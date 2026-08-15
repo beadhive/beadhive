@@ -277,6 +277,10 @@ work:
                                  # a `<phase>-main` key wins when the op targets the integration branch.
     molecule: "just check-all"   #   mol→main pre-land: the full (unit+integration) gate
     merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain merge→mol stays fast)
+  validate_subset: ""            # OPTIONAL, absent by default. Re-run only NAMED tests; one
+                                 # required {tests} placeholder, e.g.
+                                 #   "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
+                                 # DEVELOPER LOOP ONLY — see "Converging on failures" below.
   review_gate: "human"           # gate at submit: human | timer | gh:run | gh:pr
   runtime: local                 # which scheduler wakes a role binary: claude | local | temporal
                                  # (default local — see "Runtime tiers" below)
@@ -298,6 +302,40 @@ work:
 
 `submit` only **pushes** the branch when `review_gate` is `gh:run`/`gh:pr` (CI must
 see it); a purely local reviewer sharing the object store needs no push.
+
+## Converging on failures — `work.validate_subset`
+
+A red `bh work check` on a large suite tells you *that* something broke and then makes you wait
+~6 minutes to find out whether your fix worked. Set `work.validate_subset` and `check` re-runs
+**only the tests that failed**, straight after the red run, using the names the hive's own runner
+reported (`BH_TEST_REPORT_DIR`, see [WORKTREES.md](WORKTREES.md)):
+
+```yaml
+work:
+  validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
+```
+
+- One required placeholder, `{tests}`. A value without it is refused by `bh config set`, and —
+  if hand-edited into `config.yaml` — reads back as absent: tier 2 fails **open** to the full
+  run, never closed. **Absent is the default and is fully supported**: no key, no converge loop,
+  every phase runs whole, exactly as before.
+- bh passes the names its report gave it, **verbatim** — JUnit `classname::name`, which for
+  pytest is the *dotted module* (`tests.test_a::test_one`), hence `--pyargs` above. Turning those
+  into selectors is the template's job; bh never guesses a node id it was not given, and a hive
+  whose runner emits nothing machine-readable simply never converges.
+
+**It can never produce a verdict, and that is the whole point.** Re-running only the failures
+until they pass is exactly how a flaky suite is laundered into green, so
+[the attested-green ADR](design/attested-green-adr.md) makes the confirming run mandatory:
+
+| | |
+|---|---|
+| converge loop (`work check`) | narrows to what still fails, up to 3 rounds, stopping the moment a round makes no progress → a **CANDIDATE**. `check` still exits red. |
+| confirming run (any full, clean phase) | the only run that may write an attestation. Never consults `work.validate_subset` — the gate (`submit` / `merge` / `finish`) does not converge at all. |
+| flake report | anything that failed and then passed at the **identical tree** is recorded in `.bh/testreport/<tree>/results.json` and named on the next green run: flaky, not fixed. |
+
+So tier 2 saves the gate exactly nothing. It buys a developer seconds instead of minutes, and it
+produces the retry history that makes flakes visible for the first time.
 
 ## Runtime tiers — `work.runtime`
 

@@ -251,6 +251,16 @@ Three properties, binding:
    be read as this one's result. It is a drop zone, never a durable store.
 3. **A missing or malformed report is not a failure** — it degrades to an rc-only verdict.
 
+A fourth property belongs to the *ledger*, not the drop zone, and is the one an implementer is
+most likely to get backwards: **an attestation only ever comes from a full, clean run.** A hive
+that sets `work.validate_subset` gets a failure-scoped re-run loop in `bh work check`
+([WORK.md](WORK.md#converging-on-failures--workvalidate_subset)) — a developer-loop convenience
+that converges to a *candidate*. Converging is how a flaky suite gets laundered into green, so a
+converged result is never recorded: the ledger is sealed for the rest of the process the moment a
+subset command runs, and the gate (`submit` / `merge` / `finish`) never consults the key at all.
+What a retry *does* earn is visibility — a test that failed and then passed at the identical tree
+is named as **flaky** on the next green run.
+
 See [`docs/design/attested-green-provider-adr.md`](design/attested-green-provider-adr.md).
 
 ## Cleanup

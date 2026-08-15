@@ -40,6 +40,7 @@ import typer
 from . import (
     bd,
     config,
+    converge,
     ghpr,
     host,
     otel,
@@ -1355,6 +1356,11 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
             # output has to be copied into the durable per-tree store before then.
             triage_store.store(entry, validated_sha, cmd, rc, report, drop, log)
         validation_ledger.record(entry, validated_sha, cmd, rc, report=report)  # best-effort
+        # A clean checkout running the phase WHOLE is the confirming run — the only kind of run
+        # that may attest (bh-ku9n9.8). It never converges and never consults
+        # `work.validate_subset`; all it does here is read the tree's retry history back and say
+        # so when part of this green took a retry to get there, rather than absorbing the flake.
+        converge.warn_flakes(entry, validated_sha, rc)
         if missing := missing_binary(res):
             # This seam runs WITHOUT capture, so a missing binary would otherwise exit 127 having
             # printed NOTHING — no stdout, no stderr — and _BARE_CHECKOUT_HINT would then point

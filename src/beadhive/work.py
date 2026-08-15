@@ -33,6 +33,7 @@ from . import (
     bd,
     claim_authority,
     config,
+    converge,
     ghpr,
     git_linkage,
     guard,
@@ -1811,7 +1812,19 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
-    if missing := missing_binary(res):
+    missing = missing_binary(res)
+    if rc != 0 and not missing:
+        # THE CONVERGE LOOP (bh-ku9n9.8), and the ONLY place it is wired: a developer loop that
+        # re-runs just the failures via `work.validate_subset` to get from red to knowing-why in
+        # seconds instead of ~6 minutes. It can only ever produce a CANDIDATE — the verdict above
+        # is already recorded (and, being red, was never written), and `converge` seals the ledger
+        # shut before it spawns, so nothing downstream can turn a converged result into an
+        # attestation. A hive with no `work.validate_subset`, or a run that named no failing
+        # tests, converges nothing and gets today's behaviour. NEVER wire this into the gate.
+        # The sha is the one `_record_check_verdict` would file under — empty on a dirty tree,
+        # whose HEAD names a tree that is not what ran, so the retries are simply not stored.
+        converge.converge(entry, cfg, target, _checked_sha(target), report)
+    if missing:
         # No `capture` here, so a missing validate binary would exit 127 having printed NOTHING
         # — the operator sees `bh work check` fail silently and reads it as a test failure
         # (bh-7m2h9). Name the binary, and say this is not a verdict on the code.
@@ -1845,14 +1858,23 @@ def _record_check_verdict(entry, target, cmd, rc, report=None, drop=None, log=No
     dirty tree names no tree to file under either. `drop`/`log` are the run's drop zone and tee'd
     gate log, both live only inside the caller's `with`; `triage_store` owns whether to keep
     anything at all (red or retried only) and swallows its own failures."""
-    if not worktree.is_clean(target):
-        return
-    sha = worktree.head_full_sha(target)
+    sha = _checked_sha(target)
     if not sha:
         return
     triage_store.store(entry, sha, cmd, rc, report, drop, log)
     if rc == 0:
         validation_ledger.record(entry, sha, cmd, rc, report=report)
+        # This IS the confirming run — a full, clean, un-retried gate over this tree, which is the
+        # only thing that may attest (bh-ku9n9.8). Say so if some of it needed a retry to get here
+        # at this exact content: green is the honest verdict, and a flake is still a flake.
+        converge.warn_flakes(entry, sha, rc)
+
+
+def _checked_sha(target) -> str:
+    """`target`'s HEAD when the worktree is CLEAN, else `""` — the one honest answer to "which
+    tree actually ran". A dirty tree's HEAD names content the command never saw, so neither the
+    ledger nor the triage store may be keyed by it."""
+    return worktree.head_full_sha(target) if worktree.is_clean(target) else ""
 
 
 def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:
