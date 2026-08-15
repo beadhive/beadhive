@@ -1604,9 +1604,9 @@ def hive_hook_push_main(
         "",
         "--gate",
         metavar="CMD",
-        help="the command the caller runs on a miss; `work.validate.push-main` must resolve to "
-        "exactly this or the lookup refuses (a phase naming a weaker command is not a verdict "
-        "about this gate)",
+        help="REQUIRED: the command the caller runs on a miss; `work.validate.push-main` must "
+        "resolve to exactly this or the lookup refuses (a phase naming a weaker command is not "
+        "a verdict about this gate)",
     ),
     hive_id: str = typer.Option(
         "", "--hive", metavar="HIVE_ID", help="hive to consult (default: the hive owning cwd)"
@@ -1631,6 +1631,16 @@ def hive_hook_push_main(
     (`just push` / `scripts/push-main.sh`) remains required. This makes that path rarer, not
     safe to run bare."""
     from . import prepush
+
+    # `--gate` is required, not merely conventional (bh-ku9n9.19, item 8): an EMPTY gate_cmd
+    # makes `push_main_cmd` skip its command-equality check entirely (it stays permissive there
+    # for `release.py`'s own optional `--gate`), so a hive configuring `push-main: "true"` could
+    # earn an exit 0 from a caller that forgot to name its own command. Refusing here removes
+    # that path rather than relying on the only in-repo caller (`scripts/main-push-gate.sh`)
+    # always passing one.
+    if not gate:
+        typer.echo("✗ --gate is required — name the command this gate runs on a miss", err=True)
+        raise typer.Exit(1)
 
     ok, detail = prepush.check_push_main(rev, hive_id=hive_id, gate_cmd=gate)
     typer.echo(detail, err=not ok)
