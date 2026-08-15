@@ -116,6 +116,17 @@ def test_run_init_respects_if_exists_and_tolerates_failure(tmp_path):
     assert not (tmp_path / "unmatched.marker").exists()
 
 
+def test_run_init_surfaces_a_summary_of_failed_rules(tmp_path, capsys):
+    """bh-rcroq: a per-rule ⚠ is easy to miss in a wall of output — run_init also re-surfaces
+    every failure as a one-line summary after the loop, so a silently-skipped step (like the
+    `repowise init` bad-flag regression) is visible without becoming fatal."""
+    cfg = {"worktrees": {"init": [{"run": "false"}, {"run": "sh -c 'exit 3'"}]}}
+    worktree.run_init(cfg, {}, tmp_path)  # still no exception
+    err = capsys.readouterr().err
+    assert "2 optional provisioning rule(s) failed" in err
+    assert "false" in err and "exit 3" in err
+
+
 def test_config_example_justfile_rule_is_probe_guarded():
     """The shipped default just-setup rule probes for the recipe: template YAML parses, the
     rule shell-splits cleanly, and a repo without a `setup` recipe gets a quiet info echo —

@@ -148,6 +148,17 @@ worktrees:
     - {if_exists: "*mise.toml", run: "mise trust", verify: true}   # both .mise.toml and mise.toml
     - {if_exists: "pyproject.toml", run: "uv sync", verify: true}
     - {if_exists: "justfile", run: "sh -c 'if just --show setup >/dev/null 2>&1; then just setup; else echo \"just setup: not configured in this repo\"; fi'"}
+    # repowise (bh-rcroq): a user-brought AGPL-3.0 doc/index plugin (docs/ASSURANCE.md) — bh
+    # never requires or installs it. If you add it as an init rule, use --no-editor-setup to
+    # keep this MACHINE-WIDE (Claude Code MCP entry + hooks in ~/.claude/settings.json, not
+    # just this repo) and skip it on every ephemeral worktree provision, not just the first —
+    # dropping it entirely re-registers your global Claude Code MCP config at whatever worktree
+    # happened to provision last. Older repowise versions used --no-mcp-json/--no-vscode for
+    # this; both were removed upstream with no like-for-like replacement (`repowise init
+    # --help` is the source of truth, not this comment — verify before copying). See
+    # tests/test_repowise_init_flags.py, which fails locally (skipped if repowise isn't
+    # installed) the day this flag list next drifts.
+    # - {if_exists: ".git", run: "repowise init . --mode fast --no-prose -y --no-editor-setup --no-claude-md"}
   # toolchain: declare what a repo USES (bh-d0kb) — KNOWLEDGE-ONLY metadata. A name or a
   # list of names from the shipped registry (just | uv | npm | make); also settable per-hive
   # as managed_repos[*].toolchain (per-hive wins). The declaration NEVER drives behavior:
