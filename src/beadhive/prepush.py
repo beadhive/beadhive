@@ -245,7 +245,41 @@ def check_fence(hive_dir: Path, *, cfg=None) -> tuple[bool, str]:
     return False, detail
 
 
-def check_push_main(rev: str, hive_id: str = "", gate_cmd: str = "") -> tuple[bool, str]:
+def push_main_cmd(cfg, entry, gate_cmd: str = "") -> tuple[str, str]:
+    """`(cmd, "")` — the command `work.validate.push-main` names for `entry` — or `("", detail)`
+    when there is no usable one. **The single resolver for the `push-main` phase**, shared by the
+    pre-push lookup below and by the release flow (`release.py`, bh-ku9n9.7), so a bump and a push
+    can never disagree about which command a verdict has to have been earned under.
+
+    Two refusals, both of which must read as a hard miss rather than a lenient default:
+
+    * **Unconfigured.** `config.validate_cmd` falls back to `work.validate_cmd` (`just check` by
+      default) for an unset phase, and honoring a verdict earned by the *fast* gate as though it
+      were the *full* one is exactly the ambiguity this epic exists to refuse. So an absent key
+      resolves to nothing at all rather than to the fallback.
+    * **Mismatched.** `gate_cmd` is what the caller says it will run on a miss. When given, the
+      resolved phase must equal it exactly — a `push-main` naming a *different* (and possibly
+      weaker) command than the caller runs is a verdict about some other gate."""
+    per = config.work_value(cfg, entry, "validate", {}) or {}
+    if PUSH_MAIN_PHASE not in per:
+        return "", (
+            f"• no `work.validate.{PUSH_MAIN_PHASE}` configured for hive "
+            f"{entry.get('prefix', '?')} — nothing to look a verdict up under. Set it to the "
+            f"command the gate runs to enable attested-green reuse."
+        )
+    cmd = config.validate_cmd(cfg, entry, phase=PUSH_MAIN_PHASE)
+    if gate_cmd and gate_cmd.strip() != cmd.strip():
+        return "", (
+            f"• work.validate.{PUSH_MAIN_PHASE} is {cmd!r} but this gate runs {gate_cmd!r} — a "
+            f"verdict earned under a different command says nothing about this one. Point the "
+            f"phase at the gate's own command."
+        )
+    return cmd, ""
+
+
+def check_push_main(
+    rev: str, hive_id: str = "", gate_cmd: str = "", on_miss: str = "gate runs"
+) -> tuple[bool, str]:
     """`(ok, detail)` for "has the tree at `rev` already been proved green by the `push-main`
     gate?" — the main-push gate's lookup (bh-ku9n9.5, `docs/design/attested-green-adr.md`).
 
@@ -276,6 +310,11 @@ def check_push_main(rev: str, hive_id: str = "", gate_cmd: str = "") -> tuple[bo
     possibly weaker) command than the hook actually runs is precisely the "ambiguous
     attestation" case, and it must read as a loud miss rather than a quiet pass.
 
+    **`on_miss`** names only what the CALLER does with a `False` — "gate runs" for the hook,
+    "the bump is refused" for the release pre-flight (bh-ku9n9.7). It changes wording, never the
+    verdict: every caller's `False` is the safe side of its own decision, which is the reason one
+    predicate can serve both.
+
     WHAT THIS DOES NOT SOLVE: only the HIT path is fast. A miss still runs ~371s inside the
     push, holding the connection git opened before the hook started, so the SSH keepalive from
     bh-53o8f (`scripts/push-main.sh` / `just push`) is still required — see that script's
@@ -284,26 +323,15 @@ def check_push_main(rev: str, hive_id: str = "", gate_cmd: str = "") -> tuple[bo
         cfg = config.load()
         entry = registry.resolve_hive(cfg, hive_id) if hive_id else registry.current_hive(cfg)
         if not entry:
-            return False, f"• no managed hive for this push ({hive_id or 'cwd'}) — gate runs"
-        per = config.work_value(cfg, entry, "validate", {}) or {}
-        if PUSH_MAIN_PHASE not in per:
-            return False, (
-                f"• no `work.validate.{PUSH_MAIN_PHASE}` configured for hive "
-                f"{entry.get('prefix', '?')} — nothing to look a verdict up under, so the gate "
-                f"runs. Set it to the command this gate runs to enable attested-green reuse."
-            )
-        cmd = config.validate_cmd(cfg, entry, phase=PUSH_MAIN_PHASE)
-        if gate_cmd and gate_cmd.strip() != cmd.strip():
-            return False, (
-                f"• work.validate.{PUSH_MAIN_PHASE} is {cmd!r} but this gate runs {gate_cmd!r} "
-                f"— a verdict earned under a different command says nothing about this one, so "
-                f"the gate runs. Point the phase at the gate's own command."
-            )
+            return False, f"• no managed hive for this push ({hive_id or 'cwd'}) — {on_miss}"
+        cmd, refusal = push_main_cmd(cfg, entry, gate_cmd)
+        if refusal:
+            return False, f"{refusal} ({on_miss})"
         hit = validation_ledger.green_verdict(entry, rev, cmd)
         # `green_verdict` already refuses a red / stale / missing / malformed entry; the rc is
         # re-asserted because this is the OUTERMOST gate and the second check costs one compare.
         if not hit or hit.get("rc") != 0:
-            return False, f"• no fresh green {PUSH_MAIN_PHASE} verdict for {rev[:12]} — gate runs"
+            return False, f"• no fresh green {PUSH_MAIN_PHASE} verdict for {rev[:12]} — {on_miss}"
         # Formatting stays INSIDE the try on purpose: a garbage `at` that survived the freshness
         # check (a far-future timestamp reads as "not expired") must not raise out of a hook.
         when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
@@ -312,4 +340,4 @@ def check_push_main(rev: str, hive_id: str = "", gate_cmd: str = "") -> tuple[bo
             f"{when} — skipping the full gate for {rev[:12]}"
         )
     except Exception as exc:  # noqa: BLE001 — ANY failure means "run the gate", never "pass"
-        return False, f"• verdict lookup failed ({type(exc).__name__}: {exc}) — gate runs"
+        return False, f"• verdict lookup failed ({type(exc).__name__}: {exc}) — {on_miss}"

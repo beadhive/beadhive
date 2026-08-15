@@ -220,6 +220,46 @@ inside the push, on the connection git opened before the hook started — so the
 bh-53o8f (`just push` / `scripts/push-main.sh`) is still required. This makes that path rarer; it
 does not make it safe to run bare.
 
+## Release orchestration — the attestation as the bump's pre-flight proof (bh-ku9n9.7)
+
+The same pattern one level up, and the place it pays most. `cz bump` writes `pyproject.toml`,
+`CHANGELOG.md` and `uv.lock`, so **the release commit is a new tree with no attestation** — a
+guaranteed miss on the phase above, at precisely the moment a ~371s gate inside a push hurts most.
+bh-1owpi named this hole and did not solve it; it is what bit the 0.11.5 release.
+
+**The ordering is the design, not an implementation detail.** bh-67utw's rule is that a failed
+push is undoable to a clean slate *if and only if the tag never left*. The bump is therefore the
+last safely reversible moment, so green is proven **before** it — never inside the push, where a
+red suite is discovered only after a tag already exists locally. Pushing main becomes a short
+check that green was already proven, which is also what removes the long idle socket of bh-53o8f.
+
+```text
+  bh release preflight   ── reads a verdict for HEAD's tree. REFUSES the bump without one.
+                            Never runs the gate: a second place green gets established is a
+                            second place it gets established too late.
+  cz bump                ── new tree (pyproject + CHANGELOG + uv.lock) + tag. UNATTESTED.
+  bh release attest      ── fires the gate on THAT tree, detached, now.
+    --background
+  bh release await       ── the push blocks here. GREEN ⇒ go. RED ⇒ refuse; nothing has left,
+                            so bh-67utw's undo is still fully available.
+  push --atomic          ── main AND its tag, both refs or neither.
+ ══════════════════════════ THE TAG IS THE POINT OF NO RETURN ══════════════════════════
+  bh release recover     ── which of bh-67utw's two cases is this? Decided on ONE MEASURED
+                            FACT: did the tag reach the remote, per `ls-remote` against the
+                            actual remote. Never a local tracking ref, never an assumption.
+```
+
+Four answers from `recover`, and the fourth is why it returns a code rather than a boolean:
+**tag published** → case B, roll forward, never delete; **tag absent and the bump nowhere on the
+remote** → case A, the undo is safe (the rewrite itself stays bh-67utw's); **main landed without
+its tag** → bh-zfvbp's half-done release, finish it, do not undo it — unreachable via the atomic
+push and measured for anyway; **could not read the remote** → conclude *nothing*, because a
+history rewrite on a network blip is the one outcome worse than doing nothing.
+
+The safety property is bh-ku9n9.5's, unchanged and enforced by sharing its resolver
+(`prepush.push_main_cmd`): no missing, stale, red, corrupt or ambiguous attestation lets a bump
+or a push proceed as though green were proven, and no flag converts a refusal into a pass.
+
 ## Consequences
 
 - `validation_ledger.py`'s key changes from `(sha, cmd_hash)` to `(tree, cmd_hash)`. Existing

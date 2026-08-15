@@ -195,11 +195,17 @@ def record(
         pass
 
 
-def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None) -> dict | None:
-    """The recorded entry for exactly (tree of `rev`, cmd) iff it is GREEN (rc == 0) and fresh
-    (within `ttl`, default `work.ledger_ttl`), else None. A red / stale / missing verdict always
-    means: run the validation. Only an EXACT tree match hits — a rebase of the same patch onto a
-    different base is a different tree and always revalidates."""
+def verdict(entry, rev: str, cmd: str, ttl: int | None = None) -> dict | None:
+    """The FRESH recorded entry for exactly (tree of `rev`, cmd) **whatever its rc**, else None.
+
+    :func:`green_verdict` is the read almost everything wants — "may I skip this run?" — and is
+    defined in terms of this one. This raw form exists for the single caller that must tell a
+    RED verdict apart from NO verdict: `bh release await` (bh-ku9n9.7), which waits on a
+    background gate over the bump tree. "not finished yet" must keep waiting while "finished and
+    failed" must refuse the release immediately, and `green_verdict` collapses both to None.
+
+    Nothing here treats a red entry as permission for anything: the only consumer of a non-green
+    return is a caller that refuses harder because of it."""
     path = _ledger_path(entry)
     if path is None or not rev:
         return None
@@ -209,6 +215,15 @@ def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None) -> dict | N
         (e for e in reversed(_load(path)) if e.get("tree") == tree and e.get("cmd_hash") == key),
         None,
     )
-    if hit is None or not _is_fresh(hit, now, _ttl(entry, ttl)) or hit.get("rc") != 0:
-        return None
-    return hit
+    return hit if hit is not None and _is_fresh(hit, now, _ttl(entry, ttl)) else None
+
+
+def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None) -> dict | None:
+    """The recorded entry for exactly (tree of `rev`, cmd) iff it is GREEN (rc == 0) and fresh
+    (within `ttl`, default `work.ledger_ttl`), else None. A red / stale / missing verdict always
+    means: run the validation. Only an EXACT tree match hits — a rebase of the same patch onto a
+    different base is a different tree and always revalidates."""
+    hit = verdict(entry, rev, cmd, ttl)
+    # `!= 0` rather than a truthiness test on purpose: a malformed rc (the string "0", None, a
+    # dict) is not the integer 0 and so is NOT green — a corrupt record must never read as a pass.
+    return None if hit is None or hit.get("rc") != 0 else hit
