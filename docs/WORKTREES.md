@@ -193,7 +193,11 @@ observed at a tree ride along as **metadata** (`sha`, `shas`), never as identity
 them back. One thing a tree cannot cover: a test asserting on git **metadata** (`git describe`,
 commit counts, tag-derived versions — this repo's exposure is commitizen via
 `scripts/release-pin.sh`) is a function of history, not content, so those tests carry the
-`always_run` pytest marker and are selectable as a set with `pytest -m always_run`.
+`always_run` pytest marker and are selectable as a set with `pytest -m always_run`. Point
+**`work.always_run`** at that selection and a hit runs it before honoring the verdict — a hit is
+"skip the expensive command", never "skip everything" — refusing the hit, and sealing the ledger
+for the rest of the process, if it fails. Absent (the default) honors the hit whole. See
+[WORK.md](WORK.md#the-always-run-set--workalways_run).
 
 **Staleness is `work.ledger_ttl`** — an ISO-8601 duration (`PT30M` / `PT4H` / `P1D`), per-hive
 over global, default `P1D`, which is exactly the 24h that shipped before it was configurable.

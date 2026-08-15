@@ -271,7 +271,12 @@ or a push proceed as though green were proven, and no flag converts a refusal in
   as separate implementation beads under this epic (bh-ku9n9), not decided here.
 - Any test reading git metadata (commit-derived version strings, `git describe`, commit counts)
   must stay in the always-run set per the git-metadata asterisk — tree equality says nothing
-  about git history.
+  about git history. **What RUNS that set is `work.always_run`** (bh-ehmd8): `green_verdict` —
+  the one question every reuse boundary asks — spawns the hive's declared command before it
+  hands back a hit, so a hit means "skip the expensive command, still run the small set" rather
+  than "skip everything". A failing set refuses the hit *and* seals the ledger for the rest of
+  the process, so that outcome can never become an attestation. Declaring nothing honors the hit
+  whole, which is the tier contract's degradation, not a gap.
 - Establish-from-tree (see "Why this is not a third exception" above) means a test reaching
   ambient host/git state that `scripts/hermetic.sh` should have fenced is a defect to fix, not
   a second always-run category — bh-ku9n9.12 is the live instance, bh-ab5e7 (epic bh-1c04h) is

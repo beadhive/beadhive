@@ -291,6 +291,12 @@ def check_push_main(
     an exception of any kind. There is no path through here where a missing, unreadable, or
     ambiguous attestation produces `True`; the worst case is current behaviour.
 
+    **And a hive's declared `work.always_run` set is one more way to get `False`** (bh-ehmd8):
+    `green_verdict` runs it before it hands back a hit, because a tree hash vouches for file
+    content and this gate's own release pin reads git *metadata*. A failing set means `ok=False`
+    and the full gate runs — the same safe side as every other outcome above. The rule lives in
+    `green_verdict`, so this gate and every landing boundary get it from one place.
+
     That asymmetry is why the `except Exception` below is correct rather than lazy: the failure
     mode of this lookup is "we ran the 371s gate we would have run anyway", so swallowing a
     surprise and falling through is strictly safer than propagating it (which, from a git hook,
