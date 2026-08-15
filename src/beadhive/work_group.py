@@ -580,7 +580,11 @@ def merge_group(cfg, group_arg, hive, rm):
 
     started = time.perf_counter()
     with merge_slot(main):
-        rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry))
+        # Landing-boundary reuse on exact tree match (ADR Decision 4, bh-ku9n9.17): the ledger is
+        # keyed on (TREE, cmd_hash), so a hit here means this exact content already passed this
+        # exact command — the batch branch is unchanged since its submit. Anything else (a
+        # rebase onto a moved base, a changed command, a stale or red entry) misses and runs.
+        rc = worktree.clean_checkout(entry, branch, config.validate_cmd(cfg, entry), reuse=True)
         otel.count_validation(rc == 0, {"bh.batch": group, "bh.work.phase": "batch"})
         if rc != 0:
             typer.echo(f"✗ batch validation failed (exit {rc}) — nothing landed", err=True)
