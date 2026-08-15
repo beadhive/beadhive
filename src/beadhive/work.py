@@ -1741,6 +1741,10 @@ def loop(
 def check(bead: str = _BEAD, hive: str = _HIVE):
     """Run the hive's validation command against the worktree; propagate its exit code.
 
+    The hive's `verify: true` init rules run first, so the environment the command validates is
+    derived from THIS TREE rather than from whenever the seat happened to be provisioned
+    (bh-ku9n9.14) — the same establishment `clean_checkout` does in its verify dir.
+
     A green run against a CLEAN tree also seeds the verdict ledger `submit` reuses from
     (bh-i0p1.4), so the ordinary check-then-submit sequence pays for validation once, not
     twice — see `_record_check_verdict`."""
@@ -1772,6 +1776,15 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     # Telemetry-neutral env so `check` agrees with `submit`'s clean-checkout validation regardless
     # of the hive's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
     cmd = config.validate_cmd(cfg, entry)
+    # Establish the environment FROM THE TREE before validating (bh-ku9n9.14), exactly as
+    # `clean_checkout` does in its verify dir. Without this, `check`'s verdict — which seeds the
+    # ledger `submit` reuses — was a property of WHEN THE SEAT WAS PROVISIONED, not of the tree:
+    # a seat whose venv predates a dependency change validates a different environment than the
+    # clean checkout would, and the two verdicts are indistinguishable in the ledger (same key,
+    # same rc). Measured 0.18s on a warm seat here against a ~371s gate. The rules stay opaque
+    # {run, if_exists?, verify?} entries in the operator's declared order — bh learns nothing
+    # about any ecosystem — so a hive declaring none runs zero commands and is unaffected.
+    worktree.run_init(cfg, entry, target, verify_only=True)
     v_start = time.perf_counter()
     res = run(
         shlex.split(cmd),
@@ -1802,10 +1815,12 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
 def _record_check_verdict(entry, target, cmd, rc) -> None:
     """Feed a green `check` into the same verdict ledger `submit` reuses from (bh-i0p1.4): a
     clean-checkout validation and a `check` against a CLEAN worktree prove the exact same thing
-    for the exact same sha, so there is no reason the second (submit's) has to re-pay the ~6
-    minute run the first (check's, run moments earlier in the ordinary check-then-submit flow —
-    see the `work` skill) already proved green. Recording is against `target`'s own HEAD — which
-    the ledger keys by its TREE (bh-ku9n9.3), the commit itself kept only as metadata — so it
+    for the exact same tree — `check` runs the same `verify: true` init rules first
+    (bh-ku9n9.14), so both establish their environment from that tree — and there is no reason
+    the second (submit's) has to re-pay the ~6 minute run the first (check's, run moments
+    earlier in the ordinary check-then-submit flow — see the `work` skill) already proved green.
+    Recording is against `target`'s own HEAD — which the ledger keys by its TREE (bh-ku9n9.3),
+    the commit itself kept only as metadata — so it
     is only trustworthy, and only attempted, when the tree is clean (no uncommitted delta):
     a dirty tree's HEAD would misrepresent what `cmd` actually ran against. Best-effort, silent,
     and skipped outright on a red run — `validation_ledger.record` never reuses a non-green
