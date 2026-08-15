@@ -653,6 +653,18 @@ def test_a_corrupt_marker_is_a_marker_that_is_not_there(hive, name, content):
     assert _await(hive, rev=bumped).exit_code == 1, name
 
 
+def test_a_fifo_at_the_marker_path_reads_as_not_there(hive):
+    """A FIFO makes `Path.read_text()` block forever rather than raise, which the OSError/
+    ValueError clauses in `_read_marker` never catch (bh-0jgdz, inherited from bh-ku9n9.7).
+    Calling the function directly, not through the CLI: an unfixed regression here would hang
+    the whole test run rather than fail it."""
+    if not hasattr(os, "mkfifo"):
+        pytest.skip("mkfifo is POSIX-only")
+    os.mkfifo(_marker(hive))
+
+    assert release._read_marker(hive["entry"]) == {}
+
+
 def test_await_refuses_an_unconfigured_phase(hive):
     hive["entry"]["work"] = {"validate": {}, "validate_cmd": "just check"}
 
@@ -767,9 +779,19 @@ def test_pending_fails_open_when_config_explodes(hive, monkeypatch):
 
 
 def test_pending_and_await_agree_about_what_is_pending(hive):
-    """The acceptance bar, stated as a behavioral invariant rather than by reading source: the two
-    verbs share `_marker_for_tree` (bh-8c2yo), so for any marker state either both see a pending
-    gate for this tree or neither does — there is no state where the two disagree."""
+    """The acceptance bar, stated as a behavioral invariant rather than by reading source, for the
+    states this test exercises: none fired, fired-with-no-verdict-yet, and red. Across those three,
+    the two verbs share `_marker_for_tree` (bh-8c2yo), so either both see a pending gate for this
+    tree or neither does.
+
+    GREEN is deliberately excluded, not merely untested: there both `pending` (a marker is not
+    consumed once attested, so it still names this tree) and `await --if-pending --timeout 0`
+    (now safe to push) exit 0 — but for different reasons, one answering "is a gate in flight for
+    this tree" and the other "is it safe to stop waiting and push". `in_flight()`'s XOR-style
+    proxy below (`pending`'s 0 vs. `await`'s 1) does not extend to that case, and the divergence
+    is the whole point of bh-8c2yo: `just push`'s pre-flight must refuse a push mid-release even
+    once the bump is green, which is exactly why it asks `pending` directly rather than proxying
+    through `await`."""
     bumped = _bump(hive)
 
     def in_flight() -> bool:

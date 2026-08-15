@@ -172,9 +172,16 @@ def _marker_path(entry) -> Path | None:
 
 def _read_marker(entry) -> dict:
     """The marker as a dict; `{}` on absent/corrupt/wrong-shape — a marker that cannot be read
-    is a marker that is not there, and "not there" is never permission for anything."""
+    is a marker that is not there, and "not there" is never permission for anything.
+
+    The `is_file()` guard matters beyond ruling out a directory: a FIFO at this path makes
+    `Path.read_text()` block forever rather than raise, which neither exception clause below
+    catches — inherited from bh-ku9n9.7, shared by both callers of this function through
+    `_marker_for_tree`. Nothing creates a FIFO here today, but "unreadable in bounded time" is
+    exactly the "not there" case this function already exists to collapse everything else into,
+    and a `just push` that never returns is the worst kind of failure to debug."""
     path = _marker_path(entry)
-    if path is None:
+    if path is None or not path.is_file():
         return {}
     try:
         data = json.loads(path.read_text())
@@ -368,16 +375,21 @@ def await_cmd(
     if_pending: bool = typer.Option(
         False,
         "--if-pending",
-        help="exit 0 immediately when NO background gate is pending for this tree (for the "
-        "general `just push`, which must stay unchanged for an ordinary integration push)",
+        help="exit 0 immediately when NO background gate is pending for this tree (for "
+        "`just release-push`'s pre-flight, which must not block an ordinary release with no "
+        "bump gate in flight; `just push` itself no longer calls `await` at all — see "
+        "`_refuse-if-bump-pending` in the justfile)",
     ),
 ):
     """BLOCK until the background bump gate records a verdict for REV's tree. Exit 0 iff GREEN.
 
     This is where "the push waits on a verdict" is actually implemented, and the reason the push
     hook is no longer where green gets established. On a green verdict the pre-push hook's own
-    lookup (`bh hive hook push-main`) then hits the same ledger entry and the push costs
-    milliseconds — same key, same command, one resolver.
+    lookup (`bh hive hook push-main`) then hits the same ledger entry — same key, same command,
+    one resolver, and fast relative to the full gate it replaces. Not free, though: a hive
+    declaring `work.always_run` (bh-ehmd8) pays that set on every hit, not milliseconds — see
+    docs/WORK.md's "The always-run set" for the current cost, kept there rather than restated
+    here so there is one place to keep it current.
 
     Three answers, kept apart on purpose:
 
