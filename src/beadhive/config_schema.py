@@ -409,11 +409,19 @@ class WorkConfig(_Section):
     def _iso8601_duration(cls, v):
         """Catch a typo here, where it is one loud error at validation time. `config.ledger_ttl`
         deliberately degrades to the default instead, so a hand-edited bad value can never fail
-        an unrelated `bh` command."""
+        an unrelated `bh` command.
+
+        A NEGATIVE duration (`-P1D`) is a well-formed ISO-8601 duration that pydantic's own
+        `timedelta` adapter happily parses (bh-ku9n9.19, item 3) — but `config.duration_seconds`
+        would then hand the ledger a negative TTL, which makes `_is_fresh` false for every entry.
+        Fail-safe (nothing is ever wrongly reused), but silent: the operator gets zero reuse and
+        no signal why. Reject it here, loudly, instead."""
         try:
-            _TIMEDELTA.validate_python(v)
+            parsed = _TIMEDELTA.validate_python(v)
         except ValidationError as exc:
             raise ValueError(f"not an ISO-8601 duration (want PT30M / PT4H / P1D): {v!r}") from exc
+        if parsed.total_seconds() < 0:
+            raise ValueError(f"ledger_ttl must not be negative (want PT30M / PT4H / P1D): {v!r}")
         return v
 
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
