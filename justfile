@@ -166,18 +166,21 @@ hooks:
 # has to be the thing you type. scripts/push-main.sh carries the full writeup, including the
 # `git push | tail` trap (tail's exit status, not git's) that hid the failure twice.
 #
-# THE PENDING-BUMP CHECK (bh-ku9n9.7) is the first line and it is inert for an ordinary push:
-# `--if-pending` exits 0 when no background bump gate exists for this tree. When one DOES exist —
-# `just bump` fired one on the new bump tree — this refuses to push until that verdict is in and
-# green. It removes no protection from any other push: a miss still meets the full pre-push gate
-# exactly as before. It only stops publishing a bump whose gate is still running or already red,
-# which is the window in which the bump is still reversible (bh-67utw).
+# THE PENDING-BUMP REFUSAL (bh-8c2yo) is the first line, and it REFUSES rather than waiting.
+# `just bump` fires a background gate and drops a marker naming the bump tree (bh-ku9n9.7); if
+# that marker still names HEAD's tree, this is `just push` reached mid-release, and `just
+# release-push` is the atomic path that lands main and the tag together — `just push` alone would
+# land main and leave the tag local, the half-done state bh-ku9n9.7's atomic push exists to
+# prevent. Waiting the gate out and then pushing anyway (what this used to do) does not avoid
+# that state, it just delays it, so this refuses instead of redirecting: a command that quietly
+# does something other than what was typed is its own kind of trap. It removes no protection from
+# an ordinary push — no marker for this tree is "not pending" and this is a no-op, same as before.
 push remote="origin" branch="main":
-    @just _await-bump-gate
+    @just _refuse-if-bump-pending
     ./scripts/push-main.sh {{ remote }} {{ branch }}
 
-# The pending-bump check, factored out because `push` and `release-push` both need it and a
-# second copy of a safety check is a second thing to forget to update.
+# The pending-bump check `release-push` waits on, factored out because a second copy of a safety
+# check is a second thing to forget to update.
 #
 # THE CAPABILITY PROBE IS NOT PARANOIA. `${BH_EXEC:-bh}` is the RELEASED binary by default
 # (lefthook.yml's convention), and in the repo that authors bh that binary routinely lags the
@@ -192,6 +195,26 @@ _await-bump-gate:
     else \
         echo "⚠ this \`bh\` has no \`release await\` — a PENDING BUMP GATE IS NOT CHECKED." >&2; \
         echo "  Set BH_EXEC='uv run bh' to use this tree's own bh (bh-ku9n9.7)." >&2; \
+    fi
+
+# `just push`'s pre-flight (bh-8c2yo): REFUSE, don't wait, when a bump-gate marker still names
+# HEAD's tree — `release await` (above) answers "is it green yet"; this answers "is a release in
+# flight at all", which is the question `just push` (not `just release-push`) needs to ask.
+#
+# Same capability probe as `_await-bump-gate`, for the same reason: an older `bh` (`${BH_EXEC:-bh}`
+# defaults to the released binary, which can lag this tree) has no `release pending` at all, and a
+# bare call would break every ordinary push with "no such command". FAILS OPEN either way: an old
+# `bh` warns and does not block; `bh release pending` itself treats no marker, an unreadable one,
+# or one for a different tree as exit 1 (not pending) — this recipe only refuses on its exit 0.
+_refuse-if-bump-pending:
+    @if ${BH_EXEC:-bh} release --help 2>/dev/null | grep -q pending; then \
+        if ${BH_EXEC:-bh} release pending --gate "just check-all" >/dev/null 2>&1; then \
+            echo "✗ a bump gate is pending for this tree — use \`just release-push\` (or \`bh release recover\` to see where you are)" >&2; \
+            exit 1; \
+        fi; \
+    else \
+        echo "⚠ this \`bh\` has no \`release pending\` — a PENDING BUMP GATE IS NOT CHECKED." >&2; \
+        echo "  Set BH_EXEC='uv run bh' to use this tree's own bh (bh-8c2yo)." >&2; \
     fi
 
 # lint (includes format-check so the tree can't silently drift from the pinned ruff — bh-ukzy)

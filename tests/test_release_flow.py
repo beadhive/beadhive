@@ -670,6 +670,123 @@ def test_a_marker_from_another_host_never_reads_as_a_dead_process(hive):
     assert release._still_running({"pid": os.getpid(), "host": host.host_id()}) is True
 
 
+# ─── pending: `just push`'s refuse-not-wait pre-flight (bh-8c2yo) ────────────────────────────
+#
+# `bh release pending` answers a narrower question than `await`: not "is it green yet" but "is a
+# release in flight for this tree at all" — and it answers immediately, without waiting, because
+# `just push` must refuse rather than land main while the gate is still running or red. Every
+# test here is one of the FAIL-OPEN shapes: everything except a marker that names REV's own tree
+# must read as "not pending", identically to how `await` treats the same shapes as nothing to
+# wait on.
+
+
+def _pending(hive, rev: str | None = None, gate: str = GATE_CMD):
+    return _run(hive, "pending", rev or hive["sha"], "--gate", gate)
+
+
+def test_pending_is_true_only_once_a_marker_names_this_tree(hive):
+    bumped = _bump(hive)
+
+    assert _pending(hive, rev=bumped).exit_code == 1  # nothing fired yet — an ordinary push
+
+    _fire(hive, rev=bumped)
+
+    assert _pending(hive, rev=bumped).exit_code == 0
+
+
+def test_pending_does_not_care_whether_the_verdict_is_green_red_or_absent(hive):
+    """`await` tells green from red from still-running; `pending` collapses all three into one
+    answer, because `just push` must refuse the moment a release is in flight, not once it knows
+    how that release turns out."""
+    bumped = _bump(hive)
+    _fire(hive, rev=bumped)
+
+    assert _pending(hive, rev=bumped).exit_code == 0  # still running, no verdict yet
+
+    _attest(hive, rev=bumped, rc=1)
+    assert _pending(hive, rev=bumped).exit_code == 0  # red
+
+    _attest(hive, rev=bumped, rc=0)
+    assert _pending(hive, rev=bumped).exit_code == 0  # green
+
+
+def test_pending_is_false_for_a_marker_naming_a_different_tree(hive):
+    """A marker fired for the bump tree says nothing about a LATER tree — exactly the shape
+    `await --if-pending` already leaves to the full pre-push gate."""
+    _fire(hive, rev=_bump(hive))
+    repo = hive["repo"]
+    (repo / "extra.txt").write_text("late\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-qm", "fix: after the gate started", cwd=repo)
+    other = _git("rev-parse", "HEAD", cwd=repo)
+
+    assert _pending(hive, rev=other).exit_code == 1
+
+
+@pytest.mark.parametrize(
+    ("name", "content"),
+    [("not json", "{oops"), ("a list", "[]"), ("empty", ""), ("null", "null")],
+)
+def test_pending_fails_open_on_a_corrupt_marker(hive, name, content):
+    bumped = _bump(hive)
+    _marker(hive).write_text(content)
+
+    assert _pending(hive, rev=bumped).exit_code == 1, name
+
+
+def test_pending_fails_open_with_no_marker_file_at_all(hive):
+    """The ordinary case, proven directly: a fresh hive that has never bumped has no marker file
+    on disk whatsoever, and that must read as "not pending", never as an error."""
+    assert not _marker(hive).exists()
+
+    assert _pending(hive).exit_code == 1
+
+
+def test_pending_fails_open_on_an_unconfigured_phase(hive):
+    hive["entry"]["work"] = {"validate": {}, "validate_cmd": "just check"}
+
+    assert _pending(hive).exit_code == 1
+
+
+def test_pending_fails_open_when_no_hive_is_managed(hive, monkeypatch):
+    monkeypatch.setattr(config, "load", lambda *a, **k: {"managed_repos": []})
+
+    assert runner.invoke(app, ["release", "pending", hive["sha"]]).exit_code == 1
+
+
+def test_pending_fails_open_when_config_explodes(hive, monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("config is on fire")
+
+    monkeypatch.setattr(config, "load", boom)
+
+    res = runner.invoke(app, ["release", "pending", hive["sha"]])
+
+    assert res.exit_code != 0
+    assert res.exception is None or isinstance(res.exception, SystemExit)
+
+
+def test_pending_and_await_agree_about_what_is_pending(hive):
+    """The acceptance bar, stated as a behavioral invariant rather than by reading source: the two
+    verbs share `_marker_for_tree` (bh-8c2yo), so for any marker state either both see a pending
+    gate for this tree or neither does — there is no state where the two disagree."""
+    bumped = _bump(hive)
+
+    def in_flight() -> bool:
+        was_pending = _pending(hive, rev=bumped).exit_code == 0
+        was_waited_on = _await(hive, "--if-pending", "--timeout", "0", rev=bumped).exit_code == 1
+        assert was_pending == was_waited_on
+        return was_pending
+
+    assert in_flight() is False  # nothing fired
+
+    _fire(hive, rev=bumped)
+    assert in_flight() is True  # fired, no verdict — await would refuse to wave it through
+
+    _attest(hive, rev=bumped, rc=1)
+    assert in_flight() is True  # red
+
+
 # ─── recover: ONE measured fact, never an assumption ─────────────────────────────────────────
 
 

@@ -183,6 +183,19 @@ def _read_marker(entry) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _marker_for_tree(entry, rev: str) -> tuple[dict | None, str]:
+    """`(marker, tree)` for REV — `marker` is None when there is none, it's unreadable, or it
+    names a different tree than REV's own (always returned too, so a caller needing it for a
+    message doesn't resolve it twice).
+
+    THE ONE TEST. `await` waits on this and `just push`'s pre-flight refusal (bh-8c2yo) answers
+    from it immediately, without waiting — factored out so the two can never disagree about
+    what "a bump gate is pending for this tree" means."""
+    tree = validation_ledger.tree_of(entry, rev)
+    marker = _read_marker(entry)
+    return (marker if marker.get("tree") == tree else None), tree
+
+
 def _still_running(marker: dict) -> bool | None:
     """True/False for "is the background gate process alive?", or **None for "cannot tell"** —
     a marker from another host, or one with no usable pid. Cannot-tell is deliberately its own
@@ -382,9 +395,8 @@ def await_cmd(
     if refusal:
         typer.echo(f"{refusal} — cannot wait on a verdict", err=True)
         raise typer.Exit(REFUSED)
-    tree = validation_ledger.tree_of(entry, rev)
-    marker = _read_marker(entry)
-    if marker.get("tree") != tree:
+    marker, tree = _marker_for_tree(entry, rev)
+    if marker is None:
         if if_pending:
             typer.echo(f"• no bump gate pending for {rev} ({tree[:12]}) — nothing to wait on")
             return
@@ -440,6 +452,27 @@ def await_cmd(
             )
             raise typer.Exit(REFUSED)
         time.sleep(poll)
+
+
+@app.command("pending")
+def pending(rev: str = _REV, gate: str = _GATE, hive: str = _HIVE):
+    """Exit 0 iff a bump-gate marker is live for REV's tree, 1 otherwise — no output either way.
+
+    `just push`'s pre-flight (bh-8c2yo) consults this to refuse landing main while `just bump`'s
+    background gate marker still names HEAD, rather than waiting the gate out (`await`'s job)
+    and then pushing main without ever pushing the tag. Prints nothing on purpose: the caller
+    owns the wording of its own refusal.
+
+    Reads the marker through `_marker_for_tree` — the SAME test `await` waits on, not a second
+    parser. **FAILS OPEN**: no hive, an unresolvable gate, an absent or unreadable marker, or a
+    marker for a different tree are ALL "not pending" (exit 1) — identically to how `await`
+    treats every one of those as nothing to wait on. A pending gate's verdict (green, red, or
+    still running) does not matter here; only whether one is in flight for THIS tree does."""
+    entry, _cmd, refusal = _resolve(hive, gate)
+    if refusal:
+        raise typer.Exit(REFUSED)
+    marker, _tree = _marker_for_tree(entry, rev)
+    raise typer.Exit(0 if marker is not None else REFUSED)
 
 
 def _ls_remote(main: Path, remote: str, pattern: str) -> tuple[int, list[str]]:
