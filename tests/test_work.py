@@ -12,6 +12,7 @@ import datetime
 import json
 import os
 import re
+import time
 from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
@@ -26,6 +27,7 @@ from beadhive import (
     ghpr,
     git_linkage,
     host,
+    identity,
     otel,
     plan,
     registry,
@@ -147,11 +149,20 @@ class FakeBd:
         self.beads[bead_id] = {"id": bead_id, "status": "open", "assignee": "", **fields}
 
     def __call__(
-        self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
+        self,
+        cmd,
+        *,
+        check=True,
+        capture=False,
+        env=None,
+        cwd=None,
+        text_input=None,
+        timeout=None,
+        tee=None,  # `check`/`clean_checkout` tee the gate log (bh-ku9n9.6) — forwarded, not faked
     ):
         if not cmd or cmd[0] != "bd":
             return real_run(
-                cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input
+                cmd, check=check, capture=capture, env=env, cwd=cwd, text_input=text_input, tee=tee
             )
         # strip leading global flags: -C <dir> and --actor <name> (any order)
         args = cmd[1:]
@@ -642,6 +653,25 @@ def test_claim_supervised_leaves_identity(hive, fakebd, monkeypatch):
             "signing_key": None,
             "sign": False,
         },
+    )
+    # An empty `as_` + no static identity.name falls through to identity.resolve_actor's ambient
+    # fallback ($BH_DEV/$WS_DEV, then `git config user.name` in the REAL process cwd — not this
+    # fixture's tmp_path repos). That reads whichever seat happens to have stamped the worktree
+    # this suite is running in (dev/<name>, disp/<name>, or nothing in a plain clone), so the
+    # "no ambient seat" premise this test asserts is only true by accident of where it runs
+    # (bh-ku9n9.12). Pin both ambient sources the same way work_identity is pinned above: clear
+    # the env fallbacks and point the git-config fallback at the fixture's own unstamped `main`
+    # repo (user.name="human", set in the `hive` fixture) instead of the real cwd.
+    monkeypatch.delenv("BH_DEV", raising=False)
+    monkeypatch.delenv("WS_DEV", raising=False)
+    monkeypatch.delenv("WS_CREW", raising=False)
+    real_resolve_actor = identity.resolve_actor
+    monkeypatch.setattr(
+        identity,
+        "resolve_actor",
+        lambda explicit="", profile_name="", cwd=None: real_resolve_actor(
+            explicit, profile_name, cwd=hive.main
+        ),
     )
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="", hive="myrepo")
@@ -1161,12 +1191,21 @@ def test_resubmit_supersedes_stale_gates_and_self_heals_duplicates(hive, fakebd)
     assert fakebd.beads["mr-161"]["status"] == "closed"
 
 
-# ---- validation verdict ledger at submit (bh-dfx0) ---------------------------
+# ---- validation verdict ledger at submit + at the landing boundary -----------
 #
-# Submit is the trusted-local opt-in: a green verdict recorded for the exact (branch sha,
-# validate_cmd) skips the redundant clean-checkout, so a re-submit of an unchanged sha is a
-# true end-to-end no-op (composes with the bh-c3il gate reuse above). Landing-boundary
-# validations (merge and its post-merge tip check) never consult the ledger.
+# Submit is the trusted-local opt-in: a green verdict recorded for the exact (TREE,
+# validate_cmd) skips the redundant clean-checkout, so a re-submit of unchanged content is a
+# true end-to-end no-op (composes with the bh-c3il gate reuse above).
+#
+# The LANDING boundaries — merge, its post-merge tip check, finish and batch land — read the
+# same ledger since bh-ku9n9.17 (ADR Decision 4, `docs/design/attested-green-adr.md`), on EXACT
+# TREE MATCH ONLY. That is not a second rule bolted on: the key has been (tree, cmd_hash) since
+# bh-ku9n9.3, so a hit IS the exact-tree test and no landing caller compares trees itself. The
+# tests below are the guard on the other side of that: the two that used to assert the blanket
+# refusal now assert the hit, and the block after them proves the MISS at the landing boundary
+# for every way "the same code" can be less than the same tree — a moved base, the same patch on
+# a new base, a subtree, a changed command, an expired entry, a red verdict, and an unresolvable
+# rev. Wrong reuse at landing has to stay impossible; that is what these are for.
 
 
 def _logging_validate(hive, monkeypatch, name="validate-runs.log"):
@@ -1213,41 +1252,302 @@ def test_resubmit_new_sha_revalidates(hive, fakebd, monkeypatch):
     assert _run_count(log) == 2
 
 
-def test_merge_never_consults_verdict_ledger(hive, fakebd, monkeypatch):
-    """The landing boundary stays fresh: submit consults the ledger (reuse=True), but the whole
-    merge path — including its post-merge re-validation of the integration tip — never does."""
-    consults = []
+def _spy_lookups(monkeypatch):
+    """Record every ledger lookup as (rev, hit) — the seam for "did the landing boundary consult
+    the ledger, and did it hit". Returns the list, which fills as the verbs run."""
+    seen = []
     real = validation_ledger.green_verdict
-    monkeypatch.setattr(
-        validation_ledger,
-        "green_verdict",
-        lambda *a, **k: (consults.append(a), real(*a, **k))[1],
-    )
+
+    def spy(entry, rev, cmd, ttl=None, cfg=None):
+        hit = real(entry, rev, cmd, ttl, cfg)
+        seen.append((rev, hit))
+        return hit
+
+    monkeypatch.setattr(validation_ledger, "green_verdict", spy)
+    return seen
+
+
+def _tree(ref, cwd):
+    """The TREE hash `ref` names — the ledger's identity half, resolved independently here so a
+    test can say which tree a lookup was actually about."""
+    return _git("rev-parse", f"{ref}^{{tree}}", cwd=cwd).stdout.strip()
+
+
+def test_merge_consults_the_ledger_at_the_landing_boundary(hive, fakebd, monkeypatch):
+    """(rewrite of test_merge_never_consults_verdict_ledger — bh-dfx0's blanket refusal, relaxed
+    by ADR Decision 4 and wired by bh-ku9n9.17.)
+
+    The landing boundary DOES consult the ledger now, and this pins the only reason it may hit:
+    the post-merge lookup is about a tree byte-identical to the one submit validated, because a
+    `--no-ff` merge onto an UNMOVED main adds no content. Submit misses (nothing recorded yet)
+    and the landing hits — one lookup each, and the hit's tree is the branch tip's tree."""
+    seen = _spy_lookups(monkeypatch)
     fakebd.seed("mr-172", title="t")
     work.claim(bead="mr-172", as_="", hive="myrepo")
     _commit(_wt(hive, "mr-172"), "feat: the change")
     work.submit(bead="mr-172", hive="myrepo")
-    assert len(consults) == 1  # submit is the one opt-in
+    assert [hit for _rev, hit in seen] == [None]  # submit looked, found nothing yet
+    tip_tree = _tree("HEAD", cwd=_wt(hive, "mr-172"))
 
     fakebd.approve("mr-172")
     work.merge(bead="mr-172", hive="myrepo", rm=False, molecule=False)
-    assert len(consults) == 1  # merge + post-merge tip validation: zero ledger lookups
+
+    assert len(seen) == 2  # the landing boundary consults it — one post-merge tip lookup
+    landing_rev, landing_hit = seen[1]
+    assert landing_hit is not None  # …and hits
+    # the hit is an exact tree match by construction: the key IS the match
+    assert landing_hit["tree"] == tip_tree == _tree(landing_rev, cwd=hive.main)
+    assert _tree("main", cwd=hive.main) == tip_tree  # main moved to a tree already proved
     assert fakebd.beads["mr-172"]["status"] == "closed"
 
 
-def test_merge_revalidates_despite_recorded_green(hive, fakebd, monkeypatch):
-    """Even with a green verdict recorded by submit, landing runs its own validation — the
-    merge-boundary run count grows (the gate at landing never rides the cache)."""
+def test_merge_reuses_the_recorded_green_on_an_exact_tree_match(hive, fakebd, monkeypatch, capsys):
+    """(rewrite of test_merge_revalidates_despite_recorded_green — same inversion, ADR Decision 4.)
+
+    The payoff the epic exists for: with a green recorded by submit, landing onto an unmoved main
+    costs ZERO extra validation runs — the merge commit's tree is the tree that was already
+    tested. The run count must not grow, and the operator is told why it didn't."""
     log = _logging_validate(hive, monkeypatch)
     fakebd.seed("mr-173", title="t")
     work.claim(bead="mr-173", as_="", hive="myrepo")
     _commit(_wt(hive, "mr-173"), "feat: the change")
     work.submit(bead="mr-173", hive="myrepo")
     runs_after_submit = _run_count(log)
+    assert runs_after_submit == 1
 
     fakebd.approve("mr-173")
     work.merge(bead="mr-173", hive="myrepo", rm=False, molecule=False)
-    assert _run_count(log) > runs_after_submit  # landing validated fresh
+
+    assert _run_count(log) == runs_after_submit  # the land rode the tip's verdict
+    assert "validation verdict reused" in capsys.readouterr().out
+    # and it really landed — the saving is on a completed merge, not a skipped one
+    assert fakebd.beads["mr-173"]["status"] == "closed"
+    assert _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip().startswith("chore(merge)")
+
+
+# ---- landing-boundary MISSES: every way "the same code" is not the same tree ----
+#
+# The value of the two tests above, in their previous form, was that they made landing-time reuse
+# impossible. These make WRONG landing-time reuse impossible, which is the harder property. Each
+# one lands for real and asserts the gate RAN — a miss is always "pay the full cost", never a
+# quiet pass.
+
+
+def _ledger_path(hive):
+    return hive.main / ".git" / validation_ledger.LEDGER_FILENAME
+
+
+def _put_verdict(hive, tree, cmd, rc=0, age=0.0):
+    """Replace the hive's ledger with ONE entry for `tree`, so a landing lookup can only hit via
+    that entry. The direct write is the point: it plants states the real writers never produce
+    (a subtree, an expired or red verdict) exactly as a hostile/corrupt ledger would."""
+    _ledger_path(hive).write_text(
+        json.dumps(
+            [
+                {
+                    "tree": tree,
+                    "cmd_hash": validation_ledger.cmd_hash(cmd),
+                    "rc": rc,
+                    "at": time.time() - age,
+                    "sha": tree,
+                    "shas": [tree],
+                }
+            ]
+        )
+        + "\n"
+    )
+
+
+def _submitted_bead(hive, fakebd, bead, fname="change.txt", body="feat: the change"):
+    """claim → commit → submit: the state every landing test starts from (a green verdict for the
+    branch tip's tree, recorded by submit). Returns the bead's worktree path."""
+    fakebd.seed(bead, title="t")
+    work.claim(bead=bead, as_="", hive="myrepo")
+    wt = _wt(hive, bead)
+    (wt / fname).parent.mkdir(parents=True, exist_ok=True)  # `fname` may name a subdirectory
+    _commit(wt, body, fname=fname)
+    work.submit(bead=bead, hive="myrepo")
+    return wt
+
+
+def test_landing_misses_when_the_base_moved(hive, fakebd, monkeypatch, capsys):
+    """Moved base: main advanced under the branch, so the --no-ff merge tree matches NEITHER
+    parent — nothing ever validated that combination and the gate runs. This is the case the
+    whole relaxation depends on getting right; a hit here would land untested content."""
+    log = _logging_validate(hive, monkeypatch)
+    wt = _submitted_bead(hive, fakebd, "mr-180")
+    tip_tree = _tree("HEAD", cwd=wt)
+    _commit(hive.main, "chore: unrelated main work", fname="other.txt")  # main moves underneath
+    capsys.readouterr()
+
+    fakebd.approve("mr-180")
+    work.merge(bead="mr-180", hive="myrepo", rm=False, molecule=False)
+
+    assert _tree("main", cwd=hive.main) != tip_tree  # a tree no verdict was ever earned at
+    assert _run_count(log) == 2  # …so the landing gate ran for real
+    assert "validation verdict reused" not in capsys.readouterr().out
+    assert fakebd.beads["mr-180"]["status"] == "closed"
+
+
+def test_landing_misses_the_same_patch_on_a_new_base(hive, fakebd, monkeypatch, capsys):
+    """Same patch, new base (the rebase/cherry-pick row of the ADR's equality matrix): the
+    branch's diff is byte-identical before and after the rebase, and that buys it nothing — the
+    verdict was earned at the OLD tree, the landing tree is a different one, so it revalidates."""
+    log = _logging_validate(hive, monkeypatch)
+    wt = _submitted_bead(hive, fakebd, "mr-181")
+    patch_before = _git("show", "--format=", "HEAD", cwd=wt).stdout
+    old_tree = _tree("HEAD", cwd=wt)
+
+    _commit(hive.main, "chore: unrelated main work", fname="other.txt")
+    _git("rebase", "main", cwd=wt)  # same patch, replayed onto a different base
+    assert _git("show", "--format=", "HEAD", cwd=wt).stdout == patch_before  # identical patch
+    assert _tree("HEAD", cwd=wt) != old_tree  # …different tree
+    capsys.readouterr()
+
+    fakebd.approve("mr-181")
+    work.merge(bead="mr-181", hive="myrepo", rm=False, molecule=False)
+
+    assert _run_count(log) == 2  # the identical patch earned no reuse
+    assert "validation verdict reused" not in capsys.readouterr().out
+
+
+def test_landing_misses_a_subtree_match(hive, fakebd, monkeypatch, capsys):
+    """Subtree match: a real, resolvable tree object that is PART of the landing tree is not the
+    landing tree. The ledger is left holding a green for exactly that subtree and nothing else —
+    a lookup that ever accepted "a tree we know about" instead of "this tree" would hit here."""
+    log = _logging_validate(hive, monkeypatch)
+    wt = _submitted_bead(hive, fakebd, "mr-182", fname="sub/nested.txt")
+    subtree = _git("rev-parse", "HEAD:sub", cwd=wt).stdout.strip()
+    assert subtree and subtree != _tree("HEAD", cwd=wt)
+    _put_verdict(hive, subtree, config.validate_cmd(None, None))  # the ONLY verdict on record
+    capsys.readouterr()
+
+    fakebd.approve("mr-182")
+    work.merge(bead="mr-182", hive="myrepo", rm=False, molecule=False)
+
+    assert _run_count(log) == 2  # the containing tree was never proved — the gate ran
+    assert "validation verdict reused" not in capsys.readouterr().out
+
+
+def test_landing_misses_when_the_validate_command_changed(hive, fakebd, monkeypatch, capsys):
+    """Changed command: the tree is identical and the verdict still does not transfer, because
+    cmd_hash is the other half of the key. A verdict earned under a weaker (or just different)
+    gate can never be honored by the one actually being run."""
+    logs = {}
+
+    def per_phase(cfg, entry, phase=None, main_gate=False):
+        log = logs.setdefault(phase, hive.cfg_path.parent / f"{phase}.log")
+        return f"sh -c 'echo ran >> {log}'"  # same shape, different string per phase
+
+    monkeypatch.setattr(config, "validate_cmd", per_phase)
+    wt = _submitted_bead(hive, fakebd, "mr-183")
+    tip_tree = _tree("HEAD", cwd=wt)
+    capsys.readouterr()
+
+    fakebd.approve("mr-183")
+    work.merge(bead="mr-183", hive="myrepo", rm=False, molecule=False)
+
+    assert _tree("main", cwd=hive.main) == tip_tree  # identical content…
+    assert _run_count(logs["merge"]) == 1  # …but the merge phase's own command ran
+    assert "validation verdict reused" not in capsys.readouterr().out
+
+
+def test_landing_misses_an_entry_past_the_configured_ledger_ttl(hive, fakebd, monkeypatch, capsys):
+    """Expired: the entry is aged past this hive's CONFIGURED work.ledger_ttl (PT30M here) while
+    still being well inside the P1D default — so what expires it is the operator's setting, not a
+    hardcoded constant. An old green is weaker evidence and is not served."""
+    hive.cfg_path.write_text(
+        CONFIG_YAML.replace('validate_cmd: "true"', 'validate_cmd: "true"\n  ledger_ttl: PT30M')
+    )
+    log = _logging_validate(hive, monkeypatch)
+    wt = _submitted_bead(hive, fakebd, "mr-184")
+    _put_verdict(hive, _tree("HEAD", cwd=wt), config.validate_cmd(None, None), age=31 * 60)
+    capsys.readouterr()
+
+    fakebd.approve("mr-184")
+    work.merge(bead="mr-184", hive="myrepo", rm=False, molecule=False)
+
+    assert _run_count(log) == 2  # 31 minutes old under a 30-minute TTL → stale → gate runs
+    assert "validation verdict reused" not in capsys.readouterr().out
+
+
+def test_landing_misses_a_recorded_red_verdict(hive, fakebd, monkeypatch, capsys):
+    """Red: a recorded FAILURE for the exact landing tree is never reused. rc is the sole verdict
+    (bh-ku9n9.20) and only rc == 0 is a hit, so a red tree is re-proved, never served."""
+    log = _logging_validate(hive, monkeypatch)
+    wt = _submitted_bead(hive, fakebd, "mr-185")
+    _put_verdict(hive, _tree("HEAD", cwd=wt), config.validate_cmd(None, None), rc=1)
+    capsys.readouterr()
+
+    fakebd.approve("mr-185")
+    work.merge(bead="mr-185", hive="myrepo", rm=False, molecule=False)
+
+    assert _run_count(log) == 2  # the red entry bought nothing
+    assert "validation verdict reused" not in capsys.readouterr().out
+
+
+def test_landing_misses_when_the_rev_cannot_be_resolved(hive, fakebd, monkeypatch, capsys):
+    """Fail-safe (bh-ku9n9.3): a rev git cannot resolve is used VERBATIM, so a resolve/no-resolve
+    mismatch between the writer and the landing reader can only miss. The landing boundary must
+    never turn a lookup failure into a hit — here rev-parse fails only for the reader, and the
+    gate runs exactly as it would have before any of this existed."""
+    log = _logging_validate(hive, monkeypatch)
+    _submitted_bead(hive, fakebd, "mr-186")  # recorded under the RESOLVED tree
+    monkeypatch.setattr(  # …now the ledger can no longer resolve anything
+        validation_ledger, "run", lambda *a, **k: _CP(1, "", "fatal: not a git repository")
+    )
+    capsys.readouterr()
+
+    fakebd.approve("mr-186")
+    work.merge(bead="mr-186", hive="myrepo", rm=False, molecule=False)
+
+    assert _run_count(log) == 2  # unresolvable → miss → revalidate, never a hit
+    assert "validation verdict reused" not in capsys.readouterr().out
+    assert fakebd.beads["mr-186"]["status"] == "closed"
+
+
+# ---- the other two landing boundaries: finish (+ postland) and batch land -------
+# (helpers `_land_two_bead_molecule` / `_submit_and_approve_batch` live with their own suites
+# further down — the flows are theirs; what's asserted here is the ledger contract.)
+
+
+def test_finish_and_postland_reuse_the_molecule_verdict(hive, fakebd, monkeypatch, capsys):
+    """The molecule land under `conservative` — its two validations are the assembled-molecule
+    pre-land check and the post-land tip re-test — costs ZERO runs when nothing moved: the last
+    bead to land onto mol/<epic> already proved that tree, and landing it onto an unmoved main
+    reproduces it byte for byte. Both boundaries hit, and the epic still lands."""
+    log = _logging_validate(hive, monkeypatch)
+    monkeypatch.setattr(config, "validation_mode", lambda cfg, entry: "conservative")
+    _land_two_bead_molecule(hive, fakebd, "mr-1")  # setup pays its own validations
+    runs_before_land = _run_count(log)
+    capsys.readouterr()
+
+    work.merge(bead="mr-1", hive="myrepo", molecule=True)
+
+    assert _run_count(log) == runs_before_land  # molecule + postland: both reused
+    assert capsys.readouterr().out.count("validation verdict reused") == 2
+    assert fakebd.beads["mr-1"]["status"] == "closed"
+    assert (
+        _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip()
+        == "chore(merge): molecule mr-1"
+    )
+
+
+def test_batch_land_reuses_the_submitted_verdict(hive, fakebd, monkeypatch, capsys):
+    """Batch land validates the batch BRANCH — unchanged since `submit --group` validated it — so
+    the same tree under the same command reuses, and the batch lands with no second run."""
+    log = _logging_validate(hive, monkeypatch)
+    _submit_and_approve_batch(hive, fakebd)
+    runs_after_submit = _run_count(log)
+    assert runs_after_submit == 1
+    capsys.readouterr()
+
+    work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    assert _run_count(log) == runs_after_submit
+    assert "validation verdict reused" in capsys.readouterr().out
+    assert fakebd.beads["mr-1.1"]["status"] == "closed"
+    assert fakebd.beads["mr-1.2"]["status"] == "closed"
 
 
 # ---- check feeds the same verdict ledger submit reuses from (bh-i0p1.4) ----------
@@ -1299,13 +1599,54 @@ def test_check_on_dirty_tree_does_not_seed_ledger(hive, fakebd, monkeypatch):
     assert _run_count(log) == 2  # no verdict existed for either sha — validated fresh
 
 
-def test_record_check_verdict_skips_red_run(monkeypatch):
-    """A failing check is never recorded — the rc gate short-circuits before even looking at
-    the worktree, let alone touching the ledger."""
+def test_record_check_verdict_skips_red_run(hive, fakebd, monkeypatch):
+    """A failing check is never recorded. The clean-tree gate is now FIRST (bh-ku9n9.6 files
+    triage detail for a red run precisely *because* it is red), so the rc gate has to be proven
+    against a GENUINELY CLEAN tree — a tree that fails the clean gate exits before rc is ever
+    read, which is why passing a nonexistent path proved nothing: deleting `if rc == 0:`
+    outright left that assertion passing. The green call is the control: it shows this tree does
+    reach the ledger, so the red call's silence is the rc gate and not the setup."""
     calls = []
     monkeypatch.setattr(validation_ledger, "record", lambda *a, **k: calls.append(a))
-    work._record_check_verdict({"prefix": "mr"}, Path("/nonexistent"), "true", 1)
-    assert calls == []
+    fakebd.seed("mr-183", title="t")
+    work.claim(bead="mr-183", as_="", hive="myrepo")
+    wt = _wt(hive, "mr-183")
+    _commit(wt, "feat: the change")  # clean tree at a real sha
+    entry, _main, _target, _branch = worktree.locate(config.load(), "myrepo", "mr-183")
+
+    work._record_check_verdict(entry, wt, "true", 1)
+    assert calls == [], "a red run was written to the verdict ledger"
+
+    work._record_check_verdict(entry, wt, "true", 0)
+    assert len(calls) == 1, "the clean tree never reached the ledger — the red case proved nothing"
+
+    # Still nothing recorded for a dirty tree, red or green: its HEAD misrepresents what ran.
+    (wt / "dirty.txt").write_text("uncommitted\n")
+    work._record_check_verdict(entry, wt, "true", 0)
+    assert len(calls) == 1
+
+
+def test_check_exports_a_fresh_empty_test_report_dir(hive, fakebd, monkeypatch):
+    """bh-ku9n9.20: `check` exports `BH_TEST_REPORT_DIR` into its validation subprocess too, so
+    `check` and `submit` observe a run identically — and hands it a directory that is FRESH and
+    EMPTY, with a different path each run. The hostile cases live in
+    tests/test_attestation_provider.py; this pins the second of the two exec seams."""
+    log = hive.cfg_path.parent / "drops.log"
+    d = '"$BH_TEST_REPORT_DIR"'
+    probe = f"sh -c 'echo {d} >> {log}; ls -A {d} | wc -l >> {log}'"
+    monkeypatch.setattr(
+        config, "validate_cmd", lambda cfg, entry, phase=None, main_gate=False: probe
+    )
+    fakebd.seed("mr-182", title="t")
+    work.claim(bead="mr-182", as_="", hive="myrepo")
+
+    work.check(bead="mr-182", hive="myrepo")
+    work.check(bead="mr-182", hive="myrepo")
+
+    drop1, count1, drop2, count2 = log.read_text().split()
+    assert drop1 and drop2 and drop1 != drop2, "two checks shared one drop zone"
+    assert count1 == count2 == "0", "the exported drop zone was not empty at exec"
+    assert not Path(drop1).exists() and not Path(drop2).exists()
 
 
 # ---- approve (first-class review-gate resolve; replaces `ws bd gate resolve`) ----

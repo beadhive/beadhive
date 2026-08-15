@@ -50,6 +50,19 @@ first push — and so the transport repo, and so this hook — already exists. `
 re-installs idempotently, so re-running `bh hive init` (or the second host's own onboard,
 which bootstraps first) picks up any transport repo that has since appeared.
 
+**A SECOND, UNRELATED PRE-PUSH BEHAVIOUR LIVES HERE TOO** (bh-ku9n9.5):
+:func:`check_push_main`, the attested-green lookup the main-merge gate consults before it
+spends ~371s re-running `just check-all` on a tree something already proved. It shares nothing
+with the fence above except the git lifecycle point — and, deliberately, the shape: a
+`(ok, detail)` predicate with the whole hook contract in a verb (`bh hive hook push-main`), so
+neither hook file owns logic that can drift from bh's own notion of the gate.
+
+The two are opposite in polarity, which is the thing to keep straight when editing either:
+the fence REFUSES a push (ok=False blocks), while the push-main lookup only ever REMOVES WORK
+(ok=True skips the gate; ok=False means "run it, exactly as before this existed"). So the
+fence must fail OPEN on "nothing to fence", and the lookup must fail CLOSED on everything —
+miss, stale entry, invalid record, unconfigured phase, or any exception at all.
+
 **Installed independent of the furnish axis** (`hive.py`'s declared-footprint convention,
 bh-ytbb.12's spec-review note): a git hook is never tracked in a repo's git history — it lives
 under `.git/` (or a bare repo dir) by construction, invisible to `git status`/`git add` either
@@ -60,12 +73,17 @@ ever meant to gate.
 
 from __future__ import annotations
 
+import datetime
 from pathlib import Path
 
-from . import config, guard, host_fence
+from . import config, guard, host_fence, registry, validation_ledger
 from .run import run
 
 HOOK_FILENAME = "pre-push"
+
+# The named phase the main-push gate resolves through (bh-ku9n9.5). A plain value in the
+# free-form `work.validate` map `config.validate_cmd` already reads — no schema change.
+PUSH_MAIN_PHASE = "push-main"
 
 # Stamped into every hook bh installs: lets a re-run tell "ours, safe to refresh" apart from
 # an operator's own pre-existing pre-push hook, which is left untouched (non-destructive,
@@ -225,3 +243,104 @@ def check_fence(hive_dir: Path, *, cfg=None) -> tuple[bool, str]:
         "  stale-epoch push is rejected there regardless of --no-verify."
     )
     return False, detail
+
+
+def push_main_cmd(cfg, entry, gate_cmd: str = "") -> tuple[str, str]:
+    """`(cmd, "")` — the command `work.validate.push-main` names for `entry` — or `("", detail)`
+    when there is no usable one. **The single resolver for the `push-main` phase**, shared by the
+    pre-push lookup below and by the release flow (`release.py`, bh-ku9n9.7), so a bump and a push
+    can never disagree about which command a verdict has to have been earned under.
+
+    Two refusals, both of which must read as a hard miss rather than a lenient default:
+
+    * **Unconfigured.** `config.validate_cmd` falls back to `work.validate_cmd` (`just check` by
+      default) for an unset phase, and honoring a verdict earned by the *fast* gate as though it
+      were the *full* one is exactly the ambiguity this epic exists to refuse. So an absent key
+      resolves to nothing at all rather than to the fallback.
+    * **Mismatched.** `gate_cmd` is what the caller says it will run on a miss. When given, the
+      resolved phase must equal it exactly — a `push-main` naming a *different* (and possibly
+      weaker) command than the caller runs is a verdict about some other gate."""
+    per = config.work_value(cfg, entry, "validate", {}) or {}
+    if PUSH_MAIN_PHASE not in per:
+        return "", (
+            f"• no `work.validate.{PUSH_MAIN_PHASE}` configured for hive "
+            f"{entry.get('prefix', '?')} — nothing to look a verdict up under. Set it to the "
+            f"command the gate runs to enable attested-green reuse."
+        )
+    cmd = config.validate_cmd(cfg, entry, phase=PUSH_MAIN_PHASE)
+    if gate_cmd and gate_cmd.strip() != cmd.strip():
+        return "", (
+            f"• work.validate.{PUSH_MAIN_PHASE} is {cmd!r} but this gate runs {gate_cmd!r} — a "
+            f"verdict earned under a different command says nothing about this one. Point the "
+            f"phase at the gate's own command."
+        )
+    return cmd, ""
+
+
+def check_push_main(
+    rev: str, hive_id: str = "", gate_cmd: str = "", on_miss: str = "gate runs"
+) -> tuple[bool, str]:
+    """`(ok, detail)` for "has the tree at `rev` already been proved green by the `push-main`
+    gate?" — the main-push gate's lookup (bh-ku9n9.5, `docs/design/attested-green-adr.md`).
+
+    `ok=True` means, and only ever means: the ledger holds a FRESH GREEN verdict for the EXACT
+    tree this push would land, earned under the exact command this gate would otherwise run.
+    The caller may then skip that command. **Every other outcome is `ok=False`, which means run
+    the full gate inline exactly as before this function existed** — a miss, a stale entry, a
+    red verdict, an invalid record, an unconfigured phase, no hive, no clone, a corrupt config,
+    an exception of any kind. There is no path through here where a missing, unreadable, or
+    ambiguous attestation produces `True`; the worst case is current behaviour.
+
+    That asymmetry is why the `except Exception` below is correct rather than lazy: the failure
+    mode of this lookup is "we ran the 371s gate we would have run anyway", so swallowing a
+    surprise and falling through is strictly safer than propagating it (which, from a git hook,
+    would BLOCK a push that today succeeds).
+
+    **The phase, and why it is required rather than defaulted.** The command is resolved through
+    `config.validate_cmd(..., phase="push-main")` — so the outermost gate participates in
+    `work.validate.<phase>` like every other validation point, keyed on the same
+    `(tree, cmd_hash)` the land-time `molecule` / `merge-main` runs write. `push-main` must be
+    EXPLICITLY configured: unset, `validate_cmd` falls back to `work.validate_cmd` (`just check`
+    by default), and honoring a verdict earned by the *fast* gate would let a push skip the
+    *full* one. Unconfigured therefore looks up nothing at all and the gate runs — the tier
+    contract's "a hive that supports nothing gets exactly today's behaviour".
+
+    **`gate_cmd`** is what the caller says it will run on a miss. When given, the resolved phase
+    must equal it exactly or the lookup refuses: a `push-main` key naming a *different* (and
+    possibly weaker) command than the hook actually runs is precisely the "ambiguous
+    attestation" case, and it must read as a loud miss rather than a quiet pass.
+
+    **`on_miss`** names only what the CALLER does with a `False` — "gate runs" for the hook,
+    "the bump is refused" for the release pre-flight (bh-ku9n9.7). It changes wording, never the
+    verdict: every caller's `False` is the safe side of its own decision, which is the reason one
+    predicate can serve both.
+
+    WHAT THIS DOES NOT SOLVE: only the HIT path is fast. A miss still runs ~371s inside the
+    push, holding the connection git opened before the hook started, so the SSH keepalive from
+    bh-53o8f (`scripts/push-main.sh` / `just push`) is still required — see that script's
+    header. This makes the expensive path rarer; it does not make it safe to run bare."""
+    try:
+        cfg = config.load()
+        entry = registry.resolve_hive(cfg, hive_id) if hive_id else registry.current_hive(cfg)
+        if not entry:
+            return False, f"• no managed hive for this push ({hive_id or 'cwd'}) — {on_miss}"
+        cmd, refusal = push_main_cmd(cfg, entry, gate_cmd)
+        if refusal:
+            return False, f"{refusal} ({on_miss})"
+        hit = validation_ledger.green_verdict(entry, rev, cmd, cfg=cfg)
+        # `green_verdict` already refuses a red / stale / missing / malformed entry; the rc is
+        # re-asserted because this is the OUTERMOST gate and the second check costs one compare.
+        if not hit or hit.get("rc") != 0:
+            return False, f"• no fresh green {PUSH_MAIN_PHASE} verdict for {rev[:12]} — {on_miss}"
+        # Formatting stays INSIDE the try anyway (bh-ku9n9.19): `_is_fresh` now rejects a future
+        # `at` outright, so nothing that reaches here should be unformattable — but this whole
+        # function's contract is "an exception here means a miss, never a pass, never a raise
+        # out of a hook", and there is no reason to make that depend on the ledger's invariant
+        # holding.
+        when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
+        return True, (
+            f"✓ attested green: tree {str(hit.get('tree', ''))[:12]} already passed {cmd!r} at "
+            f"{when} — skipping the full gate for {rev[:12]}"
+        )
+    except Exception as exc:  # noqa: BLE001 — ANY failure means "run the gate", never "pass"
+        return False, f"• verdict lookup failed ({type(exc).__name__}: {exc}) — {on_miss}"

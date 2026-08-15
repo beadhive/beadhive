@@ -277,6 +277,10 @@ work:
                                  # a `<phase>-main` key wins when the op targets the integration branch.
     molecule: "just check-all"   #   mol→main pre-land: the full (unit+integration) gate
     merge-main: "just check-all" #   ad-hoc bead → main: the full gate (plain merge→mol stays fast)
+  validate_subset: ""            # OPTIONAL, absent by default. Re-run only NAMED tests; one
+                                 # required {tests} placeholder, e.g.
+                                 #   "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
+                                 # DEVELOPER LOOP ONLY — see "Converging on failures" below.
   review_gate: "human"           # gate at submit: human | timer | gh:run | gh:pr
   runtime: local                 # which scheduler wakes a role binary: claude | local | temporal
                                  # (default local — see "Runtime tiers" below)
@@ -298,6 +302,40 @@ work:
 
 `submit` only **pushes** the branch when `review_gate` is `gh:run`/`gh:pr` (CI must
 see it); a purely local reviewer sharing the object store needs no push.
+
+## Converging on failures — `work.validate_subset`
+
+A red `bh work check` on a large suite tells you *that* something broke and then makes you wait
+~6 minutes to find out whether your fix worked. Set `work.validate_subset` and `check` re-runs
+**only the tests that failed**, straight after the red run, using the names the hive's own runner
+reported (`BH_TEST_REPORT_DIR`, see [WORKTREES.md](WORKTREES.md)):
+
+```yaml
+work:
+  validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
+```
+
+- One required placeholder, `{tests}`. A value without it is refused by `bh config set`, and —
+  if hand-edited into `config.yaml` — reads back as absent: tier 2 fails **open** to the full
+  run, never closed. **Absent is the default and is fully supported**: no key, no converge loop,
+  every phase runs whole, exactly as before.
+- bh passes the names its report gave it, **verbatim** — JUnit `classname::name`, which for
+  pytest is the *dotted module* (`tests.test_a::test_one`), hence `--pyargs` above. Turning those
+  into selectors is the template's job; bh never guesses a node id it was not given, and a hive
+  whose runner emits nothing machine-readable simply never converges.
+
+**It can never produce a verdict, and that is the whole point.** Re-running only the failures
+until they pass is exactly how a flaky suite is laundered into green, so
+[the attested-green ADR](design/attested-green-adr.md) makes the confirming run mandatory:
+
+| | |
+|---|---|
+| converge loop (`work check`) | narrows to what still fails, up to 3 rounds, stopping the moment a round makes no progress → a **CANDIDATE**. `check` still exits red. |
+| confirming run (any full, clean phase) | the only run that may write an attestation. Never consults `work.validate_subset` — the gate (`submit` / `merge` / `finish`) does not converge at all. |
+| flake report | anything that failed and then passed at the **identical tree** is recorded in `.bh/testreport/<tree>/results.json` and named on the next green run: flaky, not fixed. |
+
+So tier 2 saves the gate exactly nothing. It buys a developer seconds instead of minutes, and it
+produces the retry history that makes flakes visible for the first time.
 
 ## Runtime tiers — `work.runtime`
 
@@ -573,7 +611,8 @@ Two properties hold regardless of mode:
   escalate to forward-fix). The cost is paid only when `main` actually moved.
 
 **Tiered test commands.** Each boundary's command is overridable per-point via
-`work.validate.<phase>` (phases: `submit`, `merge`, `molecule`, `postland`, `union`). A
+`work.validate.<phase>` (phases: `submit`, `merge`, `molecule`, `postland`, `union`,
+`push-main`). A
 `<phase>-main` key is preferred when the operation targets the integration branch — so an ad-hoc
 bead's merge resolves `merge-main` while a molecule member's merge into `mol/<epic>` resolves the
 plain `merge`. The `just` recipes provide the two tiers: `just check` (lint + unit — the fast
@@ -590,6 +629,36 @@ work:
 
 `postland` (fires only when `main` moved) and intermediate bead→`mol/<epic>` merges stay on the
 fast `just check`; bump them to `just check-all` if integration-level conflicts start surfacing.
+
+### `push-main` — the pre-push gate, and the verdict it can skip
+
+`push-main` is the outermost point: the gate a `git push` of the integration branch runs. It is
+a phase like any other, so it is configured the same way — but it is the only one a *hook*
+resolves, through `bh hive hook push-main`:
+
+```yaml
+work:
+  validate:
+    push-main: "just check-all"    # MUST name the command the pre-push hook itself runs
+```
+
+The hook asks that verb whether the **exact tree** being pushed already has a fresh green
+verdict for that command (`validation_ledger`, keyed on `(tree, cmd_hash)`), and skips the gate
+if so — which is the whole point of tree-keying: a `--no-ff` land onto an unmoved `main` produces
+a tree byte-identical to the one the land-time `molecule` / `merge-main` run already tested, so
+the push has nothing left to prove. Point all three keys at the same command and the land run
+covers the push for free.
+
+**Everything else runs the gate.** A miss, a stale entry, a red or malformed record, an
+unconfigured `push-main`, a `push-main` naming a *different* command than the hook runs, no
+`bh` on PATH, or any error at all: all of them mean "run the full gate inline", exactly as
+before the lookup existed. Nothing treats a missing or unreadable attestation as a pass, and
+leaving `push-main` unset simply keeps today's behaviour.
+
+**It does not remove the need for the SSH keepalive.** Only the *hit* path is fast; a miss still
+runs the full gate (~371s here) inside the push, holding a connection git opened before the hook
+started — so push `main` with `just push` (`scripts/push-main.sh`), which sets
+`ServerAliveInterval` and verifies the remote actually moved (bh-53o8f).
 
 ## PR-governed landing — `work.landing: pr`
 

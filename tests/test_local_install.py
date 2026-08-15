@@ -18,6 +18,7 @@ first — this suite never installs into the machine running it.
 
 from __future__ import annotations
 
+import ast
 import os
 import re
 import shutil
@@ -216,6 +217,17 @@ needs_just = pytest.mark.skipif(
     shutil.which("just") is None or shutil.which("uv") is None, reason="needs just + uv"
 )
 
+#: THE ALWAYS-RUN SET, this repo's instance of it (attested-green ADR, "the git-metadata
+#: exception"; bh-ku9n9.3). Every test below drives the REAL `local-install` recipe in THIS
+#: checkout, and that recipe resolves its version pin through `scripts/release-pin.sh`, which
+#: reads `git describe --tags --exact-match` — git METADATA, not tree content. The validation
+#: ledger keys a verdict on the TREE, so a hit proves the bytes are identical and says nothing
+#: about the commit graph: the same tree tagged `v9.9.9` and untagged give different answers
+#: here. These can therefore never be covered by a tree-keyed cache hit, and are selectable as
+#: a set with `-m always_run`. Over-inclusion is safe (it only means "run it anyway"); under-
+#: inclusion is not, so the whole recipe-driven group carries it, not just the pin assertion.
+always_run = pytest.mark.always_run
+
 
 def _just(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
     """Run `just` against the real justfile with uv's tool store pointed at a tmp dir, so a
@@ -229,6 +241,7 @@ def _just(tmp_path: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 @needs_just
+@always_run
 def test_plan_prints_all_five_steps_and_mutates_nothing(tmp_path):
     result = _just(tmp_path, "local-install", "plan=1")
     assert result.returncode == 0, result.stderr
@@ -238,6 +251,7 @@ def test_plan_prints_all_five_steps_and_mutates_nothing(tmp_path):
 
 
 @needs_just
+@always_run
 def test_plan_shows_bh_at_uvs_tool_bin_dir_not_a_bare_name(tmp_path):
     """The plan is the evidence for the PATH decision: it names the absolute path it will use."""
     result = _just(tmp_path, "local-install", "plan=1")
@@ -245,6 +259,7 @@ def test_plan_shows_bh_at_uvs_tool_bin_dir_not_a_bare_name(tmp_path):
 
 
 @needs_just
+@always_run
 def test_from_source_installs_the_checkout_and_the_default_installs_the_release(tmp_path):
     source = _just(tmp_path, "local-install", "plan=1", "from_source=1")
     default = _just(tmp_path, "local-install", "plan=1")
@@ -253,6 +268,7 @@ def test_from_source_installs_the_checkout_and_the_default_installs_the_release(
 
 
 @needs_just
+@always_run
 def test_docker_mode_is_refused_rather_than_silently_taking_the_native_path(tmp_path):
     result = _just(tmp_path, "local-install", "mode=docker", "plan=1")
     assert result.returncode != 0
@@ -260,9 +276,36 @@ def test_docker_mode_is_refused_rather_than_silently_taking_the_native_path(tmp_
 
 
 @needs_just
+@always_run
 def test_an_unknown_setting_is_refused(tmp_path):
     """The forward to the private recipe keeps just's own typo guard — a misspelled setting
     must not be accepted and then ignored."""
     result = _just(tmp_path, "local-install", "answer=host.yaml", "plan=1")
     assert result.returncode != 0
     assert "answer" in result.stderr
+
+
+# ---- the always-run set (bh-ku9n9.3) ----------------------------------------
+
+
+def test_every_recipe_driven_test_is_in_the_always_run_set():
+    """The guard on the set above. A verdict in the validation ledger is keyed on the TREE, so
+    honoring one skips work whose result is a function of file content — and every test that
+    drives the real recipe here is a function of this checkout's git TAGS as well, through
+    `release-pin.sh`. A new `@needs_just` test that forgets `@always_run` would quietly become
+    coverage a tree-keyed cache hit is allowed to skip, which is exactly the git-metadata
+    unsoundness the ADR names."""
+    module = ast.parse(Path(__file__).read_text())
+    # Bare-Name decorators only (`@needs_just`, `@always_run`) — a longhand
+    # `@pytest.mark.always_run` (an ast.Attribute, not ast.Name) would not register as
+    # `always_run` here and so would false-POSITIVE into `missing`. Safe direction, on purpose:
+    # it over-reports (flags a longhand-marked test for a human to look at) rather than
+    # under-reports (silently letting a genuinely-unmarked test through) — bh-ku9n9.19, item 4.
+    missing = [
+        node.name
+        for node in module.body
+        if isinstance(node, ast.FunctionDef)
+        for names in [{d.id for d in node.decorator_list if isinstance(d, ast.Name)}]
+        if "needs_just" in names and "always_run" not in names
+    ]
+    assert missing == [], f"drives the real recipe but is not always-run: {missing}"

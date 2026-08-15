@@ -50,11 +50,16 @@ CLAUDE.md
 .planning/
 
 # generated .mcp.json — churn here was retriggering the codebase-memory watcher
-# into a reindex storm (index workers pinning CPU). .repowise/ is ignored globally.
+# into a reindex storm (index workers pinning CPU).
 .mcp.json
 
 # tokensave MCP server local cache
 .tokensave/
+
+# repowise (codebase-memory) local caches + config, and the .vscode/ it writes alongside them.
+# Regenerable via `repowise init`; local-only, can run to tens of MB.
+.repowise/
+.vscode/
 
 # Orca ADE scratch (drops/ receives screenshots and pasted files)
 .orca/

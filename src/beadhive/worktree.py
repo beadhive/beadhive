@@ -37,7 +37,20 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, ghpr, host, otel, plugins, registry, validation_ledger, worktree_merge
+from . import (
+    bd,
+    config,
+    converge,
+    ghpr,
+    host,
+    otel,
+    plugins,
+    registry,
+    test_report,
+    triage_store,
+    validation_ledger,
+    worktree_merge,
+)
 from .identity import workspace_identity
 from .run import missing_binary, retry_on_index_lock, run
 
@@ -1220,14 +1233,23 @@ _BARE_CHECKOUT_HINT = (
 )
 
 
-def _reuse_verdict_hit(entry, sha: str, cmd: str) -> bool:
+def _reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None) -> bool:
     """True (after echoing the reused-verdict notice and counting telemetry) iff a fresh GREEN
-    ledger verdict exists for (entry, sha, cmd) — `clean_checkout`'s `reuse=True` short-circuit."""
-    hit = validation_ledger.green_verdict(entry, sha, cmd)
+    ledger verdict exists for (entry, TREE of `sha`, cmd) — `clean_checkout`'s `reuse=True`
+    short-circuit. `sha` is a rev the ledger resolves to its tree, which is the real key
+    (bh-ku9n9.3); the notice still names the commit, and the tree the verdict was earned at, so
+    an operator can see when a hit came from a *different* commit at identical content.
+
+    `cfg` — `clean_checkout`'s own, already resolved — is forwarded to the ledger's TTL lookup
+    rather than re-read from disk (bh-ku9n9.19, item 2)."""
+    hit = validation_ledger.green_verdict(entry, sha, cmd, cfg=cfg)
     if hit is None:
         return False
     when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
-    typer.echo(f"✓ validation verdict reused (sha {sha[:7]}, recorded {when})")
+    typer.echo(
+        f"✓ validation verdict reused (sha {sha[:7]}, tree {str(hit.get('tree', ''))[:7]}, "
+        f"recorded {when})"
+    )
     otel.count_validation_reuse({"bh.hive": str(entry.get("prefix", ""))})
     return True
 
@@ -1272,13 +1294,18 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
     thread it. On a nonzero exit from the command, a one-shot bare-checkout hint is emitted to
     stderr here — the single central place — rather than at every caller's failure render.
 
-    Verdict ledger (bh-dfx0): every run records its (sha, cmd) verdict in the hive-local
-    validation ledger. With `reuse=True` a fresh GREEN verdict for the exact key short-circuits
-    the whole checkout (rc 0); a red / stale / cmd-changed verdict always revalidates. The
-    ledger is a local optimization for trusted-local seats (anything that can write it can fake
-    a green), so `reuse` stays False on every landing-boundary validation — merge / postland /
-    finish / batch land never consult it — and only `submit` (plus `review --run --no-fresh`,
-    explicitly) opts in."""
+    Verdict ledger (bh-dfx0, re-keyed by bh-ku9n9.3): every run records its (TREE, cmd) verdict
+    in the hive-local validation ledger — the commit sha rides along as metadata only. With
+    `reuse=True` a fresh GREEN verdict for the exact key short-circuits the whole checkout
+    (rc 0); a red / stale / cmd-changed / different-tree verdict always revalidates. Keying on
+    the tree is what lets a `--no-ff` merge onto an unmoved main reuse the branch tip's verdict
+    (byte-identical tree, new commit) while a merge onto a MOVED main misses and runs.
+
+    `reuse=True` is now the landing boundaries' setting too (bh-ku9n9.17, ADR Decision 4): merge,
+    postland, finish and batch land consult the ledger, because with a (tree, cmd_hash) key a hit
+    IS an exact tree match and nothing weaker can produce one. `reuse` still defaults to False,
+    so an unflagged caller — the `review --run` demo, the union-merge conflict tier — is fresh by
+    construction; `review --run` itself only reuses under an explicit `--no-fresh`."""
     main = registry.hive_dir(entry)
     if cfg is None:
         try:
@@ -1286,7 +1313,7 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         except FileNotFoundError:
             cfg = {}
     sha = _branch_sha(entry, branch)
-    if reuse and _reuse_verdict_hit(entry, sha, cmd):
+    if reuse and _reuse_verdict_hit(entry, sha, cmd, cfg=cfg):
         return 0
     tmp, rc = _prepare_verify_worktree(main, entry, branch, cmd)
     if tmp is None:
@@ -1311,14 +1338,34 @@ def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         "backgrounding or polling"
     )
     try:
-        res = run(
-            shlex.split(cmd),
-            cwd=str(tmp),
-            check=False,
-            env=_color_neutral_env(otel.telemetry_neutral_env()),
+        # BH_TEST_REPORT_DIR (bh-ku9n9.20): a fresh, empty drop zone exported into every
+        # validation subprocess, with no opt-in and no bh config. bh never invokes a runner — it
+        # names a directory and reads what appears. `rc` below stays the sole verdict; an
+        # ingested report is detail on the ledger entry and can never upgrade it.
+        # The gate log is teed live (bh-ku9n9.6): the output still streams, and now also
+        # survives the run that produced it, so a red 6-minute gate can be read instead of
+        # re-run. `triage_store` keeps it only when the write rule fires — red, or retried.
+        with test_report.drop_zone() as drop, triage_store.gate_log() as log:
+            res = run(
+                shlex.split(cmd),
+                cwd=str(tmp),
+                check=False,
+                env=test_report.export(_color_neutral_env(otel.telemetry_neutral_env()), drop),
+                tee=log,
+            )
+            rc = res.returncode
+            report = test_report.ingest(drop, rc)
+            # Inside the `with`: the drop zone is gone the moment it closes, so the raw runner
+            # output has to be copied into the durable per-tree store before then.
+            triage_store.store(entry, validated_sha, cmd, rc, report, drop, log)
+        validation_ledger.record(  # best-effort
+            entry, validated_sha, cmd, rc, report=report, cfg=cfg
         )
-        rc = res.returncode
-        validation_ledger.record(entry, validated_sha, cmd, rc)  # passive, best-effort
+        # A clean checkout running the phase WHOLE is the confirming run — the only kind of run
+        # that may attest (bh-ku9n9.8). It never converges and never consults
+        # `work.validate_subset`; all it does here is read the tree's retry history back and say
+        # so when part of this green took a retry to get there, rather than absorbing the flake.
+        converge.warn_flakes(entry, validated_sha, rc)
         if missing := missing_binary(res):
             # This seam runs WITHOUT capture, so a missing binary would otherwise exit 127 having
             # printed NOTHING — no stdout, no stderr — and _BARE_CHECKOUT_HINT would then point

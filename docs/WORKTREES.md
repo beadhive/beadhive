@@ -166,14 +166,41 @@ Upstream-native alternatives, if you'd rather not flag rules:
 
 ### The validation verdict ledger
 
-Every clean-checkout validation records its verdict — keyed by **(commit sha, validate-cmd
+Every clean-checkout validation records its verdict — keyed by **(tree hash, validate-cmd
 hash)**, with a timestamp — in `<hive>/.git/bh-validation-ledger.json` (repo-local, untracked,
 dies with the clone). `bh work submit` reuses a fresh **green** verdict for the exact key and
-skips the redundant checkout (`✓ validation verdict reused …`), so re-submitting an unchanged
-sha is a true no-op; `bh work review --run` reuses only with an explicit `--no-fresh`. A red,
-stale (older than 24h), or command-changed verdict always revalidates. The ledger is a local
-optimization for trusted-local seats — landing-boundary validations (merge, post-land, finish,
-batch land) never consult it, so the gate at landing always runs fresh.
+skips the redundant checkout (`✓ validation verdict reused …`), so re-submitting unchanged
+content is a true no-op; `bh work review --run` reuses only with an explicit `--no-fresh`. A
+red, stale, command-changed, or different-tree verdict always revalidates. The landing boundaries
+(merge, post-land, finish, batch land) consult it too, on **exact tree match only** — the ADR's
+Decision 4, wired in bh-ku9n9.17. Because the key is `(tree, cmd_hash)`, a hit *is* that exact
+match: a `--no-ff` land onto an unmoved base rides the tip's verdict, while a moved base, a
+rebase of the same patch, a subtree, a changed command, an expired entry or a red one all miss
+and run the gate for real.
+
+**The key is the tree, not the commit** (bh-ku9n9.3; `docs/design/attested-green-adr.md`). A
+`--no-ff` merge onto an *unmoved* main produces a merge commit whose tree is byte-identical to
+the branch tip's, so the run that validated the tip already exercised exactly the bytes the
+merge produces — keyed on the commit sha it would be a new key, and a full re-run for nothing.
+Two properties fall out with no hand-written invalidation rules: if main **moved**, the merge
+tree differs from both parents and the lookup misses; and the scheme is **self-covering**,
+because the justfile that defines the gate is itself a file in the tree, so editing the recipe
+changes the tree hash and no verdict earned under the old one can be honored.
+
+A verdict transfers on **exact tree match only** — never a same-patch-different-base rebase
+(different content, never tested), never a subtree, never "close enough". The commit sha(s)
+observed at a tree ride along as **metadata** (`sha`, `shas`), never as identity; nothing reads
+them back. One thing a tree cannot cover: a test asserting on git **metadata** (`git describe`,
+commit counts, tag-derived versions — this repo's exposure is commitizen via
+`scripts/release-pin.sh`) is a function of history, not content, so those tests carry the
+`always_run` pytest marker and are selectable as a set with `pytest -m always_run`.
+
+**Staleness is `work.ledger_ttl`** — an ISO-8601 duration (`PT30M` / `PT4H` / `P1D`), per-hive
+over global, default `P1D`, which is exactly the 24h that shipped before it was configurable.
+The realistic reuse window is minutes-to-hours: tune it **DOWN**, not up. A pass from this
+morning is stronger evidence about an identical tree than one from last week, and a short TTL is
+cheap insurance against environmental rot — a green recorded before a toolchain upgrade says
+nothing about after it.
 
 `bh work check` feeds the same ledger (bh-i0p1.4): a green run against a **clean** worktree is
 recorded exactly like a clean checkout's, keyed on that worktree's own HEAD — a dirty tree is
@@ -195,6 +222,46 @@ If a stall happens anyway, `bh work resume` reattaches and a retry at the same s
 A submit's actual outcome is always readable from `bd` state (`bd state <id> review`, or the
 `review:pending` label `bh work issue <id> --json` surfaces) — that, not an agent's own
 end-of-turn report, is the authoritative "did it really submit" signal.
+
+### The test-report drop zone (`BH_TEST_REPORT_DIR`)
+
+Every validation subprocess — `bh work check` and every clean-checkout run — is handed
+**`BH_TEST_REPORT_DIR`**, a fresh, empty, per-run directory. bh **never invokes a test runner**:
+`validate_cmd` is a pipeline (`just check` is lint + lint-md + license-check + test), so bh runs
+it verbatim, exports that one directory, and parses whatever JUnit XML the run leaves there.
+
+**There is no bh config for this.** A hive opts in from its own already-maintained test config:
+
+```toml
+# pyproject.toml — pytest
+[tool.pytest.ini_options]
+addopts = "--junitxml=${BH_TEST_REPORT_DIR}/junit.xml"
+```
+
+`[profile.default.junit]` in `.config/nextest.toml` and a `reporters` entry in
+`vitest.config.ts` are the equivalents. A hive that opts into nothing gets today's behaviour:
+the variable is exported, nothing writes to it, and the ledger entry stays rc-only.
+
+Three properties, binding:
+
+1. **The exit code is the verdict.** An ingested report is *detail* recorded beside it — a
+   report claiming everything passed against a non-zero exit code is surfaced as a discrepancy
+   and the verdict stays red. A report can never upgrade a verdict.
+2. **The directory is fresh per run**, so a report from a previous (or concurrent) run can never
+   be read as this one's result. It is a drop zone, never a durable store.
+3. **A missing or malformed report is not a failure** — it degrades to an rc-only verdict.
+
+A fourth property belongs to the *ledger*, not the drop zone, and is the one an implementer is
+most likely to get backwards: **an attestation only ever comes from a full, clean run.** A hive
+that sets `work.validate_subset` gets a failure-scoped re-run loop in `bh work check`
+([WORK.md](WORK.md#converging-on-failures--workvalidate_subset)) — a developer-loop convenience
+that converges to a *candidate*. Converging is how a flaky suite gets laundered into green, so a
+converged result is never recorded: the ledger is sealed for the rest of the process the moment a
+subset command runs, and the gate (`submit` / `merge` / `finish`) never consults the key at all.
+What a retry *does* earn is visibility — a test that failed and then passed at the identical tree
+is named as **flaky** on the next green run.
+
+See [`docs/design/attested-green-provider-adr.md`](design/attested-green-provider-adr.md).
 
 ## Cleanup
 

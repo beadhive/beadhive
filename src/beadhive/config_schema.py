@@ -23,6 +23,7 @@ instead of silently ignoring it.
 
 from __future__ import annotations
 
+import datetime
 import difflib
 import json
 import types
@@ -30,9 +31,18 @@ import typing
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
 from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+#: ISO-8601 duration parser for `WorkConfig.ledger_ttl` — pydantic's own, so `P1D` / `PT30M`
+#: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
+_TIMEDELTA = TypeAdapter(datetime.timedelta)
+
+#: The one placeholder `WorkConfig.validate_subset` must carry, defined here because this module
+#: imports nothing of bh's: `converge.PLACEHOLDER` and `config._validate`'s write-path check are
+#: both this constant, so the rule cannot drift between the schema, the setter, and the reader.
+SUBSET_PLACEHOLDER = "{tests}"
 
 # First official schema version. Bump only for a breaking change (rename/removal/type change
 # that needs a transform) — see the module docstring.
@@ -291,6 +301,17 @@ class WorkConfig(_Section):
     validate_cmd: str = Field(
         "just check", description="Default validation command for any boundary without an override."
     )
+    validate_subset: str = Field(
+        "",
+        description=(
+            "OPTIONAL template for re-running only NAMED tests, with one required {tests} "
+            "placeholder — e.g. `./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}`. "
+            "Absent (the default) is fully supported: no converge loop, every phase runs whole. "
+            "DEVELOPER-LOOP ONLY — never consulted on a run that writes an attestation, because "
+            "re-running only the failures until they pass is how a flaky suite gets laundered "
+            "into green (attested-green ADR, settled decision 1). See converge.py."
+        ),
+    )
     validation: Literal["relaxed", "conservative", "loose"] = Field(
         "relaxed",
         description=(
@@ -359,6 +380,50 @@ class WorkConfig(_Section):
     batch_max_size: int = Field(
         5, description="Max issues a planner-declared batch:<group> may hold as one unit."
     )
+    ledger_ttl: str = Field(
+        "P1D",
+        description=(
+            "How long a recorded validation verdict stays reusable, as an ISO-8601 duration "
+            "(PT30M | PT4H | P1D). The verdict ledger keys on (tree hash, validate-cmd hash), so "
+            "an aging entry is a claim about bytes that are still identical but were last proved "
+            "green a while ago. Default P1D — exactly the 24h shipped since bh-dfx0. The "
+            "realistic reuse window is minutes-to-hours: tune this DOWN, not up."
+        ),
+    )
+
+    @field_validator("validate_subset")
+    @classmethod
+    def _subset_placeholder(cls, v):
+        """A template bh cannot fill is not a template. Loud here (and at `bh config set`); the
+        READ path (`converge.template`) degrades to absent instead, so tier 2 fails open to the
+        full run rather than failing a validation on a typo."""
+        if v and SUBSET_PLACEHOLDER not in v:
+            raise ValueError(
+                f"work.validate_subset must contain the {SUBSET_PLACEHOLDER} placeholder "
+                f"(where the failing test names go): {v!r}"
+            )
+        return v
+
+    @field_validator("ledger_ttl")
+    @classmethod
+    def _iso8601_duration(cls, v):
+        """Catch a typo here, where it is one loud error at validation time. `config.ledger_ttl`
+        deliberately degrades to the default instead, so a hand-edited bad value can never fail
+        an unrelated `bh` command.
+
+        A NEGATIVE duration (`-P1D`) is a well-formed ISO-8601 duration that pydantic's own
+        `timedelta` adapter happily parses (bh-ku9n9.19, item 3) — but `config.duration_seconds`
+        would then hand the ledger a negative TTL, which makes `_is_fresh` false for every entry.
+        Fail-safe (nothing is ever wrongly reused), but silent: the operator gets zero reuse and
+        no signal why. Reject it here, loudly, instead."""
+        try:
+            parsed = _TIMEDELTA.validate_python(v)
+        except ValidationError as exc:
+            raise ValueError(f"not an ISO-8601 duration (want PT30M / PT4H / P1D): {v!r}") from exc
+        if parsed.total_seconds() < 0:
+            raise ValueError(f"ledger_ttl must not be negative (want PT30M / PT4H / P1D): {v!r}")
+        return v
+
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     identity: IdentityConfig | None = Field(
         None,

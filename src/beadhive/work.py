@@ -33,6 +33,7 @@ from . import (
     bd,
     claim_authority,
     config,
+    converge,
     ghpr,
     git_linkage,
     guard,
@@ -44,6 +45,8 @@ from . import (
     registry,
     release_order,
     state,
+    test_report,
+    triage_store,
     validation_ledger,
     work_group,
     work_logic,
@@ -1741,6 +1744,10 @@ def loop(
 def check(bead: str = _BEAD, hive: str = _HIVE):
     """Run the hive's validation command against the worktree; propagate its exit code.
 
+    The hive's `verify: true` init rules run first, so the environment the command validates is
+    derived from THIS TREE rather than from whenever the seat happened to be provisioned
+    (bh-ku9n9.14) — the same establishment `clean_checkout` does in its verify dir.
+
     A green run against a CLEAN tree also seeds the verdict ledger `submit` reuses from
     (bh-i0p1.4), so the ordinary check-then-submit sequence pays for validation once, not
     twice — see `_record_check_verdict`."""
@@ -1772,21 +1779,54 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     # Telemetry-neutral env so `check` agrees with `submit`'s clean-checkout validation regardless
     # of the hive's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
     cmd = config.validate_cmd(cfg, entry)
+    # Establish the environment FROM THE TREE before validating (bh-ku9n9.14), exactly as
+    # `clean_checkout` does in its verify dir. Without this, `check`'s verdict — which seeds the
+    # ledger `submit` reuses — was a property of WHEN THE SEAT WAS PROVISIONED, not of the tree:
+    # a seat whose venv predates a dependency change validates a different environment than the
+    # clean checkout would, and the two verdicts are indistinguishable in the ledger (same key,
+    # same rc). Warm `run_init` medians 0.119s here (bh-ku9n9.19) against THIS command — `check`
+    # runs the FAST subset (~140-167s), not the ~371.4s full check-all pipeline that figure
+    # belongs to elsewhere in this epic. The rules stay opaque {run, if_exists?, verify?} entries
+    # in the operator's declared order — bh learns nothing about any ecosystem — so a hive
+    # declaring none runs zero commands and is unaffected.
+    worktree.run_init(cfg, entry, target, verify_only=True)
     v_start = time.perf_counter()
-    res = run(
-        shlex.split(cmd),
-        cwd=str(target),
-        check=False,
-        env=otel.telemetry_neutral_env(),
-    )
-    rc = res.returncode
+    # BH_TEST_REPORT_DIR (bh-ku9n9.20): same fresh, empty drop zone `submit`'s clean checkout
+    # exports, so `check` and `submit` observe the run identically. bh never invokes a runner.
+    # …and the gate log is teed to the durable per-tree triage store (bh-ku9n9.6) on the same
+    # rule `submit`'s clean checkout uses, so a red `check` is readable afterwards.
+    with test_report.drop_zone() as drop, triage_store.gate_log() as log:
+        res = run(
+            shlex.split(cmd),
+            cwd=str(target),
+            check=False,
+            env=test_report.export(otel.telemetry_neutral_env(), drop),
+            tee=log,
+        )
+        rc = res.returncode
+        v_elapsed = time.perf_counter() - v_start  # the command itself, not bh's bookkeeping
+        report = test_report.ingest(drop, rc)
+        # Inside the `with`: the drop zone and the tee'd gate log are both gone the moment it
+        # closes, so anything durable has to be copied out before then.
+        _record_check_verdict(entry, target, cmd, rc, report, drop, log, cfg=cfg)
     otel.record_validation_duration(
-        time.perf_counter() - v_start,
+        v_elapsed,
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
-    _record_check_verdict(entry, target, cmd, rc)
-    if missing := missing_binary(res):
+    missing = missing_binary(res)
+    if rc != 0 and not missing:
+        # THE CONVERGE LOOP (bh-ku9n9.8), and the ONLY place it is wired: a developer loop that
+        # re-runs just the failures via `work.validate_subset` to get from red to knowing-why in
+        # seconds instead of ~6 minutes. It can only ever produce a CANDIDATE — the verdict above
+        # is already recorded (and, being red, was never written), and `converge` seals the ledger
+        # shut before it spawns, so nothing downstream can turn a converged result into an
+        # attestation. A hive with no `work.validate_subset`, or a run that named no failing
+        # tests, converges nothing and gets today's behaviour. NEVER wire this into the gate.
+        # The sha is the one `_record_check_verdict` would file under — empty on a dirty tree,
+        # whose HEAD names a tree that is not what ran, so the retries are simply not stored.
+        converge.converge(entry, cfg, target, _checked_sha(target), report)
+    if missing:
         # No `capture` here, so a missing validate binary would exit 127 having printed NOTHING
         # — the operator sees `bh work check` fail silently and reads it as a test failure
         # (bh-7m2h9). Name the binary, and say this is not a verdict on the code.
@@ -1799,21 +1839,48 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         raise typer.Exit(rc)
 
 
-def _record_check_verdict(entry, target, cmd, rc) -> None:
+def _record_check_verdict(
+    entry, target, cmd, rc, report=None, drop=None, log=None, cfg=None
+) -> None:
     """Feed a green `check` into the same verdict ledger `submit` reuses from (bh-i0p1.4): a
     clean-checkout validation and a `check` against a CLEAN worktree prove the exact same thing
-    for the exact same sha, so there is no reason the second (submit's) has to re-pay the ~6
-    minute run the first (check's, run moments earlier in the ordinary check-then-submit flow —
-    see the `work` skill) already proved green. Recording is keyed on `target`'s own HEAD, so it
-    is only trustworthy — and only attempted — when the tree is clean (no uncommitted delta):
+    for the exact same tree — `check` runs the same `verify: true` init rules first
+    (bh-ku9n9.14), so both establish their environment from that tree — and there is no reason
+    the second (submit's) has to re-pay the ~6 minute run the first (check's, run moments
+    earlier in the ordinary check-then-submit flow — see the `work` skill) already proved green.
+    Recording is against `target`'s own HEAD — which the ledger keys by its TREE (bh-ku9n9.3),
+    the commit itself kept only as metadata — so it
+    is only trustworthy, and only attempted, when the tree is clean (no uncommitted delta):
     a dirty tree's HEAD would misrepresent what `cmd` actually ran against. Best-effort, silent,
     and skipped outright on a red run — `validation_ledger.record` never reuses a non-green
-    verdict anyway, so there's nothing to gain recording one from here."""
-    if rc != 0 or not worktree.is_clean(target):
+    verdict anyway, so there's nothing to gain recording one from here.
+
+    It also files this run's triage detail under the same tree (bh-ku9n9.6), which is why the
+    clean-tree gate now comes FIRST: the ledger's rc gate is unchanged and still short-circuits a
+    red run before any ledger write, but the durable per-tree store wants a red run precisely
+    *because* it is red, and both need the same honest answer to "which tree actually ran". A
+    dirty tree names no tree to file under either. `drop`/`log` are the run's drop zone and tee'd
+    gate log, both live only inside the caller's `with`; `triage_store` owns whether to keep
+    anything at all (red or retried only) and swallows its own failures. `cfg` — `check`'s own,
+    already resolved — is forwarded to the ledger's TTL lookup instead of a fresh `config.load()`
+    (bh-ku9n9.19, item 2)."""
+    sha = _checked_sha(target)
+    if not sha:
         return
-    sha = worktree.head_full_sha(target)
-    if sha:
-        validation_ledger.record(entry, sha, cmd, rc)
+    triage_store.store(entry, sha, cmd, rc, report, drop, log)
+    if rc == 0:
+        validation_ledger.record(entry, sha, cmd, rc, report=report, cfg=cfg)
+        # This IS the confirming run — a full, clean, un-retried gate over this tree, which is the
+        # only thing that may attest (bh-ku9n9.8). Say so if some of it needed a retry to get here
+        # at this exact content: green is the honest verdict, and a flake is still a flake.
+        converge.warn_flakes(entry, sha, rc)
+
+
+def _checked_sha(target) -> str:
+    """`target`'s HEAD when the worktree is CLEAN, else `""` — the one honest answer to "which
+    tree actually ran". A dirty tree's HEAD names content the command never saw, so neither the
+    ledger nor the triage store may be keyed by it."""
+    return worktree.head_full_sha(target) if worktree.is_clean(target) else ""
 
 
 def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:
@@ -2117,8 +2184,10 @@ def _warn_submit_release_hint(bead, main, entry, branch, base) -> None:
 def _validate_submit_checkout(entry, branch, cfg) -> None:
     """Clean-checkout validation — the result must not depend on dirty local state. Submit is
     the trusted-local opt-in to the verdict ledger (bh-dfx0): a fresh green verdict for this
-    exact (sha, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a
-    true end-to-end no-op. Landing-boundary validations (merge/postland/finish) never reuse."""
+    exact (TREE, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a
+    true end-to-end no-op. Since bh-ku9n9.17 the landing boundaries (merge / postland / finish /
+    batch land) reuse on the same key — an exact tree match, ADR Decision 4 — which is what makes
+    THIS verdict the one a `--no-ff` land onto an unmoved base gets to ride."""
     v_start = time.perf_counter()
     rc = worktree.clean_checkout(
         entry, branch, config.validate_cmd(cfg, entry, "submit"), reuse=True
@@ -2610,9 +2679,12 @@ def _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
     """PR-only-main landing (work.landing: pr): a molecule landing onto the SHARED integration
     branch publishes as a PR instead of local-merging. The assembled molecule is still validated
     from a clean checkout first (a red molecule never reaches the PR either); the
-    postland/combined validation role passes to CI on the PR."""
+    postland/combined validation role passes to CI on the PR. Reuses an exact-tree verdict on the
+    same terms as the local-land path (`_validate_molecule_checkout`)."""
     if mode != "loose":
-        rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"))
+        rc = worktree.clean_checkout(
+            entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"), reuse=True
+        )
         otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
         if rc != 0:
             typer.echo(f"✗ molecule validation failed (exit {rc}) — no PR opened", err=True)
@@ -2623,11 +2695,21 @@ def _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
 def _validate_molecule_checkout(entry, mol_branch, cfg, mode) -> None:
     """Validate the ASSEMBLED molecule from a clean checkout before landing — the land must not
     depend on dirty local state, and a red molecule never reaches the integration line. `loose`
-    trusts the per-bead submits and skips even this. Raises on a red result."""
+    trusts the per-bead submits and skips even this. Raises on a red result.
+
+    `reuse=True` — LANDING-BOUNDARY REUSE, ADR Decision 4 (bh-ku9n9.17). The ledger is keyed on
+    (TREE, cmd_hash) since bh-ku9n9.3, so a hit IS the exact-tree-match test and nothing else can
+    hit: same patch on a different base, a subtree, a moved base, a changed command, a stale entry
+    and a red verdict all miss and run the gate for real. That is the whole condition Decision 4
+    relaxes to, so there is deliberately no second tree comparison layered on top of the key —
+    one source of truth for "same bytes", and it is the lookup. The last bead to land onto
+    mol/<epic> already validated this exact tree; re-running it here proves nothing new."""
     if mode == "loose":
         return
     v_start = time.perf_counter()
-    rc = worktree.clean_checkout(entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"))
+    rc = worktree.clean_checkout(
+        entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"), reuse=True
+    )
     otel.record_validation_duration(
         time.perf_counter() - v_start,
         {"bh.work.phase": "molecule", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
@@ -2644,9 +2726,14 @@ def _postland_revalidate_molecule(
     """Post-land re-validation of the integration tip. Runs under `conservative` always, and as a
     correctness backstop under `relaxed` when main moved (stale). Still holding the slot, so a red
     tip is reset to its pre-land sha before release — no one ever sees a broken main. Raises on an
-    unrecoverable red result."""
+    unrecoverable red result. Reuses an exact-tree verdict (Decision 4, see
+    `_validate_molecule_checkout`): a land onto an UNMOVED base produces a merge commit whose tree
+    is byte-identical to the molecule's, which the pre-land run just proved — and the `stale` arm
+    above is exactly the case where the base MOVED, so that tree is new and the lookup misses."""
     if mode == "conservative" or (mode != "loose" and stale):
-        vrc = worktree.clean_checkout(entry, base, config.validate_cmd(cfg, entry, "postland"))
+        vrc = worktree.clean_checkout(
+            entry, base, config.validate_cmd(cfg, entry, "postland"), reuse=True
+        )
         otel.count_validation(vrc == 0, {"bh.work.phase": "postland"})
         if vrc != 0:
             # Only rewrite a branch that's safe to rewrite (unpushed). A shared integration
@@ -3219,9 +3306,19 @@ def _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_
     the COMBINATION with what's already on the tip may be red. Still holding the slot, so on red
     we reset a safe-to-rewrite tip (the private mol/<epic>, or an unpushed main) to its pre-merge
     sha and bounce the bead to changes-requested; a shared (pushed) tip is left standing and
-    fixed forward. Raises on an unrecoverable red result."""
+    fixed forward. Raises on an unrecoverable red result.
+
+    "The COMBINATION may be red" is precisely a statement about the TREE: a merge onto a base that
+    moved since the branch forked produces a tree neither parent has, the (tree, cmd_hash) lookup
+    misses, and this runs in full. When the base did NOT move the merge tree is byte-identical to
+    the branch tip submit already validated, so there is no combination to test — that is ADR
+    Decision 4 (bh-ku9n9.17), and the ledger key is the entire test for it (see
+    `_validate_molecule_checkout` for why no second tree comparison exists)."""
     vrc = worktree.clean_checkout(
-        entry, base, config.validate_cmd(cfg, entry, "merge", main_gate=on_main)
+        entry,
+        base,
+        config.validate_cmd(cfg, entry, "merge", main_gate=on_main),
+        reuse=True,
     )
     otel.count_validation(vrc == 0, {"bh.work.phase": "merge"})
     if vrc == 0:
