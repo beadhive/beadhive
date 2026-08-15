@@ -59,7 +59,24 @@
 #   "could not verify" is its own branch with its own message — see the three-way split at the
 #   bottom. Never fold "I could not look" into "I looked and it had not moved".
 #
-# Usage:  scripts/push-main.sh [remote] [branch]     (defaults: origin main)
+# THE TAG RIDES WITH THE BRANCH, OR NEITHER GOES (bh-ku9n9.7, from bh-zfvbp's report). A third
+# argument names a tag to publish WITH the branch, and both then go in one `git push --atomic`:
+# git's own all-or-nothing ref update, so "main is on the remote and its tag is not" cannot be
+# produced by this script. That state is the worst one bh-67utw's rule identifies — main being
+# published has already closed the undo path, while .github/workflows/release.yml fires on
+# `push: tags: v*`, so nothing is actually released: no wheel, no tap, no latest. In the 0.11.5
+# incident this script ran to completion, printed its verified success for main, and the tag was
+# still local; publishing needed a second `git push origin v0.11.5`, typed by hand and remembered
+# by a human.
+#
+# The tag is verified the same way the branch is — a real `ls-remote` against the remote, not the
+# local tracking ref — because that discipline is what caught every failure in this incident.
+# PRESENCE, not sha equality: an annotated tag's remote sha is the TAG object, not the commit it
+# points at, and "is it there" is the whole question. bh-zfvbp still owns the general path (having
+# `just push` DISCOVER an unpushed bump tag and report it on an ordinary push); this argument is
+# the capability that lets the release path answer both-or-neither.
+#
+# Usage:  scripts/push-main.sh [remote] [branch] [tag]   (defaults: origin main, no tag)
 #
 # Exit codes:  0 = landed and verified · 3 = COULD NOT VERIFY (ls-remote failed) · anything
 # else = git's own status from the push.
@@ -84,6 +101,7 @@ VERIFY_FAILED=3
 
 REMOTE=${1:-origin}
 BRANCH=${2:-main}
+TAG=${3:-}
 
 # Respect an operator who already set one; only ADD the keepalive when nothing is configured.
 # Precedence matters here the same way it does for `run.child_env`: a deliberately-set value must
@@ -106,6 +124,24 @@ else
 fi
 
 local_sha=$(git rev-parse "refs/heads/${BRANCH}") || exit 2
+
+# The refs this push carries. With a TAG it is --atomic: git updates both refs or neither, which
+# is what makes "main landed without its tag" unreachable rather than merely unlikely.
+refs=("${BRANCH}")
+atomic=()
+if [ -n "${TAG}" ]; then
+    git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null || {
+        echo "✗ no local tag '${TAG}' to push. Refusing rather than pushing ${BRANCH} alone —" >&2
+        echo "  a branch published without its tag is bh-zfvbp's worst state (main is on the" >&2
+        echo "  remote so the bump can no longer be undone, and nothing is released because" >&2
+        echo "  the workflow fires on the TAG)." >&2
+        exit 2
+    }
+    refs+=("refs/tags/${TAG}:refs/tags/${TAG}")
+    atomic=(--atomic)
+    echo "→ atomic push: ${BRANCH} AND ${TAG} — both refs or neither (git --atomic)." >&2
+fi
+
 before=$(remote_sha "${REMOTE}" "refs/heads/${BRANCH}")
 if [ $? -ne 0 ]; then
     # Not fatal HERE — the push is about to try the same remote and will report it far more
@@ -122,7 +158,7 @@ echo "→ pushing ${BRANCH} ${local_sha:0:12} to ${REMOTE} (remote is at ${befor
 echo "  the pre-push gate runs the full suite — several minutes. Do not background or poll it." >&2
 
 # NOT piped. See THE PIPE TRAP above.
-git push "${REMOTE}" "${BRANCH}"
+git push "${atomic[@]+"${atomic[@]}"}" "${REMOTE}" "${refs[@]}"
 rc=$?
 
 # THREE OUTCOMES, NOT TWO. "I could not look" is its own answer and gets its own branch —
@@ -152,6 +188,34 @@ if [ "${after}" = "${local_sha}" ]; then
     fi
     echo "✓ ${REMOTE}/${BRANCH} is at ${local_sha:0:12} — verified with ls-remote against the" >&2
     echo "  actual remote, not the local remote-tracking ref." >&2
+    # The branch landed. With a tag in the same push, --atomic means the tag landed too — but
+    # MEASURE it rather than reason about it. The whole recovery branch downstream (bh-67utw,
+    # `bh release recover`) turns on whether the tag reached the remote, and that fact must be
+    # observed, never inferred, even from a guarantee git gives us.
+    if [ -n "${TAG}" ]; then
+        tag_sha=$(remote_sha "${REMOTE}" "refs/tags/${TAG}")
+        tag_rc=$?
+        if [ "${tag_rc}" -ne 0 ]; then
+            echo "" >&2
+            echo "✗ COULD NOT VERIFY whether ${TAG} reached ${REMOTE} (ls-remote exited" >&2
+            echo "  ${tag_rc}). ${BRANCH} DID land. --atomic says the tag landed with it, but" >&2
+            echo "  this script does not report a release on a guarantee it could not check:" >&2
+            echo "      git ls-remote --tags ${REMOTE} ${TAG}" >&2
+            exit "${VERIFY_FAILED}"
+        fi
+        if [ -z "${tag_sha}" ]; then
+            echo "" >&2
+            echo "✗ ${BRANCH} LANDED BUT ${TAG} DID NOT — measured, and it should be" >&2
+            echo "  impossible: this push was --atomic. The release is HALF DONE: the undo" >&2
+            echo "  path is closed (main is published) and nothing is released (the workflow" >&2
+            echo "  fires on the tag). Finish it, do not undo it:" >&2
+            echo "      git push ${REMOTE} ${TAG}" >&2
+            echo "  Then file this — an atomic push updating one of two refs is a real bug." >&2
+            exit 1
+        fi
+        echo "✓ ${TAG} is on ${REMOTE} — verified with ls-remote. The release is published;" >&2
+        echo "  the tag is now the point of no return (bh-67utw: roll forward, never delete)." >&2
+    fi
     exit 0
 fi
 

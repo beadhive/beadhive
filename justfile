@@ -165,8 +165,34 @@ hooks:
 # by `git ls-remote` an hour later. Tribal knowledge in a transcript is not a fix — the mitigation
 # has to be the thing you type. scripts/push-main.sh carries the full writeup, including the
 # `git push | tail` trap (tail's exit status, not git's) that hid the failure twice.
+#
+# THE PENDING-BUMP CHECK (bh-ku9n9.7) is the first line and it is inert for an ordinary push:
+# `--if-pending` exits 0 when no background bump gate exists for this tree. When one DOES exist —
+# `just bump` fired one on the new bump tree — this refuses to push until that verdict is in and
+# green. It removes no protection from any other push: a miss still meets the full pre-push gate
+# exactly as before. It only stops publishing a bump whose gate is still running or already red,
+# which is the window in which the bump is still reversible (bh-67utw).
 push remote="origin" branch="main":
+    @just _await-bump-gate
     ./scripts/push-main.sh {{ remote }} {{ branch }}
+
+# The pending-bump check, factored out because `push` and `release-push` both need it and a
+# second copy of a safety check is a second thing to forget to update.
+#
+# THE CAPABILITY PROBE IS NOT PARANOIA. `${BH_EXEC:-bh}` is the RELEASED binary by default
+# (lefthook.yml's convention), and in the repo that authors bh that binary routinely lags the
+# tree — the bh installed while cutting 0.11.6 is 0.11.5, which has no `release await` at all. A
+# bare call would exit 2 ("no such command") and break every ordinary `just push`. So: probe,
+# and on absence say loudly that the check did not happen. What it must NEVER do is swallow a
+# refusal — there is no `||` on the call itself, so a red or still-running bump gate fails the
+# recipe exactly as it should.
+_await-bump-gate:
+    @if ${BH_EXEC:-bh} release --help 2>/dev/null | grep -q await; then \
+        ${BH_EXEC:-bh} release await --gate "just check-all" --if-pending; \
+    else \
+        echo "⚠ this \`bh\` has no \`release await\` — a PENDING BUMP GATE IS NOT CHECKED." >&2; \
+        echo "  Set BH_EXEC='uv run bh' to use this tree's own bh (bh-ku9n9.7)." >&2; \
+    fi
 
 # lint (includes format-check so the tree can't silently drift from the pinned ruff — bh-ukzy)
 lint:
@@ -418,8 +444,43 @@ bump-dry:
 # (--changelog keeps them atomic — never a version bump without its changelog entry or vice
 # versa). uv.lock rides along via commitizen's pre_bump_hooks (see pyproject.toml), so the tag
 # covers a lockfile that already matches the new version.
+#
+# GREEN IS PROVEN BEFORE THE BUMP, AND THE BUMP'S OWN TREE IS GATED AFTER IT (bh-ku9n9.7,
+# docs/design/attested-green-adr.md). Both lines are load-bearing and neither is a nicety.
+#
+#   LINE 1 — the proof. A bump is only safely reversible until its tag leaves the machine
+#   (bh-67utw), so this is the last moment where a red suite is free. `preflight` REFUSES the
+#   bump unless the tree already has a fresh green `work.validate.push-main` verdict — which the
+#   land-time `bh work merge` run wrote for free, because `molecule` / `merge-main` / `push-main`
+#   name the same command. It never RUNS anything; establishing green is `bh release attest`.
+#   Refusal is total: no flag turns it into a pass. In the 0.11.5 incident this is the line that
+#   was missing — the suite was genuinely red and nobody knew until a tag already existed.
+#
+#   LINE 3 — the hole this bead exists for. `cz bump` writes pyproject.toml, CHANGELOG.md and
+#   uv.lock, so the commit it just made is A NEW TREE WITH NO ATTESTATION: a guaranteed full-gate
+#   miss inside the push, on a connection GitHub closes after ~5 minutes idle (bh-53o8f). So fire
+#   that gate HERE, detached, the instant the tree exists — then `just push` waits on the verdict
+#   (`_await-bump-gate`) instead of establishing green while holding a socket open.
+#
+# Deliberately NOT probed for like `_await-bump-gate` is: an old `bh` here should fail the bump
+# loudly, not bump unproven. A release is exactly where "the check silently did not run" is
+# worst. Set BH_EXEC='uv run bh' to use this tree's bh.
 bump:
+    ${BH_EXEC:-bh} release preflight --gate "just check-all"
     uv run cz bump --changelog
+    ${BH_EXEC:-bh} release attest --background --gate "just check-all"
+
+# publish the release: main AND its tag, in ONE atomic push, after the bump tree's gate is green.
+#
+# Both-or-neither is the point (bh-zfvbp): `just push` alone lands main and leaves the tag local,
+# which is the worst state bh-67utw's rule identifies — main published closes the undo path,
+# while .github/workflows/release.yml fires on `push: tags: v*` so nothing is actually released.
+# `_await-bump-gate` first, so a still-running or RED bump gate stops the release while it is
+# still fully reversible. If it stops you, `bh release recover` measures the remote and says
+# which of bh-67utw's two cases you are in.
+release-push tag="" remote="origin":
+    @just _await-bump-gate
+    ./scripts/push-main.sh {{ remote }} main "{{ if tag == "" { "v" + `scripts/release-pin.sh` } else { tag } }}"
 
 # build the wheel/sdist
 build:
