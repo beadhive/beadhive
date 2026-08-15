@@ -303,6 +303,23 @@ bh setup check   # the four tools bh drives
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
+**Reading the version.** Every route on this page installs a *release*, so
+`bh --version` prints a plain number — `0.11.5`. A `bh` built from a source
+checkout instead (`just install`, the contributor path) carries a PEP 440
+**local segment** naming the build:
+
+```text
+0.11.5                          the release
+0.11.5+local.g790ef0d           built from a clean checkout at commit 790ef0d
+0.11.5+local.g790ef0d.dirty     ...and that checkout had uncommitted changes
+```
+
+So the version tells you release-or-working-tree on sight. A local segment sorts
+*after* the same public version, so a local build never reads as older than the
+release it came from — and **PyPI forbids local segments outright**, so a
+locally-built artifact can never be published by accident. That guarantee comes
+from the packaging ecosystem, not from our discipline.
+
 `bh setup check` is the one that tells the two routes apart. On the managed path
 it reports **4 of 4** — that is the whole point of it. On the PyPI route it
 reports whatever your machine already had, and anything it lists as missing or

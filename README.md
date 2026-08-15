@@ -150,12 +150,20 @@ brew bundle --file=Brewfile     # provides mise
 mise exec -- just bootstrap     # mise installs the pinned just, then runs bootstrap
 
 just bootstrap   # brew bundle + mise install + uv sync   (once per machine; needs just)
-just install     # uv tool install --force '.[otel]' → ~/.local/bin/bh
+just install     # build + install this checkout → ~/.local/bin/bh
 just lint        # ruff check
 just fmt         # ruff format
 just test        # pytest
-just build       # uv build
+just build       # wheel + sdist into dist/  (stamped local)
 ```
+
+`just install` and `just build` stamp the artifact with a PEP 440 **local
+segment** — `0.11.5+local.g790ef0d`, plus `.dirty` when the checkout had
+uncommitted changes — so `bh --version` distinguishes your build from the
+release it was built from, and the wheel filename says what is under test. PyPI
+forbids local segments, so a local build can never be published by accident;
+`just build-release` is the deliberate opt-out that produces a publishable
+artifact (and is what CI runs on a `v*` tag).
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for the plain-git contributor path — setup, tests,
 and how to submit a change.
