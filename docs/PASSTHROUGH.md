@@ -43,6 +43,64 @@ bh bd create "Fix login" -p 1      # → bd create … -l provider:…,org:…,r
 bh bd import backfill.jsonl        # → triplet merged into each record, then bd import (upsert)
 ```
 
+### Filing bead prose — the transport rule
+
+**Never pass bead prose as a double-quoted shell argument.** Bead prose is markdown, and
+markdown marks identifiers with backticks; inside a double-quoted shell string a backtick is
+**command substitution**. On 2026-08-16 a `bh bd create` call whose acceptance text named
+`just push` / `just bump` / `just release` as code spans caused bash to **run them** before `bh`
+was exec'd: main was pushed and a version bump + tag were created. `just release` — publish to
+PyPI, recoverable only by yank — was a code span in the same argument and did not fire only by
+luck, because bash pairs backticks **positionally** (1↔2, 3↔4), so which spans execute drifts
+out of phase with what the author wrote. Auditing your prose for "dangerous" backticks is
+therefore checking the wrong thing.
+
+bh cannot defend against this. Substitution completes in the shell before the process starts;
+bh receives the *result*. The only fix is a transport where prose is never a shell token.
+
+In order of preference:
+
+1. **The `bd_create` MCP tool** ([MCP](MCP.md)). Prose arrives as a JSON value over stdio and is
+   never re-parsed. No shell exists anywhere in this path — the one transport where the bug is
+   structurally impossible rather than merely avoidable.
+2. **`bh bd create --json <path>` / `--json -`** — one whole-bead JSON document, the *same*
+   schema the MCP tool takes (`bd_create` and `--json` share one core, so they cannot drift):
+
+   ```json
+   {"title": "…", "type": "bug", "priority": 0, "description": "…",
+    "acceptance": "…", "design": "…", "parent": "…", "labels": [], "deps": []}
+   ```
+
+   A bare object, or a list of them. Values are placed straight into `bd`'s argv — a list, run
+   without a shell — so no character in the prose is interpreted. `--json` refuses to be combined
+   with per-field flags rather than resolving a silent precedence; triplet injection and the
+   per-bead label gate are identical to the flag path.
+
+   ```sh
+   bh bd create --json bead.json
+   printf '%s' "$payload" | bh bd create --json -
+   ```
+
+3. **A quoted heredoc plus a command-substituted read**, when neither is available:
+
+   ```sh
+   cat > /tmp/acceptance.md <<'EOF'      # QUOTED 'EOF' — unquoted EOF still substitutes
+   Prose with `just release` in it.
+   EOF
+   bh bd create "title" --acceptance "$(cat /tmp/acceptance.md)"
+   ```
+
+   Command-substitution *output* is not re-scanned, so backticks inside the file are inert.
+
+**Per-field `--file` flags do not close this class.** `bd create --body-file` / `--design-file`
+are why those two fields survived the incident intact, and they are worth using — but the file
+*write* is still shell-mediated (`cat > f <<'EOF'` is safe, `<<EOF` is not), so they **move** the
+hazard into the heredoc rather than removing it: N writes with N chances to get the quoting
+right, instead of one payload with one rule. A correct habit applied inconsistently still fails,
+which is exactly how the incident happened — that same command used `--body-file` and
+`--design-file` for description and design, and inlined acceptance and notes because they felt
+short enough.
+
 ## `bh git`
 
 Forwards to `git`, including `git workspace …` (git-workspace's own subcommands). One special

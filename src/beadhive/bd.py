@@ -384,8 +384,155 @@ def create(create_args, cwd) -> tuple[int, str]:
     return _run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
 
 
+# ---- whole-payload create (the shell-free transport) ------------------------------------
+#
+# One bead-shaped dict — the schema the `bd_create` MCP tool takes — is the unit BOTH shell-free
+# transports carry: the MCP tool hands it over as a JSON value, and `bh bd create --json` reads it
+# from a file or stdin. Shared here so the two cannot drift into two schemas.
+#
+# WHY THIS EXISTS (2026-08-16). Bead prose is markdown, and markdown marks identifiers with
+# backticks. Passed as a double-quoted shell argument, a backtick is COMMAND SUBSTITUTION: bash
+# ran the spans before `bh` was ever exec'd and `just push` + `just bump` executed against this
+# repo; `just release` — publish to PyPI, recoverable only by yank — was a code span in the same
+# argument and did not run only because bash pairs backticks POSITIONALLY (1<->2, 3<->4), so which
+# spans fire drifts out of phase with what the author wrote. bh cannot detect this: substitution
+# happens before the process starts, so bh receives the *result*. The only fix is a transport where
+# prose never becomes a shell token.
+
+#: Fields of one bead item, mapped to the `bd create` flag that carries them. `title` is the
+#: positional and is handled separately; `labels`/`deps` are lists and joined on `,`.
+_ITEM_FLAGS = {
+    "type": "--type",
+    "priority": "-p",
+    "description": "-d",
+    "acceptance": "--acceptance",
+    "design": "--design",
+    "parent": "--parent",
+}
+
+
+def create_args_from_item(item: dict) -> list[str]:
+    """Translate one structured bead item into `bd create` positional/flag args.
+
+    Mirrors the flag taxonomy `plan._create_issue` uses. The identity triplet is NOT added here —
+    `create` appends it, so both transports inherit the same triplet + label gate. Values go into
+    an argv LIST, which `run` passes to `subprocess` without a shell, so no character in the prose
+    is ever interpreted. Assumes `title` is present (`create_items` checks first)."""
+    args: list[str] = [str(item["title"]).strip()]
+    for field, flag in _ITEM_FLAGS.items():
+        value = item.get(field)
+        if value not in (None, ""):
+            args += [flag, str(value)]
+    if labels := (item.get("labels") or []):
+        args += ["-l", ",".join(str(label) for label in labels)]
+    if deps := (item.get("deps") or []):
+        args += ["--deps", ",".join(str(dep) for dep in deps)]
+    return args
+
+
+def create_items(items, cwd) -> tuple[list[str], list[str]]:
+    """Create every structured item in `items`, one `create` call each.
+
+    Returns `(created titles, failure messages)`. Each item is gated on ITS OWN labels by
+    `create`, so a bad item is refused by itself; the loop runs to the end and reports every
+    failure rather than stopping at the first, so a caller sees the whole picture in one pass."""
+    created: list[str] = []
+    failures: list[str] = []
+    for idx, item in enumerate(items):
+        if not isinstance(item, dict):
+            failures.append(f"#{idx}: expected a JSON object, got {type(item).__name__}")
+            continue
+        if not str(item.get("title") or "").strip():
+            failures.append(f"#{idx}: missing 'title'")
+            continue
+        code, error = create(create_args_from_item(item), cwd)
+        if code != 0:
+            failures.append(f"#{idx} {item['title']!r}: {error or f'bd exit {code}'}")
+        else:
+            created.append(str(item["title"]))
+    return created, failures
+
+
+def create_json(source, cwd) -> tuple[int, str]:
+    """`bh bd create --json <path>|-` — create beads from a whole-payload JSON document.
+
+    `source` is a file path or `-` for stdin. The document is one bead object or a LIST of them,
+    each taking the `bd_create` MCP schema: `{title (required), type, priority, description,
+    acceptance, design, parent, labels[], deps[]}`. Returns `(exit_code, error)` like `create`,
+    whose triplet injection and per-bead label gate it goes through unchanged.
+
+    Partial success is reported, not hidden: if item 3 of 5 fails, the first two are already
+    created and the error names which items failed."""
+    try:
+        if source == "-":
+            text = sys.stdin.read()
+        else:
+            path = Path(source)
+            text = (path if path.is_absolute() else Path(cwd or ".") / path).read_text()
+    except OSError as exc:
+        return 1, f"cannot read --json payload {source!r}: {exc}"
+    try:
+        payload = _json.loads(text)
+    except ValueError as exc:
+        return 1, f"--json payload {source!r} is not valid JSON: {exc}"
+    items = payload if isinstance(payload, list) else [payload]
+    if not items:
+        return 1, f"--json payload {source!r} is empty — nothing to create"
+    created, failures = create_items(items, cwd)
+    if failures:
+        made = f" (created {len(created)} of {len(items)})" if created else ""
+        return 1, f"--json create failed for: {'; '.join(failures)}{made}"
+    for title in created:
+        typer.echo(f"✓ created {title}")
+    return 0, ""
+
+
+def _split_json_flag(create_args) -> tuple[str, list[str]]:
+    """Pull `--json <src>` / `--json=<src>` out of `create_args`.
+
+    Returns `(source, leftover args)`; `source` is `""` when the flag is absent. The leftover is
+    what makes `--json` refuse to be *combined* with per-field flags rather than silently picking
+    a precedence — the payload is the whole bead or it is not the input."""
+    rest: list[str] = []
+    source = ""
+    args = list(create_args)
+    while args:
+        arg = args.pop(0)
+        if arg == "--json":
+            source = args.pop(0) if args else ""
+        elif arg.startswith("--json="):
+            source = arg[len("--json=") :]
+        else:
+            rest.append(arg)
+    return source, rest
+
+
 def _create(create_args, cwd):
-    """CLI wrapper over `create`: echo the violation error to stderr, return the exit code."""
+    """CLI wrapper over `create`: echo the violation error to stderr, return the exit code.
+
+    Routes `--json <path>|-` to `create_json` — the shell-free transport. It is an EITHER/OR with
+    the flag path, not a default: combining it with per-field flags is refused rather than
+    resolved by precedence, because a half-payload/half-flags create is exactly the inconsistent
+    transport that produced this bead."""
+    if not _is_help(create_args) and any(
+        a == "--json" or a.startswith("--json=") for a in create_args
+    ):
+        source, rest = _split_json_flag(create_args)
+        if not source:
+            code, error = 1, "--json needs a payload: a file path, or '-' to read stdin"
+        elif rest:
+            code, error = (
+                1,
+                (
+                    "--json carries the WHOLE bead and cannot be combined with per-field flags "
+                    f"({' '.join(rest)}) — move those fields into the payload"
+                ),
+            )
+        else:
+            code, error = create_json(source, cwd)
+        if error:
+            typer.echo(f"✗ {error}", err=True)
+        return code
     code, error = create(create_args, cwd)
     if error:
         typer.echo(f"✗ {error}", err=True)

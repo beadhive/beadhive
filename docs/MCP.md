@@ -94,6 +94,14 @@ via MCP resources (`beadhive://work/ready`, `beadhive://doctor`, etc.) in a subs
 The token-efficiency policy above still applies: the MCP surface is intentionally minimal.
 Most operations stay CLI-only; only the tools listed below justify the MCP path.
 
+**One exception to "prefer the CLI for simple things": filing beads.** `bd_create` is the
+preferred transport for bead prose _regardless_ of how short the bead is, because prose is
+markdown and markdown backticks are command substitution in a double-quoted shell argument —
+which on 2026-08-16 executed `just push` and `just bump` against this repo. MCP has no shell
+anywhere in its path. If MCP is unavailable, use `bh bd create --json` (same schema, one
+document); never inline prose in a double-quoted argument. Full rule and fallbacks:
+[Filing bead prose](PASSTHROUGH.md#filing-bead-prose--the-transport-rule).
+
 ## Exposed tools
 
 These tools are registered. Everything else stays CLI-only.
@@ -198,3 +206,32 @@ Tool-only clients are unaffected; subscription clients prefer the resource inter
 ```sh
 bh doctor   # reports MCP availability under "# MCP"
 ```
+
+### A stdio server outlives the environment it was launched from
+
+`bh-mcp` is a long-lived process: a client starts it once and keeps it for the whole session,
+days if the session is long. The environment underneath it is _not_ similarly stable —
+`uv tool install`, `uv sync` and a container rebuild all replace it in place, and a change of
+python minor deletes the old `lib/pythonX.Y` tree outright. A process that keeps serving the
+code it started with is fine; a process that keeps serving **some** of it is not, and a
+**deferred import** is exactly that: code that has not been loaded yet and now never can be.
+
+This is not theoretical (bh-fwhlu). fastmcp imports `fastmcp.server.tasks.routing` lazily inside
+`Tool.run` / `Resource.read` / `ResourceTemplate.read` / `Prompt.render` — so when the env under
+a server started on 2026-08-08 was rebuilt on a different python, **every tool and every
+resource** went down at once with `No module named 'fastmcp.server.tasks.routing'`: all 10 tools,
+all 14 resources, all 6 resource templates. `bd_create` was simply the first one anyone called.
+It stayed broken for 18 hours because nothing restarts a stdio server mid-session, and agents
+fell back to filing beads through the shell — which is how `just push` and `just bump` came to
+run (see [Filing bead prose](PASSTHROUGH.md#filing-bead-prose--the-transport-rule)).
+
+`beadhive.mcp._warm_serve_path_imports` closes it: every module the serve path would otherwise
+import mid-request is imported at startup, so the server's code is fully resident before it
+serves anything. Nothing is caught — a genuinely missing module now raises at startup, where it
+is visible, instead of on a tool call hours later. `tests/test_mcp_call_every_tool.py` guards
+both halves: it **calls** every registered tool (an import-only smoke test cannot see a tool that
+defines cleanly and explodes on invocation), and it reproduces the vanished environment in a
+fresh interpreter.
+
+If you do hit a `bh-mcp` behaving unlike the installed `bh`, **restart the MCP client** — that
+is the only way to restart the server.
