@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.12.1 (2026-08-16)
+
+### Fix
+
+- **mcp**: warm the serve path's deferred imports; add a shell-free `bd create --json`
+
 ## v0.12.0 (2026-08-16)
 
 ### Feat
