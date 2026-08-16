@@ -50,6 +50,7 @@ from . import (
     triage_store,
     validation_ledger,
     worktree_merge,
+    wt_status,
 )
 from .identity import workspace_identity
 from .run import missing_binary, retry_on_index_lock, run
@@ -2009,9 +2010,7 @@ def _refuse_unknown_removal(cfg, entry, target: Path, *, force: bool) -> None:
         statuses = _classify_entry(entry, rows, cfg)
     except Exception:  # noqa: BLE001 — never let the preflight itself fail the verb
         return
-    from .wt_status import untrustworthy
-
-    unknown = untrustworthy(statuses)
+    unknown = wt_status.untrustworthy(statuses)
     if not unknown:
         return
     st = unknown[0]
@@ -2169,9 +2168,7 @@ def _prune_withhold_untrustworthy(safe_set: list, skipped: list) -> tuple[list, 
     Scoped to the affected HIVE rather than the whole run: a second, healthy hive in the same
     `bh worktree prune` still prunes, because its answers were never in doubt.
     """
-    from .wt_status import untrustworthy
-
-    tainted = {s.hive for s in untrustworthy(safe_set + skipped)}
+    tainted = {s.hive for s in wt_status.untrustworthy(safe_set + skipped)}
     if not tainted:
         return safe_set, skipped, tainted
     withheld = [s for s in safe_set if s.hive in tainted]
@@ -2487,7 +2484,6 @@ def _classify_entry(
     ``WtStatus`` objects.
     """
     from . import metadata
-    from .wt_status import classify
 
     key = registry.hive_key(entry)
     meta_map = metadata.read_fleet(cfg, [key], ttl=0)
@@ -2511,7 +2507,7 @@ def _classify_entry(
     def _landed_fn(_e, branch, base, close_reason):
         return is_landed(entry, branch, base, close_reason)
 
-    return classify(
+    return wt_status.classify(
         hive_prefix=str(entry.get("prefix", "")),
         managed_rows=rows,
         meta_branches=meta_branches,
@@ -2584,10 +2580,8 @@ def _warn_untrustworthy(statuses: list) -> None:
     here, and one bad row poisons the hive's whole answer, because whatever stopped that bead
     resolving stopped nothing else being confirmed either.
     """
-    from .wt_status import untrustworthy
-
     by_hive: dict[str, list] = {}
-    for s in untrustworthy(statuses):
+    for s in wt_status.untrustworthy(statuses):
         by_hive.setdefault(s.hive, []).append(s)
     for hive, rows in by_hive.items():
         typer.echo(
