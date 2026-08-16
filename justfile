@@ -507,7 +507,7 @@ demo-local-loop:
 #   just push             main to the remote. NO TAG.                reversible
 #   just bump-preview     what would the next bump write?            read-only
 #   just bump             version + changelog + LOCAL tag.           reversible, still local
-#   just release-preview  is the path clear?                         read-only
+#   just release-preview  is the path clear? (--next: what would bump write?)   read-only
 #   just release          main + tag, atomic. CI publishes.          ONE-WAY DOOR
 
 # prove THIS tree green under `just check-all` and stamp the verdict every other release command
