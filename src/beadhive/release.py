@@ -719,9 +719,9 @@ def _published_artifact(project: str, version: str, timeout: float = 5.0):
         with urllib.request.urlopen(url, timeout=timeout):  # noqa: S310 — literal https URL
             return True, (
                 f"✗ {project} {version} IS ALREADY ON PyPI — {url}\n"
-                f"       that version is spent: PyPI never re-accepts a filename, so a release "
-                f"of it cannot succeed.\n"
-                f"       Roll FORWARD to the next version rather than trying to replace it."
+                f"           that version is spent: PyPI never re-accepts a filename, so a "
+                f"release of it cannot succeed.\n"
+                f"           Roll FORWARD to the next version rather than trying to replace it."
             )
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
