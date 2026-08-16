@@ -847,9 +847,26 @@ def preview(
         )
     tag = tag or (f"v{version}" if version else "")
 
-    # MEASURE FIRST, PRINT AFTER (bh-k5te9). The "you are already on the released version" state
-    # is only knowable once the tag and artifact answers are in, and it has to be read BEFORE
-    # them — two ✗ marks that mean "already shipped" read as "blocked" when they lead.
+    # STREAM THE HEADER (bh-ulwck). Everything above is local (pyproject + at most one call to
+    # `cz bump`'s dry run, via `_next_version`, for the version THIS invocation asked to
+    # preview) — print it now, before the two checks below that actually pay for the network:
+    # `git ls-remote` and a PyPI request, plus a SECOND call to `_next_version` that only fires
+    # on the already-shipped path (below). A slow or unreachable PyPI must not leave the command
+    # looking hung.
+    typer.echo(
+        f"release preview{' --next' if next_ else ''} — {rev} → {remote}"
+        f"{f', tag {tag}' if tag else ''}\n"
+        f"  READ-ONLY: nothing below establishes a verdict or pushes a ref, and nothing refuses."
+    )
+    if note:
+        typer.echo(note)
+
+    # MEASURE, THEN PRINT THE REST (bh-k5te9). The "you are already on the released version"
+    # state is only knowable once the tag and artifact answers are in, and it has to be read
+    # BEFORE them — two ✗ marks that mean "already shipped" read as "blocked" when they lead. So
+    # this part still can't stream line-by-line as it resolves: the banner that summarizes tag +
+    # artifact has to print before either of their own lines, which means both must be measured
+    # (silently) first. What moved is only the header above — it no longer waits on any of this.
     if not tag:
         tag_already, tag_line = (
             False,
@@ -908,12 +925,7 @@ def preview(
         rev, hive_id=hive, gate_cmd=gate, on_miss="REPORTED HERE, not enforced"
     )
 
-    typer.echo(
-        f"release preview{' --next' if next_ else ''} — {rev} → {remote}"
-        f"{f', tag {tag}' if tag else ''}\n"
-        f"  READ-ONLY: nothing below establishes a verdict or pushes a ref, and nothing refuses."
-    )
-    for line in (note, lead, f"  green    {detail}"):
+    for line in (lead, f"  green    {detail}"):
         if line:
             typer.echo(line)
     if not ok:
