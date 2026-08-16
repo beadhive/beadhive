@@ -95,7 +95,7 @@ wheels = [
 
 [[package]]
 name = "beadhive"
-version = "0.11.5"
+version = "0.12.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },

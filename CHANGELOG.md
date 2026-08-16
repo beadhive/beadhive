@@ -13,6 +13,37 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.12.0 (2026-08-16)
+
+### Feat
+
+- **release**: preview the NEXT version, and probe the verbs the recipes need
+- **release**: name the release commands by commitment, add an idempotent attest and a read-only release-preview
+- **gate**: run the hive's always-run set before honouring a verdict hit
+- **gate**: converge on failures cheaply, then earn the verdict with one clean run
+- **gate**: durable per-tree triage store for red and retried runs
+- **gate**: reuse a landing-boundary verdict on exact tree match
+- **release**: make the attestation the pre-flight proof for the bump, and gate the bump tree in the background
+- **gate**: export BH_TEST_REPORT_DIR and ingest JUnit XML
+- **gate**: make pre-push a named phase that looks up a verdict, falling back to the full gate on any miss
+- **gate**: key the validation ledger on tree hash with an ISO-8601 TTL
+
+### Fix
+
+- **gate**: degrade a FIFO ledger/verify-marker to absent instead of blocking forever
+- **build**: replay real-tree DELETIONS into the throwaway worktree
+- **metadata**: give each writer its own scratch file so a background reload can't ENOENT the foreground
+- **release**: make `just push` refuse a pending bump gate instead of waiting past it
+- **cli**: require --gate on `bh hive hook push-main`
+- **config**: reject a negative ledger_ttl ISO-8601 duration
+- **gate**: reject a future `at`, hoist the per-entry TTL read, thread cfg
+- **gate**: flush the tee'd gate per line and make results.json atomic
+- **repo**: ignore .repowise/ and .vscode/ in the repo's own .gitignore
+- **gate**: derive `work check`'s environment from the tree before validating
+- **test**: pin claim's ambient actor fallback in test_claim_supervised_leaves_identity
+- **design**: correct always-run set per operator's establish-from-tree ruling
+- **design**: correct ADR ledger reader inventory and always-run set per review
+
 ## v0.11.5 (2026-08-15)
 
 ### Fix
