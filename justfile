@@ -199,8 +199,7 @@ _await-bump-gate:
     @if ${BH_EXEC:-bh} release --help 2>/dev/null | grep -q await; then \
         ${BH_EXEC:-bh} release await --gate "just check-all" --if-pending; \
     else \
-        echo "⚠ this \`bh\` has no \`release await\` — a PENDING BUMP GATE IS NOT CHECKED." >&2; \
-        echo "  Set BH_EXEC='uv run bh' to use this tree's own bh (bh-ku9n9.7)." >&2; \
+        just _require "release await" bh-ku9n9.7 warn "a PENDING BUMP GATE IS NOT CHECKED"; \
     fi
 
 # `just push`'s pre-flight (bh-8c2yo): REFUSE, don't wait, when a bump-gate marker still names
@@ -219,8 +218,32 @@ _refuse-if-bump-pending:
             exit 1; \
         fi; \
     else \
-        echo "⚠ this \`bh\` has no \`release pending\` — a PENDING BUMP GATE IS NOT CHECKED." >&2; \
-        echo "  Set BH_EXEC='uv run bh' to use this tree's own bh (bh-8c2yo)." >&2; \
+        just _require "release pending" bh-8c2yo warn "a PENDING BUMP GATE IS NOT CHECKED"; \
+    fi
+
+# ONE probe-outcome MESSAGE for the four capability probes above/below (bh-ulwck, following
+# bh-k5te9's review). THE MESSAGE is what was duplicated four times, not the probe — each call
+# site above/below still runs its own capability check and stays deliberately non-uniform (see
+# each site for what it actually tests: `attest` probes a FLAG, `release-preview` probes a VERB
+# and a flag only when asked, the two above probe a VERB each). Only the resulting text and the
+# warn-vs-fail branch collapse here.
+#
+# FAIL-VS-WARN IS A PARAMETER, VISIBLE AT EVERY CALL SITE, not a default and not two hidden
+# variants: `_await-bump-gate` / `_refuse-if-bump-pending` are gates on an ordinary push, where
+# refusing would block work over a tooling gap, so they warn and stay open (exit 0).
+# `attest` / `release-preview` are commands an operator invoked ON PURPOSE, where succeeding
+# having done nothing is worse than a clean stop, so they warn and FAIL (exit 1).
+_require thing since mode consequence:
+    @if [ "{{ mode }}" = "fail" ]; then \
+        echo "✗ this \`bh\` has no \`{{ thing }}\` — {{ consequence }}." >&2; \
+        echo "  It arrived AFTER v0.11.5 ({{ since }}), so an installed 0.11.5 or older — or any" >&2; \
+        echo "  bh behind this tree — has not got it." >&2; \
+        echo "  Fix: \`just install\` (updates the bh on PATH from this checkout)," >&2; \
+        echo "  or set BH_EXEC='uv run bh' to use this tree's own bh." >&2; \
+        exit 1; \
+    else \
+        echo "⚠ this \`bh\` has no \`{{ thing }}\` — {{ consequence }}." >&2; \
+        echo "  Set BH_EXEC='uv run bh' to use this tree's own bh ({{ since }})." >&2; \
     fi
 
 # lint (includes format-check so the tree can't silently drift from the pinned ruff — bh-ukzy)
@@ -519,11 +542,7 @@ attest:
     @if ${BH_EXEC:-bh} release attest --help 2>/dev/null | grep -q -- --if-needed; then \
         ${BH_EXEC:-bh} release attest --if-needed --gate "just check-all"; \
     else \
-        echo "✗ this \`bh\` has no \`release attest --if-needed\` — NOTHING WAS ATTESTED." >&2; \
-        echo "  It arrived AFTER v0.11.5 (bh-0jndj), so an installed 0.11.5 or older has not got it." >&2; \
-        echo "  Fix: \`just install\` (updates the bh on PATH from this checkout)," >&2; \
-        echo "  or set BH_EXEC='uv run bh' to use this tree's own bh." >&2; \
-        exit 1; \
+        just _require "release attest --if-needed" bh-0jndj fail "NOTHING WAS ATTESTED"; \
     fi
 
 # `bump-preview` and `release-preview` are a SUPERSET, not siblings (bh-k5te9): to say what the
@@ -585,7 +604,8 @@ bump:
 # COULD NOT LOOK) and never folds the third into the second. The PyPI line is the only one needing
 # the network, and it degrades to "could not check" on anything but a definitive 404.
 #
-# CAPABILITY PROBE, AND IT FAILS (bh-k5te9) — see `attest` above for the full why. `release
+# CAPABILITY PROBE, AND IT FAILS (bh-k5te9) — see `attest` above for the full why; the message
+# itself is `_require` (bh-ulwck), shared with the other three probes in this file. `release
 # preview` arrived in bh-0jndj, and THIS IS THE RECIPE THE OPERATOR ACTUALLY HIT (2026-08-16, one
 # commit later, with a stale installed bh): typer answered `No such command 'preview'` and nothing
 # in that error says `just install`. A read-only report failing loudly is harmless, as the earlier
@@ -597,18 +617,14 @@ bump:
 # both: an absent verb prints nothing, and an absent flag is absent from what it does print.
 # is the release path clear? attested? tag on the remote? published? (--next also covers bump-preview)
 release-preview *flags:
-    @help="$(${BH_EXEC:-bh} release preview --help 2>/dev/null)"; missing=""; \
-    case "{{ flags }}" in *--next*) echo "$help" | grep -q -- --next || missing="release preview --next";; esac; \
-    [ -n "$help" ] || missing="release preview"; \
+    @help="$(${BH_EXEC:-bh} release preview --help 2>/dev/null)"; missing=""; since=""; \
+    case "{{ flags }}" in *--next*) echo "$help" | grep -q -- --next || { missing="release preview --next"; since="bh-k5te9"; };; esac; \
+    if [ -z "$help" ]; then missing="release preview"; since="bh-0jndj"; fi; \
     if [ -n "$missing" ]; then \
-        echo "✗ this \`bh\` has no \`$missing\` — NOTHING WAS CHECKED." >&2; \
-        echo "  It arrived AFTER v0.11.5 (the verb in bh-0jndj, \`--next\` in bh-k5te9), so an" >&2; \
-        echo "  installed 0.11.5 or older — or any bh behind this tree — has not got it." >&2; \
-        echo "  Fix: \`just install\` (updates the bh on PATH from this checkout)," >&2; \
-        echo "  or set BH_EXEC='uv run bh' to use this tree's own bh." >&2; \
-        exit 1; \
-    fi; \
-    ${BH_EXEC:-bh} release preview --gate "just check-all" {{ flags }}
+        just _require "$missing" "$since" fail "NOTHING WAS CHECKED"; \
+    else \
+        ${BH_EXEC:-bh} release preview --gate "just check-all" {{ flags }}; \
+    fi
 
 # publish the release: main AND its tag, in ONE atomic push, after the bump tree's gate is green.
 #
