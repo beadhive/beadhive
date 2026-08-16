@@ -234,7 +234,13 @@ def _measured_tool(mcp, fn):
     """Register *fn* as an ``mcp.tool`` wrapped in the shared measured envelope. Tool name is
     ``fn.__name__``; a genuine error is observed (log + span ERROR + counter) and mapped to a clean
     ``ToolError`` so the client never sees a traceback. An async *fn* keeps an async wrapper (the
-    notify is awaited inside the same envelope)."""
+    notify is awaited inside the same envelope).
+
+    Tools read bd STRICTLY, exactly as resources do (:func:`_strict_bd_reads`) — bh-fzh4h fixed the
+    resource half and left the tool half on the old contract, where `plan_file` reached
+    `plan.file_molecule`'s `bd.json` calls and got the None that means "no such bead". There is no
+    tool-side equivalent of ``beadhive://doctor``'s exemption: no tool exists to diagnose a broken
+    seat, so strictness is unconditional here and a tool added later inherits it."""
     tool_name = fn.__name__
 
     def _mapper(exc):
@@ -242,7 +248,7 @@ def _measured_tool(mcp, fn):
         return ToolError(f"{tool_name} failed: {type(exc).__name__}: {exc}")
 
     return _measured(
-        fn,
+        _strict_bd_reads(fn),
         span_name=f"{otel.GEN_AI_OP_EXECUTE_TOOL} {tool_name}",
         record=otel.record_mcp_invocation,
         name=tool_name,
