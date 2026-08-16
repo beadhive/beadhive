@@ -87,6 +87,31 @@ Once `bh-cgcg.3` lands this becomes a command. Until then, re-register your hive
 internal workspace root as you would on a fresh machine — see
 [ONBOARDING.md](ONBOARDING.md)'s git-workspace and hive-onboarding phases.
 
+## 0.11.x → 0.12.0 — the validation ledger re-keys; every entry goes cold once
+
+0.12.0 ships **Attested Green** — a re-keyed validation ledger plus the landing-boundary reuse
+and `work.always_run` / `work.validate_subset` tuning it enables. Full design:
+[design/attested-green-adr.md](design/attested-green-adr.md); the two new operator-facing keys
+are documented in [WORK.md](WORK.md#configuration) and shipped in `config.example.yaml`.
+
+**What changes on disk, and why you'll notice:** the ledger's key shape moves from
+`(commit sha, cmd hash)` to `(tree hash, cmd hash)` (attested-green-adr.md, "Consequences").
+An old-shape entry can never match a new-shape lookup, so **every entry your ledger already
+holds goes cold the moment you upgrade** — there is no migration, because there is nothing to
+migrate a sha-keyed row *into*. The first validation for each `(tree, command)` pair you hit
+after upgrading pays the full run again; every one after that is a normal reused hit, same as
+before.
+
+**This is expected and self-healing, not a regression** — it happens exactly once per
+`(tree, command)` you still care about, and it's the same "harmless and self-healing"
+degradation the ledger already handles for a TTL expiry or a size-cap eviction, just all at
+once instead of trickling in. If the release that advertises skipping redundant validation
+seems to be re-running everything right after you install it, this is why.
+
+Nothing to do here — no flag, no migration command. If you want to confirm it for yourself,
+inspecting `<hive>/.git/bh-validation-ledger.json` will show old sha-keyed rows aging out
+under the existing TTL/cap eviction rather than being read back.
+
 ## 0.7.x → 0.8.0 — the store engine moves to bd's shared dolt server
 
 0.8.0 changes **where a hive's beads physically live**. Until now every hive ran bd's *embedded*

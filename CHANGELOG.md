@@ -8,6 +8,11 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)
 for why the version was walked back from an early `1.0.0` draft to `0.1.0`).
 
+Only `feat`/`fix`/etc. commit types land below — a `docs:`-only change (a design record, an
+upgrade note) never appears here even when it matters for the release above it. When a version
+needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
+narrative note.
+
 ## v0.11.5 (2026-08-15)
 
 ### Fix
