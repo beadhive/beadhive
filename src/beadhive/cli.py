@@ -882,7 +882,8 @@ def contrib_publish(
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
     rich_help_panel=PASSTHROUGH_PANEL,
-    help="Passthrough to bd; `bd create` auto-applies provider/org/repo.",
+    help="Passthrough to bd; `bd create` auto-applies provider/org/repo "
+    "(`create --json <path>|-` takes a whole bead as one document — no prose through the shell).",
 )
 def bd_passthrough(ctx: typer.Context):
     if not config.bd_pass_enabled():

@@ -266,6 +266,11 @@ drafted+approved, interactively authored, or explicitly stubbed-and-flagged.
 `--dry-run` renders a preview without calling `bd` at all, making it side-effect-free.
 `--save <path>` writes the normalised spec for audit after filing.
 
+Every `bd create` above is built as an **argv list**, so prose fields never meet a shell. Filing
+a bead by hand must hold the same property — see
+[Filing bead prose](PASSTHROUGH.md#filing-bead-prose--the-transport-rule): prefer the `bd_create`
+MCP tool, else `bh bd create --json`, and never inline prose in a double-quoted argument.
+
 ### Why not `bd create --graph`?
 
 The `--graph <json>` call creates epic + children + deps + labels atomically but **silently

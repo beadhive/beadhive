@@ -128,32 +128,6 @@ Context = None
 # ---- structured-payload builders (pure; no fastmcp / no bd) ------------------
 
 
-def _bd_create_args(item: dict) -> list[str]:
-    """Translate a structured bd_create item into `bd create` positional/flag args.
-
-    Mirrors the flag taxonomy `plan._create_issue` uses; the identity triplet is NOT
-    added here — `bd.create` appends it for us so the wrapper stays a thin batch loop.
-    Assumes `title` is present (the tool checks before calling)."""
-    args: list[str] = [str(item["title"]).strip()]
-    if item.get("type"):
-        args += ["--type", str(item["type"])]
-    if item.get("priority") not in (None, ""):
-        args += ["-p", str(item["priority"])]
-    if item.get("description"):
-        args += ["-d", str(item["description"])]
-    if item.get("acceptance"):
-        args += ["--acceptance", str(item["acceptance"])]
-    if item.get("design"):
-        args += ["--design", str(item["design"])]
-    if item.get("parent"):
-        args += ["--parent", str(item["parent"])]
-    if labels := (item.get("labels") or []):
-        args += ["-l", ",".join(str(label) for label in labels)]
-    if deps := (item.get("deps") or []):
-        args += ["--deps", ",".join(str(dep) for dep in deps)]
-    return args
-
-
 def _preview_payload(spec: dict, cwd) -> dict:
     """A structured `plan_file --dry-run` preview: epic + issues (topo order, labels,
     deps) + roots. Reuses plan's ordering/label helpers so it never drifts from what
@@ -381,6 +355,53 @@ def _require_triplet(tool: str, provider: str, org: str, repo: str) -> None:
             raise ToolError(f"{tool}: '{name}' is required")
 
 
+# Modules the SERVE path imports lazily — inside a request rather than at startup. Warmed by
+# `_warm_serve_path_imports` before the server serves anything. See that function for why.
+_SERVE_PATH_DEFERRED = (
+    # fastmcp defers this one into EVERY component invocation: `Tool.run`, `Resource.read`,
+    # `ResourceTemplate.read` (x2) and `Prompt.render` each do
+    # `from fastmcp.server.tasks.routing import check_background_task` at call time. One missing
+    # file therefore takes out the whole tool AND resource surface at once.
+    "fastmcp.server.tasks.routing",
+    "fastmcp.server.tasks.capabilities",  # deferred by `low_level` on initialize
+    "fastmcp.server.tasks.elicitation",  # deferred by `Context.elicit`
+    # ours, and the same shape: `_notify_updated` (every mutating tool) and the intake resource.
+    "mcp.types",
+    "beadhive.state",
+)
+
+
+def _warm_serve_path_imports() -> None:
+    """Import, at startup, every module the serve path would otherwise import mid-request.
+
+    THE INCIDENT (2026-08-15/16). Every `bd_create` call against a long-lived `bh-mcp` failed
+    with `No module named 'fastmcp.server.tasks.routing'` for 18h, while a freshly launched
+    server was fine. The server process had been started on 2026-08-08 from a
+    `~/.local/share/uv/tools/beadhive` env built on python3.13; a later `uv tool install`
+    rebuilt that env on python3.11, which DELETES `lib/python3.13/` outright. Everything the
+    process had already imported stayed resident and kept working — but fastmcp imports
+    `tasks.routing` lazily, inside `Tool.run`, so the first tool call after the upgrade went to
+    the filesystem for a tree that no longer existed. With MCP tools unusable, beads got filed
+    through `bh bd create` on the command line instead, and markdown backticks in the prose were
+    command substitution: `just push` and `just bump` ran.
+
+    So the fault is not a version skew or a missing dependency — the module ships in every
+    fastmcp in our range. It is that a deferred import makes a long-lived stdio server's code
+    only PARTIALLY resident, while the environment underneath it is not stable: `uv tool
+    install`, `uv sync` and a container rebuild all replace it in place. A process that serves
+    the code it was started with is fine and expected; a process that serves *some* of it and
+    404s the rest halfway through a session is not.
+
+    Warming is not `except ImportError: pass` — nothing is caught. A genuinely missing module
+    raises HERE, at startup, where the failure is visible and the server refuses to serve, rather
+    than on some tool call hours later. Cost is a few already-installed imports.
+    """
+    import importlib
+
+    for name in _SERVE_PATH_DEFERRED:
+        importlib.import_module(name)
+
+
 def build_server():
     """Construct and return the bh `FastMCP` server with the complex-input tools wired.
 
@@ -397,6 +418,8 @@ def build_server():
         from fastmcp.exceptions import ResourceError, ToolError
     except ImportError as exc:  # ModuleNotFoundError is a subclass
         raise MCPUnavailable(install_hint()) from exc
+
+    _warm_serve_path_imports()
 
     mcp = FastMCP(config.BINARY_ALIAS)
 
@@ -572,24 +595,16 @@ def _register_plan_tools(mcp, tool, resource):
         """Batch-create beads from structured items (identity triplet auto-applied).
 
         Each item: {title (required), type, priority, description, acceptance, design,
-        parent, labels[], deps[]}. Forwards to `bd.create` per item (which appends the
-        provider/org/repo triplet + enforces label validity). Any failure aborts with a
-        ToolError naming the offending item(s); reports the created titles on success and
-        emits `resources/updated` for `beadhive://work/ready` + `beadhive://work/intake`.
+        parent, labels[], deps[]}. Forwards to `bd.create_items` (which appends the
+        provider/org/repo triplet + enforces label validity per bead) — the SAME core
+        `bh bd create --json` runs, so the two shell-free transports cannot drift apart. Any
+        failure aborts with a ToolError naming the offending item(s); reports the created titles
+        on success and emits `resources/updated` for `beadhive://work/ready` +
+        `beadhive://work/intake`.
         """
         cfg = config.load()
         cwd = registry.hive_dir_for(cfg, hive)
-        created: list[str] = []
-        failures: list[str] = []
-        for idx, item in enumerate(issues):
-            if not str(item.get("title") or "").strip():
-                failures.append(f"#{idx}: missing 'title'")
-                continue
-            code, error = bd.create(_bd_create_args(item), cwd)
-            if code != 0:
-                failures.append(f"#{idx} {item['title']!r}: {error or f'bd exit {code}'}")
-            else:
-                created.append(str(item["title"]))
+        created, failures = bd.create_items(issues, cwd)
         if failures:
             raise ToolError("bd_create failed for: " + "; ".join(failures))
         await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://work/intake"])
