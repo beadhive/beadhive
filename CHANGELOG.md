@@ -2,7 +2,7 @@
 
 All notable changes to this project are documented in this file, generated from
 [Conventional Commits](https://www.conventionalcommits.org/) via
-[Commitizen](https://commitizen-tools.github.io/commitizen/) (`just bump` / `just bump-dry`).
+[Commitizen](https://commitizen-tools.github.io/commitizen/) (`just bump` / `just bump-preview`).
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); SemVer, with
 `major_version_zero = true` (breaking changes bump MINOR, not MAJOR, until `1.0.0` is chosen
 deliberately — see [`docs/design/limn-naming-strategy-adr.md`](docs/design/limn-naming-strategy-adr.md#versioning-the-100--010-walkback)

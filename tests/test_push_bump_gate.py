@@ -5,7 +5,7 @@ contract needs a test that actually runs `just` rather than one that only reads 
 as text. `bh release pending`'s own read (`_marker_for_tree`) is proven against a real hive in
 tests/test_release_flow.py; this file proves the JUSTFILE calls it correctly and reacts to its
 two answers — pending / not pending — the way `just push` needs to: refuse with a pointer to
-`just release-push`, or stay silent and let an ordinary push through unchanged.
+`just release`, or stay silent and let an ordinary push through unchanged.
 
 Every case stubs `bh` (via `BH_EXEC`, the same escape hatch the recipe's own capability probe
 documents) rather than talking to a real hive — no git, no marker file, no network.
@@ -61,13 +61,13 @@ def _run(bh: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 @needs_just
-def test_a_pending_marker_refuses_and_names_release_push(tmp_path):
+def test_a_pending_marker_refuses_and_names_release(tmp_path):
     bh = _stub_bh(tmp_path, help_names_pending=True, pending_exit=0)
 
     res = _run(bh, "_refuse-if-bump-pending")
 
     assert res.returncode != 0, res.stderr
-    assert "release-push" in res.stderr
+    assert "just release" in res.stderr
     assert "bh release recover" in res.stderr
 
 
@@ -113,12 +113,12 @@ def test_push_calls_the_refusal_before_touching_the_remote():
 
 
 @needs_just
-def test_release_push_is_untouched_and_still_waits_rather_than_refuses():
-    """Not in scope, and must stay that way: `just release-push` keeps `_await-bump-gate`, the
+def test_release_is_untouched_and_still_waits_rather_than_refuses():
+    """Not in scope, and must stay that way: `just release` keeps `_await-bump-gate`, the
     WAIT-for-verdict recipe — it is the atomic path this check exists to route operators onto,
     so it must not itself start refusing a pending gate it is meant to ride to green."""
     body = subprocess.run(
-        ["just", "--show", "release-push"],
+        ["just", "--show", "release"],
         cwd=str(ROOT),
         capture_output=True,
         text=True,

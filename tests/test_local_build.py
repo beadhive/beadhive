@@ -203,7 +203,7 @@ def test_a_publishable_build_takes_a_deliberately_NAMED_recipe():
 
 def test_the_actual_release_path_does_not_go_through_any_of_this():
     """release.yml builds the v* tag with `uv build` itself, so the published wheel is unstamped
-    no matter what the justfile does. `release-push` / release-pin.sh only READ the version."""
+    no matter what the justfile does. `release` / release-pin.sh only READ the version."""
     assert "run: uv build\n" in RELEASE_WORKFLOW
     assert "local-build" not in RELEASE_WORKFLOW
     assert "local-build" not in (ROOT / "scripts" / "release-pin.sh").read_text()
