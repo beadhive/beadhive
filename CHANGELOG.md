@@ -13,6 +13,18 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.12.2 (2026-08-16)
+
+### Fix
+
+- **mcp**: close the serve path's residual lazy imports — hoist two, warm nine
+- **mcp**: an absent bd reaches the AGENT, not just the server's stderr
+- **release**: stream release-preview's header before it measures
+
+### Refactor
+
+- **justfile**: one _require helper for the four capability probes
+
 ## v0.12.1 (2026-08-16)
 
 ### Fix
