@@ -499,13 +499,40 @@ demo-local-loop:
 # must keep refusing: a deliberate act silently becoming a six-minute wait is worse than a clear
 # pointer at this recipe. And `just release` waits on the BUMP tree's gate — a different tree,
 # which cannot be pre-warmed at all. `attest` is what the others DEPEND ON, not what they call.
+#
+# CAPABILITY PROBE, AND IT FAILS (bh-k5te9). Same shape as `_await-bump-gate` /
+# `_refuse-if-bump-pending` above, for the same reason: `${BH_EXEC:-bh}` is the RELEASED binary by
+# default and routinely lags this tree, and `attest --if-needed` did not exist before bh-0jndj —
+# so a bare call gives typer's raw "No such option" with no hint that the answer is `just
+# install`. Measured 2026-08-16, on `release-preview`, one commit after bh-0jndj merged.
+#
+# THE ONE DIFFERENCE FROM THOSE TWO, and it is deliberate: they are GATES on an ordinary push, so
+# they warn and let it through rather than blocking work on a tooling gap. This is a command an
+# operator invoked ON PURPOSE and whose whole output is the point, so it WARNS AND STILL FAILS —
+# `attest` exiting 0 having attested nothing would make the next command slow for an unexplained
+# reason, which is strictly worse than a clean failure.
+#
+# It probes the FLAG, not the verb: `--if-needed` is what this line actually needs, and a bh old
+# enough to have `release attest` without it fails exactly as cryptically.
 # prove this tree green and stamp the verdict — idempotent, so it's cheap on an already-proven tree
 attest:
-    ${BH_EXEC:-bh} release attest --if-needed --gate "just check-all"
+    @if ${BH_EXEC:-bh} release attest --help 2>/dev/null | grep -q -- --if-needed; then \
+        ${BH_EXEC:-bh} release attest --if-needed --gate "just check-all"; \
+    else \
+        echo "✗ this \`bh\` has no \`release attest --if-needed\` — NOTHING WAS ATTESTED." >&2; \
+        echo "  It arrived AFTER v0.11.5 (bh-0jndj), so an installed 0.11.5 or older has not got it." >&2; \
+        echo "  Fix: \`just install\` (updates the bh on PATH from this checkout)," >&2; \
+        echo "  or set BH_EXEC='uv run bh' to use this tree's own bh." >&2; \
+        exit 1; \
+    fi
 
-# preview the next version bump AND its changelog entry from conventional commits (no writes)
+# `bump-preview` and `release-preview` are a SUPERSET, not siblings (bh-k5te9): to say what the
+# next version is, `release-preview --next` must ask what this asks, so it runs the SAME
+# scripts/next-version.sh. What survives as a distinction is COST, not content — deciding "minor
+# or patch?" should not need a round-trip to PyPI and the remote. Keep it offline and instant.
+# the next version + its changelog entry (no writes) — the fast OFFLINE half of `release-preview`
 bump-preview:
-    uv run cz bump --dry-run
+    ./scripts/next-version.sh
     uv run cz changelog --incremental --dry-run
 
 # bump version (pyproject.toml) + uv.lock + CHANGELOG.md, tag, and commit as one unit
@@ -539,8 +566,14 @@ bump:
     uv run cz bump --changelog
     ${BH_EXEC:-bh} release attest --background --gate "just check-all"
 
-# is the release path clear? READ-ONLY, and the counterpart to `bump-preview` above: that one
-# shows what the bump would WRITE, this one shows what the push would MEET.
+# is the release path clear? READ-ONLY, and a SUPERSET of `bump-preview` above rather than its
+# sibling (bh-k5te9): `--next` runs that recipe's own scripts/next-version.sh for the number, then
+# adds what the push would MEET — attested? tag on the remote? version already on PyPI? Keep both:
+# `bump-preview` is the offline, instant answer, and this one pays for the network.
+#
+# `*flags` so `--next` (and `--tag` / `--remote`) reach the verb. Bare, it previews the pin in
+# pyproject — which is the version ALREADY SHIPPED until `just bump` runs, so it says so first
+# rather than leading with two ✗ marks that mean "already shipped" and read as "blocked".
 #
 # WHY IT REPORTS RATHER THAN GATES. `bh release preflight` (inside `just bump`) exits 1 on an
 # unattested tree because it exists to STOP a bump. A preview doing the same would hide the other
@@ -552,12 +585,30 @@ bump:
 # COULD NOT LOOK) and never folds the third into the second. The PyPI line is the only one needing
 # the network, and it degrades to "could not check" on anything but a definitive 404.
 #
-# No capability probe here, unlike `_await-bump-gate`: an older `${BH_EXEC:-bh}` failing loudly on
-# a read-only report is harmless, and a probe only matters where a missing verb would silently
-# skip a safety check on the push path.
-# report whether the release path is clear — attested? tag on the remote? version already published?
-release-preview:
-    ${BH_EXEC:-bh} release preview --gate "just check-all"
+# CAPABILITY PROBE, AND IT FAILS (bh-k5te9) — see `attest` above for the full why. `release
+# preview` arrived in bh-0jndj, and THIS IS THE RECIPE THE OPERATOR ACTUALLY HIT (2026-08-16, one
+# commit later, with a stale installed bh): typer answered `No such command 'preview'` and nothing
+# in that error says `just install`. A read-only report failing loudly is harmless, as the earlier
+# note here said — failing CRYPTICALLY is what was not.
+#
+# IT PROBES WHAT THIS INVOCATION NEEDS, verb AND flag. `--next` is one bead younger than the verb,
+# so a bh from that window answers `No such option: --next` — the same cryptic failure one level
+# down, and MEASURED here too while writing this. One probe of `release preview --help` covers
+# both: an absent verb prints nothing, and an absent flag is absent from what it does print.
+# is the release path clear? attested? tag on the remote? published? (--next also covers bump-preview)
+release-preview *flags:
+    @help="$(${BH_EXEC:-bh} release preview --help 2>/dev/null)"; missing=""; \
+    case "{{ flags }}" in *--next*) echo "$help" | grep -q -- --next || missing="release preview --next";; esac; \
+    [ -n "$help" ] || missing="release preview"; \
+    if [ -n "$missing" ]; then \
+        echo "✗ this \`bh\` has no \`$missing\` — NOTHING WAS CHECKED." >&2; \
+        echo "  It arrived AFTER v0.11.5 (the verb in bh-0jndj, \`--next\` in bh-k5te9), so an" >&2; \
+        echo "  installed 0.11.5 or older — or any bh behind this tree — has not got it." >&2; \
+        echo "  Fix: \`just install\` (updates the bh on PATH from this checkout)," >&2; \
+        echo "  or set BH_EXEC='uv run bh' to use this tree's own bh." >&2; \
+        exit 1; \
+    fi; \
+    ${BH_EXEC:-bh} release preview --gate "just check-all" {{ flags }}
 
 # publish the release: main AND its tag, in ONE atomic push, after the bump tree's gate is green.
 #
