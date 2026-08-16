@@ -266,7 +266,13 @@ def preflight(rev: str = _REV, gate: str = _GATE, hive: str = _HIVE):
         "  a red suite too late.\n"
         "  Either land through `bh work merge` (its clean-checkout run writes the verdict this\n"
         "  reads) or establish one directly:\n"
-        f"      {config.BINARY_ALIAS} release attest {rev}",
+        # NAME THE RECIPE FIRST (bh-k5te9). This is the one message an operator actually hits on
+        # the unattested path, and `just attest` is what the justfile's commitment ladder teaches
+        # — idempotent, so it is cheap on an already-proven tree. The verb stays named right
+        # under it: the suggestion is a string, not a dependency on the justfile, and anyone not
+        # using `just` still needs the thing the recipe calls.
+        "      just attest                  (idempotent — cheap on an already-proven tree)\n"
+        f"      {config.BINARY_ALIAS} release attest {rev}   (the underlying verb)",
         err=True,
     )
     raise typer.Exit(REFUSED)
@@ -698,6 +704,38 @@ def _project_pin(main: Path) -> tuple[str, str]:
         return "", ""
 
 
+def _next_version(main: Path) -> str:
+    """The version `cz bump` WOULD create, or `""` when it cannot be determined (bh-k5te9).
+
+    ONE LOOKUP, SHARED, NOT A SECOND SPELLING OF IT. `scripts/next-version.sh` is what `just
+    bump-preview` runs, so `preview --next` runs the same file rather than its own `cz` line —
+    `--next` is a SUPERSET of `bump-preview` (that number, plus the tag and PyPI checks), and two
+    paths to the same number is how a superset drifts into a contradiction.
+
+    THE INCREMENT IS NEVER COMPUTED HERE. commitizen owns it and this repo sets
+    `major_version_zero`, so a `feat` bumps MINOR — the exact case a hand-rolled semver guess
+    gets wrong. Only cz's `bump: version X → Y` line is read.
+
+    EVERY FAILURE IS "COULD NOT DETERMINE": no script (a hive that is not this repo), no `uv`, no
+    commits to bump, a broken venv, a timeout. Same discipline as the tag and artifact checks —
+    never a guess, and never a refusal."""
+    import re
+
+    script = main / "scripts" / "next-version.sh"
+    if not script.exists():
+        return ""
+    try:
+        out = subprocess.run(  # noqa: S603 — path from the hive clone, no shell, fixed argv
+            [str(script)], cwd=main, capture_output=True, text=True, timeout=180
+        ).stdout
+    except Exception:  # noqa: BLE001 — cz unavailable/slow ⇒ "could not determine", not an error
+        return ""
+    # cz prints "bump: version 0.11.5 → 0.12.0"; `->` accepted too, so a non-UTF-8 console or a
+    # future cz rendering does not silently become "could not determine".
+    hit = re.search(r"bump: version \S+ (?:→|->) (\S+)", out)
+    return hit.group(1) if hit else ""
+
+
 def _published_artifact(project: str, version: str, timeout: float = 5.0):
     """Is `project`'s `version` ALREADY published on PyPI? `True` / `False` / **`None` = could
     not check** — plus the sentence to print, either way.
@@ -744,6 +782,13 @@ def preview(
     hive: str = _HIVE,
     tag: str = typer.Option("", "--tag", help="the tag a release would push (default: v<version>)"),
     remote: str = typer.Option("origin", "--remote"),
+    next_: bool = typer.Option(
+        False,
+        "--next",
+        help="preview the version `cz bump` WOULD create instead of the pin already in "
+        "pyproject — the question you have BEFORE a bump. Still read-only: nothing is written, "
+        "and an undeterminable next version reports 'could not determine', never a guess",
+    ),
 ):
     """Is the release path clear? READ-ONLY — three checks REPORTED, and NOTHING is refused.
 
@@ -763,8 +808,17 @@ def preview(
     * **no conflicting published artifact** — the only check that needs the network, and it
       degrades to "could not check" on anything but a definitive 404.
 
-    Establishes no verdict, pushes no ref, writes nothing. Exit 3 only when there is no clone to
-    read at all, because then not one of the three was measured."""
+    **WHICH VERSION IT ANSWERS ABOUT (bh-k5te9).** The pin comes from pyproject, which is the
+    version ALREADY SHIPPED until `cz bump` runs — so before a bump the honest answer is two ✗
+    marks that mean "you already released that one", and read as failures. Two things fix that
+    and they compose: when the pin's tag AND artifact are both already out there and a bump is
+    pending, the report LEADS with that state instead of with the two marks; and `--next` asks
+    about the version `cz bump` would create, which is the question the ladder position implies.
+    `--next` shares `just bump-preview`'s lookup (`scripts/next-version.sh`) rather than running
+    its own, which is what makes it a superset of that recipe instead of a second opinion.
+
+    Establishes no verdict, pushes no ref, writes nothing — `--next` included. Exit 3 only when
+    there is no clone to read at all, because then not one of the three was measured."""
     try:
         main = registry.hive_dir_for(config.load(), hive)
     except Exception as exc:  # noqa: BLE001 — no clone ⇒ nothing was measured at all
@@ -774,49 +828,95 @@ def preview(
         )
         raise typer.Exit(UNMEASURABLE) from exc
 
-    name, version = _project_pin(main)
+    name, pin = _project_pin(main)
+    version, note = pin, ""
+    if next_:
+        version = _next_version(main)
+        note = (
+            f"  next     ✓ {version} — what `cz bump` would create from the commits since "
+            f"{pin or 'the last bump'}\n"
+            f"           commitizen's own number, through the `scripts/next-version.sh` that\n"
+            f"           `just bump-preview` runs — not computed here, not written anywhere"
+            if version
+            else (
+                "  next     • COULD NOT DETERMINE the next version — no commits to bump, no "
+                "`cz`, or not a repo with scripts/next-version.sh\n"
+                "           NOT a guess and NOT a refusal; the checks below have no version to "
+                "ask about"
+            )
+        )
     tag = tag or (f"v{version}" if version else "")
 
-    typer.echo(
-        f"release preview — {rev} → {remote}{f', tag {tag}' if tag else ''}\n"
-        f"  READ-ONLY: nothing below establishes a verdict or pushes a ref, and nothing refuses."
-    )
+    # MEASURE FIRST, PRINT AFTER (bh-k5te9). The "you are already on the released version" state
+    # is only knowable once the tag and artifact answers are in, and it has to be read BEFORE
+    # them — two ✗ marks that mean "already shipped" read as "blocked" when they lead.
+    if not tag:
+        tag_already, tag_line = (
+            False,
+            "  tag      • no tag to check — "
+            + ("no next version to check" if next_ else "no [project] version readable"),
+        )
+    else:
+        rc, lines = _ls_remote(main, remote, f"refs/tags/{tag}")
+        if rc != 0:
+            tag_already, tag_line = (
+                False,
+                f"  tag      • COULD NOT MEASURE whether {tag} is on {remote} (`git ls-remote` "
+                f"exited {rc})\n"
+                f"           this is NOT 'the tag never left' — check by hand: "
+                f"git ls-remote --tags {remote} {tag}",
+            )
+        elif lines:
+            tag_already, tag_line = (
+                True,
+                f"  tag      ✗ {tag} IS ALREADY ON {remote} — measured, "
+                f"{lines[0].split()[0][:12]}\n"
+                f"           a published tag is never moved or deleted; roll FORWARD to the next "
+                f"version ({config.BINARY_ALIAS} release recover)",
+            )
+        else:
+            tag_already, tag_line = (
+                False,
+                f"  tag      ✓ {tag} is not on {remote} — measured, the release is still "
+                f"fully reversible",
+            )
+
+    if not (name and version):
+        art_already, art_line = False, "  artifact • could not check — no name/version to ask about"
+    else:
+        published, why = _published_artifact(name, version)
+        art_already, art_line = published is True, f"  artifact {why}"
+
+    # Both already out there ⇒ this is a SHIPPED version, and the only useful thing to say is
+    # which command moves off it. Only when a bump is actually pending: `cz` finding nothing to
+    # bump (or being unavailable) is "could not determine", and this must never claim otherwise.
+    lead = ""
+    if not next_ and tag_already and art_already:
+        nxt = _next_version(main)
+        if nxt and nxt != pin:
+            lead = (
+                f"  ⚠ YOU ARE ON THE RELEASED VERSION v{pin} — the ✗ marks below mean ALREADY "
+                f"SHIPPED, not blocked.\n"
+                f"    Run `just bump` first (it would create {nxt}), then re-run this.\n"
+                f"    Or ask about that version now, without bumping: "
+                f"`just release-preview --next`"
+            )
 
     from . import prepush
 
     ok, detail = prepush.check_push_main(
         rev, hive_id=hive, gate_cmd=gate, on_miss="REPORTED HERE, not enforced"
     )
-    typer.echo(f"  green    {detail}")
+
+    typer.echo(
+        f"release preview{' --next' if next_ else ''} — {rev} → {remote}"
+        f"{f', tag {tag}' if tag else ''}\n"
+        f"  READ-ONLY: nothing below establishes a verdict or pushes a ref, and nothing refuses."
+    )
+    for line in (note, lead, f"  green    {detail}"):
+        if line:
+            typer.echo(line)
     if not ok:
         typer.echo("           → not attested — run `just attest` (`just bump` would refuse)")
-
-    if not tag:
-        typer.echo("  tag      • no tag to check — no [project] version readable from pyproject")
-    else:
-        rc, lines = _ls_remote(main, remote, f"refs/tags/{tag}")
-        if rc != 0:
-            typer.echo(
-                f"  tag      • COULD NOT MEASURE whether {tag} is on {remote} (`git ls-remote` "
-                f"exited {rc})\n"
-                f"           this is NOT 'the tag never left' — check by hand: "
-                f"git ls-remote --tags {remote} {tag}"
-            )
-        elif lines:
-            typer.echo(
-                f"  tag      ✗ {tag} IS ALREADY ON {remote} — measured, "
-                f"{lines[0].split()[0][:12]}\n"
-                f"           a published tag is never moved or deleted; roll FORWARD to the next "
-                f"version ({config.BINARY_ALIAS} release recover)"
-            )
-        else:
-            typer.echo(
-                f"  tag      ✓ {tag} is not on {remote} — measured, the release is still "
-                f"fully reversible"
-            )
-
-    if not (name and version):
-        typer.echo("  artifact • could not check — no [project] name/version readable")
-    else:
-        _published, why = _published_artifact(name, version)
-        typer.echo(f"  artifact {why}")
+    typer.echo(tag_line)
+    typer.echo(art_line)

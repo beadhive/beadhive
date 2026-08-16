@@ -378,6 +378,9 @@ def test_the_refusal_says_why_the_order_matters_and_how_to_get_a_verdict(hive):
 
     assert "bh-67utw" in res.output  # WHY the proof is here rather than in the push
     assert "release attest" in res.output  # and the one way to establish one
+    # …named as the RECIPE the ladder teaches, not only as the verb (bh-k5te9). Both, because the
+    # recipe is what the operator was taught and the verb is what anyone not using `just` needs.
+    assert "just attest" in res.output
 
 
 # ─── attest: the confirming run that produces a bump-tree verdict ────────────────────────────
@@ -1214,6 +1217,126 @@ def test_preview_concludes_nothing_when_there_is_no_clone_to_read(hive, monkeypa
 
     assert res.exit_code == 3
     assert "COULD NOT MEASURE" in res.output
+
+
+# ─── --next, and the released-version state it exists for (bh-k5te9) ─────────────────────────
+#
+# The pin comes from pyproject, which is the version ALREADY SHIPPED until `cz bump` runs — so
+# before a bump the report answered a question nobody asked, with two ✗ marks that read as
+# failures. Two fixes that compose: say so when that is the state, and let `--next` ask about the
+# version the bump WOULD create.
+
+
+def _next_script(hive, out: str, rc: int = 0) -> None:
+    """Stand in for `scripts/next-version.sh` — the ONE lookup, which is `uv run cz bump
+    --dry-run` and nothing else. Stubbed here for the same reason `_bump` stands in for `cz bump`:
+    what is under test is which number this verb reports, not commitizen's own arithmetic."""
+    (hive["repo"] / "scripts").mkdir(exist_ok=True)
+    script = hive["repo"] / "scripts" / "next-version.sh"
+    script.write_text(f"#!/bin/sh\ncat <<'EOF'\n{out}\nEOF\nexit {rc}\n")
+    script.chmod(0o755)
+
+
+def test_next_previews_the_version_the_bump_would_create(hive):
+    """The question people actually bring to a preview is a BEFORE-bump one — "is the path
+    clear?" — and answering it about the version already shipped is worse than not answering."""
+    _bump(hive, version="0.1.1")
+    _next_script(hive, "bump: version 0.1.1 → 0.2.0\ntag to create: v0.2.0\nincrement: MINOR")
+
+    res = _preview(hive, "--next")
+
+    assert res.exit_code == 0, res.output
+    assert "release preview --next" in res.output
+    assert "tag v0.2.0" in res.output  # every check below asks about the NEXT version
+    assert "v0.2.0 is not on origin" in res.output
+
+
+def test_next_takes_the_number_from_commitizen_rather_than_computing_it(hive):
+    """Criterion 7, and the reason for it: this repo sets `major_version_zero`, so a `feat` bumps
+    MINOR (0.11.5 → 0.12.0). A hand-rolled semver guess says 0.11.6, confidently and wrongly — so
+    the number must come from the one place that owns the increment."""
+    _bump(hive, version="0.11.5")
+    _next_script(hive, "bump: version 0.11.5 → 0.12.0\nincrement detected: MINOR")
+
+    out = _preview(hive, "--next").output
+
+    assert "0.12.0" in out
+    assert "0.11.6" not in out
+
+
+@pytest.mark.parametrize(
+    "script",
+    [None, ("", 21), ("nothing to bump", 0)],
+    ids=["no-script", "cz-refused", "no-bump-line"],
+)
+def test_next_degrades_to_could_not_determine_and_never_guesses(hive, script):
+    """Criterion 8 — the same could-not-measure discipline the tag and artifact checks already
+    keep. A preview that guessed the next version would be wrong exactly when it mattered, and a
+    preview that refused would be a gate wearing a report's name."""
+    _bump(hive, version="0.1.1")
+    if script is not None:
+        _next_script(hive, script[0], rc=script[1])
+
+    res = _preview(hive, "--next")
+
+    assert res.exit_code == 0, res.output
+    assert "COULD NOT DETERMINE" in res.output
+    assert "0.1.2" not in res.output and "0.2.0" not in res.output  # no invented number
+
+
+def test_next_writes_no_version_anywhere(hive):
+    """READ-ONLY is the property that lets this be run in front of a one-way door: it establishes
+    nothing, pushes nothing, refuses nothing, and above all does not bump."""
+    _bump(hive, version="0.1.1")
+    _next_script(hive, "bump: version 0.1.1 → 0.2.0")
+    pyproject = (hive["repo"] / "pyproject.toml").read_bytes()
+    before = _git("ls-remote", "origin", cwd=hive["repo"])
+
+    assert _preview(hive, "--next").exit_code == 0
+
+    assert (hive["repo"] / "pyproject.toml").read_bytes() == pyproject
+    assert not _ledger(hive).exists()
+    assert _git("ls-remote", "origin", cwd=hive["repo"]) == before
+
+
+def _already_shipped(hive, monkeypatch, *, next_out: str | None) -> str:
+    """The state the operator was actually in: the pin's tag is on the remote AND its artifact is
+    on PyPI, because that version was released."""
+    (hive["repo"] / "pyproject.toml").write_text(
+        '[project]\nname = "beadhive"\nversion = "0.11.5"\n'
+    )
+    _git("add", "-A", cwd=hive["repo"])
+    _git("commit", "-qm", "bump: version 0.11.5", cwd=hive["repo"])
+    _git("tag", "v0.11.5", cwd=hive["repo"])
+    _git("push", "-q", "origin", "main", "v0.11.5", cwd=hive["repo"])
+    monkeypatch.setattr(
+        release,
+        "_published_artifact",
+        lambda *a, **k: (True, "✗ beadhive 0.11.5 IS ALREADY ON PyPI"),
+    )
+    if next_out is not None:
+        _next_script(hive, next_out)
+    return _preview(hive).output
+
+
+def test_preview_leads_with_the_released_version_rather_than_two_failure_marks(hive, monkeypatch):
+    """Criterion 6. "Tag on the remote" and "artifact on PyPI" both mean ALREADY SHIPPED here, and
+    two ✗ marks read as "blocked" when they lead — the operator ran it twice, which is what a
+    confusing report looks like from the outside. So: say which state this is, first."""
+    out = _already_shipped(hive, monkeypatch, next_out="bump: version 0.11.5 → 0.12.0")
+
+    assert "YOU ARE ON THE RELEASED VERSION v0.11.5" in out
+    assert "just bump" in out and "0.12.0" in out
+    assert out.index("RELEASED VERSION") < out.index("IS ALREADY ON origin")  # LEADS with it
+
+
+def test_the_released_state_is_only_claimed_when_a_bump_is_actually_pending(hive, monkeypatch):
+    """The same discipline again, one level up: "run `just bump` first" is a claim about pending
+    commits, so an undeterminable next version must not produce it. The ✗ lines still print."""
+    out = _already_shipped(hive, monkeypatch, next_out=None)
+
+    assert "RELEASED VERSION" not in out
+    assert "IS ALREADY ON origin" in out
 
 
 # ─── the published-artifact check: the only one that needs the network ───────────────────────
