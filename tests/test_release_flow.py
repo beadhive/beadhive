@@ -1071,3 +1071,205 @@ def test_the_bump_and_the_push_resolve_the_gate_through_the_same_function(hive):
 
     assert _preflight(hive).exit_code == 1
     assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] is False
+
+
+# ─── attest --if-needed: the one flag that makes attest idempotent (bh-0jndj) ────────────────
+
+
+def _clean_checkout_spy(monkeypatch, rc: int = 0) -> dict:
+    """Capture what `attest` asks `worktree.clean_checkout` for, without running a gate."""
+    from beadhive import worktree
+
+    seen: dict = {}
+
+    def fake(entry, rev, cmd, cfg=None, reuse=False):
+        seen.update(rev=rev, cmd=cmd, reuse=reuse)
+        validation_ledger.record(entry, rev, cmd, rc)
+        return rc
+
+    monkeypatch.setattr(worktree, "clean_checkout", fake)
+    return seen
+
+
+def test_if_needed_asks_for_prove_or_skip_rather_than_a_second_lookup(hive, monkeypatch):
+    """`--if-needed` IS `clean_checkout(reuse=True)` — the same prove-or-skip every landing
+    boundary already uses (bh-ku9n9.17). Not a parallel code path, not a second reader of the
+    ledger: one flag threaded into the one writer, so "is this tree proven?" can only ever be
+    answered in one place."""
+    seen = _clean_checkout_spy(monkeypatch)
+
+    assert _run(hive, "attest", "--if-needed", "--gate", GATE_CMD).exit_code == 0
+
+    assert seen["reuse"] is True
+
+
+def test_attest_still_defaults_to_running_the_gate_for_real(hive, monkeypatch):
+    """The default must stay OFF. `attest`'s designed job is the tree `cz bump` just wrote, which
+    by construction has no verdict to reuse — a reusing default would make a bump-tree attestation
+    look established when nothing had run."""
+    seen = _clean_checkout_spy(monkeypatch)
+
+    assert _run(hive, "attest", "--gate", GATE_CMD).exit_code == 0
+
+    assert seen["reuse"] is False
+
+
+def test_a_red_run_is_still_red_when_it_was_asked_for_if_needed(hive, monkeypatch):
+    """Idempotence is about skipping work already done, never about softening the answer."""
+    _clean_checkout_spy(monkeypatch, rc=1)
+
+    res = _run(hive, "attest", "--if-needed", "--gate", GATE_CMD)
+
+    assert res.exit_code == 1
+    assert _preflight(hive).exit_code == 1
+
+
+# ─── preview: the read-only forward view (bh-0jndj) ──────────────────────────────────────────
+
+
+def _preview(hive, *extra: str):
+    return _run(hive, "preview", "--gate", GATE_CMD, *extra)
+
+
+def test_preview_reports_an_unattested_tree_instead_of_refusing_it(hive):
+    """The difference from `preflight`, which is the whole reason this verb exists: `preflight`
+    exits 1 on a miss because it GATES a bump. A preview that did the same would hide the tag and
+    artifact answers behind the first bad one — exactly what you do not want in front of a
+    one-way door."""
+    res = _preview(hive)
+
+    assert res.exit_code == 0, res.output
+    assert "not attested" in res.output
+    assert "just attest" in res.output
+    assert "tag" in res.output  # the other checks still ran and were reported
+
+
+def test_preview_reports_a_green_tree_as_green(hive):
+    _attest(hive)
+
+    res = _preview(hive)
+
+    assert res.exit_code == 0
+    assert "attested green" in res.output
+
+
+def test_preview_measures_the_tag_against_the_actual_remote(hive):
+    """The same fact bh-67utw's undo rule turns on, measured the same way `recover` measures it:
+    `git ls-remote` against the real remote, never a local tracking ref."""
+    _bump(hive)
+    _git("push", "-q", "origin", "main", "v0.1.1", cwd=hive["repo"])
+
+    res = _preview(hive, "--tag", "v0.1.1")
+
+    assert res.exit_code == 0
+    assert "IS ALREADY ON origin" in res.output
+
+
+def test_preview_says_the_tag_never_left_when_it_never_left(hive):
+    _bump(hive)
+
+    res = _preview(hive, "--tag", "v0.1.1")
+
+    assert "v0.1.1 is not on origin" in res.output
+    assert "fully reversible" in res.output
+
+
+def test_preview_keeps_could_not_measure_apart_from_not_there(hive):
+    """bh-dt2d9, in the forward direction. "I could not look" is never folded into "it is not
+    there" — that collapse is how the 0.11.5 incident produced a confident wrong sentence."""
+    _bump(hive)
+    _git("remote", "set-url", "origin", str(hive["repo"] / "nope.git"), cwd=hive["repo"])
+
+    res = _preview(hive, "--tag", "v0.1.1")
+
+    assert res.exit_code == 0
+    assert "COULD NOT MEASURE" in res.output
+    assert "is not on origin" not in res.output
+
+
+def test_preview_derives_the_tag_from_pyproject_rather_than_asking_for_it(hive):
+    """One source of truth for the version, the same one `scripts/release-pin.sh` reads."""
+    _bump(hive, version="0.4.2")
+
+    assert "v0.4.2" in _preview(hive).output
+
+
+def test_preview_writes_nothing_and_pushes_nothing(hive):
+    """READ-ONLY, asserted rather than asserted-in-a-docstring: no verdict established, no ref
+    moved. A preview that could establish green would be a second `preflight` with the opposite
+    contract, which is the confusion this bead exists to remove."""
+    _bump(hive)
+    before = _git("ls-remote", "origin", cwd=hive["repo"])
+
+    _preview(hive)
+
+    assert not _ledger(hive).exists()
+    assert _git("ls-remote", "origin", cwd=hive["repo"]) == before
+
+
+def test_preview_concludes_nothing_when_there_is_no_clone_to_read(hive, monkeypatch):
+    monkeypatch.setattr(config, "load", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("nope")))
+
+    res = _preview(hive)
+
+    assert res.exit_code == 3
+    assert "COULD NOT MEASURE" in res.output
+
+
+# ─── the published-artifact check: the only one that needs the network ───────────────────────
+
+
+def _urlopen(monkeypatch, raises):
+    import urllib.request
+
+    def fake(*a, **k):
+        raise raises
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake)
+
+
+@pytest.mark.parametrize(
+    "boom",
+    [
+        TimeoutError("timed out"),
+        OSError("[Errno -3] Temporary failure in name resolution"),
+        __import__("urllib.error", fromlist=["HTTPError"]).HTTPError(
+            "https://pypi.org", 503, "Service Unavailable", {}, None
+        ),
+    ],
+    ids=["timeout", "dns", "5xx"],
+)
+def test_a_network_failure_is_could_not_check_and_never_a_refusal(monkeypatch, boom):
+    """The one check here that can be wrong because a wifi blinked. A preview that turned a blip
+    into "the path is blocked" would be a gate wearing a report's name, and an operator learns to
+    ignore exactly that."""
+    _urlopen(monkeypatch, boom)
+
+    published, detail = release._published_artifact("beadhive", "9.9.9")
+
+    assert published is None
+    assert "COULD NOT CHECK" in detail
+
+
+def test_a_404_is_the_one_negative_answer_pypi_actually_asserts(monkeypatch):
+    """404 is measured, not inferred — so it is the only failure read as "not published"."""
+    import urllib.error
+
+    _urlopen(monkeypatch, urllib.error.HTTPError("https://pypi.org", 404, "Not Found", {}, None))
+
+    published, detail = release._published_artifact("beadhive", "9.9.9")
+
+    assert published is False
+    assert "not on PyPI" in detail
+
+
+def test_an_already_published_version_is_reported_as_spent(monkeypatch):
+    import contextlib
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", lambda *a, **k: contextlib.nullcontext())
+
+    published, detail = release._published_artifact("beadhive", "0.11.5")
+
+    assert published is True
+    assert "IS ALREADY ON PyPI" in detail

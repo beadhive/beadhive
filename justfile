@@ -50,6 +50,7 @@ bootstrap:
 # The enforcing seam is now the LAND itself — `work.validate.molecule` / `.merge-main` for this
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
+# FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
 check: lint lint-md license-check test
 
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
@@ -117,6 +118,7 @@ check: lint lint-md license-check test
 # through the same wrapper `test-integration-land` already used. Cost: three bwrap spawns, ~54ms
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
+# FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: require-bd lint lint-md license-check (test FAST) test-integration-land demo-local-loop
 
 # `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
@@ -125,6 +127,7 @@ check-all: require-bd lint lint-md license-check (test FAST) test-integration-la
 # gate ran ZERO integration tests and reported green — a gate that looks wired and tests
 # nothing, the same failure mode `check-all` sitting unwired had. It must refuse to run rather
 # than pass vacuously. `check` (FAST) excludes integration by construction and needs no guard.
+# refuse unless `bd` is on PATH — check-all's guard against a vacuously green integration half
 require-bd:
     @command -v bd >/dev/null 2>&1 || { \
         echo "check-all needs the 'bd' binary on PATH: its integration half drives a real bd," >&2; \
@@ -136,6 +139,7 @@ require-bd:
 # convention gate (~3s): what lefthook's pre-commit runs. Deliberately NOT `just check` (~6min) —
 # a six-minute pre-commit gets --no-verify'd within a week, leaving the repo ungated while looking
 # gated. `check`/`check-all` stay the real gates, run deliberately.
+# convention gate (~3s): ruff + the naming-convention tests — what lefthook's pre-commit runs
 conventions:
     uv run ruff check
     uv run pytest tests/test_naming_conventions.py -q
@@ -151,6 +155,7 @@ conventions:
 # exit 127, and the hooks silently do not exist. Measured on this repo's own main clone
 # 2026-08-11: `.git/hooks/` held nothing but git's `.sample` files, so the pre-push `main-gate`
 # bh-dfz2 wired had NEVER fired, and four integration tests rotted red on main behind it.
+# install lefthook's git hooks into .git/hooks (idempotent — run it after a fresh clone)
 hooks:
     mise exec -- lefthook install --reset-hooks-path
     @echo "→ verify: .git/hooks should now hold pre-commit, commit-msg, prepare-commit-msg, pre-push"
@@ -169,17 +174,18 @@ hooks:
 # THE PENDING-BUMP REFUSAL (bh-8c2yo) is the first line, and it REFUSES rather than waiting.
 # `just bump` fires a background gate and drops a marker naming the bump tree (bh-ku9n9.7); if
 # that marker still names HEAD's tree, this is `just push` reached mid-release, and `just
-# release-push` is the atomic path that lands main and the tag together — `just push` alone would
+# release` is the atomic path that lands main and the tag together — `just push` alone would
 # land main and leave the tag local, the half-done state bh-ku9n9.7's atomic push exists to
 # prevent. Waiting the gate out and then pushing anyway (what this used to do) does not avoid
 # that state, it just delays it, so this refuses instead of redirecting: a command that quietly
 # does something other than what was typed is its own kind of trap. It removes no protection from
 # an ordinary push — no marker for this tree is "not pending" and this is a no-op, same as before.
+# PUSH main to the remote, through the gate. NO TAG — this stays fully reversible.
 push remote="origin" branch="main":
     @just _refuse-if-bump-pending
     ./scripts/push-main.sh {{ remote }} {{ branch }}
 
-# The pending-bump check `release-push` waits on, factored out because a second copy of a safety
+# The pending-bump check `release` waits on, factored out because a second copy of a safety
 # check is a second thing to forget to update.
 #
 # THE CAPABILITY PROBE IS NOT PARANOIA. `${BH_EXEC:-bh}` is the RELEASED binary by default
@@ -199,7 +205,7 @@ _await-bump-gate:
 
 # `just push`'s pre-flight (bh-8c2yo): REFUSE, don't wait, when a bump-gate marker still names
 # HEAD's tree — `release await` (above) answers "is it green yet"; this answers "is a release in
-# flight at all", which is the question `just push` (not `just release-push`) needs to ask.
+# flight at all", which is the question `just push` (not `just release`) needs to ask.
 #
 # Same capability probe as `_await-bump-gate`, for the same reason: an older `bh` (`${BH_EXEC:-bh}`
 # defaults to the released binary, which can lag this tree) has no `release pending` at all, and a
@@ -209,7 +215,7 @@ _await-bump-gate:
 _refuse-if-bump-pending:
     @if ${BH_EXEC:-bh} release --help 2>/dev/null | grep -q pending; then \
         if ${BH_EXEC:-bh} release pending --gate "just check-all" >/dev/null 2>&1; then \
-            echo "✗ a bump gate is pending for this tree — use \`just release-push\` (or \`bh release recover\` to see where you are)" >&2; \
+            echo "✗ a bump gate is pending for this tree — use \`just release\` (or \`bh release recover\` to see where you are)" >&2; \
             exit 1; \
         fi; \
     else \
@@ -265,6 +271,7 @@ license_allow := "MIT,Apache-2.0,BSD-3-Clause,BSD-2-Clause,ISC,PSF-2.0,Unlicense
 # It emits purls + the dependency graph but NO licenses and NO hashes; licenses come from
 # deps.dev at scan time. If this breaks, the fallback is syft over the built wheel — record the
 # switch rather than making it silently.
+# generate the CycloneDX SBOM (bom.json) from the RESOLVED lockfile — what license-check/cve-report read
 sbom:
     uv export --format cyclonedx1.5 --no-dev -q -o bom.json
 
@@ -287,6 +294,7 @@ sbom:
 #
 # Output is gitignored (dist/): it is derived, and it carries a fresh timestamp and UUID on every
 # run, so committing it would produce a diff on every regeneration that says nothing.
+# generate the IMAGE SBOM (dist/) — the nix CLOSURE the container ships, not the wheel's dep graph
 [group('image')]
 image-sbom:
     mkdir -p dist
@@ -307,6 +315,7 @@ image-sbom:
 # which also disabled license enforcement, exactly the one-toggle-controls-both outcome above
 # says must never happen. osv-license-gate.sh re-derives a license-only status instead; CVEs
 # found by the same scan are left to `cve-report` below, which is what already gates on them.
+# gate third-party LICENCES from the SBOM — enforcing by default (BH_LICENSE_MODE=warn to advise)
 license-check: sbom
     @scripts/osv-license-gate.sh {{license_mode}} "license gate" \
         scan source -L bom.json --licenses="{{license_allow}}" --config osv-scanner.toml
@@ -325,6 +334,7 @@ cve-report: sbom
 # It scans what NOTHING scanned before: the closure's transitive dependencies. The first run's
 # findings were almost entirely glibc, which is not one of the seven binaries we pin — which is
 # the whole argument for scanning a closure rather than a pin list.
+# IMAGE CVE signal over the nix closure — ADVISORY by default (BH_IMAGE_CVE_MODE=enforce to block)
 [group('image')]
 image-cve-report: image-sbom
     @scripts/image-cve-gate.sh {{image_cve_mode}} dist/image-sbom.cdx.json
@@ -364,6 +374,7 @@ FULL := ""
 # tests/test_guard_primary.py:280 as what rewrote the operator's real .git/config, and that file
 # carries no `integration` marker, so the one fenced recipe (`-m integration`) never collected it.
 # The suspect ran in the unfenced half for the fence's entire existence.
+# run the suite for a marker selection — fenced and parallel (default: the fast unit-only set)
 test set=FAST:
     ./scripts/hermetic.sh uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
@@ -409,6 +420,7 @@ test set=FAST:
 # sandbox: host read-only, tmpfs HOME (so ~/.beads and ~/.gitconfig leave bd's resolution walk),
 # loopback up but no egress. 41ms per spawn — cheap enough to be the default rather than an
 # opt-in. Off Linux the wrapper says so on stderr and runs unfenced; BH_HERMETIC=0 forces that.
+# the LAND gate's integration pass — fenced and parallel, minus the quarantines named above
 test-integration-land:
     ./scripts/hermetic.sh uv run pytest -n auto -m "integration" \
         --deselect "tests/test_host_fence_int.py::test_the_located_transport_repo_is_the_one_that_pushes[embedded]" \
@@ -429,11 +441,13 @@ test-integration-land:
 # NOT part of `just check`: measured +15% wall (64.6s -> 74.4s), and coverage is a periodic
 # question, not a per-commit gate. No --cov-fail-under threshold yet — see bh-rmem: pick one
 # from a real baseline rather than asserting a number nobody has looked at.
+# test coverage over src/beadhive, unit set only — periodic, deliberately NOT part of `check`
 cov:
     uv run pytest -n auto -m 'not integration' --cov=src/beadhive --cov-report=term-missing
 
 # run the harness and render each git history (mode=all) or only divergent ones (mode=diff)
 # streams live per-bead progress; -v shows which test is running
+# run the integration harness and render each bead's git history (mode=all | diff)
 render-int mode="all":
     AGF_RENDER={{mode}} uv run pytest -m integration -s -v
 
@@ -455,11 +469,42 @@ demo:
 # BH_HOME, BH_CONFIG, BH_WORKTREES, GIT_WORKSPACE, GIT_CONFIG_GLOBAL and BEADS_SHARED_SERVER_DIR
 # but never sets HOME — which is exactly why redirecting env vars could not fix bh-ik08j and a
 # private HOME does.
+# drive the `local` work-runtime tier's operator demo end to end against a scratch hive (~115s)
 demo-local-loop:
     ./scripts/hermetic.sh uv run scripts/demo_local_loop.py
 
+# ---- the release commands, in order of COMMITMENT (bh-0jndj) -------------------------------
+#
+# They differ by REVERSIBILITY, and that is the same axis bh-67utw's recovery rule turns on: a
+# failed release is undoable to a clean slate IF AND ONLY IF THE TAG NEVER LEFT. So the names
+# below say how far each one commits you, not which git plumbing it happens to call —
+# `release-push` read like a variant of `push` when it is the single irreversible command here.
+#
+#   just attest           prove THIS tree green and stamp it.        nothing committed
+#   just push             main to the remote. NO TAG.                reversible
+#   just bump-preview     what would the next bump write?            read-only
+#   just bump             version + changelog + LOCAL tag.           reversible, still local
+#   just release-preview  is the path clear?                         read-only
+#   just release          main + tag, atomic. CI publishes.          ONE-WAY DOOR
+
+# prove THIS tree green under `just check-all` and stamp the verdict every other release command
+# reads. IDEMPOTENT: `--if-needed` is `clean_checkout(reuse=True)` — a fresh green verdict for
+# this exact (tree, command) short-circuits the run, and only a miss pays the full gate. Two runs
+# in a row therefore cost the gate once, and "warm this tree deliberately" is finally something
+# you can type instead of a side effect of whatever `bh work merge` last happened to run.
+#
+# NOTHING ELSE CALLS THIS, deliberately. `just push` already IS attest-if-needed — its pre-push
+# hook does the same lookup and falls back to the full gate inline, so calling attest first would
+# only duplicate it. `just bump` REFUSES on an unattested tree (`bh release preflight`, above) and
+# must keep refusing: a deliberate act silently becoming a six-minute wait is worse than a clear
+# pointer at this recipe. And `just release` waits on the BUMP tree's gate — a different tree,
+# which cannot be pre-warmed at all. `attest` is what the others DEPEND ON, not what they call.
+# prove this tree green and stamp the verdict — idempotent, so it's cheap on an already-proven tree
+attest:
+    ${BH_EXEC:-bh} release attest --if-needed --gate "just check-all"
+
 # preview the next version bump AND its changelog entry from conventional commits (no writes)
-bump-dry:
+bump-preview:
     uv run cz bump --dry-run
     uv run cz changelog --incremental --dry-run
 
@@ -488,10 +533,31 @@ bump-dry:
 # Deliberately NOT probed for like `_await-bump-gate` is: an old `bh` here should fail the bump
 # loudly, not bump unproven. A release is exactly where "the check silently did not run" is
 # worst. Set BH_EXEC='uv run bh' to use this tree's bh.
+# BUMP: version + changelog + uv.lock + a LOCAL tag, as one commit. Nothing leaves this machine.
 bump:
     ${BH_EXEC:-bh} release preflight --gate "just check-all"
     uv run cz bump --changelog
     ${BH_EXEC:-bh} release attest --background --gate "just check-all"
+
+# is the release path clear? READ-ONLY, and the counterpart to `bump-preview` above: that one
+# shows what the bump would WRITE, this one shows what the push would MEET.
+#
+# WHY IT REPORTS RATHER THAN GATES. `bh release preflight` (inside `just bump`) exits 1 on an
+# unattested tree because it exists to STOP a bump. A preview doing the same would hide the other
+# two answers behind the first bad one, which is the opposite of what you want standing in front
+# of a one-way door. Every line is measured and printed; the exit code is not the verdict.
+#
+# The remote-tag line is `git ls-remote` against the ACTUAL remote — the same measurement
+# `bh release recover` decides on, so it keeps the same three answers (on the remote / not there /
+# COULD NOT LOOK) and never folds the third into the second. The PyPI line is the only one needing
+# the network, and it degrades to "could not check" on anything but a definitive 404.
+#
+# No capability probe here, unlike `_await-bump-gate`: an older `${BH_EXEC:-bh}` failing loudly on
+# a read-only report is harmless, and a probe only matters where a missing verb would silently
+# skip a safety check on the push path.
+# report whether the release path is clear — attested? tag on the remote? version already published?
+release-preview:
+    ${BH_EXEC:-bh} release preview --gate "just check-all"
 
 # publish the release: main AND its tag, in ONE atomic push, after the bump tree's gate is green.
 #
@@ -501,7 +567,8 @@ bump:
 # `_await-bump-gate` first, so a still-running or RED bump gate stops the release while it is
 # still fully reversible. If it stops you, `bh release recover` measures the remote and says
 # which of bh-67utw's two cases you are in.
-release-push tag="" remote="origin":
+# RELEASE — the ONE-WAY DOOR: main AND its tag pushed atomically, and CI publishes from the tag.
+release tag="" remote="origin":
     @just _await-bump-gate
     ./scripts/push-main.sh {{ remote }} main "{{ if tag == "" { "v" + `scripts/release-pin.sh` } else { tag } }}"
 
@@ -518,7 +585,7 @@ release-push tag="" remote="origin":
 # publishable one is the SEPARATE, NAMED recipe below — forget it and you get an artifact PyPI
 # rejects, never a silently mislabelled one. Nothing on the actual release path goes through
 # here: .github/workflows/release.yml runs `uv build` itself on the v* tag it checks out, and
-# `just release-push` / scripts/release-pin.sh only ever read the version, never build.
+# `just release` / scripts/release-pin.sh only ever read the version, never build.
 #
 # A SEPARATE RECIPE RATHER THAN `build release=1`, and that is not a style choice — it is the
 # trap THIS JUSTFILE ALREADY DOCUMENTS as measured, on the `local-install` settings block below
@@ -544,6 +611,7 @@ build-release:
 
 # install bh on PATH (~/.local/bin/bh) — includes the otel extra so the installed bh
 # can export OpenTelemetry out of the box (fastmcp ships as a core dependency).
+# install bh on PATH (~/.local/bin/bh) from THIS checkout — a stamped LOCAL build, with the otel extra
 install:
     ./scripts/local-build.sh install
 
@@ -710,6 +778,7 @@ local-install *settings:
 #
 # Forgetting to run this does not ship stale metadata: the docker build regenerates and DIFFS the
 # file, failing with a pointer back to this recipe.
+# regenerate docker/toolchain-metadata.json from flake.nix (nix in docker) — commit the result
 [group('image')]
 toolchain-metadata:
     docker run --rm -v "$PWD:/src:ro" nixos/nix:latest sh -c \
@@ -899,6 +968,7 @@ image-cross target="default": image-builder image-qemu
 # Default endpoint: gRPC on localhost:4317 (grafana/otel-lgtm or any OTLP-capable collector).
 # HTTP transport: just otel-verify http://localhost:4318 (set WS_OTEL_PROTOCOL=http/protobuf).
 # After running, check your collector for service.name=ws spans/metrics/logs.
+# live OTel verification: export real traces+metrics+logs to a running collector
 otel-verify endpoint="http://localhost:4317":
     WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run pytest tests/test_otel_verify.py -v -s
 
@@ -914,6 +984,7 @@ otel-verify endpoint="http://localhost:4317":
 #
 # Default OTLP endpoint: gRPC localhost:4317; default Prometheus: http://localhost:9090.
 # Override: just metrics-verify http://localhost:4317 http://localhost:9090
+# live metrics-usability verification against a running collector + Prometheus
 metrics-verify endpoint="http://localhost:4317" prom="http://localhost:9090":
     WS_METRICS_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} WS_OTEL_VERIFY_PROM={{prom}} \
         uv run pytest tests/test_metrics_verify.py -v -s

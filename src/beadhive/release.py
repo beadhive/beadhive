@@ -8,8 +8,8 @@ the beads whose review gate cleared) and orders it through the same scorer that 
 counterpart — the `release-hold:` gate that blocks a `release:breaking` bead until a releaser
 clears it — lives in plan/guard/work, not here.
 
-THE BUMP FLOW — `preflight` / `attest` / `await` / `recover` (bh-ku9n9.7)
-========================================================================
+THE BUMP FLOW — `preflight` / `attest` / `await` / `recover` / `preview` (bh-ku9n9.7, bh-0jndj)
+==============================================================================================
 
 This is the attested-green design (`docs/design/attested-green-adr.md`) applied one level up,
 to the release itself. It exists because of a measured incident, the 0.11.5 release: a bump was
@@ -36,6 +36,15 @@ which is also what removes the ~371s idle socket that killed the connection (bh-
        ══════════ THE TAG IS THE POINT OF NO RETURN ══════════
            everything above is reversible; nothing below is. `bh release recover` decides
            which side of that line you are on by MEASURING the remote with ls-remote.
+
+**TWO READ-ONLY COMPANIONS, and one flag (bh-0jndj).** `attest --if-needed` is prove-or-skip
+(`clean_checkout(reuse=True)`), which is what makes "prove this tree if it is not already proven"
+something you can ask for deliberately — `just attest` — rather than only ever getting as a side
+effect of whatever `bh work merge` last ran. `preview` is the forward-facing counterpart to
+`recover`: the same ls-remote measurement, asked BEFORE the door instead of after it, plus the
+green lookup and a PyPI check. It REPORTS all three and refuses none of them, because `preflight`
+already owns refusing and a second refuser reachable by a different name is the confusion these
+verbs exist to remove. Neither establishes anything the flow did not already establish.
 
 **WHAT THIS MODULE DOES NOT OWN.** The undo *rewrite* itself (`git rebase --rebase-merges
 --onto`, the backup ref, the only-version-files diff) is bh-67utw; `recover` measures and
@@ -274,6 +283,14 @@ def attest(
         help="fire the gate detached and return immediately; `bh release await` blocks on the "
         "verdict later. This is what the bump uses — see the verb's docstring.",
     ),
+    if_needed: bool = typer.Option(
+        False,
+        "--if-needed",
+        help="skip the run when this tree already has a fresh green verdict for the gate command "
+        "— prove-or-skip, which is what makes `attest` idempotent and cheap to warm a tree with. "
+        "A miss still runs the full gate. Ignored under `--background`, whose whole job is a tree "
+        "that by construction has no verdict.",
+    ),
 ):
     """RUN the `push-main` gate against REV's tree from a clean checkout and record the verdict.
 
@@ -294,7 +311,16 @@ def attest(
     `bh-release-bump-gate.log` and drops a marker naming the tree, command and pid. It carries NO
     verdict —
     it exists only so `await` can tell "still running" from "died without recording one". The
-    verdict is always the ledger's."""
+    verdict is always the ledger's.
+
+    `--if-needed` makes the verb IDEMPOTENT — `clean_checkout(reuse=True)`, the same prove-or-skip
+    every landing boundary already uses, so a fresh green verdict for this exact (tree, command)
+    short-circuits the run and a miss pays the full gate. That is not a second lookup and not a
+    weaker proof: a hit under a (tree, cmd_hash) key IS an exact tree match. It exists so "prove
+    this tree if it is not already proven" is something you can deliberately ask for (`just
+    attest`) instead of only ever getting it as a side effect of a land-time `bh work merge`.
+    The default stays OFF, because the verb's designed job — attesting a just-written bump tree —
+    has no verdict to reuse and must never look as though it did."""
     entry, cmd, refusal = _resolve(hive, gate)
     if refusal:
         typer.echo(f"{refusal} — cannot attest", err=True)
@@ -316,7 +342,7 @@ def attest(
         raise typer.Exit(REFUSED)
 
     if not background:
-        rc = worktree.clean_checkout(entry, sha, cmd)
+        rc = worktree.clean_checkout(entry, sha, cmd, reuse=if_needed)
         typer.echo(
             f"{'✓ attested green' if rc == 0 else f'✗ RED (exit {rc}) — recorded, not attested'}"
             f": {sha[:12]} under {cmd!r}",
@@ -376,7 +402,7 @@ def await_cmd(
         False,
         "--if-pending",
         help="exit 0 immediately when NO background gate is pending for this tree (for "
-        "`just release-push`'s pre-flight, which must not block an ordinary release with no "
+        "`just release`'s pre-flight, which must not block an ordinary release with no "
         "bump gate in flight; `just push` itself no longer calls `await` at all — see "
         "`_refuse-if-bump-pending` in the justfile)",
     ),
@@ -654,3 +680,143 @@ def recover(
     code, detail = recovery_decision(main, tag, bump_sha, remote=remote, branch=branch)
     typer.echo(detail, err=code != 0)
     raise typer.Exit(code)
+
+
+def _project_pin(main: Path) -> tuple[str, str]:
+    """`(name, version)` from the clone's `[project]` table, or `("", "")` when unreadable.
+
+    The same single source of truth `scripts/release-pin.sh` reads, and for its reason: a second
+    place to spell a version is a second place for it to be wrong. Unreadable is not an error
+    here — it degrades the two checks that need it to "could not check", which is this verb's
+    whole failure direction."""
+    import tomllib
+
+    try:
+        project = tomllib.loads((main / "pyproject.toml").read_text()).get("project", {})
+        return str(project.get("name") or ""), str(project.get("version") or "")
+    except Exception:  # noqa: BLE001 — no project metadata ⇒ "could not check", never a refusal
+        return "", ""
+
+
+def _published_artifact(project: str, version: str, timeout: float = 5.0):
+    """Is `project`'s `version` ALREADY published on PyPI? `True` / `False` / **`None` = could
+    not check** — plus the sentence to print, either way.
+
+    The only check in `preview` that needs the network, so it is the only one that can be wrong
+    because a wifi blinked. **`None` swallows everything that is not a definitive 404**: a
+    timeout, DNS, a proxy, a 5xx, an SSL error. A preview that turned a network blip into "the
+    path is blocked" would be a gate wearing a report's name, and an operator learns to ignore
+    exactly that. 404 is the one negative answer PyPI actually asserts, so it is the only one
+    read as "not published".
+
+    Imported lazily like `prepush` above: `cli.py` imports this module at startup and `urllib`
+    is not worth taxing every `bh` invocation for one read-only verb."""
+    import urllib.error
+    import urllib.request
+
+    url = f"https://pypi.org/pypi/{project}/{version}/json"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout):  # noqa: S310 — literal https URL
+            return True, (
+                f"✗ {project} {version} IS ALREADY ON PyPI — {url}\n"
+                f"       that version is spent: PyPI never re-accepts a filename, so a release "
+                f"of it cannot succeed.\n"
+                f"       Roll FORWARD to the next version rather than trying to replace it."
+            )
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False, f"✓ {project} {version} is not on PyPI — nothing to collide with"
+        return None, (
+            f"• COULD NOT CHECK PyPI for {project} {version} (HTTP {exc.code}) — not an answer, "
+            f"and not a refusal"
+        )
+    except Exception as exc:  # noqa: BLE001 — every network failure is "could not check"
+        return None, (
+            f"• COULD NOT CHECK PyPI for {project} {version} ({type(exc).__name__}: {exc}) — "
+            f"not an answer, and not a refusal"
+        )
+
+
+@app.command("preview")
+def preview(
+    rev: str = _REV,
+    gate: str = _GATE,
+    hive: str = _HIVE,
+    tag: str = typer.Option("", "--tag", help="the tag a release would push (default: v<version>)"),
+    remote: str = typer.Option("origin", "--remote"),
+):
+    """Is the release path clear? READ-ONLY — three checks REPORTED, and NOTHING is refused.
+
+    The counterpart to `preflight`, and deliberately not a second copy of it. `preflight` EXITS 1
+    on an unattested tree because it exists to GATE the bump; a preview that did the same would
+    hide the other two answers behind the first bad one, which is the opposite of what you want
+    before a one-way door. So every line here is measured and printed, and **the exit code is 0
+    even when the path is not clear** — read the lines, not the status.
+
+    * **green** — free, the same lookup `preflight` and the pre-push hook use. A miss reports
+      "not attested" and names `just attest`, instead of refusing.
+    * **the tag is not already on the remote** — `git ls-remote` against the ACTUAL remote,
+      through the same `_ls_remote` `recovery_decision` measures with, so both keep the same
+      three-way answer: on the remote / not there / COULD NOT LOOK. The third is never folded
+      into the second (bh-dt2d9) — "the tag never left" is the fact bh-67utw's whole undo rule
+      turns on, and assuming it is the one thing that must never happen.
+    * **no conflicting published artifact** — the only check that needs the network, and it
+      degrades to "could not check" on anything but a definitive 404.
+
+    Establishes no verdict, pushes no ref, writes nothing. Exit 3 only when there is no clone to
+    read at all, because then not one of the three was measured."""
+    try:
+        main = registry.hive_dir_for(config.load(), hive)
+    except Exception as exc:  # noqa: BLE001 — no clone ⇒ nothing was measured at all
+        typer.echo(
+            f"✗ COULD NOT MEASURE: no clone to preview from ({type(exc).__name__}: {exc}).",
+            err=True,
+        )
+        raise typer.Exit(UNMEASURABLE) from exc
+
+    name, version = _project_pin(main)
+    tag = tag or (f"v{version}" if version else "")
+
+    typer.echo(
+        f"release preview — {rev} → {remote}{f', tag {tag}' if tag else ''}\n"
+        f"  READ-ONLY: nothing below establishes a verdict or pushes a ref, and nothing refuses."
+    )
+
+    from . import prepush
+
+    ok, detail = prepush.check_push_main(
+        rev, hive_id=hive, gate_cmd=gate, on_miss="REPORTED HERE, not enforced"
+    )
+    typer.echo(f"  green    {detail}")
+    if not ok:
+        typer.echo("           → not attested — run `just attest` (`just bump` would refuse)")
+
+    if not tag:
+        typer.echo("  tag      • no tag to check — no [project] version readable from pyproject")
+    else:
+        rc, lines = _ls_remote(main, remote, f"refs/tags/{tag}")
+        if rc != 0:
+            typer.echo(
+                f"  tag      • COULD NOT MEASURE whether {tag} is on {remote} (`git ls-remote` "
+                f"exited {rc})\n"
+                f"           this is NOT 'the tag never left' — check by hand: "
+                f"git ls-remote --tags {remote} {tag}"
+            )
+        elif lines:
+            typer.echo(
+                f"  tag      ✗ {tag} IS ALREADY ON {remote} — measured, "
+                f"{lines[0].split()[0][:12]}\n"
+                f"           a published tag is never moved or deleted; roll FORWARD to the next "
+                f"version ({config.BINARY_ALIAS} release recover)"
+            )
+        else:
+            typer.echo(
+                f"  tag      ✓ {tag} is not on {remote} — measured, the release is still "
+                f"fully reversible"
+            )
+
+    if not (name and version):
+        typer.echo("  artifact • could not check — no [project] name/version readable")
+    else:
+        _published, why = _published_artifact(name, version)
+        typer.echo(f"  artifact {why}")
