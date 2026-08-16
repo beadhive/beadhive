@@ -234,7 +234,13 @@ def _measured_tool(mcp, fn):
     """Register *fn* as an ``mcp.tool`` wrapped in the shared measured envelope. Tool name is
     ``fn.__name__``; a genuine error is observed (log + span ERROR + counter) and mapped to a clean
     ``ToolError`` so the client never sees a traceback. An async *fn* keeps an async wrapper (the
-    notify is awaited inside the same envelope)."""
+    notify is awaited inside the same envelope).
+
+    Tools read bd STRICTLY, exactly as resources do (:func:`_strict_bd_reads`) — bh-fzh4h fixed the
+    resource half and left the tool half on the old contract, where `plan_file` reached
+    `plan.file_molecule`'s `bd.json` calls and got the None that means "no such bead". There is no
+    tool-side equivalent of ``beadhive://doctor``'s exemption: no tool exists to diagnose a broken
+    seat, so strictness is unconditional here and a tool added later inherits it."""
     tool_name = fn.__name__
 
     def _mapper(exc):
@@ -242,7 +248,7 @@ def _measured_tool(mcp, fn):
         return ToolError(f"{tool_name} failed: {type(exc).__name__}: {exc}")
 
     return _measured(
-        fn,
+        _strict_bd_reads(fn),
         span_name=f"{otel.GEN_AI_OP_EXECUTE_TOOL} {tool_name}",
         record=otel.record_mcp_invocation,
         name=tool_name,
@@ -368,6 +374,21 @@ _SERVE_PATH_DEFERRED = (
     # ours, and the same shape: `_notify_updated` (every mutating tool) and the intake resource.
     "mcp.types",
     "beadhive.state",
+    # --- bh-doz0n: the residual 13, measured rather than guessed -----------------------------
+    # Nine of ours fire from ONE resource, `beadhive://doctor` — doctor_payload's own lazy
+    # imports plus the ones it reaches through guard / hitch_plugin / install_plane / config.
+    # Each carries a stated reason at its call site (cycle, or keeping a hot module import-light),
+    # so warming is the right lever there and hoisting is not: see `_warm_serve_path_imports`.
+    "beadhive.compose",  # install_plane.detect, via doctor's legacy-install plane
+    "beadhive.config_partition",  # config.fleet_override_violations, on every config.load()
+    "beadhive.dispatch_status",  # doctor._data_dispatch; pulls dispatch_log + _supervisor
+    "beadhive.git_identity",  # doctor._disarmed_signing_gate_warnings
+    "beadhive.host_lease",  # guard.primary_state, via doctor's not-primary warning
+    "beadhive.setup",  # doctor._bd_dolt_fix_warnings (setup<->deps cycle: must stay deferred)
+    # fastmcp's own three, deferred inside its request path the same way `tasks.routing` was.
+    "fastmcp.apps.app",
+    "fastmcp.server.providers.addressing",
+    "fastmcp.server.providers.prefab_synthesis",
 )
 
 
@@ -395,6 +416,45 @@ def _warm_serve_path_imports() -> None:
     Warming is not `except ImportError: pass` — nothing is caught. A genuinely missing module
     raises HERE, at startup, where the failure is visible and the server refuses to serve, rather
     than on some tool call hours later. Cost is a few already-installed imports.
+
+    WHAT THE LIST COVERS, AND WHAT IT DELIBERATELY DOES NOT (bh-doz0n). The first cut warmed the
+    shared spine only; snapshotting `sys.modules` around a full surface exercise after
+    `build_server()` still found 19 modules importing mid-request — 10 ours. Measured, in a fresh
+    process, after `build_server()` (~1150 ms):
+
+        all 13 warmed together                          103 ms
+        of which structlog's FIRST get_logger call        ~100 ms
+        the 13 module bodies, once structlog is up       ~20 ms  (config_partition 15, wt_status 2)
+
+    So the headline number is not the modules — it is structlog configuring itself the first time
+    any module body calls `log.get_logger`, a cost this process pays on its first log line either
+    way. Warming moves it to startup rather than adding it. Individually every module is 0.3-4 ms
+    except `config_partition` (15 ms), which `config.load()` triggers on the first request anyway.
+    That is cheap enough to warm all of them, which is what the list above does.
+
+    TWO WERE HOISTED INSTEAD, because warming a lazy import is a workaround and moving it is a fix:
+
+      * `beadhive.wt_status` — `worktree.py` imported it inside four function bodies. The module
+        imports NOTHING but stdlib, so there was no cycle to break and no cost to defer; it is now
+        a plain module-scope import in `worktree`, which is resident at startup. Zero runtime cost
+        and nothing to remember on the next lazy call site.
+      * `beadhive.role` — `hitch_plugin.seat_reports` reached into it for one private helper.
+        `role` imports only `deps` + `run`, both already resident. Hoisted to module scope.
+
+    The other eight kept their `from . import x` inside a function because the call site states a
+    reason that still holds: `setup` <-> `deps` is a real cycle (deps derives its probe tables from
+    setup), and `compose` / `host_lease` / `config_partition` are deferred to keep `install_plane`,
+    `guard` and `config` — imported by nearly everything — import-light for the CLI paths that
+    never touch them. Hoisting those trades this server's problem for a slower `bh` binary.
+
+    SIX ARE STILL NOT WARMED, on purpose: `_strptime`, `encodings.idna`, `stringprep`,
+    `anyio._backends[._asyncio]`, `ruamel.yaml.mergevalue`. Every one is a lazy import made BY
+    stdlib or a vendored library inside its own code (`time.strptime`, the idna codec, anyio's
+    backend dispatch, ruamel's resolver) — not by ours. Warming them means naming another project's
+    private internals in our startup path and re-deriving the list on every dependency bump, to
+    close a window that only opens when the interpreter's own tree has been deleted underneath a
+    running process. That is the whack-a-mole this bead's design warned against; the root condition
+    is bh-x55ux.6's to detect.
     """
     import importlib
 

@@ -105,7 +105,7 @@ import shutil
 
 import typer
 
-from . import config, plugins, run
+from . import config, plugins, role, run
 
 # bh's own harness vocabulary (mirrors role.KNOWN_HARNESSES) mapped onto hitch's own `up` target
 # names — determined empirically: hitch's CLI accepts "claude-code"/"opencode", NOT "claude"
@@ -260,9 +260,7 @@ def seat_reports(cfg) -> list[dict]:
     if not profiles_file.is_file() or not catalog_file.is_file():
         return []
 
-    from .role import _known_seats
-
-    seats = sorted(_profile_names(profiles_file) & set(_known_seats()))
+    seats = sorted(_profile_names(profiles_file) & set(role._known_seats()))
     if not seats:
         return []
 

@@ -241,7 +241,7 @@ def json(args, cwd, *, strict=False):
     if res.returncode != 0:
         if (strict or _STRICT_READS.get(False)) and (binary := _runmod.missing_binary(res)):
             raise BinaryMissing(_missing_binary_message(binary, narrating=False))
-        _warn_missing_binary(res)
+        _warn_missing_binary(res, cwd)
         return None
     try:
         return _json.loads(res.stdout or "null")
@@ -249,9 +249,9 @@ def json(args, cwd, *, strict=False):
         return None
 
 
-#: Narrate an absent binary ONCE per process — every subsequent bd read would repeat it, and the
-#: operator needs the cause stated, not a hundred copies of it.
-_MISSING_BINARY_WARNED: set[str] = set()
+#: Narrate an absent binary once per (binary, HIVE) — see `_warn_missing_binary` for why the hive
+#: is in the key and why it is not narrowed further.
+_MISSING_BINARY_WARNED: set[tuple[str, str]] = set()
 
 
 def _missing_binary_message(binary: str, *, narrating: bool) -> str:
@@ -274,13 +274,28 @@ def _missing_binary_message(binary: str, *, narrating: bool) -> str:
     )
 
 
-def _warn_missing_binary(res) -> None:
+def _warn_missing_binary(res, cwd=None) -> None:
     """Say plainly that the binary is absent, so the caller's own "not found" message cannot be
-    read as a fact about the data."""
+    read as a fact about the data.
+
+    GRANULARITY, decided on the record (bh-8x452). Keyed on `(binary, hive)`, not on the binary
+    alone. A fleet-wide sweep — `bh doctor`, `bh hive survey`, any `-a` fan-out — reads bd once per
+    hive, and a binary-only key narrated for the FIRST hive and then went silent, so an operator
+    read 40 empty hives with one warning above them all.
+
+    Deliberately NOT narrower than that. Within one hive the narration stays once, because a verb
+    that reads bd twenty times would otherwise print twenty copies of the same sentence, and the
+    per-verb reset the bead floated buys nothing a per-hive key does not: a CLI process is one
+    verb. The long-lived processes the bead worried about — `bh mcp serve`, localloop — no longer
+    DEPEND on this channel at all: every MCP resource and tool reads bd inside
+    :func:`strict_reads`, so their caller gets `BinaryMissing` in band, on every call, forever.
+    stderr is the human's channel and this is the human's cadence; the structured surface has its
+    own."""
     binary = _runmod.missing_binary(res)
-    if not binary or binary in _MISSING_BINARY_WARNED:
+    key = (binary, str(cwd or ""))
+    if not binary or key in _MISSING_BINARY_WARNED:
         return
-    _MISSING_BINARY_WARNED.add(binary)
+    _MISSING_BINARY_WARNED.add(key)
     typer.echo(f"✗ {_missing_binary_message(binary, narrating=True)}", err=True)
 
 
@@ -381,7 +396,23 @@ def create(create_args, cwd) -> tuple[int, str]:
                 f"'{config.BINARY_ALIAS} label validate'): " + "; ".join(problems)
             )
     extra = triplet_label_args(cwd)
-    return _run(["bd", "create", *create_args, *extra], check=False, cwd=cwd).returncode, ""
+    return _rc_error(_run(["bd", "create", *create_args, *extra], check=False, cwd=cwd))
+
+
+def _rc_error(res) -> tuple[int, str]:
+    """`(exit code, error)` for a bd WRITE, naming an absent binary instead of leaving a bare 127.
+
+    The read path got this in bh-fzh4h (`strict_reads` → `BinaryMissing`); the write path kept
+    reporting only the number. `create_items` renders per-item failures, so over MCP an uninstalled
+    bd reached the agent as ``bd_create failed for: #0 'my bead': bd exit 127`` — a statement about
+    THAT ITEM, which sends the agent to inspect a bead that is fine. Same class as the null read
+    (bh-8x452): the exit code is a failed invocation, not a fact about the request.
+
+    Only the tagged case is translated (`run.missing_binary`, never the number alone — a child may
+    exit 127 by choice); every other non-zero keeps the empty `error` its callers already render."""
+    if binary := _runmod.missing_binary(res):
+        return res.returncode, _missing_binary_message(binary, narrating=False)
+    return res.returncode, ""
 
 
 # ---- whole-payload create (the shell-free transport) ------------------------------------
@@ -612,7 +643,7 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
         return 0, ""
     if combined.strip():
         typer.echo(combined.rstrip())
-    return result.returncode, ""
+    return _rc_error(result)
 
 
 def _import(import_args, cwd):

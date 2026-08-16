@@ -18,6 +18,12 @@ Two guards here, and they are different guards:
     incident directly — make `fastmcp.server.tasks.routing` unimportable *after* startup and
     assert tool calls still work — with the negative control that proves the warm-up is what
     saves them.
+  * :func:`test_hoisted_serve_path_imports_need_no_warming` covers the two modules bh-doz0n
+    fixed at SOURCE rather than by warming — a module-scope import cannot be evicted out from
+    under a request at all, so it is a strictly stronger guarantee than a warm-list entry.
+
+Both residency guards run in a FRESH SUBPROCESS on purpose. In-process, one earlier tool call
+anywhere in the session makes a module resident and the assertion passes vacuously.
 """
 
 from __future__ import annotations
@@ -183,3 +189,59 @@ def test_serve_path_imports_are_resident_and_survive_a_vanished_env(tmp_path):
     )
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert "REPRO-OK" in proc.stdout
+
+
+# bh-doz0n: `beadhive.wt_status` and `beadhive.role` were imported inside function bodies out of
+# habit — no cycle to break, nothing expensive to defer — and so imported mid-request, the shape
+# that took the server out for 18 hours. They were HOISTED to module scope rather than added to
+# the warm list, which is why the assertions below are the ones they are: resident after startup
+# (the warm list's guarantee) AND still usable once the module is evicted (a guarantee warming
+# cannot give, because a warmed name is still looked up through `sys.modules` by its call site).
+_HOISTED = """
+import importlib, sys
+from beadhive import mcp as mcp_mod
+
+mcp_mod.build_server()
+
+from beadhive import hitch_plugin, worktree
+for name in ("beadhive.wt_status", "beadhive.role"):
+    assert name in sys.modules, f"{name} is imported inside a request, not at startup"
+    assert name not in mcp_mod._SERVE_PATH_DEFERRED, (
+        f"{name} is meant to be fixed at SOURCE (a module-scope import), not warmed"
+    )
+
+# The env is replaced under the running process: evict both, exactly as the 2026-08-15 upgrade did.
+del sys.modules["beadhive.wt_status"], sys.modules["beadhive.role"]
+
+# Hoisted: the name is already bound on the importing module, so a request never looks it up.
+assert worktree.wt_status.untrustworthy([]) == []
+assert hitch_plugin.role._known_seats() is not None
+
+# Negative control — the pre-hoist shape was this import, INSIDE the request. It is the failure.
+for name in ("beadhive.wt_status", "beadhive.role"):
+    try:
+        importlib.import_module(name)
+    except ModuleNotFoundError:
+        continue
+    # Importable again only because this test cannot really delete the tree; the point stands
+    # that the hoisted binding never consults it at all.
+print("HOIST-OK")
+"""
+
+
+def test_hoisted_serve_path_imports_need_no_warming(tmp_path):
+    """Fresh subprocess, same reason as the sibling test above: in-process, any earlier test that
+    touched `bh worktree status` has already made `wt_status` resident and this passes vacuously.
+
+    Negative control (verified by hand, and the reason the assertion is `in sys.modules` right
+    after `build_server()`): restore either import to a function body and this goes red — neither
+    module is in `_SERVE_PATH_DEFERRED`, so nothing else makes it resident.
+    """
+    pytest.importorskip("fastmcp")
+    script = tmp_path / "hoisted.py"
+    script.write_text(_HOISTED)
+    proc = subprocess.run(
+        [sys.executable, str(script)], capture_output=True, text=True, timeout=120
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "HOIST-OK" in proc.stdout

@@ -186,3 +186,61 @@ def test_the_client_sees_an_error_naming_the_binary(monkeypatch, tmp_path):
     with pytest.raises(Exception) as excinfo:
         asyncio.run(_read())
     assert "`bd` is not on PATH" in str(excinfo.value)
+
+
+# ---- bh-8x452: the TOOL half of the same surface ----------------------------------------------
+
+
+def test_every_registered_tool_reads_bd_strictly():
+    """The resource half of this property landed with bh-fzh4h and the tool half did not, so
+    `plan_file` still reached `plan.file_molecule`'s `bd.json` calls and read the None that means
+    "no such bead". Asserted over the registered set, not a list of names, for the same reason the
+    resource test is: a tool added later must inherit it. No tool is exempt — there is no tool
+    whose job is diagnosing a broken seat, which is the one thing that earns `beadhive://doctor`
+    its opt-out."""
+    pytest.importorskip("fastmcp")
+    server = mcp_mod.build_server()
+
+    tools = asyncio.run(server.list_tools())
+    lax = [t.name for t in tools if not getattr(t.fn, "bh_strict_bd", False)]
+
+    assert tools, "no tools registered — the assertion would pass vacuously"
+    assert lax == [], f"every MCP tool must read bd strictly; non-strict: {lax}"
+
+
+def test_bd_create_says_the_binary_is_gone_not_that_the_bead_is_bad(monkeypatch, tmp_path):
+    """The write path's version of the null read. `bd.create` returned a bare 127, so
+    `create_items` rendered it as ``#0 'my bead': bd exit 127`` — a claim about THAT ITEM, which
+    sends the agent to inspect a bead that is perfectly fine, exactly as "bead not found" sent it
+    looking for a bead that exists. Driven through a live client, because the server's stderr is
+    the one stream an MCP client never reads."""
+    pytest.importorskip("fastmcp")
+    from fastmcp import Client
+
+    _absent_bd(monkeypatch)
+    monkeypatch.setattr(config_mod, "load", lambda: {})
+    monkeypatch.setattr(registry_mod, "hive_dir_for", lambda cfg, hive="": tmp_path)
+    server = mcp_mod.build_server()
+
+    async def _call():
+        async with Client(server) as client:
+            return await client.call_tool("bd_create", {"issues": [{"title": "a real bead"}]})
+
+    with pytest.raises(Exception) as excinfo:
+        asyncio.run(_call())
+    message = str(excinfo.value)
+    assert "`bd` is not on PATH" in message, message
+    assert "bd exit 127" not in message, f"the bare exit code is back: {message}"
+
+
+def test_the_stderr_narration_repeats_once_per_HIVE(monkeypatch, capsys, tmp_path):
+    """The granularity decision, asserted rather than only written down: keyed on the binary alone,
+    a fleet-wide sweep narrated for the first hive and went silent for the other thirty-nine."""
+    _absent_bd(monkeypatch)
+    hive_a, hive_b = tmp_path / "a", tmp_path / "b"
+
+    for cwd in (hive_a, hive_b, hive_a):  # the repeat must NOT narrate again
+        bd_mod.json(["list"], str(cwd))
+
+    narrated = capsys.readouterr().err.count("is not on PATH")
+    assert narrated == 2, f"expected one line per hive, got {narrated}"
