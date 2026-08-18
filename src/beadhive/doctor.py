@@ -17,6 +17,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import time
 from pathlib import Path
 
 import typer
@@ -1937,20 +1938,37 @@ def _render_warnings(warns: list[str]) -> None:
 # ---- collect + payload + render ---------------------------------------------
 
 
+def _timed(timings: dict, key: str, fn, *args, **kwargs):
+    """Call ``fn`` and record its wall-clock cost into ``timings[key]`` (ms, monotonic clock).
+
+    The only instrumentation `_collect` gets: no spans, no context, just a stopwatch around
+    each section builder so `bh-13spb.1` can attribute doctor's total without guessing.
+    """
+    t0 = time.monotonic()
+    result = fn(*args, **kwargs)
+    timings[key] = round((time.monotonic() - t0) * 1000, 3)
+    return result
+
+
 def _collect(cfg) -> dict:
     """Gather the full diagnostics dict, section by section, from the shared inputs.
 
     Reuses ``metadata.read_fleet`` / ``registry.*`` / ``gitworkspace.*`` and runs the metadata
     rollup ONCE (Disk Usage + Fleet Health share it, so no repo is disk-walked twice). Pure data:
-    makes no ``typer.echo`` calls, returns a JSON-able dict keyed by section.
+    makes no ``typer.echo`` calls, returns a JSON-able dict keyed by section, plus a
+    ``timings`` key (section name -> milliseconds, plus ``total``) from a monotonic clock.
     """
     root = Path(workspace_root())
     hives = cfg.get("managed_repos", []) or []
+    timings: dict[str, float] = {}
+    t_start = time.monotonic()
 
     # ---- inventory intermediates (also feed disk usage, fleet health, warnings) ----
     hive_keys = {f"{e['provider']}/{e['org']}/{e['repo']}" for e in hives}
-    git_repos, nonrepo, unknown_top = _scan(root, registry.effective_providers(cfg))
-    tracked = _tracked(root)
+    git_repos, nonrepo, unknown_top = _timed(
+        timings, "scan", _scan, root, registry.effective_providers(cfg)
+    )
+    tracked = _timed(timings, "tracked", _tracked, root)
     universe = tracked if tracked is not None else git_repos
     excluded = {k for k in git_repos if registry.is_excluded(cfg, *k.split("/"))}
     candidates = {
@@ -1974,30 +1992,51 @@ def _collect(cfg) -> dict:
         for e in hives
         if (root / e["provider"] / e["org"] / e["repo"]).exists()
     }
-    records = metadata.read_fleet(cfg, sorted(git_repos | hive_keys_on_disk), ttl=metadata.ttl(cfg))
+    records = _timed(
+        timings,
+        "metadata_rollup",
+        metadata.read_fleet,
+        cfg,
+        sorted(git_repos | hive_keys_on_disk),
+        ttl=metadata.ttl(cfg),
+    )
 
-    return {
-        "config": _data_config(cfg, root),
-        "providers": _data_providers(cfg),
-        "orgs": _data_orgs(cfg),
-        "hives": _data_hives(cfg),
+    data = {
+        "config": _timed(timings, "config", _data_config, cfg, root),
+        "providers": _timed(timings, "providers", _data_providers, cfg),
+        "orgs": _timed(timings, "orgs", _data_orgs, cfg),
+        "hives": _timed(timings, "hives", _data_hives, cfg),
         "inventory": inventory,
-        "disk_usage": _data_disk_usage(hives, root, records),
-        "fleet_health": _data_fleet_health(records, git_repos),
-        "worktrees": _data_worktrees(cfg),
-        "molecules": _data_molecules(cfg),
-        "prefix_mismatches": _data_prefix_mismatches(cfg),
-        "node_id": _data_node_id(cfg),
-        "beads_role": _data_beads_role(cfg),
-        "store_engine": _data_store_engine(cfg),
-        "dispatch": _data_dispatch(cfg),
-        "group_auth": _data_group_auth(cfg),
-        "mcp": _data_mcp(cfg),
-        "seats": _data_seats(cfg),
-        "install": _data_install(cfg),
-        "observability": _data_observability(cfg),
-        "warnings": _data_warnings(cfg, root, hives, git_repos, nonrepo, unknown_top, untracked),
+        "disk_usage": _timed(timings, "disk_usage", _data_disk_usage, hives, root, records),
+        "fleet_health": _timed(timings, "fleet_health", _data_fleet_health, records, git_repos),
+        "worktrees": _timed(timings, "worktrees", _data_worktrees, cfg),
+        "molecules": _timed(timings, "molecules", _data_molecules, cfg),
+        "prefix_mismatches": _timed(timings, "prefix_mismatches", _data_prefix_mismatches, cfg),
+        "node_id": _timed(timings, "node_id", _data_node_id, cfg),
+        "beads_role": _timed(timings, "beads_role", _data_beads_role, cfg),
+        "store_engine": _timed(timings, "store_engine", _data_store_engine, cfg),
+        "dispatch": _timed(timings, "dispatch", _data_dispatch, cfg),
+        "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
+        "mcp": _timed(timings, "mcp", _data_mcp, cfg),
+        "seats": _timed(timings, "seats", _data_seats, cfg),
+        "install": _timed(timings, "install", _data_install, cfg),
+        "observability": _timed(timings, "observability", _data_observability, cfg),
+        "warnings": _timed(
+            timings,
+            "warnings",
+            _data_warnings,
+            cfg,
+            root,
+            hives,
+            git_repos,
+            nonrepo,
+            unknown_top,
+            untracked,
+        ),
     }
+    timings["total"] = round((time.monotonic() - t_start) * 1000, 3)
+    data["timings"] = timings
+    return data
 
 
 def doctor_payload() -> dict:
@@ -2006,7 +2045,9 @@ def doctor_payload() -> dict:
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
     ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``seats``,
-    ``install``, ``observability``, ``warnings``), under the ``schema_version`` / ``command``
+    ``install``, ``observability``, ``warnings``), plus ``timings`` (section name -> milliseconds
+    from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
+    always present regardless of ``--json``/verbosity), under the ``schema_version`` / ``command``
     envelope (:mod:`beadhive.jsonout`). ``seats`` is ``None`` when hitch is disabled/absent
     (bh-og0q.4's silent-when-unused bar) — every other key is always present. Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
@@ -2035,11 +2076,27 @@ def show():
     _section_config_problems(cfg)
 
 
-def doctor(as_json: bool = False):
+def _render_timings(timings: dict) -> None:
+    """Verbose-only: per-section wall-clock cost from `_collect`'s monotonic stopwatch
+    (bh-8nnh7). Silent by default — printing a column of numbers nobody asked for is the
+    thing `bh-13spb.1`'s stakes note explicitly rules out."""
+    typer.echo("\n# Timings (ms)")
+    total = timings.get("total")
+    for key, ms in sorted(timings.items(), key=lambda kv: kv[1], reverse=True):
+        if key == "total":
+            continue
+        typer.echo(f"  {ms:>8.1f}  {key}")
+    if total is not None:
+        typer.echo(f"  {total:>8.1f}  total")
+
+
+def doctor(as_json: bool = False, verbose: bool = False):
     """Render the full `ws doctor` report from the structured payload.
 
     ``as_json`` emits :func:`doctor_payload` — the SAME object the renders below consume, not a
-    parallel assembly of it — and nothing else on stdout.
+    parallel assembly of it — and nothing else on stdout (it always carries ``timings``).
+    ``verbose`` additionally prints the per-section timings breakdown in text mode; the default
+    text report is unchanged (bh-8nnh7).
     """
     data = doctor_payload()
     if as_json:
@@ -2065,3 +2122,5 @@ def doctor(as_json: bool = False):
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_warnings(data["warnings"])
+    if verbose:
+        _render_timings(data["timings"])
