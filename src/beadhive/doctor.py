@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import importlib.metadata
 import json
+import os
 from pathlib import Path
 
 import typer
@@ -443,6 +444,124 @@ def _section_prefix_mismatches(cfg):
     _render_prefix_mismatches(_data_prefix_mismatches(cfg))
 
 
+# ---- node_id section (bh-y85rj) ----------------------------------------------
+# bd's own `bd reclaim --help`: a lease is only meaningful on the replica that granted it, and
+# reclaim SKIPS a lease another replica granted (unless --any-replica) — but only when node_id
+# is set. Unset, that cross-replica guard is simply off. node_id is per-HOST (this hive runs
+# `dolt.shared-server = true`, and every client of ONE shared sql-server is ONE replica that
+# must share a value), lives in `~/.config/bd/config.yaml` (never a hive-tracked file), and is
+# only worth guarding once a hive's store can actually reach a second host — i.e. has a Dolt
+# remote wired (`sync.remote`). A host with no remote-wired hive sees a quiet ✓ line, matching
+# the Store Engine section's "no new noise for a fleet that never needed this" bar.
+
+
+def _data_node_id(cfg) -> dict:
+    """This host's resolved node_id (env override first, then the persisted config value —
+    mirroring how bd itself resolves it) plus every registered hive whose store has a Dolt
+    remote wired, i.e. is reachable from a second host and so actually needs the guard."""
+    remote_hives: list[str] = []
+    probe_cwd: Path | None = None
+    for e in cfg.get("managed_repos", []) or []:
+        path = registry.hive_dir(e)
+        if not (path / ".beads").is_dir():
+            continue
+        probe_cwd = probe_cwd or path
+        remote = bd.json(["config", "get", "sync.remote"], path)
+        if isinstance(remote, dict) and str(remote.get("value") or "").strip():
+            remote_hives.append(f"{e['provider']}/{e['org']}/{e['repo']}")
+
+    env_value = os.environ.get("BEADS_NODE_ID", "").strip()
+    cfg_value = ""
+    if not env_value:
+        data = bd.json(["config", "get", "node_id"], probe_cwd or Path(workspace_root()))
+        if isinstance(data, dict):
+            cfg_value = str(data.get("value") or "").strip()
+    resolved = env_value or cfg_value
+
+    remediation = ""
+    if not resolved and remote_hives:
+        remediation = f"{config.BINARY_ALIAS} hive repair --hive {remote_hives[0]} --node-id --yes"
+    return {
+        "resolved": resolved,
+        "source": "BEADS_NODE_ID" if env_value else ("config" if cfg_value else ""),
+        "remote_hives": remote_hives,
+        "remediation": remediation,
+    }
+
+
+def _render_node_id(d: dict) -> None:
+    typer.echo("\n# Node ID")
+    if d["resolved"]:
+        typer.echo(f"  ✓ node_id='{d['resolved']}' ({d['source']})")
+        return
+    if not d["remote_hives"]:
+        typer.echo("  ✓ unset (no remote-wired hive on this host needs it yet)")
+        return
+    typer.echo("  ✗ node_id UNSET — the reclaim replica guard is OFF for these remote-wired hives:")
+    for h in d["remote_hives"]:
+        typer.echo(f"    - {h}")
+    typer.echo(f"    fix: {d['remediation']}")
+
+
+def _section_node_id(cfg):
+    """Render the node_id section."""
+    _render_node_id(_data_node_id(cfg))
+
+
+# ---- beads.role section (bh-f3blt) -------------------------------------------
+# bd routes on `beads.role` (git config) and falls back to a remote-shape heuristic when it's
+# unset — its own doctor already warns "beads.role not configured (GH#2950)". bh knows the
+# authoritative answer per hive (the registry `kind`, not remote shape), so this section maps
+# it explicitly (`hive_repair.expected_role`) and flags a hive whose actual value disagrees or
+# is missing. Only DRIFT is listed (an already-correct hive is silent), same shape as the
+# Prefix Mismatches section above.
+
+
+def _data_beads_role(cfg) -> list[dict]:
+    """Registered hives whose `beads.role` is unset or disagrees with what their registry
+    `kind` maps to. Skipped for a hive with no local checkout/`.beads` — nothing to read."""
+    findings = []
+    for e in cfg.get("managed_repos", []) or []:
+        path = registry.hive_dir(e)
+        if not (path / ".beads").is_dir():
+            continue
+        current = bd.json(["config", "get", "beads.role"], path)
+        if not isinstance(current, dict):
+            continue
+        actual = str(current.get("value") or "").strip()
+        kind = str(e.get("kind", ""))
+        expected = hive_repair.expected_role(kind)
+        if actual == expected:
+            continue
+        hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
+        findings.append(
+            {
+                "hive": hive_id,
+                "kind": kind,
+                "expected": expected,
+                "actual": actual,
+                "remediation": f"{config.BINARY_ALIAS} hive repair --hive {hive_id} --role --yes",
+            }
+        )
+    return findings
+
+
+def _render_beads_role(findings: list[dict]) -> None:
+    typer.echo(f"\n# beads.role ({len(findings)})")
+    if not findings:
+        typer.echo("  ✓ none")
+        return
+    for f in findings:
+        actual = f"'{f['actual']}'" if f["actual"] else "unset"
+        typer.echo(f"  ⚠ {f['hive']}: kind={f['kind']} expected='{f['expected']}' actual={actual}")
+        typer.echo(f"    fix: {f['remediation']}")
+
+
+def _section_beads_role(cfg):
+    """Render the beads.role section."""
+    _render_beads_role(_data_beads_role(cfg))
+
+
 # ---- store engine section (bh-areg.3) ----------------------------------------
 # "Nothing in bh knows a store engine can be DOWN" — embedded mode has no liveness question
 # (in-process engine); mode (a) — bd's shared `dolt sql-server` — can be down, wedged, or on
@@ -492,10 +611,10 @@ def _data_store_engine(cfg) -> dict:
         return {"relevant": False}
 
     probe = dolt_health.probe_shared_server() if server_mode_hives else None
-    host, port = dolt_health.server_endpoint()
+    srv_host, port = dolt_health.server_endpoint()
     return {
         "relevant": True,
-        "endpoint": {"host": host, "port": port},
+        "endpoint": {"host": srv_host, "port": port},
         "server_mode_hives": server_mode_hives,
         "reachable": probe.reachable if probe else None,
         "detail": probe.detail if probe else None,
@@ -1844,6 +1963,8 @@ def _collect(cfg) -> dict:
         "worktrees": _data_worktrees(cfg),
         "molecules": _data_molecules(cfg),
         "prefix_mismatches": _data_prefix_mismatches(cfg),
+        "node_id": _data_node_id(cfg),
+        "beads_role": _data_beads_role(cfg),
         "store_engine": _data_store_engine(cfg),
         "dispatch": _data_dispatch(cfg),
         "group_auth": _data_group_auth(cfg),
@@ -1860,10 +1981,10 @@ def doctor_payload() -> dict:
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
     ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
-    ``prefix_mismatches``, ``group_auth``, ``mcp``, ``seats``, ``install``, ``observability``,
-    ``warnings``), under the ``schema_version`` / ``command`` envelope
-    (:mod:`beadhive.jsonout`). ``seats`` is ``None`` when hitch is disabled/absent (bh-og0q.4's
-    silent-when-unused bar) — every other key is always present. Exposed as the
+    ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``seats``,
+    ``install``, ``observability``, ``warnings``), under the ``schema_version`` / ``command``
+    envelope (:mod:`beadhive.jsonout`). ``seats`` is ``None`` when hitch is disabled/absent
+    (bh-og0q.4's silent-when-unused bar) — every other key is always present. Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
     output never drifts from this payload.
 
@@ -1910,6 +2031,8 @@ def doctor(as_json: bool = False):
     _render_worktrees(data["worktrees"])
     _render_molecules(data["molecules"])
     _render_prefix_mismatches(data["prefix_mismatches"])
+    _render_node_id(data["node_id"])
+    _render_beads_role(data["beads_role"])
     _render_store_engine(data["store_engine"])
     _render_dispatch(data["dispatch"])
     _render_group_auth(data["group_auth"])

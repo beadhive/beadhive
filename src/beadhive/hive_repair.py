@@ -1,17 +1,23 @@
-"""`bh hive repair --prefix <p>` — reconcile a hive's registry prefix against its beads-DB
-issue prefix through one idempotent detect/preview/confirm/migrate/update/verify flow.
+"""`bh hive repair --prefix <p> | --node-id | --role` — reconcile one piece of hive-level or
+host-level config drift through the same idempotent detect/preview/confirm/apply/verify shape.
+Exactly one of the three modes runs per invocation.
 
 The problem (bh-6h1m): the registry prefix (`managed_repos[*].prefix` in config.yaml) and the
 beads-DB prefix (`bd config get issue_prefix`) are tracked separately — nothing keeps them in
 sync, and reconciling them by hand meant `bd rename-prefix` (whose argument needs a trailing
 hyphen the registry's stored form never carries) followed by an unregister/re-register dance.
-`repair` folds all of that into one call: it reads both prefixes, previews the change against
-an explicit `--prefix` target, requires `--yes` to mutate (mirrors `hive init`'s
-prefix-change-needs-yes gate — no stdin-blocking prompt, so it stays agent-drivable), migrates
-the DB via `bd rename-prefix` when it disagrees with the target, upserts the registry entry via
+`--prefix` folds all of that into one call: it reads both prefixes, previews the change against
+an explicit target, requires `--yes` to mutate (mirrors `hive init`'s prefix-change-needs-yes
+gate — no stdin-blocking prompt, so it stays agent-drivable), migrates the DB via
+`bd rename-prefix` when it disagrees with the target, upserts the registry entry via
 `registry.register` (in place — same triplet key, no unregister/re-register), then re-reads both
 sources to verify convergence. Re-running once converged is a clean no-op.
-"""
+
+`--node-id` (bh-y85rj) and `--role` (bh-f3blt) are the same shape applied to two more drift
+cases `bh doctor` detects: a missing per-host `node_id` (`~/.config/bd/config.yaml`, never
+project-tracked) and a missing/mismatched `beads.role` (git config, derived from the hive's
+registry `kind`). Both reuse this module's detect → preview → confirm (`--yes`) → apply →
+verify skeleton rather than growing a parallel repair path."""
 
 from __future__ import annotations
 
@@ -21,7 +27,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, registry
+from . import bd, config, host, registry
 from .identity import resolve_actor
 
 _HIVE = typer.Option("", "--hive", help="target hive (default: cwd's hive)")
@@ -176,9 +182,8 @@ def verify(plan: RepairPlan) -> list[str]:
     return problems
 
 
-def repair(hive: str, prefix: str, yes: bool, dry_run: bool) -> None:
-    """CLI core: detect -> preview -> confirm (--yes) -> migrate -> update -> verify."""
-    cfg = config.load()
+def _repair_prefix(cfg, hive: str, prefix: str, yes: bool, dry_run: bool) -> None:
+    """`--prefix` mode: detect -> preview -> confirm (--yes) -> migrate -> update -> verify."""
     try:
         plan = detect(cfg, hive, prefix)
     except RepairError as e:
@@ -215,3 +220,234 @@ def repair(hive: str, prefix: str, yes: bool, dry_run: bool) -> None:
         typer.echo("✗ repair applied changes but prefixes did not converge (above)", err=True)
         raise typer.Exit(1)
     typer.echo("✓ Prefixes consistent")
+
+
+# ---- node_id repair (bh-y85rj) -----------------------------------------------
+# node_id is a per-HOST value (never per-hive: this hive runs `dolt.shared-server = true`, and
+# bd's own reclaim docs are explicit that every client of the same shared sql-server is ONE
+# replica and must share one value). It lives in the per-machine
+# `~/.config/bd/config.yaml` (`bd config set node_id <name>`/`BEADS_NODE_ID`), never in a
+# hive's git-tracked config. `--hive` here only picks which local checkout's `.beads/` to run
+# `bd` against — the write itself lands on the host, not the hive.
+
+
+@dataclass
+class NodeIdPlan:
+    """`current`/`target` are both this HOST's node_id — `--hive` only supplies a `.beads/`
+    checkout to invoke `bd` from. `in_sync` is the idempotent no-op signal."""
+
+    entry: dict
+    cwd: Path
+    current: str
+    target: str
+
+    @property
+    def in_sync(self) -> bool:
+        return self.current == self.target
+
+
+def detect_node_id(cfg, hive: str) -> NodeIdPlan:
+    """Read this host's persisted `node_id` (never the `BEADS_NODE_ID` env override — that
+    already wins at read time everywhere bd itself consults it, and repair only ever fixes the
+    persisted file) and target `host.host_id()` — the stable per-host identity `bh` already
+    mints once via `bh config init` and never regenerates, reused here rather than inventing a
+    second per-host name."""
+    entry = _resolve_entry(cfg, hive)
+    cwd = registry.hive_dir(entry)
+    if not (cwd / ".beads").is_dir():
+        raise RepairError(f"{cwd} has no .beads/ — clone/init the hive before repairing node_id")
+    current = bd.json(["config", "get", "node_id"], cwd)
+    if not isinstance(current, dict):
+        raise RepairError(f"could not read node_id via bd at {cwd}")
+    return NodeIdPlan(
+        entry=entry,
+        cwd=cwd,
+        current=str(current.get("value") or "").strip(),
+        target=host.host_id(),
+    )
+
+
+def apply_node_id(plan: NodeIdPlan, actor: str) -> list[str]:
+    """`bd config set node_id <target>` — writes `~/.config/bd/config.yaml`, never a
+    hive-tracked file. Empty list means the plan was already in sync."""
+    if plan.in_sync:
+        return []
+    res = bd.run(["config", "set", "node_id", plan.target], plan.cwd, actor=actor)
+    if res.returncode != 0:
+        raise RepairError(f"`bd config set node_id` failed: {bd.err_line(res)}")
+    typer.echo("✓ node_id set")
+    return [f"node_id: '{plan.current}' -> '{plan.target}'"]
+
+
+def verify_node_id(plan: NodeIdPlan) -> list[str]:
+    current = bd.json(["config", "get", "node_id"], plan.cwd)
+    value = str((current or {}).get("value") or "").strip()
+    return [] if value == plan.target else [f"node_id did not converge to '{plan.target}'"]
+
+
+def _repair_node_id(cfg, hive: str, yes: bool, dry_run: bool) -> None:
+    try:
+        plan = detect_node_id(cfg, hive)
+    except RepairError as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1) from None
+
+    typer.echo(f"Host node_id: '{plan.current}' -> '{plan.target}'")
+    if plan.in_sync:
+        typer.echo("\n✓ node_id already set — nothing to repair")
+        return
+    if dry_run:
+        typer.echo("\n(dry-run: no changes made — pass --yes to apply)")
+        return
+    if not yes:
+        typer.echo(
+            "\n✗ refusing to set this host's node_id without --yes; pass --yes to confirm",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    actor = resolve_actor("", "", cwd=plan.cwd)
+    try:
+        apply_node_id(plan, actor)
+    except RepairError as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1) from None
+
+    problems = verify_node_id(plan)
+    if problems:
+        for p in problems:
+            typer.echo(f"  - {p}", err=True)
+        typer.echo("✗ repair applied changes but node_id did not converge (above)", err=True)
+        raise typer.Exit(1)
+    typer.echo("✓ node_id set")
+
+
+# ---- beads.role repair (bh-f3blt) --------------------------------------------
+# `beads.role` (git config) drives bd's own routing; bh maps it explicitly off the hive's
+# registry `kind` rather than leaving bd to guess from remote shape. `org-native`/`hq` (we
+# administer it) -> maintainer; everything else (`fork`, `external`, `personal`, `prototype` —
+# hives we don't own the same way) -> contributor.
+
+_MAINTAINER_KINDS = frozenset({"org-native", "hq"})
+
+
+def expected_role(kind: str) -> str:
+    """The `beads.role` a hive's registry `kind` maps to — the ONE mapping (onboard, doctor,
+    and this repair all call this, never re-derive it separately)."""
+    return "maintainer" if kind in _MAINTAINER_KINDS else "contributor"
+
+
+@dataclass
+class RolePlan:
+    entry: dict
+    cwd: Path
+    current: str
+    target: str
+
+    @property
+    def in_sync(self) -> bool:
+        return self.current == self.target
+
+    @property
+    def mismatched(self) -> bool:
+        """A NON-EMPTY current value that disagrees with the target — the case onboard must
+        report rather than silently overwrite."""
+        return bool(self.current) and not self.in_sync
+
+
+def detect_role(cfg, hive: str) -> RolePlan:
+    entry = _resolve_entry(cfg, hive)
+    cwd = registry.hive_dir(entry)
+    if not (cwd / ".beads").is_dir():
+        raise RepairError(f"{cwd} has no .beads/ — clone/init the hive before repairing role")
+    current = bd.json(["config", "get", "beads.role"], cwd)
+    if not isinstance(current, dict):
+        raise RepairError(f"could not read beads.role via bd at {cwd}")
+    return RolePlan(
+        entry=entry,
+        cwd=cwd,
+        current=str(current.get("value") or "").strip(),
+        target=expected_role(str(entry.get("kind", ""))),
+    )
+
+
+def apply_role(plan: RolePlan, actor: str) -> list[str]:
+    """`bd config set beads.role <target>` — an explicit, `--yes`-gated repair MAY overwrite a
+    mismatch (unlike onboard's auto-set, which never does); an empty current value is always
+    safe to set."""
+    if plan.in_sync:
+        return []
+    res = bd.run(["config", "set", "beads.role", plan.target], plan.cwd, actor=actor)
+    if res.returncode != 0:
+        raise RepairError(f"`bd config set beads.role` failed: {bd.err_line(res)}")
+    typer.echo("✓ beads.role set")
+    return [f"beads.role: '{plan.current}' -> '{plan.target}'"]
+
+
+def verify_role(plan: RolePlan) -> list[str]:
+    current = bd.json(["config", "get", "beads.role"], plan.cwd)
+    value = str((current or {}).get("value") or "").strip()
+    return [] if value == plan.target else [f"beads.role did not converge to '{plan.target}'"]
+
+
+def _repair_role(cfg, hive: str, yes: bool, dry_run: bool) -> None:
+    try:
+        plan = detect_role(cfg, hive)
+    except RepairError as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1) from None
+
+    e = plan.entry
+    typer.echo(f"Hive: {e['provider']}/{e['org']}/{e['repo']} (kind={e.get('kind', '')})")
+    typer.echo(f"beads.role: '{plan.current}' -> '{plan.target}'")
+    if plan.in_sync:
+        typer.echo("\n✓ beads.role already correct — nothing to repair")
+        return
+    if dry_run:
+        typer.echo("\n(dry-run: no changes made — pass --yes to apply)")
+        return
+    if not yes:
+        typer.echo(
+            "\n✗ refusing to set beads.role without --yes; pass --yes to confirm",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    actor = resolve_actor("", "", cwd=plan.cwd)
+    try:
+        apply_role(plan, actor)
+    except RepairError as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1) from None
+
+    problems = verify_role(plan)
+    if problems:
+        for p in problems:
+            typer.echo(f"  - {p}", err=True)
+        typer.echo("✗ repair applied changes but beads.role did not converge (above)", err=True)
+        raise typer.Exit(1)
+    typer.echo("✓ beads.role set")
+
+
+def repair(
+    hive: str,
+    prefix: str = "",
+    node_id: bool = False,
+    role: bool = False,
+    *,
+    yes: bool,
+    dry_run: bool,
+) -> None:
+    """CLI core: dispatch to exactly one of the three repair modes."""
+    modes = [bool(prefix), node_id, role]
+    if sum(modes) != 1:
+        typer.echo("✗ pass exactly one of --prefix <p>, --node-id, --role", err=True)
+        raise typer.Exit(1)
+
+    cfg = config.load()
+    if prefix:
+        _repair_prefix(cfg, hive, prefix, yes, dry_run)
+    elif node_id:
+        _repair_node_id(cfg, hive, yes, dry_run)
+    else:
+        _repair_role(cfg, hive, yes, dry_run)

@@ -170,6 +170,153 @@ def test_collect_includes_prefix_mismatches(hive, fakebd):  # noqa: F811
     assert payload["prefix_mismatches"] == []
 
 
+# ---- node_id section (bh-y85rj) ----------------------------------------------
+
+
+def _fake_node_id_json(sync_remote, node_id):
+    def fake(args, cwd):
+        if args == ["config", "get", "sync.remote"]:
+            return {"value": sync_remote}
+        if args == ["config", "get", "node_id"]:
+            return {"value": node_id}
+        raise AssertionError(args)
+
+    return fake
+
+
+def test_data_node_id_resolved_from_config_when_set(prefix_hive, monkeypatch):
+    monkeypatch.setattr(doctor.bd, "json", _fake_node_id_json("git+ssh://x", "host-1"))
+    data = doctor._data_node_id(_cfg_one_hive("mr"))
+    assert data["resolved"] == "host-1"
+    assert data["source"] == "config"
+    assert data["remote_hives"] == ["github/myorg/myrepo"]
+    assert data["remediation"] == ""
+
+
+def test_data_node_id_env_override_wins_and_skips_the_config_read(prefix_hive, monkeypatch):
+    monkeypatch.setenv("BEADS_NODE_ID", "env-host")
+
+    def fake(args, cwd):
+        if args == ["config", "get", "sync.remote"]:
+            return {"value": "git+ssh://x"}
+        raise AssertionError(f"should not read node_id config when env is set: {args}")
+
+    monkeypatch.setattr(doctor.bd, "json", fake)
+    data = doctor._data_node_id(_cfg_one_hive("mr"))
+    assert data["resolved"] == "env-host"
+    assert data["source"] == "BEADS_NODE_ID"
+
+
+def test_data_node_id_unset_and_no_remote_wired_is_quiet(prefix_hive, monkeypatch):
+    monkeypatch.setattr(doctor.bd, "json", _fake_node_id_json("", ""))
+    data = doctor._data_node_id(_cfg_one_hive("mr"))
+    assert data == {"resolved": "", "source": "", "remote_hives": [], "remediation": ""}
+
+
+def test_data_node_id_unset_with_remote_wired_names_the_fix(prefix_hive, monkeypatch):
+    monkeypatch.setattr(doctor.bd, "json", _fake_node_id_json("git+ssh://x", ""))
+    data = doctor._data_node_id(_cfg_one_hive("mr"))
+    assert data["resolved"] == ""
+    assert data["remote_hives"] == ["github/myorg/myrepo"]
+    assert data["remediation"] == "bh hive repair --hive github/myorg/myrepo --node-id --yes"
+
+
+def test_render_node_id_ok_line_when_resolved(capsys):
+    doctor._render_node_id(
+        {"resolved": "host-1", "source": "config", "remote_hives": [], "remediation": ""}
+    )
+    assert "node_id='host-1'" in capsys.readouterr().out
+
+
+def test_render_node_id_quiet_when_unset_and_no_remote(capsys):
+    doctor._render_node_id({"resolved": "", "source": "", "remote_hives": [], "remediation": ""})
+    out = capsys.readouterr().out
+    assert "✓" in out
+    assert "✗" not in out
+
+
+def test_render_node_id_loud_when_unset_and_remote_wired(capsys):
+    doctor._render_node_id(
+        {
+            "resolved": "",
+            "source": "",
+            "remote_hives": ["github/myorg/myrepo"],
+            "remediation": "bh hive repair --hive github/myorg/myrepo --node-id --yes",
+        }
+    )
+    out = capsys.readouterr().out
+    assert "✗" in out
+    assert "github/myorg/myrepo" in out
+    assert "fix: bh hive repair --hive github/myorg/myrepo --node-id --yes" in out
+
+
+# ---- beads.role section (bh-f3blt) -------------------------------------------
+
+
+def test_data_beads_role_flags_mismatch(prefix_hive, monkeypatch):
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "maintainer"})
+    data = doctor._data_beads_role(_cfg_one_hive("mr"))  # kind=personal -> contributor
+    assert data == [
+        {
+            "hive": "github/myorg/myrepo",
+            "kind": "personal",
+            "expected": "contributor",
+            "actual": "maintainer",
+            "remediation": "bh hive repair --hive github/myorg/myrepo --role --yes",
+        }
+    ]
+
+
+def test_data_beads_role_flags_unset(prefix_hive, monkeypatch):
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": ""})
+    data = doctor._data_beads_role(_cfg_one_hive("mr"))
+    assert data[0]["actual"] == ""
+
+
+def test_data_beads_role_empty_when_matching(prefix_hive, monkeypatch):
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "contributor"})
+    assert doctor._data_beads_role(_cfg_one_hive("mr")) == []
+
+
+def test_data_beads_role_skips_missing_beads_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "ws"))
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "maintainer"})
+    assert doctor._data_beads_role(_cfg_one_hive("mr")) == []
+
+
+def test_render_beads_role_clean_when_none(capsys):
+    doctor._render_beads_role([])
+    out = capsys.readouterr().out
+    assert "# beads.role (0)" in out
+    assert "✓ none" in out
+
+
+def test_render_beads_role_shows_fix_command(capsys):
+    doctor._render_beads_role(
+        [
+            {
+                "hive": "github/myorg/myrepo",
+                "kind": "personal",
+                "expected": "contributor",
+                "actual": "maintainer",
+                "remediation": "bh hive repair --hive github/myorg/myrepo --role --yes",
+            }
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "# beads.role (1)" in out
+    assert "kind=personal" in out
+    assert "fix: bh hive repair --hive github/myorg/myrepo --role --yes" in out
+
+
+def test_collect_includes_node_id_and_beads_role(hive, fakebd):  # noqa: F811
+    """No local `.beads/` checkout in the plain `hive` fixture, so both sections come back
+    empty/unset — this pins that `_collect` wires both keys through end to end."""
+    payload = doctor.doctor_payload()
+    assert payload["node_id"]["resolved"] == ""
+    assert payload["beads_role"] == []
+
+
 # ---- store engine section (bh-areg.3) ----------------------------------------
 
 
@@ -597,6 +744,8 @@ _DOCTOR_SECTIONS = {
     "worktrees",
     "molecules",
     "prefix_mismatches",
+    "node_id",
+    "beads_role",
     "store_engine",
     "dispatch",
     "group_auth",
