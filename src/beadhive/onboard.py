@@ -156,6 +156,10 @@ class Ctx:
     agents: bool = False
     opencode: bool = False
     codex: bool = False
+    # bh-n0m7n: modifier on claude/codex — grant the WHOLE worktrees_root() in the harness's
+    # GLOBAL config instead of this hive's own subtree. Opt-in, defaults off (per-hive stays
+    # the default posture for both harnesses).
+    global_grant: bool = False
     plugins: list[str] = field(default_factory=list)  # plugin names forced on via --plugin
     force: bool = False
     yes: bool = False
@@ -1141,7 +1145,13 @@ def _do_claude(ctx: Ctx) -> None:
     # below aborts mid-run, so an interrupted --claude phase
     # leaves nothing unreachable and a re-run only has the fallible step left.
     hive._install_claude_settings(ctx.base)
-    hive._install_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
+    # bh-n0m7n: --global swaps WHICH grant gets written (whole worktrees_root() in the global
+    # ~/.claude/settings.json vs this hive's own subtree in the project-local
+    # settings.local.json) — everything else --claude installs is unaffected.
+    if ctx.global_grant:
+        hive._install_global_sandbox_grant(ctx.cfg)
+    else:
+        hive._install_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
     hive._ensure_agf_hint(ctx.base / "CLAUDE.md", ctx.force, "--claude")
     source = config.claude_source(ctx.cfg)
     if source == "plugin":
@@ -1174,7 +1184,11 @@ def _do_agents(ctx: Ctx) -> None:
 def _do_codex(ctx: Ctx) -> None:
     from . import hive
 
-    hive._install_codex_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
+    # bh-n0m7n: same --global swap as --claude above.
+    if ctx.global_grant:
+        hive._install_global_codex_sandbox_grant(ctx.cfg)
+    else:
+        hive._install_codex_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
 
 
 def _do_opencode(ctx: Ctx) -> None:

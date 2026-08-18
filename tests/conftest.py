@@ -150,6 +150,17 @@ def _sandbox_claude_home(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sandbox_codex_home(tmp_path_factory, monkeypatch):
+    """Every test gets an isolated ``$BH_CODEX_HOME`` (bh-n0m7n) — the Codex sibling to
+    :func:`_sandbox_claude_home`. `hive._install_global_codex_sandbox_grant` and
+    `hive.global_codex_grant_is_current` read/write Codex's ambient ``~/.codex/config.toml``
+    (`config.codex_home()`); without this, a test exercising the global grant would read or
+    write the OPERATOR's real Codex config — including its `[projects."<path>"]` trust
+    records — same real-state risk bh-nvv66 closed off for Claude."""
+    monkeypatch.setenv("BH_CODEX_HOME", str(tmp_path_factory.mktemp("codex-home")))
+
+
+@pytest.fixture(autouse=True)
 def _sandbox_global_git_config(tmp_path_factory, monkeypatch):
     """Every test gets an isolated ``$GIT_CONFIG_GLOBAL`` (bh-ijd4) — the third sibling to
     :func:`_sandbox_bh_home` and :func:`_sandbox_workspace_root`, and the one whose absence

@@ -10,7 +10,7 @@ import os
 import tomllib
 from pathlib import Path
 
-from beadhive import hive, worktree
+from beadhive import config, hive, worktree
 
 SUFFIX = "github/o/r"
 
@@ -126,3 +126,65 @@ def test_codex_granted_subtree_and_grant_is_current(tmp_path, monkeypatch):
     )
     assert hive.codex_grant_is_current({}, clone, "github", "o", "r") is False  # stale
     assert hive.codex_grant_is_current({}, tmp_path / "bare", "github", "o", "r") is None
+
+
+# ---- global Codex sandbox grant (bh-n0m7n) -----------------------------------
+# Opt-in, coarser alternative: one entry covering the WHOLE worktrees_root() in the GLOBAL
+# ~/.codex/config.toml (config.codex_home(), sandboxed per-test by conftest's
+# _sandbox_codex_home) instead of one hive's own subtree in the project-local file. Same
+# managed-marker splice as the per-hive writer (_write_codex_grant_block) — reuses
+# _codex_grant_block/_codex_grant_roots directly, only the target file/value differ.
+
+
+def test_install_global_grant_is_noop_when_ephemeral():
+    hive._install_global_codex_sandbox_grant({"worktrees": {"ephemeral": True}})
+    assert not (config.codex_home() / "config.toml").exists()
+
+
+def test_install_global_grant_writes_the_whole_root(monkeypatch):
+    monkeypatch.setenv("BH_WORKTREES", str(Path.home() / ".ws-codex-global-wts"))
+    hive._install_global_codex_sandbox_grant({"worktrees": {"ephemeral": False}})
+    f = config.codex_home() / "config.toml"
+    parsed = tomllib.loads(f.read_text())
+    roots = parsed["sandbox_workspace_write"]["writable_roots"]
+    assert "~/.ws-codex-global-wts" in roots
+    assert hive.global_codex_grant_is_current({}) is True
+
+
+def test_install_global_grant_is_idempotent(monkeypatch):
+    monkeypatch.setenv("BH_WORKTREES", str(Path.home() / ".ws-codex-global-wts2"))
+    hive._install_global_codex_sandbox_grant({"worktrees": {"ephemeral": False}})
+    once = (config.codex_home() / "config.toml").read_text()
+    hive._install_global_codex_sandbox_grant({"worktrees": {"ephemeral": False}})
+    twice = (config.codex_home() / "config.toml").read_text()
+    assert once == twice
+
+
+def test_install_global_grant_preserves_unrelated_content(monkeypatch):
+    monkeypatch.setenv("BH_WORKTREES", str(Path.home() / ".ws-codex-global-wts3"))
+    home = config.codex_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.toml").write_text(
+        'model = "gpt-5"\n\n[projects."/some/trusted/project"]\ntrust_level = "trusted"\n'
+    )
+    hive._install_global_codex_sandbox_grant({"worktrees": {"ephemeral": False}})
+    text = (home / "config.toml").read_text()
+    parsed = tomllib.loads(text)
+    assert parsed["model"] == "gpt-5"  # operator's own unrelated config survives
+    assert parsed["projects"]["/some/trusted/project"]["trust_level"] == "trusted"
+    assert parsed["sandbox_workspace_write"]["writable_roots"]
+
+
+def test_global_codex_grant_is_current_false_when_absent():
+    assert hive.global_codex_grant_is_current({}) is False
+
+
+def test_per_hive_and_global_codex_grants_coexist(tmp_path, monkeypatch):
+    """Different files (project-local .codex/config.toml vs global ~/.codex/config.toml) — no
+    shared key, so writing both never conflicts or dedupes across the two shapes."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BH_WORKTREES", str(tmp_path / "wts"))
+    hive._install_codex_sandbox_grant({"worktrees": {"ephemeral": False}}, "github", "o", "r")
+    hive._install_global_codex_sandbox_grant({"worktrees": {"ephemeral": False}})
+    assert hive.codex_grant_is_current({}, tmp_path, "github", "o", "r") is True
+    assert hive.global_codex_grant_is_current({}) is True

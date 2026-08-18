@@ -8,7 +8,7 @@ import json
 import os
 from pathlib import Path
 
-from beadhive import hive, worktree
+from beadhive import config, hive, worktree
 
 SUFFIX = "github/o/r"
 
@@ -91,3 +91,70 @@ def test_install_grant_writes_when_persistent(tmp_path, monkeypatch):
     hive._install_sandbox_grant({"worktrees": {"ephemeral": False}}, "github", "o", "r")
     data = json.loads((tmp_path / ".claude" / "settings.local.json").read_text())
     assert any(e.endswith("/github/o/r") for e in data["sandbox"]["filesystem"]["allowWrite"])
+
+
+# ---- global sandbox grant (bh-n0m7n) -----------------------------------------
+# Opt-in, coarser alternative: one entry covering the WHOLE worktrees_root() in the GLOBAL
+# ~/.claude/settings.json (config.claude_home(), sandboxed per-test by conftest's
+# _sandbox_claude_home) instead of one hive's own subtree in the project-local file.
+
+
+def test_merge_global_grants_both_arrays():
+    out = hive._merge_global_sandbox_grant({}, "~/wts")
+    assert out["sandbox"]["filesystem"]["allowWrite"] == ["~/wts"]
+    assert out["permissions"]["additionalDirectories"] == ["~/wts"]
+
+
+def test_merge_global_is_idempotent():
+    once = hive._merge_global_sandbox_grant({}, "~/wts")
+    twice = hive._merge_global_sandbox_grant(once, "~/wts")
+    assert twice["sandbox"]["filesystem"]["allowWrite"] == ["~/wts"]
+
+
+def test_global_root_has_no_provider_org_repo_suffix(monkeypatch):
+    monkeypatch.setenv("WS_WORKTREES", str(Path.home() / ".ws-test-global-root"))
+    root = hive._global_sandbox_root({})
+    assert root == "~/.ws-test-global-root"
+
+
+def test_install_global_grant_is_noop_when_ephemeral(monkeypatch):
+    hive._install_global_sandbox_grant({"worktrees": {"ephemeral": True}})
+    assert not (config.claude_home() / "settings.json").exists()
+
+
+def test_install_global_grant_writes_the_whole_root(monkeypatch):
+    monkeypatch.setenv("WS_WORKTREES", str(Path.home() / ".ws-test-global-wts"))
+    hive._install_global_sandbox_grant({"worktrees": {"ephemeral": False}})
+    data = json.loads((config.claude_home() / "settings.json").read_text())
+    assert "~/.ws-test-global-wts" in data["sandbox"]["filesystem"]["allowWrite"]
+    assert hive.global_grant_is_current({}) is True
+
+
+def test_install_global_grant_preserves_unrelated_content(monkeypatch):
+    monkeypatch.setenv("WS_WORKTREES", str(Path.home() / ".ws-test-global-wts2"))
+    home = config.claude_home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "settings.json").write_text(
+        json.dumps({"permissions": {"allow": ["WebFetch(domain:github.com)"]}, "model": "opus"})
+    )
+    hive._install_global_sandbox_grant({"worktrees": {"ephemeral": False}})
+    data = json.loads((home / "settings.json").read_text())
+    assert data["model"] == "opus"  # operator's own unrelated config survives
+    assert data["permissions"]["allow"] == ["WebFetch(domain:github.com)"]
+    assert "~/.ws-test-global-wts2" in data["permissions"]["additionalDirectories"]
+
+
+def test_global_grant_is_current_false_when_absent():
+    assert hive.global_grant_is_current({}) is False
+
+
+def test_per_hive_and_global_grants_coexist(tmp_path, monkeypatch):
+    """A per-hive grant (project-local settings.local.json) and a global grant (settings.json)
+    are two different files with no shared key — writing both never conflicts or dedupes across
+    the two shapes."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("WS_WORKTREES", str(tmp_path / "wts"))
+    hive._install_sandbox_grant({"worktrees": {"ephemeral": False}}, "github", "o", "r")
+    hive._install_global_sandbox_grant({"worktrees": {"ephemeral": False}})
+    assert hive.grant_is_current({}, tmp_path, "github", "o", "r") is True
+    assert hive.global_grant_is_current({}) is True

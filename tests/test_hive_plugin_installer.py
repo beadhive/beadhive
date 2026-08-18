@@ -200,6 +200,7 @@ def test_do_claude_plugin_mode_calls_plugin_installer(tmp_path):
         provider = "github"
         org = "acme"
         repo = "api"
+        global_grant = False
 
     ctx = FakeCtx()
     with (
@@ -226,6 +227,7 @@ def test_do_claude_copy_mode_calls_agents_installer(tmp_path):
         provider = "github"
         org = "acme"
         repo = "api"
+        global_grant = False
 
     ctx = FakeCtx()
     with (
@@ -259,6 +261,7 @@ def test_do_claude_local_steps_land_when_plugin_install_fails(tmp_path, capsys):
         provider = "github"
         org = "acme"
         repo = "api"
+        global_grant = False
 
     ctx = FakeCtx()
     # First run: the external `claude` CLI aborts (e.g. marketplace add rejected) —
@@ -305,6 +308,7 @@ def test_do_claude_plugin_failure_recorded_in_plan_warnings(tmp_path):
         provider = "github"
         org = "acme"
         repo = "api"
+        global_grant = False
         plan = onboard.OnboardPlan(hive="github/acme/api", target=str(tmp_path), dry_run=False)
 
     ctx = FakeCtx()
@@ -318,6 +322,107 @@ def test_do_claude_plugin_failure_recorded_in_plan_warnings(tmp_path):
 
     assert len(ctx.plan.warnings) == 1
     assert "recover manually" in ctx.plan.warnings[0]
+
+
+# ---- _do_claude / _do_codex: --global routing (bh-n0m7n) ----
+
+
+def test_do_claude_global_flag_calls_global_installer(tmp_path):
+    """ctx.global_grant=True routes to the global installer, not the per-hive one — everything
+    else --claude installs is unaffected."""
+    from beadhive import onboard
+
+    ctx = onboard.Ctx(
+        hive="github/acme/api",
+        target=str(tmp_path),
+        cwd=str(tmp_path),
+        provider="github",
+        org="acme",
+        repo="api",
+        cfg={"claude": {"source": "copy"}},
+        global_grant=True,
+    )
+    with (
+        patch("beadhive.hive._install_claude_settings"),
+        patch("beadhive.hive._install_global_sandbox_grant") as mock_global,
+        patch("beadhive.hive._install_sandbox_grant") as mock_per_hive,
+        patch("beadhive.hive._install_agents_claude"),
+        patch("beadhive.hive._ensure_agf_hint"),
+    ):
+        onboard._do_claude(ctx)
+
+    mock_global.assert_called_once_with(ctx.cfg)
+    mock_per_hive.assert_not_called()
+
+
+def test_do_claude_without_global_flag_calls_per_hive_installer(tmp_path):
+    from beadhive import onboard
+
+    ctx = onboard.Ctx(
+        hive="github/acme/api",
+        target=str(tmp_path),
+        cwd=str(tmp_path),
+        provider="github",
+        org="acme",
+        repo="api",
+        cfg={"claude": {"source": "copy"}},
+    )
+    with (
+        patch("beadhive.hive._install_claude_settings"),
+        patch("beadhive.hive._install_global_sandbox_grant") as mock_global,
+        patch("beadhive.hive._install_sandbox_grant") as mock_per_hive,
+        patch("beadhive.hive._install_agents_claude"),
+        patch("beadhive.hive._ensure_agf_hint"),
+    ):
+        onboard._do_claude(ctx)
+
+    mock_per_hive.assert_called_once()
+    mock_global.assert_not_called()
+
+
+def test_do_codex_global_flag_calls_global_installer(tmp_path):
+    from beadhive import onboard
+
+    ctx = onboard.Ctx(
+        hive="github/acme/api",
+        target=str(tmp_path),
+        cwd=str(tmp_path),
+        provider="github",
+        org="acme",
+        repo="api",
+        cfg={},
+        global_grant=True,
+    )
+    with (
+        patch("beadhive.hive._install_global_codex_sandbox_grant") as mock_global,
+        patch("beadhive.hive._install_codex_sandbox_grant") as mock_per_hive,
+    ):
+        onboard._do_codex(ctx)
+
+    mock_global.assert_called_once_with(ctx.cfg)
+    mock_per_hive.assert_not_called()
+
+
+def test_do_codex_without_global_flag_calls_per_hive_installer(tmp_path):
+    from beadhive import onboard
+
+    ctx = onboard.Ctx(
+        hive="github/acme/api",
+        target=str(tmp_path),
+        cwd=str(tmp_path),
+        provider="github",
+        org="acme",
+        repo="api",
+        cfg={},
+    )
+    with (
+        patch("beadhive.hive._install_global_codex_sandbox_grant") as mock_global,
+        patch("beadhive.hive._install_codex_sandbox_grant") as mock_per_hive,
+    ):
+        onboard._do_codex(ctx)
+
+    mock_per_hive.assert_called_once()
+    mock_global.assert_not_called()
 
 
 # ---- _do_skills guard: skip local copy in plugin mode ----

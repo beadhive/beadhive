@@ -262,3 +262,52 @@ def test_hive_init_forwards_flags_to_hive_init(monkeypatch):
     assert captured["plugins"] == ["orca"]
     assert captured["dry_run"] is True
     assert captured["skip_check"] == "dirty-tree"
+
+
+# ---- --global: modifier on --claude/--codex (bh-n0m7n) -----------------------
+
+
+def test_hive_init_forwards_global_flag(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("beadhive.hive.init", lambda **kwargs: captured.update(kwargs))
+
+    result = runner.invoke(app, ["hive", "init", "--claude", "--global", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["global_grant"] is True
+
+
+def test_hive_init_global_defaults_false(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("beadhive.hive.init", lambda **kwargs: captured.update(kwargs))
+
+    result = runner.invoke(app, ["hive", "init", "--claude", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["global_grant"] is False
+
+
+def test_hive_init_rejects_global_without_claude_or_codex():
+    result = runner.invoke(app, ["hive", "init", "--global", "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "--global" in result.output
+
+
+def test_hive_onboard_forwards_global_flag(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("beadhive.hive.onboard", lambda hive_id, **kwargs: captured.update(kwargs))
+
+    result = runner.invoke(
+        app, ["hive", "onboard", "github/acme/widget", "--codex", "--global", "--dry-run"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["global_grant"] is True
+
+
+def test_hive_onboard_rejects_global_without_claude_or_codex():
+    result = runner.invoke(app, ["hive", "onboard", "github/acme/widget", "--global", "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "--global" in result.output

@@ -69,6 +69,7 @@ class _Env(BaseSettings):
         None, validation_alias=AliasChoices("BH_OPENCODE_SKILLS_HOME")
     )
     claude_home: str | None = Field(None, validation_alias=AliasChoices("BH_CLAUDE_HOME"))
+    codex_home: str | None = Field(None, validation_alias=AliasChoices("BH_CODEX_HOME"))
     harness: str | None = Field(None, validation_alias=AliasChoices("BH_HARNESS"))
     role: str | None = Field(None, validation_alias=AliasChoices("BH_ROLE", "WS_ROLE"))
     dev: str | None = Field(None, validation_alias=AliasChoices("BH_DEV", "WS_DEV"))
@@ -375,6 +376,23 @@ def claude_home() -> Path:
     if override:
         return Path(override).expanduser()
     return Path.home() / ".claude"
+
+
+def codex_home() -> Path:
+    """Codex's own user directory (``~/.codex``) — where its AMBIENT ``config.toml`` (model,
+    `[projects."<path>"]` trust records, ``[sandbox_workspace_write]``) and ``auth.json`` live.
+
+    Same seam as :func:`claude_home`, for the same reason (bh-n0m7n's global sandbox grant):
+    redirected by ``$BH_CODEX_HOME`` so tests never read or write the operator's real
+    ``~/.codex``. This is bh's OWN test override, distinct from Codex's real ``$CODEX_HOME``
+    env var (which relocates Codex's entire state dir, credentials included) — bh doesn't need
+    to honor that one here since it only ever WRITES the global sandbox grant, an operator who
+    relocates their real ``$CODEX_HOME`` already knows to point bh's writer at it too via the
+    override below."""
+    override = _Env().codex_home
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".codex"
 
 
 def opencode_skills_home() -> Path:

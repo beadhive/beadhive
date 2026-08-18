@@ -961,6 +961,18 @@ def _reject_claude_skills_conflict_in_plugin_mode(claude: bool, skills: bool) ->
         raise typer.Exit(1)
 
 
+def _reject_global_without_claude_or_codex(global_grant: bool, claude: bool, codex: bool) -> None:
+    """`hive init`/`hive onboard` shared guard: --global is a modifier on --claude/--codex, not
+    a standalone flag — bare `--global` with neither would silently do nothing."""
+    if global_grant and not (claude or codex):
+        typer.echo(
+            "✗ --global needs --claude and/or --codex — it's a modifier on those grants, not "
+            "a standalone flag.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
 @hive_app.command("init")
 def hive_init(
     furnish: bool = typer.Option(
@@ -1012,6 +1024,15 @@ def hive_init(
         "[sandbox_workspace_write].writable_roots) covering this hive's own worktree "
         "subtree — the Codex-native twin of --claude's settings.local.json grant",
     ),
+    global_grant: bool = typer.Option(
+        False,
+        "--global",
+        help="modifier on --claude/--codex: grant the WHOLE shared worktrees_root() (every "
+        "hive's worktrees, not just this one) in the harness's GLOBAL config instead of this "
+        "hive's own subtree — ~/.claude/settings.json for --claude, ~/.codex/config.toml for "
+        "--codex. One-time, coarser-grained, opt-in; broader blast radius than the per-hive "
+        "grant, which stays the default. Requires --claude and/or --codex.",
+    ),
     force: bool = typer.Option(
         False,
         "-f",
@@ -1039,6 +1060,7 @@ def hive_init(
     from . import hive
 
     _reject_claude_skills_conflict_in_plugin_mode(claude, skills)
+    _reject_global_without_claude_or_codex(global_grant, claude, codex)
 
     hive.init(
         furnish=furnish,
@@ -1048,6 +1070,7 @@ def hive_init(
         agents=agents,
         opencode=opencode,
         codex=codex,
+        global_grant=global_grant,
         plugins=plugin,
         force=force,
         kind=kind,
@@ -1256,6 +1279,12 @@ def hive_onboard(
     codex: bool = typer.Option(
         False, "--codex", help="write a project-local Codex sandbox grant (see `hive init`)"
     ),
+    global_grant: bool = typer.Option(
+        False,
+        "--global",
+        help="modifier on --claude/--codex: grant the whole shared worktrees_root() in the "
+        "harness's GLOBAL config instead of this hive's own subtree (see `hive init`)",
+    ),
     force: bool = typer.Option(
         False, "-f", "--force", help="re-register an already-configured hive (see `hive init`)"
     ),
@@ -1288,6 +1317,7 @@ def hive_onboard(
     from . import hive
 
     _reject_claude_skills_conflict_in_plugin_mode(claude, skills)
+    _reject_global_without_claude_or_codex(global_grant, claude, codex)
 
     hive.onboard(
         hive_id,
@@ -1299,6 +1329,7 @@ def hive_onboard(
         agents=agents,
         opencode=opencode,
         codex=codex,
+        global_grant=global_grant,
         plugins=plugin,
         force=force,
         kind=kind,
