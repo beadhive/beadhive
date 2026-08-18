@@ -9,6 +9,7 @@ and a missing/broken bd yields a friendly error instead of a raw traceback.
 
 from __future__ import annotations
 
+import json
 from collections import namedtuple
 from pathlib import Path
 
@@ -693,86 +694,236 @@ def test_bootstrap_env_activates_shared_server(monkeypatch):
     assert env["BD_NON_INTERACTIVE"] == "1"
 
 
-def test_fetch_cache_bootstraps_onto_shared_server(tmp_path, monkeypatch):
-    """bh-hpeye: an uncloned hive's cache must bootstrap onto the fleet's shared-server target
-    mode, not silently re-create an embedded store — this was the one `bd bootstrap` call site
-    that didn't activate it, unlike `onboard.py`'s zero-footprint branch."""
-    cache_root = tmp_path / "cache"
-    cache = cache_root / "github" / "o" / "r"
-    calls = []
+# ---- bh-fnn3d / bh-qpa3g / bh-gbmyw: cache stores carry their own per-hive identity -------
+
+
+def _cache_entry(repo="r", prefix="dxnvh"):
+    return {"provider": "github", "org": "o", "repo": repo, "prefix": prefix}
+
+
+def _wire_cache(tmp_path, monkeypatch, cache, calls, *, server_up=True):
+    """Fake clone + bootstrap for `_fetch_cache`, against a fake shared-server datadir."""
+    server = tmp_path / "shared" / "dolt"
+    server.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(tmp_path / "shared"))
 
     def fake_run(cmd, **k):
         calls.append((cmd, k))
         if cmd[:2] == ["git", "clone"]:
             cache.mkdir(parents=True, exist_ok=True)
-            (cache / ".git").mkdir()
+            (cache / ".git").mkdir(exist_ok=True)
         return Completed(0, "", "")
 
     def fake_bd_run(cmd, **k):
         calls.append((cmd, k))
         if cmd[:2] == ["bd", "bootstrap"]:
-            (cache / ".beads").mkdir(parents=True, exist_ok=True)
+            # what a real `bd bootstrap` does with the seeded name: clone into that database ON
+            # THE SHARED SERVER (measured against bd 1.1.0 — "via server at 127.0.0.1:3308")
+            (server / _metadata(cache)["dolt_database"]).mkdir(parents=True, exist_ok=True)
         return Completed(0, "", "")
 
     monkeypatch.setattr(hub, "run", fake_run)
     monkeypatch.setattr(bd, "_run", fake_bd_run)
-    monkeypatch.setattr(hub.config, "cache_dir", lambda: cache_root)
+    monkeypatch.setattr(hub.config, "cache_dir", lambda: cache.parents[2])
     monkeypatch.setattr(hub, "_hive_url", lambda cfg, e: "git@github.com:o/r.git")
-    from beadhive import store_locator
+    monkeypatch.setattr(hub.registry, "hives", lambda cfg: cfg.get("managed_repos", []))
+    from beadhive import dolt_health
 
-    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda store: False)
+    probe = dolt_health.ProbeResult(reachable=server_up, detail="")
+    monkeypatch.setattr(dolt_health, "probe_shared_server", lambda **k: probe)
+    return server
 
-    result = hub._fetch_cache({}, {"provider": "github", "org": "o", "repo": "r"})
+
+def _metadata(cache):
+    return json.loads((cache / ".beads" / "metadata.json").read_text())
+
+
+def test_fetch_cache_hydrates_into_its_own_database_on_the_shared_server(tmp_path, monkeypatch):
+    """bh-fnn3d: the registered prefix was never an input to the bootstrap's database
+    resolution, so a fresh host's cache-only bootstrap landed in bd's generic database and could
+    never hydrate. The name is seeded into the store's own metadata BEFORE bootstrap — the only
+    lever, bootstrap has no working `--database` override (bh-8g6cj) — and the fleet's
+    shared-server mode stays ON, per docs/design/dolt-server-mode-adr.md."""
+    cache = tmp_path / "cache" / "github" / "o" / "r"
+    calls = []
+    server = _wire_cache(tmp_path, monkeypatch, cache, calls)
+    entry = _cache_entry(prefix="bc-workspace")
+
+    result = hub._fetch_cache({"managed_repos": [entry]}, entry)
 
     assert result == cache
+    assert (server / "bc_workspace").is_dir()
+    meta = _metadata(cache)
+    assert meta["dolt_mode"] == "server"
+    assert meta["dolt_database"] == "bc_workspace"
+    assert meta["dolt_server_database"] == "bc_workspace"  # recorded, never re-derived
     bootstrap_kwargs = next(k for c, k in calls if c[:2] == ["bd", "bootstrap"])
     assert bootstrap_kwargs["env"]["BEADS_DOLT_SHARED_SERVER"] == "1"
-    config_call = ["bd", "-C", str(cache), "config", "set", "dolt.shared-server", "true"]
-    assert config_call in [c for c, _ in calls]
 
 
-def test_fetch_cache_warns_visibly_when_dolt_mode_needed_fixing(tmp_path, monkeypatch, capsys):
-    cache_root = tmp_path / "cache"
-    cache = cache_root / "github" / "o" / "r"
-    cache.mkdir(parents=True)
+def test_fetch_cache_repairs_an_owned_mode_store_and_never_restamps_it(tmp_path, monkeypatch):
+    """bh-qpa3g, the measured shape: metadata asserting server mode + another hive's database
+    (`ag_hp`) + the shared project_id, a per-cache dolt server on a rotating port whose datadir
+    holds nothing (bd's OWNED mode, rejected by the ADR), and the data stranded in
+    `embeddeddolt/`. Dropping the stale project_id is load-bearing: with it in place bd's own
+    "Bootstrap metadata repair" resolves it back to `ag_hp` and overwrites the seeded name —
+    that is the re-stamp the bead observed from the outside."""
+    cache = tmp_path / "cache" / "github" / "o" / "r"
+    (cache / ".beads" / "embeddeddolt" / "beads").mkdir(parents=True)
+    (cache / ".beads" / "dolt").mkdir()  # the owned server's datadir, holding no database
+    (cache / ".beads" / "dolt-server-config.yaml").write_text("listener:\n  port: 43755\n")
     (cache / ".git").mkdir()
-
-    def fake_bd_run(cmd, **k):
-        if cmd[:2] == ["bd", "bootstrap"]:
-            (cache / ".beads").mkdir(parents=True, exist_ok=True)
-        return Completed(0, "", "")
-
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: Completed(0, "", ""))
-    monkeypatch.setattr(bd, "_run", fake_bd_run)
-    monkeypatch.setattr(hub.config, "cache_dir", lambda: cache_root)
-    from beadhive import store_locator
-
-    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda store: True)
-
-    hub._fetch_cache({}, {"provider": "github", "org": "o", "repo": "r"})
-
-    err = capsys.readouterr().err
-    assert "dolt_mode" in err
-    assert "⚠" in err
-
-
-def test_fetch_cache_returns_none_when_bootstrap_never_materializes_beads(tmp_path, monkeypatch):
-    """A failed bootstrap must not be papered over by the shared-server persist step — no
-    `.beads/` means nothing to persist a mode into."""
-    cache_root = tmp_path / "cache"
-    cache = cache_root / "github" / "o" / "r"
-    cache.mkdir(parents=True)
-    (cache / ".git").mkdir()
+    (cache / ".beads" / "metadata.json").write_text(
+        json.dumps(
+            {
+                "dolt_mode": "server",
+                "dolt_database": "ag_hp",
+                "dolt_server_database": "ag_hp",
+                "project_id": "8b177292-509a-4c36-b10d-6fd4b0047b33",
+            }
+        )
+    )
     calls = []
+    server = _wire_cache(tmp_path, monkeypatch, cache, calls)
+    (server / "ag_hp").mkdir()  # another hive's database really is on the server
+    entry = _cache_entry(prefix="dxnvh")
+    cfg = {"managed_repos": [entry]}
 
+    assert hub._fetch_cache(cfg, entry) == cache
+
+    meta = _metadata(cache)
+    assert meta["dolt_database"] == "dxnvh"
+    assert meta["dolt_mode"] == "server"
+    assert "project_id" not in meta  # nothing left for bd to "repair" back to ag_hp
+    assert (server / "dxnvh").is_dir()
+
+    # THE REGRESSION: a second sync must leave the repaired store exactly as it found it.
+    before = (cache / ".beads" / "metadata.json").read_bytes()
+    assert hub._fetch_cache(cfg, entry) == cache
+    assert (cache / ".beads" / "metadata.json").read_bytes() == before
+
+
+def test_fetch_cache_starts_the_shared_server_on_a_fresh_host(tmp_path, monkeypatch):
+    """bh-fnn3d's actual scenario is a host with no prior store, where nothing has started bd's
+    shared server yet — and `bd bootstrap`, unlike `bd init --shared-server`, does not start one
+    itself. Probe first, start only when nothing answers (bh-l90xk)."""
+    cache = tmp_path / "cache" / "github" / "o" / "r"
+    calls = []
+    _wire_cache(tmp_path, monkeypatch, cache, calls, server_up=False)
+    entry = _cache_entry()
+
+    assert hub._fetch_cache({"managed_repos": [entry]}, entry) == cache
+    assert ["bd", "-C", str(cache), "dolt", "start", "--global"] in [c for c, _ in calls]
+
+
+def test_fetch_cache_does_not_start_a_server_that_is_already_up(tmp_path, monkeypatch):
+    cache = tmp_path / "cache" / "github" / "o" / "r"
+    calls = []
+    _wire_cache(tmp_path, monkeypatch, cache, calls, server_up=True)
+    entry = _cache_entry()
+
+    hub._fetch_cache({"managed_repos": [entry]}, entry)
+    assert not any(c[:4] == ["bd", "-C", str(cache), "dolt"] for c, _ in calls)
+
+
+def test_fetch_cache_refuses_loudly_when_the_bootstrap_misses_the_server(
+    tmp_path, monkeypatch, capsys
+):
+    """bh-fnn3d asked for a loud refusal naming the checkout + migrate-storage route, not a warn
+    and exit 0 — and explicitly not a fallback onto a mode the ADR retired."""
+    cache = tmp_path / "cache" / "github" / "o" / "r"
+    calls = []
+    _wire_cache(tmp_path, monkeypatch, cache, calls)
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(1, "", "connection refused"))
+    entry = _cache_entry()
+
+    assert hub._fetch_cache({"managed_repos": [entry]}, entry) is None
+    err = capsys.readouterr().err
+    assert "did not land 'dxnvh' on the shared server" in err
+    assert "migrate-storage dxnvh --confirm" in err
+
+
+def test_fetch_cache_refuses_a_database_two_hives_claim(tmp_path, monkeypatch):
+    """bh-gbmyw: `_fetch_cache` had no equivalent of `migrate-storage`'s
+    `detect_target_collisions`, and five stores ended up sharing one database. Prefixes are
+    unique fleet-wide, so this is unreachable by construction — asserted, not assumed."""
+    cache = tmp_path / "cache" / "github" / "o" / "r"
+    calls = []
+    _wire_cache(tmp_path, monkeypatch, cache, calls)
+    entry = _cache_entry(prefix="dup")
+    cfg = {"managed_repos": [entry, _cache_entry(repo="other", prefix="dup")]}
+
+    assert hub.detect_cache_collisions(cfg) == {"dup": ["github/o/r", "github/o/other"]}
+    assert hub._fetch_cache(cfg, entry) is None
+    assert not any(c[:2] == ["bd", "bootstrap"] for c, _ in calls)
+
+
+def test_cache_databases_are_distinct_across_every_registered_hive():
+    """bh-gbmyw's acceptance: no two cache stores resolve to the same identity."""
+    cfg = {
+        "managed_repos": [
+            {"provider": "github", "org": "briancripe", "repo": "homelab", "prefix": "hl"},
+            {
+                "provider": "github",
+                "org": "briancripe",
+                "repo": "workspace",
+                "prefix": "bc-workspace",
+            },
+            {
+                "provider": "github",
+                "org": "agentguides",
+                "repo": "hermes-plugin",
+                "prefix": "ag-hp",
+            },
+            {"provider": "github", "org": "ric03uec", "repo": "dxnvh", "prefix": "dxnvh"},
+        ]
+    }
+    names = [hub.cache_database(e) for e in cfg["managed_repos"]]
+    assert names == ["hl", "bc_workspace", "ag_hp", "dxnvh"]
+    assert hub.detect_cache_collisions(cfg) == {}
+
+
+def test_persist_shared_server_mode_refuses_when_nothing_landed_on_the_server(
+    tmp_path, monkeypatch, capsys
+):
+    """bh-qpa3g: the unconditional `dolt_mode="server"` assert is what turned bootstrap's
+    `Database already exists. Nothing to do` decline into a store that claims a server database
+    it does not have. No database under the shared-server datadir, no stamp."""
+    store = tmp_path / "store"
+    (store / ".beads").mkdir(parents=True)
+    (store / ".beads" / "metadata.json").write_text(
+        json.dumps({"dolt_mode": "embedded", "dolt_database": "beads"})
+    )
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(tmp_path / "shared"))
+    calls = []
     monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
-    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append(cmd) or Completed(1, "", "boom"))
-    monkeypatch.setattr(hub.config, "cache_dir", lambda: cache_root)
 
-    result = hub._fetch_cache({}, {"provider": "github", "org": "o", "repo": "r"})
+    hub.persist_shared_server_mode(store)
 
-    assert result is None
-    assert not any(c[:2] == ["bd", "config"] for c in calls)  # never persists onto a dead cache
+    assert json.loads((store / ".beads" / "metadata.json").read_text())["dolt_mode"] == "embedded"
+    assert calls == []
+    assert "did not land it on the shared server" in capsys.readouterr().err
+
+
+def test_persist_shared_server_mode_stamps_a_store_that_really_is_on_the_server(
+    tmp_path, monkeypatch, capsys
+):
+    """The `hq.clone` path, unchanged: a bootstrap that really did land on the shared server
+    still gets its mode + `dolt.shared-server` made durable, warning visibly when bd itself
+    left the mode unpersisted."""
+    store = tmp_path / "hq"
+    (store / ".beads").mkdir(parents=True)
+    (store / ".beads" / "metadata.json").write_text(json.dumps({"dolt_database": "hq"}))
+    (tmp_path / "shared" / "dolt" / "hq").mkdir(parents=True)
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(tmp_path / "shared"))
+    calls = []
+    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+
+    hub.persist_shared_server_mode(store)
+
+    assert json.loads((store / ".beads" / "metadata.json").read_text())["dolt_mode"] == "server"
+    assert calls == [["bd", "-C", str(store), "config", "set", "dolt.shared-server", "true"]]
+    assert "⚠" in capsys.readouterr().err
 
 
 def test_sync_emits_banner_and_per_hive_progress(tmp_path, monkeypatch, capsys):
