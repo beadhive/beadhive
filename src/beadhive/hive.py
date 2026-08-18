@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import tomllib
 from pathlib import Path
 
 import typer
@@ -850,6 +851,143 @@ def grant_is_current(cfg, clone: Path, provider: str, org: str, repo: str):
     )
 
 
+# ---- codex sandbox grant (bh-odulu) -----------------------------------------
+# Codex-native twin of the Claude grant above: SAME logic (_sandbox_subtree, _replace_for_hive,
+# _git_exclude), different file/key because Codex's config model differs from Claude's.
+#
+# Empirically verified against the installed `codex` binary (codex-cli 0.147.0; bh-odulu — do
+# not re-assume from docs alone, this was tested live, not read off config-reference.md). Two
+# rounds: the first round tested against a scratch dir that turned out to already be an
+# implicitly-trusted Codex project from earlier commands in the same session, which produced a
+# false "no trust gate at all" reading — corrected below with a clean A/B (fresh, never-touched
+# dirs) before landing this design:
+#   - Codex DOES have a real per-project trust gate, but it is NOT file-presence-based and NOT
+#     project-local: a brand-new project's `codex exec` defaults to `sandbox: read-only` — even
+#     when its OWN `.codex/config.toml` explicitly sets `sandbox_mode = "workspace-write"` (an
+#     untrusted project's own config cannot self-elevate its own sandbox — confirmed live, this
+#     is clearly deliberate: otherwise any checked-out repo could escape its sandbox by shipping
+#     a `.codex/config.toml`). Trust instead lives in the AMBIENT `~/.codex/config.toml`, under a
+#     `[projects."<absolute-checkout-path>"]` table with `trust_level = "trusted"` — auto-written
+#     (no prompt) the first time that project is run with an explicit `-s workspace-write` (or
+#     `-c sandbox_mode=...`) override. That's the "non-interactive/scriptable trust step" the
+#     bead asked about — but it lives OUTSIDE this hive's checkout, in a shared per-machine file
+#     covering every project the operator has ever run codex in, so bh does NOT drive it here:
+#     writing to a shared $CODEX_HOME file is a different, bigger blast radius than a
+#     project-local git-excluded grant, and out of this bead's scope. Documented as a manual
+#     prerequisite in docs/WORKTREES.md instead.
+#   - In practice this is rarely a real prerequisite: a session that can't already write into
+#     its own checkout (untrusted → read-only) can't be driving `bh work claim`/editing files in
+#     it in the first place, so by the time an operator's Codex session is doing real AGF work in
+#     a hive, that hive's checkout is already a trusted project — the same "already-in-a-live-
+#     session" precondition Claude's own grant carries (see docstring below).
+#   - ONCE the checkout is a trusted project, `<repo>/.codex/config.toml` DOES load automatically
+#     for a plain `codex exec` (no `-s` override needed) — confirmed via `sandbox_workspace_write
+#     .writable_roots` set there showing up appended to the run's `sandbox: workspace-write
+#     [...]` banner. Codex climbs from cwd to find `.codex/` the same way git finds `.git`
+#     (confirmed running from a subdirectory).
+#   - The correct key is `[sandbox_workspace_write] writable_roots = [...]` (NOT the beta
+#     `[permissions.<name>]` form) — confirmed via that same banner literally listing the granted
+#     path once written, with `~/`-relative paths expanding fine.
+#   - Only `writable_roots` is written here, never `sandbox_mode`: once trusted, `codex exec`'s
+#     own default is already `workspace-write`, and leaving `sandbox_mode` unset means this grant
+#     never overrides an operator's own `-s`/`sandbox_mode` choice (read-only, danger-full-
+#     access) — and, per the point above, setting it wouldn't help an untrusted project anyway.
+#   - ponytail: known no-op, not an error, if the operator's ambient config already opted into
+#     the newer `default_permissions`/`[permissions.<name>]` scheme — confirmed mutually
+#     exclusive with `sandbox_workspace_write` per Codex's own docs (also reconfirmed live: the
+#     grant is silently dropped from the resolved sandbox banner, no crash). Nothing bh can fix
+#     from a project-local file; documented in docs/WORKTREES.md rather than defended against.
+
+_CODEX_MARK_START = "# bh:codex-sandbox-grant:start (managed by `bh hive init --codex`)"
+_CODEX_MARK_END = "# bh:codex-sandbox-grant:end"
+
+
+def _codex_grant_block(items: list[str]) -> str:
+    roots = ", ".join(json.dumps(x) for x in items)  # JSON string syntax is valid TOML too
+    return (
+        f"{_CODEX_MARK_START}\n"
+        "[sandbox_workspace_write]\n"
+        f"writable_roots = [{roots}]\n"
+        f"{_CODEX_MARK_END}\n"
+    )
+
+
+def _codex_grant_roots(text: str) -> list[str]:
+    """writable_roots currently inside bh's own marked block, or [] if absent/unparsable. Only
+    ever reads INSIDE the marked span — never a `[sandbox_workspace_write]` table the operator
+    wrote themselves outside it (see `_install_codex_sandbox_grant`'s unmanaged-table guard)."""
+    if _CODEX_MARK_START not in text:
+        return []
+    start = text.index(_CODEX_MARK_START)
+    end = text.index(_CODEX_MARK_END, start) + len(_CODEX_MARK_END)
+    try:
+        parsed = tomllib.loads(text[start:end])
+    except tomllib.TOMLDecodeError:
+        return []
+    return list((parsed.get("sandbox_workspace_write") or {}).get("writable_roots") or [])
+
+
+def _install_codex_sandbox_grant(cfg, provider: str, org: str, repo: str, base=None) -> None:
+    # Ephemeral worktrees live in the (already sandbox-writable) OS temp dir — no grant to
+    # write. Grants are a persistent-mode (ephemeral=false) feature. Mirrors _install_sandbox_grant.
+    if config.worktrees_ephemeral(cfg):
+        typer.echo("✓ --codex: ephemeral worktrees (OS temp) — no sandbox grant needed")
+        return
+    base = _base(base)
+    (base / ".codex").mkdir(exist_ok=True)
+    f = base / ".codex/config.toml"
+    text = f.read_text() if f.exists() else ""
+    subtree = _sandbox_subtree(cfg, provider, org, repo)
+    triplet_suffix = f"{provider}/{org}/{repo}"
+    updated = _replace_for_hive(_codex_grant_roots(text), subtree, triplet_suffix)
+    block = _codex_grant_block(updated)
+    if _CODEX_MARK_START in text:
+        start = text.index(_CODEX_MARK_START)
+        end = text.index(_CODEX_MARK_END, start) + len(_CODEX_MARK_END)
+        # `text[end:]` already carries the newline that followed the old end marker — splice in
+        # `block` WITHOUT its own trailing newline so re-running never accumulates blank lines.
+        new_text = text[:start] + block.rstrip("\n") + text[end:]
+    elif "[sandbox_workspace_write]" in text:
+        # An unmanaged table already exists (hand-written, or from another tool) — writing our
+        # own [sandbox_workspace_write] table here would be a duplicate-key TOML parse error.
+        # Leave the file untouched rather than corrupt it; tell the operator the exact value.
+        typer.echo(
+            "⚠ --codex: .codex/config.toml already has an unmanaged [sandbox_workspace_write] "
+            f"table — not touching it; add to its writable_roots manually: {subtree!r}",
+            err=True,
+        )
+        return
+    else:
+        sep = "" if not text or text.endswith("\n") else "\n"
+        new_text = text + sep + ("\n" if text else "") + block
+    f.write_text(new_text if new_text.endswith("\n") else new_text + "\n")
+    _git_exclude(".codex/config.toml", base)
+    typer.echo(f"✓ --codex: sandbox grant → .codex/config.toml ({subtree})")
+
+
+def codex_granted_subtree(clone: Path, provider: str, org: str, repo: str) -> str | None:
+    """The grant entry for this hive in `clone`'s .codex/config.toml, or None if absent.
+    Codex twin of `granted_subtree`."""
+    f = clone / ".codex" / "config.toml"
+    if not f.exists():
+        return None
+    items = _codex_grant_roots(f.read_text())
+    suffix = f"{provider}/{org}/{repo}"
+    return next((x for x in items if _matches_hive(x, suffix)), None)
+
+
+def codex_grant_is_current(cfg, clone: Path, provider: str, org: str, repo: str):
+    """None = no grant; True = matches current root; False = stale (hive moved root). Codex
+    twin of `grant_is_current`."""
+    granted = codex_granted_subtree(clone, provider, org, repo)
+    if granted is None:
+        return None
+    want = _sandbox_subtree(cfg, provider, org, repo)
+    return os.path.realpath(os.path.expanduser(granted)) == os.path.realpath(
+        os.path.expanduser(want)
+    )
+
+
 def _parse_triplet(hive_id: str):
     """Split a `provider/org/repo` triplet, or abort with a clear error. Registry-only:
     the repo need not be cloned, so we never touch the filesystem here."""
@@ -945,6 +1083,7 @@ def onboard(
     observaloop=False,
     agents=False,
     opencode=False,
+    codex=False,
     plugins=None,
     force=False,
     kind="",
@@ -986,6 +1125,7 @@ def onboard(
         observaloop=observaloop,
         agents=agents,
         opencode=opencode,
+        codex=codex,
         plugins=plugins or [],
         force=force,
         yes=yes,
@@ -1118,6 +1258,7 @@ def init(
     observaloop=False,
     agents=False,
     opencode=False,
+    codex=False,
     plugins=None,
     force=False,
     kind="",
@@ -1158,6 +1299,7 @@ def init(
         observaloop=observaloop,
         agents=agents,
         opencode=opencode,
+        codex=codex,
         plugins=plugins or [],
         force=force,
         yes=yes,

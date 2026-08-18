@@ -155,6 +155,7 @@ class Ctx:
     observaloop: bool = False
     agents: bool = False
     opencode: bool = False
+    codex: bool = False
     plugins: list[str] = field(default_factory=list)  # plugin names forced on via --plugin
     force: bool = False
     yes: bool = False
@@ -1170,6 +1171,12 @@ def _do_agents(ctx: Ctx) -> None:
     hive._ensure_agf_hint(ctx.base / "AGENTS.md", ctx.force, "--agents")
 
 
+def _do_codex(ctx: Ctx) -> None:
+    from . import hive
+
+    hive._install_codex_sandbox_grant(ctx.cfg, ctx.provider, ctx.org, ctx.repo, ctx.base)
+
+
 def _do_opencode(ctx: Ctx) -> None:
     from . import hive
 
@@ -1468,6 +1475,14 @@ def build_steps(ctx: Ctx) -> list[Step]:
             requires=["register"],
             mutates=True,
             enabled=lambda c: c.opencode,
+        ),
+        Step(
+            "codex",
+            "install .codex sandbox grant",
+            _installer("codex", _do_codex),
+            requires=["register"],
+            mutates=True,
+            enabled=lambda c: c.codex,
         ),
         Step(
             "observaloop",

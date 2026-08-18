@@ -185,14 +185,22 @@ def _grant_check(cfg, root: Path, provider: str, org: str, repo: str) -> Check:
     )
 
 
-def _codex_sandbox_check(cfg) -> Check:
-    """bh-rpzaj: unlike Claude (`_grant_check`), bh cannot write Codex a grant file — its
-    writable roots come from however `codex` itself was launched. This reports whether the
-    hive's *persistent* worktree root falls inside Codex's DEFAULT sandbox (cwd + $TMPDIR,
-    `config.codex_default_sandbox_covers`) so the gap surfaces here instead of showing up
-    later as a Codex sub-agent unable to edit a worktree `bh work assign`/`claim` already
+def _codex_sandbox_check(cfg, root: Path, provider: str, org: str, repo: str) -> Check:
+    """bh-rpzaj: unlike Claude (`_grant_check`), Codex's writable roots normally come from
+    however `codex` itself was launched, invisible to bh ahead of time — so this first reports
+    whether the hive's *persistent* worktree root falls inside Codex's DEFAULT sandbox (cwd +
+    $TMPDIR, `config.codex_default_sandbox_covers`), surfacing the gap here instead of showing
+    up later as a Codex sub-agent unable to edit a worktree `bh work assign`/`claim` already
     provisioned. Ephemeral worktrees (the default) already live in the OS temp dir, always
-    reachable, so this is N/A for them."""
+    reachable, so this is N/A for them.
+
+    bh-odulu: a SECOND ok path — `hive._install_codex_sandbox_grant` (`bh hive init --codex`)
+    now CAN write Codex a project-local grant (`.codex/config.toml`), so a current one for this
+    hive flips this green even when the root sits outside cwd/$TMPDIR; a stale one (root moved)
+    still reports off with the exact refresh command. Does NOT touch
+    `worktree._refuse_if_codex_unreachable`'s fail-fast guard — that stays the last-resort check
+    for any session that hasn't picked up a grant yet (a config grant only takes effect on
+    Codex's *next* launch, same limitation Claude's own grant has)."""
     if config.worktrees_ephemeral(cfg):
         return Check(
             "codex sandbox", False, "na", "ephemeral worktrees (OS temp) — always reachable"
@@ -200,13 +208,27 @@ def _codex_sandbox_check(cfg) -> Check:
     wt_root = config.worktrees_root(cfg)
     if config.codex_default_sandbox_covers(wt_root):
         return Check("codex sandbox", False, "ok", f"{wt_root} is under cwd/$TMPDIR")
+    cur = hive.codex_grant_is_current(cfg, root, provider, org, repo)
+    if cur:
+        return Check(
+            "codex sandbox", False, "ok", f"{wt_root} — current grant (.codex/config.toml)"
+        )
+    if cur is False:
+        return Check(
+            "codex sandbox",
+            False,
+            "off",
+            f"{wt_root} is outside Codex's default sandbox (cwd + $TMPDIR) — grant is stale "
+            f"(hive moved root) — re-run `{config.BINARY_ALIAS} hive init --codex -f`",
+        )
     return Check(
         "codex sandbox",
         False,
         "off",
         f"{wt_root} is outside Codex's default sandbox (cwd + $TMPDIR) — "
         "set worktrees.ephemeral: true, move worktrees.path under $TMPDIR, "
-        f"or launch codex with --add-dir {wt_root}",
+        f"launch codex with --add-dir {wt_root}, or "
+        f"`{config.BINARY_ALIAS} hive init --codex`",
     )
 
 
@@ -463,7 +485,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.append(_git_workspace_check(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
     checks.append(_grant_check(cfg, root, provider, org, repo))
-    checks.append(_codex_sandbox_check(cfg))
+    checks.append(_codex_sandbox_check(cfg, root, provider, org, repo))
     checks.append(_hint_check("AGENTS.md hint", root / "AGENTS.md"))
     checks.append(_hint_check("CLAUDE.md hint", root / "CLAUDE.md"))
     return checks
