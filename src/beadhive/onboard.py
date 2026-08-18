@@ -1106,11 +1106,11 @@ def _act_beads_role(ctx: Ctx) -> None:
     overwritten — see the module's own acceptance bar) with the exact repair command."""
     from . import bd, config, hive_repair
 
-    current = bd.json(["config", "get", "beads.role"], ctx.base)
+    current = bd.json(["config", "get", "beads.role"], ctx.base, pin_process_cwd=True)
     actual = str((current or {}).get("value") or "").strip() if isinstance(current, dict) else ""
     target = hive_repair.expected_role(ctx.kind)
     if not actual:
-        res = bd.run(["config", "set", "beads.role", target], ctx.base)
+        res = bd.run(["config", "set", "beads.role", target], ctx.base, pin_process_cwd=True)
         if res.returncode == 0:
             typer.echo(f"• beads: set beads.role={target} (kind={ctx.kind})")
         return
