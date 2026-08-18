@@ -220,11 +220,13 @@ def co_located_database(
     """
     # bh-4o07n GUARD 1 — a CACHE store is never co-located. `hub.sync` resolves `src` to either
     # a real checkout or `_fetch_cache()`'s hydration artifact, and the bulk path used to receive
-    # that with the distinction erased. Every cache store on this host carries
-    # `dolt_mode: server` + `dolt_database: beads` (they are bootstrapped with
+    # that with the distinction erased. Cache stores bootstrapped before bh-qpa3g carry
+    # `dolt_mode: server` + another hive's `dolt_database` (they were bootstrapped with
     # BEADS_DOLT_SHARED_SERVER=1 — bh-hpeye), so BOTH original signals passed and four unrelated
-    # hives were copied from one database belonging to none of them. A cache is a hydration
-    # artifact, never an authoritative co-located hive.
+    # hives were copied from one database belonging to none of them. bh-qpa3g gives each cache its
+    # own prefix-named database, which removes the coincidence; this guard does NOT depend on that
+    # and must stay either way. A cache is a hydration artifact, never an authoritative co-located
+    # hive.
     if is_cache:
         return None
     if store_locator.is_embedded_mode(hive_dir):
