@@ -196,6 +196,42 @@ def worktrees_root(cfg=None) -> Path:
     return Path(path).expanduser()
 
 
+# ---- Codex sandbox reachability (bh-rpzaj) ----------------------------------
+# Codex has no bh-managed grant-file equivalent to Claude's `.claude/settings.local.json`
+# (`hive._install_sandbox_grant`): its writable roots are set by however the `codex` binary
+# itself was launched (config.toml permission profile / `--add-dir`), invisible to bh ahead
+# of time. Empirically confirmed (docs/spikes/bh-a7so.8-codex-empirical.md, Evidence 4 + 8):
+# every command Codex runs inside its own sandbox carries CODEX_SANDBOX_NETWORK_DISABLED in
+# its environment, and codex's DEFAULT workspace-write sandbox (no `--add-dir`) covers only
+# its own cwd tree plus the OS temp dir (`sandbox: workspace-write [workdir, /tmp, $TMPDIR]`).
+
+
+def codex_sandbox_active() -> bool:
+    """Best-effort: is THIS bh invocation itself running as one of Codex's own sandboxed
+    tool calls right now? No harness bh launches (claude/opencode) sets this, so its mere
+    presence is a strong positive signal — but it is a proxy for Codex's NETWORK sandbox
+    (the only boundary it exposes to children), not a literal filesystem-write probe.
+    ponytail: env-var proxy, not a live write test — Codex enables both boundaries together
+    per turn, so false positives are rare, but a session run outside any Codex tool call
+    (e.g. `codex sandbox` was never invoked) is invisible here."""
+    return bool(os.environ.get("CODEX_SANDBOX_NETWORK_DISABLED", "").strip())
+
+
+def codex_default_sandbox_covers(path: Path) -> bool:
+    """True when `path` falls under a root Codex's DEFAULT workspace-write sandbox covers
+    with no extra flag: its own cwd tree, or the OS temp dir. A session launched with its
+    own `--add-dir <path>` escapes this and is a false negative here — remediation text
+    should name that escape hatch alongside the config-side fixes."""
+    try:
+        target = path.resolve()
+    except OSError:
+        return True  # unresolvable — don't manufacture a failure over a path we can't check
+    for root in (Path.cwd().resolve(), Path(tempfile.gettempdir()).resolve()):
+        if target == root or target.is_relative_to(root):
+            return True
+    return False
+
+
 def docs_path() -> Path:
     return home() / "labels.md"
 

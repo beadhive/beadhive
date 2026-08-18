@@ -547,6 +547,50 @@ If `worktrees.root` / `$WS_WORKTREES` moves, each hive's grant goes stale; `bh d
 the drifted hives and the fix is to **re-run `bh hive init --claude`** in them — the writer
 replaces the old entry rather than piling on.
 
+## Codex sandbox reachability (bh-rpzaj)
+
+Codex has **no grant-file mechanism `bh` can write** — unlike Claude Code's
+`.claude/settings.local.json` above, Codex's own writable roots are set entirely by however
+the `codex` binary was launched (a permission-profile `config.toml`, or `--add-dir`), and bh
+has no hook into that. Codex's own **default** `workspace-write` sandbox (no `--add-dir`)
+covers only its own cwd tree plus the OS temp dir
+(`docs/spikes/bh-a7so.8-codex-empirical.md`, Evidence 8:
+`sandbox: workspace-write [workdir, /tmp, $TMPDIR]`).
+
+That means a **persistent** worktree root (`worktrees.ephemeral: false`, e.g. under
+`~/.beadhive/worktrees`) sits outside a Codex sub-agent's own default sandbox even though
+`bh work assign`/`claim` (run by a human, an orchestrator, or Codex itself) can provision it
+just fine — the worktree exists, the bead looks claimed, and then the same session's own
+`apply_patch`/file-edit tool calls can't write into it.
+
+**Two defenses, not one, because bh can only see half the picture:**
+
+- **`bh hive ready -v`** reports a `codex sandbox` line (advisory, never fails the gate —
+  bh has nothing to grant here, only to warn about) whenever `worktrees.ephemeral: false`
+  and the configured `worktrees.path` sits outside cwd/$TMPDIR.
+- **`bh work assign` / `claim` / `worktree add`** refuse up front — before provisioning —
+  whenever the invocation is **itself** running as one of Codex's own sandboxed tool calls
+  (detected via `CODEX_SANDBOX_NETWORK_DISABLED`, which Codex sets on every command it runs
+  inside its sandbox) and the target root is unreachable. This is the case that matters most
+  in practice: a Codex-driven developer sub-agent calling `bh work claim <id>` itself, which
+  is exactly when bh can tell.
+
+**Recommended Codex workflow**, in order of preference:
+
+1. **Leave `worktrees.ephemeral: true`** (the default) — worktrees live under the OS temp
+   dir, which Codex's default sandbox already covers. No grant, no flag, nothing to get out
+   of sync.
+2. If persistent worktrees are required, **point `worktrees.path` under `$TMPDIR`** (still
+   OS-temp, still covered by default) instead of under `$HOME`.
+3. Otherwise, **launch codex with `--add-dir <worktrees_root>`** (`bh worktree path` /
+   `config.worktrees_root()` prints the exact root) every time, extending its sandbox to
+   cover it explicitly.
+
+What bh does **not** do: silently relocate a configured `worktrees.path` to make it Codex-
+reachable (the `Expected` option `bh` did not take) — that would surprise operators who
+picked a persistent path deliberately, and every other harness (Claude/opencode/a human
+terminal) still uses that same root correctly. Fail fast with the exact fix instead.
+
 ## Non-goals
 
 - **`safe.directory` / global git config:** not touched. Same-owner worktrees don't need it;

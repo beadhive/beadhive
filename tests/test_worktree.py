@@ -622,6 +622,48 @@ def test_ensure_epic_kind_opens_container_namespace(tmp_path, monkeypatch):
     assert worktree._branch_exists(repo, "wt/bead/epic/ag-epic") is True
 
 
+def test_ensure_refuses_when_codex_sandbox_cannot_reach_persistent_root(tmp_path, monkeypatch):
+    """bh-rpzaj regression: a persistent worktree root outside Codex's default sandbox (cwd +
+    $TMPDIR) must refuse to provision — rather than silently claiming a bead into a directory
+    the Codex sub-agent's own apply_patch/file-edit tool calls can never reach — whenever THIS
+    invocation is itself running as one of Codex's own sandboxed tool calls."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    # Neither cwd (the real process cwd — not tmp_path) nor $TMPDIR covers wts_root once we
+    # point the OS-temp lookup somewhere unrelated.
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path / "unrelated-tmp"))
+
+    with pytest.raises(typer.Exit):
+        worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert not (config.worktrees_root(cfg) / "ag-epic.3").exists()
+
+
+def test_ensure_proceeds_under_codex_sandbox_when_root_is_reachable(tmp_path, monkeypatch):
+    """The refusal is scoped to genuinely unreachable roots — an ephemeral-style root under
+    $TMPDIR still provisions fine even while CODEX_SANDBOX_NETWORK_DISABLED is set."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path.parent))
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert br == "wt/bead/issue/ag-epic.3"
+    assert target.exists()
+
+
+def test_ensure_ignores_codex_check_when_not_codex_sandboxed(tmp_path, monkeypatch):
+    """No false positive for the common case (Claude/opencode/a human terminal): without the
+    Codex sandbox env signal, an "unreachable" root is provisioned exactly as before."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path / "unrelated-tmp"))
+
+    _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target.exists()
+
+
 def test_ensure_same_host_resume_reattaches_exact_worktree(tmp_path, monkeypatch):
     """Same-host resume is deterministic: a second ensure() re-derives wt/bead/issue/<id> and
     re-attaches the exact live worktree dir (idempotent), recovering in-progress work — the payoff

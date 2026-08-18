@@ -404,6 +404,60 @@ def test_scan_includes_orca_line(world, monkeypatch):
     assert any(c.label == "orca" for c in checks)
 
 
+# ---- codex sandbox reachability (bh-rpzaj) ------------------------------------
+# Advisory only — never fails the gate — since bh has no Codex-equivalent grant file to write
+# (unlike `_grant_check`'s Claude `.claude/settings.local.json`): this line surfaces whether a
+# persistent worktree root is even reachable by Codex's own DEFAULT sandbox ahead of time.
+
+_CODEX_ENTRY = {
+    "provider": "github",
+    "org": "myorg",
+    "repo": "myrepo",
+    "prefix": "mr",
+    "kind": "personal",
+}
+
+
+def test_codex_sandbox_check_na_for_ephemeral_worktrees(world, capsys):
+    _make_ready(world)  # default config: worktrees.ephemeral omitted -> True
+
+    assert _run(verbose=True) == 0
+    assert "- codex sandbox" in capsys.readouterr().out
+
+
+def test_codex_sandbox_check_ok_when_persistent_root_is_under_tmp(world, monkeypatch):
+    main = _make_ready(world)
+    monkeypatch.delenv("BH_WORKTREES", raising=False)  # let worktrees.path drive the root
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": str(world.tmp / "wt")}
+    config.save(cfg)
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(world.tmp))
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "ok"
+    assert line.required is False
+
+
+def test_codex_sandbox_check_off_when_persistent_root_is_unreachable(world, monkeypatch):
+    """bh-rpzaj: a persistent `worktrees.path` outside cwd/$TMPDIR reports 'off' with an exact
+    remediation — the reported readiness must not look green for a Codex workflow when the
+    configured worktree root is unavailable to Codex's default sandbox."""
+    main = _make_ready(world)
+    monkeypatch.delenv("BH_WORKTREES", raising=False)  # let worktrees.path drive the root
+    cfg = config.load()
+    outside = "/definitely-not-cwd-or-tmp/beadhive/worktrees"
+    cfg["worktrees"] = {"ephemeral": False, "path": outside}
+    config.save(cfg)
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "off"
+    assert line.required is False  # advisory — never fails the gate
+    assert outside in line.detail
+    assert "--add-dir" in line.detail
+
+
 # ---- dolt server check (bh-areg.3) -------------------------------------------
 # Advisory only (never `missing`/required — never flips the gate's exit code), copying
 # `dolt_fix_advisory`'s "informs without blocking" shape per this bead's own DESIGN note: a
