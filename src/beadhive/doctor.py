@@ -1262,11 +1262,14 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
     sharing the SAME local-only primacy read (``guard.primary_state``) so the two can never
     disagree about who is primary.
 
-    Direct ``bd`` bypasses the multi-host guard entirely (bh-ytbb.9's ``guard_primary`` only
-    gates ``bh work``'s own write verbs), so this is the warning's whole reason to exist:
-    surface local writes an operator built on a host that was already not primary, before
-    they discover it only at push time (bounded exposure, but an hour of wasted work either
-    way — see the bead description).
+    Direct ``bd`` — invoked outside ``bh`` entirely — bypasses the multi-host guard
+    completely; bh cannot intercept it. ``bh bd`` no longer shares that bypass
+    (bh-edvs' :func:`guard.bd_write_refusal` gates it at the passthrough seam with the same
+    lease check ``guard_primary`` uses for ``bh work``'s own write verbs, carved out only for
+    the intake tier's bare, unparented ``bd create``, bh-lkbas), so this warning's remaining
+    reason to exist is RAW ``bd``: surface local writes an operator built on a host that was
+    already not primary, before they discover it only at push time (bounded exposure, but an
+    hour of wasted work either way — see the bead description).
 
     Bounded on purpose: only commits dated after the current holder's ``adopted_at`` count —
     i.e. commits made strictly after primacy demonstrably passed elsewhere, not "everything
