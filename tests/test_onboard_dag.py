@@ -207,6 +207,23 @@ def test_installers_gated_by_flags_and_recorded(world, synced, monkeypatch):
     # Un-flagged installers never run.
     assert "claude" not in plan.steps_run
     assert "skills" not in plan.steps_run
+    assert "codex" not in plan.steps_run
+
+
+def test_codex_installer_gated_by_flag_and_recorded(world, synced, monkeypatch):
+    """bh-odulu: `--codex` writes only the git-excluded sandbox grant — no tracked furniture,
+    unlike --claude/--agents/--skills/--opencode — so it must not imply --furnish."""
+    target = _make_repo(world)
+    monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
+    monkeypatch.setattr(registry, "has_push_access", lambda *a, **k: True)
+    ctx = _ctx(world, target, codex=True)
+    ctx.cfg["worktrees"] = {"ephemeral": False, "path": str(world.tmp / "wts")}
+
+    plan = onboard.run_onboard(ctx)
+
+    assert plan.installers_run == ["codex"]
+    assert (target / ".codex" / "config.toml").exists()
+    assert not ctx.furnish  # codex alone stays zero-footprint
 
 
 # ---------------------------------------------------------------------------

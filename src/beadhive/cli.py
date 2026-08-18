@@ -1005,6 +1005,13 @@ def hive_init(
         "bd-steer plugin under .opencode/plugins/ (steers raw `bd` to `bh bd`), and the "
         "AGENTS.md AGF hint stanza",
     ),
+    codex: bool = typer.Option(
+        False,
+        "--codex",
+        help="write a project-local, git-excluded Codex sandbox grant (.codex/config.toml, "
+        "[sandbox_workspace_write].writable_roots) covering this hive's own worktree "
+        "subtree — the Codex-native twin of --claude's settings.local.json grant",
+    ),
     force: bool = typer.Option(
         False,
         "-f",
@@ -1040,6 +1047,7 @@ def hive_init(
         observaloop=observaloop,
         agents=agents,
         opencode=opencode,
+        codex=codex,
         plugins=plugin,
         force=force,
         kind=kind,
@@ -1245,6 +1253,9 @@ def hive_onboard(
     opencode: bool = typer.Option(
         False, "--opencode", help="furnish for OpenCode (see `hive init`)"
     ),
+    codex: bool = typer.Option(
+        False, "--codex", help="write a project-local Codex sandbox grant (see `hive init`)"
+    ),
     force: bool = typer.Option(
         False, "-f", "--force", help="re-register an already-configured hive (see `hive init`)"
     ),
@@ -1287,6 +1298,7 @@ def hive_onboard(
         observaloop=observaloop,
         agents=agents,
         opencode=opencode,
+        codex=codex,
         plugins=plugin,
         force=force,
         kind=kind,
