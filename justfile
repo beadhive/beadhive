@@ -136,6 +136,16 @@ require-bd:
         echo "  or run the fast gate instead:  just check" >&2; \
         exit 1; }
 
+# MANUAL ONLY — deliberately NOT a dependency of `check` / `check-all` / any CI gate
+# (bh-amq08). It benchmarks bh's read path cold vs warm per verb (hive list, hive status
+# --json, bd export, hive ready, doctor); a single cold `bh doctor` alone runs ~60s, and the
+# numbers measure this host as much as the code, so wiring it into a gate every bead's
+# `bh work check` runs would make it minutes slower for a signal nobody asked it to prove
+# every time. Run by hand when judging a read-path change or an adoption before/after.
+# manual: benchmark bh's read path (cold vs warm, per verb) and write a report to .bench/
+bench-read-path:
+    uv run python3 scripts/bench_read_path.py
+
 # convention gate (~3s): what lefthook's pre-commit runs. Deliberately NOT `just check` (~6min) —
 # a six-minute pre-commit gets --no-verify'd within a week, leaving the repo ungated while looking
 # gated. `check`/`check-all` stay the real gates, run deliberately.
