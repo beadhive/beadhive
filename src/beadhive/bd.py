@@ -49,16 +49,26 @@ def names_bead(desc: str, bead: str) -> bool:
     )
 
 
-def run(args, cwd, actor="", capture=False, text_input=None):
+def run(args, cwd, actor="", capture=False, text_input=None, pin_process_cwd=False):
     """Run a `bd` subcommand scoped to the hive via `-C <cwd>` (so the right Beads DB is hit
     regardless of the process cwd / `--hive`). Prepends `--actor <name>` for the audit trail;
     `text_input` feeds stdin (e.g. a JSONL record for `bd import -`). The one shared bd-invocation
     helper the work/plan/triage/report layers all call — routed through the configured
-    `Engine.passthrough` (bh-dw3e.5; `bd` is the only engine today, so this is extraction-only)."""
+    `Engine.passthrough` (bh-dw3e.5; `bd` is the only engine today, so this is extraction-only).
+
+    `pin_process_cwd=True` (bh-s08me): also pins the CHILD PROCESS's real cwd to `cwd`, for a
+    GIT-CONFIG-backed key (e.g. `beads.role`) that `-C` alone does not scope — see
+    `Engine.passthrough`'s docstring. Leave False for ordinary beads-DB commands, which `-C`
+    already scopes correctly."""
     from . import engine  # lazy: engine imports bd, so keep the cycle import-safe
 
     return engine.get_engine().passthrough(
-        args, cwd, actor=actor, capture=capture, text_input=text_input
+        args,
+        cwd,
+        actor=actor,
+        capture=capture,
+        text_input=text_input,
+        pin_process_cwd=pin_process_cwd,
     )
 
 
@@ -220,7 +230,7 @@ def strict_reads():
         _STRICT_READS.reset(token)
 
 
-def json(args, cwd, *, strict=False):
+def json(args, cwd, *, strict=False, pin_process_cwd=False):
     """Run ``bd -C <cwd> <args> --json`` and return the parsed dict/list, or None on error.
 
     Appends ``--json`` itself — callers pass args WITHOUT ``--json``. Returns None when the
@@ -236,8 +246,11 @@ def json(args, cwd, *, strict=False):
 
     `strict=True` — or ANY call made inside :func:`strict_reads` — raises `BinaryMissing` for that
     one case instead, for callers whose consumer cannot see the narration; see that exception's
-    docstring."""
-    res = run(args + ["--json"], cwd, capture=True)
+    docstring.
+
+    `pin_process_cwd=True` (bh-s08me): forwarded to `run()` for a GIT-CONFIG-backed key that
+    `-C` alone does not scope — see `Engine.passthrough`'s docstring."""
+    res = run(args + ["--json"], cwd, capture=True, pin_process_cwd=pin_process_cwd)
     if res.returncode != 0:
         if (strict or _STRICT_READS.get(False)) and (binary := _runmod.missing_binary(res)):
             raise BinaryMissing(_missing_binary_message(binary, narrating=False))

@@ -641,11 +641,11 @@ class _FakeKV:
         self.value = initial
         self.set_calls = 0
 
-    def fake_json(self, args, cwd):
+    def fake_json(self, args, cwd, **kw):
         assert args == ["config", "get", self.key]
         return {"key": self.key, "value": self.value}
 
-    def fake_run(self, args, cwd, actor="", capture=False, text_input=None):
+    def fake_run(self, args, cwd, actor="", capture=False, text_input=None, **kw):
         assert args[:2] == ["config", "set"] and args[2] == self.key
         self.value = args[3]
         self.set_calls += 1
@@ -765,3 +765,32 @@ def test_act_beads_role_noop_when_already_correct(world, monkeypatch):
 
     assert fake.value == "contributor"
     assert fake.set_calls == 0
+
+
+def test_act_beads_role_scopes_to_ctx_base_not_process_cwd(world, monkeypatch):
+    """bh-s08me: onboard's own `_act_beads_role` is one of `beads.role`'s call sites too —
+    it must pin the child's real cwd to `ctx.base` (the target hive `hive.onboard` threaded
+    in, per `hive.py`'s "Threading cwd=target" contract), not let bd fall back to onboard's
+    own process cwd. Reuses `RealCwdGitConfig`, which reproduces bd's real `-C`-vs-process-cwd
+    split, rather than mocking the return value directly — the same fake `test_hive_repair.py`
+    uses for the n>1 regression."""
+    from pathlib import Path
+
+    from beadhive import bd as bd_mod
+    from test_hive_repair import RealCwdGitConfig
+
+    target = world.ws_root / "github" / "acme" / "widget"
+    target.mkdir(parents=True)
+
+    fake = RealCwdGitConfig()
+    # The process happens to be sitting somewhere else entirely (pytest's own cwd), with a
+    # DIFFERENT value — exactly what an unpinned call would silently borrow instead of
+    # ctx.base's own value.
+    fake.store[str(Path.cwd())] = "maintainer"
+    monkeypatch.setattr(bd_mod, "_run", fake)
+
+    ctx = onboard.Ctx(hive="github/acme/widget", target="", cwd=str(target), kind="fork")
+    onboard._act_beads_role(ctx)
+
+    assert fake.store[str(target)] == "contributor"
+    assert fake.store[str(Path.cwd())] == "maintainer"  # runner's own cwd untouched

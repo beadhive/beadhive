@@ -519,21 +519,37 @@ def _section_node_id(cfg):
 
 def _data_beads_role(cfg) -> list[dict]:
     """Registered hives whose `beads.role` is unset or disagrees with what their registry
-    `kind` maps to. Skipped for a hive with no local checkout/`.beads` — nothing to read."""
+    `kind` maps to. A hive with no local checkout/`.beads` is reported UNRESOLVABLE
+    (`actual=None`) rather than silently skipped or left to borrow whatever value the process
+    happens to be sitting in — that misreport (bh-s08me evidence #5) is exactly the bug this
+    function used to have.
+
+    `pin_process_cwd=True`: `beads.role` is git-config-backed, and `bd -C <path>` alone
+    resolves git config off the process's REAL cwd, not `-C`'s target — every hive but the one
+    `bh doctor` happens to run from would otherwise report the RUNNER's own value (bh-s08me)."""
     findings = []
     for e in cfg.get("managed_repos", []) or []:
         path = registry.hive_dir(e)
+        hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
+        kind = str(e.get("kind", ""))
+        expected = hive_repair.expected_role(kind)
         if not (path / ".beads").is_dir():
+            findings.append(
+                {
+                    "hive": hive_id,
+                    "kind": kind,
+                    "expected": expected,
+                    "actual": None,
+                    "remediation": f"no local checkout at {path} — clone it before repairing",
+                }
+            )
             continue
-        current = bd.json(["config", "get", "beads.role"], path)
+        current = bd.json(["config", "get", "beads.role"], path, pin_process_cwd=True)
         if not isinstance(current, dict):
             continue
         actual = str(current.get("value") or "").strip()
-        kind = str(e.get("kind", ""))
-        expected = hive_repair.expected_role(kind)
         if actual == expected:
             continue
-        hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
         findings.append(
             {
                 "hive": hive_id,
@@ -552,7 +568,12 @@ def _render_beads_role(findings: list[dict]) -> None:
         typer.echo("  ✓ none")
         return
     for f in findings:
-        actual = f"'{f['actual']}'" if f["actual"] else "unset"
+        if f["actual"] is None:
+            actual = "unresolvable (no local checkout)"
+        elif f["actual"]:
+            actual = f"'{f['actual']}'"
+        else:
+            actual = "unset"
         typer.echo(f"  ⚠ {f['hive']}: kind={f['kind']} expected='{f['expected']}' actual={actual}")
         typer.echo(f"    fix: {f['remediation']}")
 

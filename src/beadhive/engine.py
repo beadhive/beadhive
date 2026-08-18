@@ -119,11 +119,20 @@ class Engine(Protocol):
         capture: bool = False,
         text_input=None,
         timeout: float | None = None,
+        pin_process_cwd: bool = False,
     ):
         """Issue management (create/list/dep/close/…) — an arbitrary bd-shaped subcommand
         scoped to `cwd`, attributed to `actor` when given. `timeout` (seconds) bounds the
         child so a wedged backend can't block forever; None keeps the historical
-        wait-indefinitely behaviour for local, non-network subcommands."""
+        wait-indefinitely behaviour for local, non-network subcommands.
+
+        `pin_process_cwd=True` (bh-s08me) additionally spawns the child with its OWN process
+        cwd set to `cwd`, not just `bd -C <cwd>` on the command line. `bd`'s `-C` scopes which
+        beads DB it opens but NOT which git repo it reads/writes GIT-CONFIG-backed keys
+        against (e.g. `beads.role`) — those resolve off the real process cwd bd inherited, so
+        `bd -C <hive-A> config get beads.role` run from inside hive B's directory silently
+        answers for hive B. Opt-in (default False, unchanged shape for every other caller):
+        only the git-config-backed callers need their process cwd pinned."""
         ...
 
     def export_jsonl(self, cwd, out_path, *, env=None):
@@ -209,7 +218,16 @@ class BdEngine:
 
     name = "bd"
 
-    def passthrough(self, args, cwd, actor="", capture=False, text_input=None, timeout=None):
+    def passthrough(
+        self,
+        args,
+        cwd,
+        actor="",
+        capture=False,
+        text_input=None,
+        timeout=None,
+        pin_process_cwd=False,
+    ):
         # Extracted from bd.py's `run()` (the shared bd-invocation helper work/plan/report/
         # triage all call).
         cmd = ["bd", "-C", str(cwd)]
@@ -222,6 +240,10 @@ class BdEngine:
         # `run()`, and the test doubles pin that shape (bh-uxew).
         if timeout is not None:
             kw["timeout"] = timeout
+        # bh-s08me: `-C` alone does not scope bd's git-config reads/writes (e.g. `beads.role`)
+        # — those resolve off the child's real process cwd. Pin it too, opt-in only.
+        if pin_process_cwd:
+            kw["cwd"] = str(cwd)
         return bd_mod._run(cmd, **kw)
 
     def _state_call(self, args, cwd, actor="", *, timeout=STATE_TIMEOUT):

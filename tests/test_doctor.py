@@ -254,7 +254,7 @@ def test_render_node_id_loud_when_unset_and_remote_wired(capsys):
 
 
 def test_data_beads_role_flags_mismatch(prefix_hive, monkeypatch):
-    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "maintainer"})
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd, **kw: {"value": "maintainer"})
     data = doctor._data_beads_role(_cfg_one_hive("mr"))  # kind=personal -> contributor
     assert data == [
         {
@@ -268,20 +268,43 @@ def test_data_beads_role_flags_mismatch(prefix_hive, monkeypatch):
 
 
 def test_data_beads_role_flags_unset(prefix_hive, monkeypatch):
-    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": ""})
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd, **kw: {"value": ""})
     data = doctor._data_beads_role(_cfg_one_hive("mr"))
     assert data[0]["actual"] == ""
 
 
 def test_data_beads_role_empty_when_matching(prefix_hive, monkeypatch):
-    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "contributor"})
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd, **kw: {"value": "contributor"})
     assert doctor._data_beads_role(_cfg_one_hive("mr")) == []
 
 
-def test_data_beads_role_skips_missing_beads_dir(tmp_path, monkeypatch):
+def test_data_beads_role_reports_missing_checkout_as_unresolvable(tmp_path, monkeypatch):
+    """A hive with no local checkout/`.beads` must be flagged explicitly, not silently
+    skipped and not left to borrow whatever `bd` happens to answer for the process cwd
+    (bh-s08me evidence #5)."""
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "ws"))
-    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "maintainer"})
-    assert doctor._data_beads_role(_cfg_one_hive("mr")) == []
+    called = False
+
+    def fail(*a, **k):
+        nonlocal called
+        called = True
+        raise AssertionError("must not shell out for a hive with no local checkout")
+
+    monkeypatch.setattr(doctor.bd, "json", fail)
+    data = doctor._data_beads_role(_cfg_one_hive("mr"))
+    assert not called
+    assert data == [
+        {
+            "hive": "github/myorg/myrepo",
+            "kind": "personal",
+            "expected": "contributor",
+            "actual": None,
+            "remediation": (
+                f"no local checkout at {tmp_path / 'ws' / 'github' / 'myorg' / 'myrepo'} — "
+                "clone it before repairing"
+            ),
+        }
+    ]
 
 
 def test_render_beads_role_clean_when_none(capsys):
@@ -309,12 +332,38 @@ def test_render_beads_role_shows_fix_command(capsys):
     assert "fix: bh hive repair --hive github/myorg/myrepo --role --yes" in out
 
 
+def test_render_beads_role_shows_unresolvable_for_missing_checkout(capsys):
+    doctor._render_beads_role(
+        [
+            {
+                "hive": "github/briancripe/observaloop",
+                "kind": "personal",
+                "expected": "contributor",
+                "actual": None,
+                "remediation": "no local checkout at /wherever — clone it before repairing",
+            }
+        ]
+    )
+    out = capsys.readouterr().out
+    assert "actual=unresolvable (no local checkout)" in out
+    assert "fix: no local checkout at /wherever — clone it before repairing" in out
+
+
 def test_collect_includes_node_id_and_beads_role(hive, fakebd):  # noqa: F811
-    """No local `.beads/` checkout in the plain `hive` fixture, so both sections come back
-    empty/unset — this pins that `_collect` wires both keys through end to end."""
+    """No local `.beads/` checkout in the plain `hive` fixture — `beads_role` now reports
+    that hive explicitly as unresolvable rather than empty/skipped (bh-s08me); this still
+    pins that `_collect` wires both keys through end to end."""
     payload = doctor.doctor_payload()
     assert payload["node_id"]["resolved"] == ""
-    assert payload["beads_role"] == []
+    assert payload["beads_role"] == [
+        {
+            "hive": "github/myorg/myrepo",
+            "kind": "personal",
+            "expected": "contributor",
+            "actual": None,
+            "remediation": (f"no local checkout at {hive.main} — clone it before repairing"),
+        }
+    ]
 
 
 # ---- store engine section (bh-areg.3) ----------------------------------------

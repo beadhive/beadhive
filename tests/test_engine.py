@@ -569,13 +569,15 @@ def test_bd_run_routes_through_get_engine(monkeypatch):
     calls = []
 
     class FakeEngine:
-        def passthrough(self, args, cwd, actor="", capture=False, text_input=None):
-            calls.append((args, cwd, actor, capture, text_input))
+        def passthrough(
+            self, args, cwd, actor="", capture=False, text_input=None, pin_process_cwd=False
+        ):
+            calls.append((args, cwd, actor, capture, text_input, pin_process_cwd))
             return Completed(0, "faked", "")
 
     monkeypatch.setattr(engine, "get_engine", lambda: FakeEngine())
 
     res = bd.run(["list"], "/hive", actor="dev/a", capture=True)
 
-    assert calls == [(["list"], "/hive", "dev/a", True, None)]
+    assert calls == [(["list"], "/hive", "dev/a", True, None, False)]
     assert res.stdout == "faked"
