@@ -1070,6 +1070,58 @@ def _act_register(ctx: Ctx) -> None:
         )
 
 
+def _act_node_id(ctx: Ctx) -> None:
+    """Set this HOST's bd `node_id` (bh-y85rj) if absent — never overwrites an existing value.
+
+    Per-host, not per-hive (bd's own `bd reclaim --help`: every client of the same
+    `dolt.shared-server = true` sql-server is ONE replica and must share one node_id), so this
+    writes `~/.config/bd/config.yaml` via `bd config set node_id <host_id>`, reusing
+    `host.host_id()` — the stable per-host identity `bh config init` already mints once and
+    never regenerates — rather than inventing a second per-host name. Idempotent: an existing
+    value (this host's own, or one an operator set by hand) is left exactly as it is.
+
+    `host.host_id()` raises when `host.yaml` hasn't been minted yet (`bh config init` never
+    ran) — never fatal to onboarding itself, just skipped; `bh doctor`/`bh hive repair
+    --node-id` cover it once the host identity exists."""
+    from . import bd, host
+
+    current = bd.json(["config", "get", "node_id"], ctx.base)
+    if isinstance(current, dict) and str(current.get("value") or "").strip():
+        return
+    try:
+        node_id = host.host_id()
+    except FileNotFoundError:
+        return
+    res = bd.run(["config", "set", "node_id", node_id], ctx.base)
+    if res.returncode == 0:
+        typer.echo(f"• beads: set this host's node_id ({node_id})")
+
+
+def _act_beads_role(ctx: Ctx) -> None:
+    """Set `beads.role` (git config) from the hive's registry `kind` (bh-f3blt) if absent.
+
+    `hive_repair.expected_role` is the ONE kind->role mapping — this, `bh doctor`'s beads_role
+    section, and `bh hive repair --role` all call it rather than re-deriving it separately. An
+    existing value that already matches is left alone; a MISMATCH is reported (never silently
+    overwritten — see the module's own acceptance bar) with the exact repair command."""
+    from . import bd, config, hive_repair
+
+    current = bd.json(["config", "get", "beads.role"], ctx.base)
+    actual = str((current or {}).get("value") or "").strip() if isinstance(current, dict) else ""
+    target = hive_repair.expected_role(ctx.kind)
+    if not actual:
+        res = bd.run(["config", "set", "beads.role", target], ctx.base)
+        if res.returncode == 0:
+            typer.echo(f"• beads: set beads.role={target} (kind={ctx.kind})")
+        return
+    if actual != target:
+        typer.echo(
+            f"⚠ beads.role='{actual}' disagrees with kind={ctx.kind} (expected '{target}') — "
+            f"left unchanged; run `{config.BINARY_ALIAS} hive repair --hive {ctx.hive} --role "
+            "--yes` to fix"
+        )
+
+
 def _installer(name: str, run_it):
     """Wrap an installer body so it records itself in plan.installers_run when it runs."""
 
@@ -1450,6 +1502,14 @@ def build_steps(ctx: Ctx) -> list[Step]:
     # --dry-run (assessment action), never fails the onboard, never auto-creates the HQ.
     hq_parent = Step("hq-parent", "escalation parent (HQ)", _act_hq_parent, requires=["register"])
 
+    # bh-y85rj / bh-f3blt: two more config-drift gates set at onboard time, same shape as the
+    # prefix reconciliation above — set-if-absent, never overwrite, `bh doctor`/`hive repair`
+    # cover the backfill for hives onboarded before this existed.
+    node_id = Step("node-id", "set host node_id", _act_node_id, requires=["register"], mutates=True)
+    beads_role = Step(
+        "beads-role", "set beads.role", _act_beads_role, requires=["register"], mutates=True
+    )
+
     # Generic plugin steps: one per registered plugin that declares an on_onboard hook. When
     # the registry is empty, no plugin step is built (integrations are not hardcoded here).
     plugin_steps = [_plugin_step(p) for p in _plugins.registry() if p.on_onboard is not None]
@@ -1463,6 +1523,8 @@ def build_steps(ctx: Ctx) -> list[Step]:
         worktree_clean,
         bd_init,
         register,
+        node_id,
+        beads_role,
         *installers,
         *plugin_steps,
         hq_parent,

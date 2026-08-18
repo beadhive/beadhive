@@ -75,18 +75,23 @@ def test_existing_clean_folder_runs_full_dag_in_order(world, synced, monkeypatch
         "worktree-clean",
         "bd-init",
         "register",
+        "node-id",
+        "beads-role",
         "hq-parent",
         "hub-sync",
         "footprint",
     }
     order = plan.steps_run.index
     # The DAG edges: resolve first; bd-init after both prefix and worktree-clean; register
-    # after bd-init; hub-sync after register; footprint last (captures hub-sync's jsonl
-    # export). No prepush-hook step since bh-smcj — see the zero-footprint test below.
+    # after bd-init; node-id/beads-role after register (bh-y85rj/bh-f3blt); hub-sync after
+    # register; footprint last (captures hub-sync's jsonl export). No prepush-hook step since
+    # bh-smcj — see the zero-footprint test below.
     assert order("resolve") == 0
     assert order("bd-init") > order("prefix")
     assert order("bd-init") > order("worktree-clean")
     assert order("register") > order("bd-init")
+    assert order("node-id") > order("register")
+    assert order("beads-role") > order("register")
     assert order("hub-sync") > order("register")
     assert plan.steps_run[-1] == "footprint"
     assert plan.registered is True
@@ -620,3 +625,143 @@ def test_remove_stealth_still_strips_legacy_bd_1_0_5_block(world):
     assert "Beads stealth mode" not in text
     assert ".beads/" not in text
     assert ".ws/" in text
+
+
+# ---------------------------------------------------------------------------
+# _act_node_id / _act_beads_role (bh-y85rj / bh-f3blt)
+# ---------------------------------------------------------------------------
+
+
+class _FakeKV:
+    """Fakes `bd config get/set <key>` for one in-memory key — same shape the hive_repair
+    tests use for the identical two-verb contract."""
+
+    def __init__(self, key, initial=""):
+        self.key = key
+        self.value = initial
+        self.set_calls = 0
+
+    def fake_json(self, args, cwd):
+        assert args == ["config", "get", self.key]
+        return {"key": self.key, "value": self.value}
+
+    def fake_run(self, args, cwd, actor="", capture=False, text_input=None):
+        assert args[:2] == ["config", "set"] and args[2] == self.key
+        self.value = args[3]
+        self.set_calls += 1
+        from types import SimpleNamespace
+
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+
+def test_act_node_id_sets_from_host_id_when_absent(world, monkeypatch):
+    from beadhive import bd as bd_mod
+    from beadhive import host
+
+    fake = _FakeKV("node_id", "")
+    monkeypatch.setattr(bd_mod, "json", fake.fake_json)
+    monkeypatch.setattr(bd_mod, "run", fake.fake_run)
+    monkeypatch.setattr(host, "host_id", lambda: "host-xyz")
+    ctx = onboard.Ctx(hive="github/acme/widget", target="", cwd=str(world.ws_root))
+
+    onboard._act_node_id(ctx)
+
+    assert fake.value == "host-xyz"
+    assert fake.set_calls == 1
+
+
+def test_act_node_id_never_overwrites_an_existing_value(world, monkeypatch):
+    from beadhive import bd as bd_mod
+    from beadhive import host
+
+    fake = _FakeKV("node_id", "already-set")
+    monkeypatch.setattr(bd_mod, "json", fake.fake_json)
+    monkeypatch.setattr(bd_mod, "run", fake.fake_run)
+    monkeypatch.setattr(host, "host_id", lambda: "host-xyz")
+    ctx = onboard.Ctx(hive="github/acme/widget", target="", cwd=str(world.ws_root))
+
+    onboard._act_node_id(ctx)
+
+    assert fake.value == "already-set"
+    assert fake.set_calls == 0
+
+
+def test_act_node_id_skips_gracefully_when_host_identity_unminted(world, monkeypatch):
+    """`host.host_id()` raises `FileNotFoundError` when `bh config init` never ran (host.yaml
+    absent) — must never fail onboarding itself over this."""
+    from beadhive import bd as bd_mod
+    from beadhive import host
+
+    fake = _FakeKV("node_id", "")
+    monkeypatch.setattr(bd_mod, "json", fake.fake_json)
+    monkeypatch.setattr(bd_mod, "run", fake.fake_run)
+
+    def _raise():
+        raise FileNotFoundError("host identity not found")
+
+    monkeypatch.setattr(host, "host_id", _raise)
+    ctx = onboard.Ctx(hive="github/acme/widget", target="", cwd=str(world.ws_root))
+
+    onboard._act_node_id(ctx)  # must not raise
+
+    assert fake.set_calls == 0
+
+
+def test_act_beads_role_sets_from_kind_when_absent(world, monkeypatch):
+    from beadhive import bd as bd_mod
+
+    fake = _FakeKV("beads.role", "")
+    monkeypatch.setattr(bd_mod, "json", fake.fake_json)
+    monkeypatch.setattr(bd_mod, "run", fake.fake_run)
+    ctx = onboard.Ctx(hive="github/acme/widget", target="", cwd=str(world.ws_root), kind="fork")
+
+    onboard._act_beads_role(ctx)
+
+    assert fake.value == "contributor"
+    assert fake.set_calls == 1
+
+
+def test_act_beads_role_maps_org_native_to_maintainer(world, monkeypatch):
+    from beadhive import bd as bd_mod
+
+    fake = _FakeKV("beads.role", "")
+    monkeypatch.setattr(bd_mod, "json", fake.fake_json)
+    monkeypatch.setattr(bd_mod, "run", fake.fake_run)
+    ctx = onboard.Ctx(
+        hive="github/acme/widget", target="", cwd=str(world.ws_root), kind="org-native"
+    )
+
+    onboard._act_beads_role(ctx)
+
+    assert fake.value == "maintainer"
+
+
+def test_act_beads_role_reports_mismatch_without_overwriting(world, monkeypatch, capsys):
+    from beadhive import bd as bd_mod
+
+    fake = _FakeKV("beads.role", "maintainer")
+    monkeypatch.setattr(bd_mod, "json", fake.fake_json)
+    monkeypatch.setattr(bd_mod, "run", fake.fake_run)
+    ctx = onboard.Ctx(hive="github/acme/widget", target="", cwd=str(world.ws_root), kind="fork")
+
+    onboard._act_beads_role(ctx)
+
+    assert fake.value == "maintainer"  # never silently overwritten
+    assert fake.set_calls == 0
+    out = capsys.readouterr().out
+    assert "disagrees with kind=fork" in out
+    assert "hive repair --hive github/acme/widget --role --yes" in out
+
+
+def test_act_beads_role_noop_when_already_correct(world, monkeypatch):
+    from beadhive import bd as bd_mod
+
+    fake = _FakeKV("beads.role", "contributor")
+    monkeypatch.setattr(bd_mod, "json", fake.fake_json)
+    monkeypatch.setattr(bd_mod, "run", fake.fake_run)
+    ctx = onboard.Ctx(hive="github/acme/widget", target="", cwd=str(world.ws_root), kind="fork")
+
+    onboard._act_beads_role(ctx)
+
+    assert fake.value == "contributor"
+    assert fake.set_calls == 0

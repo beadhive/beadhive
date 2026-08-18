@@ -413,6 +413,35 @@ consequences follow directly:
 `claude` cannot be the default precisely because it is the one tier bound to a specific
 harness — `local` is the harness-agnostic floor every hive can run with zero infrastructure.
 
+### Replicas and node_id (bh-y85rj)
+
+`bd reclaim` reaps a stale lease so another worker can pick it up — but "stale" is only
+meaningful from the replica that granted the lease: a reaper on a SECOND host sees the
+granting replica's liveness as stale by up to one sync interval, so it can revert a unit that
+is very much alive over there. bd's guard against exactly that is opt-in: set `node_id` (`bd
+config set node_id <name>`, or `BEADS_NODE_ID`) and `reclaim` records the granting replica on
+each lease and SKIPS one another replica granted (unless `--any-replica`).
+
+**Scoping — per HOST, not per hive.** This hive runs `dolt.shared-server = true`; every hive on
+one host's shared `dolt sql-server` is served by that ONE process, so every client of it is one
+replica and must share a single `node_id`. `bh` writes it once, to the per-machine
+`~/.config/bd/config.yaml` (`bd config set node_id <name>`) — **never** to a hive-tracked file;
+committing it would make every clone report the same name and the guard would go
+armed-but-inert. `bh hive onboard`/`bh setup` set it from `host.host_id()` (the same stable
+per-host identity `bh config init` mints once and never regenerates) if absent, and never
+overwrite an existing value; `bh doctor` flags it loudly when unset on a host with a
+remote-wired hive, with the exact `bh hive repair --hive <id> --node-id --yes` fix.
+
+**The TTL/cadence constraint bd itself states but bh does not yet enforce or even define:**
+grace window and lease TTL must both exceed the interval at which replicas exchange state —
+otherwise the remote view a reaper acts on is a full sync interval stale by construction, and
+the guard's "meaningful" claim above stops holding. bh's own default lease TTL is 5 minutes
+(`coordination.py`'s heartbeat contract) with reclaim's default grace window at 2× that (10
+minutes) — but bh has **no defined sync cadence at all**: every `bh hive sync-remote` today is
+hand-run, not scheduled. There is currently no interval to safely raise the TTL/grace above;
+this is an open constraint on any future multi-host federation design, recorded here rather
+than silently assumed away.
+
 ### The `Runtime` seam
 
 `src/beadhive/runtime.py` names the `Runtime` protocol: three operations, nothing else —

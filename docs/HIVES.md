@@ -112,6 +112,28 @@ identity reflects the **upstream** so they don't pollute org/personal rollups.
 sanitized to `^[a-z0-9-]+$`. A prefix over 8 chars or one already in use produces a warning
 (override with `--prefix`). The registry enforces global uniqueness.
 
+## beads.role (bh-f3blt)
+
+bd routes on its own `beads.role` git config key (`maintainer` | `contributor`) and, left
+unset, falls back to guessing from remote shape (fork pattern → contributor; SSH/credentialed
+HTTPS origin → maintainer; plain HTTPS → contributor; no remote → maintainer) — bd's own
+doctor already warns `beads.role not configured (GH#2950)` on every hive that has never set
+it. bh knows the authoritative answer per hive already (the registry `kind` above), so it maps
+it explicitly instead of leaving bd to infer it from a repo's remote shape:
+
+| Kind | beads.role |
+|---|---|
+| **org-native**, **hq** | `maintainer` — we administer it |
+| everything else (**fork**, **external**, **personal**, **prototype**) | `contributor` — we don't own it the same way |
+
+`hive_repair.expected_role(kind)` is the ONE place this mapping lives — `bh hive
+onboard`/`bh setup` (set-if-absent, at onboard time), `bh doctor`'s `beads.role` section, and
+`bh hive repair --role` all call it rather than re-deriving it. An existing value that already
+matches is left alone; a value that **disagrees** is only ever *reported* by onboard (never
+silently overwritten — bd's routing decision is not bh's to override without an operator
+saying so) — `bh doctor` names the exact `bh hive repair --hive <id> --role --yes` fix, which
+*does* apply the mapped value once explicitly invoked with `--yes`.
+
 ### An existing store's prefix wins over a derived one
 
 Derivation answers the question only when nobody already has. A repo that carries a bead store
