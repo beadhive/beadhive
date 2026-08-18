@@ -44,6 +44,31 @@ def test_bh_worktrees_env_overrides_both_modes(monkeypatch):
         )
 
 
+# ---- Codex sandbox reachability (bh-rpzaj) -----------------------------------
+
+
+def test_codex_sandbox_active_reads_the_env_signal(monkeypatch):
+    monkeypatch.delenv("CODEX_SANDBOX_NETWORK_DISABLED", raising=False)
+    assert config.codex_sandbox_active() is False
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    assert config.codex_sandbox_active() is True
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "")  # empty counts as unset
+    assert config.codex_sandbox_active() is False
+
+
+def test_codex_default_sandbox_covers_cwd_and_tmp(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    assert config.codex_default_sandbox_covers(tmp_path / "worktrees") is True
+    assert config.codex_default_sandbox_covers(Path(tempfile.gettempdir()) / "bh-worktrees") is True
+
+
+def test_codex_default_sandbox_does_not_cover_a_root_outside_cwd_and_tmp(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    # a persistent root under $HOME, well outside both cwd and the OS temp dir
+    outside = Path("/definitely-not-cwd-or-tmp/beadhive/worktrees")
+    assert config.codex_default_sandbox_covers(outside) is False
+
+
 def test_mise_trust_rule_matches_both_dotted_and_undotted_config(tmp_path):
     """bh-ggfr: the default `mise trust` predicate fires for BOTH mise config spellings.
 

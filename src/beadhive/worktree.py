@@ -644,6 +644,7 @@ def add(hive="", bead="", branch="", dry_run=False, as_json=False):
     if target.exists():
         typer.echo(f"✗ worktree path already exists: {target}", err=True)
         raise typer.Exit(1)
+    _refuse_if_codex_unreachable(cfg, target)
     _do_add(cfg, entry, main, br, target, new_branch=True)
     from . import metadata
 
@@ -854,6 +855,29 @@ def pr_base_ref(cfg, entry) -> str:
     return f"{UPSTREAM_REMOTE}/{base}"
 
 
+def _refuse_if_codex_unreachable(cfg, target: Path) -> None:
+    """bh-rpzaj: refuse to (re)provision `target` when THIS invocation is itself running as a
+    Codex tool call (`config.codex_sandbox_active`) and `target` sits outside Codex's own
+    default sandbox roots (`config.codex_default_sandbox_covers`) — bh's own process can
+    write there (it's the one doing the provisioning), but the SAME Codex sub-agent's later
+    `apply_patch`/file-edit tool calls, routed through that session's actual sandbox, cannot.
+    Fails fast with the exact remediation instead of leaving a claimed bead the agent can
+    never edit (the sandbox-grant mechanism `hive._install_sandbox_grant` uses for Claude has
+    no Codex equivalent — see docs/spikes/bh-a7so.8-codex-empirical.md)."""
+    if not config.codex_sandbox_active() or config.codex_default_sandbox_covers(target):
+        return
+    wt_root = config.worktrees_root(cfg)
+    typer.echo(
+        f"✗ worktree root {target} is outside Codex's default sandbox (cwd + $TMPDIR) — "
+        "this session cannot write there.\n"
+        "  Fix one: set worktrees.ephemeral: true (OS temp, always reachable) · "
+        "move worktrees.path under $TMPDIR · "
+        f"relaunch codex with --add-dir {wt_root}",
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
 def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
     """Idempotent provision/re-attach for `ws work`. Returns (entry, target, branch): reuse a live
     dir; else attach an existing branch into a fresh dir; else create the branch+dir forked off its
@@ -865,11 +889,15 @@ def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
 
     For a `kind=external` hive, `integration` (the root fallback `integration_base` climbs to)
     is `pr_base_ref`'s freshly-fetched `upstream/<branch>` — a contribution worktree is always
-    created off upstream, never local main (see `pr_base_ref`)."""
+    created off upstream, never local main (see `pr_base_ref`).
+
+    Refuses up front (bh-rpzaj) rather than provisioning a dir a Codex sub-agent's own tool
+    calls can never reach — see `_refuse_if_codex_unreachable`."""
     entry, main, target, br = locate(cfg, hive, bead=bead, branch=branch, kind=kind)
     if not (main / ".git").exists():
         typer.echo(f"✗ no clone for hive at {main} — clone it first", err=True)
         raise typer.Exit(1)
+    _refuse_if_codex_unreachable(cfg, target)
     if target.exists():
         if bead:  # only a single-bead child branch tracks a refreshable container tip
             _repoint_if_stale(cfg, entry, main, br, target, base_bead or bead)
