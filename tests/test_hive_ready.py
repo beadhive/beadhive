@@ -501,6 +501,97 @@ def test_codex_sandbox_check_off_when_grant_is_stale(world, monkeypatch):
     assert "-f" in line.detail
 
 
+def test_codex_sandbox_check_ok_when_only_global_grant_present(world, monkeypatch):
+    """bh-n0m7n: a THIRD ok path — a global grant satisfies the check for a hive with no
+    per-hive entry of its own."""
+    main = _make_ready(world)
+    monkeypatch.delenv("BH_WORKTREES", raising=False)
+    cfg = config.load()
+    outside = "/definitely-not-cwd-or-tmp/beadhive/worktrees"
+    cfg["worktrees"] = {"ephemeral": False, "path": outside}
+    config.save(cfg)
+    hive._install_global_codex_sandbox_grant(config.load())
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "ok"
+    assert "global grant" in line.detail
+
+
+def test_codex_sandbox_check_stale_per_hive_grant_not_rescued_by_global(world, monkeypatch):
+    """A stale per-hive grant shadows the global one at runtime (see hive.py's empirical
+    addendum) — a valid global grant must not paper over it in the check."""
+    main = _make_ready(world)
+    monkeypatch.delenv("BH_WORKTREES", raising=False)
+    cfg = config.load()
+    old_root = "/definitely-not-cwd-or-tmp/beadhive/old-worktrees"
+    cfg["worktrees"] = {"ephemeral": False, "path": old_root}
+    config.save(cfg)
+    hive._install_codex_sandbox_grant(config.load(), "github", "myorg", "myrepo", main)
+
+    new_root = "/definitely-not-cwd-or-tmp/beadhive/new-worktrees"
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": new_root}
+    config.save(cfg)
+    hive._install_global_codex_sandbox_grant(config.load())  # valid, current global grant
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "off"  # stale per-hive grant, not rescued by the global one
+    assert "stale" in line.detail
+
+
+# ---- Claude sandbox grant check (`_grant_check`) -----------------------------
+
+
+def test_grant_check_ok_when_per_hive_grant_current(world):
+    main = _make_ready(world)
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": str(world.tmp / "wt")}
+    config.save(cfg)
+    hive._install_sandbox_grant(config.load(), "github", "myorg", "myrepo", main)
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "sandbox grant"]
+    assert line.state == "ok"
+
+
+def test_grant_check_off_when_no_grant_at_all(world):
+    main = _make_ready(world)
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "sandbox grant"]
+    assert line.state == "off"
+    assert "no grant" in line.detail
+
+
+def test_grant_check_ok_when_only_global_grant_present(world):
+    """bh-n0m7n: a global grant satisfies the check for a hive with no per-hive entry."""
+    main = _make_ready(world)
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": str(world.tmp / "wt")}
+    config.save(cfg)
+    hive._install_global_sandbox_grant(config.load())
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "sandbox grant"]
+    assert line.state == "ok"
+    assert "global grant" in line.detail
+
+
+def test_grant_check_per_hive_and_global_coexist_ok(world):
+    main = _make_ready(world)
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": str(world.tmp / "wt")}
+    config.save(cfg)
+    hive._install_sandbox_grant(config.load(), "github", "myorg", "myrepo", main)
+    hive._install_global_sandbox_grant(config.load())
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "sandbox grant"]
+    assert line.state == "ok"
+
+
 # ---- dolt server check (bh-areg.3) -------------------------------------------
 # Advisory only (never `missing`/required — never flips the gate's exit code), copying
 # `dolt_fix_advisory`'s "informs without blocking" shape per this bead's own DESIGN note: a
