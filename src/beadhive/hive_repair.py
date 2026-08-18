@@ -275,7 +275,6 @@ def apply_node_id(plan: NodeIdPlan, actor: str) -> list[str]:
     res = bd.run(["config", "set", "node_id", plan.target], plan.cwd, actor=actor)
     if res.returncode != 0:
         raise RepairError(f"`bd config set node_id` failed: {bd.err_line(res)}")
-    typer.echo("✓ node_id set")
     return [f"node_id: '{plan.current}' -> '{plan.target}'"]
 
 
@@ -360,7 +359,7 @@ def detect_role(cfg, hive: str) -> RolePlan:
     cwd = registry.hive_dir(entry)
     if not (cwd / ".beads").is_dir():
         raise RepairError(f"{cwd} has no .beads/ — clone/init the hive before repairing role")
-    current = bd.json(["config", "get", "beads.role"], cwd)
+    current = bd.json(["config", "get", "beads.role"], cwd, pin_process_cwd=True)
     if not isinstance(current, dict):
         raise RepairError(f"could not read beads.role via bd at {cwd}")
     return RolePlan(
@@ -377,15 +376,16 @@ def apply_role(plan: RolePlan, actor: str) -> list[str]:
     safe to set."""
     if plan.in_sync:
         return []
-    res = bd.run(["config", "set", "beads.role", plan.target], plan.cwd, actor=actor)
+    res = bd.run(
+        ["config", "set", "beads.role", plan.target], plan.cwd, actor=actor, pin_process_cwd=True
+    )
     if res.returncode != 0:
         raise RepairError(f"`bd config set beads.role` failed: {bd.err_line(res)}")
-    typer.echo("✓ beads.role set")
     return [f"beads.role: '{plan.current}' -> '{plan.target}'"]
 
 
 def verify_role(plan: RolePlan) -> list[str]:
-    current = bd.json(["config", "get", "beads.role"], plan.cwd)
+    current = bd.json(["config", "get", "beads.role"], plan.cwd, pin_process_cwd=True)
     value = str((current or {}).get("value") or "").strip()
     return [] if value == plan.target else [f"beads.role did not converge to '{plan.target}'"]
 

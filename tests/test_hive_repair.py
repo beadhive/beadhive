@@ -215,11 +215,11 @@ class FakeConfigKV:
         self.key = key
         self.value = initial
 
-    def fake_json(self, args, cwd):
+    def fake_json(self, args, cwd, **kw):
         assert args == ["config", "get", self.key]
         return {"key": self.key, "schema_version": 1, "value": self.value}
 
-    def fake_run(self, args, cwd, actor="", capture=False, text_input=None):
+    def fake_run(self, args, cwd, actor="", capture=False, text_input=None, **kw):
         assert args[:2] == ["config", "set"] and args[2] == self.key
         self.value = args[3]
         return SimpleNamespace(returncode=0, stdout="", stderr="")
@@ -287,3 +287,112 @@ def test_repair_role_already_correct_is_noop(hive, monkeypatch, capsys):
     hive_repair.repair(hive="", role=True, yes=True, dry_run=False)
     assert "already correct" in capsys.readouterr().out
     assert fake.value == "contributor"
+
+
+# ---- --role targets the HIVE, not the runner's cwd (bh-s08me) ---------------------------
+#
+# The regression that hid the CWD-vs-target bug at n=1: exercising `--role` against exactly
+# one hive from that hive's OWN directory, where cwd and target coincide. These fake the real
+# `bd` binary's actual quirk — discovered against the live fleet, see bh-s08me's brief —
+# rather than faking bd.json/bd.run's return value directly: `-C <path>` scopes which beads DB
+# bd opens, but a git-config-backed key (`beads.role`) resolves off the CHILD PROCESS's real
+# cwd, independent of `-C`. `RealCwdGitConfig` models exactly that: one value per directory the
+# subprocess actually ran in (`kwargs["cwd"]` when a caller pins it, else `os.getcwd()`), so a
+# regression that drops `pin_process_cwd=True` at a call site makes this fail the same way the
+# real fleet did (bh-s08me evidence #1-#4), not just a mocked-away green.
+
+
+class RealCwdGitConfig:
+    """Fakes `bd_mod._run` (the real subprocess seam) well enough to reproduce bd's own
+    `-C` vs. process-cwd split for a git-config-backed key. One in-memory value per resolved
+    directory."""
+
+    def __init__(self):
+        self.store: dict[str, str] = {}
+
+    def __call__(self, cmd, **kw):
+        resolved = str(kw.get("cwd") or os.getcwd())
+        if "get" in cmd:
+            import json as _json
+
+            value = self.store.get(resolved, "")
+            payload = _json.dumps({"key": "beads.role", "value": value})
+            return SimpleNamespace(returncode=0, stdout=payload, stderr="")
+        if "set" in cmd:
+            self.store[resolved] = cmd[-1]
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected bd invocation: {cmd}")
+
+
+CONFIG_YAML_TWO_KINDS = """\
+providers: [github]
+managed_repos:
+  - {provider: github, org: myorg, repo: personalrepo, prefix: pr, kind: personal}
+  - {provider: github, org: myorg, repo: orgrepo, prefix: og, kind: org-native}
+"""
+
+
+@pytest.fixture
+def two_hives(tmp_path, monkeypatch):
+    """Two registered hives with DIFFERENT expected roles (personal -> contributor,
+    org-native -> maintainer), plus a THIRD directory that is neither — the shape the
+    acceptance criteria require and the one the merged code was never exercised against."""
+    ws_root = tmp_path / "ws"
+    personal = ws_root / "github" / "myorg" / "personalrepo"
+    org = ws_root / "github" / "myorg" / "orgrepo"
+    runner = tmp_path / "runner"
+    for d in (personal, org, runner):
+        (d / ".beads").mkdir(parents=True)
+
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(CONFIG_YAML_TWO_KINDS)
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+    monkeypatch.setenv("BH_CONFIG", str(cfg_path))
+    monkeypatch.setenv("BH_HOME", str(tmp_path / "bhhome"))
+    monkeypatch.delenv("WS_CREW", raising=False)
+    monkeypatch.delenv("BH_DEV", raising=False)
+    monkeypatch.chdir(runner)  # neither hive's own directory
+    return SimpleNamespace(personal=personal, org=org, runner=runner)
+
+
+def test_repair_role_n_gt_1_targets_each_hive_not_the_runner_cwd(two_hives, monkeypatch, capsys):
+    """Repair BOTH hives, in one run, from a THIRD directory. Each must converge to its OWN
+    expected role, and neither the runner's cwd nor the other hive's directory may pick up a
+    stray value — the exact inversion bh-s08me's dogfood measured (10 mismatches became 5
+    DIFFERENT ones after "repairing" them)."""
+    fake = RealCwdGitConfig()
+    monkeypatch.setattr(bd_mod, "_run", fake)
+
+    hive_repair.repair(hive="github/myorg/personalrepo", role=True, yes=True, dry_run=False)
+    capsys.readouterr()
+    hive_repair.repair(hive="github/myorg/orgrepo", role=True, yes=True, dry_run=False)
+    capsys.readouterr()
+
+    assert fake.store.get(str(two_hives.personal)) == "contributor"
+    assert fake.store.get(str(two_hives.org)) == "maintainer"
+    # Neither repair wrote to the directory the process was actually sitting in.
+    assert str(two_hives.runner) not in fake.store
+
+
+def test_doctor_beads_role_reads_each_hive_not_the_runner_cwd(two_hives, monkeypatch):
+    """`bh doctor`'s beads.role section must report each hive's OWN value, not the runner's
+    cwd's — checked from the same third directory, on the SAME two-hive fixture as the repair
+    test above (the n>1 shape)."""
+    from beadhive import doctor
+
+    fake = RealCwdGitConfig()
+    # The runner's own directory answers 'maintainer' for anything unpinned — if either read
+    # below leaks through unscoped, it would silently pass this value off as the hive's own.
+    fake.store[str(two_hives.runner)] = "maintainer"
+    monkeypatch.setattr(bd_mod, "_run", fake)
+
+    findings = doctor._data_beads_role(config.load())
+
+    by_hive = {f["hive"]: f for f in findings}
+    # personal -> contributor expected; unset ('') != expected -> flagged, and NOT 'maintainer'
+    # (which is what the runner cwd would have silently answered before this fix).
+    assert by_hive["github/myorg/personalrepo"]["actual"] == ""
+    assert by_hive["github/myorg/personalrepo"]["expected"] == "contributor"
+    # org-native -> maintainer expected; unset ('') != expected -> also flagged.
+    assert by_hive["github/myorg/orgrepo"]["actual"] == ""
+    assert by_hive["github/myorg/orgrepo"]["expected"] == "maintainer"
