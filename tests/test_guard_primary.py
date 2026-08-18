@@ -730,3 +730,26 @@ def test_authoring_verbs_did_not_get_swept_up_in_the_sync_exemption(
     _record_lease(hq, _lease(OTHER_HOST))
     for args in (["update", "tt-1", "--claim"], ["close", "tt-1"], ["dep", "add", "tt-1", "tt-2"]):
         assert guard.bd_write_refusal(args, hq / "x", cfg={}) != "", args
+
+
+# ---- bh-1pg77: the observed not-primary case, pinned as a regression --------------------
+#
+# bh-1pg77 was filed against a `bh bd create` that succeeded while this host was not primary.
+# Both cited beads (bh-y85rj, bh-f3blt) were BARE top-level creates — no `--parent`, no
+# `--id` — which is exactly the intake tier `test_filing_a_standalone_bead_needs_no_lease`
+# already covers above: bh-lkbas carved that shape out deliberately, before bh-1pg77 was
+# filed, because it cannot collide across hosts. That exemption is intentional and stays.
+#
+# What genuinely regressed the observation's point is a create that CAN collide (`--parent`,
+# the same beads#4796 trigger `plan file` guards against) — pin that alongside the read side,
+# so the exact pairing bh-1pg77 asks for (write refused, read allowed) has one dedicated test.
+def test_bh_1pg77_not_primary_collidable_create_refused_list_allowed(
+    hq, hive, this_host, monkeypatch
+):
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(OTHER_HOST))
+    assert (
+        guard.bd_write_refusal(["create", "--parent", "tt-1", "--title", "child"], hq / "x", cfg={})
+        != ""
+    )
+    assert guard.bd_write_refusal(["list"], hq / "x", cfg={}) == ""
