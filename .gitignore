@@ -80,3 +80,7 @@ bom.json
 # machine-local and meaningless anywhere else. `nix build` recreates it on demand.
 /result
 /result-*
+
+# read-path benchmark reports (just bench-read-path / bh-amq08) — host-specific, diffed
+# locally, not shipped
+/.bench/
