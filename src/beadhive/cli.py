@@ -1379,19 +1379,26 @@ def hive_migrate_storage(
 
 @hive_app.command(
     "repair",
-    help="reconcile a hive's registry prefix against its beads-DB issue prefix: detect both, "
-    "preview the change against --prefix, migrate the DB (bd rename-prefix), update the "
-    "registry in place, then verify. Idempotent; --yes required to mutate, --dry-run to preview.",
+    help="reconcile ONE piece of hive/host config drift — pass exactly one of --prefix / "
+    "--node-id / --role: (--prefix) detect the registry prefix vs. the beads-DB issue prefix, "
+    "migrate the DB (bd rename-prefix), update the registry in place; (--node-id) set this "
+    "HOST's node_id (~/.config/bd/config.yaml) from bh's own host identity; (--role) set the "
+    "hive's beads.role (git config) from its registry kind. Idempotent; --yes required to "
+    "mutate, --dry-run to preview.",
 )
 def hive_repair_cmd(
-    prefix: str = typer.Option(
-        ..., "--prefix", help="target canonical prefix (no trailing hyphen)"
+    prefix: str = typer.Option("", "--prefix", help="target canonical prefix (no trailing hyphen)"),
+    node_id: bool = typer.Option(
+        False, "--node-id", help="set this host's bd node_id from bh's host identity"
+    ),
+    role: bool = typer.Option(
+        False, "--role", help="set the hive's beads.role from its registered kind"
     ),
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     yes: bool = typer.Option(
         False,
         "--yes",
-        help="required to apply a prefix change (orphans no bead IDs — bd "
+        help="required to apply a change (a prefix change orphans no bead IDs — bd "
         "rename-prefix rewrites every issue's id in place, but any prefix cached elsewhere goes "
         "stale); no prompt so this stays agent-drivable",
     ),
@@ -1401,7 +1408,9 @@ def hive_repair_cmd(
 ):
     from . import hive_repair
 
-    hive_repair.repair(hive=hive, prefix=prefix, yes=yes, dry_run=dry_run)
+    hive_repair.repair(
+        hive=hive, prefix=prefix, node_id=node_id, role=role, yes=yes, dry_run=dry_run
+    )
 
 
 @hive_app.command("ready", help="check whether this repo is set up for AGF (read-only).")
