@@ -55,6 +55,21 @@ def bootstrap_env() -> dict:
     return {**_bd_ni_env(), "BEADS_DOLT_SHARED_SERVER": "1"}
 
 
+def landed_on_shared_server(store) -> bool:
+    """Whether `store`'s database is REALLY present under bd's shared-server datadir
+    (`store_locator.server_store_dir()`) — a filesystem fact, no subprocess and no live probe,
+    the same discipline `store_locator` itself keeps.
+
+    Both names a store can resolve through are checked (`dolt_database`, bd's own field, and
+    `dolt_server_database`, bh's additive one) because a store mid-bootstrap may carry either.
+    Absent/unreadable metadata resolves to the store directory's own name, which no shared
+    database is normally called — so the answer fails toward "not on the server", i.e. toward
+    leaving bd's own persisted mode alone rather than overwriting it with a guess."""
+    root = store_locator.server_store_dir()
+    names = {store_locator.dolt_database(store, ""), store_locator.server_database(store, "")}
+    return any(name and (root / name).is_dir() for name in names)
+
+
 def persist_shared_server_mode(store) -> None:
     """Belt-and-suspenders durability after a fresh `bd bootstrap` lands `store` on server mode
     — mirrors `onboard._ensure_server_mode_persisted` (same reasoning: a per-invocation
@@ -63,7 +78,25 @@ def persist_shared_server_mode(store) -> None:
     asserts `dolt_mode` in `.beads/metadata.json` (pure file op, no subprocess — see
     `store_locator.ensure_server_mode_persisted`) and `dolt.shared-server` in
     `.beads/config.yaml` (a real `bd config set`, same belt-and-suspenders step `ensure_store`
-    already takes after a fresh `bd init` above)."""
+    already takes after a fresh `bd init` above).
+
+    REFUSES on a store the bootstrap did not actually put on the shared server (bh-qpa3g). This
+    used to assert server mode UNCONDITIONALLY, on the assumption that activating
+    `BEADS_DOLT_SHARED_SERVER=1` guaranteed the bootstrap honored it. Measured, it does not: when
+    the target database name already exists `bd bootstrap` declines outright (bh-8g6cj), leaving
+    the store half-migrated — server metadata and server scaffolding, data still in
+    `.beads/embeddeddolt/` — which is precisely the `database "ag_hp" not found` state four cache
+    stores on this host were left in. A mode assertion is a RECORD of what happened, never a
+    wish: :func:`landed_on_shared_server` checks the database really is under bd's shared-server
+    datadir before anything is written."""
+    if not landed_on_shared_server(store):
+        typer.echo(
+            f"⚠ beads: {store} has no database under {store_locator.server_store_dir()} — the "
+            "bootstrap did not land it on the shared server, so its dolt_mode is left as bd "
+            "actually wrote it (bh-qpa3g).",
+            err=True,
+        )
+        return
     if store_locator.ensure_server_mode_persisted(store):
         # Defensive path only — a fresh, non-`--reinit-local` bootstrap already persists this
         # correctly on its own (measured, bh-areg.4/onboard.py). Fix it visibly, never
@@ -123,9 +156,12 @@ def _is_cache_path(cfg, src) -> bool:
     """Whether `src` is a `_fetch_cache` hydration artifact rather than a real checkout.
 
     `sync()` resolves each hive to a checkout OR a cache store and then treats them alike; the
-    bulk path must NOT (bh-4o07n). Every cache store on this fleet carries `dolt_mode: server`
-    plus bd's generic `dolt_database: beads`, so it looks co-located by metadata alone while
-    belonging to no hive — five of them share one project_id AND one database."""
+    bulk path must NOT (bh-4o07n). Cache stores predating bh-qpa3g carry `dolt_mode: server`
+    plus a `dolt_database` belonging to some other hive, so they look co-located by metadata
+    alone while belonging to none — five of them shared one project_id AND one database. They
+    carry their own per-hive database now (`cache_database`), but the distinction this answers
+    is structural, not a property of what a store happens to carry: a cache is a derived
+    hydration artifact and is never an authoritative co-located hive."""
     try:
         Path(src).resolve().relative_to(config.cache_dir().resolve())
     except (ValueError, OSError):
@@ -265,20 +301,193 @@ def _hive_url(cfg, entry):
     return None
 
 
-def _fetch_cache(cfg, entry):
-    """Minimal-clone (blobless, no checkout) + bootstrap a hive's beads into the cache.
-    Returns the cache path, or None if it couldn't be fetched.
+# ---------------------------------------------------------------------------
+# Cache-store identity (bh-fnn3d / bh-qpa3g / bh-gbmyw — one defect, three beads)
+#
+# `_fetch_cache` bootstrapped every cache under `BEADS_DOLT_SHARED_SERVER=1` and then asserted
+# server mode on the result. The REGISTERED PREFIX — the one identity bh already enforces
+# unique fleet-wide — was never an input to the bootstrap's database resolution, so every store
+# landed on bd's generic default. Measured on this host 2026-08-09: all five cache stores
+# carried `dolt_database: ag_hp` (hermes-plugin's name) and ONE shared project_id, 8b177292.
+# Three consequences, filed as three beads and fixed here as one:
+#
+#   * bh-fnn3d — a fresh host, whose only artifact IS a cache, had no path to a per-hive
+#     database at all, so hydration failed (silently, exit 0);
+#   * bh-qpa3g — each store's identity is overwritten on every sync;
+#   * bh-gbmyw — five stores, one database, one project_id, nothing to tell them apart.
+#
+# THE DIRECT-TO-SHARED PATH WORKS, and is what bh-fnn3d asked for. Measured against real bd
+# 1.1.0 with the fleet server up on 3308: seeding `.beads/metadata.json` with
+# `dolt_mode: "server"` + `dolt_database: <sanitized prefix>` BEFORE `bd bootstrap` makes a
+# blobless `--no-checkout` clone hydrate straight into `~/.beads/shared-server/dolt/<prefix>`
+# ("Bootstrap plan: clone from remote / Database: dxnvh_probe … via server at 127.0.0.1:3308"),
+# readable immediately. Seeding the name is the only lever there is: `bd bootstrap` resolves its
+# target from that field and has no working `--database` override (bh-8g6cj). Without the seed
+# it resolves bd's generic `beads` — re-measured, and it lands on the FLEET server too, which is
+# exactly how five caches collapsed onto one database. This is `storage_migrate.migrate_hive`'s
+# own repoint-then-bootstrap sequence, applied to the one bootstrap call site that lacked it.
+#
+# THE RE-STAMP IS bd's, NOT bh's — the mechanism bh-qpa3g measured from the outside ("repointing
+# them by hand does not hold; the next `bh sync` re-stamps them"). Measured directly: with a
+# stale `project_id` still in metadata.json, `bd bootstrap` prints `Bootstrap metadata repair:
+# repaired dolt_database: "dxnvh" -> "ag_hp" using project_id 8b177292…` and puts the WRONG
+# database name back, because that id is the one another hive's database already claims on the
+# server. So the repair must retire the stale project_id along with the stale name; with it
+# dropped, the same store bootstraps cleanly into its own database (measured, both ways).
+#
+# The `.beads/dolt-server-config.yaml` + rotating-port servers found on those caches are bd's
+# OWNED mode, which `docs/design/dolt-server-mode-adr.md` rejects separately (OS-ephemeral port,
+# one unbounded server per project directory). Repairing to the fleet server retires them:
+# measured, bootstrap rewrites the store's port file 43755 -> 3308.
+#
+# Both `hub_bulk` guards stay exactly as they are. A cache is a derived hydration artifact and
+# is never an authoritative co-located hive, whatever identity it happens to carry.
+# ---------------------------------------------------------------------------
 
-    Activates `BEADS_DOLT_SHARED_SERVER=1` on the bootstrap (`bootstrap_env()`, bh-hpeye) so an
-    uncloned hive's cache lands on the fleet's shared-server target mode instead of quietly
-    re-creating an embedded store — the drift this bead found: this was the one `bd bootstrap`
-    call site that didn't, unlike `onboard.py`'s zero-footprint branch. Safe to re-run: this
-    cache is a read-only, DERIVED aggregation source, never a place a developer creates local
-    beads — a hive with a live checkout is synced by path instead (`sync()` above), never
-    through this cache — so there is never unpushed local work here for a re-bootstrap to
-    discard (the hazard `bd bootstrap` poses against a LIVE, non-empty embedded store,
-    measured for bh-oa225)."""
+
+def cache_database(entry) -> str:
+    """The database name a hive's CACHE store hydrates into on the shared server — its
+    registered prefix, run through `store_locator.sanitize_database_name` (so `bc-workspace` ->
+    `bc_workspace`), matching what `migrate-storage` derives for a cloned hive.
+
+    The prefix is the hive's own registered identity AND the one name bh already enforces
+    unique fleet-wide, so this is collision-free by construction and — the rule bh-g5ujg set —
+    RECORDED (`store_locator.ensure_server_database_persisted`), never re-derived at read time.
+    :func:`detect_cache_collisions` asserts the uniqueness rather than assuming it."""
+    return store_locator.sanitize_database_name(str(entry.get("prefix") or ""))
+
+
+def detect_cache_collisions(cfg) -> dict[str, list[str]]:
+    """``{database: [hive_key, ...]}`` for every cache database name claimed by more than one
+    registered hive — empty when the fleet is safe.
+
+    The cache-side counterpart of `storage_migrate.detect_target_collisions`, which this path
+    had no equivalent of: migration refuses a plan where two hives resolve to one database,
+    while hydration merrily pointed five stores at one. Same shape, same refusal."""
+    by_database: dict[str, list[str]] = {}
+    for entry in registry.hives(cfg):
+        name = cache_database(entry)
+        if name:
+            by_database.setdefault(name, []).append(registry.hive_key(entry))
+    return {name: ids for name, ids in sorted(by_database.items()) if len(ids) > 1}
+
+
+def _cache_on_shared_server(cache: Path, database: str) -> bool:
+    """Whether `cache` ALREADY is what the ADR requires: metadata pinning server mode and
+    `database`, and that database really present under bd's shared-server datadir. Pure
+    filesystem + metadata facts, no subprocess (`store_locator`'s discipline).
+
+    This is the idempotence gate. True means LEAVE IT ALONE — re-stamping a store that is
+    already correct on every sync is the churn bh-qpa3g measured, and the condition is a fixed
+    point: once a cache satisfies it, no later sync writes to it again. False covers a fresh
+    clone, a store in bd's owned mode (rotating port, empty `.beads/dolt/`), a store left
+    embedded, and a store naming a database that belongs to some other hive."""
+    return (
+        store_locator.dolt_mode(cache) == "server"
+        and store_locator.dolt_database(cache, "") == database
+        and (store_locator.server_store_dir() / database).is_dir()
+    )
+
+
+def _adopt_cache_identity(cache: Path, database: str) -> str:
+    """Point `cache` at its OWN database on the shared server, by writing `dolt_mode: "server"`
+    + `dolt_database: <database>` into `.beads/metadata.json` before `bd bootstrap` reads it.
+    Returns a short note describing what changed.
+
+    Also RETIRES the stale `project_id`, which is not housekeeping: bd's own "Bootstrap metadata
+    repair" resolves a project_id to whichever database on the server already claims it and
+    silently overwrites the name being seeded (measured — see the section comment). Leaving it
+    is what makes a hand repair evaporate on the next sync. A cache is a derived artifact, so
+    the identity it should carry is the one it re-clones from its own remote; bd writes that
+    back itself during the bootstrap that follows. Measured, that is also what finally settles
+    bh-gbmyw: the next sync prints `Bootstrap metadata repair: backfilled project_id 2ff6c786…
+    from database "hl"`, so each store ends up with the DISTINCT id of its own database
+    (2ff6c786 for hl, cd6dbccf for dxnvh) instead of one shared 8b177292, and the file is then
+    byte-stable across every further sync.
+
+    `dolt_server_database` is dropped for the same reason and re-recorded AFTER bootstrap
+    (`_fetch_cache`) — measured, bd rewrites metadata.json during bootstrap and does not
+    preserve bh's additive key."""
+    beads = Path(cache) / ".beads"
+    path = beads / "metadata.json"
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    before = f"{data.get('dolt_mode') or 'unset'}/{data.get('dolt_database') or 'unset'}"
+    data["dolt_mode"] = "server"
+    data["dolt_database"] = database
+    for stale in ("project_id", store_locator.SERVER_DATABASE_KEY):
+        data.pop(stale, None)
+    beads.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    return f"{before} -> server/{database}"
+
+
+def _ensure_shared_server_running(cache: Path) -> None:
+    """Start bd's shared server if nothing is answering on its endpoint — the step
+    `storage_migrate._bootstrap_shared_server` already takes for the same reason, and the one a
+    FRESH HOST needs (bh-fnn3d's whole scenario is a host with no prior store): unlike `bd init
+    --shared-server`, `bd bootstrap` does NOT auto-start the server, it fails outright with
+    `connect: connection refused`. Probe first (`dolt_health.probe_shared_server`, a real
+    endpoint connect, no subprocess) and only then attempt a start — an unconditional `bd dolt
+    start --global` returns non-zero against a server already running outside bd's own
+    bookkeeping (bh-hqmcl / bh-l90xk). Best-effort: a failed start is left for the bootstrap
+    below to report against the actual work it was trying to do."""
+    from . import dolt_health
+
+    if dolt_health.probe_shared_server().reachable:
+        return
+    run(
+        ["bd", "-C", str(cache), "dolt", "start", "--global"],
+        check=False,
+        capture=True,
+        env={**bootstrap_env()},
+    )
+
+
+def _fetch_cache(cfg, entry):
+    """Minimal-clone (blobless, no checkout) + bootstrap a hive's beads into the cache, on the
+    fleet's shared server, in the hive's OWN database. Returns the cache path, or None — loudly
+    — if it couldn't be hydrated there.
+
+    Identity is written only when the store is not already correct (:func:`_cache_on_shared_
+    server`), so a repair survives the next sync instead of being re-stamped, and landing on the
+    shared server is ASSERTED afterwards rather than assumed: a bootstrap that didn't get there
+    is a failure this reports and returns None for (`sync()` counts it failed and `bh sync`
+    exits non-zero), never a quieter fallback onto a mode the ADR retired.
+
+    Safe to re-run — but NOT because nothing here is ever written locally: `report._target`
+    creates a bead in this cache and pushes it back (`bh report` against an uncloned hive), so
+    the "read-only, never a place a developer creates local beads" claim this docstring used to
+    make was false and is retracted (filed as bh-3dyo9). What makes a re-run safe is narrower:
+    `bd bootstrap` declines outright on a store that already exists ("Database already exists.
+    Nothing to do", measured), and the repair path only runs when the store is not usable as it
+    stands."""
     cache = config.cache_dir() / entry["provider"] / entry["org"] / entry["repo"]
+    prefix = str(entry.get("prefix") or "?")
+    database = cache_database(entry)
+    from . import hub_bulk
+
+    if not database or database in hub_bulk.GENERIC_DATABASE_NAMES:
+        typer.echo(
+            f"  ✗ {prefix}: cannot hydrate — its prefix resolves to "
+            f"{database or '(nothing)'!r}, which is not a usable per-hive database name "
+            "(bh-fnn3d). Re-register the hive with a distinct --prefix.",
+            err=True,
+        )
+        return None
+    collisions = detect_cache_collisions(cfg)
+    if database in collisions:
+        typer.echo(
+            f"  ✗ {prefix}: cannot hydrate — cache database {database!r} is claimed by more "
+            f"than one registered hive ({', '.join(collisions[database])}); hydrating would "
+            "merge separate bead corpora into one store (bh-gbmyw).",
+            err=True,
+        )
+        return None
     if not (cache / ".git").is_dir():
         url = _hive_url(cfg, entry)
         if not url:
@@ -290,11 +499,38 @@ def _fetch_cache(cfg, entry):
         ).returncode
         if rc:
             return None
-    # bootstrap pulls refs/dolt/data (idempotent; refreshes on later syncs)
+    if not _cache_on_shared_server(cache, database):
+        _ensure_shared_server_running(cache)
+        typer.echo(
+            f"  ↻ {prefix}: cache store repointed at its own shared-server database "
+            f"({_adopt_cache_identity(cache, database)})",
+            err=True,
+        )
+    # bootstrap pulls refs/dolt/data into the database named above (a no-op once it exists)
     engine.get_engine(cfg).bootstrap(cache, env=bootstrap_env())
-    if not (cache / ".beads").is_dir():
+    if not _cache_on_shared_server(cache, database):
+        # Deliberately NOT the old `.beads/.is_dir()` check, which the identity stamp above would
+        # now satisfy on its own. bh-fnn3d asks for a loud refusal over a cheerful exit 0, and
+        # names the fallback an operator has: a real checkout plus `bh hive migrate-storage`.
+        typer.echo(
+            f"  ✗ {prefix}: bootstrap did not land {database!r} on the shared server at "
+            f"{store_locator.server_store_dir()} — refusing to register a store that is not "
+            "there. Clone the hive and run `bh hive migrate-storage " + prefix + " --confirm` "
+            "instead (bh-fnn3d).",
+            err=True,
+        )
         return None
     persist_shared_server_mode(cache)
+    # Record the server name rather than leaving it derivable (bh-g5ujg) — bd's own bootstrap
+    # rewrite drops this additive key, so it goes back afterwards, not before.
+    store_locator.ensure_server_database_persisted(cache, database)
+    embedded = store_locator.embedded_store_dir(cache)
+    if embedded.is_dir():
+        typer.echo(
+            f"  · {prefix}: {embedded} is now unused (the store is on the shared server) — "
+            "remove it to reclaim the space.",
+            err=True,
+        )
     return cache
 
 
