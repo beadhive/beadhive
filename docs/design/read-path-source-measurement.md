@@ -47,7 +47,7 @@ just bench-read-path
 
 ## 1. Verb level, cold vs warm
 
-```
+```text
 VERB                        COLD      WARM       GAP
 hive list                  0.93s     1.37s    -0.45s
 hive status --json         1.25s     1.11s     0.14s
@@ -178,7 +178,7 @@ config", read once) can. That is bh-i6e5g's point and the measurement supports i
 
 For scale, reading those files directly instead:
 
-```
+```text
 15 × .beads/config.yaml, plain read:   1.57 ms
 15 × .beads/config.yaml, yaml.safe_load: 44.55 ms
 ```
@@ -238,7 +238,7 @@ Per hive (`prototypes/briancripe/observaloop` excluded as a duplicate store;
 `agentguides/hermes-plugin` runs bd in embedded mode where `bd sql` is unsupported — counted
 from `issues.jsonl`):
 
-```
+```text
 HIVE                                   ISSUES  EVENTS   DEPS  LABELS  COMMENTS  DOLT_COMMITS
 github/beadhive/beadhive                 3108    5041   3186    7039        32          7752
 github/briancripe/agent-hitch             780     106    869    1403         4          2224
@@ -261,7 +261,7 @@ TOTAL                                    6673   12155   6820   14410        86  
 
 **12 155 rows in the `events` tables fleet-wide.** Distribution (bh hive, 5 041 rows):
 
-```
+```text
 label_added 1993 · updated 999 · created 939 · closed 480 · label_removed 241
 claimed 178 · dependency_added 130 · status_changed 68 · dependency_removed 10
 commented 2 · reopened 1
