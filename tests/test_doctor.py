@@ -173,19 +173,22 @@ def test_collect_includes_prefix_mismatches(hive, fakebd):  # noqa: F811
 # ---- node_id section (bh-y85rj) ----------------------------------------------
 
 
-def _fake_node_id_json(sync_remote, node_id):
+def _fake_node_id_reads(monkeypatch, sync_remote, node_id):
+    """Fake the two reads `_data_node_id` makes. Since bh-i6e5g the per-hive `sync.remote` is a
+    plain `.beads/config.yaml` read (`bd.sync_remote`), not a `bd config get` spawn; only the
+    host-wide `node_id` still goes through bd."""
+    monkeypatch.setattr(doctor.bd, "sync_remote", lambda cwd: sync_remote)
+
     def fake(args, cwd):
-        if args == ["config", "get", "sync.remote"]:
-            return {"value": sync_remote}
         if args == ["config", "get", "node_id"]:
             return {"value": node_id}
         raise AssertionError(args)
 
-    return fake
+    monkeypatch.setattr(doctor.bd, "json", fake)
 
 
 def test_data_node_id_resolved_from_config_when_set(prefix_hive, monkeypatch):
-    monkeypatch.setattr(doctor.bd, "json", _fake_node_id_json("git+ssh://x", "host-1"))
+    _fake_node_id_reads(monkeypatch, "git+ssh://x", "host-1")
     data = doctor._data_node_id(_cfg_one_hive("mr"))
     assert data["resolved"] == "host-1"
     assert data["source"] == "config"
@@ -196,9 +199,9 @@ def test_data_node_id_resolved_from_config_when_set(prefix_hive, monkeypatch):
 def test_data_node_id_env_override_wins_and_skips_the_config_read(prefix_hive, monkeypatch):
     monkeypatch.setenv("BEADS_NODE_ID", "env-host")
 
+    monkeypatch.setattr(doctor.bd, "sync_remote", lambda cwd: "git+ssh://x")
+
     def fake(args, cwd):
-        if args == ["config", "get", "sync.remote"]:
-            return {"value": "git+ssh://x"}
         raise AssertionError(f"should not read node_id config when env is set: {args}")
 
     monkeypatch.setattr(doctor.bd, "json", fake)
@@ -208,13 +211,13 @@ def test_data_node_id_env_override_wins_and_skips_the_config_read(prefix_hive, m
 
 
 def test_data_node_id_unset_and_no_remote_wired_is_quiet(prefix_hive, monkeypatch):
-    monkeypatch.setattr(doctor.bd, "json", _fake_node_id_json("", ""))
+    _fake_node_id_reads(monkeypatch, "", "")
     data = doctor._data_node_id(_cfg_one_hive("mr"))
     assert data == {"resolved": "", "source": "", "remote_hives": [], "remediation": ""}
 
 
 def test_data_node_id_unset_with_remote_wired_names_the_fix(prefix_hive, monkeypatch):
-    monkeypatch.setattr(doctor.bd, "json", _fake_node_id_json("git+ssh://x", ""))
+    _fake_node_id_reads(monkeypatch, "git+ssh://x", "")
     data = doctor._data_node_id(_cfg_one_hive("mr"))
     assert data["resolved"] == ""
     assert data["remote_hives"] == ["github/myorg/myrepo"]
@@ -254,7 +257,7 @@ def test_render_node_id_loud_when_unset_and_remote_wired(capsys):
 
 
 def test_data_beads_role_flags_mismatch(prefix_hive, monkeypatch):
-    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd, **kw: {"value": "maintainer"})
+    monkeypatch.setattr(doctor.bd, "beads_role", lambda cwd: "maintainer")
     data = doctor._data_beads_role(_cfg_one_hive("mr"))  # kind=personal -> contributor
     assert data == [
         {
@@ -268,13 +271,13 @@ def test_data_beads_role_flags_mismatch(prefix_hive, monkeypatch):
 
 
 def test_data_beads_role_flags_unset(prefix_hive, monkeypatch):
-    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd, **kw: {"value": ""})
+    monkeypatch.setattr(doctor.bd, "beads_role", lambda cwd: "")
     data = doctor._data_beads_role(_cfg_one_hive("mr"))
     assert data[0]["actual"] == ""
 
 
 def test_data_beads_role_empty_when_matching(prefix_hive, monkeypatch):
-    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd, **kw: {"value": "contributor"})
+    monkeypatch.setattr(doctor.bd, "beads_role", lambda cwd: "contributor")
     assert doctor._data_beads_role(_cfg_one_hive("mr")) == []
 
 
@@ -291,6 +294,7 @@ def test_data_beads_role_reports_missing_checkout_as_unresolvable(tmp_path, monk
         raise AssertionError("must not shell out for a hive with no local checkout")
 
     monkeypatch.setattr(doctor.bd, "json", fail)
+    monkeypatch.setattr(doctor.bd, "beads_role", fail)
     data = doctor._data_beads_role(_cfg_one_hive("mr"))
     assert not called
     assert data == [

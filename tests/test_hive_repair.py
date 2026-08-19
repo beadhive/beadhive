@@ -312,6 +312,11 @@ class RealCwdGitConfig:
 
     def __call__(self, cmd, **kw):
         resolved = str(kw.get("cwd") or os.getcwd())
+        if cmd[0] == "git":  # the READ path is a direct `git config --get` since bh-i6e5g
+            value = self.store.get(resolved, "")
+            # git exits 1 (not 0-with-empty) for a key that is not set — the signal
+            # `bd.beads_role` distinguishes "unset" from "unreadable" by.
+            return SimpleNamespace(returncode=0 if value else 1, stdout=value, stderr="")
         if "get" in cmd:
             import json as _json
 
@@ -396,3 +401,62 @@ def test_doctor_beads_role_reads_each_hive_not_the_runner_cwd(two_hives, monkeyp
     # org-native -> maintainer expected; unset ('') != expected -> also flagged.
     assert by_hive["github/myorg/orgrepo"]["actual"] == ""
     assert by_hive["github/myorg/orgrepo"]["expected"] == "maintainer"
+
+
+def test_beads_role_real_git_reads_the_TARGET_repo_not_the_process_cwd(tmp_path, monkeypatch):
+    """bh-i6e5g swapped the `bd config get beads.role` spawn for a direct `git config --get`.
+    That read must keep bh-s08me's scoping, so this checks it against REAL git rather than the
+    fake above: two real repos with DIFFERENT beads.role, plus a third the process actually
+    sits in that answers something else entirely. A read that leaks to the process cwd — the
+    original bug — returns 'runner-value' for both."""
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(tmp_path / "gitconfig"))  # no host global leak
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    dirs = {}
+    for name, role in (("a", "contributor"), ("b", "maintainer"), ("runner", "runner-value")):
+        d = tmp_path / name
+        d.mkdir()
+        _git("init", "-q", cwd=d)
+        _git("config", "beads.role", role, cwd=d)
+        dirs[name] = d
+    monkeypatch.chdir(dirs["runner"])
+
+    assert bd_mod.beads_role(dirs["a"]) == "contributor"
+    assert bd_mod.beads_role(dirs["b"]) == "maintainer"
+
+    unset = tmp_path / "unset"
+    unset.mkdir()
+    _git("init", "-q", cwd=unset)
+    assert bd_mod.beads_role(unset) == ""  # set-to-nothing, reportable as drift
+
+    # Outside a repo git still exits 1 ("not set" in the scopes it can see), which is the same
+    # answer as an unset key — the None case is a git that could not run at all (exit 127).
+    plain = tmp_path / "notarepo"
+    plain.mkdir()
+    assert bd_mod.beads_role(plain) == ""
+    monkeypatch.setattr(
+        bd_mod, "_run", lambda *a, **k: SimpleNamespace(returncode=127, stdout="", stderr="")
+    )
+    assert bd_mod.beads_role(dirs["a"]) is None  # no git, no answer — caller skips, never flags
+
+
+def test_sync_remote_reads_config_yaml_without_a_subprocess(tmp_path, monkeypatch):
+    """bh-i6e5g: `sync.remote` comes off `.beads/config.yaml` now. Both spellings bd's dotted
+    key accepts resolve, a store without the key is "", and no subprocess is spawned at all."""
+    monkeypatch.setattr(
+        bd_mod, "_run", lambda *a, **k: pytest.fail("sync_remote must not spawn a process")
+    )
+    flat = tmp_path / "flat"
+    (flat / ".beads").mkdir(parents=True)
+    (flat / ".beads" / "config.yaml").write_text('sync.remote: "git+ssh://git@example.com/x.git"\n')
+    assert bd_mod.sync_remote(flat) == "git+ssh://git@example.com/x.git"
+
+    nested = tmp_path / "nested"
+    (nested / ".beads").mkdir(parents=True)
+    (nested / ".beads" / "config.yaml").write_text("sync:\n  remote: ssh://n\n")
+    assert bd_mod.sync_remote(nested) == "ssh://n"
+
+    bare = tmp_path / "bare"
+    (bare / ".beads").mkdir(parents=True)
+    (bare / ".beads" / "config.yaml").write_text("# nothing wired\n")
+    assert bd_mod.sync_remote(bare) == ""
+    assert bd_mod.sync_remote(tmp_path / "nosuchhive") == ""  # absent file, not a crash

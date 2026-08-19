@@ -536,7 +536,9 @@ def test_local_bd_schema_version_caches_by_bd_version_string(tmp_path, monkeypat
     assert first.version == 42
     assert second.version == 42
     assert calls["init"] == 1  # the real (expensive) scratch probe only ran once
-    assert calls["version"] == 2  # each call still re-checks WHICH bd is on PATH
+    # `bd --version` is memoized for the process since bh-i6e5g — the binary cannot change
+    # under a running process, and doctor was paying for that question 12 times a run.
+    assert calls["version"] == 1
 
 
 def test_local_bd_schema_version_reprobes_after_a_bd_upgrade(tmp_path, monkeypatch):
@@ -558,6 +560,7 @@ def test_local_bd_schema_version_reprobes_after_a_bd_upgrade(tmp_path, monkeypat
     before = dolt_health.local_bd_schema_version()
     state["version"] = "bd version 2.0.0"
     state["n"] = 59
+    dolt_health._local_bd_version_string.cache_clear()  # an upgrade is a NEW process's view
     after = dolt_health.local_bd_schema_version()
 
     assert before.version == 42

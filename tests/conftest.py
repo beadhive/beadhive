@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import otel, validation_ledger
+from beadhive import dolt_health, otel, validation_ledger
 from harness.world import (
     MAX_CONCURRENT_DOLT_SERVER_TESTS,
     World,
@@ -209,6 +209,17 @@ def _sandbox_workspace_root(tmp_path_factory, monkeypatch):
     default and simply wins, the same way ``BH_CONFIG`` overrides the seeded config above."""
     root = tmp_path_factory.mktemp("git-workspace")
     monkeypatch.setenv("GIT_WORKSPACE", str(root))
+
+
+@pytest.fixture(autouse=True)
+def _fresh_bd_version_memo():
+    """`dolt_health._local_bd_version_string` is memoized for the process (bh-i6e5g: `bh doctor`
+    spawned `bd --version` 12 times per run, 1.30 s of pure repetition). A process-lifetime memo
+    is a shared mutable in a test *process*, so it is cleared per test — same argument as
+    `_unsealed_ledger` below."""
+    dolt_health._local_bd_version_string.cache_clear()
+    yield
+    dolt_health._local_bd_version_string.cache_clear()
 
 
 @pytest.fixture(autouse=True)
