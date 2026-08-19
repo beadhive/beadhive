@@ -93,3 +93,74 @@ def test_sql_rows_is_none_on_a_failed_call_not_empty():
 
 def test_sql_rows_is_none_on_unparseable_output():
     assert fleet.sql_rows(_Res(0, "Warning: something\nnot json")) is None
+
+
+# ---- shape H: fleet.once, pool-safe (bh-gy7bc / bh-w49zv) -------------------
+
+
+def test_once_collapses_concurrent_callers_to_a_single_execution():
+    """THE WHOLE POINT. functools.cache does NOT do this — under a pool all N callers miss and
+    all N execute, which is how bh-i6e5g's `bd --version` memo was silently defeated when
+    bh-ti7ws made its caller concurrent. Written as a pool because a sequential test passes
+    against the broken implementation too."""
+    import time
+
+    runs = []
+
+    def slow():
+        runs.append(1)
+        time.sleep(0.05)  # wide enough that every worker is inside the miss window
+        return "v1"
+
+    memo = fleet.once(slow)
+    assert fleet.fanout(lambda _: memo(), list(range(15)), workers=15) == ["v1"] * 15
+    assert len(runs) == 1, f"expected ONE execution under a 15-way pool, got {len(runs)}"
+
+
+def test_once_the_same_test_fails_against_functools_cache():
+    """Pins WHY fleet.once exists rather than @cache — if this ever stops holding, the stdlib
+    grew stampede protection and `once` can go."""
+    import time
+    from functools import cache
+
+    runs = []
+
+    @cache
+    def slow():
+        runs.append(1)
+        time.sleep(0.05)
+        return "v1"
+
+    fleet.fanout(lambda _: slow(), list(range(15)), workers=15)
+    assert len(runs) > 1, "functools.cache appears to have gained stampede protection"
+
+
+def test_once_does_not_cache_a_raised_exception():
+    """A cached failure would turn one transient probe failure into a permanently wrong answer
+    for the life of the process."""
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("transient")
+        return "ok"
+
+    memo = fleet.once(flaky)
+    with pytest.raises(RuntimeError):
+        memo()
+    assert memo() == "ok"
+
+
+def test_once_caches_a_falsy_result():
+    """`bd --version` returns None when bd is absent — a legitimate answer, not a miss."""
+    calls = []
+
+    def none_returner():
+        calls.append(1)
+        return None
+
+    memo = fleet.once(none_returner)
+    assert memo() is None
+    assert memo() is None
+    assert len(calls) == 1

@@ -227,8 +227,7 @@ def refresh_with_detail(
         observed_by_host = host.host_id()
     except Exception:
         observed_by_host = ""
-    probe_timeout = dolt_health.DEFAULT_SCHEMA_PROBE_TIMEOUT
-    bd_version = dolt_health._local_bd_version_string(timeout=probe_timeout)
+    bd_version = dolt_health._local_bd_version_string()
     record = HiveSchemaRecord(
         provider=provider,
         org=org,
