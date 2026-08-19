@@ -443,6 +443,54 @@ def test_server_probe_uses_bd_sql(tmp_path, monkeypatch):
     assert "sql" in calls[0]
 
 
+def test_server_probe_succeeds_despite_nonzero_exit_when_a_bd_warning_is_the_only_stderr(
+    tmp_path, monkeypatch
+):
+    """bh-j50yv: a subprocess that exits non-zero but whose only stderr line is bd's own
+    non-fatal `Warning:` advisory (the real repro: `.beads` has permissions 0755) must still
+    succeed if the answer parsed off stdout — not read as a failed probe."""
+    monkeypatch.setattr(
+        dolt_health,
+        "run",
+        lambda *a, **k: Completed(
+            1,
+            _json_bare_array(max_version=62),
+            f"Warning: {tmp_path}/.beads has permissions 0755 (recommended: 0700). Run: "
+            f"chmod 700 {tmp_path}/.beads",
+        ),
+    )
+    result = dolt_health.probe_server_schema_version(tmp_path)
+    assert result.version == 62
+
+
+def test_server_probe_fails_on_nonzero_exit_with_a_real_error_and_no_parseable_stdout(
+    tmp_path, monkeypatch
+):
+    """The opposite case must still fail: a nonzero exit with no usable stdout and a REAL
+    error on stderr is a genuine probe failure, warning-filter or not."""
+    monkeypatch.setattr(dolt_health, "run", lambda *a, **k: Completed(1, "", "connection refused"))
+    result = dolt_health.probe_server_schema_version(tmp_path)
+    assert result.version is None
+    assert "connection refused" in result.detail
+
+
+def test_embedded_probe_succeeds_despite_nonzero_exit_when_a_bd_warning_is_the_only_stderr(
+    tmp_path, monkeypatch
+):
+    """Same fix, embedded path (bh-j50yv)."""
+    db_dir = tmp_path / "db"
+    (db_dir / ".dolt").mkdir(parents=True)
+    monkeypatch.setattr(
+        dolt_health,
+        "run",
+        lambda *a, **k: Completed(
+            1, _json_rows(max_version=59), f"Warning: {db_dir} has permissions 0755"
+        ),
+    )
+    result = dolt_health.probe_embedded_schema_version(db_dir)
+    assert result.version == 59
+
+
 def test_server_probe_returns_none_if_it_were_fed_the_wrong_envelope_shape():
     """Documents the exact bug review caught, as a standing regression guard: if
     `_parse_max_version` only understood `dolt`'s `{"rows": [...]}` envelope, `bd sql --json`'s

@@ -183,16 +183,30 @@ def is_stale(
 def refresh(
     hive_dir: Path, provider: str, org: str, repo: str, *, hq_dir: Path, dolt_mode: str | None
 ) -> HiveSchemaRecord | None:
+    """`refresh_with_detail`, without the probe detail a caller that only wants the record
+    doesn't need."""
+    record, _detail = refresh_with_detail(
+        hive_dir, provider, org, repo, hq_dir=hq_dir, dolt_mode=dolt_mode
+    )
+    return record
+
+
+def refresh_with_detail(
+    hive_dir: Path, provider: str, org: str, repo: str, *, hq_dir: Path, dolt_mode: str | None
+) -> tuple[HiveSchemaRecord | None, str | None]:
     """Probe `hive_dir`'s real schema version and persist it — the one place a
-    `HiveSchemaRecord` gets written. Returns the new record, or ``None`` (and writes NOTHING)
-    when the probe itself failed: this module never manufactures a placeholder value (module
-    docstring's staleness contract) — a failed refresh must leave the PRIOR record (if any) as
-    the last known-true observation, not overwrite it with a guess."""
+    `HiveSchemaRecord` gets written. Returns ``(record, None)`` on success; ``(None, detail)``
+    (and writes NOTHING) when the probe itself failed, *detail* being
+    `dolt_health.SchemaProbeResult.detail` — WHY it failed, so a caller that needs to say so out
+    loud (`bh doctor`'s never-successfully-probed case, bh-j50yv) doesn't have to re-probe just
+    to learn the reason. This module never manufactures a placeholder value (module docstring's
+    staleness contract) — a failed refresh must leave the PRIOR record (if any) as the last
+    known-true observation, not overwrite it with a guess."""
     from . import host
 
     probed = dolt_health.probe_raw_schema_version(hive_dir, dolt_mode=dolt_mode)
     if probed.version is None:
-        return None
+        return None, probed.detail
     try:
         observed_by_host = host.host_id()
     except Exception:
@@ -210,4 +224,4 @@ def refresh(
         observed_by_bd_version=bd_version or "",
     )
     save(hq_dir, record)
-    return record
+    return record, None

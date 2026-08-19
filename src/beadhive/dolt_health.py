@@ -245,6 +245,41 @@ class SchemaProbeResult:
     detail: str
 
 
+#: bd's own prefix for a non-fatal advisory printed to stderr (e.g. "Warning: <dir> has
+#: permissions 0755 ..."). A probe must not read this as "the command failed" — bd emits it
+#: on an otherwise-successful run, and a probe that treats it as fatal produces a confident
+#: wrong answer (SchemaProbeResult(version=None, ...)) that then silently blanks the fleet
+#: (`hive_schema.refresh` writes nothing for a `None` probe — see that module's docstring).
+_BD_WARNING_PREFIX = "Warning:"
+
+
+def _non_warning_lines(text: str) -> list[str]:
+    """*text*'s lines with bd's own ``Warning:``-prefixed advisories removed — what is left is
+    the part of stderr that might actually explain a real failure."""
+    return [
+        line
+        for line in (text or "").strip().splitlines()
+        if not line.strip().startswith(_BD_WARNING_PREFIX)
+    ]
+
+
+def _probe_failure(res, *, tool: str, target) -> SchemaProbeResult:
+    """Build the `SchemaProbeResult` for a nonzero exit, once stdout has already failed to
+    parse (see call sites): the exit CODE is the real failure signal (bd's own docstring
+    already established stderr content is a proxy that can lie — see the module docstring's
+    "TWO DECOYS" section for the same lesson applied elsewhere), so a nonzero code with only a
+    `Warning:` line on stderr still counts as failed HERE — the caller only reaches this helper
+    once the optimistic stdout-parse (the actual fix for bh-j50yv) has already come up empty.
+    Filtering the warning out of the DETAIL string keeps the reported reason legible instead of
+    quoting bd's own harmless warning back as if it were the cause."""
+    non_warning = _non_warning_lines(res.stderr)
+    detail_source = (
+        "\n".join(non_warning) if non_warning else (res.stderr or res.stdout or f"{tool} failed")
+    )
+    detail = detail_source.strip().splitlines()[:1]
+    return SchemaProbeResult(None, f"{tool} against {target} failed: {' '.join(detail)}")
+
+
 def _parse_max_version(stdout: str) -> int | None:
     """Extract the first row's ``max_version`` from either of TWO real, DIFFERENT shapes the two
     tools this module shells out to actually produce for the identical query — confirmed by
@@ -299,13 +334,15 @@ def probe_embedded_schema_version(
         capture=True,
         timeout=timeout,
     )
-    if res.returncode != 0:
-        detail = (res.stderr or res.stdout or "dolt sql failed").strip().splitlines()[:1]
-        return SchemaProbeResult(None, f"dolt sql against {db_dir} failed: {' '.join(detail)}")
     version = _parse_max_version(res.stdout)
-    if version is None:
-        return SchemaProbeResult(None, f"could not parse a schema_migrations row from {db_dir}")
-    return SchemaProbeResult(version, f"read directly from {db_dir}/schema_migrations")
+    if version is not None:
+        # A real row parsed off stdout even though the exit code (or a stray warning) below
+        # might say otherwise — bd/dolt can print a non-fatal `Warning:` and still answer the
+        # query correctly (bh-j50yv). The data on stdout is the stronger signal.
+        return SchemaProbeResult(version, f"read directly from {db_dir}/schema_migrations")
+    if res.returncode != 0:
+        return _probe_failure(res, tool="dolt sql", target=db_dir)
+    return SchemaProbeResult(None, f"could not parse a schema_migrations row from {db_dir}")
 
 
 # ---- server modes (owned/shared/external): `bd sql` over the live connection ----------------
@@ -332,13 +369,15 @@ def probe_server_schema_version(
         capture=True,
         timeout=timeout,
     )
-    if res.returncode != 0:
-        detail = (res.stderr or res.stdout or "bd sql failed").strip().splitlines()[:1]
-        return SchemaProbeResult(None, f"bd sql against {hive_dir} failed: {' '.join(detail)}")
     version = _parse_max_version(res.stdout)
-    if version is None:
-        return SchemaProbeResult(None, f"could not parse a schema_migrations row from {hive_dir}")
-    return SchemaProbeResult(version, f"read via `bd sql` against {hive_dir}")
+    if version is not None:
+        # See probe_embedded_schema_version's identical guard: a `Warning:` on stderr (e.g. the
+        # `.beads` permissions advisory, bh-j50yv's actual repro) is not a failed probe when
+        # the query answer parsed off stdout regardless.
+        return SchemaProbeResult(version, f"read via `bd sql` against {hive_dir}")
+    if res.returncode != 0:
+        return _probe_failure(res, tool="bd sql", target=hive_dir)
+    return SchemaProbeResult(None, f"could not parse a schema_migrations row from {hive_dir}")
 
 
 # ---- mode dispatch ---------------------------------------------------------------------------
@@ -421,8 +460,7 @@ def _scratch_probe_local_version(timeout: float) -> SchemaProbeResult:
             timeout=timeout,
         )
         if init.returncode != 0:
-            detail = (init.stderr or init.stdout or "bd init failed").strip().splitlines()[:1]
-            return SchemaProbeResult(None, f"scratch probe init failed: {' '.join(detail)}")
+            return _probe_failure(init, tool="bd init", target=scratch)
         probed = probe_embedded_schema_version(
             store_locator.embedded_database_dir(scratch, database=prefix), timeout=timeout
         )
