@@ -1858,12 +1858,8 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
         return []  # can't judge what THIS bd supports — nothing to compare (dolt_fix_advisory's
         # own precedent: stay silent rather than warn off an unconfirmed premise)
 
-    entries = [
-        (e, root / e["provider"] / e["org"] / e["repo"])
-        for e in hives
-        if (root / e["provider"] / e["org"] / e["repo"]).exists()
-        and (root / e["provider"] / e["org"] / e["repo"] / ".beads").is_dir()
-    ]
+    _paths = [(e, root / e["provider"] / e["org"] / e["repo"]) for e in hives]
+    entries = [(e, path) for e, path in _paths if (path / ".beads").is_dir()]
     if not entries:
         return []
 
@@ -1872,9 +1868,12 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
         dolt_mode = safety._bd_dolt_mode(str(path))
         # WRITE PATH: `refresh` -> `hive_schema.save` writes ONE file per hive
         # (hives/<provider>/<org>/<repo>.yaml) — no two workers ever target the same path, so
-        # there is no file-level race to serialize. The one piece of shared, mutable state is
-        # `hive_schema`'s module-level `ruamel.yaml.YAML()` instance, which is now lock-guarded
-        # (hive_schema.py, mirroring config.py's bh-3qo60 fix) — safe to call from a pool as-is.
+        # there is no file-level race to serialize. The shared, mutable state that IS on this
+        # path: `hive_schema`'s module-level `ruamel.yaml.YAML()` (lock-guarded, mirroring
+        # config.py's bh-3qo60 fix) AND `host.py`'s own `ruamel.yaml.YAML()` singleton, reached
+        # via `refresh` -> `host.host_id()` -> `host.load()` — a THIRD instance of the same
+        # bh-3qo60 pattern, now lock-guarded the same way (`host.py`'s `_yaml_lock`). Both are
+        # safe to call from a pool as-is.
         hive_schema.refresh(
             path, e["provider"], e["org"], e["repo"], hq_dir=hq_dir, dolt_mode=dolt_mode
         )

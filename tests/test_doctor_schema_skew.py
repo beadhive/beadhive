@@ -176,13 +176,17 @@ def test_concurrent_probes_preserve_order_and_persist_every_hive(tmp_path, monke
     manifest file (hive_schema's shared `ruamel.yaml.YAML()` is lock-guarded) rather than one
     write corrupting or losing a sibling's."""
     import random
+    import re
     import time as time_mod
 
     hq_dir = _hq(tmp_path)
     n = 14
+    # Distinct, non-substring-colliding prefixes (not `f"r{i}"`, where "r1" is also a substring
+    # of "r11"/"r13"'s warning) so extracting each warning's hive back out of `warns` is exact.
+    prefixes = [f"zz{i:02d}" for i in range(n)]
     entries = []
     for i in range(n):
-        entries.append(_entry(org="acme", repo=f"r{i}", prefix=f"r{i}"))
+        entries.append(_entry(org="acme", repo=f"r{i}", prefix=prefixes[i]))
         (tmp_path / "github" / "acme" / f"r{i}" / ".beads").mkdir(parents=True)
 
     monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
@@ -207,9 +211,12 @@ def test_concurrent_probes_preserve_order_and_persist_every_hive(tmp_path, monke
     # Every odd hive is skewed; a scrambled completion order only flips one adjacent pair
     # undetected, so this many discriminating positions in registry order is needed to make a
     # wrong-order (or wrong-file) implementation fail reliably.
-    expected_prefixes = [f"r{i}" for i in range(1, n, 2)]
-    assert [p for p in expected_prefixes if any(p in w for w in warns)] == expected_prefixes
-    assert len(warns) == len(expected_prefixes)
+    expected_prefixes = [prefixes[i] for i in range(1, n, 2)]
+    # Assert the ACTUAL sequence `warns` came back in, not a filtered/reordered view of
+    # `expected_prefixes` — iterating `warns` (pool-completion order pre-fix) is what makes
+    # this discriminate; iterating `expected_prefixes` (already-sorted) cannot.
+    actual_prefixes = [re.search(r"hive '([^']+)':", w).group(1) for w in warns]
+    assert actual_prefixes == expected_prefixes
 
     # And every hive — even the non-skewed, non-warned ones — got its OWN record persisted
     # correctly: no cross-hive corruption from the shared YAML instance under concurrency.
