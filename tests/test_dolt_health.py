@@ -999,3 +999,18 @@ def test_bulk_schema_versions_on_no_targets_makes_no_call(monkeypatch):
         lambda *a_, **k: pytest.fail("must not query with nothing to query for"),
     )
     assert dolt_health.bulk_schema_versions([]) == {}
+
+
+def test_bulk_schema_versions_drops_a_hive_with_no_recorded_database(tmp_path, monkeypatch):
+    """An unrecorded name would have to be GUESSED, and a guess that names no database on the
+    server fails the UNION for every hive in it. Ask only for what is written down."""
+    seen = []
+    monkeypatch.setattr(
+        dolt_health.fleet,
+        "sql",
+        lambda s, q, **k: (seen.append(q), _bulk_res([{"db": "bh", "max_version": 62}]))[1],
+    )
+    a, b = tmp_path / "a", tmp_path / "b"
+    out = dolt_health.bulk_schema_versions([(a, "bh"), (b, "")])
+    assert b not in out
+    assert "FROM ." not in seen[0], "an empty name must never reach the query as a bare dot"

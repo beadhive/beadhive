@@ -1876,9 +1876,15 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
     # `bd sql`, so this is the same query asked once instead of N times, with no bd-side
     # derivation to reimplement (see dolt_health.bulk_schema_versions' classification note).
     # PARTIAL BY CONSTRUCTION: embedded-mode hives are absent and fall back to shape B below.
+    # RECORDED, never derived (bh-g5ujg's rule, and bh-td8t9 backfilled the fleet so this is
+    # not a narrower set in practice): `server_database` FALLS BACK to `dolt_database` for a
+    # keyless hive, and for a hive whose metadata is unreadable that fallback is the directory
+    # name — a guess. A guessed name that names no database on the server fails the UNION, and
+    # one bad hive would drop every hive back to the per-hive path. Asking only for what is
+    # written down keeps a broken hive's blast radius to that hive.
     bulk = dolt_health.bulk_schema_versions(
         [
-            (path, store_locator.server_database(path))
+            (path, store_locator.recorded_server_database(path))
             for _e, path in entries
             if not store_locator.is_embedded_mode(path)
         ]
