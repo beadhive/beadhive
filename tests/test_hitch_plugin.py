@@ -659,3 +659,67 @@ def test_setting_a_hitch_key_reports_no_unknown_section_problem():
 
     (problem,) = config._validate(["definitely-not-a-section", "k"], "x")
     assert problem["level"] == "warning" and "unknown config section" in problem["message"]
+
+
+# ---- seat_reports concurrency (bh-ls1ks) ---------------------------------------
+# Each preflight is a ~1.8s external spawn and there is no ordering between them, so they run
+# in a thread pool. These two pin the properties that made the sequential loop safe: the report
+# stays in `seats` order regardless of completion order, and one seat blowing up is that seat's
+# report rather than the whole section's.
+
+
+def test_seat_reports_keeps_sorted_order_when_preflights_finish_out_of_order(monkeypatch, tmp_path):
+    import time
+
+    seats = ["analyst", "developer", "dispatcher", "merger"]
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    monkeypatch.setattr(role, "_known_seats", lambda: seats)
+    repo = _write_repo(tmp_path, seats)
+
+    # Reverse-ordered sleeps: the first seat alphabetically finishes last.
+    delay = {s: 0.05 * (len(seats) - i) for i, s in enumerate(sorted(seats))}
+    started = []
+
+    def _fake_run(argv, **kw):
+        seat = argv[3]
+        started.append(seat)
+        time.sleep(delay[seat])
+
+        class _R:
+            returncode = 0
+            stdout = "Preflight succeeded\n"
+
+        return _R()
+
+    monkeypatch.setattr(hitch_plugin.run, "run", _fake_run)
+
+    reports = hitch_plugin.seat_reports({"hitch": {"repo": str(repo)}})
+
+    assert [r["seat"] for r in reports] == sorted(seats)
+    assert len(started) == len(seats)
+
+
+def test_seat_reports_one_failing_spawn_does_not_abort_the_section(monkeypatch, tmp_path):
+    seats = ["developer", "merger"]
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    monkeypatch.setattr(role, "_known_seats", lambda: seats)
+    repo = _write_repo(tmp_path, seats)
+
+    def _fake_run(argv, **kw):
+        if argv[3] == "developer":
+            raise OSError("hitch vanished")
+
+        class _R:
+            returncode = 0
+            stdout = "Preflight succeeded\n"
+
+        return _R()
+
+    monkeypatch.setattr(hitch_plugin.run, "run", _fake_run)
+
+    reports = hitch_plugin.seat_reports({"hitch": {"repo": str(repo)}})
+
+    assert [r["seat"] for r in reports] == ["developer", "merger"]
+    assert reports[0]["state"] == "blocked"
+    assert "hitch vanished" in reports[0]["detail"]
+    assert reports[1]["state"] == "ok"

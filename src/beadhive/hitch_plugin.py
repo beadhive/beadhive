@@ -102,6 +102,7 @@ content on rebuild is tracked separately (bh-add2.2), out of scope here.
 from __future__ import annotations
 
 import shutil
+from concurrent.futures import ThreadPoolExecutor
 
 import typer
 
@@ -268,8 +269,7 @@ def seat_reports(cfg) -> list[dict]:
     if hitch_target is None:
         return []
 
-    reports = []
-    for seat in seats:
+    def _one(seat: str) -> dict:
         argv = [
             command,
             "profile",
@@ -282,10 +282,18 @@ def seat_reports(cfg) -> list[dict]:
             "--target",
             hitch_target,
         ]
-        result = run.run(argv, check=False, capture=True)
+        try:
+            result = run.run(argv, check=False, capture=True)
+        except Exception as exc:  # noqa: BLE001 — one seat's spawn failing is that seat's report
+            return {"seat": seat, "state": "blocked", "detail": f"{command} preflight: {exc}"}
         state, detail = _classify_preflight(result.returncode, result.stdout or "")
-        reports.append({"seat": seat, "state": state, "detail": detail})
-    return reports
+        return {"seat": seat, "state": state, "detail": detail}
+
+    # Preflights are independent and read-only, and each costs ~1.8s of external process
+    # (bh-ls1ks: 7 seats = 12.7s sequential). Run them in a pool and keep `seats`' sorted
+    # order by consuming `map`'s results positionally, so the report stays deterministic.
+    with ThreadPoolExecutor(max_workers=len(seats)) as pool:
+        return list(pool.map(_one, seats))
 
 
 def _readiness(cfg, entry) -> tuple[str, str] | None:
