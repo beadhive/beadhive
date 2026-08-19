@@ -26,6 +26,7 @@ references its OWN key, and only the PUBLIC half is ever read or published.
 from __future__ import annotations
 
 import socket
+import threading
 import uuid
 from pathlib import Path
 
@@ -37,6 +38,16 @@ from .run import run
 # Same round-trip settings as config.py's writer — plain 2-key file, but consistent style.
 _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
+
+# Same fix as config.py's bh-3qo60 and hive_schema.py: `ruamel.yaml.YAML()` instances are not
+# thread-safe, and every `_bd_schema_skew_warnings` pool worker reaches this module's `_yaml`
+# via `hive_schema.refresh` -> `host.host_id()` -> `load()`. A process-lifetime `@cache` on
+# `host_id()` was considered instead (host.yaml is minted once and never regenerated, so it's
+# process-constant) but rejected: `host_id()`/`mint_if_needed()` are exercised directly by ~18
+# test modules that monkeypatch `config.home()` to a fresh tmp dir per test and expect a freshly
+# minted id each time, all within one pytest process — a global cache would return a stale id
+# across tests. Locking (like the other two singletons) has no such cross-test hazard.
+_yaml_lock = threading.Lock()
 
 #: Default SSH public keys probed, in order, when git itself has no ``user.signingkey``.
 #: PUBLIC halves only — bh never reads, generates or moves private key material (the bead's
@@ -111,7 +122,7 @@ def mint_if_needed() -> bool:
         "label": _default_label(),
         "signing_key": discover_signing_key(),
     }
-    with p.open("w") as f:
+    with _yaml_lock, p.open("w") as f:
         _yaml.dump(data, f)
     return True
 
@@ -136,7 +147,7 @@ def ensure_signing_key() -> str:
     if not found:
         return ""
     data["signing_key"] = found
-    with p.open("w") as f:
+    with _yaml_lock, p.open("w") as f:
         _yaml.dump(data, f)
     return found
 
@@ -151,7 +162,8 @@ def load() -> dict:
             f"{config.BINARY_ALIAS} host identity not found at {p}\n"
             f"  scaffold it with:  {config.BINARY_ALIAS} config init"
         )
-    return _yaml.load(p.read_text())
+    with _yaml_lock:
+        return _yaml.load(p.read_text())
 
 
 def host_id() -> str:

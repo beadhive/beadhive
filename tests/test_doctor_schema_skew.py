@@ -169,6 +169,62 @@ def test_stale_prior_record_survives_a_failed_reprobe_and_is_flagged(tmp_path, m
     assert hive_schema.load(hq_dir, "github", "acme", "zf") == stale_record
 
 
+def test_concurrent_probes_preserve_order_and_persist_every_hive(tmp_path, monkeypatch):
+    """bh-ti7ws: the per-hive `bd dolt status` / `bd sql schema_migrations` probes now run in a
+    thread pool, not sequentially. The reported warnings must still come back in registry order
+    regardless of which worker finishes first, and every hive's record must land in ITS OWN
+    manifest file (hive_schema's shared `ruamel.yaml.YAML()` is lock-guarded) rather than one
+    write corrupting or losing a sibling's."""
+    import random
+    import re
+    import time as time_mod
+
+    hq_dir = _hq(tmp_path)
+    n = 14
+    # Distinct, non-substring-colliding prefixes (not `f"r{i}"`, where "r1" is also a substring
+    # of "r11"/"r13"'s warning) so extracting each warning's hive back out of `warns` is exact.
+    prefixes = [f"zz{i:02d}" for i in range(n)]
+    entries = []
+    for i in range(n):
+        entries.append(_entry(org="acme", repo=f"r{i}", prefix=prefixes[i]))
+        (tmp_path / "github" / "acme" / f"r{i}" / ".beads").mkdir(parents=True)
+
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+    monkeypatch.setattr(doctor.safety, "_bd_dolt_mode", lambda path: "embedded")
+    monkeypatch.setattr(
+        dolt_health, "local_bd_schema_version", lambda **k: dolt_health.SchemaProbeResult(53, "x")
+    )
+    monkeypatch.setattr(dolt_health, "_local_bd_version_string", lambda **k: "bd version 1.1.2")
+
+    def fake_probe(hive_dir, *, dolt_mode, timeout=None):
+        # jitter completion order across threads
+        time_mod.sleep(random.uniform(0, 0.01))
+        i = int(hive_dir.name.removeprefix("r"))
+        # even i: matches local (53) -> no skew; odd i: skewed -> warns
+        version = 53 if i % 2 == 0 else 59
+        return dolt_health.SchemaProbeResult(version, "probed")
+
+    monkeypatch.setattr(dolt_health, "probe_raw_schema_version", fake_probe)
+
+    warns = doctor._bd_schema_skew_warnings({}, entries, tmp_path)
+
+    # Every odd hive is skewed; a scrambled completion order only flips one adjacent pair
+    # undetected, so this many discriminating positions in registry order is needed to make a
+    # wrong-order (or wrong-file) implementation fail reliably.
+    expected_prefixes = [prefixes[i] for i in range(1, n, 2)]
+    # Assert the ACTUAL sequence `warns` came back in, not a filtered/reordered view of
+    # `expected_prefixes` — iterating `warns` (pool-completion order pre-fix) is what makes
+    # this discriminate; iterating `expected_prefixes` (already-sorted) cannot.
+    actual_prefixes = [re.search(r"hive '([^']+)':", w).group(1) for w in warns]
+    assert actual_prefixes == expected_prefixes
+
+    # And every hive — even the non-skewed, non-warned ones — got its OWN record persisted
+    # correctly: no cross-hive corruption from the shared YAML instance under concurrency.
+    for i in range(n):
+        record = hive_schema.load(hq_dir, "github", "acme", f"r{i}")
+        assert record.schema_version == (53 if i % 2 == 0 else 59)
+
+
 def test_stale_no_skew_record_still_warns_not_a_silent_all_clear(tmp_path, monkeypatch):
     """Review-caught AC4 regression, reproduced exactly: an 11-day-old record showing NO skew
     at the time it was confirmed (both sides were v53 then), local bd still v53 now, and this
