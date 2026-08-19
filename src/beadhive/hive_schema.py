@@ -181,19 +181,17 @@ def is_stale(
 
 
 def refresh(
-    hive_dir: Path,
-    provider: str,
-    org: str,
-    repo: str,
-    *,
-    hq_dir: Path,
-    dolt_mode: str | None,
-    probed: dolt_health.SchemaProbeResult | None = None,
+    hive_dir: Path, provider: str, org: str, repo: str, *, hq_dir: Path, dolt_mode: str | None
 ) -> HiveSchemaRecord | None:
     """`refresh_with_detail`, without the probe detail a caller that only wants the record
-    doesn't need."""
+    doesn't need.
+
+    NO PRODUCTION CALLER as of bh-0gvs3 — every path under ``src/`` goes through
+    ``refresh_with_detail``; only tests reach this. Deliberately NOT given shape A's ``probed``
+    parameter for that reason: a second public entry point nothing exercises is not worth
+    keeping in step. Whether it should exist at all is a separate question from this bead."""
     record, _detail = refresh_with_detail(
-        hive_dir, provider, org, repo, hq_dir=hq_dir, dolt_mode=dolt_mode, probed=probed
+        hive_dir, provider, org, repo, hq_dir=hq_dir, dolt_mode=dolt_mode
     )
     return record
 
