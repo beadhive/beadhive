@@ -22,7 +22,7 @@ from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import config, identity, registry, safety
+from . import config, fleet, identity, registry, safety
 
 # On-disk schema version — a file with a different version is treated as an empty (cold) cache.
 CACHE_VERSION = 1
@@ -324,14 +324,23 @@ def store(cfg, cache: MetadataCache) -> None:
 def refresh(cfg, keys: Iterable[str] | None = None, *, root=None) -> MetadataCache:
     """Recompute ``keys`` (or the full on-disk fleet when ``None``), merge into the loaded cache,
     stamp ``last_updated``, atomically store, and return the new cache. What a cold read and a
-    (bead .4) background reload both call."""
+    (bead .4) background reload both call.
+
+    Fans out across repos (``fleet.fanout``, shape B — bh-f6w4d): each ``measure()`` call is one
+    repo's ``os.walk`` + ~8 ``git`` subprocess spawns, so this is exactly the bounded per-repo
+    fan-out the shape exists for, not a bulk read (no server-side equivalent — bd never sees
+    these repos) and not a host-global fact. Order doesn't matter here (results are merged into a
+    dict keyed by repo), so ``fanout``'s input-order guarantee is unused but harmless. A failing
+    ``measure()`` still propagates and aborts the batch, same as the serial loop it replaces.
+    """
     root = root or identity.workspace_root()
     cache = load(cfg)
     target = list(keys) if keys is not None else _fleet_keys(cfg, root)
 
     repos = dict(cache.repos)
-    for key in target:
-        repos[key] = measure(Path(root) / key)
+    measured = fleet.fanout(lambda key: (key, measure(Path(root) / key)), target)
+    for key, record in measured:
+        repos[key] = record
 
     new = MetadataCache(
         version=CACHE_VERSION,

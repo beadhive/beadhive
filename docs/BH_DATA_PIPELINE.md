@@ -429,3 +429,140 @@ cost in the pipeline) but the cause is the shrunk denominator (§4's other cold 
 line item growing or bd's surface regressing. The one real slack found — probing even when
 there's nothing to compare against — is fixed. The remaining cost has no cheaper answer from
 bh's side and is now tracked as a bd-side ask (`bh-m8dki`) rather than left as dead weight.
+
+### `metadata_rollup`'s 10.66 s MISS attributed, then a verdict per angle (bh-f6w4d)
+
+Same host as this doc's other numbers (`beadhive-factory`, 24 cores, load average 2.5–8 during
+this session — lower than the 4–23 swing the bead's brief warned about, but still interleaved
+per the protocol below). 21 on-disk repos under `$GIT_WORKSPACE` (`github/*` + `local/*`), the
+same universe `doctor._collect` folds into `metadata.read_fleet`'s `keys` — smaller than the
+20-hive/90-repo fleet §1 of `docs/METADATA-CACHE.md` profiled, so absolute per-repo numbers
+differ; the attribution shape (which bucket dominates) is the finding, not the absolute ms.
+
+**Attribution — where a single `metadata.measure()` call spends its time**, isolated with a
+throwaway harness (`scripts/profile_metadata_rollup.py`, same neutralize-the-walk technique
+`scripts/profile_fleet_health.py` used) over all 21 repos, real code path:
+
+| bucket | per-repo | fleet (×21) | share |
+|---|---:|---:|---:|
+| `safety.scan`'s OTHER git calls (remote/rev-list/stash/worktree-list, ~7 spawns) | 291.0 ms | 6.11 s | **64.9%** |
+| `_measure_disk_usage` `os.walk` (the one `docs/METADATA-CACHE.md` §1 names) | 128.8 ms | 2.71 s | 28.7% |
+| `_maturity_commit_count` — a **second** `git rev-list --count HEAD`, duplicating a count `scan()` already computed internally and discarded | 7.7 ms | 0.16 s | 1.7% |
+| `last_commit_age_days` (`git log -1`) | 7.4 ms | 0.16 s | 1.7% |
+| `metadata._last_commit_date` (`git log -1`, a second format of the same commit) | 7.1 ms | 0.15 s | 1.6% |
+| `fingerprint` (`git rev-parse HEAD` + one `.git` `stat`) | 6.4 ms | 0.14 s | 1.4% |
+| **serialization** (`json.dumps` the whole cache + atomic `mkstemp`/`os.replace`) | — | 0.009 s | **0.09% of the total** |
+
+**On THIS host/fleet, git-plumbing (5 of the 6 buckets, 71.3%) dominates the disk walk
+(28.7%) — the inverse of §1's 90-repo profile (62% walk / 36% git, no cache in front of
+either).** Two things explain the flip, not a contradiction: §1 profiled `safety.scan` alone
+(no `fingerprint`/`_maturity_commit_count`/two commit-date git-log calls layered on top by
+`measure()`), and this host's 21 repos are this repo's own working clones — none carries the
+`node_modules`-sized trees (`untui`'s 5.5 s single-repo walk) that skewed §1's fleet toward the
+walk. **Serialization was never a contender at any fleet size** — one `json.dumps` + one atomic
+write for the whole batch, not per repo; §1 didn't measure it because it predates the cache
+that does the writing.
+
+**Verdict per angle, none skipped:**
+
+1. **Is the walk the right question at all?** No universal answer — leave `measure()`'s payload
+   as-is. `disk_bytes` is a genuinely-consumed field (`doctor._data_disk_usage`'s whole reason
+   to exist, and `hive survey`'s disk column), and on this fleet it isn't even the dominant
+   cost, so trading walk accuracy for a cheaper approximation would optimize the wrong bucket
+   here. `docs/METADATA-CACHE.md` §4 already named the correct follow-up if the walk ever *is*
+   the dominant bucket on some fleet (`du`, or `git count-objects` + skip gitignored trees) and
+   scoped it as a `safety._measure_disk_usage` change — restated, not rediscovered, and left
+   unbuilt: no fleet measured in this bead or `docs/METADATA-CACHE.md` §1 shows it as the
+   blocking cost once git-plumbing is counted in full.
+2. **Shape — is the miss path serial, and does parallelizing help?** Confirmed serial by
+   reading the code: `refresh()` was a plain `for key in target: repos[key] = measure(...)`,
+   the one large per-repo loop bh-1qxjn's shapes never reached. **Fixed this bead** — `refresh()`
+   now runs through `fleet.fanout` (shape B: bounded per-repo fan-out, the correct shape per
+   `fleet.py`'s own rule — this is a filesystem/git probe, not a bead-store read, so shape A
+   never applied). Measured, not assumed: `metadata.refresh()` over the real fleet, 3 interleaved
+   trials each — serial median **9.28 s**, `fleet.fanout` (workers=8) median **8.27 s**,
+   workers=16 median **8.28 s** (no gain past 8 — the work saturates cores/spawn-rate before it
+   saturates the pool cap). **State the two claims separately, per house standard:** the
+   wall-clock win here is real but modest — ~11%, ~1 s on 21 repos — because ~65% of the cost is
+   `git` subprocess spawns that themselves already release the GIL while `subprocess.run`
+   blocks, so serial execution was never as serial as it looked; parallelizing buys the *walk*
+   and *process-scheduling* overlap, not a clean N-way split. The fleet-size-scaling argument is
+   separate and structural: cost was `O(n)` on the miss path and is now `O(n / min(8, n))` —
+   larger fleets (§1's 90-repo case) gain more in absolute terms than this 21-repo one did,
+   independent of today's noise.
+3. **Cold is not rare for everyone.** Restated, not re-argued — §1 and this section both measure
+   the FIRST-run cost directly (deleting `metadata.json` before every "cold" row), which is
+   exactly what a fresh host/CI/container pays once. No angle-specific action beyond the shape
+   fix above: a fresh host still pays a full fleet walk on its first `bh doctor`, just ~11%
+   faster after this bead.
+4. **`on_miss='stale'` for doctor — a product decision, argued, verdict is LEAVE IT (don't
+   flip the default).** `read_fleet(..., on_miss="stale")` serves a stale entry as indistinguishable
+   from a fresh one (same `RepoMetadata` shape, no "this is old" marker in the payload) and
+   serves a genuinely-*missing* entry as **absent** — for a truly cold cache (angle 3's fresh
+   host/CI/container case) that means EVERY entry is missing, so `doctor`'s Disk Usage and Fleet
+   Health sections would render as empty on exactly the run where a new user or a CI pipeline
+   forms its first impression, with no indication anything was skipped. `docs/METADATA-CACHE.md`
+   §5 already made the identical argument against a per-section timeout ("partial fleet totals
+   … worse than an honest 'refreshing' marker") and it applies unchanged here: a diagnostic
+   silently under-reporting is worse than a diagnostic that is slow. §5's own proposed follow-up
+   — a `cache: last refreshed <ago>, N stale (refreshing)` status line, gating any product
+   decision to serve stale data on that line existing — is still unbuilt and is the actual
+   prerequisite, not this bead's scope. `worktree.py`'s one `read_fleet(..., ttl=0)` call and
+   `survey.py`'s `read_fleet(cfg, keys, ttl=metadata.ttl(cfg))` (default `on_miss="compute"`,
+   unchanged) were re-checked; neither passes `on_miss="stale"` either, so today's default is
+   consistent across every caller, not just `doctor`'s.
+
+**Relationship to `bh-5sizy` / `bh-b5v4y`, stated directly:** `bh-5sizy` (read-path cache
+pipeline) would generalize this cache into a "source" under a shared layer contract — orthogonal
+to this bead, which only touches the MISS cost, unaffected by any layer contract sitting on top
+of an already-working 57.6× cache. `bh-b5v4y` (the read-path floor) is about `bd`/`git`
+per-invocation startup cost that `bh` cannot remove from outside those binaries; this bead's
+git-plumbing bucket (71.3% of `measure()`, five buckets of ~8 spawns/repo) is a *different*
+instance of the same floor shape — irreducible per-spawn cost, not a cache concern — but it is
+inside `bh`'s own call graph (`safety.scan` decides how many spawns per repo), unlike
+`bd`'s/`hitch`'s own startup which bh cannot touch at all. Recorded here as a second data point
+for `bh-b5v4y`'s open question, not folded into it.
+
+**Freshness contract — unchanged, verified by the test suite.** The shape fix only changes HOW
+`refresh()`'s per-key loop executes (serial → `fleet.fanout`), not what it computes, stores, or
+invalidates: `is_stale`'s `(git_head, git_mtime)` fingerprint comparison, `store()`'s atomic
+write, and `invalidate`/`invalidate_all` are untouched. `tests/test_metadata.py`'s full 37-case
+suite (HIT / MISS / STALENESS triangle, TTL semantics, `on_miss="stale"` behavior, cold-start
+tolerance) passes unmodified against the new `refresh()` — the `monkeypatch.setattr(metadata,
+"measure", fake_measure)` stub tests rely on still work because `fleet.fanout`'s worker calls
+`measure(...)` as a late-bound module global, same as the loop it replaced.
+
+**Re-measured, cold AND warm, same host, same protocol as §4's table above (median of 3
+interleaved before/after rounds, `git stash` toggling this bead's change, `metadata.json` +
+`bd-schema-version.json` deleted before every cold row):**
+
+| | cold (median) | warm (median) |
+|---|---:|---:|
+| `metadata_rollup`, before (main, serial `refresh`) | 10.85 s | 0.19 s |
+| `metadata_rollup`, after (this bead, `fleet.fanout`) | **10.43 s** | 0.19 s |
+
+**Warm is unchanged, as expected** — a warm run's entries are all fresh, so `read_fleet` never
+reaches `refresh()` at all; the shape fix only fires on a miss. **Cold drops ~0.42 s (~3.8%)**.
+
+CORRECTED ON REVIEW, and worth stating plainly because this document's whole value is that its
+numbers can be trusted. This bead first reported the section delta as ~1.0 s (~9.5%), read
+across from the isolated `refresh()` measurement (9.28 s → 8.27 s). Re-measured by the reviewer
+over **ten interleaved cold pairs using two independent methods** — two separate checkouts, and
+this bead's own `metadata.py`-toggle inside one worktree — both land on **~0.42 s (~3.8%)**:
+
+```text
+two checkouts (6 pairs)   before median 10.79 s   after median 10.37 s
+file toggle   (4 pairs)   before median 10.85 s   after median 10.43 s
+```
+
+The isolated `refresh()` figure is not wrong; **it just is not the section's figure**.
+`metadata_rollup` times `read_fleet`, which is `load()` + `_fleet_keys()` + a per-repo
+`is_stale()` pass + `refresh()` + `store()`. Only `refresh()` was parallelized, so the rest of
+that work dilutes the win. Reading an isolated function's delta across to the section that
+contains it is the specific error corrected here.
+
+**This does not change the section's bimodality or its unowned-ness verdict** — it
+is still ~50× more expensive cold than warm, and still the largest cold-column cost in the
+pipeline; this bead's fix trims that cost by under a twenty-fourth, it does not remove
+the bimodality
+(the walk + git-plumbing per repo is still paid in full on every miss, per angle 1's verdict).
