@@ -811,7 +811,7 @@ now written down rather than assumed.
 | local bd schema version | **H** | host-global; file-cached, correct |
 | `bd config get issue_prefix` ×14 | **A** | reclassified — a stored `config` row, not layered; see §15 (`bh-a8sox`) |
 | `bd dolt status` ×15 | B | genuinely per-hive |
-| `bd show <epic>` ×10 | B | genuinely per-hive (shape-A retarget: `bh-xi0m1`) |
+| `bd show <epic>` ×10 | **A** | retargeted — `issues.status` is a stored column (`bh-xi0m1`, §14) |
 | `channels.scan` release tags ×15 | B | genuinely per-hive — **each repo's OWN tags. CHECKED and ruled out; do not re-derive.** |
 | `systemctl is-enabled/is-active` ×28 | B | genuinely per-hive UNIT NAMES — see below |
 
@@ -828,6 +828,83 @@ returns without doing work. Batching a call that is currently a no-op would opti
 measurement artefact. The real question — what these cost on a host where the user bus works,
 and whether bh should be probing units it cannot reach at all — needs measuring somewhere the
 call actually functions. Recorded rather than guessed at.
+
+---
+
+## §14 — `molecules` stage 2 retargeted to shape A (bh-xi0m1)
+
+§11 left `doctor._orphan_container_branches`' second stage (`bd show <epic>` ×10, one per
+container branch) on shape B, noting it fanned out but not retargeted. It uses exactly ONE
+field of the full bead record it fetches: `bead.get("status") == "closed"`.
+
+### Classification, done rather than assumed
+
+`bh bd sql -q "DESCRIBE issues" --json` against a real hive on this host:
+
+```json
+{"Field": "status", "Type": "varchar(32)", "Default": "'open'", "Extra": "", "Key": "MUL"}
+```
+
+`Extra: ""` — no generated/virtual expression — so `status` is a plain, indexed stored column
+bd's own `close` mutates directly, not a value bd's Go resolver derives at read time (contrast
+`bd ready`, §11's example of a derivation that must stay shape B). `fleet.py`'s own module
+docstring already names `issues.status` as the canonical shape-A stored column. Shape A applies
+with no reimplementation risk.
+
+### Shape
+
+`doctor._bulk_epic_closed`: one cross-database `SELECT '<db>' AS db, id, status FROM
+<db>.issues WHERE id IN (...)` per server-mode hive's database, `UNION ALL`'d into a single `bd
+sql` call — same transport as `dolt_health.bulk_schema_versions`, keyed by `(hive_dir, branch)`
+so `_orphan_container_branches`'s per-item worker can thread the bulk answer straight in
+(`bulk.get(...)`), falling back to `bd show` only for whatever the bulk pass left unanswered —
+the same `probed=` shape `hive_schema.refresh_with_detail` uses.
+
+**Partial by construction, same contract as `bulk_schema_versions`:** embedded-mode hives have
+no database on the shared server to qualify (`bd sql` refuses them outright) and are excluded
+before the query is built; so is any hive whose `recorded_server_database` is absent or fails
+the `sanitize_database_name` round-trip. Both fall back to the per-hive `bd show` path,
+exercised by `test_orphan_embedded_mode_hive_falls_back_to_per_hive_bd_show` (asserts the bulk
+`fleet.sql` seam is never called for an embedded-mode hive) rather than assumed.
+
+**Stage 1 stays shape B, unchanged:** the container-branch list comes from `git for-each-ref`
+per hive — local git, not a bead-store read at all, so no bulk query covers it (fleet.py's rule:
+shape A is for reads the shared Dolt server can answer).
+
+### Numbers — same host/fleet as §11 (20 registered hives, 15 `.beads/` stores)
+
+In-process `doctor._data_molecules(cfg)`, 3 warm runs each, from the registered clone
+(`/home/bees/workspace/github/beadhive/beadhive`), `main` (before) vs this branch's `src/`
+loaded via `PYTHONPATH` against the same cwd/fleet (after) — same method §11 used for the A/B
+comparison:
+
+| | main (10 `bd show`) | after (1 `bd sql`) |
+|---|---:|---:|
+| `molecules` (`_data_molecules`) | 1.03 / 1.13 / 1.14 s | 0.37 / 0.39 / 0.40 s |
+
+`fleet.sql` called exactly **1** time (traced), replacing what was up to 10 `bd show` spawns.
+Output is identical both sides: 2 orphaned branches, same `(prefix, branch)` pairs.
+
+**State the two claims separately, per this bead's own instruction:**
+
+- **Wall-clock:** real, on this fleet — ~1.0 s → ~0.4 s for this section. Not the headline
+  number `bh doctor` users notice (§11.1: the ~10 s warm floor is `bd`/`hitch` startup), but a
+  measured, not-inside-the-noise win, unlike §11's `schema_migrations` case which WAS noise at
+  its section's scale.
+- **Fleet-size scaling (the separate, structural argument):** the real reason to do this — 10
+  invocations become 1 and stop scaling with the number of open molecule branches across the
+  fleet, exactly as §11's shape-A conversions do. This holds regardless of what the wall-clock
+  number happens to be on any one host.
+
+### Behavioural verification
+
+`test_orphan_uses_bulk_path_for_a_server_mode_hive_no_bd_show_needed` seeds NO `fakebd` bead
+record and asserts the branch still reports orphaned — if the code silently fell back to
+`bd show` for a bulk-eligible hive, `bd` would report the bead unknown and the test would fail.
+`test_bulk_epic_closed_reads_every_hive_in_one_call` asserts exactly one `fleet.sql` call.
+Existing `test_orphan_lists_closed_epic_branch_not_open` / `test_orphan_empty_when_no_mol_branches`
+pass unchanged (their fixture hives have no recorded server database, so they exercise the
+shape-B fallback exactly as before this bead).
 
 ---
 

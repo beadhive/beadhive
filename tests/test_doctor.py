@@ -61,6 +61,90 @@ def test_section_lists_orphan(hive, fakebd, capsys):  # noqa: F811
     assert "delete manually" in out
 
 
+# ---- stage 2 shape A: _bulk_epic_closed (bh-xi0m1) --------------------------
+
+
+def _record_server_mode(main, database="mr"):
+    """Persist the metadata a real server-mode hive would have — dolt_mode + a recorded
+    server database — so `_bulk_epic_closed` treats it as bulk-eligible."""
+    beads = main / ".beads"
+    beads.mkdir(exist_ok=True)
+    (beads / "metadata.json").write_text(
+        json.dumps({"dolt_mode": "server", "dolt_server_database": database})
+    )
+
+
+def _bulk_res(rows):
+    class R:
+        returncode = 0
+        stdout = json.dumps(rows)
+
+    return R()
+
+
+def test_bulk_epic_closed_reads_every_hive_in_one_call(hive, monkeypatch):  # noqa: F811
+    _record_server_mode(hive.main)
+    calls = []
+
+    def fake_sql(store, query, **kw):
+        calls.append(query)
+        return _bulk_res([{"db": "mr", "id": "mr-1", "status": "closed"}])
+
+    monkeypatch.setattr(doctor.fleet, "sql", fake_sql)
+    prefix = f"{doctor.worktree._BEAD_PREFIX}epic/"
+    candidates = [({"prefix": "mr"}, hive.main, f"{prefix}mr-1")]
+    out = doctor._bulk_epic_closed(candidates, prefix)
+    assert len(calls) == 1
+    assert out == {(str(hive.main), f"{prefix}mr-1"): True}
+
+
+def test_bulk_epic_closed_drops_an_epic_id_outside_the_identifier_charset(hive, monkeypatch):  # noqa: F811
+    """Nothing unvetted reaches the query text — a hostile branch name (git permits backslashes,
+    and this server's sql_mode lacks NO_BACKSLASH_ESCAPES, so a trailing backslash can break out
+    of the quoted string literal) cannot be a bind parameter."""
+    _record_server_mode(hive.main)
+    seen = []
+    monkeypatch.setattr(doctor.fleet, "sql", lambda s, q, **k: (seen.append(q), _bulk_res([]))[1])
+    prefix = f"{doctor.worktree._BEAD_PREFIX}epic/"
+    candidates = [({"prefix": "mr"}, hive.main, f"{prefix}mr-1\\")]
+    out = doctor._bulk_epic_closed(candidates, prefix)
+    assert not seen, "a non-identifier epic id must be dropped, not quoted into the query"
+    assert out == {}
+
+
+def test_orphan_uses_bulk_path_for_a_server_mode_hive_no_bd_show_needed(hive, fakebd, monkeypatch):  # noqa: F811
+    """The point of this bead: a server-mode hive's epic-closed check is answered without a
+    per-branch `bd show`."""
+    _record_server_mode(hive.main)
+    _mol_branch(hive.main, "mr-1")
+
+    def fake_sql(store, query, **kw):
+        return _bulk_res([{"db": "mr", "id": "mr-1", "status": "closed"}])
+
+    monkeypatch.setattr(doctor.fleet, "sql", fake_sql)
+    # No fakebd.seed("mr-1", ...) — if the code fell back to `bd show` for this branch, `bd`
+    # would report the bead unknown (None) and it would NOT show up as orphaned.
+    orphans = doctor._orphan_container_branches(config.load())
+    assert orphans == [("mr", "wt/bead/epic/mr-1")]
+
+
+def test_orphan_embedded_mode_hive_falls_back_to_per_hive_bd_show(hive, fakebd, monkeypatch):  # noqa: F811
+    """AC: embedded-mode hives have no shared-server database, so they keep the per-hive
+    `bd show` path — exercised, not assumed."""
+    beads = hive.main / ".beads"
+    beads.mkdir(exist_ok=True)
+    (beads / "metadata.json").write_text(json.dumps({"dolt_mode": "embedded"}))
+    _mol_branch(hive.main, "mr-1")
+    fakebd.seed("mr-1", status="closed")
+
+    def _must_not_query(*_a, **_k):
+        pytest.fail("embedded-mode hive must not be bulk-queried")
+
+    monkeypatch.setattr(doctor.fleet, "sql", _must_not_query)
+    orphans = doctor._orphan_container_branches(config.load())
+    assert orphans == [("mr", "wt/bead/epic/mr-1")]
+
+
 # ---- prefix mismatches section (bh-6h1m) ------------------------------------
 
 
