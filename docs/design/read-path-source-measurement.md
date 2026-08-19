@@ -388,3 +388,52 @@ Not changed, and why:
 `just bench-read-path` was NOT the instrument for the "after" column: it shells the *installed*
 `bh`, which does not carry this change, so it can only reproduce the "before" numbers until this
 lands.
+
+## 9. `warnings`' `bd dolt status` / `bd sql schema_migrations` probes parallelized (bh-ti7ws)
+
+bh-3qo60 (§8's note) parallelized `prefix_mismatches`; this bead does the identical treatment for
+the other half of `warnings` §8 named as unchanged: `_bd_schema_skew_warnings`'s per-hive
+`safety._bd_dolt_mode` (`bd dolt status`) and `hive_schema.refresh` (`bd sql … schema_migrations`)
+now fan out across a `ThreadPoolExecutor` instead of running strictly sequentially across the 15
+hives, consuming `pool.map`'s results positionally to keep the reported warnings in registry
+order.
+
+Same instrument as §8 (`scripts/measure_doctor_sources.py`, in-process `doctor.doctor_payload()`),
+3 runs each side, interleaved (after → before, immediately back to back) on this host:
+
+**Caution on this host's load** — measured at load average 4.0–6.2 (5-minute), with several
+long-lived `dolt sql-server` processes present; well below the ~20 the bead flagged as possible
+but still not a clean/idle host, so the spread below is real host noise, not a controlled
+benchmark:
+
+| run | before (`git stash` off) | after |
+|---|---:|---:|
+| 1 | 5.46 s | 1.89 s |
+| 2 | 5.42 s | 1.82 s |
+| 3 | 5.60 s | 1.79 s |
+
+`warnings`: **5.42–5.60 s → 1.79–1.89 s** (baseline 5.53 s confirmed within noise; ~3.0x faster,
+consistent across all 3 runs). The `bd sql schema_migrations` (9 calls) and `bd dolt status` (15
+calls) spawns still total ~5.8 s of subprocess time each run (`by_source` in the raw JSON), but
+now overlap inside the pool instead of summing serially into wall time.
+
+### The write path (`hive_schema.refresh` → `hive_schema.save`)
+
+Each hive writes its OWN manifest file (`hives/<provider>/<org>/<repo>.yaml`, distinct paths per
+hive), so there is no file-level write race to worry about — 15 concurrent writers never target
+the same file. The one piece of shared, mutable state is `hive_schema.py`'s module-level
+`ruamel.yaml.YAML()` instance, used by both `save` (dump) and `load`/`try_load` (load), now inside
+the same pool. That is the exact class of bug bh-3qo60 found in `config.py`'s equivalent
+singleton (measured there: 147/200 failures at 16 threads unguarded, 0/200 with a lock) — guarded
+here the same way, with a `threading.Lock` around every `_yaml.load`/`_yaml.dump` call in
+`hive_schema.py` (the other four modules bh-3qo60 flagged with the same shape, `bh-vb5nd`, are
+left alone).
+
+`bd._STRICT_READS` (a `ContextVar`, invisible inside a `ThreadPoolExecutor` worker — the hazard
+bh-3qo60's review caught) does not apply here: none of `_bd_dolt_mode` / `probe_raw_schema_version`
+/ `_local_bd_version_string` goes through `bd.py`'s `run`/`json` wrapper (the only place that
+reads `_STRICT_READS`) — they all call `run.run`/`subprocess.run` directly. Confirmed by reading
+every call in the pooled path, not assumed.
+
+Not changed: the git-spawn loops in `_data_warnings` (`git ls-files`, `_local_commits_while_not_primary`)
+— measured elsewhere at ~6 ms/call, the wrong target per bh-b5v4y.

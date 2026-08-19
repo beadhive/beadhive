@@ -41,6 +41,7 @@ that reads a record must surface its age, not just its number.
 
 from __future__ import annotations
 
+import threading
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -51,6 +52,15 @@ from . import dolt_health
 
 _yaml = YAML()
 _yaml.indent(mapping=2, sequence=4, offset=2)
+
+# `_yaml` is one shared, stateful `ruamel.yaml.YAML()` instance — `load()`/`dump()` mutate its
+# internal parser/composer state, and bh-ti7ws now calls `refresh`/`save`/`load` from a
+# ThreadPoolExecutor (one hive per worker, doctor.py's `_bd_schema_skew_warnings`). Concurrent
+# calls corrupt each other's parse (bh-3qo60 measured this exact class of bug on config.py's
+# equivalent singleton: 147/200 failures at 16 threads with no lock, 0/200 with one). One lock
+# around every use, mirroring config.py's fix — each hive still writes its OWN manifest file
+# (`manifest_path`), so the lock only serializes the in-memory YAML call, not the I/O.
+_yaml_lock = threading.Lock()
 
 # How long a recorded observation is treated as still-informative for an "all clear" read
 # (`is_stale`). Deliberately generous: schema migrations ship far less often than a hive is
@@ -108,7 +118,7 @@ def save(hq_dir: Path, record: HiveSchemaRecord) -> Path:
     already-validated (a `HiveSchemaRecord` instance cannot exist in an invalid shape)."""
     p = manifest_path(hq_dir, record.provider, record.org, record.repo)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("w") as f:
+    with p.open("w") as f, _yaml_lock:
         _yaml.dump(record.model_dump(mode="json"), f)
     return p
 
@@ -125,7 +135,9 @@ def load(hq_dir: Path, provider: str, org: str, repo: str) -> HiveSchemaRecord:
     p = manifest_path(hq_dir, provider, org, repo)
     if not p.exists():
         raise FileNotFoundError(f"no hive schema record for {provider}/{org}/{repo} at {p}")
-    raw = _yaml.load(p.read_text()) or {}
+    text = p.read_text()
+    with _yaml_lock:
+        raw = _yaml.load(text) or {}
     try:
         return HiveSchemaRecord.model_validate(raw)
     except ValidationError as exc:
