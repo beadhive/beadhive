@@ -538,16 +538,31 @@ interleaved before/after rounds, `git stash` toggling this bead's change, `metad
 
 | | cold (median) | warm (median) |
 |---|---:|---:|
-| `metadata_rollup`, before (main, serial `refresh`) | 10.61 s | 0.19 s |
-| `metadata_rollup`, after (this bead, `fleet.fanout`) | **9.60 s** | 0.19 s |
+| `metadata_rollup`, before (main, serial `refresh`) | 10.85 s | 0.19 s |
+| `metadata_rollup`, after (this bead, `fleet.fanout`) | **10.43 s** | 0.19 s |
 
 **Warm is unchanged, as expected** — a warm run's entries are all fresh, so `read_fleet` never
-reaches `refresh()` at all; the shape fix only fires on a miss. **Cold drops ~1.0 s (~9.5%)**,
-consistent with the isolated `refresh()` measurement above (9.28 s → 8.27 s, ~11%) within
-normal run-to-run noise — `bh doctor`'s section-total column is noisier than the isolated
-function call (other sections' host-load variance leaks into the same wall-clock number), so
-the isolated `refresh()` number is the more trustworthy one; both point the same direction and
-magnitude. **This does not change the section's bimodality or its unowned-ness verdict** — it
+reaches `refresh()` at all; the shape fix only fires on a miss. **Cold drops ~0.42 s (~3.8%)**.
+
+CORRECTED ON REVIEW, and worth stating plainly because this document's whole value is that its
+numbers can be trusted. This bead first reported the section delta as ~1.0 s (~9.5%), read
+across from the isolated `refresh()` measurement (9.28 s → 8.27 s). Re-measured by the reviewer
+over **ten interleaved cold pairs using two independent methods** — two separate checkouts, and
+this bead's own `metadata.py`-toggle inside one worktree — both land on **~0.42 s (~3.8%)**:
+
+```text
+two checkouts (6 pairs)   before median 10.79 s   after median 10.37 s
+file toggle   (4 pairs)   before median 10.85 s   after median 10.43 s
+```
+
+The isolated `refresh()` figure is not wrong; **it just is not the section's figure**.
+`metadata_rollup` times `read_fleet`, which is `load()` + `_fleet_keys()` + a per-repo
+`is_stale()` pass + `refresh()` + `store()`. Only `refresh()` was parallelized, so the rest of
+that work dilutes the win. Reading an isolated function's delta across to the section that
+contains it is the specific error corrected here.
+
+**This does not change the section's bimodality or its unowned-ness verdict** — it
 is still ~50× more expensive cold than warm, and still the largest cold-column cost in the
-pipeline; this bead's fix trims that cost by roughly a tenth, it does not remove the bimodality
+pipeline; this bead's fix trims that cost by under a twenty-fourth, it does not remove
+the bimodality
 (the walk + git-plumbing per repo is still paid in full on every miss, per angle 1's verdict).
