@@ -340,8 +340,10 @@ def _orphan_container_branches(cfg):
     [(hive_prefix, branch), …]. A branch whose epic is still open is an active molecule, not an
     orphan, so it's skipped."""
     prefix = f"{worktree._BEAD_PREFIX}epic/"  # wt/bead/epic/
-    orphans = []
-    for e in cfg.get("managed_repos", []) or []:
+
+    def _branches(e) -> list[tuple[dict, Path, str]]:
+        """One hive's container branches. Cheap (bh-7fen2 measured 20 for-each-ref at 0.12s
+        total) — fanned out only so the expensive per-branch stage below gets a flat list."""
         main = registry.hive_dir(e)
         res = run(
             [
@@ -356,13 +358,21 @@ def _orphan_container_branches(cfg):
             capture=True,
         )
         if res.returncode != 0:
-            continue
-        for branch in (res.stdout or "").split():
-            epic = branch[len(prefix) :]
-            bead = bd.show(epic, main)
-            if bead and bead.get("status") == "closed":
-                orphans.append((str(e["prefix"]), branch))
-    return orphans
+            return []
+        return [(e, main, branch) for branch in (res.stdout or "").split()]
+
+    def _closed(item: tuple[dict, Path, str]) -> tuple[str, str] | None:
+        _e, main, branch = item
+        bead = bd.show(branch[len(prefix) :], main)
+        return (str(_e["prefix"]), branch) if bead and bead.get("status") == "closed" else None
+
+    # THE COST IS THE SECOND STAGE: 11 `bd show` at 2.16s vs 20 `for-each-ref` at 0.12s
+    # (bh-7fen2). SHAPE B (`fleet.fanout`) for both — `bd show` reads a bead's full record
+    # through bd, and the branch list is per-hive git, neither of which the bulk shape covers.
+    # Both stages preserve input order, so `orphans` stays in registry order.
+    entries = cfg.get("managed_repos", []) or []
+    candidates = [item for group in fleet.fanout(_branches, entries) for item in group]
+    return [hit for hit in fleet.fanout(_closed, candidates) if hit is not None]
 
 
 def _data_molecules(cfg) -> dict:
