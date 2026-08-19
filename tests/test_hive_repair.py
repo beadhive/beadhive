@@ -189,6 +189,10 @@ def test_repair_requires_exactly_one_mode(hive):
     with pytest.raises(typer.Exit) as exc:
         hive_repair.repair(hive="", prefix="newpre", node_id=True, yes=True, dry_run=False)
     assert exc.value.exit_code == 1
+    # the fourth mode counts too (bh-td8t9) — two modes is still exactly-one-mode's error
+    with pytest.raises(typer.Exit) as exc:
+        hive_repair.repair(hive="", role=True, server_database=True, yes=True, dry_run=False)
+    assert exc.value.exit_code == 1
 
 
 # ---- expected_role (bh-f3blt) -----------------------------------------------
