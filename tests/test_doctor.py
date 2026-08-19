@@ -220,6 +220,78 @@ def test_data_prefix_mismatches_concurrent_preserves_order_and_skips(tmp_path, m
     ]
 
 
+# ---- prefix mismatches: shape A + embedded-mode fallback (bh-a8sox) ---------
+
+
+def test_data_prefix_mismatches_uses_bulk_read_for_server_mode_hives(prefix_hive, monkeypatch):
+    """A server-mode hive with a recorded database name is answered from the ONE bulk query —
+    `bd config get` must not be spawned for it at all."""
+    monkeypatch.setattr(doctor.store_locator, "is_embedded_mode", lambda path: False)
+    monkeypatch.setattr(doctor.store_locator, "recorded_server_database", lambda path: "myrepo")
+    monkeypatch.setattr(
+        doctor.dolt_health, "bulk_issue_prefixes", lambda targets, **k: {targets[0][0]: "ah2-"}
+    )
+
+    def _no_spawn(args, cwd):
+        raise AssertionError("a hive answered by the bulk read must not fall back to bd config get")
+
+    monkeypatch.setattr(doctor.bd, "json", _no_spawn)
+    data = doctor._data_prefix_mismatches(_cfg_one_hive("ah"))
+    assert data == [
+        {
+            "hive": "github/myorg/myrepo",
+            "registry_prefix": "ah",
+            "db_prefix": "ah2",
+            "remediation": "bh hive repair --hive github/myorg/myrepo --prefix ah --yes",
+        }
+    ]
+
+
+def test_data_prefix_mismatches_falls_back_per_hive_when_bulk_omits_a_hive(
+    prefix_hive, monkeypatch
+):
+    """Server-mode, but the bulk query didn't answer for this hive (e.g. it returned no row) —
+    falls back to the per-hive `bd config get`, same as an embedded-mode hive would."""
+    monkeypatch.setattr(doctor.store_locator, "is_embedded_mode", lambda path: False)
+    monkeypatch.setattr(doctor.store_locator, "recorded_server_database", lambda path: "myrepo")
+    monkeypatch.setattr(doctor.dolt_health, "bulk_issue_prefixes", lambda targets, **k: {})
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "ah2"})
+    data = doctor._data_prefix_mismatches(_cfg_one_hive("ah"))
+    assert data == [
+        {
+            "hive": "github/myorg/myrepo",
+            "registry_prefix": "ah",
+            "db_prefix": "ah2",
+            "remediation": "bh hive repair --hive github/myorg/myrepo --prefix ah --yes",
+        }
+    ]
+
+
+def test_data_prefix_mismatches_embedded_hive_skips_bulk_and_uses_fallback(
+    prefix_hive, monkeypatch
+):
+    """An embedded-mode hive has no database on the shared server to qualify — it must never be
+    offered to the bulk read, and is answered entirely by the per-hive fallback."""
+    monkeypatch.setattr(doctor.store_locator, "is_embedded_mode", lambda path: True)
+    seen_targets = []
+    monkeypatch.setattr(
+        doctor.dolt_health,
+        "bulk_issue_prefixes",
+        lambda targets, **k: (seen_targets.extend(targets), {})[1],
+    )
+    monkeypatch.setattr(doctor.bd, "json", lambda args, cwd: {"value": "ah2"})
+    data = doctor._data_prefix_mismatches(_cfg_one_hive("ah"))
+    assert seen_targets == [], "an embedded-mode hive must not be passed to the bulk read"
+    assert data == [
+        {
+            "hive": "github/myorg/myrepo",
+            "registry_prefix": "ah",
+            "db_prefix": "ah2",
+            "remediation": "bh hive repair --hive github/myorg/myrepo --prefix ah --yes",
+        }
+    ]
+
+
 def test_collect_includes_prefix_mismatches(hive, fakebd):  # noqa: F811
     """No local `.beads/` checkout in the plain `hive` fixture, so the section is empty — this
     just pins that `_collect` wires the key through end to end."""

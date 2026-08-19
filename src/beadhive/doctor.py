@@ -409,11 +409,18 @@ def _data_prefix_mismatches(cfg) -> list[dict]:
     unreadable issue_prefix is silently skipped here (the generic Warnings section already flags
     a missing checkout; there is nothing to compare without one).
 
-    STILL ONE `bd` SPAWN PER HIVE, deliberately (bh-i6e5g): its two sibling sections dropped
-    theirs by reading `.beads/config.yaml` / git config directly, but `issue_prefix` lives in
-    the dolt `config` TABLE, not in any file bh can read — measured, not assumed. Nothing on
-    disk carries it (`.beads/metadata.json` records engine/database, not the prefix), so asking
-    the store is the floor here until the read-path cache (bh-13spb) covers it."""
+    SHAPE A (bh-a8sox), with a shape-B fallback — re-tested against bh-0gvs3's classification,
+    which had applied "config resolution is layered" to config reads AS A CLASS and never
+    checked it against this key: `bd config get issue_prefix` (cmd/bd/config.go) is not a
+    YAML-only key and has no derivation layered on top — it falls straight through to
+    `SELECT value FROM config WHERE key = 'issue_prefix'` against the sql-server-backed store
+    (see `dolt_health.bulk_issue_prefixes`'s classification note for the full trace through
+    bd's own source). `issue_prefix` is a stored row, the same shape as `schema_migrations`'s
+    version, so ONE cross-database query replaces what was 14 `bd config get` spawns
+    (~565ms each, 7.91s summed — this section's own measured share of that; see
+    docs/design/read-path-source-measurement.md for the before/after).
+    Embedded-mode hives have no database on the shared server to qualify and stay on the
+    per-hive `bd config get` under shape B, same fallback shape as `bulk_schema_versions`."""
     root = Path(workspace_root())
     entries = [
         (e, root / e["provider"] / e["org"] / e["repo"]) for e in cfg.get("managed_repos", []) or []
@@ -422,14 +429,23 @@ def _data_prefix_mismatches(cfg) -> list[dict]:
     if not entries:
         return []
 
-    def _one(item: tuple[dict, Path]) -> dict | None:
-        e, path = item
-        db = bd.json(["config", "get", "issue_prefix"], path)
-        if not isinstance(db, dict) or "value" not in db:
-            return None
+    # RECORDED, never derived (bh-g5ujg's rule — see `bulk_schema_versions`'s caller in this
+    # module for the same reasoning): `server_database` falls back to a guess for a keyless
+    # hive, and a guessed name that names no database on the server fails the UNION for every
+    # hive in it. Asking only for what is written down keeps one broken hive's blast radius to
+    # that hive; it drops to the per-hive fallback below like any other unanswered hive.
+    bulk = dolt_health.bulk_issue_prefixes(
+        [
+            (path, store_locator.recorded_server_database(path))
+            for _e, path in entries
+            if not store_locator.is_embedded_mode(path)
+        ]
+    )
+
+    def _classify(e: dict, raw_db_prefix: str) -> dict | None:
         try:
             registry_prefix = hive_repair.normalize_prefix(str(e["prefix"]))
-            db_prefix = hive_repair.normalize_prefix(str(db["value"]))
+            db_prefix = hive_repair.normalize_prefix(raw_db_prefix)
         except hive_repair.RepairError:
             return None  # an unparseable prefix on either side isn't THIS check's problem to fix
         if registry_prefix == db_prefix:
@@ -447,11 +463,26 @@ def _data_prefix_mismatches(cfg) -> list[dict]:
             "remediation": remediation,
         }
 
-    # The `bd config get` spawns are independent, read-only, and store-bound (bh-3qo60: 15
-    # hives = 4.39s sequential). SHAPE B (`fleet.fanout`): `issue_prefix` is a bd config read,
-    # not a column the shared server holds, so the bulk shape does not apply. Input order is
-    # preserved by the shape, so the reported list stays deterministic.
-    return [m for m in fleet.fanout(_one, entries) if m is not None]
+    def _one_fallback(item: tuple[dict, Path]) -> dict | None:
+        e, path = item
+        db = bd.json(["config", "get", "issue_prefix"], path)
+        if not isinstance(db, dict) or "value" not in db:
+            return None
+        return _classify(e, str(db["value"]))
+
+    fallback = [(e, path) for e, path in entries if path not in bulk]
+    # The remaining `bd config get` spawns (embedded-mode hives, plus any server-mode hive the
+    # bulk query didn't answer for) are independent, read-only, and store-bound (bh-3qo60: 15
+    # hives = 4.39s sequential) — shape B, same as before, just over a smaller `entries`.
+    fallback_paths = [path for _e, path in fallback]
+    fallback_results = dict(zip(fallback_paths, fleet.fanout(_one_fallback, fallback), strict=True))
+
+    # Input order is preserved (`entries` order), so the reported list stays deterministic
+    # regardless of which hives came from the bulk read vs. the fallback fan-out.
+    results = [
+        _classify(e, bulk[path]) if path in bulk else fallback_results[path] for e, path in entries
+    ]
+    return [m for m in results if m is not None]
 
 
 def _render_prefix_mismatches(mismatches: list[dict]) -> None:
