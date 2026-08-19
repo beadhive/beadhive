@@ -1032,3 +1032,61 @@ always did — behavior is unchanged for a hive with no recorded server database
 and embedded-mode paths explicitly (`test_data_prefix_mismatches_uses_bulk_read_for_
 server_mode_hives`, `..._falls_back_per_hive_when_bulk_omits_a_hive`,
 `..._embedded_hive_skips_bulk_and_uses_fallback`).
+
+---
+
+## §16 — `metadata.read_fleet`'s miss path retargeted to shape B (bh-f6w4d)
+
+`fleet.py`'s own docstring calls out `metadata.read_fleet` by name as "the only large per-repo
+loop on the read path that never went through these shapes." True on inspection: `refresh()`
+(the function every miss — `read_fleet`'s `on_miss="compute"` path, plus the background
+reloader `_spawn_reload` — eventually calls) was a plain `for key in target: repos[key] =
+measure(...)`. This bead's primary deliverable was attribution of the 10.66 s cold cost
+(`docs/BH_DATA_PIPELINE.md`'s new "`metadata_rollup`'s 10.66 s MISS attributed" section carries
+the per-bucket numbers); this entry records the one shape change that followed from it.
+
+### Classification, not assumed
+
+Per §11's own choosing rule: does the fact vary by repo? Yes (every field of `RepoMetadata` is
+per-repo) — not shape H. Is it a bead-store read with a server-side equivalent? No — `measure()`
+is `os.walk` + `git` subprocess calls against the filesystem; `bd sql` has no view over
+arbitrary on-disk repos it doesn't manage. Shape A is unsound by construction. That leaves shape
+B, `fleet.fanout`, the same bounded per-repo fan-out `molecules` and `seats` already use.
+
+### The measurement this bead's brief asked for: is parallelizing worth it, given it might be I/O-bound
+
+Not assumed — measured, `metadata.refresh()` over this host's real 21-repo fleet, 3 interleaved
+trials per configuration:
+
+| | serial (before) | `fleet.fanout`, workers=8 | `fleet.fanout`, workers=16 (after) |
+|---|---:|---:|---:|
+| `metadata.refresh()`, real fleet | 9.28 s median | 8.27 s median | 8.28 s median |
+
+**Answer: yes, but modestly, and it saturates well before the pool's default cap.** Workers=16
+(what `fleet.fanout`'s `MAX_WORKERS` default gives every caller that doesn't override it) buys
+nothing over workers=8 on this fleet — the work is bound by something that stops scaling past
+~8 concurrent repos on this host (disk contention and/or `git` process-spawn rate, not
+identified further; not this bead's scope to chase). The ~11% wall-clock gain is smaller than
+§14's `molecules` (~3x) or §15's `prefix_mismatches` (~3x) shape conversions, because those
+replaced N spawns with ONE `bd sql` call — an algorithmic reduction — while this conversion only
+overlaps N calls that still all have to happen; §11's own framing (bulk-vs-fanout) predicts
+exactly this difference in kind between "replace N with 1" and "run N concurrently instead of
+serially."
+
+**Stated separately, per house standard:** the wall-clock number above is this host's 21-repo
+fleet today. The structural argument is independent of it — the miss path's cost was `O(n)`
+serial and is now `O(n / min(8, n))`, so a larger fleet (`docs/METADATA-CACHE.md` §1's 90-repo
+profile, or any fleet with more registered hives than this factory host) gains proportionally
+more in absolute seconds from the same relative speedup, and a fleet smaller than 8 repos gains
+nothing measurable at all (the pool cap never binds).
+
+### What this did NOT touch
+
+`measure()`'s own internals — the `os.walk`, the ~7 `safety.scan` git spawns, `fingerprint`,
+`_maturity_commit_count`, the two commit-date git-log calls — are unchanged; parallelizing the
+per-repo loop overlaps those calls across repos, it doesn't make any one of them cheaper. The
+freshness contract (`is_stale`'s `(git_head, git_mtime)` fingerprint, `store()`'s atomic write,
+event/coarse invalidation) is untouched — `fleet.fanout` only changes execution order and
+concurrency of the calls into `measure()`, not what any of them compute or persist.
+`docs/BH_DATA_PIPELINE.md`'s companion section carries the four-angle verdict (walk-question,
+shape, cold-is-not-rare, `on_miss='stale'`) and the `bh-5sizy`/`bh-b5v4y` relationship.
