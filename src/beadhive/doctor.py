@@ -1044,16 +1044,45 @@ def _section_mcp(cfg=None):
 # acceptance bar ("an optional integration that complains when unused is not optional").
 
 
-def _data_seats(cfg) -> dict | None:
+def _data_seats(cfg, *, full: bool = False) -> dict | None:
     """Seats section data: the hitch plugin's own `(state, detail)` readiness reading, or
-    ``None`` when hitch is disabled/absent — the render step stays silent in that case."""
+    ``None`` when hitch is disabled/absent — the render step stays silent in that case.
+
+    ``full=False`` (the default, bh-gqfrm) skips the 7-way `hitch profile preflight` fanout
+    (~2.7s, the largest warm section of `bh doctor` — docs/BH_DATA_PIPELINE.md §4.1) and only
+    checks that hitch itself is usable (on PATH, repo configured, catalog present); the ``detail``
+    string says explicitly that per-seat checks were skipped and how to get them (`--seats`), so
+    a clean HUMAN report never reads as "and every seat was checked". Pass ``full=True`` for the
+    complete per-seat breakdown (bh doctor --seats).
+
+    ``seats_checked`` (bh-gqfrm, review round 2) is the MACHINE-readable twin of that same fact —
+    a bare ``state: "ok"`` cannot distinguish "hitch usable, every seat verified" from "hitch
+    usable, seats never looked at", and `detail` is prose an MCP/JSON consumer should not have to
+    string-match to recover a meaning this payload already knows. It is exactly ``full`` — the
+    caller's own request, not a re-derived guess — so `bh doctor --json` and `--seats --json`
+    always carry a field a consumer can branch on instead of parsing English.
+
+    ``state`` deliberately stays ``"ok"`` when ``seats_checked`` is ``False``: it already meant
+    "nothing WRONG in what was checked", not "everything possible was checked", before this bead
+    — an empty `seat_reports()` (no seat-aligned profiles configured) has always produced
+    ``"ok"`` with no per-seat detail either. Reusing that existing reading for "skipped by
+    request" keeps one meaning for `state` instead of adding a second, and `seats_checked` is the
+    field that now carries the "how thoroughly" question `state` was never able to answer alone.
+
+    No `schema_version` bump (bh-gqfrm): `jsonout`'s own convention is "add a field → same
+    version (consumers ignore unknown keys); remove/retype/re-mean a field → bump" — this only
+    adds `seats_checked` and leaves `state`/`detail`'s existing meaning untouched."""
     if not hitch_plugin.PLUGIN.enabled(cfg, None):
         return None
-    result = hitch_plugin.PLUGIN.readiness(cfg, None)
+    result = (
+        hitch_plugin.PLUGIN.readiness(cfg, None)
+        if full
+        else hitch_plugin.PLUGIN.readiness(cfg, None, full=False)
+    )
     if result is None:
         return None
     state, detail = result
-    return {"state": state, "detail": detail}
+    return {"state": state, "detail": detail, "seats_checked": full}
 
 
 def _render_seats(d: dict | None) -> None:
@@ -1065,9 +1094,9 @@ def _render_seats(d: dict | None) -> None:
         typer.echo(f"  {line}")
 
 
-def _section_seats(cfg):
+def _section_seats(cfg, *, full: bool = False):
     """Render the seats section (doctor entry point)."""
-    _render_seats(_data_seats(cfg))
+    _render_seats(_data_seats(cfg, full=full))
 
 
 # ---- install-staleness section (bh-9plr) ------------------------------------
@@ -2173,7 +2202,7 @@ def _timed(timings: dict, key: str, fn, *args, **kwargs):
     return result
 
 
-def _collect(cfg) -> dict:
+def _collect(cfg, *, full_seats: bool = False) -> dict:
     """Gather the full diagnostics dict, section by section, from the shared inputs.
 
     Reuses ``metadata.read_fleet`` / ``registry.*`` / ``gitworkspace.*`` and runs the metadata
@@ -2241,7 +2270,7 @@ def _collect(cfg) -> dict:
         "dispatch": _timed(timings, "dispatch", _data_dispatch, cfg),
         "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
-        "seats": _timed(timings, "seats", _data_seats, cfg),
+        "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
         "install": _timed(timings, "install", _data_install, cfg),
         "observability": _timed(timings, "observability", _data_observability, cfg),
         "warnings": _timed(
@@ -2262,7 +2291,7 @@ def _collect(cfg) -> dict:
     return data
 
 
-def doctor_payload() -> dict:
+def doctor_payload(*, full_seats: bool = False) -> dict:
     """Structured `ws doctor` diagnostics — the data layer beneath the text render.
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
@@ -2272,7 +2301,10 @@ def doctor_payload() -> dict:
     from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
     always present regardless of ``--json``/verbosity), under the ``schema_version`` / ``command``
     envelope (:mod:`beadhive.jsonout`). ``seats`` is ``None`` when hitch is disabled/absent
-    (bh-og0q.4's silent-when-unused bar) — every other key is always present. Exposed as the
+    (bh-og0q.4's silent-when-unused bar) — every other key is always present. By default
+    ``seats`` does NOT run the per-seat `hitch profile preflight` fanout (bh-gqfrm) — pass
+    ``full_seats=True`` for the complete per-seat breakdown; the cheap default still says
+    explicitly that per-seat detail was skipped. Exposed as the
     ``beadhive://doctor`` MCP resource; ``doctor()`` renders the same builders so the text
     output never drifts from this payload.
 
@@ -2282,7 +2314,9 @@ def doctor_payload() -> dict:
     one payload. This is the only place the object is built, so it is the only place that can
     carry the version.
     """
-    return jsonout.envelope("doctor", jsonout.DOCTOR_SCHEMA, _collect(config.load()))
+    return jsonout.envelope(
+        "doctor", jsonout.DOCTOR_SCHEMA, _collect(config.load(), full_seats=full_seats)
+    )
 
 
 def show():
@@ -2313,15 +2347,17 @@ def _render_timings(timings: dict) -> None:
         typer.echo(f"  {total:>8.1f}  total")
 
 
-def doctor(as_json: bool = False, verbose: bool = False):
+def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     """Render the full `ws doctor` report from the structured payload.
 
     ``as_json`` emits :func:`doctor_payload` — the SAME object the renders below consume, not a
     parallel assembly of it — and nothing else on stdout (it always carries ``timings``).
     ``verbose`` additionally prints the per-section timings breakdown in text mode; the default
-    text report is unchanged (bh-8nnh7).
+    text report is unchanged (bh-8nnh7). ``seats`` (bh-gqfrm) opts into the full per-seat
+    `hitch profile preflight` fanout (~2.7s) — the default report checks that hitch itself is
+    usable and says explicitly that per-seat detail was skipped, rather than silently omitting it.
     """
-    data = doctor_payload()
+    data = doctor_payload(full_seats=seats)
     if as_json:
         jsonout.emit(data)
         return

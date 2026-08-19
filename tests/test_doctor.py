@@ -1230,15 +1230,55 @@ def test_data_seats_reads_the_plugin_readiness_hook(monkeypatch):
     consumes — rather than a bespoke doctor-only capability check. Swaps the whole PLUGIN
     object (a frozen dataclass instance can't have one field patched in place) so `_data_seats`
     is provably going through `.enabled`/`.readiness`, not calling `hitch_plugin._readiness`
-    directly."""
+    directly. Uses `full=True` — the default (`full=False`, bh-gqfrm) skips the per-seat fanout
+    entirely and is covered by `test_data_seats_default_skips_the_seat_fanout` below."""
     cfg = {"hitch": {"enabled": True}}
     fake_plugin = SimpleNamespace(
         enabled=lambda cfg, entry: True,
         readiness=lambda cfg, entry: ("warn", "dispatcher: cannot run — x"),
     )
     monkeypatch.setattr(hitch_plugin, "PLUGIN", fake_plugin)
+    d = doctor._data_seats(cfg, full=True)
+    assert d == {"state": "warn", "detail": "dispatcher: cannot run — x", "seats_checked": True}
+
+
+def test_data_seats_default_skips_the_seat_fanout(monkeypatch):
+    """bh-gqfrm: the default (`full=False`) call passes `full=False` through to the readiness
+    hook rather than running the 7-way preflight fanout, and the fake's return value flows
+    through unchanged."""
+    cfg = {"hitch": {"enabled": True}}
+    seen = {}
+
+    def fake_readiness(cfg, entry, **kwargs):
+        seen.update(kwargs)
+        return ("ok", "hitch on PATH; repo /r; per-seat checks skipped by default")
+
+    fake_plugin = SimpleNamespace(enabled=lambda cfg, entry: True, readiness=fake_readiness)
+    monkeypatch.setattr(hitch_plugin, "PLUGIN", fake_plugin)
     d = doctor._data_seats(cfg)
-    assert d == {"state": "warn", "detail": "dispatcher: cannot run — x"}
+    assert seen == {"full": False}
+    assert d == {
+        "state": "ok",
+        "detail": "hitch on PATH; repo /r; per-seat checks skipped by default",
+        "seats_checked": False,
+    }
+
+
+def test_data_seats_marks_seats_checked_true_under_full(monkeypatch):
+    """bh-gqfrm review round 2: `seats_checked` is the machine-readable twin of `full` — a
+    consumer branches on this field instead of string-matching `detail`'s prose. `--seats` (full)
+    flips it to True; the default flips it to False (asserted above)."""
+    cfg = {"hitch": {"enabled": True}}
+    fake_plugin = SimpleNamespace(
+        enabled=lambda cfg, entry: True,
+        readiness=lambda cfg, entry, **kwargs: (
+            "ok",
+            "hitch on PATH; repo /r; seats -\n  x: runnable",
+        ),
+    )
+    monkeypatch.setattr(hitch_plugin, "PLUGIN", fake_plugin)
+    assert doctor._data_seats(cfg, full=True)["seats_checked"] is True
+    assert doctor._data_seats(cfg, full=False)["seats_checked"] is False
 
 
 def test_render_seats_shows_per_seat_breakdown(capsys):
@@ -1257,7 +1297,9 @@ def test_render_seats_shows_per_seat_breakdown(capsys):
 
 def test_doctor_render_includes_seats_section(monkeypatch, hive, fakebd, capsys):  # noqa: F811
     """End-to-end: `doctor()` calls `_render_seats` with the collected payload's `seats` key."""
-    monkeypatch.setattr(doctor, "_data_seats", lambda cfg: {"state": "ok", "detail": "x: runnable"})
+    monkeypatch.setattr(
+        doctor, "_data_seats", lambda cfg, **kwargs: {"state": "ok", "detail": "x: runnable"}
+    )
     doctor.doctor()
     out = capsys.readouterr().out
     assert "# Seats (hitch)" in out

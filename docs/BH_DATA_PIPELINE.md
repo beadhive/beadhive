@@ -350,6 +350,72 @@ Two things worth recording so they are not re-derived:
   wins if it shares the pack resolution (14 loads instead of 38), not by avoiding process
   startup.
 
+### bh-gqfrm (2026-08-19): Seats moved off the default `bh doctor` report, not cached
+
+Re-dispatched scoped to ONE of the two routes the bead offered — the pack-tree-digest cache
+(route 1) was ruled out at dispatch because `ah-jd4p` (agent-hitch's own projection cache, which
+would make a bh-side cache of the same fact redundant) was confirmed still open, and this bead
+was told to build only route 2 ("do not preflight every seat in a health report").
+
+**The product question, answered explicitly.** `bh doctor`'s Seats section exists to answer
+"which seats can this host run" — checking all 7 is real diagnostic value, and dropping it
+silently would be a regression, not a win. But `bh doctor`'s *default* report already has a
+graduated-detail precedent (`--verbose` for timings, `--json` for the full structured payload):
+adding `--seats` to that list, so the default asks only "is hitch itself usable" (on PATH, repo
+configured, catalog present — the same prerequisite checks `_readiness` always ran before ever
+touching a seat) while the full per-seat breakdown is one flag away, keeps the fast path honest.
+The default detail line says outright that per-seat checks were skipped and names the flag
+(`hitch on PATH; repo …; per-seat checks skipped by default (pass --seats for per-seat
+runnability)`) — a clean default report cannot be misread as "and all 7 seats passed". `bh doctor
+--seats` and `doctor_payload(full_seats=True)` still run the complete 7-way fanout, unchanged
+from before this bead (`hitch_plugin._readiness(cfg, entry, full=True)`, the default for that
+function, which is also what `bh hive ready` still calls — that surface is out of this bead's
+scope and keeps running the full check on every invocation).
+
+A hitch or profile change is still caught the moment someone asks (`--seats`), and CI/dispatch
+flows that need the full picture opt in explicitly rather than getting it by accident from a
+warm cache going stale.
+
+**Measured** (interleaved `git stash` / `git stash pop`, median of 3, this same host,
+`bh doctor --json` end-to-end via `uv run` so the number includes uv's own startup):
+
+| | before (all 7 seats every run) | after (`--seats` opt-in) |
+|---|---:|---:|
+| wall clock, `bh doctor --json` | 11.3–12.0 s | 7.1–7.5 s |
+| `seats` section (internal timing) | 2.84–2.90 s | 0.2 ms |
+| `total` (internal timing, excludes uv startup) | 9.90–10.60 s | 5.78–6.13 s |
+
+The section cost drops to the prerequisite-check floor (sub-millisecond); the ~4 s wall-clock
+delta is squarely the removed 7-way preflight fanout, not noise — every one of the 3 interleaved
+pairs showed the same ~4 s gap despite host load moving between runs.
+
+**Review round 2: the human report was fixed, the machine one was not — same defect, different
+reader.** The default `detail` string says the skip out loud, which closes the "silently reports
+less" bar for a human reading `bh doctor`'s text output. But `bh doctor --json` (and the
+byte-identical `beadhive://doctor` MCP resource) carried only `{"state": "ok", "detail": "…"}` —
+before this bead, `state: "ok"` on the `seats` key always meant "every seat was checked and
+runnable"; after it, the same `"ok"` can also mean "seats were never looked at", and nothing but
+prose distinguished the two. An MCP-reading agent is exactly the consumer least equipped to
+notice a changed meaning by string-matching English that was never a contract.
+
+**Fix:** `doctor._data_seats` now always carries `"seats_checked": bool` — literally the
+`full` the caller passed, not re-derived — alongside the existing `state`/`detail`. A consumer
+branches on the field; `detail` stays as the human-readable explanation, unchanged.
+
+Two calls made explicitly rather than left implicit:
+
+1. **No `schema_version` bump.** `jsonout`'s own documented convention: "add a field → same
+   version (consumers ignore unknown keys); remove/retype/re-mean a field → bump." This adds
+   `seats_checked` and leaves `state`/`detail`'s existing shape and meaning untouched, so it's
+   the additive case.
+2. **`state` stays `"ok"` when `seats_checked` is `False`.** It already meant "nothing WRONG in
+   what was checked", not "everything possible was checked", before this bead: an empty
+   `seat_reports()` (no seat-aligned profiles configured at all) has always produced `"ok"` with
+   no per-seat detail either — that ambiguity predates this bead and is out of its scope.
+   Reusing that existing reading for "skipped by request" keeps `state` meaning one thing;
+   `seats_checked` is the new field that answers "how thoroughly", which `state` was never able
+   to answer alone.
+
 ### Reading the table
 
 **Cold and warm are two different programs.** Warm is 9.85 s, and its largest section is `seats`
