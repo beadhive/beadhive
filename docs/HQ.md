@@ -21,9 +21,10 @@ a real repo you clone by hand.
 `~/.beadhive/hq/` (override `$BH_HQ`, legacy alias `$WS_HQ`) — a durable git + `bd` store
 (embedded Dolt under `.beads/`, prefix `hq`).
 
-Once `bh sync` sees an `hq`-kind hive registered, it targets HQ instead of the disposable
-[hub](HUB.md) for cross-hive aggregation — so `bh hq bd ready` / `bh hq intake` keep working
-the same way whether or not HQ has ever been given a remote.
+HQ holds only what originates in HQ. Cross-hive aggregation belongs to the [hub](HUB.md) and
+always lands there (`bh sync`, read with `bh hub bd ready` / `bh hub intake`); `bh hq bd …` and
+`bh hq intake` read HQ's own store. See [Hub vs HQ](#hub-vs-hq) — this reverses what bh-ohx2
+recorded, deliberately.
 
 ## Repo layout
 
@@ -116,10 +117,8 @@ pushed.
 ## `bh hq push` — publish HQ again, after `init` {#hq-push}
 
 ```sh
-bh hq push             # refresh the aggregate, then push both halves; reports what moved
+bh hq push             # push both halves of HQ; reports what moved on each
 bh hq push --dry-run   # preview only; no writes
-bh hq push --no-sync   # skip the aggregate refresh; still publish both halves
-bh hq push --git-only  # skip the refresh AND the Dolt half; publish just fleet.yaml/hosts/
 bh hq status           # read-only: ahead/behind for BOTH halves, no push
 ```
 
@@ -154,9 +153,9 @@ Both depend on `main` carrying upstream tracking, which `bh hq init`'s first pus
 ahead/behind detection itself, both silently failed/hid drift without it.
 
 The raw passthrough also works for the one-shot case: `bh hq bd dolt push` publishes the Dolt
-half directly (bh-ohx2) — the hub write-guard allows `bd dolt push`/`status`/`remote list`
-through even though it blocks bead-creating writes into the aggregate (see
-[HUB — the hub is derived](HUB.md#the-hub-is-derived--never-sync-it-directly)).
+half directly. It needs no special allowance any more — `bh hq bd …` goes to HQ's own store,
+which is authoritative and takes ordinary writes. (The *hub* refuses `bd dolt push` outright:
+it has no remote and is never published. See [HUB — the contract](HUB.md#contract).)
 
 ## `bh hq clone` — bootstrap a second host {#hq-clone}
 
@@ -171,35 +170,82 @@ Clones `main` (`fleet.yaml`/`workspace.toml`/`hosts/`), hydrates bead state from
 then registers the `local/factory/hq` synthetic identity so `bh hq bd ready` resolves to it
 afterward.
 
-## Hub vs HQ — which one is authoritative {#hub-vs-hq}
+## Hub vs HQ — two stores, two jobs {#hub-vs-hq}
 
-**Settled (bh-ohx2): `bh hq bd …` and the deprecated `bh hub bd …` are the SAME code path
-hitting the SAME store, not two aggregates that happen to agree.** Both commands call
-`hub.query()`, which resolves its target via `hub._aggregation_target()` — the durable HQ store
-once one is registered (`kind=hq`), else the legacy disposable hub. Once `bh hq init` has run,
-every `bh hub bd <verb>` call transparently redirects to `~/.beadhive/hq`, identically to
-`bh hq bd <verb>` — there is no second, independently-synced hub sitting alongside HQ. `bh hub`
-is kept only as a deprecated alias name; it is not a distinct aggregate.
+**Settled by bh-89wxf: they are DIFFERENT STORES.** This supersedes bh-ohx2, which recorded the
+opposite — that `bh hq bd …` and `bh hub bd …` were one code path hitting one store. That was
+accurate when it was written and is no longer true.
 
-Both are cross-hive read caches over the same hives, but they are not interchangeable:
+| | [hub](HUB.md) — `~/.beadhive/hub/` | HQ — `~/.beadhive/hq/` |
+|---|---|---|
+| What it holds | every hive's beads, hydrated | HQ's own `hq-`prefixed beads + fleet config |
+| Where truth lives | in each hive | here |
+| Remote | none, ever | `hq.remote` (git + `refs/dolt/data`) |
+| Rebuildable | yes — `rm -rf` + `bh sync` | no; it is the original |
+| Issues ids | **no** | yes (`hq-…`) |
+| Refreshed by | `bh sync` | nothing — it is authored, not derived |
+| Read with | `bh hub bd …` | `bh hq bd …` |
 
-- The **[hub](HUB.md)** (`~/.beadhive/hub/`) is purely local and entirely disposable — it has
-  no remote of its own, and `bh sync` rebuilds it wholesale from every hive's own git remote
-  on every run. Nothing you write there persists past the next sync.
-- **HQ** is the durable, shareable form: once `bh hq init` has wired a remote, its
-  `fleet.yaml`/`workspace.toml` are genuinely authoritative content — pushed, pulled, and
-  cloned across hosts — and `fleet.yaml` is the base every host's `config.load()` merges its
-  own `~/.beadhive/config.yaml` over (see
-  [CONFIGURATION — Fleet + host config](CONFIGURATION.md#fleet-host)). Its `hq`-prefixed
-  beads are likewise authoritative: they originate in HQ, not derived from any hive.
+**Why they had to split.** bd's own sync-concepts and bucket-federation guides give one rule:
+**one database per remote path**, and "one path, multiple databases" is named there as creating
+irreconcilable divergence. HQ's path was carrying two — HQ's authoritative beads, and a
+per-host derived aggregate that *every* host rebuilt wholesale and pushed. Since every mutation
+touches `updated_at`, the guide warns that even disjoint edits to one issue between syncs
+conflict; a per-host wholesale rebuild inside a replicated database is the maximal-conflict
+shape available. And `bh hq clone` supports a second host explicitly, so this was designed for,
+not hypothetical.
 
-The part of HQ that mirrors every hive's issues (the aggregation role it took over from the
-hub) is still a *derived* read cache, same as the hub always was — only the `hq`-prefixed
-beads and the fleet config files are HQ's own authoritative content.
+So each half went to the side of the line bd already draws:
+
+- **HYDRATION** (`bd repo add` / `bd repo sync`, reading derived JSONL, N databases one-way
+  into one) → the hub. Derived, per-host, rebuildable, never pushed.
+- **DOLT REPLICATION** (`bd dolt push`, one database, many hosts) → HQ. Authoritative,
+  exactly one database on its path.
+
+`bh hq push` therefore no longer refreshes anything, and the `--no-sync` / `--git-only` flags
+that existed only to dodge that refresh are gone with it.
+
+### `intake` — the naming, said out loud {#intake-naming}
+
+`bh hq intake` used to be the director's **fleet-wide** inbox: a cross-hive read wearing HQ's
+name. One verb was carrying two scopes silently. The verb keeps its meaning — "untriaged
+inbox"; the **surface names the scope**:
+
+```sh
+bh hub intake        # fleet-wide, every hive — the director's inbox (was `bh hq intake`)
+bh hq intake         # HQ's OWN escalations, filed by `bh escalate`
+```
+
+`bh hq intake` prints a pointer to the fleet-wide one, so the rename does not strand anybody
+mid-habit.
+
+### Migrating a host whose HQ already carries the aggregate {#prune-aggregate}
+
+No Dolt surgery, and nothing to hand-edit. Two halves:
+
+- **The hub half needs nothing.** It is derived: `bh sync` builds it. (A pre-existing
+  `hub`-prefixed hub is moved aside and rebuilt automatically — see
+  [HUB — Migrating an existing host](HUB.md#contract).)
+- **The HQ half** drops the rows that were never HQ's:
+
+```sh
+bh hq prune-aggregate              # dry run: how many, and a sample
+bh hq prune-aggregate --confirm    # bd delete them, then re-assert HQ is clean
+bh hq push                         # publish the now-single-purpose database
+```
+
+`bd delete` is an ordinary bd mutation, so it replicates through `refs/dolt/data` like any
+other — a second host picks the cleanup up on its next pull instead of each host repairing its
+own copy. The alternative (export the `hq-` beads, re-init, re-import) was rejected: it
+discards HQ's Dolt lineage and leaves every other host's clone diverged from a store it can no
+longer fast-forward to.
+
+Nothing is lost either way. Every pruned bead is a derived copy of a bead that still lives in
+its own hive, and `bh sync` puts the cross-hive view back in the hub where it belongs.
 
 ## See also
 
-- [HUB](HUB.md) — the disposable local aggregation cache HQ supersedes once registered.
+- [HUB](HUB.md) — the derived per-host cross-hive aggregate, and its contract.
 - [CONFIGURATION — Fleet + host config](CONFIGURATION.md#fleet-host) — how `fleet.yaml` merges
   with a host's own config, the override allowlist, `--scope`, and the flat-config migration.
-- [CONTROL-PLANE](CONTROL-PLANE.md) — `bh hq intake`, the fleet-wide untriaged-intake inbox.
+- [CONTROL-PLANE](CONTROL-PLANE.md) — `bh hub intake`, the fleet-wide untriaged-intake inbox.

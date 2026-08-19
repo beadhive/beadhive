@@ -145,7 +145,12 @@ def config_path() -> Path:
 
 
 def hub_dir() -> Path:
-    """The aggregation hub beads DB (cross-hive view). Override with $BH_HUB."""
+    """The hub: this HOST's DERIVED cross-hive aggregate beads DB. Override with $BH_HUB.
+
+    Never authoritative, never pushed, no remote of its own, and it ISSUES NO IDS — every bead
+    in it arrives hydrated from some hive, carrying that hive's prefix. Losing it costs one
+    `bh sync`. See docs/HUB.md for the full contract and `hub.HUB_PREFIX` for why the store's
+    bd prefix is deliberately not a plausible hive prefix."""
     env = _env("hub")
     return Path(env).expanduser() if env else home() / "hub"
 

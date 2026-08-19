@@ -996,14 +996,15 @@ def _register_read_resources(mcp, tool, resource):
     def hq_intake_resource():
         """Resource: fleet-wide untriaged intake inbox, aggregated across the hub.
 
-        Resolves the aggregation target via hub._aggregation_target() (durable HQ store
-        when one is registered, else the legacy hub). Returns the open intake:untriaged
-        beads as a list via bd.json. Returns an empty list when the hub is absent or
-        unavailable rather than raising.
+        Reads THE HUB (hub.hub_target) — this host's derived cross-hive aggregate. Since
+        bh-89wxf.2 that is unconditionally the hub, never HQ: HQ holds only its own
+        hq-prefixed beads, so a fleet-wide inbox read there would see one hive's worth.
+        Returns the open intake:untriaged beads as a list via bd.json, or an empty list
+        when the hub is absent or unavailable, rather than raising.
         """
         from .state import INTAKE_UNTRIAGED
 
-        hub_dir, _prefix = hub._aggregation_target()
+        hub_dir, _prefix = hub.hub_target()
         if not (hub_dir / ".beads").is_dir():
             return []
         return (

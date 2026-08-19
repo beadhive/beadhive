@@ -43,10 +43,10 @@ flowchart TB
 ### 1. `bh` (hq) — a read cache over every hive
 
 `bh sync` pulls each registered hive's `refs/dolt/data` into one **local embedded Dolt DB** at
-`~/.beadhive/hub` (cloned hives by path; uncloned by a blobless minimal-clone cache). `bh hq bd
+`~/.beadhive/hub` (cloned hives by path; uncloned by a blobless minimal-clone cache). `bh hub bd
 ready` then answers "what's actionable anywhere?" across the whole workspace without a server
-and without every repo checked out. This is built today — see [HUB](HUB.md). The HQ aggregate
-is a **cache**: authoritative state stays on each hive's remote.
+and without every repo checked out. This is built today — see [HUB](HUB.md). The hub is a
+**cache**: authoritative state stays on each hive's remote.
 
 ### 2. `developer` — one hive, one bead, anywhere
 

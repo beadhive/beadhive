@@ -48,9 +48,10 @@ step:
          clones this HQ gets a factory with no work in it.
 
       Then say what it bought and what it costs.
-        Buys: a durable backup of BOTH halves, the cross-repo aggregate
-              (`bh sync`, `bh hq bd ready`, `bh hq intake`), and the one
-              hard prerequisite for rung 4.
+        Buys: a durable backup of BOTH halves of HQ, a shareable
+              fleet.yaml, and the one hard prerequisite for rung 4.
+              (The cross-repo aggregate is the hub's — `bh sync`,
+              `bh hub bd ready`, `bh hub intake` — and needs no remote.)
         Costs: a private repo, and a push discipline — `bh hq push` is not
               automatic.
   verify:
@@ -184,8 +185,9 @@ it is confirmed with the user before anything is pushed.
 
 ## What it buys, what it costs
 
-- **Buys.** A durable backup of both halves; the cross-repo aggregate (`bh sync`,
-  `bh hq bd ready`, `bh hq intake`); and the one hard prerequisite for rung 4.
+- **Buys.** A durable backup of both halves of HQ; a shareable `fleet.yaml`; and the one hard
+  prerequisite for rung 4. (The cross-repo aggregate is the [hub](../../../../../docs/HUB.md)'s
+  — `bh sync`, `bh hub bd ready`, `bh hub intake` — and needs no remote at all.)
 - **Costs.** A private repo, and a push discipline — `bh hq push` is not automatic.
 
 Related and worth naming if the user asks: `bh backup usage` reports what the backup roots are
