@@ -11,6 +11,7 @@ custodian/homelab provisioning.
 from __future__ import annotations
 
 import re
+from functools import cache
 from pathlib import Path
 
 from .identity import workspace_root
@@ -31,21 +32,29 @@ def global_identity() -> dict:
     }
 
 
-def _get_regexp(pattern: str) -> list[tuple[str, str]]:
-    """[(key, value), ...] from `git config --global --get-regexp <pattern>` — [] on any
-    failure (no match, git missing, malformed regex). Never raises."""
+@cache
+def _get_regexp(pattern: str) -> tuple[tuple[str, str], ...]:
+    """[(key, value), ...] from `git config --global --get-regexp <pattern>` — () on any
+    failure (no match, git missing, malformed regex). Never raises.
+
+    MEMOIZED PER PROCESS (bh-z31lc): this reads the user's GLOBAL git config, a process-wide
+    read-only fact, and each pattern was re-forked 4x in one `bh doctor`. bh has no writer for
+    the global config, so there is nothing in-process to invalidate against. Returns a TUPLE
+    rather than a list because an lru_cache hands every caller the same object and a mutable
+    one would let one caller corrupt the next's view.
+    """
     try:
         res = run(["git", "config", "--global", "--get-regexp", pattern], check=False, capture=True)
     except Exception:  # noqa: BLE001 - read-only introspection: any failure means "nothing found"
-        return []
+        return ()
     if res.returncode != 0:
-        return []
+        return ()
     out = []
     for line in res.stdout.splitlines():
         if " " in line:
             key, _, value = line.partition(" ")
             out.append((key, value))
-    return out
+    return tuple(out)
 
 
 def insteadof_aliases() -> list[tuple[str, str]]:

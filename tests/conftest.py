@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import dolt_health, otel, validation_ledger
+from beadhive import dolt_health, gitauth, identity, otel, validation_ledger
 from harness.world import (
     MAX_CONCURRENT_DOLT_SERVER_TESTS,
     World,
@@ -220,6 +220,27 @@ def _fresh_bd_version_memo():
     dolt_health._local_bd_version_string.cache_clear()
     yield
     dolt_health._local_bd_version_string.cache_clear()
+
+
+@pytest.fixture(autouse=True)
+def _clear_git_fact_caches():
+    """Every test starts with the process-lifetime git-fact caches EMPTY (bh-z31lc).
+
+    `identity.workspace_identity` and `gitauth._get_regexp` are `lru_cache`d because they fork
+    git to read a fact that cannot change while one CLI verb runs. A test PROCESS is not one
+    verb: it runs hundreds, each with its own monkeypatched `run` and its own tmp_path. Without
+    this, a value cached under one test's fake git is served to the next test — which is not a
+    hypothetical, it is how this fixture got written (two `test_gitauth` tests passed alone and
+    failed in file order).
+
+    Cleared here rather than in each test: the hazard belongs to the cache, not to whichever
+    test happens to trip over it next.
+    """
+    identity.workspace_identity.cache_clear()
+    gitauth._get_regexp.cache_clear()
+    yield
+    identity.workspace_identity.cache_clear()
+    gitauth._get_regexp.cache_clear()
 
 
 @pytest.fixture(autouse=True)
