@@ -102,11 +102,10 @@ content on rebuild is tracked separately (bh-add2.2), out of scope here.
 from __future__ import annotations
 
 import shutil
-from concurrent.futures import ThreadPoolExecutor
 
 import typer
 
-from . import config, plugins, role, run
+from . import config, fleet, plugins, role, run
 
 # bh's own harness vocabulary (mirrors role.KNOWN_HARNESSES) mapped onto hitch's own `up` target
 # names — determined empirically: hitch's CLI accepts "claude-code"/"opencode", NOT "claude"
@@ -290,10 +289,10 @@ def seat_reports(cfg) -> list[dict]:
         return {"seat": seat, "state": state, "detail": detail}
 
     # Preflights are independent and read-only, and each costs ~1.8s of external process
-    # (bh-ls1ks: 7 seats = 12.7s sequential). Run them in a pool and keep `seats`' sorted
-    # order by consuming `map`'s results positionally, so the report stays deterministic.
-    with ThreadPoolExecutor(max_workers=len(seats)) as pool:
-        return list(pool.map(_one, seats))
+    # (bh-ls1ks: 7 seats = 12.7s sequential). SHAPE B (`fleet.fanout`): not a bead-store read
+    # at all, so the bulk shape can never apply here. The shape also CAPS this, which the
+    # hand-rolled `max_workers=len(seats)` did not — fine at 7 seats, not a shape to keep.
+    return fleet.fanout(_one, seats)
 
 
 def _readiness(cfg, entry) -> tuple[str, str] | None:

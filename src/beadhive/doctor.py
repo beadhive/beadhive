@@ -18,7 +18,6 @@ import importlib.metadata
 import json
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import typer
@@ -28,6 +27,7 @@ from . import (
     channels,
     config,
     dolt_health,
+    fleet,
     gitauth,
     gitworkspace,
     guard,
@@ -438,13 +438,10 @@ def _data_prefix_mismatches(cfg) -> list[dict]:
         }
 
     # The `bd config get` spawns are independent, read-only, and store-bound (bh-3qo60: 15
-    # hives = 4.39s sequential). Run them in a pool and keep `entries`' registry order by
-    # consuming `map`'s results positionally, so the reported list stays deterministic. Capped
-    # like the other pooled sections (hive_sync._STATUS_WORKERS, sync_remote._ASSESS_WORKERS)
-    # rather than one-thread-per-hive, which would spawn unbounded `dolt` processes at scale.
-    with ThreadPoolExecutor(max_workers=min(len(entries), 16)) as pool:
-        results = list(pool.map(_one, entries))
-    return [m for m in results if m is not None]
+    # hives = 4.39s sequential). SHAPE B (`fleet.fanout`): `issue_prefix` is a bd config read,
+    # not a column the shared server holds, so the bulk shape does not apply. Input order is
+    # preserved by the shape, so the reported list stays deterministic.
+    return [m for m in fleet.fanout(_one, entries) if m is not None]
 
 
 def _render_prefix_mismatches(mismatches: list[dict]) -> None:
@@ -1898,9 +1895,9 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
     # Neither goes through `bd.run`/`bd.json` (bh's in-process wrapper) — both call
     # `run.run`/`subprocess.run` directly — so this loop never reads `bd._STRICT_READS`
     # (a ContextVar, invisible to pool workers) and can't silently defeat `bd.strict_reads()`.
-    # Capped like the other pooled sections rather than one-thread-per-hive.
-    with ThreadPoolExecutor(max_workers=min(len(entries), 16)) as pool:
-        results = list(pool.map(_probe, entries))
+    # SHAPE B (`fleet.fanout`): `bd dolt status` is bd's own report on a store, not a row the
+    # server serves, so the bulk shape does not apply.
+    results = fleet.fanout(_probe, entries)
 
     warns: list[str] = []
     for (e, _path), (record, fail_detail) in zip(entries, results, strict=True):
