@@ -10,6 +10,7 @@ and a missing/broken bd yields a friendly error instead of a raw traceback.
 from __future__ import annotations
 
 import json
+import shutil
 from collections import namedtuple
 from pathlib import Path
 
@@ -35,6 +36,13 @@ def _hive_cfg(*repos, bulk_sync=True):  # bh-l7sm8: ON is the default; False is 
     }
 
 
+def _identify(store, project_id="fake-aggregate-id"):
+    """Give a fake aggregate the `.beads/metadata.json` a real one always has."""
+    (store / ".beads").mkdir(parents=True, exist_ok=True)
+    (store / ".beads" / "metadata.json").write_text(json.dumps({"project_id": project_id}))
+    return store
+
+
 def _wire(tmp_path, monkeypatch, fake_run, *repos):
     """Point hub.sync at fake subprocesses + on-disk hive dirs for the given repo names.
 
@@ -48,6 +56,10 @@ def _wire(tmp_path, monkeypatch, fake_run, *repos):
         (d / ".beads").mkdir(parents=True)
         dirs[r] = d
     monkeypatch.setenv("WS_HOME", str(tmp_path))  # keep metadata.invalidate off the real cache
+    # The fake aggregate needs a real STORE IDENTITY: watermarks are keyed on the store's
+    # `project_id` as well as its path (bh-89wxf.1), so a metadata-less hub reads as re-minted
+    # and every mark is (correctly) discarded.
+    _identify(tmp_path / "hub")
     monkeypatch.setattr(hub, "run", fake_run)
     monkeypatch.setattr(bd, "_run", fake_run)
     monkeypatch.setattr(hub, "ensure_hub", lambda: tmp_path / "hub")
@@ -322,11 +334,38 @@ def test_load_watermarks_ignores_a_mismatched_aggregate(tmp_path, monkeypatch):
     """A watermark file recorded against a DIFFERENT aggregate directory (e.g. the hub->HQ
     handoff) must never be read as if it applies here — HQ has never seen that hive yet."""
     monkeypatch.setattr(hub.config, "cache_dir", lambda: tmp_path / "cache")
+    _identify(tmp_path / "old-hub")
+    _identify(tmp_path / "new-hq", "a-different-store")
 
     hub._store_watermarks(tmp_path / "old-hub", {"a-one": "c1"})
 
     assert hub._load_watermarks(tmp_path / "old-hub") == {"a-one": "c1"}
     assert hub._load_watermarks(tmp_path / "new-hq") == {}
+
+
+def test_load_watermarks_ignores_an_aggregate_re_minted_under_the_same_path(tmp_path, monkeypatch):
+    """THE REBUILD HAZARD (bh-89wxf.1): `rm -rf` the hub and `bh sync` re-mints it at the SAME
+    path with a NEW store identity. Path-keyed marks would have said "unchanged" for every
+    hive against a store holding nothing at all."""
+    monkeypatch.setattr(hub.config, "cache_dir", lambda: tmp_path / "cache")
+    hub_dir = _identify(tmp_path / "hub")
+    hub._store_watermarks(hub_dir, {"a-one": "c1"})
+    assert hub._load_watermarks(hub_dir) == {"a-one": "c1"}
+
+    shutil.rmtree(hub_dir)
+    _identify(hub_dir, "freshly-minted")  # same path, new bd init
+
+    assert hub._load_watermarks(hub_dir) == {}
+
+
+def test_load_watermarks_treats_an_unidentifiable_aggregate_as_cold(tmp_path, monkeypatch):
+    """No recorded `project_id` is UNKNOWN, and unknown fails toward the full re-sync."""
+    monkeypatch.setattr(hub.config, "cache_dir", lambda: tmp_path / "cache")
+    hub_dir = _identify(tmp_path / "hub")
+    hub._store_watermarks(hub_dir, {"a-one": "c1"})
+    (hub_dir / ".beads" / "metadata.json").write_text("{}")
+
+    assert hub._load_watermarks(hub_dir) == {}
 
 
 def test_hive_commit_reads_the_vc_status_commit_field(tmp_path, monkeypatch):
@@ -405,22 +444,23 @@ def test_query_refuses_hub_write_before_running_bd(tmp_path, monkeypatch, capsys
     with pytest.raises(typer.Exit) as exc:
         hub.query(["create", "-t", "stranded"])
     assert exc.value.exit_code == 1
-    assert "READ-ONLY" in capsys.readouterr().err
+    assert "ISSUES NO IDS" in capsys.readouterr().err
 
 
-def test_query_label_defaults_to_hq_and_forwards_to_guard(tmp_path, monkeypatch, capsys):
-    """`hub.query`'s default `label` ("hq") reaches the guard's refusal message unchanged, and
-    an explicit `label="hub"` (the deprecated alias's call site) overrides it (bh-ohx2)."""
+def test_query_label_defaults_to_hub_and_forwards_to_guard(tmp_path, monkeypatch, capsys):
+    """`hub.query`'s default `label` is "hub" — since bh-89wxf.2 that IS the surface this
+    function serves, and `bh hq bd …` is a different store entirely (`hq.query`). The label
+    still reaches the guard's refusal message unchanged (bh-ohx2)."""
     monkeypatch.setattr(hub, "run", lambda *a, **k: pytest.fail("bd must not run on a write"))
     monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
 
     with pytest.raises(typer.Exit):
         hub.query(["create", "-t", "boom"])
-    assert "`bh hq bd create`" in capsys.readouterr().err
+    assert "`bh hub bd create`" in capsys.readouterr().err
 
     with pytest.raises(typer.Exit):
-        hub.query(["create", "-t", "boom"], label="hub")
-    assert "`bh hub bd create`" in capsys.readouterr().err
+        hub.query(["create", "-t", "boom"], label="somewhere")
+    assert "`bh somewhere bd create`" in capsys.readouterr().err
 
 
 def test_query_read_verb_forwards_to_bd(tmp_path, monkeypatch):
@@ -576,7 +616,7 @@ def test_escalate_never_reaches_the_bounded_aggregate_path():
 def test_ensure_hub_missing_bd_is_friendly(tmp_path, monkeypatch, capsys):
     """A missing bd binary exits with a friendly message, not a raw FileNotFoundError."""
     # WS_HOME must point at an empty dir so config.load() raises FileNotFoundError and
-    # _aggregation_target() falls back to hub_dir() (which honours WS_HUB).
+    # hub_target() resolves to hub_dir() (which honours WS_HUB).
     monkeypatch.setenv("WS_HOME", str(tmp_path))
     monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
 
@@ -1184,3 +1224,57 @@ def test_sync_bulk_pass_receives_changed_flag_from_the_existing_watermark(tmp_pa
     hub.sync()
 
     assert captured["entries"] == [("a-one", tmp_path / "one", False, False)]
+
+
+# ---------------------------------------------------------------------------
+# The hub is prefix-less (bh-89wxf.1) — a store with a prefix is a store that can ISSUE ids,
+# and an aggregate never creates a bead. bd demands a prefix string, so the string is chosen
+# to self-identify a leak; `guard.guard_hub` is the enforcement.
+# ---------------------------------------------------------------------------
+
+
+def test_hub_prefix_cannot_collide_with_any_derived_hive_prefix():
+    """`registry.derive_prefix` builds prefixes from lowercase repo slugs, so an uppercase,
+    underscore-led sentinel is unreachable from it by construction — not merely unlikely."""
+    from beadhive import registry
+
+    assert hub.HUB_PREFIX == hub.HUB_PREFIX.upper()
+    assert hub.HUB_PREFIX.startswith("_")
+    derived, _ = registry.derive_prefix("github", "acme", "hub", cfg={"managed_repos": []})
+    assert derived != hub.HUB_PREFIX
+    assert hub.HUB_PREFIX not in hub._LEGACY_HUB_PREFIXES
+
+
+def test_ensure_hub_retires_a_legacy_hub_prefixed_store(tmp_path, monkeypatch, capsys):
+    """An existing host's pre-bh-89wxf.1 hub (bd prefix 'hub') is MOVED ASIDE and re-minted
+    prefix-less — the migration path, and a rebuild rather than Dolt surgery."""
+    store = tmp_path / "hub"
+    (store / ".beads").mkdir(parents=True)
+    (store / ".beads" / "metadata.json").write_text(json.dumps({"dolt_database": "hub"}))
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: store)
+    monkeypatch.setattr(hub, "hub_target", lambda: (store, hub.HUB_PREFIX))
+    minted = []
+    monkeypatch.setattr(hub, "ensure_store", lambda s, p: minted.append((s, p)) or s)
+
+    hub.ensure_hub()
+
+    assert minted == [(store, hub.HUB_PREFIX)]
+    assert not store.exists()  # renamed, never deleted
+    aside = [p for p in tmp_path.iterdir() if p.name.startswith("hub.legacy-")]
+    assert len(aside) == 1 and (aside[0] / ".beads").is_dir()
+    assert "retired the legacy hub" in capsys.readouterr().err
+
+
+def test_ensure_hub_leaves_a_store_of_unknown_provenance_alone(tmp_path, monkeypatch):
+    """No recorded database name means UNKNOWN, not legacy. Retiring a store bh cannot
+    identify is the one irreversible mistake available here, so it doesn't."""
+    store = tmp_path / "hub"
+    (store / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: store)
+    monkeypatch.setattr(hub, "hub_target", lambda: (store, hub.HUB_PREFIX))
+    monkeypatch.setattr(hub, "ensure_store", lambda s, p: s)
+
+    hub.ensure_hub()
+
+    assert (store / ".beads").is_dir()
+    assert not list(tmp_path.glob("hub.legacy-*"))

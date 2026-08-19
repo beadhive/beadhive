@@ -15,7 +15,7 @@ $GIT_WORKSPACE (default: ~/workspace)   the canonical HQ launch directory
         │  bd dolt push → refs/dolt/data on the repo's own git remote
         ▼
    ~/.beadhive/hub                       ← bh sync aggregates every hive (cloned by path, uncloned by cache)
-                                           bh hq bd ready → actionable work across the whole workspace
+                                           bh hub bd ready → actionable work across the whole workspace
 ```
 
 ## Mental model in one breath
@@ -36,7 +36,7 @@ Factory HQ). `git-workspace` (optional) tells `bh` what repos exist and unlocks 
 | `bh hive init` | onboard the current repo as a hive → [HIVES](HIVES.md) |
 | `bh bd …` / `bh git …` | passthrough to beads/git, with `-a`/`-r` hive routing → [PASSTHROUGH](PASSTHROUGH.md) |
 | `bh label …` | validate / sync / report / docs the registry → [LABELS](LABELS.md) |
-| `bh sync` / `bh hq …` | build & query the HQ aggregate (cross-hive) → [HUB](HUB.md) |
+| `bh sync` / `bh hub …` | build & query the hub, the cross-hive aggregate → [HUB](HUB.md) |
 | `bh work …` | drive a bead assigned → merged → [WORK](WORK.md), [BEADS-SYNC](BEADS-SYNC.md) |
 | `bh doctor` | status + diagnostics → [DIAGNOSTICS](DIAGNOSTICS.md) |
 | `bh dolt …` | the *optional* central Dolt server (not the store engine) → [DOLT](DOLT.md) |

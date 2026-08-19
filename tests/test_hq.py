@@ -107,15 +107,18 @@ def _stub_store_and_sync(monkeypatch, sync_result=None):
     return calls
 
 
-def test_hq_init_registers_synthetic_identity_and_aggregates(world, monkeypatch):
+def test_hq_init_registers_synthetic_identity_and_does_not_aggregate(world, monkeypatch):
+    """bh-89wxf.2: standing HQ up has nothing to do with hydrating the fleet. `hub.sync()` used
+    to run here to "move the aggregation role onto HQ" — which is exactly what put a derived
+    per-host aggregate on HQ's Dolt remote path."""
     calls = _stub_store_and_sync(monkeypatch)
 
     hq.init()
 
     # the store was stood up at hq_dir() with the reserved prefix …
     assert calls["ensure"] == [(config.hq_dir(), registry.HQ_PREFIX)]
-    # … and aggregation moved onto HQ (hub.sync ran once).
-    assert calls["sync"] == 1
+    # … and NOTHING was aggregated into it.
+    assert calls["sync"] == 0
 
     entry = registry.hive_of_kind(config.load(), registry.HQ_KIND)
     assert entry is not None
@@ -157,7 +160,7 @@ def test_hq_init_second_call_is_a_clean_no_op(world, monkeypatch, capsys):
 
     # the guard tripped before any store/sync work of the second call.
     assert calls["ensure"] == [(config.hq_dir(), registry.HQ_PREFIX)]
-    assert calls["sync"] == 1
+    assert calls["sync"] == 0  # bh-89wxf.2: init never aggregates
     # still exactly one HQ registered.
     hqs = [e for e in config.load().get("managed_repos", []) if str(e.get("kind")) == "hq"]
     assert len(hqs) == 1
@@ -177,11 +180,13 @@ def test_hq_init_creates_store_before_registering(world, monkeypatch):
     assert registry.hive_of_kind(config.load(), registry.HQ_KIND) is None
 
 
-def test_hq_init_propagates_sync_failure(world, monkeypatch):
-    _stub_store_and_sync(monkeypatch, sync_result=["a-hive"])
-    with pytest.raises(typer.Exit) as exc:
-        hq.init()
-    assert exc.value.exit_code == 1
+def test_hq_init_never_runs_a_fleet_wide_sync(world, monkeypatch):
+    """`hq init` used to propagate `hub.sync()`'s failed-hive list as its own exit code — it
+    has no aggregation step to fail any more (bh-89wxf.2), so a fleet with broken hives cannot
+    stop a host from standing HQ up."""
+    calls = _stub_store_and_sync(monkeypatch, sync_result=["a-hive"])
+    hq.init()  # must NOT raise
+    assert calls["sync"] == 0
 
 
 # ---- the synthetic identity stays green -------------------------------------
@@ -264,84 +269,78 @@ def _stub_hub_for_cli(tmp_path, monkeypatch):
     return calls
 
 
-def test_hq_intake_calls_hub_intake(tmp_path, monkeypatch):
-    """``ws hq intake`` routes to hub.intake() — same aggregate read, no deprecation noise."""
+def test_hq_intake_reads_hq_and_points_at_the_fleet_wide_view(tmp_path, monkeypatch):
+    """bh-89wxf.2: `bh hq intake` is HQ's OWN inbox now — a read of the HQ store, not the
+    cross-hive aggregate — and it names where the fleet-wide view went."""
     from typer.testing import CliRunner
 
     from beadhive import state
     from beadhive.cli import app
 
     calls = _stub_hub_for_cli(tmp_path, monkeypatch)
-
-    # Monkeypatch hub._aggregation_target so it returns our tmp_path store.
-    monkeypatch.setattr(hub, "_aggregation_target", lambda: (tmp_path, "hq"))
+    monkeypatch.setattr(hub.config, "hq_dir", lambda: tmp_path)
 
     res = CliRunner().invoke(app, ["hq", "intake"])
 
     assert res.exit_code == 0, res.output
-    # must not print any deprecation warning
-    assert "deprecated" not in res.output
-    # hub.run was called with the intake filter args
-    assert calls, "hub.run should have been called"
-    combined_args = [arg for cmd in calls for arg in cmd]
-    assert state.INTAKE_UNTRIAGED in combined_args
+    assert "hub intake" in res.output  # the pointer, so the rename strands nobody
+    assert calls, "the bounded bd read should have run"
+    assert all(cmd[:3] == ["bd", "-C", str(tmp_path)] for cmd in calls), calls
+    assert state.INTAKE_UNTRIAGED in [arg for cmd in calls for arg in cmd]
 
 
 def test_hq_intake_forwards_extra_flags(tmp_path, monkeypatch):
-    """Extra flags (e.g. --json) forwarded through ``ws hq intake`` reach hub.intake."""
+    """Extra flags (e.g. --json) forwarded through ``bh hq intake`` reach the bd read."""
     from typer.testing import CliRunner
 
     from beadhive import state
     from beadhive.cli import app
 
     calls = _stub_hub_for_cli(tmp_path, monkeypatch)
-    monkeypatch.setattr(hub, "_aggregation_target", lambda: (tmp_path, "hq"))
+    monkeypatch.setattr(hub.config, "hq_dir", lambda: tmp_path)
 
     res = CliRunner().invoke(app, ["hq", "intake", "--json"])
 
     assert res.exit_code == 0, res.output
-    # --json must appear in the bd command forwarded to hub.run
     combined_args = [arg for cmd in calls for arg in cmd]
     assert "--json" in combined_args
     assert state.INTAKE_UNTRIAGED in combined_args
 
 
-def test_hub_deprecated_alias_prints_deprecation_note(tmp_path, monkeypatch):
-    """``ws hub intake`` prints a deprecation warning (CliRunner mixes stdout+stderr)."""
+def test_hub_intake_is_the_fleet_wide_inbox_and_no_longer_deprecated(tmp_path, monkeypatch):
+    """`bh hub` was an alias for `bh hq` while both resolved to one store. They are two stores
+    with two jobs now, so the alias is un-deprecated and means the cross-hive one."""
     from typer.testing import CliRunner
 
+    from beadhive import state
     from beadhive.cli import app
 
-    _stub_hub_for_cli(tmp_path, monkeypatch)
-    monkeypatch.setattr(hub, "_aggregation_target", lambda: (tmp_path, "hq"))
+    calls = _stub_hub_for_cli(tmp_path, monkeypatch)
+    hub_dir = tmp_path / "hub"
+    (hub_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: hub_dir)
 
     res = CliRunner().invoke(app, ["hub", "intake"])
 
-    # CliRunner mixes stdout + stderr in res.output; the deprecation note must appear.
-    assert "deprecated" in res.output.lower()
-    assert "bh hq" in res.output
+    assert res.exit_code == 0, res.output
+    assert "deprecated" not in res.output.lower()
+    assert all(cmd[:3] == ["bd", "-C", str(hub_dir)] for cmd in calls), calls
+    assert state.INTAKE_UNTRIAGED in [arg for cmd in calls for arg in cmd]
 
 
-def test_hub_deprecated_alias_resolves_same_aggregate_read(tmp_path, monkeypatch):
-    """``ws hub intake`` and ``ws hq intake`` route to the same hub.intake() implementation."""
+def test_hq_bd_and_hub_bd_resolve_to_different_stores(tmp_path, monkeypatch):
+    """THE SPLIT, asserted at the CLI: one remote path, one database (bh-89wxf.2)."""
     from typer.testing import CliRunner
 
     from beadhive.cli import app
 
-    # Run ws hq intake — capture its bd call args.
-    calls_hq = _stub_hub_for_cli(tmp_path, monkeypatch)
-    monkeypatch.setattr(hub, "_aggregation_target", lambda: (tmp_path, "hq"))
-    CliRunner().invoke(app, ["hq", "intake"])
-    hq_args = [tuple(cmd) for cmd in calls_hq]
+    hub_dir = tmp_path / "hub"
+    (hub_dir / ".beads").mkdir(parents=True)
+    calls = _stub_hub_for_cli(tmp_path, monkeypatch)
+    monkeypatch.setattr(hub.config, "hub_dir", lambda: hub_dir)
+    monkeypatch.setattr(hub.config, "hq_dir", lambda: tmp_path)
 
-    # Reset and run ws hub intake — capture its bd call args.
-    calls_hub = _stub_hub_for_cli(tmp_path, monkeypatch)
-    monkeypatch.setattr(hub, "_aggregation_target", lambda: (tmp_path, "hq"))
-    CliRunner().invoke(app, ["hub", "intake"])
-    hub_args = [tuple(cmd) for cmd in calls_hub]
+    CliRunner().invoke(app, ["hq", "bd", "ready"])
+    CliRunner().invoke(app, ["hub", "bd", "ready"])
 
-    # Both must invoke the same bd command sequence (deprecation wrapper excluded).
-    assert hq_args == hub_args, (
-        f"ws hq intake and ws hub intake produced different bd calls:\n"
-        f"  hq: {hq_args}\n  hub: {hub_args}"
-    )
+    assert [cmd[2] for cmd in calls] == [str(tmp_path), str(hub_dir)], calls

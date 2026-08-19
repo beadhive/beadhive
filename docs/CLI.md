@@ -55,11 +55,13 @@ workspace or you're targeting a **different** hive; otherwise the single failure
 
 ## Passthrough command pattern
 
-`bd`, `git`, and the `hq bd` / `hq intake` commands are passthroughs: Typer `context_settings`
+`bd`, `git`, and the `hub bd` / `hub intake` / `hq bd` / `hq intake` commands are
+passthroughs: Typer `context_settings`
 use `allow_extra_args + ignore_unknown_options` and `add_help_option=False`, so all args after
 the subcommand are forwarded verbatim to the underlying tool. (`bh bd --help` shows beads' help;
-`bh git workspace --help` is rerouted to the `git-workspace` binary.) `bh hub` is a deprecated
-alias for `bh hq` and prints a deprecation note when used.
+`bh git workspace --help` is rerouted to the `git-workspace` binary.) `bh hub` and `bh hq` are
+NOT aliases — they read two different stores: the derived cross-hive aggregate and HQ's own
+authoritative beads respectively. See [HQ — Hub vs HQ](HQ.md#hub-vs-hq).
 
 ## Full surface
 
@@ -81,7 +83,7 @@ bh host init|identity|list|show|remove|adopt|release|packup
                               (gated on live leases + self-removal); identity fills this
                               host's git name/email/signing-key GAPS from bh's own config
                               and never overwrites an existing value (WORK.md)
-bh sync                       build/refresh the HQ aggregate (HUB.md)
+bh sync                       build/refresh the hub, the cross-hive aggregate (HUB.md)
 bh role [name]                launch claude in a seat role
 bh report <hive> <title>      file intake into a hive we own (REPORT-CHANNEL.md)
 bh report-target              emit bh's own report-channel descriptor

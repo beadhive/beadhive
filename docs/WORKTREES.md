@@ -547,13 +547,32 @@ If `worktrees.root` / `$WS_WORKTREES` moves, each hive's grant goes stale; `bh d
 the drifted hives and the fix is to **re-run `bh hive init --claude`** in them — the writer
 replaces the old entry rather than piling on.
 
-## Codex sandbox reachability (bh-rpzaj)
+### `--global` — one-time, coarser-grained alternative (bh-n0m7n)
 
-Codex has **no grant-file mechanism `bh` can write** — unlike Claude Code's
-`.claude/settings.local.json` above, Codex's own writable roots are set entirely by however
-the `codex` binary was launched (a permission-profile `config.toml`, or `--add-dir`), and bh
-has no hook into that. Codex's own **default** `workspace-write` sandbox (no `--add-dir`)
-covers only its own cwd tree plus the OS temp dir
+`bh hive init --claude --global` is an **opt-in, more permissive** alternative to the per-hive
+grant above: instead of one hive's own subtree, it grants the **whole shared `worktrees_root()`**
+— every hive's worktrees on this machine, not just this one — in a **single entry**, written
+once into the **global** `~/.claude/settings.json` (`config.claude_home()`, overridable with
+`$BH_CLAUDE_HOME`) rather than this hive's project-local `.claude/settings.local.json`. Same
+merge shape (`sandbox.filesystem.allowWrite` + `permissions.additionalDirectories`), so it
+merges non-destructively into whatever the operator already has there.
+
+**Blast-radius tradeoff, stated plainly:** any Claude Code session on this machine whose
+sandbox reads this global grant gets write access to **every** hive's worktrees, not just the
+one it's working in — a broader blast radius than the per-hive grant, traded for never having
+to run `bh hive init --claude` again in a new hive. The **default stays per-hive** for exactly
+this reason; `--global` is a deliberate, explicit opt-in for an operator who runs many hives
+and has decided that tradeoff is worth it, not a replacement for the default.
+
+The two shapes **coexist without conflict** — different files, no shared key — and
+`bh hive ready -v`'s `sandbox grant` line reports **ok** for a hive covered by *either* one (a
+current per-hive entry, or a current global entry), so a hive doesn't need both.
+
+## Codex sandbox reachability (bh-rpzaj, bh-odulu, bh-n0m7n)
+
+Codex's writable roots are set by however the `codex` binary was launched (a permission
+profile / `config.toml`, or `--add-dir`). Codex's own **default** `workspace-write` sandbox
+(no `--add-dir`) covers only its own cwd tree plus the OS temp dir
 (`docs/spikes/bh-a7so.8-codex-empirical.md`, Evidence 8:
 `sandbox: workspace-write [workdir, /tmp, $TMPDIR]`).
 
@@ -563,17 +582,120 @@ That means a **persistent** worktree root (`worktrees.ephemeral: false`, e.g. un
 just fine — the worktree exists, the bead looks claimed, and then the same session's own
 `apply_patch`/file-edit tool calls can't write into it.
 
-**Two defenses, not one, because bh can only see half the picture:**
+### `bh hive init --codex` — the up-front grant (bh-odulu)
 
-- **`bh hive ready -v`** reports a `codex sandbox` line (advisory, never fails the gate —
-  bh has nothing to grant here, only to warn about) whenever `worktrees.ephemeral: false`
-  and the configured `worktrees.path` sits outside cwd/$TMPDIR.
+Unlike bh-rpzaj's original finding, Codex **does** have a grant-file mechanism bh can write —
+`bh hive init --codex` is the Codex-native twin of `--claude`'s sandbox grant above, using the
+exact same logic and granularity (`_sandbox_subtree`, `_replace_for_hive`, `_git_exclude`):
+it writes this hive's own worktree subtree (`<root>/<provider>/<org>/<repo>`, never the whole
+shared root) into a marked block in the hive clone's **`.codex/config.toml`**
+(project-local, git-excluded — host-specific, just like `.claude/settings.local.json`), under
+`[sandbox_workspace_write] writable_roots = [...]`. Re-running after `worktrees.path` moves
+replaces the stale entry rather than piling on.
+
+Empirically verified against the installed `codex` binary (codex-cli 0.147.0; see
+`src/beadhive/hive.py`'s `_install_codex_sandbox_grant` comment block for the full method) —
+including a correction after an initial false read (a reused scratch directory made a
+project look untrusted-gate-free when it wasn't):
+
+- Codex has a real per-project **trust gate**, but it's neither file-presence-based nor
+  project-local: a brand-new project's `codex exec` defaults to `sandbox: read-only` **even
+  when its own `.codex/config.toml` explicitly sets `sandbox_mode = "workspace-write"`** — an
+  untrusted project's own config cannot self-elevate its own sandbox (otherwise any checked-
+  out repo could ship a `.codex/config.toml` and escape). Trust instead lives in the
+  **ambient** `~/.codex/config.toml`, under a `[projects."<absolute-checkout-path>"]` table
+  with `trust_level = "trusted"` — written automatically (no interactive prompt) the first
+  time that project is run with an explicit `-s workspace-write` (or `-c sandbox_mode=...`)
+  override. That's the scriptable form of the trust step, but it lives in a shared,
+  per-machine file covering every project the operator has ever run codex in — a bigger blast
+  radius than a project-local grant, and out of `bh hive init --codex`'s scope. Treat it as a
+  **manual prerequisite**, not something bh drives.
+- In practice this is rarely a live blocker: a session that can't already write into its own
+  checkout (untrusted → read-only) can't be driving `bh work claim`/editing files in it in the
+  first place — so by the time an operator's Codex session is doing real AGF work in a hive,
+  that hive's checkout is already a trusted project. Same "provisions future sessions, not
+  this one" caveat Claude's own grant carries below.
+- Once the checkout is trusted, `<repo>/.codex/config.toml` **does** load automatically for a
+  plain `codex exec` (no `-s` needed) — confirmed via `sandbox_workspace_write.writable_roots`
+  set there showing up appended to the run's `sandbox: workspace-write [...]` banner. Codex
+  climbs from cwd to find `.codex/` the same way git finds `.git`.
+- The correct key is `[sandbox_workspace_write] writable_roots = [...]`, **not** the beta
+  `[permissions.<name>]` form — confirmed live, not assumed from docs.
+- The writer sets only `writable_roots`, never `sandbox_mode`: once trusted, `codex exec`'s
+  own default is already `workspace-write`, so the grant never overrides an operator's own
+  `-s`/`sandbox_mode` choice (and setting it wouldn't help an untrusted project anyway, per
+  the trust-gate finding above).
+- Known no-op, not an error: if the operator's ambient config already opted into the newer
+  `default_permissions`/`[permissions.<name>]` scheme, it's mutually exclusive with
+  `sandbox_workspace_write` per Codex's own docs — the grant is silently dropped from the
+  resolved sandbox banner rather than merged. Nothing bh can do about that from a
+  project-local file.
+
+`bh hive ready -v`'s `codex sandbox` line reports **ok** when a current grant for this hive is
+present (even with the root outside cwd/$TMPDIR), **off** with an exact refresh command when a
+grant exists but is stale (root moved since it was written), and otherwise falls back to the
+cwd/$TMPDIR default-sandbox check below.
+
+### `--global` — one-time, coarser-grained alternative (bh-n0m7n)
+
+`bh hive init --codex --global` is the Codex twin of `--claude --global` above: instead of one
+hive's own subtree, it grants the **whole shared `worktrees_root()`** — every hive's worktrees
+on this machine — in a single `[sandbox_workspace_write] writable_roots` entry, written once
+into the **global, ambient** `~/.codex/config.toml` (`config.codex_home()`, overridable with
+`$BH_CODEX_HOME`) rather than this hive's project-local `.codex/config.toml`. Same managed-
+marker splice as the per-hive writer, so it merges non-destructively into whatever the operator
+already has there — including, notably, the very `[projects."<path>"]` trust records described
+above, since a global grant now lives in the same file as they do.
+
+**Blast-radius tradeoff, stated plainly:** any trusted Codex project on this machine whose
+sandbox reads this global grant gets write access to every hive's worktrees, not just the one
+it's working in. The **default stays per-hive**; `--global` is a deliberate opt-in.
+
+**Does a global grant interact with the trust records living in the same file? Re-verified live**
+(codex-cli 0.147.0, same `codex exec --skip-git-repo-check` / pre-auth-banner technique as
+bh-odulu above, scratch `$CODEX_HOME` dirs only — no credentials or real ambient config touched):
+
+- **No self-elevation, same as the per-hive grant:** a global `writable_roots` entry with no
+  matching `[projects."<path>"]` trust record for the cwd still resolves `sandbox: read-only`.
+  Living in the ambient file alongside the trust records does not exempt it from the same trust
+  gate — a global grant only ever helps an **already-trusted** project.
+- **Once trusted, it applies additively:** the banner shows
+  `sandbox: workspace-write [workdir, /tmp, $TMPDIR, <the global root>]`, coexisting fine with
+  the `[projects."<path>"]` table in the same file (different top-level TOML keys, no conflict).
+- **Load-bearing gotcha — per-hive SHADOWS global, they do not merge:** with both a per-hive
+  grant (this hive's own subtree) and a global grant (the whole root) present, the resolved
+  sandbox carried **only the per-hive root** — Codex's config layering lets a project-local
+  `[sandbox_workspace_write]` table (managed or hand-written) fully replace the ambient one
+  rather than union with it. Practical consequence: a hive's own per-hive grant, once written,
+  is what actually takes effect for that hive; the global grant only matters for a hive that has
+  none of its own. A **stale** per-hive grant (wrong path after a `worktrees_root()` move) still
+  shadows a global one that would otherwise have worked — `bh hive ready -v` reflects this: a
+  stale per-hive grant reports **off** even when a valid global grant is also present, rather
+  than silently reporting ok on the strength of the global one.
+
+The two shapes still **coexist without conflict** — different files, no shared key, no
+duplicate-TOML-key error — `bh hive ready -v`'s `codex sandbox` line just reports **ok** for
+either shape independently (current per-hive wins first, current global is the fallback when no
+per-hive entry exists at all).
+
+### The remaining gap and its two defenses
+
+A grant only takes effect on Codex's **next** launch (config is read at startup, not
+mid-session — same limitation Claude's grant has) and depends on the operator's checkout
+already being a trusted Codex project (see above). For any session that hasn't picked up a
+current grant, two defenses cover the rest, because bh can only see half the picture:
+
+- **`bh hive ready -v`** reports the `codex sandbox` line (advisory, never fails the gate)
+  whenever `worktrees.ephemeral: false` and the configured `worktrees.path` sits outside
+  cwd/$TMPDIR and no current grant is present.
 - **`bh work assign` / `claim` / `worktree add`** refuse up front — before provisioning —
   whenever the invocation is **itself** running as one of Codex's own sandboxed tool calls
   (detected via `CODEX_SANDBOX_NETWORK_DISABLED`, which Codex sets on every command it runs
   inside its sandbox) and the target root is unreachable. This is the case that matters most
   in practice: a Codex-driven developer sub-agent calling `bh work claim <id>` itself, which
-  is exactly when bh can tell.
+  is exactly when bh can tell. This fail-fast guard is unaffected by `--codex` — a grant only
+  helps a *future* Codex launch, so this check still fires for the one still running without
+  it.
 
 **Recommended Codex workflow**, in order of preference:
 
@@ -582,14 +704,19 @@ just fine — the worktree exists, the bead looks claimed, and then the same ses
    of sync.
 2. If persistent worktrees are required, **point `worktrees.path` under `$TMPDIR`** (still
    OS-temp, still covered by default) instead of under `$HOME`.
-3. Otherwise, **launch codex with `--add-dir <worktrees_root>`** (`bh worktree path` /
+3. Otherwise, run **`bh hive init --codex`** once (and again after any `worktrees.path`
+   move) so future Codex launches in this hive pick up the grant automatically.
+4. Or, **launch codex with `--add-dir <worktrees_root>`** (`bh worktree path` /
    `config.worktrees_root()` prints the exact root) every time, extending its sandbox to
-   cover it explicitly.
+   cover it explicitly — no config file, but has to be remembered on every launch.
 
 What bh does **not** do: silently relocate a configured `worktrees.path` to make it Codex-
 reachable (the `Expected` option `bh` did not take) — that would surprise operators who
 picked a persistent path deliberately, and every other harness (Claude/opencode/a human
-terminal) still uses that same root correctly. Fail fast with the exact fix instead.
+terminal) still uses that same root correctly. Fail fast with the exact fix instead. bh also
+does **not** write or manage Codex's ambient per-project trust record
+(`~/.codex/config.toml`'s `[projects."<path>"]`) — that's a manual, one-time-per-machine
+prerequisite (see above), deliberately out of a project-local grant's scope.
 
 ## Non-goals
 

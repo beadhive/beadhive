@@ -70,6 +70,16 @@ def _read_metadata(hive_dir: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def project_id(hive_dir: Path) -> str:
+    """bd's own ``project_id`` for ``hive_dir``'s store, or ``""`` when unrecorded.
+
+    The store's IDENTITY as distinct from its PATH: a store that is wiped and re-minted under
+    the same directory comes back with a new one. `hub._load_watermarks` keys on it so a hub
+    rebuilt in place cannot be served stale "unchanged" verdicts recorded against the store
+    that used to live there."""
+    return str(_read_metadata(hive_dir).get("project_id") or "")
+
+
 def embedded_store_dir(hive_dir: Path) -> Path:
     """Where bd's embedded engine keeps its store under ``hive_dir`` — a pure path join, not a
     probe. Callers check ``.is_dir()`` themselves (see :func:`has_embedded_store`)."""

@@ -205,9 +205,9 @@ def test_hive_onboard_hub_sync_flag_forwards_tri_state(monkeypatch):
     assert captured["hub_sync"] is False
 
 
-def test_hq_push_no_sync_and_git_only_flags_forward(monkeypatch):
-    """bh-d5jhc.1: `bh hq push --no-sync`/`--git-only` forward into `hq.push`'s `sync`/
-    `git_only` kwargs (default: sync=True, git_only=False)."""
+def test_hq_push_forwards_only_dry_run(monkeypatch):
+    """bh-89wxf.2: `--no-sync`/`--git-only` (bh-d5jhc.1) are GONE, along with the fleet-wide
+    aggregate refresh they existed to dodge. `hq push` publishes HQ; the hub is `bh sync`'s."""
     captured = {}
 
     def _fake_push(**kwargs):
@@ -216,15 +216,10 @@ def test_hq_push_no_sync_and_git_only_flags_forward(monkeypatch):
     monkeypatch.setattr("beadhive.hq.push", _fake_push)
 
     runner.invoke(app, ["hq", "push"])
-    assert captured == {"dry_run": False, "sync": True, "git_only": False}
+    assert captured == {"dry_run": False}
 
-    runner.invoke(app, ["hq", "push", "--no-sync"])
-    assert captured["sync"] is False
-    assert captured["git_only"] is False
-
-    runner.invoke(app, ["hq", "push", "--git-only"])
-    assert captured["sync"] is True
-    assert captured["git_only"] is True
+    for gone in ("--no-sync", "--git-only"):
+        assert runner.invoke(app, ["hq", "push", gone]).exit_code != 0, gone
 
 
 def test_hive_init_forwards_flags_to_hive_init(monkeypatch):
@@ -262,3 +257,52 @@ def test_hive_init_forwards_flags_to_hive_init(monkeypatch):
     assert captured["plugins"] == ["orca"]
     assert captured["dry_run"] is True
     assert captured["skip_check"] == "dirty-tree"
+
+
+# ---- --global: modifier on --claude/--codex (bh-n0m7n) -----------------------
+
+
+def test_hive_init_forwards_global_flag(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("beadhive.hive.init", lambda **kwargs: captured.update(kwargs))
+
+    result = runner.invoke(app, ["hive", "init", "--claude", "--global", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["global_grant"] is True
+
+
+def test_hive_init_global_defaults_false(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("beadhive.hive.init", lambda **kwargs: captured.update(kwargs))
+
+    result = runner.invoke(app, ["hive", "init", "--claude", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert captured["global_grant"] is False
+
+
+def test_hive_init_rejects_global_without_claude_or_codex():
+    result = runner.invoke(app, ["hive", "init", "--global", "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "--global" in result.output
+
+
+def test_hive_onboard_forwards_global_flag(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("beadhive.hive.onboard", lambda hive_id, **kwargs: captured.update(kwargs))
+
+    result = runner.invoke(
+        app, ["hive", "onboard", "github/acme/widget", "--codex", "--global", "--dry-run"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["global_grant"] is True
+
+
+def test_hive_onboard_rejects_global_without_claude_or_codex():
+    result = runner.invoke(app, ["hive", "onboard", "github/acme/widget", "--global", "--dry-run"])
+
+    assert result.exit_code != 0
+    assert "--global" in result.output

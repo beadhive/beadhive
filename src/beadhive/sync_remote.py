@@ -69,6 +69,12 @@ _OFFENDING = frozenset({SyncStatus.DIRTY, SyncStatus.BLOCKED})
 # "unknown" is bd's embedded/local engine's default state (bh-fl26): a Dolt remote is
 # configured but bd has no read-only ahead/behind primitive — treated the same as "ahead"
 # (attempt the idempotent `bd dolt push` and trust its own success/failure).
+# "diverged" IS IN HERE ON PURPOSE AND IS STILL WRONG (bh-efcu1): bh will attempt a push against
+# a ref that moved underneath it instead of reconciling first. git rejects the non-fast-forward,
+# so nothing corrupts — the operator just gets a push failure where they should have got a
+# reconcile. The real fix is replacing the hand-rolled push leg with `bd sync`, which knows how;
+# bh-89wxf.2 narrowed the blast radius (HQ no longer MANUFACTURES divergence on every host's
+# aggregation refresh) without removing it. Tracked, not closed by implication.
 _DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote", "unknown"})
 
 # bh-5rn7: bd has no read-only remote-diff primitive for the embedded engine (no `bd dolt

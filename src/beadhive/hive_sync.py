@@ -40,7 +40,13 @@ def _hive_id(entry) -> str:
 
 def _targets(cfg, hive_id: str | None) -> list[dict]:
     """The hive entries this run addresses — one resolved hive, or (``hive_id=None``) every
-    registered hive. HQ is excluded either way: local-only by design, no federation peer."""
+    registered hive. HQ is excluded either way: local-only by design, no federation peer.
+
+    "By design" is now a STATEMENT WITH AN EXPIRY DATE (bh-ab25i). It was a hard constraint
+    while HQ's Dolt path carried a per-host derived aggregate alongside its own beads — bd's
+    one-database-per-remote-path rule made federating that store incoherent. bh-89wxf.2 removed
+    the aggregate, so HQ is now a legitimate federation participant and this exclusion becomes
+    correct to FIX rather than to delete. Deliberately out of scope there; tracked in bh-ab25i."""
     real_hives = registry.hives(cfg)
     if hive_id:
         entry = registry.resolve_hive(cfg, hive_id)

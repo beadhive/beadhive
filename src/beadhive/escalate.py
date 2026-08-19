@@ -10,7 +10,7 @@ Write path (reuses `report.file_report` — one write path, no parallel bead-cre
   2. Call `report.file_report` with the HQ prefix as the target and ``origin=ORIGIN_ESCALATION``
      (the new closed STATE_DIMENSIONS value,).
   3. `file_report` stamps `intake=untriaged` → the bead surfaces in `ws hub intake` /
-     `ws hq intake` (the HQ aggregate read) immediately.
+     `bh hub intake` (the cross-hive aggregate read) immediately.
   4. After the bead lands, stamp the optional ``role:<derived>`` and ``tool:<name>`` metadata
      via ``bd set-state`` (best-effort; does not fail the escalation if these extra stamps fail).
 

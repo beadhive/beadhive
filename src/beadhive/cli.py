@@ -471,16 +471,15 @@ def sync_cmd():
     "hub",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
-    hidden=True,  # deprecated: use `ws hq` instead
     rich_help_panel=FLEET_PANEL,
-    help=f"[DEPRECATED] use `{config.BINARY_ALIAS} hq` instead. "
-    "Query the aggregated hub (cross-hive view).",
+    help="query the hub — this host's derived cross-hive aggregate. "
+    f"`{config.BINARY_ALIAS} hub bd ready` for work anywhere; "
+    f"`{config.BINARY_ALIAS} hub intake` for the fleet-wide untriaged inbox. "
+    f"(`{config.BINARY_ALIAS} hq bd` is HQ's OWN store, a different thing — see docs/HQ.md.)",
 )
 def hub_cmd(ctx: typer.Context):
-    typer.echo(
-        f"⚠ `{config.BINARY_ALIAS} hub` is deprecated — use `{config.BINARY_ALIAS} hq` instead.",
-        err=True,
-    )
+    # UN-DEPRECATED by bh-89wxf.2. It was an alias for `bh hq` back when both names resolved to
+    # one store; they are two stores with two jobs now, and this is the cross-hive one.
     from . import hub
 
     args = ctx.args
@@ -522,28 +521,35 @@ def hq_init(
 
 @hq_app.command(
     "push",
-    help="publish HQ to its wired remote: refresh the aggregate (`bh sync`), then push both "
-    "the git half (fleet.yaml/workspace.toml/hosts/) and the Dolt half (bead state), reporting "
-    "what moved on each. Idempotent — 'nothing to push' when there's nothing new. The "
-    "repeatable counterpart to `hq init`'s one-shot first push. --no-sync/--git-only (bh-d5jhc.1) "
-    "skip the fleet-wide aggregate refresh so publishing fleet config never pays it.",
+    help="publish HQ to its wired remote: the git half (fleet.yaml/workspace.toml/hosts/) and "
+    "the Dolt half (HQ's own hq-prefixed beads), reporting what moved on each. Idempotent — "
+    "'nothing to push' when there's nothing new. The repeatable counterpart to `hq init`'s "
+    "one-shot first push. It does NOT refresh any aggregate: that is the hub's, it is derived "
+    "and per-host, and `bh sync` owns it.",
 )
 def hq_push(
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="preview what would be refreshed/pushed; no writes"
-    ),
-    no_sync: bool = typer.Option(
-        False, "--no-sync", help="skip the fleet-wide aggregate refresh; still publish both halves"
-    ),
-    git_only: bool = typer.Option(
-        False,
-        "--git-only",
-        help="skip the aggregate refresh AND the Dolt half — publish only fleet.yaml/hosts/",
+        False, "--dry-run", help="preview what would be pushed; no writes"
     ),
 ):
     from . import hq
 
-    hq.push(dry_run=dry_run, sync=not no_sync, git_only=git_only)
+    hq.push(dry_run=dry_run)
+
+
+@hq_app.command(
+    "prune-aggregate",
+    help="MIGRATION (bh-89wxf.2): delete the hive-derived beads a pre-split HQ accumulated, so "
+    "HQ's Dolt database carries only its own hq-prefixed beads. Safe — every one of them is a "
+    "derived copy that lives in its own hive; rebuild the cross-hive view with `bh sync`.",
+)
+def hq_prune_aggregate(
+    dry_run: bool = typer.Option(False, "--dry-run", help="list what would be deleted; no writes"),
+    confirm: bool = typer.Option(False, "--confirm", help="actually delete them"),
+):
+    from . import hq
+
+    hq.prune_aggregate(dry_run=dry_run, confirm=confirm)
 
 
 @hq_app.command(
@@ -623,25 +629,28 @@ def hq_restore_cmd(
     "intake",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
-    help="fleet-wide untriaged-intake inbox: superintendent's cross-hive view (hub.intake).",
+    help="HQ's OWN untriaged inbox (escalations filed by `bh escalate`). For the fleet-wide "
+    f"cross-hive view use `{config.BINARY_ALIAS} hub intake` — bh-89wxf.2 stopped one verb "
+    "carrying both scopes.",
 )
 def hq_intake_cmd(ctx: typer.Context):
-    from . import hub
+    from . import hq
 
-    hub.intake(ctx.args)
+    hq.intake(ctx.args)
 
 
 @hq_app.command(
     "bd",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     add_help_option=False,
-    help="run a bd command against the HQ aggregate (cross-hive view), "
-    f"e.g. `{config.BINARY_ALIAS} hq bd ready`.",
+    help="run a bd command against HQ's OWN store (authoritative hq-prefixed beads), "
+    f"e.g. `{config.BINARY_ALIAS} hq bd ready`. The cross-hive view is "
+    f"`{config.BINARY_ALIAS} hub bd`.",
 )
 def hq_bd_cmd(ctx: typer.Context):
-    from . import hub
+    from . import hq
 
-    hub.query(ctx.args, label="hq")
+    hq.query(ctx.args)
 
 
 @app.command(
@@ -961,6 +970,18 @@ def _reject_claude_skills_conflict_in_plugin_mode(claude: bool, skills: bool) ->
         raise typer.Exit(1)
 
 
+def _reject_global_without_claude_or_codex(global_grant: bool, claude: bool, codex: bool) -> None:
+    """`hive init`/`hive onboard` shared guard: --global is a modifier on --claude/--codex, not
+    a standalone flag — bare `--global` with neither would silently do nothing."""
+    if global_grant and not (claude or codex):
+        typer.echo(
+            "✗ --global needs --claude and/or --codex — it's a modifier on those grants, not "
+            "a standalone flag.",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+
 @hive_app.command("init")
 def hive_init(
     furnish: bool = typer.Option(
@@ -1005,6 +1026,22 @@ def hive_init(
         "bd-steer plugin under .opencode/plugins/ (steers raw `bd` to `bh bd`), and the "
         "AGENTS.md AGF hint stanza",
     ),
+    codex: bool = typer.Option(
+        False,
+        "--codex",
+        help="write a project-local, git-excluded Codex sandbox grant (.codex/config.toml, "
+        "[sandbox_workspace_write].writable_roots) covering this hive's own worktree "
+        "subtree — the Codex-native twin of --claude's settings.local.json grant",
+    ),
+    global_grant: bool = typer.Option(
+        False,
+        "--global",
+        help="modifier on --claude/--codex: grant the WHOLE shared worktrees_root() (every "
+        "hive's worktrees, not just this one) in the harness's GLOBAL config instead of this "
+        "hive's own subtree — ~/.claude/settings.json for --claude, ~/.codex/config.toml for "
+        "--codex. One-time, coarser-grained, opt-in; broader blast radius than the per-hive "
+        "grant, which stays the default. Requires --claude and/or --codex.",
+    ),
     force: bool = typer.Option(
         False,
         "-f",
@@ -1032,6 +1069,7 @@ def hive_init(
     from . import hive
 
     _reject_claude_skills_conflict_in_plugin_mode(claude, skills)
+    _reject_global_without_claude_or_codex(global_grant, claude, codex)
 
     hive.init(
         furnish=furnish,
@@ -1040,6 +1078,8 @@ def hive_init(
         observaloop=observaloop,
         agents=agents,
         opencode=opencode,
+        codex=codex,
+        global_grant=global_grant,
         plugins=plugin,
         force=force,
         kind=kind,
@@ -1245,6 +1285,15 @@ def hive_onboard(
     opencode: bool = typer.Option(
         False, "--opencode", help="furnish for OpenCode (see `hive init`)"
     ),
+    codex: bool = typer.Option(
+        False, "--codex", help="write a project-local Codex sandbox grant (see `hive init`)"
+    ),
+    global_grant: bool = typer.Option(
+        False,
+        "--global",
+        help="modifier on --claude/--codex: grant the whole shared worktrees_root() in the "
+        "harness's GLOBAL config instead of this hive's own subtree (see `hive init`)",
+    ),
     force: bool = typer.Option(
         False, "-f", "--force", help="re-register an already-configured hive (see `hive init`)"
     ),
@@ -1277,6 +1326,7 @@ def hive_onboard(
     from . import hive
 
     _reject_claude_skills_conflict_in_plugin_mode(claude, skills)
+    _reject_global_without_claude_or_codex(global_grant, claude, codex)
 
     hive.onboard(
         hive_id,
@@ -1287,6 +1337,8 @@ def hive_onboard(
         observaloop=observaloop,
         agents=agents,
         opencode=opencode,
+        codex=codex,
+        global_grant=global_grant,
         plugins=plugin,
         force=force,
         kind=kind,

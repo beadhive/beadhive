@@ -11,7 +11,7 @@ import json
 import pytest
 import typer
 
-from beadhive import config, hive_ready
+from beadhive import config, hive, hive_ready
 from harness.world import git
 
 
@@ -456,6 +456,140 @@ def test_codex_sandbox_check_off_when_persistent_root_is_unreachable(world, monk
     assert line.required is False  # advisory — never fails the gate
     assert outside in line.detail
     assert "--add-dir" in line.detail
+
+
+def test_codex_sandbox_check_ok_when_current_grant_present(world, monkeypatch):
+    """bh-odulu: a second ok path — `bh hive init --codex`'s grant flips this green even when
+    the root is outside cwd/$TMPDIR, since the grant is what makes it reachable."""
+    main = _make_ready(world)
+    monkeypatch.delenv("BH_WORKTREES", raising=False)
+    cfg = config.load()
+    outside = "/definitely-not-cwd-or-tmp/beadhive/worktrees"
+    cfg["worktrees"] = {"ephemeral": False, "path": outside}
+    config.save(cfg)
+    hive._install_codex_sandbox_grant(config.load(), "github", "myorg", "myrepo", main)
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "ok"
+    assert line.required is False
+    assert "current grant" in line.detail
+
+
+def test_codex_sandbox_check_off_when_grant_is_stale(world, monkeypatch):
+    """A grant written for an OLD root (before a worktrees.path move) must not read as ok —
+    same staleness rule as Claude's `_grant_check`."""
+    main = _make_ready(world)
+    monkeypatch.delenv("BH_WORKTREES", raising=False)
+    cfg = config.load()
+    old_root = "/definitely-not-cwd-or-tmp/beadhive/old-worktrees"
+    cfg["worktrees"] = {"ephemeral": False, "path": old_root}
+    config.save(cfg)
+    hive._install_codex_sandbox_grant(config.load(), "github", "myorg", "myrepo", main)
+
+    # Root moves — the grant on disk now names a stale path.
+    new_root = "/definitely-not-cwd-or-tmp/beadhive/new-worktrees"
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": new_root}
+    config.save(cfg)
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "off"
+    assert line.required is False
+    assert "stale" in line.detail
+    assert "-f" in line.detail
+
+
+def test_codex_sandbox_check_ok_when_only_global_grant_present(world, monkeypatch):
+    """bh-n0m7n: a THIRD ok path — a global grant satisfies the check for a hive with no
+    per-hive entry of its own."""
+    main = _make_ready(world)
+    monkeypatch.delenv("BH_WORKTREES", raising=False)
+    cfg = config.load()
+    outside = "/definitely-not-cwd-or-tmp/beadhive/worktrees"
+    cfg["worktrees"] = {"ephemeral": False, "path": outside}
+    config.save(cfg)
+    hive._install_global_codex_sandbox_grant(config.load())
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "ok"
+    assert "global grant" in line.detail
+
+
+def test_codex_sandbox_check_stale_per_hive_grant_not_rescued_by_global(world, monkeypatch):
+    """A stale per-hive grant shadows the global one at runtime (see hive.py's empirical
+    addendum) — a valid global grant must not paper over it in the check."""
+    main = _make_ready(world)
+    monkeypatch.delenv("BH_WORKTREES", raising=False)
+    cfg = config.load()
+    old_root = "/definitely-not-cwd-or-tmp/beadhive/old-worktrees"
+    cfg["worktrees"] = {"ephemeral": False, "path": old_root}
+    config.save(cfg)
+    hive._install_codex_sandbox_grant(config.load(), "github", "myorg", "myrepo", main)
+
+    new_root = "/definitely-not-cwd-or-tmp/beadhive/new-worktrees"
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": new_root}
+    config.save(cfg)
+    hive._install_global_codex_sandbox_grant(config.load())  # valid, current global grant
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "codex sandbox"]
+    assert line.state == "off"  # stale per-hive grant, not rescued by the global one
+    assert "stale" in line.detail
+
+
+# ---- Claude sandbox grant check (`_grant_check`) -----------------------------
+
+
+def test_grant_check_ok_when_per_hive_grant_current(world):
+    main = _make_ready(world)
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": str(world.tmp / "wt")}
+    config.save(cfg)
+    hive._install_sandbox_grant(config.load(), "github", "myorg", "myrepo", main)
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "sandbox grant"]
+    assert line.state == "ok"
+
+
+def test_grant_check_off_when_no_grant_at_all(world):
+    main = _make_ready(world)
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "sandbox grant"]
+    assert line.state == "off"
+    assert "no grant" in line.detail
+
+
+def test_grant_check_ok_when_only_global_grant_present(world):
+    """bh-n0m7n: a global grant satisfies the check for a hive with no per-hive entry."""
+    main = _make_ready(world)
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": str(world.tmp / "wt")}
+    config.save(cfg)
+    hive._install_global_sandbox_grant(config.load())
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "sandbox grant"]
+    assert line.state == "ok"
+    assert "global grant" in line.detail
+
+
+def test_grant_check_per_hive_and_global_coexist_ok(world):
+    main = _make_ready(world)
+    cfg = config.load()
+    cfg["worktrees"] = {"ephemeral": False, "path": str(world.tmp / "wt")}
+    config.save(cfg)
+    hive._install_sandbox_grant(config.load(), "github", "myorg", "myrepo", main)
+    hive._install_global_sandbox_grant(config.load())
+
+    checks = hive_ready.scan(config.load(), ("github", "myorg", "myrepo"), _CODEX_ENTRY, main)
+    (line,) = [c for c in checks if c.label == "sandbox grant"]
+    assert line.state == "ok"
 
 
 # ---- dolt server check (bh-areg.3) -------------------------------------------

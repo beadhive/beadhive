@@ -193,16 +193,17 @@ def test_push_commits_dirty_tree_before_publishing(world, monkeypatch, capsys):
     assert git("status", "--porcelain", cwd=hq_dir).stdout.strip() == ""
 
 
-def test_push_refreshes_aggregate_first(world, monkeypatch, capsys):
+def test_push_never_refreshes_an_aggregate(world, monkeypatch, capsys):
+    """bh-89wxf.2: publishing HQ has nothing to hydrate. `hub.sync()` used to run here, which
+    is what made every host's `hq push` rewrite shared replicated state — the whole defect.
+    The cross-hive aggregate is the hub's, is per-host and derived, and `bh sync` owns it."""
     _init_repo_with_remote(world)
-    calls: list[int] = []
-    monkeypatch.setattr(hq.hub, "sync", lambda: calls.append(1) or [])
+    monkeypatch.setattr(hq.hub, "sync", lambda: pytest.fail("hq push must never aggregate"))
     _stub_engine(monkeypatch, _StubEngine(fed_status=_fed()))
 
     hq.push()
 
-    assert calls == [1]
-    assert "refreshing aggregate" in capsys.readouterr().out
+    assert "refreshing aggregate" not in capsys.readouterr().out
 
 
 def test_push_dry_run_makes_no_writes(world, monkeypatch, capsys):
@@ -271,51 +272,24 @@ def test_push_dolt_failure_exits_nonzero(world, monkeypatch, capsys):
     assert "bd dolt push failed" in capsys.readouterr().err
 
 
-# ---- push(sync=False) / push(git_only=True) — bh-d5jhc.1 --------------------------
+# ---- the removed flags (bh-89wxf.2) -----------------------------------------
+# `--no-sync` / `--git-only` (bh-d5jhc.1) existed ONLY to dodge the fleet-wide aggregate walk
+# `push` used to run. There is no walk to dodge now, so the flags went with the reason for
+# them — and their absence is pinned, so nobody re-adds a knob for a cost that no longer exists.
 
 
-def test_push_no_sync_skips_the_aggregate_refresh_but_still_publishes_both_halves(
-    world, monkeypatch, capsys
-):
-    hq_dir, remote = _init_repo_with_remote(world)
-    _drift(hq_dir)
-    monkeypatch.setattr(hq.hub, "sync", lambda: pytest.fail("must not sync"))
-    engine_stub = _StubEngine(fed_status=_fed(ahead=3))
-    _stub_engine(monkeypatch, engine_stub)
+def test_push_takes_no_sync_or_git_only_flags(world):
+    import inspect
 
-    hq.push(sync=False)
-
-    out = capsys.readouterr().out
-    assert "skipping aggregate refresh" in out
-    assert "✓ git: pushed main (1 commit(s))" in out
-    assert "✓ dolt: pushed refs/dolt/data" in out
-    assert engine_stub.push_calls == [str(hq_dir)]
-    assert "refs/heads/main" in git("ls-remote", "--heads", str(remote), cwd=hq_dir).stdout
+    params = set(inspect.signature(hq.push).parameters)
+    assert params == {"dry_run"}, params
 
 
-def test_push_git_only_skips_sync_and_the_dolt_half(world, monkeypatch, capsys):
-    hq_dir, _remote = _init_repo_with_remote(world)
-    _drift(hq_dir)
-    monkeypatch.setattr(hq.hub, "sync", lambda: pytest.fail("must not sync"))
-    engine_stub = _StubEngine(fed_status=_fed(ahead=3))
-    _stub_engine(monkeypatch, engine_stub)
+def test_hq_push_cli_rejects_the_removed_flags(world):
+    from typer.testing import CliRunner
 
-    hq.push(git_only=True)
+    from beadhive.cli import app
 
-    out = capsys.readouterr().out
-    assert "skipping aggregate refresh" in out
-    assert "✓ git: pushed main (1 commit(s))" in out
-    assert "dolt: skipped (--git-only)" in out
-    assert engine_stub.push_calls == []  # never attempted
-
-
-def test_push_git_only_ignores_sync_true(world, monkeypatch, capsys):
-    """`git_only=True` implies skipping the refresh even if `sync` is left at its default —
-    the two flags aren't independent knobs an operator can misuse into a slow --git-only."""
-    _init_repo_with_remote(world)
-    monkeypatch.setattr(hq.hub, "sync", lambda: pytest.fail("must not sync"))
-    _stub_engine(monkeypatch, _StubEngine(fed_status=_fed()))
-
-    hq.push(sync=True, git_only=True)  # sync=True is the default; git_only wins
-
-    assert "skipping aggregate refresh" in capsys.readouterr().out
+    for flag in ("--no-sync", "--git-only"):
+        res = CliRunner().invoke(app, ["hq", "push", flag])
+        assert res.exit_code != 0, f"{flag} should no longer be accepted"
