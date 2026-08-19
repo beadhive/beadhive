@@ -5,6 +5,47 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## The hub / HQ split — the aggregate leaves HQ (bh-89wxf)
+
+**Who this is for:** anyone who has run `bh hq init`. HQ's Dolt database has been carrying two
+different things — HQ's own authoritative `hq-`prefixed beads, and a per-host DERIVED
+cross-hive aggregate that every host rebuilt wholesale and pushed. bd's rule is one database
+per remote path, and since every mutation touches `updated_at`, a per-host wholesale rebuild
+inside a replicated database is the maximal-conflict shape there is. The aggregate has moved
+to the hub, where it belongs. Full reasoning: [HQ — Hub vs HQ](HQ.md#hub-vs-hq).
+
+### What you must run
+
+```sh
+bh sync                            # builds the hub (rebuilds a legacy one automatically)
+bh hq prune-aggregate              # dry run: how many hive-derived beads HQ is carrying
+bh hq prune-aggregate --confirm    # delete them; HQ keeps its own hq- beads and fleet config
+bh hq push                         # publish the now-single-purpose database
+```
+
+No Dolt surgery, and nothing to hand-edit. `bd delete` is an ordinary bd mutation, so the
+cleanup replicates through `refs/dolt/data` — a second host picks it up on its next pull
+instead of each host repairing its own copy. Nothing is lost: every pruned bead is a derived
+copy of a bead that still lives in its own hive.
+
+A hub minted before this change (bd prefix `hub`) is moved aside to
+`~/.beadhive/hub.legacy-<epoch>` and rebuilt prefix-less on the next `bh sync`. It is renamed,
+not deleted — delete it yourself when you want the disk back.
+
+### What changed on the CLI
+
+| Before | Now | Why |
+|---|---|---|
+| `bh hq bd …` — the cross-hive aggregate | `bh hub bd …` | two stores, two surfaces |
+| `bh hq bd …` | HQ's OWN `hq-`prefixed beads | HQ is authoritative-only now |
+| `bh hq intake` — fleet-wide inbox | `bh hub intake` | it was a cross-hive read wearing HQ's name |
+| `bh hq intake` | HQ's own escalations | the surface names the scope |
+| `bh hub …` (deprecated alias) | un-deprecated, means the hub | it is no longer an alias |
+| `bh hq push --no-sync` / `--git-only` | **removed** | they only existed to dodge the aggregate refresh, which is gone |
+
+`bh hq intake` prints a pointer to `bh hub intake`, so the rename doesn't strand a habit
+mid-command.
+
 ## Ad-hoc PyPI → the managed path (any version)
 
 Not tied to a release. This is for anyone who installed `bh` with `uv tool install` (or pipx,

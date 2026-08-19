@@ -70,8 +70,8 @@ With a remote wired, more than one hive starts paying off:
 ```sh
 bh hive onboard <provider>/<org>/<repo>   # …and repeat
 bh sync                                   # hydrate the cross-hive aggregate
-bh hq bd ready                            # one ready list across every hive
-bh hq intake                              # fleet-wide untriaged inbox
+bh hub bd ready                           # one ready list across every hive
+bh hub intake                             # fleet-wide untriaged inbox
 ```
 
 **Buys.** A durable backup of HQ (the git half *and* the Dolt half), the cross-repo aggregate

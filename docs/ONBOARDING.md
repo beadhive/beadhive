@@ -593,7 +593,7 @@ Build the hub so cross-hive views work:
 
 ```sh
 bh sync               # aggregate every registered hive into ~/.beadhive/hub
-bh hq bd ready        # actionable work across all hives
+bh hub bd ready       # actionable work across all hives
 ```
 
 When the fleet is green, launch a dispatcher to drive beads:

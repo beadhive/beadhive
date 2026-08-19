@@ -49,7 +49,7 @@ is the `config.py` (or module-local) function that resolves its path — `doctor
 | entry | class | accessor | notes |
 |---|---|---|---|
 | `hq/` | durable | `config.hq_dir()` | The Factory HQ store: a git repo + `.beads/`, fully replicated to every host that adopts it. A fresh host obtains this via `bh hq clone`. |
-| `hub/` | regenerable | `config.hub_dir()` | Legacy pre-HQ aggregation store. `bh sync` rebuilds it from each hive; `hub.py`'s `_aggregation_target` already prefers `hq/` once one is registered. |
+| `hub/` | regenerable | `config.hub_dir()` | THE cross-hive aggregate — per-host, derived, prefix-less, never pushed. `bh sync` rebuilds it from each hive; `hub.py`'s `hub_target` resolves here unconditionally since bh-89wxf.2 (it used to prefer `hq/`, which put two databases on one remote path). |
 | `cache/` | regenerable | `config.cache_dir()` | Minimal-clone caches for hives that aren't locally checked out. `bh sync` / hub hydration re-fetch on demand. |
 | `hitch/` | machine-local | `config.hitch_config_dir_root()` | Holds Claude Code's OAuth session state (`.claude.json`) — "nothing regenerates" it (the function's own docstring). Not durable in the shared sense: it's *this host's* login, not fleet truth. |
 | `wt/` (or wherever `worktrees.path` points) | machine-local | `config.worktrees_root()` | Persistent worktree checkouts, only relevant when `worktrees.ephemeral: false`. Not "regenerable" in the low-stakes sense — a worktree can hold uncommitted work — but it is also never synced; treat it like other host-local working state. |

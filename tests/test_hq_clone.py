@@ -190,9 +190,9 @@ def test_clone_leaves_a_clean_host_config_untouched(world, monkeypatch):
 
 
 def test_clone_registers_hq_so_bd_ready_targets_the_clone(world, monkeypatch):
-    """`bh hq bd ready` resolves via hub._aggregation_target()/registry.hive_of_kind — clone
-    must register the synthetic HQ identity so that resolution lands on the freshly cloned dir,
-    and hub.query (hq_bd_cmd's implementation) must then be able to run against it."""
+    """`bh hq bd ready` reads HQ's OWN store (`hq.query`, since bh-89wxf.2 — it is no longer
+    the cross-hive aggregate). Clone must register the synthetic HQ identity and leave a real
+    `.beads` at `config.hq_dir()` so that read resolves and runs."""
     remote = _make_remote_hq(world)
     _patch_remote_urls(monkeypatch, remote)
     _stub_hq_remote(monkeypatch, "acme/beadhive-hq")
@@ -204,10 +204,11 @@ def test_clone_registers_hq_so_bd_ready_targets_the_clone(world, monkeypatch):
     entry = registry.hive_of_kind(config.load(), registry.HQ_KIND)
     assert entry is not None
     assert (str(entry["provider"]), str(entry["org"]), str(entry["repo"])) == registry.HQ_TRIPLET
-    assert hub._aggregation_target() == (hq_dir, registry.HQ_PREFIX)
+    # Aggregation no longer follows HQ around — it is unconditionally the hub (bh-89wxf.2).
+    assert hub.hub_target() == (config.hub_dir(), hub.HUB_PREFIX)
 
-    # `bh hq bd ready` == hub.query(["ready"]); its own "store not initialized" guard must now
-    # pass (a real `.beads` sits at the resolved target) and the bd call must target hq_dir.
+    # `bh hq bd ready` == hq.query(["ready"]); its own "store not initialized" guard must now
+    # pass (a real `.beads` sits at hq_dir) and the bd call must target hq_dir.
     calls = []
 
     def fake_run(cmd, **k):
@@ -216,7 +217,7 @@ def test_clone_registers_hq_so_bd_ready_targets_the_clone(world, monkeypatch):
 
     # `run_bounded`, not `run`: the aggregate read is bounded since bh-toitp.
     monkeypatch.setattr(hub, "run_bounded", fake_run)
-    hub.query(["ready"])
+    hq.query(["ready"])
     assert calls == [["bd", "-C", str(hq_dir), "ready"]]
 
 

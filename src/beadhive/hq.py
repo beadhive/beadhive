@@ -76,15 +76,19 @@ _LEGACY_ARTIFACT_NAMES = {
 }
 
 
-def init_store() -> list:
+def init_store() -> None:
     """Core of ``bh hq init`` (no singleton gate, no ``typer.Exit``): stand up the store.
 
     Reuses ``hub.ensure_store`` to bd-init a durable git+bd store at ``config.hq_dir()`` with
-    prefix ``hq``, registers the reserved synthetic identity, and reuses ``hub.sync`` to
-    ``bd repo add`` every registered hive + sync (the aggregation role moves off the disposable
-    hub to HQ). Returns ``hub.sync``'s failed list. Callers own the singleton check — this is
-    the seam ``escalate``'s consent-prompted auto-init calls directly (bh-ufne), never a
-    subprocess."""
+    prefix ``hq`` and registers the reserved synthetic identity. Callers own the singleton
+    check — this is the seam ``escalate``'s consent-prompted auto-init calls directly
+    (bh-ufne), never a subprocess.
+
+    IT NO LONGER AGGREGATES (bh-89wxf.2), and so it no longer returns a failed-hive list.
+    This used to finish with ``hub.sync()`` to "move the aggregation role onto HQ", which is
+    the very thing that put a derived per-host aggregate and HQ's authoritative beads on one
+    Dolt remote path. Standing up HQ has nothing to do with hydrating the fleet; `bh sync`
+    owns that, and lands it in the hub."""
     # Create the durable store FIRST (prefix hq) — so a bd-init failure never leaves a dangling
     # registration — then register the synthetic identity in the ws registry.
     hq = hub.ensure_store(config.hq_dir(), registry.HQ_PREFIX)
@@ -96,10 +100,6 @@ def init_store() -> list:
         registry.HQ_KIND,
     )
     typer.echo(f"✓ Factory HQ store initialized at {hq} (prefix '{registry.HQ_PREFIX}', kind=hq)")
-
-    # Aggregation moves onto HQ: hub.sync now resolves the target to HQ (it is registered), so
-    # this bd repo add's every registered hive into HQ and syncs. Reuse over a parallel mechanism.
-    return hub.sync()
 
 
 def init(*, dry_run: bool = False, auto: bool = False, create: bool = False) -> None:
@@ -123,9 +123,7 @@ def init(*, dry_run: bool = False, auto: bool = False, create: bool = False) -> 
                 f"(prefix '{registry.HQ_PREFIX}')"
             )
             return
-        failed = init_store()
-        if failed:
-            raise typer.Exit(1)
+        init_store()
         cfg = config.load()  # init_store just registered HQ — reload before remote wiring
     else:
         triplet = f"{existing['provider']}/{existing['org']}/{existing['repo']}"
@@ -240,21 +238,21 @@ def status() -> None:
         typer.echo(f"→ run `{config.BINARY_ALIAS} hq push` to publish")
 
 
-def push(*, dry_run: bool = False, sync: bool = True, git_only: bool = False) -> None:
-    """`bh hq push`: refresh the aggregate, then publish BOTH halves of HQ to its wired remote
-    (bh-z9hl) — the discoverable, repeatable counterpart to `_wire_remote`'s one-shot first
-    push. Idempotent: reports "nothing to push" cleanly when there's nothing new on either
-    half. Any local dirtiness is committed first (mirroring `_wire_remote`'s own
-    scaffold-commit precedent) — HQ's tracked content is fleet configuration
-    (fleet.yaml/workspace.toml/hosts/, see HQ.md#fleet-writes-after-init), safe to auto-commit,
-    unlike a hive's arbitrary uncommitted work.
+def push(*, dry_run: bool = False) -> None:
+    """`bh hq push`: publish BOTH halves of HQ to its wired remote (bh-z9hl) — the
+    discoverable, repeatable counterpart to `_wire_remote`'s one-shot first push. Idempotent:
+    reports "nothing to push" cleanly when there's nothing new on either half. Any local
+    dirtiness is committed first (mirroring `_wire_remote`'s own scaffold-commit precedent) —
+    HQ's tracked content is fleet configuration (fleet.yaml/workspace.toml/hosts/, see
+    HQ.md#fleet-writes-after-init), safe to auto-commit, unlike a hive's arbitrary uncommitted
+    work.
 
-    ``sync``/``git_only`` (bh-d5jhc.1): the refresh (`hub.sync()`) is the SAME fleet-wide walk
-    that blocks `hive onboard` for 18+ minutes — an operator publishing only fleet config
-    (fleet.yaml/hosts/, the git half) should not pay it. ``sync=False`` (``--no-sync``) skips
-    the refresh but still publishes whatever git+Dolt state HQ already has. ``git_only=True``
-    (``--git-only``) additionally skips the Dolt half entirely — the git-only publish this flag
-    names — since there is then nothing fresh to push there anyway."""
+    IT NO LONGER REFRESHES AN AGGREGATE (bh-89wxf.2), and the `--no-sync` / `--git-only` flags
+    added under bh-d5jhc.1 went with the walk they existed to dodge. Publishing HQ has nothing
+    to hydrate: what gets pushed is HQ's own hq-prefixed beads plus the git half. The
+    cross-hive aggregate is the HUB's, is derived and per-host, and is never pushed by anyone —
+    `bh sync` refreshes it. That separation is the whole point of the split: HQ's remote path
+    now carries exactly one database, which is bd's own rule for a path."""
     hq_dir = _hq_dir_or_exit()
     already = _git(["remote", "get-url", "origin"], hq_dir)
     if already.returncode != 0:
@@ -264,28 +262,8 @@ def push(*, dry_run: bool = False, sync: bool = True, git_only: bool = False) ->
         )
         raise typer.Exit(1)
 
-    do_sync = sync and not git_only
     tag = "DRY-RUN " if dry_run else ""
-    typer.echo(f"{tag}hq push: refreshing aggregate…")
-    if not do_sync:
-        typer.echo("  skipping aggregate refresh (--no-sync/--git-only)")
-    elif dry_run:
-        typer.echo("  DRY-RUN: would run `bh sync`")
-    else:
-        failed = hub.sync()
-        if failed == [hub.BULK_SYNC_DISABLED]:
-            # Not a hydration failure — a deliberate refusal (bh-l7sm8). Reporting it as
-            # "1 hive(s) failed" would be a lie, and the aggregate is simply not refreshed.
-            typer.echo(
-                "  ⚠ aggregate refresh REFUSED — `hub.bulk_sync` is false (see bh-z4z52); "
-                "publishing HQ's existing state unrefreshed",
-                err=True,
-            )
-        elif failed:
-            typer.echo(
-                f"  ⚠ {len(failed)} hive(s) failed to hydrate — continuing to publish anyway",
-                err=True,
-            )
+    typer.echo(f"{tag}hq push: publishing HQ (hq-prefixed beads + fleet config)…")
     if not dry_run:
         _commit_if_dirty(hq_dir, "chore(hq): sync local changes")
 
@@ -307,9 +285,7 @@ def push(*, dry_run: bool = False, sync: bool = True, git_only: bool = False) ->
     else:
         typer.echo("  git: nothing to push (up to date)")
 
-    if git_only:
-        typer.echo("  dolt: skipped (--git-only)")
-    elif dolt.status in _DOLT_PUSHABLE:
+    if dolt.status in _DOLT_PUSHABLE:
         if dry_run:
             typer.echo("  DRY-RUN: would run `bd dolt push`")
         else:
@@ -326,6 +302,125 @@ def push(*, dry_run: bool = False, sync: bool = True, git_only: bool = False) ->
         typer.echo("  DRY-RUN: no writes made")
         return
     typer.echo("✓ HQ published" if moved else "✓ HQ already up to date — nothing to push")
+
+
+# ---- reading HQ itself, now that it is only itself (bh-89wxf.2) -------------
+#
+# Before the split, `bh hq bd …` and `bh hub bd …` were one code path against one store, and
+# the write-guard had to carve an hq-native exception out of a "read-only aggregate" so that
+# control-plane writes could land at all. Two stores, two surfaces, and both of those
+# complications go away:
+#
+#   `bh hub bd …`  -> the derived aggregate (`hub.query`)  — reads only, issues no ids.
+#   `bh hq  bd …`  -> HQ's own store (here)                — authoritative, writes are normal.
+#
+# HQ is an ordinary authoritative store now, so it needs no hub guard: it holds hq-prefixed
+# beads, `bd create` there mints an hq- id, and a write naming some other hive's id simply
+# finds nothing. What it DOES keep is bh-toitp's spawn bounds — those belong to the spawn, not
+# to which store it reads (`hub.bounded_bd`).
+
+
+def query(args):
+    """Run a bd command against HQ's OWN store — the authoritative hq-prefixed beads, not the
+    cross-hive aggregate. `bh hub bd …` is the cross-hive read."""
+    hub.bounded_bd(
+        config.hq_dir(),
+        args,
+        label="hq",
+        missing_hint=(
+            f"✗ Factory HQ not initialized — run `{config.BINARY_ALIAS} hq init` "
+            f"(or `{config.BINARY_ALIAS} hq clone` on a second host) first"
+        ),
+    )
+
+
+def intake(extra=None):
+    """HQ's OWN untriaged inbox: escalations and reports that ORIGINATE in HQ (`bh escalate`
+    files them here), not the fleet-wide cross-hive view.
+
+    THE NAMING DECISION (bh-89wxf.2). `bh hq intake` used to be the director's fleet-wide
+    inbox, which was a CROSS-HIVE read wearing HQ's name — one verb quietly carrying two
+    scopes. The verb keeps its meaning ("untriaged inbox"); the SURFACE names the scope. The
+    fleet-wide view moved to `bh hub intake` (`hub.intake`), and this reads HQ only. Documented
+    in docs/HQ.md#intake-naming and docs/HUB.md."""
+    from .state import INTAKE_UNTRIAGED
+
+    typer.echo(
+        f"HQ-native intake only. For the fleet-wide cross-hive inbox: "
+        f"`{config.BINARY_ALIAS} hub intake`.",
+        err=True,
+    )
+    query(["list", "--label", INTAKE_UNTRIAGED, "--status", "open", *(extra or [])])
+
+
+# ---- bh hq prune-aggregate: the existing-host migration (bh-89wxf.2) --------
+
+
+def hive_derived_ids(hq_dir: Path) -> list[str]:
+    """Every bead in HQ's store that did NOT originate in HQ — i.e. whose id does not carry the
+    reserved ``hq-`` prefix. Empty on a clean HQ.
+
+    This is the ASSERTION the acceptance asks for ("a fresh `bh hq push` publishes no
+    hive-derived beads — assert this, do not eyeball it") and the worklist for
+    :func:`prune_aggregate`, in one function so the check and the fix can never disagree about
+    what counts as hive-derived."""
+    res = _bd(["list", "--all", "--json"], hq_dir)
+    if res.returncode:
+        raise typer.Exit(1)
+    try:
+        data = json.loads(res.stdout or "[]")
+    except ValueError:
+        return []
+    beads = data if isinstance(data, list) else data.get("issues", [])
+    native = registry.HQ_PREFIX + "-"
+    return sorted(str(b["id"]) for b in beads if not str(b.get("id", "")).startswith(native))
+
+
+def prune_aggregate(*, dry_run: bool = False, confirm: bool = False) -> None:
+    """Delete the hive-derived beads a pre-split HQ accumulated, leaving HQ holding only its
+    own hq-prefixed beads plus the git half.
+
+    THE MIGRATION PATH for an existing host, and the reason it is a real verb rather than a
+    line in the release notes: a host whose HQ already carries a hydrated aggregate must end up
+    with a clean HQ and a correct hub WITHOUT manual Dolt surgery. The hub half needs nothing —
+    it is derived, so `bh sync` builds it (see docs/HUB.md#contract). The HQ half needs these
+    rows gone, and `bd delete` is the supported way to remove them: an ordinary bd mutation
+    that replicates through `refs/dolt/data` like any other, so a second host picks it up on
+    its next pull instead of each host hand-repairing its own copy.
+
+    Deliberately NOT export-hq-beads-and-re-init: that would discard HQ's Dolt lineage and
+    leave every other host's clone diverged from a store it can no longer fast-forward to."""
+    hq_dir = _hq_dir_or_exit()
+    ids = hive_derived_ids(hq_dir)
+    if not ids:
+        typer.echo("✓ HQ is already clean — no hive-derived beads to prune")
+        return
+    typer.echo(
+        f"HQ at {hq_dir} carries {len(ids)} hive-derived bead(s) (e.g. {', '.join(ids[:5])})"
+    )
+    if dry_run or not confirm:
+        typer.echo(
+            f"  DRY-RUN: would `bd delete` all {len(ids)}. Re-run with --confirm to apply.\n"
+            "  Nothing is lost: every one of them is a derived copy of a bead that lives in its "
+            f"own hive, and `{config.BINARY_ALIAS} sync` rebuilds the cross-hive view in the hub."
+        )
+        return
+    res = _bd(["delete", *ids, "--force"], hq_dir)
+    if res.returncode:
+        typer.echo(f"✗ bd delete failed: {err_line(res)}", err=True)
+        raise typer.Exit(1)
+    remaining = hive_derived_ids(hq_dir)
+    if remaining:
+        typer.echo(
+            f"✗ {len(remaining)} hive-derived bead(s) survived the prune "
+            f"(e.g. {', '.join(remaining[:5])}) — HQ is NOT clean",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(
+        f"✓ pruned {len(ids)} hive-derived bead(s) — HQ now holds only its own "
+        f"'{registry.HQ_PREFIX}-' beads. Publish with `{config.BINARY_ALIAS} hq push`."
+    )
 
 
 # ---- bh hq clone: bootstrap a host with no local HQ (bh-e0y8.4) -------------
