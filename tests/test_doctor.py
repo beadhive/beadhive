@@ -163,6 +163,63 @@ def test_section_prefix_mismatches_renders_end_to_end(prefix_hive, monkeypatch, 
     assert "db='ah2'" in out
 
 
+def _cfg_many_hives(n):
+    return {
+        "managed_repos": [
+            {
+                "provider": "github",
+                "org": "myorg",
+                "repo": f"repo{i}",
+                "prefix": f"p{i}",
+                "kind": "personal",
+            }
+            for i in range(n)
+        ]
+    }
+
+
+def test_data_prefix_mismatches_concurrent_preserves_order_and_skips(tmp_path, monkeypatch):
+    """bh-3qo60: the `bd config get` reads run in a thread pool now, not sequentially — the
+    reported list must still come back in registry order regardless of which thread finishes
+    first, and a hive whose read fails/mismatches must still be silently skipped rather than
+    crashing or corrupting a sibling's result."""
+    import random
+    import time as time_mod
+
+    ws_root = tmp_path / "ws"
+    n = 14
+    for i in range(n):
+        (ws_root / "github" / "myorg" / f"repo{i}" / ".beads").mkdir(parents=True)
+    monkeypatch.setenv("GIT_WORKSPACE", str(ws_root))
+
+    def fake_json(args, cwd):
+        # jitter completion order across threads
+        time_mod.sleep(random.uniform(0, 0.01))
+        repo = cwd.name
+        i = int(repo.removeprefix("repo"))
+        if i == 3:
+            return None  # unreadable -> skipped
+        if i == 5:
+            return {"value": ""}  # unparseable -> skipped
+        if i % 2 == 0:
+            return {"value": f"p{i}"}  # matches registry -> not a mismatch
+        return {"value": f"p{i}x"}  # diverges -> mismatch
+
+    monkeypatch.setattr(doctor.bd, "json", fake_json)
+    data = doctor._data_prefix_mismatches(_cfg_many_hives(n))
+
+    # Every odd i diverges except the two skip cases (3, 5): 1, 7, 9, 11, 13. A scrambled
+    # completion order only flips one adjacent pair undetected, so this many discriminating
+    # positions is needed to make a wrong-order implementation fail reliably (not just ~50%).
+    assert [m["hive"] for m in data] == [
+        "github/myorg/repo1",
+        "github/myorg/repo7",
+        "github/myorg/repo9",
+        "github/myorg/repo11",
+        "github/myorg/repo13",
+    ]
+
+
 def test_collect_includes_prefix_mismatches(hive, fakebd):  # noqa: F811
     """No local `.beads/` checkout in the plain `hive` fixture, so the section is empty — this
     just pins that `_collect` wires the key through end to end."""

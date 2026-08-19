@@ -18,6 +18,7 @@ import importlib.metadata
 import json
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import typer
@@ -404,36 +405,46 @@ def _data_prefix_mismatches(cfg) -> list[dict]:
     disk carries it (`.beads/metadata.json` records engine/database, not the prefix), so asking
     the store is the floor here until the read-path cache (bh-13spb) covers it."""
     root = Path(workspace_root())
-    mismatches = []
-    for e in cfg.get("managed_repos", []) or []:
-        path = root / e["provider"] / e["org"] / e["repo"]
-        if not (path / ".beads").is_dir():
-            continue
+    entries = [
+        (e, root / e["provider"] / e["org"] / e["repo"]) for e in cfg.get("managed_repos", []) or []
+    ]
+    entries = [(e, path) for e, path in entries if (path / ".beads").is_dir()]
+    if not entries:
+        return []
+
+    def _one(item: tuple[dict, Path]) -> dict | None:
+        e, path = item
         db = bd.json(["config", "get", "issue_prefix"], path)
         if not isinstance(db, dict) or "value" not in db:
-            continue
+            return None
         try:
             registry_prefix = hive_repair.normalize_prefix(str(e["prefix"]))
             db_prefix = hive_repair.normalize_prefix(str(db["value"]))
         except hive_repair.RepairError:
-            continue  # an unparseable prefix on either side isn't THIS check's problem to fix
+            return None  # an unparseable prefix on either side isn't THIS check's problem to fix
         if registry_prefix == db_prefix:
-            continue
+            return None
         hive_id = f"{e['provider']}/{e['org']}/{e['repo']}"
-        mismatches.append(
-            {
-                "hive": hive_id,
-                "registry_prefix": registry_prefix,
-                "db_prefix": db_prefix,
-                # Suggests reconciling the DB onto the registry's (deliberately configured)
-                # value — still just a suggestion: --prefix can target either side, or a third.
-                "remediation": (
-                    f"{config.BINARY_ALIAS} hive repair --hive {hive_id} "
-                    f"--prefix {registry_prefix} --yes"
-                ),
-            }
+        remediation = (
+            f"{config.BINARY_ALIAS} hive repair --hive {hive_id} --prefix {registry_prefix} --yes"
         )
-    return mismatches
+        return {
+            "hive": hive_id,
+            "registry_prefix": registry_prefix,
+            "db_prefix": db_prefix,
+            # Suggests reconciling the DB onto the registry's (deliberately configured)
+            # value — still just a suggestion: --prefix can target either side, or a third.
+            "remediation": remediation,
+        }
+
+    # The `bd config get` spawns are independent, read-only, and store-bound (bh-3qo60: 15
+    # hives = 4.39s sequential). Run them in a pool and keep `entries`' registry order by
+    # consuming `map`'s results positionally, so the reported list stays deterministic. Capped
+    # like the other pooled sections (hive_sync._STATUS_WORKERS, sync_remote._ASSESS_WORKERS)
+    # rather than one-thread-per-hive, which would spawn unbounded `dolt` processes at scale.
+    with ThreadPoolExecutor(max_workers=min(len(entries), 16)) as pool:
+        results = list(pool.map(_one, entries))
+    return [m for m in results if m is not None]
 
 
 def _render_prefix_mismatches(mismatches: list[dict]) -> None:
