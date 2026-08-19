@@ -14,6 +14,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import typer
@@ -265,6 +266,31 @@ def ensure_store(store, prefix):
     return store
 
 
+#: The hub store's bd prefix — deliberately NOT a plausible hive prefix (bh-89wxf.1).
+#:
+#: The hub is a DERIVED aggregate: everything in it arrives hydrated from some hive, carrying
+#: that hive's own prefix and `source_repo`. It therefore has no business ISSUING an id, and a
+#: store with a plausible prefix is a store whose leaked ids look ordinary. `bd init` demands a
+#: prefix string, so the enforcement that matters is :func:`guard.guard_hub`, not the string —
+#: but the string is chosen so any id that does leak self-identifies as a bug on sight
+#: (`_HUB_ISSUES_NO_IDS-7`).
+#:
+#: "Obviously invalid" has to live inside bd's own alphabet: measured against bd 1.1.0,
+#: `bd init --prefix '!hub'` is refused outright ("Database names must start with a letter or
+#: underscore and contain only letters, digits, underscores, or hyphens"), so a punctuation
+#: sentinel is not available. A leading underscore plus SHOUTING is: hive prefixes are lowercase
+#: slugs derived from repo names (`registry.derive_prefix`), which can never produce this.
+HUB_PREFIX = "_HUB_ISSUES_NO_IDS"
+
+#: Prefixes a pre-bh-89wxf.1 hub was bd-init'd with. `"hub"` is exactly the plausible-looking
+#: prefix this bead retired: it names a store, reads like a hive, and would have issued
+#: `hub-1`-style ids indistinguishable from a real hive's.
+_LEGACY_HUB_PREFIXES = frozenset({"hub"})
+
+#: Sentinel for "this store records no database name" — see :func:`_retire_legacy_hub`.
+_UNKNOWN_DATABASE = "\0"
+
+
 def _aggregation_target():
     """``(dir, prefix)`` of the cross-hive aggregate: the durable Factory HQ store (kind=hq) once
     one is registered, else the legacy disposable hub (pre-HQ back-compat). HQ subsumes the hub —
@@ -275,11 +301,44 @@ def _aggregation_target():
         cfg = {}
     if registry.hive_of_kind(cfg, registry.HQ_KIND) is not None:
         return config.hq_dir(), registry.HQ_PREFIX
-    return config.hub_dir(), "hub"
+    return config.hub_dir(), HUB_PREFIX
+
+
+def _retire_legacy_hub(store: Path) -> None:
+    """Move a pre-bh-89wxf.1 hub (bd prefix `"hub"`) aside so `ensure_store` re-mints it
+    prefix-less. The MIGRATION PATH for an existing host, and it is a REBUILD, not surgery: the
+    hub is derived, so the whole cost of discarding one is the `bd repo sync` that follows.
+
+    Detected by the recorded shared-server database name, which bd derives from the prefix —
+    the prefix itself is held in the store's Dolt data, not in any file (checked: `.beads/
+    config.yaml` carries only a commented-out `issue-prefix`). An embedded/unreadable store
+    records no database name at all and is left ALONE: unknown is not the same as legacy, and
+    wrongly retiring a store the operator still wants is the one irreversible mistake here.
+
+    Renamed, never deleted — bh does not remove an operator's data unprompted, even data it
+    considers disposable. The old shared-server database keeps its disk until they say so."""
+    if not (store / ".beads").is_dir():
+        return
+    # `_UNKNOWN`, not `""`: `dolt_database`'s no-fallback default is the STORE DIRECTORY'S OWN
+    # NAME — which is literally "hub" — so an empty fallback would read every metadata-less
+    # store as legacy on the strength of its path alone.
+    if store_locator.dolt_database(store, _UNKNOWN_DATABASE) not in _LEGACY_HUB_PREFIXES:
+        return
+    aside = store.with_name(f"{store.name}.legacy-{int(time.time())}")
+    store.rename(aside)
+    typer.echo(
+        f"↻ retired the legacy hub at {store} (bd prefix 'hub' — a prefix-less aggregate is "
+        f"the contract now, see docs/HUB.md) → moved to {aside}; rebuilding it from every "
+        "hive's own remote. Nothing is lost: the hub is derived. Delete the moved copy (and "
+        "its 'hub' shared-server database) to reclaim the space.",
+        err=True,
+    )
 
 
 def ensure_hub():
     store, prefix = _aggregation_target()
+    if store == config.hub_dir():
+        _retire_legacy_hub(store)
     return ensure_store(store, prefix)
 
 
@@ -546,7 +605,7 @@ def _fetch_cache(cfg, entry):
 # pays a full `bd export` spawn per hive every run, per the parent bead's DESIGN note).
 # ---------------------------------------------------------------------------
 
-_WATERMARK_VERSION = 1
+_WATERMARK_VERSION = 2  # 2: + "aggregate_id" (store identity, not just path) — bh-89wxf.1
 _WATERMARK_FILENAME = "hub-sync-watermarks.json"
 
 
@@ -572,7 +631,17 @@ def _load_watermarks(aggregate: Path) -> dict[str, str]:
     specifically covers the hub->HQ handoff: once a durable HQ is registered, `sync()`'s
     aggregation target moves (`_aggregation_target`) to a store that has never seen any hive
     yet, so a watermark recorded against the OLD disposable hub must never be read as if it
-    still applies."""
+    still applies.
+
+    IDENTITY, NOT JUST PATH (bh-89wxf.1). The `aggregate` path check alone could not see a hub
+    WIPED AND RE-MINTED under the same directory — precisely the `rm -rf` the hub's contract
+    invites — and would then hand every hive a "unchanged, skip the export" verdict recorded
+    against a store that no longer exists. It happened to survive that only because bd's own
+    downstream mtime memory lives in the primary store and died with it; correctness resting on
+    a second, unrelated mechanism's failure is not correctness. So the store's `project_id`
+    (`store_locator.project_id`, new on every fresh `bd init`) is recorded alongside the path
+    and must match too. A store recording no id at all reads as a mismatch — unknown fails
+    toward the full re-sync, same as every other unreadable case here."""
     path = _watermark_path()
     if not path.exists():
         return {}
@@ -583,6 +652,9 @@ def _load_watermarks(aggregate: Path) -> dict[str, str]:
     if not isinstance(data, dict) or data.get("version") != _WATERMARK_VERSION:
         return {}
     if data.get("aggregate") != str(aggregate):
+        return {}
+    identity = store_locator.project_id(aggregate)
+    if not identity or data.get("aggregate_id") != identity:
         return {}
     hives = data.get("hives")
     if not isinstance(hives, dict):
@@ -605,7 +677,13 @@ def _store_watermarks(aggregate: Path, marks: dict[str, str]) -> None:
     path = _watermark_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(
-        {"version": _WATERMARK_VERSION, "aggregate": str(aggregate), "hives": marks}, indent=2
+        {
+            "version": _WATERMARK_VERSION,
+            "aggregate": str(aggregate),
+            "aggregate_id": store_locator.project_id(aggregate),
+            "hives": marks,
+        },
+        indent=2,
     )
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
     try:

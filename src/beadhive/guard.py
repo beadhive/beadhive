@@ -35,6 +35,13 @@ from .registry import HQ_PREFIX
 # Read verbs safe to run against the hub cache (and any read-only aggregate).
 READ_VERBS = frozenset({"list", "ready", "show", "stats", "search"})
 
+# The HYDRATION verb — `bd repo add` / `bd repo list` / `bd repo sync`, the multi-repo machinery
+# that BUILDS the hub by reading each hive's derived `.beads/issues.jsonl` one-way. It is how the
+# aggregate exists at all, so it passes the hub guard even though it mutates the store. It cannot
+# strand a bead: nothing it writes originates here, every row it lands carries its source hive's
+# prefix, and the next `bh sync` reproduces all of it from the hives' own remotes.
+HYDRATION_VERBS = frozenset({"repo"})
+
 # `bd dolt <sub>` verbs that publish state already there or merely read remote config — never
 # CREATE a bead, so the stranded-bead reasoning `guard_hub` exists for does not apply to them
 # (bh-ohx2). `push`/`status` publish/inspect; `remote list` reads remote config. Deliberately
@@ -652,48 +659,84 @@ def _is_dolt_publish_safe(args) -> bool:
     return sub == "remote" and len(positionals) > 2 and positionals[2] == "list"
 
 
+def _owning_hive(args) -> tuple[str, str] | None:
+    """``(bead_id, hive)`` for the first positional that looks like a bead id belonging to a
+    REGISTERED hive, or ``None``. Powers the hub refusal's "write it here instead" line.
+
+    Matched on the id's prefix against `managed_repos`, LONGEST prefix first — `bh-app-3` belongs
+    to `bh-app`, not to `bh`, and a shortest-match would send the caller to the wrong hive with
+    full confidence. A config that can't be read just costs the caller the specific hint."""
+    try:
+        cfg = config.load()
+    except Exception:
+        return None
+    prefixes = sorted(
+        (str(e["prefix"]) for e in cfg.get("managed_repos", []) or []), key=len, reverse=True
+    )
+    for positional in _positionals(args)[1:]:
+        for prefix in prefixes:
+            if positional.startswith(prefix + "-"):
+                return positional, prefix
+    return None
+
+
+def _hub_refusal(args, verb: str, label: str) -> str:
+    """The hub write refusal, naming the hive the caller should have written to when the args
+    identify one. Pure — :func:`guard_hub` echoes it and exits."""
+    head = (
+        f"✗ `{config.BINARY_ALIAS} {label} bd {verb}` — the hub is a DERIVED cross-hive "
+        "aggregate: it ISSUES NO IDS and takes no writes. A write here strands a bead "
+        "(permanent orphan — hydration is one-way and additive, so it never self-heals) and is "
+        "erased by the next rebuild either way."
+    )
+    owner = _owning_hive(args)
+    if owner:
+        bead_id, hive = owner
+        return (
+            f"{head}\n  {bead_id} belongs to the {hive!r} hive — write it there: "
+            f"`{config.BINARY_ALIAS} --hive {hive} bd {verb} {bead_id} …`."
+        )
+    return (
+        f"{head}\n  File a report with `{config.BINARY_ALIAS} report`, escalate a tool problem "
+        f"with `{config.BINARY_ALIAS} escalate`, or create in the owning hive: "
+        f"`{config.BINARY_ALIAS} --hive <hive> bd create`."
+    )
+
+
 def guard_hub(args, *, label: str = "hq") -> None:
     """Gate a bd invocation forwarded to the hub/HQ aggregate: allow read verbs (and a bare
-    help/no-verb invocation) plus hq-native control-plane writes plus publish-only/read-safe
-    ``bd dolt`` verbs; refuse everything else with a pointer to the correct write paths.
+    help/no-verb invocation), the hydration verb that builds the aggregate, hq-native
+    control-plane writes, and publish-only/read-safe ``bd dolt`` verbs; refuse everything else,
+    naming the hive the caller should have written to instead.
 
     Allowlist (in priority order):
       1. No verb / ``--help`` invocations — let bd render its own help.
       2. Read verbs (list, ready, show, stats, search).
-      3. HQ-native writes — positionals contain an hq-prefixed bead id (e.g. ``hq-123``).
-      4. Publish-only/read-safe ``bd dolt`` verbs — push/status/remote-list (see
-         :func:`_is_dolt_publish_safe`). ``bd dolt push`` publishes the store that's already
-         there (the same write ``hq init``'s first-wiring path performs via
-         ``engine.push_state``); it creates nothing, so it is not the footgun this guard exists
-         to catch (bh-ohx2).
+      3. The hydration verb (``bd repo …``) — see :data:`HYDRATION_VERBS`.
+      4. HQ-native writes — positionals contain an hq-prefixed bead id (e.g. ``hq-123``).
+      5. Publish-only/read-safe ``bd dolt`` verbs — push/status/remote-list (see
+         :func:`_is_dolt_publish_safe`).
 
     Everything else (product-hive bead ids, bare ``create``, bare ``dolt pull``/``sync``, etc.)
     raises ``typer.Exit(1)``.
 
-    ``label`` names the command surface the caller actually invoked — ``"hq"`` for
-    ``bh hq bd …`` (the canonical, non-deprecated path) or ``"hub"`` for the deprecated
-    ``bh hub bd …`` alias — so the refusal message names the real command instead of a
-    hardcoded guess (bh-ohx2 also fixed the message mislabeling an ``hq`` invocation as
-    ``hub``). Both surfaces route through this SAME guard and the SAME resolved store
-    (``hub._aggregation_target()`` — HQ once one is registered, else the legacy hub); ``label``
-    is cosmetic, not a second code path."""
+    ``label`` names the command surface the caller actually invoked, so the refusal quotes the
+    real command instead of a hardcoded guess (bh-ohx2).
+
+    THE SCOPE IS THE HUB, NOT `config.cache_dir()` GENERALLY (bh-89wxf.1). A per-hive fetch
+    cache under `cache_dir()` is a legitimate place for that ONE hive's ids to be minted —
+    `report._target` creates a bead in an uncloned hive's cache and pushes it back to that
+    hive's own remote (bh-3dyo9), which is correct and must keep working. It is only the
+    AGGREGATE, where a created bead belongs to no hive at all, that issues nothing."""
     positionals = _positionals(args)
     verb = positionals[0] if positionals else ""
-    if not verb or verb in READ_VERBS:
+    if not verb or verb in READ_VERBS or verb in HYDRATION_VERBS:
         return
     if _is_hq_native_write(args):
         return  # hq-native control-plane write — allowed into the HQ store (the aggregate)
     if _is_dolt_publish_safe(args):
         return  # publishes/reads state already there — creates nothing, no stranding risk
-    typer.echo(
-        f"✗ `{config.BINARY_ALIAS} {label} bd {verb}` — the hub is a READ-ONLY cross-hive "
-        "cache; a write here strands a bead (permanent orphan — sync is ADDITIVE, so it never "
-        "self-heals).\n"
-        f"  File a report with `{config.BINARY_ALIAS} report`, escalate a tool problem with "
-        f"`{config.BINARY_ALIAS} escalate`, or create in the owning hive: "
-        f"`{config.BINARY_ALIAS} --hive <hive> bd create`.",
-        err=True,
-    )
+    typer.echo(_hub_refusal(args, verb, label), err=True)
     raise typer.Exit(1)
 
 

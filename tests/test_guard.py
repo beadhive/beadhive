@@ -36,7 +36,7 @@ def test_guard_hub_mutating_verbs_refused(verb, capsys):
         guard.guard_hub([verb, "-t", "boom"])
     assert exc.value.exit_code == 1
     err = capsys.readouterr().err
-    assert "READ-ONLY" in err
+    assert "ISSUES NO IDS" in err
     assert "bh report" in err
     assert "bh escalate" in err
     assert "bh --hive <hive> bd create" in err
@@ -58,7 +58,7 @@ def test_guard_hub_product_hive_write_refused(capsys):
         guard.guard_hub(["update", "", "--status", "done"])
     assert exc.value.exit_code == 1
     err = capsys.readouterr().err
-    assert "READ-ONLY" in err
+    assert "ISSUES NO IDS" in err
     assert "bh report" in err
     assert "bh --hive <hive> bd create" in err
 
@@ -105,7 +105,42 @@ def test_guard_hub_dolt_other_verbs_still_refused(args, capsys):
     with pytest.raises(typer.Exit) as exc:
         guard.guard_hub(args)
     assert exc.value.exit_code == 1
-    assert "READ-ONLY" in capsys.readouterr().err
+    assert "ISSUES NO IDS" in capsys.readouterr().err
+
+
+# ---- the refusal names the hive the caller should have written to (bh-89wxf.1) ----
+
+
+def test_guard_hub_refusal_names_the_owning_hive(monkeypatch, capsys):
+    """A refused write carrying a registered hive's bead id gets told WHERE to write it."""
+    monkeypatch.setattr(
+        guard.config,
+        "load",
+        lambda: {"managed_repos": [{"prefix": "bh"}, {"prefix": "bh-app"}]},
+    )
+    with pytest.raises(typer.Exit):
+        guard.guard_hub(["update", "bh-app-7", "--status", "done"])
+    err = capsys.readouterr().err
+    # LONGEST prefix wins: bh-app-7 is bh-app's, not bh's.
+    assert "'bh-app' hive" in err
+    assert "bh --hive bh-app bd update bh-app-7" in err
+
+
+def test_guard_hub_refusal_falls_back_when_no_hive_is_identifiable(monkeypatch, capsys):
+    """An id belonging to no registered hive (or no id at all) still gets the generic
+    report/escalate nudge rather than a confidently wrong hive name."""
+    monkeypatch.setattr(guard.config, "load", lambda: {"managed_repos": [{"prefix": "bh"}]})
+    with pytest.raises(typer.Exit):
+        guard.guard_hub(["update", "nope-7", "--status", "done"])
+    err = capsys.readouterr().err
+    assert "bh report" in err and "bh --hive <hive> bd create" in err
+
+
+def test_guard_hub_hydration_verb_passes():
+    """`bd repo add/sync` BUILDS the aggregate — it is how the hub exists, not a write into
+    it, and every row it lands carries its source hive's prefix."""
+    guard.guard_hub(["repo", "add", "/some/hive"])  # no raise
+    guard.guard_hub(["repo", "sync"])  # no raise
 
 
 # ---- refusal message names the actual command surface invoked (hq vs hub, bh-ohx2) ----
