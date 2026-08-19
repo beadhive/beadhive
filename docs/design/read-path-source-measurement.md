@@ -437,3 +437,73 @@ every call in the pooled path, not assumed.
 
 Not changed: the git-spawn loops in `_data_warnings` (`git ls-files`, `_local_commits_while_not_primary`)
 — measured elsewhere at ~6 ms/call, the wrong target per bh-b5v4y.
+
+## 10. The 4.96 s scratch `bd init` (bh-j68p3): minting is unavoidable
+
+Worked bh-j68p3's own question list, most-saving first, on this same host
+(beadhive-factory, load average 1.5–4.3 over 24 cores at measurement time — idle-ish, not a
+clean bench):
+
+**1. Can `LatestVersion()` be read without minting a repo? No CLI surface reports it.** Checked
+every candidate:
+
+- `bd version --json`'s `schema_version` — hardcoded `1` (confirmed: same value as the
+  module docstring's `bd dolt status --json` decoy; it is the JSON-envelope version, not a
+  migration count).
+- `bd migrate --inspect` — the module docstring's other decoy (`GetLocalMetadata(ctx,
+  "bd_version")`, a release string); measured here against a live server-mode store it
+  printed a blank `Schema Version:` with a bogus mismatch warning, which is itself further
+  evidence this surface is not meant to answer the question.
+- The 9x `bd sql … schema_migrations` calls `warnings` already makes (§2/§9) answer a
+  **different question by construction**: each is `MAX(version)` for one EXISTING hive's
+  store, which can legitimately lag the binary's `LatestVersion()` (a store that hasn't been
+  migrated up yet). Reusing the max observed across hives as a stand-in would be right only
+  by coincidence (on this host today, every checked store happens to be fully migrated to
+  v62, matching the binary) and silently wrong the day a hive lags — the kind of fragile
+  workaround bh-j68p3 explicitly said not to build. **Not redundant; nothing removed here.**
+
+**2. Does the cache key already make this once-per-bd-upgrade rather than once-per-cache-clear?
+Yes, already.** `local_bd_schema_version` keys `bd-schema-version.json` on `bd --version`'s
+exact string (`dolt_health.py`, `_local_bd_version_string`/`local_bd_schema_version`), not on
+anything cache-clear-shaped. A `brew upgrade beads` (or a Nix rebuild) naturally invalidates it;
+clearing `config.cache_dir()` without a binary change re-mints once and re-caches under the same
+key. This is the "cheaper win" bh-j68p3 named as the fallback — it was already the design, not a
+gap. Covered by the pre-existing `test_local_bd_schema_version_caches_by_bd_version_string` /
+`test_local_bd_schema_version_reprobes_after_a_bd_upgrade`.
+
+**3. Is 4.96 s the right price for `bd init`? Yes — it's dolt migration replay, not incidental
+scaffolding.** Isolated measurement, 3 samples per condition, same host/load window:
+
+| variant | run 1 | run 2 | run 3 |
+|---|---:|---:|---:|
+| `bd init --prefix … --non-interactive` (as it was) | 4.77 s | 4.89 s | 4.79 s |
+| + `--skip-agents --skip-hooks` | 4.76 s | 4.90 s | 4.90 s |
+| + `--skip-agents --skip-hooks --quiet` | — | 4.97 s | 4.92 s |
+| `git init` pre-run (removes the "init a git repo" step too) | — | — | 4.71 s |
+| bare `dolt init` (no bd, no migrations) for comparison | 0.09 s | — | — |
+
+AGENTS.md generation, git-hooks install, Cursor scaffolding, output formatting, and even git
+repo initialization are NOT the cost — every variant lands in the same ~4.7–4.9 s band, while a
+bare `dolt init` (no schema migrations applied) is 90 ms. The gap is bd replaying every
+migration the binary knows against a fresh embedded store — the actual `LatestVersion()` proof,
+by construction, and there is no cheaper way to get it from the outside.
+
+**What changed:** `_scratch_probe_local_version`'s `bd init` now passes `--skip-agents
+--skip-hooks` — measured as free (no time cost, see table) and it removes filesystem writes
+(an `AGENTS.md`, a git-hooks install) a throwaway probe directory that gets `rm -rf`'d
+immediately has no business making. This does not move the needle on wall time; it is a
+correctness-neutral cleanup, not the fix.
+
+**Full `bh doctor` cold/warm re-measurement was not run via `just bench-read-path` here**: that
+script drives the `bh` binary on `$PATH` (the machine's globally `uv tool install`ed
+0.12.2), not this worktree's modified `src/`, and this bead's fix lives entirely inside
+`_scratch_probe_local_version`/probe failure-detail plumbing — reinstalling the global `bh`
+mid-flight on a shared host with other concurrent seats was judged the wrong risk for a change
+already shown, at the isolated-call level, not to move the number. The isolated measurement
+above (same subprocess, same host, same load window, before/after the flag change) is the
+honest substitute: it shows the target call is unchanged at ~4.7–4.9 s, which is expected since
+§10.3 established that time is migration replay, not something `--skip-agents/--skip-hooks`
+touches. Net effect on `bh doctor` cold wall-time: **~0 s from this bead's code change**; the
+4.96 s line item stands as a measured, unavoidable cost of learning `LatestVersion()` the only
+way bd's CLI surface allows, now correctly NOT misreported as a failure when a bd `Warning:`
+line shares the same subprocess (bh-j50yv, same molecule, same file).

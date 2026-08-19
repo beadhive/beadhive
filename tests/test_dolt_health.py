@@ -560,6 +560,30 @@ def _fake_bd_init_scratch(cmd, cwd) -> None:
     (Path(cwd) / ".beads" / "embeddeddolt" / prefix / ".dolt").mkdir(parents=True)
 
 
+def test_scratch_probe_skips_agents_and_hooks_scaffolding(tmp_path, monkeypatch):
+    """bh-j68p3: the throwaway scratch probe has no business writing an AGENTS.md or
+    installing git hooks into a directory that gets rm -rf'd immediately after — measured
+    (design doc §10) to cost nothing either way, so there is no reason not to skip them."""
+    monkeypatch.setattr(dolt_health.config, "cache_dir", lambda: tmp_path)
+    seen_cmd = {}
+
+    def fake_run(cmd, **kw):
+        if cmd[:2] == ["bd", "--version"]:
+            return Completed(0, "bd version 9.9.9", "")
+        if cmd[:2] == ["bd", "init"]:
+            seen_cmd["cmd"] = cmd
+            _fake_bd_init_scratch(cmd, kw["cwd"])
+            return Completed(0, "", "")
+        if cmd[0] == "dolt":
+            return Completed(0, _json_rows(max_version=42), "")
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(dolt_health, "run", fake_run)
+    dolt_health.local_bd_schema_version()
+    assert "--skip-agents" in seen_cmd["cmd"]
+    assert "--skip-hooks" in seen_cmd["cmd"]
+
+
 def test_local_bd_schema_version_caches_by_bd_version_string(tmp_path, monkeypatch):
     monkeypatch.setattr(dolt_health.config, "cache_dir", lambda: tmp_path)
     calls = {"init": 0, "version": 0}

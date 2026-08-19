@@ -448,12 +448,35 @@ def _scratch_probe_local_version(timeout: float) -> SchemaProbeResult:
     this inits a THROWAWAY store in an OS temp directory — never a registered hive, never
     `~/.beadhive` — and reads its freshly-created schema version, which is `LatestVersion()` by
     construction (a fresh `bd init` runs every migration the binary knows). Cached by the caller
-    so this only runs once per bd binary, not once per check (`local_bd_schema_version`)."""
+    so this only runs once per bd binary, not once per check (`local_bd_schema_version`).
+
+    bh-j68p3 MEASURED this cold, at 20 registered hives on beadhive-factory: `bd init` here
+    costs ~4.7-4.9s regardless of `--skip-agents --skip-hooks --quiet` (three separate 3-run
+    samples, load average ~1.5-4.3/24 cores) — AGENTS.md/git-hooks/Cursor scaffolding and
+    output formatting are NOT the cost. `--skip-agents --skip-hooks` are passed anyway: they
+    are free (no measured downside) and cut unrelated filesystem writes (an AGENTS.md, a
+    .git/hooks install) a schema-only probe has no business making in a THROWAWAY directory
+    that gets rm -rf'd immediately after. The ~4.8s itself is dolt applying every migration the
+    binary knows (`dolt init` alone measures ~90ms; the gap is bd's migration replay, not
+    process start-up) — the real cost `LatestVersion()` has no cheaper way to observe (no `bd`
+    subcommand reports it without materializing a store; `bd version --json`'s `schema_version`
+    and `bd migrate --inspect`'s are the module docstring's two decoys). The EXISTING cache
+    already keys on `bd --version`'s exact string (`local_bd_schema_version`), so this runs
+    once per bd binary, not once per cache-clear — the cheaper fix bh-j68p3 asks for as a
+    fallback is already in place; there was nothing further to change there."""
     with tempfile.TemporaryDirectory(prefix="bh-wnly-schema-probe-") as tmp:
         scratch = Path(tmp)
         prefix = f"schemaprobe{uuid.uuid4().hex[:8]}"
         init = run(
-            ["bd", "init", "--prefix", prefix, "--non-interactive"],
+            [
+                "bd",
+                "init",
+                "--prefix",
+                prefix,
+                "--non-interactive",
+                "--skip-agents",
+                "--skip-hooks",
+            ],
             check=False,
             capture=True,
             cwd=str(scratch),
