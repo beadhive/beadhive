@@ -803,6 +803,7 @@ _DOCTOR_SECTIONS = {
     "install",
     "observability",
     "warnings",
+    "timings",
 }
 
 

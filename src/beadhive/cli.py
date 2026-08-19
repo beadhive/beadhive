@@ -2667,12 +2667,17 @@ def doctor_cmd(
     as_json: bool = typer.Option(
         False, "--json", help="emit the structured, schema-versioned diagnostics as JSON"
     ),
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose", help="also print the per-section timings breakdown (bh-8nnh7)"
+    ),
 ):
     """`--json` (bh-0olv9.2) emits `doctor.doctor_payload` — the same section-keyed object the
-    text render is built from, and the same one the `beadhive://doctor` MCP resource serves."""
+    text render is built from, and the same one the `beadhive://doctor` MCP resource serves.
+    `--verbose` prints the per-section wall-clock timings under the text report; the JSON
+    payload always carries them regardless of this flag."""
     from . import doctor
 
-    doctor.doctor(as_json=as_json)
+    doctor.doctor(as_json=as_json, verbose=verbose)
 
 
 # ---- backup (bh-cmqp.2, bh-5009a) --------------------------------------------

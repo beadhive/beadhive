@@ -43,6 +43,25 @@ empty; without the `git-workspace` binary itself, the "untracked" detection is s
 filesystem scan, registry checks, and warnings still run. See
 [Scope & gating](INTEGRATIONS.md#scope--gating).
 
+## Timings (bh-8nnh7)
+
+`bh doctor --json` always carries a `timings` object: per-section wall-clock cost in
+milliseconds from a monotonic clock (`time.monotonic()`), plus a `total`. It's metadata for
+attributing doctor's cost, not a substitute for real tracing (see `bh-13spb`) — a dict of
+numbers, nothing more. `bh doctor -v`/`--verbose` also prints it under the text report,
+sorted worst-first; the default text report is unchanged. The same object backs the
+`beadhive://doctor` MCP resource, so all three consumers (text, `--json`, MCP) read one
+measurement.
+
+Measured on this host (2026-08-18, 22 hives, warm cache, `bh doctor -v`): total 48.8s, with
+`seats` (13.1s), `node_id` (9.0s), `beads_role` (8.6s), `warnings` (6.8s), and
+`prefix_mismatches` (5.0s) accounting for the bulk of it — each of those sections calls out
+to `bd`/git per hive, so their cost scales with fleet size. `molecules` (3.3s) and `dispatch`
+(1.6s) are the next tier down; every remaining section is sub-second. Instrumentation
+overhead is negligible: the sum of the `timings` values (48752.5ms) matched an outside
+`time.monotonic()` wrapper around the whole call to within noise on both a warm run (48.8s)
+and a cold run (62.7s vs the bead's independently-measured 62.6s).
+
 ## See also
 
 `bh hive survey` provides a per-repo table with DIFFICULTY ratings for onboarding triage —
