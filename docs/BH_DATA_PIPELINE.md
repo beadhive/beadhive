@@ -8,9 +8,15 @@ This is a **measurement record, not a design document**. It describes the implem
 stands at `b59750e`, so that later changes have something honest to be compared against. Nothing
 here proposes work; the beads named throughout own that.
 
-**Measured**: 2026-08-19, host `beadhive-factory` (Linux, load average 3.9–5.8 during the runs),
+**Measured**: 2026-08-19, host `beadhive-factory` (Linux, load average 2.8–7.8 across the runs),
 20 registered hives / 15 local `.beads/` stores, 14 of them server-mode on one shared Dolt
 server and 1 embedded. `bh` run from source in the main clone.
+
+**Toolchain under measurement**: `bd` as installed; `agent-hitch` at its `main` as of this date
+(`679cfa9`), rebuilt and reinstalled partway through this snapshot. That upgrade moved
+`hitch profile preflight` from ~1.8 s to **2.59 s** per seat and bh's `seats` section from
+~2.55 s to ~2.7–2.9 s — a real regression for bh, recorded in §4.1 rather than smoothed over.
+Every number below is against the NEW hitch unless it says otherwise.
 
 **Method**: a shim placed ahead of the real binary on `$PATH` that logs each invocation's argv,
 cwd, elapsed time and **parent process**, then `exec`s the real one. Section timings come from
@@ -29,7 +35,7 @@ flowchart TD
 
     BH -->|"136 spawns · 5.6 ms ea · ~0.76 s"| GIT["<b>git</b><br/>refs · config · toplevel"]
     BH -->|"57–86 invocations · 233–565 ms ea"| BD["<b>bd</b>"]
-    BH -->|"7 spawns · ~1.8 s ea"| HITCH["<b>hitch</b><br/>seat preflight"]
+    BH -->|"7 spawns · ~2.6 s ea"| HITCH["<b>hitch</b><br/>seat preflight"]
     BH -->|"28 spawns · ~9.6 ms ea"| SYSD["<b>systemctl</b><br/>dispatcher units"]
     BH -->|"in-process import<br/>+ asyncio round-trips"| MCP["<b>fastmcp</b>"]
 
@@ -60,7 +66,7 @@ Same thing in ASCII:
    │    └─► dolt    shared sql-server, or embedded    ┘
    │
    ├─► dolt          direct — embedded-mode stores only (bd refuses `bd sql` there)
-   ├─► hitch          7 spawns  ~1.8s ea              seats preflight
+   ├─► hitch          7 spawns  ~2.6s ea              seats preflight
    ├─► systemctl     28 spawns  ~9.6ms ea             dispatch supervisor units
    └─► fastmcp       in-process import + asyncio      ~0.55s
 
@@ -89,20 +95,20 @@ flowchart TD
     end
 
     subgraph P1["PHASE 1 · the ONLY shared intermediate"]
-        META["<b>metadata_rollup</b><br/>metadata.read_fleet(keys, ttl)<br/><b>cold 10.80 s · warm 0.19 s</b><br/>cache: ~/.beadhive/cache/metadata.json<br/>key: per-repo git_head + git_mtime, plus TTL<br/>miss: os.walk disk-sizing per repo (62% of cost)"]
+        META["<b>metadata_rollup</b><br/>metadata.read_fleet(keys, ttl)<br/><b>cold 10.66 s · warm 0.19 s</b><br/>cache: ~/.beadhive/cache/metadata.json<br/>key: per-repo git_head + git_mtime, plus TTL<br/>miss: os.walk disk-sizing per repo (62% of cost)"]
     end
 
     subgraph P2["PHASE 2..N · 18 independent sections, SERIAL"]
         direction TB
         PURE["config · providers · orgs · hives · worktrees<br/>· install · observability<br/><i>pure cfg / filesystem — under 50 ms combined</i>"]
         DU["disk_usage + fleet_health<br/><i>pure — read metadata records</i>"]
-        MOL["<b>molecules</b> 0.96 s ∥<br/>fanout: git for-each-ref ×20 → bd show ×11<br/><i>no cache — cold == warm</i>"]
+        MOL["<b>molecules</b> 1.06 s ∥<br/>fanout: git for-each-ref ×20 → bd show ×11<br/><i>no cache — cold == warm</i>"]
         PFX["<b>prefix_mismatches</b> 1.34 s ∥<br/>fanout: bd config get issue_prefix ×14"]
         SER["node_id 0.38 s │ · beads_role 0.10 s │<br/>store_engine 0.13 s │<br/><i>serial per-hive loops</i>"]
-        DISP["<b>dispatch</b> 1.39 s │<br/>serial ×15 → guard.primary_state<br/>→ git rev-parse refs/bh/lease/&lt;prefix&gt;<br/>+ systemctl ×28"]
-        GA["group_auth 0.04 s · mcp 0.56 s"]
-        SEAT["<b>seats</b> 2.55 s ∥<br/>fanout: hitch preflight ×7 @ ~1.8 s<br/><i>floor = ONE preflight</i>"]
-        WARN["<b>warnings</b> — cold 6.81 s · warm 1.87 s<br/>the only multi-phase section"]
+        DISP["<b>dispatch</b> 1.41 s │<br/>serial ×15 → guard.primary_state<br/>→ git rev-parse refs/bh/lease/&lt;prefix&gt;<br/>+ systemctl ×28"]
+        GA["group_auth 0.04 s · mcp 0.54 s"]
+        SEAT["<b>seats</b> 2.71 s ∥<br/>fanout: hitch preflight ×7 @ ~2.6 s<br/><i>floor = ONE preflight</i>"]
+        WARN["<b>warnings</b> — cold 7.09 s · warm 1.87 s<br/>the only multi-phase section"]
     end
 
     SCAN --> META
@@ -145,7 +151,7 @@ Same thing in ASCII:
         |                                                       | feeds
  PHASE 1  metadata rollup   <- THE ONLY SHARED INTERMEDIATE     | 2 sections
  -----------------------------------------------------------------------------
-   metadata.read_fleet(keys, ttl)                          *  10.80    0.19
+   metadata.read_fleet(keys, ttl)                          *  10.66    0.19
         |   cache: ~/.beadhive/cache/metadata.json
         |   key:   per-repo (git_head + git_mtime) + TTL
         |   miss:  os.walk disk-sizing per repo  <- 62% of its cost
@@ -157,31 +163,31 @@ Same thing in ASCII:
  -----------------------------------------------------------------------------
    config/providers/orgs/hives/worktrees  o  pure cfg      0.00    0.00
                                                           -------------------
-   molecules       ||  fanout 1: git for-each-ref x20      0.94    0.96
+   molecules       ||  fanout 1: git for-each-ref x20      1.02    1.06
                    ||  fanout 2: bd show x11
                    o   no cache - cold == warm
                                                           -------------------
-   prefix_mism.    ||  fanout: bd config get issue_prefix  1.27    1.34
+   prefix_mism.    ||  fanout: bd config get issue_prefix  1.34    1.34
                    o   no cache
                                                           -------------------
-   node_id         |   serial, early-exit: bd config get   0.39    0.38
-   beads_role      |   serial x15: bd.beads_role -> git    0.10    0.10
-   store_engine    |   serial x15: pure filesystem         0.14    0.13
+   node_id         |   serial, early-exit: bd config get   0.40    0.38
+   beads_role      |   serial x15: bd.beads_role -> git    0.11    0.10
+   store_engine    |   serial x15: pure filesystem         0.13    0.13
                                                           -------------------
-   dispatch        |   serial x15: guard.primary_state     1.38    1.39
+   dispatch        |   serial x15: guard.primary_state     1.38    1.41
                    |     +-> git rev-parse refs/bh/lease/<p>  <-- SAME READ
                    |     +-> systemctl x28                     as warnings
                                                           -------------------
    group_auth      o   git config --global (memoized)      0.04    0.04
-   mcp             o   import fastmcp + asyncio            0.54    0.56
+   mcp             o   import fastmcp + asyncio            0.52    0.54
                                                           -------------------
-   seats           ||  fanout: hitch preflight x7 @ 1.8s   2.74    2.55
+   seats           ||  fanout: hitch preflight x7 @ 2.6s   2.70    2.71
                    o   no cache - floor is ONE preflight
                                                           -------------------
    install         o                                       0.04    0.04
    observability   o                                       0.00    0.00
                                                           -------------------
-   warnings        -- the only multi-phase section          6.81    1.87
+   warnings        -- the only multi-phase section          7.09    1.87
                    |
                    +- 1. local bd schema version       *   [5.15 / 0.00]
                    |     cache: cache_dir/bd-schema-version.json
@@ -299,31 +305,58 @@ irreproducible across hosts. **Warm** is an immediate re-run with those caches p
 
 | section | cold | warm | ratio |
 |---|---:|---:|---:|
-| `metadata_rollup` | 10.80 s | 0.19 s | **57.1×** |
-| `warnings` | 6.81 s | 1.87 s | 3.6× |
-| `seats` | 2.74 s | 2.55 s | 1.1× |
-| `dispatch` | 1.38 s | 1.39 s | 1.0× |
-| `prefix_mismatches` | 1.27 s | 1.34 s | 0.9× |
-| `molecules` | 0.94 s | 0.96 s | 1.0× |
-| `mcp` | 0.54 s | 0.56 s | 1.0× |
-| `node_id` | 0.39 s | 0.38 s | 1.0× |
-| `store_engine` | 0.14 s | 0.13 s | 1.1× |
-| `beads_role` | 0.10 s | 0.10 s | 1.0× |
+| `metadata_rollup` | 10.66 s | 0.19 s | **57.6×** |
+| `warnings` | 7.09 s | 1.87 s | 3.8× |
+| `seats` | 2.70 s | 2.71 s | 1.0× |
+| `dispatch` | 1.38 s | 1.41 s | 1.0× |
+| `prefix_mismatches` | 1.34 s | 1.34 s | 1.0× |
+| `molecules` | 1.02 s | 1.06 s | 1.0× |
+| `mcp` | 0.52 s | 0.54 s | 1.0× |
+| `node_id` | 0.40 s | 0.38 s | 1.1× |
+| `store_engine` | 0.13 s | 0.13 s | 1.0× |
+| `beads_role` | 0.11 s | 0.10 s | 1.0× |
 | `group_auth` | 0.04 s | 0.04 s | 1.0× |
-| `tracked` | 0.01 s | 0.01 s | 0.9× |
-| **TOTAL** | **24.72 s** | **9.58 s** | **2.6×** |
+| `tracked` | 0.01 s | 0.01 s | 1.0× |
+| **TOTAL** | **25.21 s** | **9.85 s** | **2.6×** |
 
 Sections below 5 ms (`config`, `providers`, `orgs`, `hives`, `scan`, `disk_usage`,
 `fleet_health`, `worktrees`, `observability`, `install`) are omitted; together they are under
 50 ms in either column.
 
+### 4.1 The `agent-hitch` upgrade, isolated
+
+`agent-hitch` was rebuilt from its `main` (`679cfa9`) partway through this snapshot, so the
+`seats` numbers moved for a reason unrelated to any bh change. Measured directly rather than
+inferred from the section total, since host load moved too:
+
+| | old hitch | new hitch (`679cfa9`) |
+|---|---:|---:|
+| `hitch profile preflight <seat>` | ~1.80 s | **2.59 s** |
+| bh `seats` section (7 seats, concurrent) | 2.50–2.55 s | 2.79–2.94 s |
+
+**The upgrade cost bh roughly 0.35 s.** Where it goes, from an in-process profile of one
+preflight: 72% is JSON-schema work — **34 schema loads of 5 distinct files**, of which
+`hitch.schema.json` alone is read and re-`check_schema`'d **28 times for 1.17 s**. Across the 7
+seats bh preflights, the pack layer shows the same shape: **38 pack loads for 14 distinct
+packs**, a 2.7× redundancy.
+
+Two things worth recording so they are not re-derived:
+
+- Memoizing `_load_schema` by path is worth **−19%** per preflight (2.112 s → 1.716 s, median of
+  3 interleaved fresh processes). An in-process measurement suggested −50%; that was warm-cache
+  bias, and −19% is the honest figure.
+- **Do not batch the preflights serially.** Seven preflights in one process take **9.79 s**
+  against bh's current concurrent fan-out at **2.9 s wall** — a 3× regression. A batch verb only
+  wins if it shares the pack resolution (14 loads instead of 38), not by avoiding process
+  startup.
+
 ### Reading the table
 
-**Cold and warm are two different programs.** Warm is 9.58 s, and its largest section is `seats`
-(2.55 s) — already at its floor of one hitch preflight's latency (`bh-ls1ks`). Cold is 24.72 s,
-and **17.61 s of it — 71% — is two caches missing**: `metadata_rollup` (10.80 s) and the
-`bd init` scratch probe inside `warnings` (7.54 s of that section's 6.81 s attributed cost, the
-rest overlapping in the pool).
+**Cold and warm are two different programs.** Warm is 9.85 s, and its largest section is `seats`
+(2.71 s) — already at its floor of one hitch preflight's latency (`bh-ls1ks`), which is why the
+preflight regression above lands on bh in full. Cold is 25.21 s, and **17.75 s of it — 70% — is
+two caches missing**: `metadata_rollup` (10.66 s) and the `bd init` scratch probe inside
+`warnings` (7.54 s of that section's 7.09 s attributed cost, the rest overlapping in the pool).
 
 **Every section with a ratio of 1.0× has no cache at all** and pays in full on every invocation.
 `molecules` is the clearest example, which is exactly why optimizing it (`bh-7fen2`, 2.68 s →
@@ -331,8 +364,10 @@ rest overlapping in the pool).
 read.
 
 **`bh doctor`'s warm number moved 11.95 s → 9.58 s** across the four beads landed 2026-08-19
-(`bh-td8t9`, `bh-1qxjn`, `bh-7fen2`, `bh-0gvs3`) plus `bh-z31lc`. Cold moved 26.83 s → 24.72 s
-over the same span — a 4% change, because none of that work touched either cold-dominant cost.
+(`bh-td8t9`, `bh-1qxjn`, `bh-7fen2`, `bh-0gvs3`) plus `bh-z31lc`, measured before the hitch
+upgrade. It reads 9.85 s after that upgrade, under heavier load — the ~0.3 s difference is the
+preflight regression in §4.1, not a bh change. Cold moved 26.83 s → 25.21 s over the same span
+— a 6% change, because none of that work touched either cold-dominant cost.
 The per-bead attribution is in `docs/design/read-path-source-measurement.md` §11–§12.
 
 ### What has no owner
