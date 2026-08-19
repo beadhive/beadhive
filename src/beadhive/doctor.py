@@ -1870,6 +1870,20 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
     if not entries:
         return []
 
+    # SHAPE A (bh-0gvs3): every server-mode hive's `schema_migrations` version in ONE
+    # cross-database query — measured 14 hives in 0.267s against ~280ms per `bd sql` spawn.
+    # `schema_migrations` is a stored table and the per-hive path already reads it with
+    # `bd sql`, so this is the same query asked once instead of N times, with no bd-side
+    # derivation to reimplement (see dolt_health.bulk_schema_versions' classification note).
+    # PARTIAL BY CONSTRUCTION: embedded-mode hives are absent and fall back to shape B below.
+    bulk = dolt_health.bulk_schema_versions(
+        [
+            (path, store_locator.server_database(path))
+            for _e, path in entries
+            if not store_locator.is_embedded_mode(path)
+        ]
+    )
+
     def _probe(item: tuple[dict, Path]) -> tuple[hive_schema.HiveSchemaRecord | None, str | None]:
         e, path = item
         dolt_mode = safety._bd_dolt_mode(str(path))
@@ -1882,7 +1896,13 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
         # bh-3qo60 pattern, now lock-guarded the same way (`host.py`'s `_yaml_lock`). Both are
         # safe to call from a pool as-is.
         _refreshed, fail_detail = hive_schema.refresh_with_detail(
-            path, e["provider"], e["org"], e["repo"], hq_dir=hq_dir, dolt_mode=dolt_mode
+            path,
+            e["provider"],
+            e["org"],
+            e["repo"],
+            hq_dir=hq_dir,
+            dolt_mode=dolt_mode,
+            probed=bulk.get(path),
         )
         # ALWAYS read back, even on a failed refresh: refresh writes nothing when the probe
         # fails, but a PRIOR record may already be on disk from an earlier successful run —

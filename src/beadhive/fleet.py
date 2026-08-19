@@ -5,7 +5,7 @@ Before this module every cross-hive read invented its own shape: five hand-rolle
 never any one of them; it was that a SIXTH dataset had nothing to be added to, so it invented a
 seventh shape. There are two shapes here and adding a dataset means picking one.
 
-## Shape A — bulk cross-hive read (:mod:`beadhive.fleet_sql`)
+## Shape A — bulk cross-hive read (:func:`sql` / :func:`sql_rows`)
 
 ONE query against the shared Dolt server, reading every hive's database by qualified name. Its
 cost does not scale with fleet size. Sound ONLY when the value is something the server itself
@@ -55,9 +55,13 @@ module's; until it lands, a pooled ``fn`` should use a plain timeout, not the PD
 
 from __future__ import annotations
 
+import json as _json
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import TypeVar
+
+from .run import run
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -90,3 +94,35 @@ def fanout(
         return []
     with ThreadPoolExecutor(max_workers=min(len(materialized), workers)) as pool:
         return list(pool.map(fn, materialized))
+
+
+# ---- shape A: the bulk cross-hive transport ---------------------------------
+# `bd -C <store> sql -q <query> --json` executes against the SHARED SERVER every server-mode
+# hive's tables live on, including another database by qualified name (`<other_db>.<table>`).
+# So one connection reads the whole fleet and no MySQL driver is added — established and
+# measured by hub_bulk (bh-z4z52, ~398x on the copy path); this is that transport promoted out
+# of hub_bulk so the READ path can use it too (bh-0gvs3).
+
+SQL_TIMEOUT = 60.0  # seconds per `bd sql` call — a local loopback query, generously bounded
+
+
+def sql(store: Path, query: str, *, timeout: float = SQL_TIMEOUT):
+    """``bd -C <store> sql -q <query> --json``. Never raises; the caller reads ``returncode``."""
+    return run(
+        ["bd", "-C", str(store), "sql", "-q", query, "--json"],
+        check=False,
+        capture=True,
+        timeout=timeout,
+    )
+
+
+def sql_rows(res):
+    """Parsed JSON body of a :func:`sql` result, or ``None`` on a failed call or unparseable
+    output — never raises, matching ``bd.json``'s own None-on-failure contract. ``None`` is the
+    signal to FALL BACK to shape B, never to report an empty fleet."""
+    if res.returncode != 0:
+        return None
+    try:
+        return _json.loads(res.stdout or "null")
+    except ValueError:
+        return None

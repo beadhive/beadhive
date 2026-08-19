@@ -515,3 +515,89 @@ FAILURE DETAIL is reported when a real error shares a subprocess with a harmless
 line (see `_probe_failure`'s docstring in `dolt_health.py`), not whether the probe treats a
 `Warning:` as a failure — measurement there (bh-j50yv's own review) found `bd` already exits 0
 on a warning-only stderr, so that was never the mechanism.
+
+---
+
+## §11 — Two pipeline shapes, and the first cross-hive bulk read (bh-1qxjn, bh-0gvs3, bh-7fen2)
+
+**Measured 2026-08-19 on beadhive-factory**, 20 registered hives / 15 local `.beads/` stores,
+`bh doctor -v` from source in a batch worktree, load average 2.5–3.4. Three warm runs each side.
+
+### The shapes
+
+Before this work, every cross-hive read invented its own concurrency: five hand-rolled
+`ThreadPoolExecutor` blocks with three different worker bounds. `beadhive/fleet.py` now holds
+**two** shapes and the rule for choosing between them, so a sixth dataset has something to be
+added to instead of inventing a seventh:
+
+* **Shape A — bulk cross-hive read** (`fleet.sql` / `fleet.sql_rows`). ONE `bd sql` against the
+  shared Dolt server, reading every hive's database by qualified name. Cost does NOT scale with
+  fleet size. Sound only for a stored column or a server-side view.
+* **Shape B — bounded per-hive fan-out** (`fleet.fanout`). N calls under a worker cap. Cost
+  still scales with fleet size, divided by the cap. Required whenever A is unsound, and for
+  anything that is not a bead-store read at all.
+
+### The classification rule, and why it is the load-bearing half
+
+bd is not a thin wrapper over its tables. `bd ready` is the clear case: readiness is computed
+from status plus the dependency graph plus defer dates by bd's own resolver, not read from a
+column. Hand-writing that as SQL yields a number that looks right and then DRIFTS every time bd
+changes upstream, with nothing to catch it. So every dataset is classified BEFORE any SQL is
+written — stored column / server-side view / derived-in-Go-do-not-reimplement — and the third
+class stays on shape B.
+
+### What was classified, and where each landed
+
+| Dataset | Reads | Class | Shape |
+|---|---|---|---|
+| `warnings` schema version | `MAX(version) FROM schema_migrations` | stored table; the per-hive path ALREADY used `bd sql`, so there is no bd-side derivation to reimplement | **A** |
+| `warnings` dolt mode | `bd dolt status` | bd's own report on a store, not a row the server serves | B |
+| `molecules` epic status | `bd show <epic>` | full bead record through bd | B |
+| `prefix_mismatches` | `bd config get issue_prefix` | bd config resolution (layered), not a plain row | B |
+| `seats` | hitch preflights | not a bead-store read at all | B |
+| federation status / remote assess | per-hive engine + network | not a bead-store read at all | B |
+
+### Numbers
+
+**Shape A, isolated (`dolt_health.bulk_schema_versions`, live against the real fleet):**
+**14 server-mode hives answered in ONE query, 0.267 s.** The per-hive path it replaces is one
+`bd sql` spawn each at ~280 ms — 3.9 s sequential, and roughly 0.6–1.0 s even pooled at 16
+workers. Embedded-mode hives are absent from the map by construction and fall back to shape B
+per hive; a query failure returns `{}` so the whole pass falls back.
+
+**Section-level effect of shape A: inside the noise, and that is the honest result.** `warnings`
+measures ~1.8–2.0 s before and after. bh-ti7ws had already pooled these probes, so what shape A
+removes was no longer the section's binding cost — the remainder is `_bd_dolt_mode` (0.21 s
+pooled), `local_bd_schema_version` (0.11 s), and the section's other unrelated checks. The value
+delivered here is **structural, not a wall-time win at today's fleet size**: N spawns became 1,
+so this dataset's cost stops growing as hives are added. Claiming a section win the measurement
+does not show would be the wrong record to leave.
+
+**`molecules` (shape B, bh-7fen2), same-host A/B:**
+
+| | main | batch branch |
+|---|---|---|
+| `molecules` | 2.66 / 2.68 / 2.70 s | 1.01 / 1.03 / 1.07 s |
+| `bh doctor` total | 11.07 / 11.08 / 11.78 s | 9.86 / 9.81 / 10.17 s |
+
+The section's cost was 11 `bd show` calls (2.16 s) behind 20 `git for-each-ref` (0.12 s);
+both stages now fan out.
+
+**A drift question closed:** `molecules` was recorded at 2.61 s early in the session and 3.01 s
+later, and it was unclear whether that was a regression. Unmodified `main` re-measures at
+**2.66–2.70 s across three consecutive runs** — the 3.01 s reading was host load. Noise, not a
+regression.
+
+### Behavioural verification
+
+The `warnings` section renders **byte-for-byte identically** to `main` on the real fleet, which
+is what a read-path change is allowed to move: how the reading is obtained, never what is
+reported.
+
+### What this does NOT do
+
+`fleet.fanout` does not bound the child processes its workers spawn. Stopping the WAIT on a
+future does not reap the process behind it — it would report a timeout while the real child ran
+on. Bounding stays at `run.bounded`; PDEATHSIG in a threaded pool remains **bh-0tjqd's** call,
+since `preexec_fn` is unsafe in a multi-threaded process and a pool is exactly what makes bh
+multi-threaded. `fleet.py`'s docstring names that seam rather than leaving it implicit.

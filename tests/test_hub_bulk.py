@@ -13,7 +13,10 @@ import json
 from collections import namedtuple
 from pathlib import Path
 
-from beadhive import hub_bulk
+# The `bd sql` transport this module's tests fake now lives in `fleet` (shape A) rather than
+# in hub_bulk itself (bh-0gvs3) — hub_bulk calls it through `fleet.sql`, so the seam these
+# tests patch is `fleet.run`. Same transport, one home; the transport moved to `fleet`.
+from beadhive import fleet, hub_bulk
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -153,12 +156,12 @@ def test_server_databases_parses_show_databases(tmp_path, monkeypatch):
         assert cmd[-3:] == ["-q", "SHOW DATABASES", "--json"] or cmd[-2] == "SHOW DATABASES"
         return Completed(0, json.dumps([{"Database": "bh"}, {"Database": "hq"}]), "")
 
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
     assert hub_bulk.server_databases(tmp_path) == {"bh", "hq"}
 
 
 def test_server_databases_empty_on_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr(hub_bulk, "run", lambda cmd, **k: Completed(1, "", "boom"))
+    monkeypatch.setattr(fleet, "run", lambda cmd, **k: Completed(1, "", "boom"))
     assert hub_bulk.server_databases(tmp_path) == set()
 
 
@@ -210,7 +213,7 @@ def test_copy_table_success(tmp_path, monkeypatch):
             return Completed(0, json.dumps(_DESCRIBE_ISSUES), "")
         return Completed(0, json.dumps({"rows_affected": 1}), "")
 
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
     ok, detail = hub_bulk.copy_table(tmp_path, "otherdb", "issues", {})
     assert ok
     assert detail == ""
@@ -224,7 +227,7 @@ def cmd_query_index(cmd):
 
 
 def test_copy_table_schema_read_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr(hub_bulk, "run", lambda cmd, **k: Completed(1, "", "boom"))
+    monkeypatch.setattr(fleet, "run", lambda cmd, **k: Completed(1, "", "boom"))
     ok, detail = hub_bulk.copy_table(tmp_path, "otherdb", "issues", {})
     assert not ok
     assert "schema" in detail
@@ -237,7 +240,7 @@ def test_copy_table_insert_failure_surfaces_bd_error_line(tmp_path, monkeypatch)
             return Completed(0, json.dumps(_DESCRIBE_ISSUES), "")
         return Completed(1, "", "Error: something broke\n")
 
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
     ok, detail = hub_bulk.copy_table(tmp_path, "otherdb", "issues", {})
     assert not ok
     assert detail == "Error: something broke"
@@ -264,7 +267,7 @@ def test_copy_failure_reason_survives_the_multiline_json_bd_really_emits(tmp_pat
             return Completed(0, json.dumps(_DESCRIBE_ISSUES), "")
         return Completed(1, bd_json_error, "")
 
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
     ok, detail = hub_bulk.copy_hive(tmp_path, "otherdb", {})
 
     assert not ok
@@ -282,7 +285,7 @@ def test_copy_table_caches_schema_across_calls(tmp_path, monkeypatch):
             return Completed(0, json.dumps(_DESCRIBE_ISSUES), "")
         return Completed(0, json.dumps({"rows_affected": 0}), "")
 
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
     cache: dict = {}
     hub_bulk.copy_table(tmp_path, "db1", "issues", cache)
     hub_bulk.copy_table(tmp_path, "db2", "issues", cache)
@@ -303,7 +306,7 @@ def test_copy_hive_stops_at_first_failing_table(tmp_path, monkeypatch):
             return Completed(1, "", "Error: dependencies exploded\n")
         return Completed(0, json.dumps({"rows_affected": 0}), "")
 
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
     ok, detail = hub_bulk.copy_hive(tmp_path, "otherdb", {})
     assert not ok
     assert "dependencies" in detail
@@ -322,7 +325,7 @@ def test_copy_hive_success_touches_every_content_table_and_nothing_else(tmp_path
         inserted_into.append(table)
         return Completed(0, json.dumps({"rows_affected": 0}), "")
 
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
     ok, detail = hub_bulk.copy_hive(tmp_path, "otherdb", {})
     assert ok, detail
     assert inserted_into == list(hub_bulk.CONTENT_TABLES)
@@ -341,18 +344,18 @@ def test_copy_hive_success_touches_every_content_table_and_nothing_else(tmp_path
 
 def test_validate_ancestors_parses_violation_count(tmp_path, monkeypatch):
     monkeypatch.setattr(
-        hub_bulk, "run", lambda cmd, **k: Completed(0, json.dumps([{"violations": 3}]), "")
+        fleet, "run", lambda cmd, **k: Completed(0, json.dumps([{"violations": 3}]), "")
     )
     assert hub_bulk.validate_ancestors(tmp_path) == 3
 
 
 def test_validate_ancestors_none_on_query_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr(hub_bulk, "run", lambda cmd, **k: Completed(1, "", "boom"))
+    monkeypatch.setattr(fleet, "run", lambda cmd, **k: Completed(1, "", "boom"))
     assert hub_bulk.validate_ancestors(tmp_path) is None
 
 
 def test_validate_ancestors_none_on_unparseable_shape(tmp_path, monkeypatch):
-    monkeypatch.setattr(hub_bulk, "run", lambda cmd, **k: Completed(0, json.dumps({}), ""))
+    monkeypatch.setattr(fleet, "run", lambda cmd, **k: Completed(0, json.dumps({}), ""))
     assert hub_bulk.validate_ancestors(tmp_path) is None
 
 
@@ -389,7 +392,7 @@ def test_run_bulk_pass_empty_entries_makes_no_calls(tmp_path, monkeypatch):
     def fail(cmd, **k):
         raise AssertionError("run() must not be called for an empty entry list")
 
-    monkeypatch.setattr(hub_bulk, "run", fail)
+    monkeypatch.setattr(fleet, "run", fail)
     assert hub_bulk.run_bulk_pass(tmp_path, []) == []
 
 
@@ -397,7 +400,7 @@ def test_run_bulk_pass_skips_a_hive_with_no_server_database(tmp_path, monkeypatc
     hive = tmp_path / "ghost"
     _metadata(hive, dolt_mode="server")
     fake_run, queries, deregistered = _fake_bulk_server(databases={"other"})
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
 
     hydrated = hub_bulk.run_bulk_pass(tmp_path, [("ghost", hive, True, False)])
 
@@ -412,7 +415,7 @@ def test_run_bulk_pass_copies_a_changed_co_located_hive_and_keeps_it_registered(
     hive = tmp_path / "bh"
     _metadata(hive, dolt_mode="server")
     fake_run, queries, deregistered = _fake_bulk_server(databases={"bh"})
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
 
     hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True, False)])
 
@@ -430,7 +433,7 @@ def test_run_bulk_pass_unchanged_hive_is_hydrated_without_recopying(tmp_path, mo
     hive = tmp_path / "bh"
     _metadata(hive, dolt_mode="server")
     fake_run, queries, deregistered = _fake_bulk_server(databases={"bh"})
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
 
     hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, False, False)])
 
@@ -447,7 +450,7 @@ def test_run_bulk_pass_leaves_a_hive_registered_when_copy_fails(tmp_path, monkey
     hive = tmp_path / "bh"
     _metadata(hive, dolt_mode="server")
     fake_run, queries, deregistered = _fake_bulk_server(databases={"bh"}, insert_ok=False)
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
 
     hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True, False)])
 
@@ -462,7 +465,7 @@ def test_run_bulk_pass_reports_but_does_not_raise_on_ancestor_violations(
     hive = tmp_path / "bh"
     _metadata(hive, dolt_mode="server")
     fake_run, _queries, _dereg = _fake_bulk_server(databases={"bh"}, violations=2)
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
 
     hydrated = hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True, False)])
 
@@ -475,7 +478,7 @@ def test_run_bulk_pass_never_queries_a_denied_or_undecided_table(tmp_path, monke
     hive = tmp_path / "bh"
     _metadata(hive, dolt_mode="server")
     fake_run, queries, _dereg = _fake_bulk_server(databases={"bh"})
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
 
     hub_bulk.run_bulk_pass(tmp_path, [("bh", hive, True, False)])
 
@@ -497,7 +500,7 @@ def test_run_bulk_pass_mixed_co_located_and_not(tmp_path, monkeypatch):
     ghost_hive = tmp_path / "bc-workspace"
     _metadata(ghost_hive, dolt_mode="embedded")
     fake_run, _queries, deregistered = _fake_bulk_server(databases={"bh"})
-    monkeypatch.setattr(hub_bulk, "run", fake_run)
+    monkeypatch.setattr(fleet, "run", fake_run)
 
     hydrated = hub_bulk.run_bulk_pass(
         tmp_path, [("bh", bh_hive, True, False), ("bc-workspace", ghost_hive, True, False)]

@@ -181,18 +181,32 @@ def is_stale(
 
 
 def refresh(
-    hive_dir: Path, provider: str, org: str, repo: str, *, hq_dir: Path, dolt_mode: str | None
+    hive_dir: Path,
+    provider: str,
+    org: str,
+    repo: str,
+    *,
+    hq_dir: Path,
+    dolt_mode: str | None,
+    probed: dolt_health.SchemaProbeResult | None = None,
 ) -> HiveSchemaRecord | None:
     """`refresh_with_detail`, without the probe detail a caller that only wants the record
     doesn't need."""
     record, _detail = refresh_with_detail(
-        hive_dir, provider, org, repo, hq_dir=hq_dir, dolt_mode=dolt_mode
+        hive_dir, provider, org, repo, hq_dir=hq_dir, dolt_mode=dolt_mode, probed=probed
     )
     return record
 
 
 def refresh_with_detail(
-    hive_dir: Path, provider: str, org: str, repo: str, *, hq_dir: Path, dolt_mode: str | None
+    hive_dir: Path,
+    provider: str,
+    org: str,
+    repo: str,
+    *,
+    hq_dir: Path,
+    dolt_mode: str | None,
+    probed: dolt_health.SchemaProbeResult | None = None,
 ) -> tuple[HiveSchemaRecord | None, str | None]:
     """Probe `hive_dir`'s real schema version and persist it — the one place a
     `HiveSchemaRecord` gets written. Returns ``(record, None)`` on success; ``(None, detail)``
@@ -204,7 +218,11 @@ def refresh_with_detail(
     known-true observation, not overwrite it with a guess."""
     from . import host
 
-    probed = dolt_health.probe_raw_schema_version(hive_dir, dolt_mode=dolt_mode)
+    # `probed` lets a caller that ALREADY read this hive's version supply it instead of paying
+    # a second subprocess — the seam shape A plugs into (bh-0gvs3: one cross-database `bd sql`
+    # answers every server-mode hive at once). Absent, this probes per hive exactly as before.
+    if probed is None:
+        probed = dolt_health.probe_raw_schema_version(hive_dir, dolt_mode=dolt_mode)
     if probed.version is None:
         return None, probed.detail
     try:

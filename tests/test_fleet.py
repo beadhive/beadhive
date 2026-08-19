@@ -69,3 +69,27 @@ def test_fanout_propagates_an_exception_from_an_item():
 
 def test_fanout_accepts_a_lazy_iterable():
     assert fleet.fanout(lambda n: n + 1, (n for n in range(3))) == [1, 2, 3]
+
+
+# ---- shape A: the bulk cross-hive transport (bh-0gvs3) ----------------------
+
+
+class _Res:
+    def __init__(self, returncode=0, stdout=""):
+        self.returncode = returncode
+        self.stdout = stdout
+
+
+def test_sql_rows_parses_a_result_body():
+    assert fleet.sql_rows(_Res(0, '[{"db": "bh", "max_version": 62}]')) == [
+        {"db": "bh", "max_version": 62}
+    ]
+
+
+def test_sql_rows_is_none_on_a_failed_call_not_empty():
+    """None means FALL BACK to shape B. Returning [] here would read as 'the fleet is empty'."""
+    assert fleet.sql_rows(_Res(1, "")) is None
+
+
+def test_sql_rows_is_none_on_unparseable_output():
+    assert fleet.sql_rows(_Res(0, "Warning: something\nnot json")) is None

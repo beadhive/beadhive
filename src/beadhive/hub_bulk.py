@@ -82,15 +82,14 @@ drops or "fixes" them.
 
 from __future__ import annotations
 
-import json as _json
 from pathlib import Path
 
 import typer
 
-from . import bd, store_locator
-from .run import run
+from . import bd, fleet, store_locator
 
-SQL_TIMEOUT = 60.0  # seconds per `bd sql` call — a local loopback query, generously bounded
+# This module's own name for the bound; the value lives with the transport it belongs to.
+SQL_TIMEOUT = fleet.SQL_TIMEOUT
 
 # ---------------------------------------------------------------------------------------------
 # THE CURATED TABLE LIST — see module docstring. Order matters: FK-referenced parents
@@ -159,27 +158,11 @@ WHERE d.type = 'blocks'
 """.strip()
 
 
-def _run_sql(store: Path, query: str, *, timeout: float = SQL_TIMEOUT):
-    """``bd -C <store> sql -q <query> --json`` — the ONE transport this whole module uses (see
-    module docstring: no MySQL driver, `bd sql` reaches the shared server directly, including
-    cross-database qualified names). Never raises; the caller reads ``returncode``."""
-    return run(
-        ["bd", "-C", str(store), "sql", "-q", query, "--json"],
-        check=False,
-        capture=True,
-        timeout=timeout,
-    )
-
-
-def _parse_json(res):
-    """Parsed JSON body of a `_run_sql` result, or ``None`` on a failed call or unparseable
-    output — never raises, matching `bd.json`'s own None-on-failure contract."""
-    if res.returncode != 0:
-        return None
-    try:
-        return _json.loads(res.stdout or "null")
-    except ValueError:
-        return None
+# The transport this module established now lives in `fleet` (shape A), so the READ path can
+# use the same one instead of a second copy (bh-0gvs3). These aliases keep this module's own
+# call sites and their names unchanged.
+_run_sql = fleet.sql
+_parse_json = fleet.sql_rows
 
 
 def server_databases(hub: Path) -> set[str]:
