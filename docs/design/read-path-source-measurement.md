@@ -516,6 +516,21 @@ line (see `_probe_failure`'s docstring in `dolt_health.py`), not whether the pro
 `Warning:` as a failure — measurement there (bh-j50yv's own review) found `bd` already exits 0
 on a warning-only stderr, so that was never the mechanism.
 
+### §10.1 — Re-verdict at 30% (bh-zzoek, 2026-08-19): still unavoidable
+
+`docs/BH_DATA_PIPELINE.md` §4's "What has no owner" carries the full re-check (same host, same
+line item, now worth ~26–30% of cold `bh doctor` rather than ~8% — the denominator shrank, not
+this cost). Summary against §10's own four questions, re-asked from scratch against `bd version
+1.1.0 (dev)` and post-`bh-gy7bc` code rather than inherited: (1) the cache invalidates on a bd
+upgrade only, confirmed; (2) `bh doctor` only needs the value when there's a hive to compare
+against — a real gap (the probe fired even with zero local checkouts) fixed in
+`doctor._bd_schema_skew_warnings`, though it doesn't move this repo's own number (20/20
+registered hives have local checkouts); (3) bd's CLI surface as of 1.1.0 still has no way to
+learn `LatestVersion()` without a real database — `bd migrate --inspect`, `bd info --schema`,
+and `bd version --json` all checked fresh, none answer it; (4) filed as a bd-side ask,
+`bh-m8dki`, rather than merely noted. The isolated `bd init` cost re-measured at 5.08–5.13 s
+over 3 runs, same band as §10's 4.7–4.9 s.
+
 ---
 
 ## §11 — Two pipeline shapes, and the first cross-hive bulk read (bh-1qxjn, bh-0gvs3, bh-7fen2)
