@@ -9,6 +9,8 @@ unchanged.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from beadhive import config
 
 _CREWS_CFG = {
@@ -88,3 +90,27 @@ def test_per_hive_crews_override_global():
 
 def test_supervised_when_nothing_configured():
     assert config.work_identity({}, None, "crew/alice")["mode"] == "supervised"
+
+
+# ---- workspace_identity memoization (bh-z31lc) ------------------------------
+
+
+def test_workspace_identity_forks_git_once_per_directory(tmp_path, monkeypatch):
+    """29 `rev-parse --show-toplevel` spawns in one `bh doctor` were mostly re-asks about a
+    directory already asked about. One fork per directory, not one per call."""
+    from beadhive import identity as ident_mod
+
+    ident_mod.workspace_identity.cache_clear()
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(kw.get("cwd"))
+        return SimpleNamespace(returncode=1, stdout="")
+
+    monkeypatch.setattr(ident_mod, "run", fake_run)
+    for _ in range(5):
+        ident_mod.workspace_identity(cwd=str(tmp_path / "a"))
+    for _ in range(5):
+        ident_mod.workspace_identity(cwd=str(tmp_path / "b"))
+    assert len(calls) == 2, f"expected one fork per directory, got {calls}"
+    ident_mod.workspace_identity.cache_clear()

@@ -8,6 +8,7 @@ workspace root is $GIT_WORKSPACE (default ~/workspace); a repo's path under it i
 from __future__ import annotations
 
 import os
+from functools import cache
 from pathlib import Path
 
 from .run import run
@@ -26,8 +27,21 @@ def workspace_root() -> str:
         return os.path.expanduser(root)
 
 
+@cache
 def workspace_identity(cwd=None):
-    """Return (provider, org, repo), or None when outside a managed workspace path."""
+    """Return (provider, org, repo), or None when outside a managed workspace path.
+
+    MEMOIZED PER PROCESS (bh-z31lc). This forks `git rev-parse --show-toplevel` and was the
+    single most-repeated git call on the read path — 29 spawns in one `bh doctor`, most of
+    them re-asking about a directory already asked about. A directory's git toplevel does not
+    change while bh runs: bh never `os.chdir`s (checked — every verb threads `cwd=` instead),
+    and a repo would have to be moved or re-inited underneath a live process to invalidate an
+    entry.
+
+    ponytail: process-lifetime cache with no invalidation. Correct for the CLI, where a
+    process is one verb. A long-lived host daemon that outlives a `git init` would need
+    `workspace_identity.cache_clear()` on that event — there is no such daemon today.
+    """
     res = run(["git", "rev-parse", "--show-toplevel"], check=False, capture=True, cwd=cwd)
     if res.returncode != 0:
         return None

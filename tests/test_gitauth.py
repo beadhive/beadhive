@@ -193,3 +193,44 @@ def test_gitauth_never_writes_global_config(tmp_path, monkeypatch, global_gitcon
     rows = gitauth.group_auth_table({})
     gitauth.group_auth_warnings(rows)
     assert global_gitconfig.read_text() == before
+
+
+# ---- global git-config memoization (bh-z31lc) -------------------------------
+
+
+def test_get_regexp_forks_git_once_per_pattern(monkeypatch):
+    """Each pattern was re-forked 4x in one `bh doctor`. The global git config is a
+    process-wide read-only fact — read it once."""
+    from types import SimpleNamespace
+
+    from beadhive import gitauth as ga
+
+    ga._get_regexp.cache_clear()
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd[-1])
+        return SimpleNamespace(returncode=0, stdout="url.x.insteadof y\n")
+
+    monkeypatch.setattr(ga, "run", fake_run)
+    for _ in range(4):
+        ga.insteadof_aliases()
+    for _ in range(4):
+        ga.includeif_blocks()
+    assert len(calls) == 2, f"expected one fork per pattern, got {calls}"
+    ga._get_regexp.cache_clear()
+
+
+def test_get_regexp_returns_an_immutable_result(monkeypatch):
+    """An lru_cache hands every caller the SAME object — a mutable one would let one caller
+    corrupt the next's view."""
+    from types import SimpleNamespace
+
+    from beadhive import gitauth as ga
+
+    ga._get_regexp.cache_clear()
+    monkeypatch.setattr(
+        ga, "run", lambda *a, **k: SimpleNamespace(returncode=0, stdout="url.x.insteadof y\n")
+    )
+    assert isinstance(ga._get_regexp("whatever"), tuple)
+    ga._get_regexp.cache_clear()

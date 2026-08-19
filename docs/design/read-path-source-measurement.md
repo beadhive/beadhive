@@ -621,3 +621,90 @@ cache defers to the next cold read rather than removes. At ~10 s warm the bindin
 `bd`'s ~278 ms fixed startup, not any one section — and §11 adds a second answer the epic was
 not designed around: a cross-hive dataset that qualifies for shape A stops scaling with fleet
 size without any cache at all. Whoever kicks off `bh-5sizy` answers the premise question first.
+
+---
+
+## §12 — The git inventory: 44% of the spawns are bd's, not bh's (bh-z31lc)
+
+Measured 2026-08-19 on beadhive-factory at `main` `bef62ce`, 20 registered hives / 15 local
+stores. Method: a shim on `$PATH` logging every git invocation's argv, cwd and PARENT PROCESS,
+then exec'ing the real git.
+
+### The premise this bead opened with was wrong in both directions
+
+|  | filed (from bh-b5v4y) | measured now |
+|---|---:|---:|
+| spawns per `bh doctor` | 186 | **278** |
+| per spawn | 6.2 ms | 5.6 ms (50 clean samples, no shim) |
+| total git | ~1.15 s | ~1.56 s |
+| share of a warm run | 1.15 / 45.8 = 2.5% | **1.56 / 9.5 ≈ 16%** |
+
+The denominator shrank 4x while the count grew 1.5x. git went from a rounding error to about a
+sixth of a warm run without anyone adding git calls on purpose. `bh hive ready` contributes 3
+spawns; this is entirely `bh doctor`.
+
+### 44% of them are spawned by bd, inside its own startup
+
+| parent process | spawns |
+|---|---:|
+| `bh` | 156 (56%) |
+| `.bd-wrapped` | **122 (44%)** |
+
+What bd asks git before doing any work, with no `-C` (orienting itself in cwd): 41x
+`rev-parse --git-dir --git-common-dir --show-toplevel`, 26x `config user.name`, plus per-hive
+`-C <hive> rev-parse --show-toplevel` / `--git-dir --git-common-dir`.
+
+**Every bd invocation forks git at least twice before answering anything.** bh cannot remove
+these by restructuring bh. They are the first CAUSE anyone has attached to bh-b5v4y's
+"why does bd cost 278 ms to start" — recorded on that bead, which is where they belong.
+
+### bh's own 156: mostly distinct work, 28% waste
+
+156 spawns / 113 distinct (question, directory) pairs / **43 redundant**. Most of bh's git
+calls are one-per-hive asking a DIFFERENT question — this hive's lease ref, that hive's
+`beads.role`, the other's release tags. That is real work, not duplication.
+
+### What was fixed, and what was measured and deliberately not fixed
+
+**FIXED — 18 spawns, `bh` side 156 → 138 (278 → 260 total):**
+
+- `identity.workspace_identity` (29 → 15, one per directory): `lru_cache`. It forks
+  `rev-parse --show-toplevel` for a fact that cannot change while a verb runs — bh never
+  `os.chdir`s, every verb threads `cwd=` instead.
+- `gitauth._get_regexp` (8 → 2, one per pattern): `lru_cache`. Reads the user's GLOBAL git
+  config, a process-wide read-only fact with no in-process writer. Returns a tuple, because an
+  `lru_cache` hands every caller the same object.
+
+That is ~0.10 s — **below `bh doctor`'s run-to-run noise, and it is not claimed as a wall-time
+win.** The value is that the count stops growing: both were called once per hive by
+construction, so both scaled with the fleet.
+
+A hazard this introduced and closed in the same change: a process-lifetime `lru_cache` leaks
+across tests, where a process runs hundreds of verbs with different fake gits. `conftest.py`'s
+autouse `_clear_git_fact_caches` resets both per test. This is not hypothetical — two
+`test_gitauth` tests passed alone and failed in file order before the fixture existed.
+
+**MEASURED AND NOT FIXED — the duplicate lease probe, 14 spawns / ~0.08 s.**
+`refs/bh/lease/<prefix>` is read twice per prefix because two independent doctor sections each
+need it (traced: `dispatch_status.compute_status_all` and `doctor._data_warnings`, both through
+`guard.primary_state` → `host_lease.read_cached`). Deduplicating means caching a ref that has an
+in-process WRITER (lease adoption), so it needs an invalidation contract across that write path.
+That is real machinery for 78 ms, and a stale lease cache would make a fresh primary look like a
+follower to its own guard. Left alone deliberately; the number is here so nobody has to
+re-measure to make the same call.
+
+### Options rejected, with reasons, so they stay closed
+
+- **`git-workspace run` / `gita`** — both broadcast ONE command across every repo. bh's
+  per-hive calls ask DIFFERENT questions per hive, so a broadcast answers none of them, and
+  neither touches the 44% bd spawns. git-workspace is already a required dependency, so there
+  is no adoption cost being avoided either — it simply does not fit the shape.
+- **A different git implementation or build** — at 5.6 ms/spawn there is nothing to reclaim,
+  and it trades a universally-present system binary for a fleet-wide dependency.
+- **Reading refs without git** — REAL, and measured rather than assumed: a plain stdlib read of
+  `.git/refs` + `packed-refs` returns the IDENTICAL answer in **0.21 ms vs git's 6.23 ms (30x)**,
+  with no `pygit2` and no `dulwich`. Across bh's ref and config questions that is ~0.64 s. Not
+  recommended today: a hand-rolled ref reader must handle packed-refs, `.git` as a FILE for
+  worktrees (this repo has 60+), per-worktree refs, symbolic refs, and concurrent updates.
+  Getting any of those wrong makes doctor report a wrong branch state, which is worse than
+  slow. Revisit only if git's share grows again.
