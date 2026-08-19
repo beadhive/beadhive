@@ -1239,7 +1239,7 @@ def test_data_seats_reads_the_plugin_readiness_hook(monkeypatch):
     )
     monkeypatch.setattr(hitch_plugin, "PLUGIN", fake_plugin)
     d = doctor._data_seats(cfg, full=True)
-    assert d == {"state": "warn", "detail": "dispatcher: cannot run — x"}
+    assert d == {"state": "warn", "detail": "dispatcher: cannot run — x", "seats_checked": True}
 
 
 def test_data_seats_default_skips_the_seat_fanout(monkeypatch):
@@ -1260,7 +1260,25 @@ def test_data_seats_default_skips_the_seat_fanout(monkeypatch):
     assert d == {
         "state": "ok",
         "detail": "hitch on PATH; repo /r; per-seat checks skipped by default",
+        "seats_checked": False,
     }
+
+
+def test_data_seats_marks_seats_checked_true_under_full(monkeypatch):
+    """bh-gqfrm review round 2: `seats_checked` is the machine-readable twin of `full` — a
+    consumer branches on this field instead of string-matching `detail`'s prose. `--seats` (full)
+    flips it to True; the default flips it to False (asserted above)."""
+    cfg = {"hitch": {"enabled": True}}
+    fake_plugin = SimpleNamespace(
+        enabled=lambda cfg, entry: True,
+        readiness=lambda cfg, entry, **kwargs: (
+            "ok",
+            "hitch on PATH; repo /r; seats -\n  x: runnable",
+        ),
+    )
+    monkeypatch.setattr(hitch_plugin, "PLUGIN", fake_plugin)
+    assert doctor._data_seats(cfg, full=True)["seats_checked"] is True
+    assert doctor._data_seats(cfg, full=False)["seats_checked"] is False
 
 
 def test_render_seats_shows_per_seat_breakdown(capsys):

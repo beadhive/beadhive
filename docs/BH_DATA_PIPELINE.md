@@ -389,6 +389,33 @@ The section cost drops to the prerequisite-check floor (sub-millisecond); the ~4
 delta is squarely the removed 7-way preflight fanout, not noise — every one of the 3 interleaved
 pairs showed the same ~4 s gap despite host load moving between runs.
 
+**Review round 2: the human report was fixed, the machine one was not — same defect, different
+reader.** The default `detail` string says the skip out loud, which closes the "silently reports
+less" bar for a human reading `bh doctor`'s text output. But `bh doctor --json` (and the
+byte-identical `beadhive://doctor` MCP resource) carried only `{"state": "ok", "detail": "…"}` —
+before this bead, `state: "ok"` on the `seats` key always meant "every seat was checked and
+runnable"; after it, the same `"ok"` can also mean "seats were never looked at", and nothing but
+prose distinguished the two. An MCP-reading agent is exactly the consumer least equipped to
+notice a changed meaning by string-matching English that was never a contract.
+
+**Fix:** `doctor._data_seats` now always carries `"seats_checked": bool` — literally the
+`full` the caller passed, not re-derived — alongside the existing `state`/`detail`. A consumer
+branches on the field; `detail` stays as the human-readable explanation, unchanged.
+
+Two calls made explicitly rather than left implicit:
+
+1. **No `schema_version` bump.** `jsonout`'s own documented convention: "add a field → same
+   version (consumers ignore unknown keys); remove/retype/re-mean a field → bump." This adds
+   `seats_checked` and leaves `state`/`detail`'s existing shape and meaning untouched, so it's
+   the additive case.
+2. **`state` stays `"ok"` when `seats_checked` is `False`.** It already meant "nothing WRONG in
+   what was checked", not "everything possible was checked", before this bead: an empty
+   `seat_reports()` (no seat-aligned profiles configured at all) has always produced `"ok"` with
+   no per-seat detail either — that ambiguity predates this bead and is out of its scope.
+   Reusing that existing reading for "skipped by request" keeps `state` meaning one thing;
+   `seats_checked` is the new field that answers "how thoroughly", which `state` was never able
+   to answer alone.
+
 ### Reading the table
 
 **Cold and warm are two different programs.** Warm is 9.85 s, and its largest section is `seats`

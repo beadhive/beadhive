@@ -1050,10 +1050,28 @@ def _data_seats(cfg, *, full: bool = False) -> dict | None:
 
     ``full=False`` (the default, bh-gqfrm) skips the 7-way `hitch profile preflight` fanout
     (~2.7s, the largest warm section of `bh doctor` — docs/BH_DATA_PIPELINE.md §4.1) and only
-    checks that hitch itself is usable (on PATH, repo configured, catalog present); the detail
+    checks that hitch itself is usable (on PATH, repo configured, catalog present); the ``detail``
     string says explicitly that per-seat checks were skipped and how to get them (`--seats`), so
-    a clean default report never reads as "and every seat was checked". Pass ``full=True`` for
-    the complete per-seat breakdown (bh doctor --seats)."""
+    a clean HUMAN report never reads as "and every seat was checked". Pass ``full=True`` for the
+    complete per-seat breakdown (bh doctor --seats).
+
+    ``seats_checked`` (bh-gqfrm, review round 2) is the MACHINE-readable twin of that same fact —
+    a bare ``state: "ok"`` cannot distinguish "hitch usable, every seat verified" from "hitch
+    usable, seats never looked at", and `detail` is prose an MCP/JSON consumer should not have to
+    string-match to recover a meaning this payload already knows. It is exactly ``full`` — the
+    caller's own request, not a re-derived guess — so `bh doctor --json` and `--seats --json`
+    always carry a field a consumer can branch on instead of parsing English.
+
+    ``state`` deliberately stays ``"ok"`` when ``seats_checked`` is ``False``: it already meant
+    "nothing WRONG in what was checked", not "everything possible was checked", before this bead
+    — an empty `seat_reports()` (no seat-aligned profiles configured) has always produced
+    ``"ok"`` with no per-seat detail either. Reusing that existing reading for "skipped by
+    request" keeps one meaning for `state` instead of adding a second, and `seats_checked` is the
+    field that now carries the "how thoroughly" question `state` was never able to answer alone.
+
+    No `schema_version` bump (bh-gqfrm): `jsonout`'s own convention is "add a field → same
+    version (consumers ignore unknown keys); remove/retype/re-mean a field → bump" — this only
+    adds `seats_checked` and leaves `state`/`detail`'s existing meaning untouched."""
     if not hitch_plugin.PLUGIN.enabled(cfg, None):
         return None
     result = (
@@ -1064,7 +1082,7 @@ def _data_seats(cfg, *, full: bool = False) -> dict | None:
     if result is None:
         return None
     state, detail = result
-    return {"state": state, "detail": detail}
+    return {"state": state, "detail": detail, "seats_checked": full}
 
 
 def _render_seats(d: dict | None) -> None:
