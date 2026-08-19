@@ -17,6 +17,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -332,6 +333,77 @@ def _section_worktrees(cfg):
 
 # ---- molecule branches section ----------------------------------------------
 
+# Bead-id charset observed across the live corpus (bh-xi0m1 review): lowercase
+# letters/digits, hyphen-joined words (`bh-merge-slot`), dot-joined child suffixes
+# (`bh-5sizy.3`). Epic ids come from git branch names — free text a hostile branch
+# could set to something like `bh-x\` to break out of the quoted string literal this
+# server treats backslash as an escape in (no NO_BACKSLASH_ESCAPES sql_mode). Anything
+# outside this charset is dropped rather than quoted, so nothing unvetted reaches the
+# query text — same rule as store_locator.sanitize_database_name / bulk_schema_versions.
+_EPIC_ID_RE = re.compile(r"[a-z0-9]+(?:[-.][a-z0-9]+)*")
+
+
+def _bulk_epic_closed(
+    candidates: list[tuple[dict, Path, str]], prefix: str
+) -> dict[tuple[str, str], bool]:
+    """SHAPE A (bh-xi0m1) for stage 2: every server-mode hive's epic-closed check in ONE
+    cross-database query, keyed by ``(str(hive_dir), branch)`` so the per-item fallback below
+    can thread the answer straight in — the same ``probed=`` shape
+    ``dolt_health.bulk_schema_versions`` -> ``hive_schema.refresh_with_detail`` uses.
+
+    CLASSIFICATION (fleet.py's step 2, done here rather than assumed): `bh bd sql -q "DESCRIBE
+    issues"` shows `status` as a plain, indexed `varchar(32)` column with `Extra: ""` — no
+    generated/virtual expression — and `bd close` mutates it directly. Nothing server-side
+    derives it, so this is the same value `bd show` already reads, asked once per hive instead
+    of once per branch. `fleet.py` itself names `issues.status` as the canonical shape-A stored
+    column.
+
+    PARTIAL BY CONSTRUCTION, like `bulk_schema_versions`: embedded-mode hives have no database
+    on the shared server to qualify (`bd sql` refuses them outright), so they're excluded here
+    and the caller falls back to the per-hive `bd show` path for them — same for a hive whose
+    recorded database name doesn't round-trip through `sanitize_database_name` (unrecorded or
+    unsafe), or an epic id outside `_EPIC_ID_RE` (branch names are free text, so a hostile one
+    falls back to shape B rather than being quoted into the query). A missing key means
+    UNANSWERED, never "open"."""
+    server_items = [
+        (e, main, branch)
+        for e, main, branch in candidates
+        if not store_locator.is_embedded_mode(main)
+    ]
+    if not server_items:
+        return {}
+    by_db: dict[str, tuple[Path, list[tuple[Path, str, str]]]] = {}
+    for _e, main, branch in server_items:
+        db = store_locator.recorded_server_database(main)
+        if not db or db != store_locator.sanitize_database_name(db):
+            continue  # unrecorded / unsafe name — falls back to shape B for this branch
+        epic_id = branch[len(prefix) :]
+        if not _EPIC_ID_RE.fullmatch(epic_id):
+            continue  # outside the vetted charset — falls back to shape B for this branch
+        by_db.setdefault(db, (main, []))[1].append((main, branch, epic_id))
+    if not by_db:
+        return {}
+    conn = next(iter(by_db.values()))[0]
+    clauses = []
+    for db, (_main, rows) in by_db.items():
+        ids = sorted({eid for _m, _b, eid in rows})
+        quoted = ",".join("'" + i.replace("'", "''") + "'" for i in ids)
+        clauses.append(f"SELECT '{db}' AS db, id, status FROM {db}.issues WHERE id IN ({quoted})")
+    rows = fleet.sql_rows(fleet.sql(conn, " UNION ALL ".join(clauses)))
+    if not isinstance(rows, list):
+        return {}
+    status_by_db_id = {
+        (str(r["db"]), str(r["id"])): r.get("status") == "closed"
+        for r in rows
+        if isinstance(r, dict) and "db" in r and "id" in r
+    }
+    return {
+        (str(main), branch): status_by_db_id[(db, epic_id)]
+        for db, (_main, rows) in by_db.items()
+        for main, branch, epic_id in rows
+        if (db, epic_id) in status_by_db_id
+    }
+
 
 def _orphan_container_branches(cfg):
     """Container branches `wt/bead/epic/<epic>` whose epic is closed — i.e. a molecule landed but
@@ -343,7 +415,10 @@ def _orphan_container_branches(cfg):
 
     def _branches(e) -> list[tuple[dict, Path, str]]:
         """One hive's container branches. Cheap (bh-7fen2 measured 20 for-each-ref at 0.12s
-        total) — fanned out only so the expensive per-branch stage below gets a flat list."""
+        total) — fanned out only so the expensive per-branch stage below gets a flat list.
+        STAYS SHAPE B (bh-xi0m1): this is per-hive git, not a bead-store read at all, so no
+        bulk query covers it — fleet.py's shape A is scoped to reads the shared Dolt server can
+        answer, and a local `refs/heads/...` listing isn't one."""
         main = registry.hive_dir(e)
         res = run(
             [
@@ -361,17 +436,26 @@ def _orphan_container_branches(cfg):
             return []
         return [(e, main, branch) for branch in (res.stdout or "").split()]
 
-    def _closed(item: tuple[dict, Path, str]) -> tuple[str, str] | None:
-        _e, main, branch = item
-        bead = bd.show(branch[len(prefix) :], main)
-        return (str(_e["prefix"]), branch) if bead and bead.get("status") == "closed" else None
-
-    # THE COST IS THE SECOND STAGE: 11 `bd show` at 2.16s vs 20 `for-each-ref` at 0.12s
-    # (bh-7fen2). SHAPE B (`fleet.fanout`) for both — `bd show` reads a bead's full record
-    # through bd, and the branch list is per-hive git, neither of which the bulk shape covers.
-    # Both stages preserve input order, so `orphans` stays in registry order.
     entries = cfg.get("managed_repos", []) or []
     candidates = [item for group in fleet.fanout(_branches, entries) for item in group]
+
+    # SHAPE A (bh-xi0m1): resolves every server-mode hive's epic-closed check in ONE query.
+    bulk = _bulk_epic_closed(candidates, prefix)
+
+    def _closed(item: tuple[dict, Path, str]) -> tuple[str, str] | None:
+        e, main, branch = item
+        answer = bulk.get((str(main), branch))
+        if answer is None:
+            # unanswered by the bulk pass (embedded-mode hive, or excluded above) — SHAPE B
+            # fallback, same as before this bead.
+            bead = bd.show(branch[len(prefix) :], main)
+            answer = bool(bead and bead.get("status") == "closed")
+        return (str(e["prefix"]), branch) if answer else None
+
+    # Only items the bulk pass left unanswered still spawn a `bd show`; everything else is a
+    # dict lookup inside `_closed`. SHAPE B (`fleet.fanout`) still runs over every candidate so
+    # order is preserved (`orphans` stays in registry order) — bulk-answered items just return
+    # instantly instead of forking a process.
     return [hit for hit in fleet.fanout(_closed, candidates) if hit is not None]
 
 
