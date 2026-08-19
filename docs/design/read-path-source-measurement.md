@@ -530,10 +530,10 @@ Before this work, every cross-hive read invented its own concurrency: five hand-
 **two** shapes and the rule for choosing between them, so a sixth dataset has something to be
 added to instead of inventing a seventh:
 
-* **Shape A — bulk cross-hive read** (`fleet.sql` / `fleet.sql_rows`). ONE `bd sql` against the
+- **Shape A — bulk cross-hive read** (`fleet.sql` / `fleet.sql_rows`). ONE `bd sql` against the
   shared Dolt server, reading every hive's database by qualified name. Cost does NOT scale with
   fleet size. Sound only for a stored column or a server-side view.
-* **Shape B — bounded per-hive fan-out** (`fleet.fanout`). N calls under a worker cap. Cost
+- **Shape B — bounded per-hive fan-out** (`fleet.fanout`). N calls under a worker cap. Cost
   still scales with fleet size, divided by the cap. Required whenever A is unsound, and for
   anything that is not a bead-store read at all.
 
