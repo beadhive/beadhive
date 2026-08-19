@@ -79,7 +79,6 @@ import socket
 import tempfile
 import uuid
 from dataclasses import dataclass
-from functools import cache
 from pathlib import Path
 
 from . import config, fleet, store_locator
@@ -416,18 +415,33 @@ def _local_cache_path() -> Path:
     return config.cache_dir() / _LOCAL_VERSION_CACHE_FILENAME
 
 
-@cache
-def _local_bd_version_string(*, timeout: float) -> str | None:
-    """The local bd binary's `--version` line, memoized for the process.
-
-    `bh doctor` asked for it 12 times in one warm run with identical argv and cwd — 1.30 s of
-    pure repetition (bh-i6e5g's measurement). The binary cannot change mid-process, so the
-    second answer is the first one."""
+def _read_local_bd_version_string(timeout: float) -> str | None:
+    """One `bd --version`. Not called directly — go through :func:`_local_bd_version_string`."""
     res = run(["bd", "--version"], check=False, capture=True, timeout=timeout)
     if res.returncode != 0:
         return None
     out = (res.stdout or res.stderr or "").strip()
     return out or None
+
+
+# SHAPE H (`fleet.once`, bh-w49zv): the local bd binary's version is a HOST-GLOBAL fact — it
+# takes no hive, resolves no cwd, and cannot differ between iterations of anything.
+#
+# THIS WAS `@cache` AND THAT WAS DEFEATED (bh-gy7bc). bh-i6e5g added the memo against a
+# SEQUENTIAL loop and measured 12 spawns -> 1. bh-ti7ws then made that loop concurrent, and
+# `functools.cache` has no stampede protection: all 15 pool workers missed and all 15 forked
+# `bd`, while this docstring went on claiming "the second answer is the first one". Measured
+# warm AND cold on the reference host: 15 invocations at 233-255 ms.
+#
+# `fleet.once` holds a lock across the miss, so N concurrent callers produce ONE `bd --version`.
+#
+# WHY A MEMO HERE RATHER THAN THE HOIST shape H prefers: the value is consumed three call levels
+# below the pool boundary (`fanout` -> `_probe` -> `hive_schema.refresh_with_detail` ->
+# `local_bd_schema_version`), and threading it down would change two public signatures for an
+# identical observable result. The hoist is still the right default — see `fleet.py`'s shape H.
+_local_bd_version_string = fleet.once(
+    lambda: _read_local_bd_version_string(DEFAULT_SCHEMA_PROBE_TIMEOUT)
+)
 
 
 def _read_local_cache() -> dict:
@@ -500,7 +514,12 @@ def local_bd_schema_version(*, timeout: float = SCRATCH_INIT_TIMEOUT) -> SchemaP
     exact output, so the (relatively expensive — a real `bd init`) scratch probe only runs once
     per bd binary rather than once per invocation; a `brew upgrade beads` changes the version
     string and naturally invalidates the cache."""
-    version_string = _local_bd_version_string(timeout=timeout)
+    # No `timeout=` argument: shape H, one host-global question with one bound. Passing the
+    # caller's timeout through was a SECOND bug in the old `@cache` version — it keyed the memo
+    # on the bound, so the 15 s caller (`hive_schema`) and the 30 s caller (here) each got their
+    # own entry and `bd --version` ran at least twice even without a pool. `bd --version`
+    # measures at ~233 ms; the tighter bound is the right one for both.
+    version_string = _local_bd_version_string()
     if version_string is None:
         return SchemaProbeResult(None, "bd is not available (`bd --version` failed)")
     cache = _read_local_cache()

@@ -708,3 +708,108 @@ re-measure to make the same call.
   worktrees (this repo has 60+), per-worktree refs, symbolic refs, and concurrent updates.
   Getting any of those wrong makes doctor report a wrong branch state, which is worse than
   slow. Revisit only if git's share grows again.
+
+---
+
+## §13 — Shape H, and the audit of every process-lifetime memo (bh-w49zv, bh-gy7bc)
+
+§11 named two shapes for a cross-hive dataset and **both were per-hive**. An author holding a
+fact that does not vary by hive was told to pick A or B, and both are wrong for such a value.
+That omission had a measured consequence: `bd --version` — which takes no hive, resolves no cwd,
+and cannot differ between iterations — was forked **15 times per `bh doctor` run**.
+
+### The third shape
+
+- **Shape H — a host-global fact.** Resolved ONCE per process. The cheapest correct code for one
+  has no cache in it at all: hoist the value out of the loop and pass it in
+  (`hive_schema.refresh_with_detail(probed=…)` is the worked example). `fleet.once` is the
+  fallback for when the value is consumed several call levels below the pool boundary and
+  threading it would change signatures that exist for other reasons.
+
+The choosing rule now asks **"does this fact vary by hive at all?" FIRST**, before the A-vs-B
+classification, because that is the question whose omission caused the defect.
+
+### Why `functools.cache` could not be the answer
+
+`functools.cache` / `lru_cache` have no stampede protection. Measured:
+
+```text
+@cache under a 15-way pool: underlying function ran 15 times (want 1)
+@cache called sequentially : underlying function ran  1 times
+```
+
+This is exactly how the memo was defeated. `bh-i6e5g` added `@cache` to
+`_local_bd_version_string` against a **sequential** loop and measured 12 spawns → 1. `bh-ti7ws`
+then made that loop concurrent, all 15 workers missed together, and the docstring went on
+claiming "the second answer is the first one" for as long as it was false. **Making fan-out the
+house pattern is what armed the trap**, so the guard lives next to the shape: `fleet.once`, a
+double-checked lock that does not cache a raised exception (a cached failure would turn one
+transient probe failure into a permanently wrong answer for the process's life).
+
+A test pins the reason `fleet.once` exists by asserting that the same pool test **fails** against
+`functools.cache` — if the stdlib ever grows stampede protection, that test tells us to delete
+`once`.
+
+### A second bug in the same function, found while fixing the first
+
+The old `@cache` was keyed on a `timeout=` keyword, and the two callers passed **different**
+bounds (15 s from `hive_schema`, 30 s from `local_bd_schema_version`). One host-global question
+therefore had two cache entries, so `bd --version` ran at least twice **even without a pool**.
+`fleet.once` is zero-argument on purpose: if a value varies by anything, it is not shape H.
+
+### Result
+
+| | before | after |
+|---|---:|---:|
+| `bd --version` per `bh doctor` | 15 | **2** |
+| total `bd` invocations (warm) | 57 | **47** |
+
+The residual 2 is not a leak: one is the schema-version read through `fleet.once` (verified as
+exactly **1** by an in-process trace), and one is `deps.probe_one`'s dependency detection, a
+separate call site with a different purpose that `run.py`'s own routing inventory deliberately
+keeps unrouted.
+
+**No wall-clock claim.** The 15 forks overlapped inside the pool, so removing 13 of them returns
+process count and host load, not seconds.
+
+### The audit: every process-lifetime memo under `src/`
+
+Three exist. Each is classified for pool reachability, because "believed safe" is what this bead
+exists to stop trusting:
+
+| memo | shape | pool-reachable? | verdict |
+|---|---|---|---|
+| `dolt_health._local_bd_version_string` | H | **YES** — `fleet.fanout` → `_probe` → `hive_schema.refresh_with_detail` | **was defeated**; now `fleet.once` |
+| `identity.workspace_identity` | H per directory | No — only `bd.create` / `bd.import_`, both write paths | `@cache` retained; re-audit if a read path calls it |
+| `gitauth._get_regexp` | H | No — `doctor`'s `group_auth` section, serial | `@cache` retained; re-audit if it moves into a pool |
+
+The two retained ones were fixed by `bh-z31lc` **per-site rather than from a rule**, which is
+precisely the pattern this bead exists to replace. They are correct today and their safety is
+now written down rather than assumed.
+
+### Dataset classification: A / B / H
+
+| dataset | shape | why |
+|---|---|---|
+| `bd --version` | **H** | host-global; the defect above |
+| `git config --global --get-regexp` ×8 | **H** | host-global; already memoized (`bh-z31lc`) |
+| local bd schema version | **H** | host-global; file-cached, correct |
+| `bd config get issue_prefix` ×14 | B | genuinely per-hive (shape-A retest: `bh-a8sox`) |
+| `bd dolt status` ×15 | B | genuinely per-hive |
+| `bd show <epic>` ×10 | B | genuinely per-hive (shape-A retarget: `bh-xi0m1`) |
+| `channels.scan` release tags ×15 | B | genuinely per-hive — **each repo's OWN tags. CHECKED and ruled out; do not re-derive.** |
+| `systemctl is-enabled/is-active` ×28 | B | genuinely per-hive UNIT NAMES — see below |
+
+### The systemctl question, answered
+
+`systemctl` **does** accept multiple units per invocation — its own man page documents
+`is-enabled UNIT...` and `is-active PATTERN...`, printing one state line per unit. So bh's 28
+single-unit calls could be 2.
+
+**Not done here, and the reason is a finding of its own.** On this host those 28 calls measure at
+~9.6 ms each *because they fail immediately*: `systemctl --user` cannot reach a session bus
+(`DBUS_SESSION_BUS_ADDRESS` and `XDG_RUNTIME_DIR` unset in this environment), so every one
+returns without doing work. Batching a call that is currently a no-op would optimise a
+measurement artefact. The real question — what these cost on a host where the user bus works,
+and whether bh should be probing units it cannot reach at all — needs measuring somewhere the
+call actually functions. Recorded rather than guessed at.
