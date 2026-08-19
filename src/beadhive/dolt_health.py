@@ -79,6 +79,7 @@ import socket
 import tempfile
 import uuid
 from dataclasses import dataclass
+from functools import cache
 from pathlib import Path
 
 from . import config, store_locator
@@ -374,7 +375,13 @@ def _local_cache_path() -> Path:
     return config.cache_dir() / _LOCAL_VERSION_CACHE_FILENAME
 
 
+@cache
 def _local_bd_version_string(*, timeout: float) -> str | None:
+    """The local bd binary's `--version` line, memoized for the process.
+
+    `bh doctor` asked for it 12 times in one warm run with identical argv and cwd — 1.30 s of
+    pure repetition (bh-i6e5g's measurement). The binary cannot change mid-process, so the
+    second answer is the first one."""
     res = run(["bd", "--version"], check=False, capture=True, timeout=timeout)
     if res.returncode != 0:
         return None

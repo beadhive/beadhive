@@ -396,7 +396,13 @@ def _data_prefix_mismatches(cfg) -> list[dict]:
 
     Only checked for hives with a local checkout carrying `.beads/` — a missing checkout or an
     unreadable issue_prefix is silently skipped here (the generic Warnings section already flags
-    a missing checkout; there is nothing to compare without one)."""
+    a missing checkout; there is nothing to compare without one).
+
+    STILL ONE `bd` SPAWN PER HIVE, deliberately (bh-i6e5g): its two sibling sections dropped
+    theirs by reading `.beads/config.yaml` / git config directly, but `issue_prefix` lives in
+    the dolt `config` TABLE, not in any file bh can read — measured, not assumed. Nothing on
+    disk carries it (`.beads/metadata.json` records engine/database, not the prefix), so asking
+    the store is the floor here until the read-path cache (bh-13spb) covers it."""
     root = Path(workspace_root())
     mismatches = []
     for e in cfg.get("managed_repos", []) or []:
@@ -467,8 +473,10 @@ def _data_node_id(cfg) -> dict:
         if not (path / ".beads").is_dir():
             continue
         probe_cwd = probe_cwd or path
-        remote = bd.json(["config", "get", "sync.remote"], path)
-        if isinstance(remote, dict) and str(remote.get("value") or "").strip():
+        # `bd.sync_remote` reads `.beads/config.yaml` directly — the same answer `bd config get
+        # sync.remote --json` gave, without the ~470 ms process start it charged per hive
+        # (bh-i6e5g: 15 of those spawns were 7.0 s of a 46 s warm doctor).
+        if bd.sync_remote(path):
             remote_hives.append(f"{e['provider']}/{e['org']}/{e['repo']}")
 
     env_value = os.environ.get("BEADS_NODE_ID", "").strip()
@@ -525,9 +533,11 @@ def _data_beads_role(cfg) -> list[dict]:
     happens to be sitting in — that misreport (bh-s08me evidence #5) is exactly the bug this
     function used to have.
 
-    `pin_process_cwd=True`: `beads.role` is git-config-backed, and `bd -C <path>` alone
-    resolves git config off the process's REAL cwd, not `-C`'s target — every hive but the one
-    `bh doctor` happens to run from would otherwise report the RUNNER's own value (bh-s08me)."""
+    The read goes through `bd.beads_role`, which asks git for the git-config-backed key
+    directly (6 ms) instead of paying a ~470 ms `bd config get` per hive (bh-i6e5g). Its
+    process cwd is pinned to the hive exactly as `bd.run(pin_process_cwd=True)` pinned it:
+    `-C <path>` ALONE resolves git config off the process's REAL cwd, so every hive but the one
+    `bh doctor` runs from would otherwise report the RUNNER's own value (bh-s08me)."""
     findings = []
     for e in cfg.get("managed_repos", []) or []:
         path = registry.hive_dir(e)
@@ -545,10 +555,9 @@ def _data_beads_role(cfg) -> list[dict]:
                 }
             )
             continue
-        current = bd.json(["config", "get", "beads.role"], path, pin_process_cwd=True)
-        if not isinstance(current, dict):
+        actual = bd.beads_role(path)
+        if actual is None:  # unreadable (not a git repo, no git) — same skip as before
             continue
-        actual = str(current.get("value") or "").strip()
         if actual == expected:
             continue
         findings.append(

@@ -173,6 +173,65 @@ def store_prefix(cwd) -> str:
     return str(data.get("issue_prefix") or "").strip()
 
 
+#: The store's own settings file, the one bd resolves `sync.remote` (and friends) from.
+_CONFIG_YAML_REL = Path(".beads") / "config.yaml"
+
+
+def config_yaml(cwd) -> dict:
+    """`<cwd>/.beads/config.yaml` as a dict, or {} when absent/unreadable/not a mapping.
+
+    A PURE FILE OP, no subprocess — the discipline `store_locator` already keeps for metadata,
+    applied to the settings bd persists in a plain YAML file. `bd config get <key> --json`
+    answers the same question through a ~250 ms process start (bh-i6e5g measured 15 of them at
+    7.0 s for ONE key; reading all 15 files with `yaml.safe_load` measured 44 ms).
+
+    Only for keys bd stores IN this file. `issue_prefix` lives in the dolt `config` TABLE and is
+    NOT here — that one still needs :func:`store_prefix`."""
+    import yaml  # lazy: a plain `bd` passthrough shouldn't pay the yaml import
+
+    try:
+        data = yaml.safe_load(Path(cwd).joinpath(_CONFIG_YAML_REL).read_text())
+    except (OSError, ValueError, yaml.YAMLError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def sync_remote(cwd) -> str:
+    """The Dolt sync remote wired for the store at *cwd*, or "" when none is.
+
+    Read off `.beads/config.yaml` (see :func:`config_yaml`). bd writes the key FLAT
+    (`sync.remote: "git+ssh://…"`); the nested `sync: {remote: …}` spelling is accepted too so a
+    hand-edited file reads the same way bd's own dotted-key lookup would."""
+    data = config_yaml(cwd)
+    value = data.get("sync.remote")
+    if value is None and isinstance(data.get("sync"), dict):
+        value = data["sync"].get("remote")
+    return str(value or "").strip()
+
+
+def beads_role(cwd) -> str | None:
+    """`beads.role` for the hive at *cwd* — "" when unset, None when it cannot be read.
+
+    Git-config-backed (bd's own `config get beads.role` reports `"location": "git config"`), so
+    this asks git directly: one 6 ms `git` spawn instead of a ~470 ms `bd` one (bh-i6e5g).
+
+    THE SCOPING IS THE WHOLE POINT (bh-s08me): the child gets BOTH `-C <cwd>` and its real
+    process cwd pinned to *cwd*, which is what `bd.run(pin_process_cwd=True)` does and what
+    `bd -C <path>` alone does NOT — under `-C` alone every hive but the one the runner happens
+    to sit in reports the RUNNER's value. None (not "") when git could not answer AT ALL —
+    exit 1 is git's "no such key" (so: unset, reportable drift), while 127/other is a git that
+    did not run, which is not a fact about the hive and must not be reported as one."""
+    res = _run(
+        ["git", "-C", str(cwd), "config", "--get", "beads.role"],
+        cwd=str(cwd),
+        check=False,
+        capture=True,
+    )
+    if res.returncode == 0:
+        return (res.stdout or "").strip()
+    return "" if res.returncode == 1 else None
+
+
 def triplet_label_args(cwd) -> list[str]:
     """`-l provider:…,org:…,repo:…` for `cwd`'s managed identity, or [] outside one.
 
