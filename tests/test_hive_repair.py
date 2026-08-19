@@ -189,6 +189,10 @@ def test_repair_requires_exactly_one_mode(hive):
     with pytest.raises(typer.Exit) as exc:
         hive_repair.repair(hive="", prefix="newpre", node_id=True, yes=True, dry_run=False)
     assert exc.value.exit_code == 1
+    # the fourth mode counts too (bh-td8t9) — two modes is still exactly-one-mode's error
+    with pytest.raises(typer.Exit) as exc:
+        hive_repair.repair(hive="", role=True, server_database=True, yes=True, dry_run=False)
+    assert exc.value.exit_code == 1
 
 
 # ---- expected_role (bh-f3blt) -----------------------------------------------
@@ -460,3 +464,63 @@ def test_sync_remote_reads_config_yaml_without_a_subprocess(tmp_path, monkeypatc
     (bare / ".beads" / "config.yaml").write_text("# nothing wired\n")
     assert bd_mod.sync_remote(bare) == ""
     assert bd_mod.sync_remote(tmp_path / "nosuchhive") == ""  # absent file, not a crash
+
+
+# ---- --server-database mode (bh-td8t9) --------------------------------------
+
+
+def _write_meta(hive_dir, **keys):
+    import json
+
+    (hive_dir / ".beads" / "metadata.json").write_text(json.dumps(keys, indent=2) + "\n")
+
+
+def _recorded(hive_dir):
+    from beadhive import store_locator
+
+    return store_locator.recorded_server_database(hive_dir)
+
+
+def test_repair_server_database_records_the_name_already_resolved(hive, capsys):
+    """The grandfather clause resolves `dolt_database` for a keyless server-mode hive; the
+    repair must WRITE THAT DOWN, not derive a new name from the prefix (bh-4o07n's regression)."""
+    _write_meta(hive.main, dolt_mode="server", dolt_database="observaloop")
+    hive_repair.repair(hive="", server_database=True, yes=True, dry_run=False)
+    assert _recorded(hive.main) == "observaloop"  # NOT the "mr" prefix
+    assert "dolt_server_database recorded" in capsys.readouterr().out
+
+
+def test_repair_server_database_is_idempotent(hive, capsys):
+    _write_meta(hive.main, dolt_mode="server", dolt_database="beads", dolt_server_database="bh")
+    hive_repair.repair(hive="", server_database=True, yes=True, dry_run=False)
+    assert _recorded(hive.main) == "bh"
+    assert "already recorded" in capsys.readouterr().out
+
+
+def test_repair_server_database_skips_an_embedded_hive(hive, capsys):
+    _write_meta(hive.main, dolt_mode="embedded", dolt_database="beads")
+    hive_repair.repair(hive="", server_database=True, yes=True, dry_run=False)
+    assert _recorded(hive.main) == ""  # never given a spurious key
+    assert "does not apply" in capsys.readouterr().out
+
+
+def test_repair_server_database_dry_run_writes_nothing(hive, capsys):
+    _write_meta(hive.main, dolt_mode="server", dolt_database="nvhack")
+    hive_repair.repair(hive="", server_database=True, yes=False, dry_run=True)
+    assert _recorded(hive.main) == ""
+    assert "dry-run" in capsys.readouterr().out
+
+
+def test_repair_server_database_refuses_without_yes(hive):
+    _write_meta(hive.main, dolt_mode="server", dolt_database="nvhack")
+    with pytest.raises(typer.Exit):
+        hive_repair.repair(hive="", server_database=True, yes=False, dry_run=False)
+    assert _recorded(hive.main) == ""
+
+
+def test_repair_server_database_refuses_unknown_dolt_mode(hive):
+    """Unknown mode is not 'embedded' — recording a server database for it would be a guess."""
+    _write_meta(hive.main, dolt_database="beads")
+    with pytest.raises(typer.Exit):
+        hive_repair.repair(hive="", server_database=True, yes=True, dry_run=False)
+    assert _recorded(hive.main) == ""

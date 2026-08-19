@@ -82,7 +82,7 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
-from . import config, store_locator
+from . import config, fleet, store_locator
 from .run import ps_argv, run
 
 # bd's own shared-server defaults (internal/doltserver/doltserver.go) — read-only CONSTANTS
@@ -808,3 +808,59 @@ def schema_skew_advisory(
         f"advanced past what this bd supports. Detection only — nothing was migrated, pinned, "
         f"or blocked."
     )
+
+
+# ---- shape A: every server-mode hive's schema version in ONE query (bh-0gvs3) ---------------
+# CLASSIFICATION, per fleet.py's rule — do this before writing SQL, not after:
+#   `schema_migrations` is a STORED TABLE in each hive's own database, and the per-hive probe
+#   (`probe_server_schema_version`) ALREADY reads it with `bd sql`. There is no bd-side
+#   derivation layered on top — `MAX(version)` is the value, whether asked once per hive or
+#   once for all of them. So shape A applies with no reimplementation risk at all: this is the
+#   same query, asked from one connection instead of N.
+# NOT COVERED, deliberately: embedded-mode hives. They have no database on the shared server to
+# qualify, and bd refuses `bd sql` for them outright (module docstring finding 3). They stay on
+# `probe_embedded_schema_version` under shape B — which is why this returns a PARTIAL map and
+# the caller must fall back per hive, never treat a missing key as "unknown version".
+
+
+def bulk_schema_versions(
+    targets: list[tuple[Path, str]], *, timeout: float = DEFAULT_SCHEMA_PROBE_TIMEOUT
+) -> dict[Path, SchemaProbeResult]:
+    """One cross-database query for every ``(hive_dir, database)`` in *targets*.
+
+    Returns a map for the hives that answered. A hive missing from the map is UNANSWERED, not
+    "unknown" — the caller falls back to the per-hive probe for it. An outright query failure
+    returns ``{}`` so the whole pass falls back, which is the safe direction: a slow correct
+    read beats a fast empty one.
+
+    Only server-mode hives with a resolvable database name belong in *targets*; see the
+    classification note above.
+    """
+    if not targets:
+        return {}
+    # A qualified name is an identifier, not a bind parameter — `bd sql -q` takes one string.
+    # Database names come from `.beads/metadata.json`, not user input, and are constrained to
+    # the identifier charset by `store_locator.sanitize_database_name`; anything outside it is
+    # dropped rather than quoted, so nothing unvetted reaches the query text.
+    safe = [(d, db) for d, db in targets if db and db == store_locator.sanitize_database_name(db)]
+    if not safe:
+        return {}
+    query = " UNION ALL ".join(
+        f"SELECT '{db}' AS db, MAX(version) AS max_version FROM {db}.schema_migrations"
+        for _dir, db in safe
+    )
+    rows = fleet.sql_rows(fleet.sql(safe[0][0], query, timeout=timeout))
+    if not isinstance(rows, list):
+        return {}
+    by_db = {
+        str(r["db"]): r.get("max_version")
+        for r in rows
+        if isinstance(r, dict) and "db" in r and isinstance(r.get("max_version"), int)
+    }
+    return {
+        hive_dir: SchemaProbeResult(
+            by_db[db], f"read via ONE cross-database `bd sql` over {len(safe)} hives ({db})"
+        )
+        for hive_dir, db in safe
+        if db in by_db
+    }

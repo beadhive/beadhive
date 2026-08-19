@@ -124,6 +124,13 @@ def sanitize_database_name(name: str) -> str:
     return f"db_{out}" if out[:1].isdigit() else out
 
 
+def recorded_server_database(hive_dir: Path) -> str:
+    """The ``dolt_server_database`` key AS RECORDED, or ``""`` when absent — deliberately NOT
+    :func:`server_database`, which falls back to a derivation. Callers that must distinguish
+    "written down" from "resolves to" (``hive_repair``'s backfill, bh-td8t9) need this one."""
+    return str(_read_metadata(hive_dir).get(SERVER_DATABASE_KEY) or "")
+
+
 def server_database(hive_dir: Path, fallback: str = "") -> str:
     """Which database bd's SHARED SERVER opens for ``hive_dir`` — a DIFFERENT fact from
     :func:`dolt_database`, and deliberately a different metadata key (bh-g5ujg).

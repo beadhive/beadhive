@@ -27,7 +27,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, host, registry
+from . import bd, config, host, registry, store_locator
 from .identity import resolve_actor
 
 _HIVE = typer.Option("", "--hive", help="target hive (default: cwd's hive)")
@@ -429,19 +429,119 @@ def _repair_role(cfg, hive: str, yes: bool, dry_run: bool) -> None:
     typer.echo("✓ beads.role set")
 
 
+# ---- server-database mode (bh-td8t9) ----------------------------------------
+# A server-mode hive with no `dolt_server_database` key still RESOLVES a name — `store_locator
+# .server_database`'s order-2 grandfather clause falls back to `dolt_database`. That derivation
+# is what bh-g5ujg's rule exists to stop: re-derivation is how an already-migrated hive gets
+# "corrected" onto a name its store isn't under (bh-4o07n). This mode RECORDS the name the hive
+# already resolves today — it never picks a new one, so applying it can't move a working hive.
+
+
+@dataclass
+class ServerDatabasePlan:
+    entry: dict
+    cwd: Path
+    embedded: bool
+    current: str
+    target: str
+
+    @property
+    def in_sync(self) -> bool:
+        """Nothing to do — either already recorded, or embedded (which must NOT get the key)."""
+        return self.embedded or self.current == self.target
+
+
+def detect_server_database(cfg, hive: str) -> ServerDatabasePlan:
+    entry = _resolve_entry(cfg, hive)
+    cwd = registry.hive_dir(entry)
+    if not (cwd / ".beads").is_dir():
+        raise RepairError(f"{cwd} has no .beads/ — clone/init the hive before repairing it")
+    if store_locator.dolt_mode(cwd) is None:
+        raise RepairError(
+            f"{cwd}/.beads/metadata.json records no dolt_mode — unknown is not 'embedded', and "
+            "recording a server database for a store whose mode is unreadable would be a guess"
+        )
+    embedded = store_locator.is_embedded_mode(cwd)
+    return ServerDatabasePlan(
+        entry=entry,
+        cwd=cwd,
+        embedded=embedded,
+        current=store_locator.recorded_server_database(cwd),
+        # The name the hive resolves TODAY, not a fresh derivation — see the module note above.
+        target="" if embedded else store_locator.server_database(cwd),
+    )
+
+
+def apply_server_database(plan: ServerDatabasePlan) -> list[str]:
+    if plan.in_sync:
+        return []
+    store_locator.ensure_server_database_persisted(plan.cwd, plan.target)
+    return [f"dolt_server_database: '{plan.current}' -> '{plan.target}'"]
+
+
+def verify_server_database(plan: ServerDatabasePlan) -> list[str]:
+    recorded = store_locator.recorded_server_database(plan.cwd)
+    if plan.embedded:
+        if not recorded:
+            return []
+        return [f"embedded hive carries a spurious dolt_server_database '{recorded}'"]
+    if recorded == plan.target:
+        return []
+    return [f"dolt_server_database did not converge to '{plan.target}'"]
+
+
+def _repair_server_database(cfg, hive: str, yes: bool, dry_run: bool) -> None:
+    try:
+        plan = detect_server_database(cfg, hive)
+    except RepairError as e:
+        typer.echo(f"✗ {e}", err=True)
+        raise typer.Exit(1) from None
+
+    e = plan.entry
+    typer.echo(f"Hive: {e['provider']}/{e['org']}/{e['repo']}")
+    if plan.embedded:
+        typer.echo("\n✓ embedded-mode hive — dolt_server_database does not apply, nothing to do")
+        return
+    typer.echo(f"dolt_server_database: '{plan.current}' -> '{plan.target}'")
+    if plan.in_sync:
+        typer.echo("\n✓ dolt_server_database already recorded — nothing to repair")
+        return
+    if dry_run:
+        typer.echo("\n(dry-run: no changes made — pass --yes to apply)")
+        return
+    if not yes:
+        typer.echo(
+            "\n✗ refusing to write dolt_server_database without --yes; pass --yes to confirm",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    apply_server_database(plan)
+    problems = verify_server_database(plan)
+    if problems:
+        for p in problems:
+            typer.echo(f"  - {p}", err=True)
+        typer.echo("✗ repair wrote metadata but dolt_server_database did not converge", err=True)
+        raise typer.Exit(1)
+    typer.echo("✓ dolt_server_database recorded")
+
+
 def repair(
     hive: str,
     prefix: str = "",
     node_id: bool = False,
     role: bool = False,
+    server_database: bool = False,
     *,
     yes: bool,
     dry_run: bool,
 ) -> None:
-    """CLI core: dispatch to exactly one of the three repair modes."""
-    modes = [bool(prefix), node_id, role]
+    """CLI core: dispatch to exactly one of the four repair modes."""
+    modes = [bool(prefix), node_id, role, server_database]
     if sum(modes) != 1:
-        typer.echo("✗ pass exactly one of --prefix <p>, --node-id, --role", err=True)
+        typer.echo(
+            "✗ pass exactly one of --prefix <p>, --node-id, --role, --server-database", err=True
+        )
         raise typer.Exit(1)
 
     cfg = config.load()
@@ -449,5 +549,7 @@ def repair(
         _repair_prefix(cfg, hive, prefix, yes, dry_run)
     elif node_id:
         _repair_node_id(cfg, hive, yes, dry_run)
-    else:
+    elif role:
         _repair_role(cfg, hive, yes, dry_run)
+    else:
+        _repair_server_database(cfg, hive, yes, dry_run)

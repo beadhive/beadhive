@@ -10,7 +10,7 @@ Rules (bh-wty3 plan):
 - HQ (``kind=hq``) is local-only by design and always skipped — same filter as ``hub.sync``.
 - UNKNOWN is first-class: an unreachable/unverifiable peer renders ``unknown (reason)`` as
   loudly as a failure and counts as offending — never a fabricated 0/0.
-- ``--dry-run`` parallelizes the read-only status pass (ThreadPoolExecutor, like
+- ``--dry-run`` parallelizes the read-only status pass (``fleet.fanout``, shape B, like
   sync_remote's assessment pass); a live sync is a WRITE and runs serially per hive.
 - Conflicts are data: a paused sync prints the conflicted tables + the re-run instruction
   and lands the hive in the offending list instead of half-merging.
@@ -21,11 +21,9 @@ Rules (bh-wty3 plan):
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-
 import typer
 
-from . import config, engine, registry
+from . import config, engine, fleet, registry
 
 _STATUS_WORKERS = 4  # read-only federation_status calls; matches sync_remote's fleet pass
 
@@ -87,8 +85,9 @@ def _status_pass(eng, entries: list[dict]) -> list[str]:
     """--dry-run: read-only fleet federation status, parallel (never calls ``sync_state``).
     Renders the two-axis table; returns the hive ids whose peer state could not be verified."""
     paths = [registry.hive_dir(e) for e in entries]
-    with ThreadPoolExecutor(max_workers=_STATUS_WORKERS) as pool:
-        statuses = list(pool.map(eng.federation_status, paths))
+    # SHAPE B (`fleet.fanout`): federation status is a per-hive engine call over the network,
+    # not a row the shared server holds. Keeps its own smaller cap — these are network-bound.
+    statuses = fleet.fanout(eng.federation_status, paths, workers=_STATUS_WORKERS)
 
     rows: list[tuple[str, ...]] = []
     offending: list[str] = []

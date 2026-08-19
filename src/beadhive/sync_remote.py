@@ -27,7 +27,6 @@ Exported API
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -35,7 +34,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, engine, registry
+from . import bd, config, engine, fleet, registry
 from .run import run
 from .safety import Category, DoltRefInfo, scan
 
@@ -311,10 +310,12 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
         provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
         targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
 
-    # Parallel read-only pre-assessment (fetch=True — see docstring); `Executor.map`
-    # preserves input order, so output below stays in deterministic config order.
-    with ThreadPoolExecutor(max_workers=_ASSESS_WORKERS) as pool:
-        records = list(pool.map(lambda t: assess_hive(t[0], t[1], fetch=True), targets))
+    # Parallel read-only pre-assessment (fetch=True — see docstring). SHAPE B
+    # (`fleet.fanout`), which preserves input order, so output below stays in deterministic
+    # config order. Keeps its own smaller cap — these are network-bound.
+    records = fleet.fanout(
+        lambda t: assess_hive(t[0], t[1], fetch=True), targets, workers=_ASSESS_WORKERS
+    )
 
     for (hive_id, clone_path), record in zip(targets, records, strict=True):
         plan.records.append(record)

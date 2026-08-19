@@ -18,7 +18,6 @@ import importlib.metadata
 import json
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import typer
@@ -28,6 +27,7 @@ from . import (
     channels,
     config,
     dolt_health,
+    fleet,
     gitauth,
     gitworkspace,
     guard,
@@ -340,8 +340,10 @@ def _orphan_container_branches(cfg):
     [(hive_prefix, branch), …]. A branch whose epic is still open is an active molecule, not an
     orphan, so it's skipped."""
     prefix = f"{worktree._BEAD_PREFIX}epic/"  # wt/bead/epic/
-    orphans = []
-    for e in cfg.get("managed_repos", []) or []:
+
+    def _branches(e) -> list[tuple[dict, Path, str]]:
+        """One hive's container branches. Cheap (bh-7fen2 measured 20 for-each-ref at 0.12s
+        total) — fanned out only so the expensive per-branch stage below gets a flat list."""
         main = registry.hive_dir(e)
         res = run(
             [
@@ -356,13 +358,21 @@ def _orphan_container_branches(cfg):
             capture=True,
         )
         if res.returncode != 0:
-            continue
-        for branch in (res.stdout or "").split():
-            epic = branch[len(prefix) :]
-            bead = bd.show(epic, main)
-            if bead and bead.get("status") == "closed":
-                orphans.append((str(e["prefix"]), branch))
-    return orphans
+            return []
+        return [(e, main, branch) for branch in (res.stdout or "").split()]
+
+    def _closed(item: tuple[dict, Path, str]) -> tuple[str, str] | None:
+        _e, main, branch = item
+        bead = bd.show(branch[len(prefix) :], main)
+        return (str(_e["prefix"]), branch) if bead and bead.get("status") == "closed" else None
+
+    # THE COST IS THE SECOND STAGE: 11 `bd show` at 2.16s vs 20 `for-each-ref` at 0.12s
+    # (bh-7fen2). SHAPE B (`fleet.fanout`) for both — `bd show` reads a bead's full record
+    # through bd, and the branch list is per-hive git, neither of which the bulk shape covers.
+    # Both stages preserve input order, so `orphans` stays in registry order.
+    entries = cfg.get("managed_repos", []) or []
+    candidates = [item for group in fleet.fanout(_branches, entries) for item in group]
+    return [hit for hit in fleet.fanout(_closed, candidates) if hit is not None]
 
 
 def _data_molecules(cfg) -> dict:
@@ -438,13 +448,10 @@ def _data_prefix_mismatches(cfg) -> list[dict]:
         }
 
     # The `bd config get` spawns are independent, read-only, and store-bound (bh-3qo60: 15
-    # hives = 4.39s sequential). Run them in a pool and keep `entries`' registry order by
-    # consuming `map`'s results positionally, so the reported list stays deterministic. Capped
-    # like the other pooled sections (hive_sync._STATUS_WORKERS, sync_remote._ASSESS_WORKERS)
-    # rather than one-thread-per-hive, which would spawn unbounded `dolt` processes at scale.
-    with ThreadPoolExecutor(max_workers=min(len(entries), 16)) as pool:
-        results = list(pool.map(_one, entries))
-    return [m for m in results if m is not None]
+    # hives = 4.39s sequential). SHAPE B (`fleet.fanout`): `issue_prefix` is a bd config read,
+    # not a column the shared server holds, so the bulk shape does not apply. Input order is
+    # preserved by the shape, so the reported list stays deterministic.
+    return [m for m in fleet.fanout(_one, entries) if m is not None]
 
 
 def _render_prefix_mismatches(mismatches: list[dict]) -> None:
@@ -1863,6 +1870,26 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
     if not entries:
         return []
 
+    # SHAPE A (bh-0gvs3): every server-mode hive's `schema_migrations` version in ONE
+    # cross-database query — measured 14 hives in 0.267s against ~280ms per `bd sql` spawn.
+    # `schema_migrations` is a stored table and the per-hive path already reads it with
+    # `bd sql`, so this is the same query asked once instead of N times, with no bd-side
+    # derivation to reimplement (see dolt_health.bulk_schema_versions' classification note).
+    # PARTIAL BY CONSTRUCTION: embedded-mode hives are absent and fall back to shape B below.
+    # RECORDED, never derived (bh-g5ujg's rule, and bh-td8t9 backfilled the fleet so this is
+    # not a narrower set in practice): `server_database` FALLS BACK to `dolt_database` for a
+    # keyless hive, and for a hive whose metadata is unreadable that fallback is the directory
+    # name — a guess. A guessed name that names no database on the server fails the UNION, and
+    # one bad hive would drop every hive back to the per-hive path. Asking only for what is
+    # written down keeps a broken hive's blast radius to that hive.
+    bulk = dolt_health.bulk_schema_versions(
+        [
+            (path, store_locator.recorded_server_database(path))
+            for _e, path in entries
+            if not store_locator.is_embedded_mode(path)
+        ]
+    )
+
     def _probe(item: tuple[dict, Path]) -> tuple[hive_schema.HiveSchemaRecord | None, str | None]:
         e, path = item
         dolt_mode = safety._bd_dolt_mode(str(path))
@@ -1875,7 +1902,13 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
         # bh-3qo60 pattern, now lock-guarded the same way (`host.py`'s `_yaml_lock`). Both are
         # safe to call from a pool as-is.
         _refreshed, fail_detail = hive_schema.refresh_with_detail(
-            path, e["provider"], e["org"], e["repo"], hq_dir=hq_dir, dolt_mode=dolt_mode
+            path,
+            e["provider"],
+            e["org"],
+            e["repo"],
+            hq_dir=hq_dir,
+            dolt_mode=dolt_mode,
+            probed=bulk.get(path),
         )
         # ALWAYS read back, even on a failed refresh: refresh writes nothing when the probe
         # fails, but a PRIOR record may already be on disk from an earlier successful run —
@@ -1898,9 +1931,9 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
     # Neither goes through `bd.run`/`bd.json` (bh's in-process wrapper) — both call
     # `run.run`/`subprocess.run` directly — so this loop never reads `bd._STRICT_READS`
     # (a ContextVar, invisible to pool workers) and can't silently defeat `bd.strict_reads()`.
-    # Capped like the other pooled sections rather than one-thread-per-hive.
-    with ThreadPoolExecutor(max_workers=min(len(entries), 16)) as pool:
-        results = list(pool.map(_probe, entries))
+    # SHAPE B (`fleet.fanout`): `bd dolt status` is bd's own report on a store, not a row the
+    # server serves, so the bulk shape does not apply.
+    results = fleet.fanout(_probe, entries)
 
     warns: list[str] = []
     for (e, _path), (record, fail_detail) in zip(entries, results, strict=True):
