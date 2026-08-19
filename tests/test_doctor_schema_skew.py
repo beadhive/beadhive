@@ -125,6 +125,21 @@ def test_skips_hives_with_no_local_checkout(tmp_path, monkeypatch):
     assert probed["called"] is False
 
 
+def test_no_local_probe_when_no_hive_has_a_checkout(tmp_path, monkeypatch):
+    """bh-zzoek: with nothing to compare against, this must not pay the LOCAL bd probe's cold
+    cost either (the ~5-7s throwaway `bd init`) — not just skip the per-hive
+    `probe_raw_schema_version` call the sibling test above already pins."""
+    hq_dir = _hq(tmp_path)
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+    monkeypatch.setattr(
+        dolt_health,
+        "local_bd_schema_version",
+        lambda **k: (_ for _ in ()).throw(AssertionError("must not probe with nothing to compare")),
+    )
+    warns = doctor._bd_schema_skew_warnings({}, [_entry()], tmp_path)  # no checkout under tmp_path
+    assert warns == []
+
+
 def test_stale_prior_record_survives_a_failed_reprobe_and_is_flagged(tmp_path, monkeypatch):
     """AC4: a refresh that fails this run must not silently drop or hide a PRIOR confirmed
     skew — it still reads back and reports the last known-true observation, marked stale."""

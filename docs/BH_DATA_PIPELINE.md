@@ -380,3 +380,52 @@ this snapshot's work was done happened to catch it warm.
 `bh-j68p3` closed the `bd init` scratch probe as "measured, unavoidable, call it less". That
 verdict was reached when it was ~5 s of a 62 s run. It is now 7.54 s of a 24.72 s run — the same
 cost against a denominator that shrank by more than half.
+
+### bh-zzoek (2026-08-19): re-verdict against CURRENT bd and CURRENT code — still unavoidable
+
+Re-checked bh-j68p3's own question list against `bd version 1.1.0 (dev)` and against `main`
+post-`bh-gy7bc` (`_local_bd_version_string` is now `fleet.once`, not `functools.cache`), rather
+than inheriting the 8%-era answer:
+
+1. **What actually invalidates `cache_dir/bd-schema-version.json`? Confirmed: only a bd
+   upgrade.** The cache key is `bd --version`'s exact string
+   (`dolt_health.local_bd_schema_version`); nothing else touches it. Pinned by two existing
+   tests (`test_local_bd_schema_version_caches_by_bd_version_string`,
+   `test_local_bd_schema_version_reprobes_after_a_bd_upgrade`) and independently re-derived here
+   by reading the code — `docs/design/read-path-source-measurement.md` §10 point 2 already
+   established this; still true.
+2. **Does `bh doctor` need the value at all, or only the sections that compare against it?
+   Only the comparison — and that was a real, if currently inert, gap.**
+   `doctor._bd_schema_skew_warnings` computed `local_bd_schema_version()` (the expensive probe)
+   *before* checking whether any registered hive even has a local checkout to compare against.
+   With zero such hives, the whole check returns `[]` regardless — meaning it paid the probe
+   for nothing. Fixed (this bead): the entries filter now runs first, so a fleet with an HQ but
+   no local checkouts pays nothing. **Does not change today's number** — this repo's own fleet
+   has 20/20 registered hives with local checkouts, so the probe still fires on every cold run
+   here; this is a correctness fix for the genuinely-empty case, not a measured win.
+3. **Has bd's CLI gained a cheaper way since bh-j68p3? No — re-checked against 1.1.0's current
+   surface, not assumed from the old answer.** `bd --help`'s full command list, `bd migrate
+   --inspect [--json]`, `bd info [--schema]`, and `bd version --json` were all exercised fresh
+   outside any repo: every one of them errors `no beads database found` or (for `bd
+   version --json`) reports the hardcoded decoy `schema_version: 1` — none answer
+   `LatestVersion()` for a bare binary. `bd schema` is unrelated (JSON Schema for bd's
+   `--json`/export record shapes, not the Dolt migration version). No new surface exists.
+4. **Is this worth an upstream ask on bd? Yes — filed as `bh-m8dki`**, not merely described:
+   a `bd` verb reporting `LatestVersion()` without minting a repo is a one-line win for bd (it
+   already computes the value to decide what to migrate to) that would let bh drop its most
+   expensive cold-path step entirely.
+
+**Re-measured cold, same definition (`metadata.json` + `bd-schema-version.json` deleted first),
+this worktree's code via `uv run`, 2 clean runs**: cold totals 27.66 s / 25.70 s (`warnings`
+section 7.00 s / 7.15 s — 25–28% of the run), consistent with the 25.21 s / 7.54 s (30%) figure
+above within normal host-load noise; a third, non-representative cold run measured 46.9 s under
+transient extra load and is excluded. The isolated `bd init --prefix schemaprobe<hex>
+--non-interactive` call itself: 5.08 s / 5.08 s / 5.13 s over 3 runs — unchanged in kind from
+bh-j68p3's 4.7–4.9 s (host-load variance, not a regression).
+
+**Verdict: still unavoidable, on bd's CURRENT CLI surface, checked fresh rather than
+inherited.** The ratio is real (~26–30% of a cold run, the largest or second-largest single
+cost in the pipeline) but the cause is the shrunk denominator (§4's other cold wins), not this
+line item growing or bd's surface regressing. The one real slack found — probing even when
+there's nothing to compare against — is fixed. The remaining cost has no cheaper answer from
+bh's side and is now tracked as a bd-side ask (`bh-m8dki`) rather than left as dead weight.

@@ -1855,20 +1855,29 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
     (this run's re-probe failed, and the last CONFIRMED value showed no skew) — that is exactly
     "a newer bd on another host may have advanced the real store since, and we can't tell right
     now", which must never render as silence (a false all-clear), not just as a footnote on an
-    already-detected skew."""
+    already-detected skew.
+
+    ENTRIES ARE FILTERED *BEFORE* THE LOCAL PROBE (bh-zzoek): with nothing to compare against —
+    no registered hive has a local checkout — there is nothing this whole check can say, so it
+    must not pay `local_bd_schema_version`'s cold cost (the ~5-7s throwaway `bd init`,
+    `dolt_health._scratch_probe_local_version`) to learn an answer no comparison will use. This
+    is the literal "does doctor need the value at all" question `bh-zzoek` asked: only when
+    there's a hive to compare against does it. A live fleet with a real HQ almost always has at
+    least one such hive (this repo's own fleet does, 20/20 as of that bead), so this is a
+    correctness fix for the genuinely-empty case, not a measured win on today's numbers."""
     hq_dir = config.hq_dir()
     if not (hq_dir / ".beads").is_dir():
+        return []
+
+    _paths = [(e, root / e["provider"] / e["org"] / e["repo"]) for e in hives]
+    entries = [(e, path) for e, path in _paths if (path / ".beads").is_dir()]
+    if not entries:
         return []
 
     local = dolt_health.local_bd_schema_version()
     if local.version is None:
         return []  # can't judge what THIS bd supports — nothing to compare (dolt_fix_advisory's
         # own precedent: stay silent rather than warn off an unconfirmed premise)
-
-    _paths = [(e, root / e["provider"] / e["org"] / e["repo"]) for e in hives]
-    entries = [(e, path) for e, path in _paths if (path / ".beads").is_dir()]
-    if not entries:
-        return []
 
     # SHAPE A (bh-0gvs3): every server-mode hive's `schema_migrations` version in ONE
     # cross-database query — measured 14 hives in 0.267s against ~280ms per `bd sql` spawn.
