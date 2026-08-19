@@ -1432,11 +1432,13 @@ def hive_migrate_storage(
 @hive_app.command(
     "repair",
     help="reconcile ONE piece of hive/host config drift — pass exactly one of --prefix / "
-    "--node-id / --role: (--prefix) detect the registry prefix vs. the beads-DB issue prefix, "
-    "migrate the DB (bd rename-prefix), update the registry in place; (--node-id) set this "
-    "HOST's node_id (~/.config/bd/config.yaml) from bh's own host identity; (--role) set the "
-    "hive's beads.role (git config) from its registry kind. Idempotent; --yes required to "
-    "mutate, --dry-run to preview.",
+    "--node-id / --role / --server-database: (--prefix) detect the registry prefix vs. the "
+    "beads-DB issue prefix, migrate the DB (bd rename-prefix), update the registry in place; "
+    "(--node-id) set this HOST's node_id (~/.config/bd/config.yaml) from bh's own host "
+    "identity; (--role) set the hive's beads.role (git config) from its registry kind; "
+    "(--server-database) record the shared-server database name a server-mode hive already "
+    "resolves, so it stops being re-derived. Idempotent; --yes required to mutate, --dry-run "
+    "to preview.",
 )
 def hive_repair_cmd(
     prefix: str = typer.Option("", "--prefix", help="target canonical prefix (no trailing hyphen)"),
@@ -1445,6 +1447,12 @@ def hive_repair_cmd(
     ),
     role: bool = typer.Option(
         False, "--role", help="set the hive's beads.role from its registered kind"
+    ),
+    server_database: bool = typer.Option(
+        False,
+        "--server-database",
+        help="record dolt_server_database from the name this server-mode hive already resolves "
+        "(no-op for an embedded hive)",
     ),
     hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
     yes: bool = typer.Option(
@@ -1461,7 +1469,13 @@ def hive_repair_cmd(
     from . import hive_repair
 
     hive_repair.repair(
-        hive=hive, prefix=prefix, node_id=node_id, role=role, yes=yes, dry_run=dry_run
+        hive=hive,
+        prefix=prefix,
+        node_id=node_id,
+        role=role,
+        server_database=server_database,
+        yes=yes,
+        dry_run=dry_run,
     )
 
 
