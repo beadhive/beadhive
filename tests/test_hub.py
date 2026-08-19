@@ -447,19 +447,20 @@ def test_query_refuses_hub_write_before_running_bd(tmp_path, monkeypatch, capsys
     assert "ISSUES NO IDS" in capsys.readouterr().err
 
 
-def test_query_label_defaults_to_hq_and_forwards_to_guard(tmp_path, monkeypatch, capsys):
-    """`hub.query`'s default `label` ("hq") reaches the guard's refusal message unchanged, and
-    an explicit `label="hub"` (the deprecated alias's call site) overrides it (bh-ohx2)."""
+def test_query_label_defaults_to_hub_and_forwards_to_guard(tmp_path, monkeypatch, capsys):
+    """`hub.query`'s default `label` is "hub" — since bh-89wxf.2 that IS the surface this
+    function serves, and `bh hq bd …` is a different store entirely (`hq.query`). The label
+    still reaches the guard's refusal message unchanged (bh-ohx2)."""
     monkeypatch.setattr(hub, "run", lambda *a, **k: pytest.fail("bd must not run on a write"))
     monkeypatch.setattr(hub.config, "hub_dir", lambda: tmp_path)
 
     with pytest.raises(typer.Exit):
         hub.query(["create", "-t", "boom"])
-    assert "`bh hq bd create`" in capsys.readouterr().err
+    assert "`bh hub bd create`" in capsys.readouterr().err
 
     with pytest.raises(typer.Exit):
-        hub.query(["create", "-t", "boom"], label="hub")
-    assert "`bh hub bd create`" in capsys.readouterr().err
+        hub.query(["create", "-t", "boom"], label="somewhere")
+    assert "`bh somewhere bd create`" in capsys.readouterr().err
 
 
 def test_query_read_verb_forwards_to_bd(tmp_path, monkeypatch):
@@ -615,7 +616,7 @@ def test_escalate_never_reaches_the_bounded_aggregate_path():
 def test_ensure_hub_missing_bd_is_friendly(tmp_path, monkeypatch, capsys):
     """A missing bd binary exits with a friendly message, not a raw FileNotFoundError."""
     # WS_HOME must point at an empty dir so config.load() raises FileNotFoundError and
-    # _aggregation_target() falls back to hub_dir() (which honours WS_HUB).
+    # hub_target() resolves to hub_dir() (which honours WS_HUB).
     monkeypatch.setenv("WS_HOME", str(tmp_path))
     monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
 
@@ -1251,7 +1252,7 @@ def test_ensure_hub_retires_a_legacy_hub_prefixed_store(tmp_path, monkeypatch, c
     (store / ".beads").mkdir(parents=True)
     (store / ".beads" / "metadata.json").write_text(json.dumps({"dolt_database": "hub"}))
     monkeypatch.setattr(hub.config, "hub_dir", lambda: store)
-    monkeypatch.setattr(hub, "_aggregation_target", lambda: (store, hub.HUB_PREFIX))
+    monkeypatch.setattr(hub, "hub_target", lambda: (store, hub.HUB_PREFIX))
     minted = []
     monkeypatch.setattr(hub, "ensure_store", lambda s, p: minted.append((s, p)) or s)
 
@@ -1270,7 +1271,7 @@ def test_ensure_hub_leaves_a_store_of_unknown_provenance_alone(tmp_path, monkeyp
     store = tmp_path / "hub"
     (store / ".beads").mkdir(parents=True)
     monkeypatch.setattr(hub.config, "hub_dir", lambda: store)
-    monkeypatch.setattr(hub, "_aggregation_target", lambda: (store, hub.HUB_PREFIX))
+    monkeypatch.setattr(hub, "hub_target", lambda: (store, hub.HUB_PREFIX))
     monkeypatch.setattr(hub, "ensure_store", lambda s, p: s)
 
     hub.ensure_hub()

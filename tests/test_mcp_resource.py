@@ -422,7 +422,7 @@ def test_hq_intake_resource_returns_list(monkeypatch, tmp_path):
     fake_beads = tmp_path / ".beads"
     fake_beads.mkdir()
 
-    monkeypatch.setattr(hub_mod, "_aggregation_target", lambda: (tmp_path, "hub"))
+    monkeypatch.setattr(hub_mod, "hub_target", lambda: (tmp_path, hub_mod.HUB_PREFIX))
     monkeypatch.setattr(bd_mod, "json", lambda args, cwd, **_kw: [{"id": "bc-1", "title": "test"}])
 
     server = mcp_mod.build_server()
@@ -440,7 +440,7 @@ def test_hq_intake_resource_returns_empty_when_no_hub(monkeypatch, tmp_path):
     from beadhive import hub as hub_mod
 
     # tmp_path exists but has no .beads subdir — simulates missing/uninitialized hub
-    monkeypatch.setattr(hub_mod, "_aggregation_target", lambda: (tmp_path, "hub"))
+    monkeypatch.setattr(hub_mod, "hub_target", lambda: (tmp_path, hub_mod.HUB_PREFIX))
 
     server = mcp_mod.build_server()
     contents = asyncio.run(_read(server, "beadhive://hq/intake"))

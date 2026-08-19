@@ -13,6 +13,9 @@ It also pins the two halves of the prefix contract that only a real bd can answe
   * `bd init --prefix _HUB_ISSUES_NO_IDS` is ACCEPTED (a punctuation sentinel like `!hub` is
     not — bd rejects it outright, which is why the prefix shouts inside bd's alphabet instead);
   * no bead reachable in the hub carries that prefix — every one keeps its SOURCE hive's.
+
+The second test is bh-89wxf.2's other half: HQ's Dolt database carries only hq-prefixed beads,
+asserted rather than eyeballed, through the same function the migration verb uses.
 """
 
 from __future__ import annotations
@@ -109,3 +112,47 @@ def test_rm_rf_the_hub_then_rehydrate_yields_the_identical_aggregate(tmp_path):
     # ISSUES NO IDS: every bead carries its SOURCE hive's prefix, never the hub's.
     assert all(bead_id.split("-")[0] in {"srcone", "srctwo"} for bead_id, _, _ in before), before
     assert not any(bead_id.startswith(hub.HUB_PREFIX) for bead_id, _, _ in before), before
+
+
+# ---------------------------------------------------------------------------
+# THE OTHER HALF (bh-89wxf.2): HQ's Dolt database carries only hq-prefixed beads. "Assert this,
+# do not eyeball it" — so the check that gates a push is the same function the migration uses,
+# run against a real bd store.
+# ---------------------------------------------------------------------------
+
+
+def test_hq_publishes_no_hive_derived_beads_and_prune_makes_it_so(tmp_path, monkeypatch, capsys):
+    """A pre-split HQ carries other hives' beads; `bh hq prune-aggregate --confirm` removes
+    exactly those and leaves HQ's own untouched, so what a later `bh hq push` publishes is
+    HQ and only HQ."""
+    from beadhive import hq as hq_mod
+
+    hq_dir = tmp_path / "hq"
+    assert _bd_init(hq_dir, "hq").returncode == 0
+    assert _bd(hq_dir, "q", "an escalation").returncode == 0
+
+    # Hydrate a hive's beads into HQ — exactly what `_aggregation_target()`'s HQ branch did.
+    hive = _make_hive(tmp_path / "hives", "srcone", ["derived one", "derived two"])
+    assert _bd(hq_dir, "repo", "add", str(hive)).returncode == 0
+    assert _bd(hq_dir, "repo", "sync").returncode == 0
+
+    derived = hq_mod.hive_derived_ids(hq_dir)
+    assert len(derived) == 2 and all(i.startswith("srcone-") for i in derived), derived
+
+    monkeypatch.setattr(hq_mod, "_hq_dir_or_exit", lambda: hq_dir)
+
+    hq_mod.prune_aggregate(dry_run=True)
+    assert hq_mod.hive_derived_ids(hq_dir) == derived  # dry run mutates nothing
+
+    hq_mod.prune_aggregate(confirm=True)
+
+    assert hq_mod.hive_derived_ids(hq_dir) == []
+    # HQ's OWN bead survived — the prune is scoped, not a wipe.
+    res = _bd(hq_dir, "list", "--all", "--json")
+    beads = json.loads(res.stdout or "[]")
+    beads = beads if isinstance(beads, list) else beads.get("issues", [])
+    assert [b["id"] for b in beads if b["id"].startswith("hq-")], beads
+
+    # …and re-running is a clean no-op, not an error.
+    hq_mod.prune_aggregate(confirm=True)
+    assert "already clean" in capsys.readouterr().out

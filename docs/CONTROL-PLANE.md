@@ -161,7 +161,7 @@ after the retention window has passed (default 30 days, controlled by `archive.w
 ## Fleet routing (director)
 
 The **director** owns intake + fleet-wide work routing and the interface to the per-hive
-dispatchers. The fleet-wide intake inbox is `bh hq intake` (untriaged intake aggregated across every
+dispatchers. The fleet-wide intake inbox is `bh hub intake` (untriaged intake aggregated across every
 hive); typed disposition verbs route each item to the right hive (`bh work reroute <id> --to <hive>`),
 hold it for a second look (`--super <seat>`), accept/reject, or promote it to a planner. The
 director directs work — it holds no secrets and sets no policy. See docs/AGF.md's intake

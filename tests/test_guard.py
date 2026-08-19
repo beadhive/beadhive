@@ -1,8 +1,9 @@
 """Tests for the ws-layer write-guard (ws.guard).
 
 Two footguns bd will not protect against, one guard:
-  1. `ws hub bd create` strands a bead in the read cache — allowlist reads on the hub.
-     Exception: hq-prefixed (control-plane) bead writes are allowed into the HQ store.
+  1. `bh hub bd create` strands a bead in the derived aggregate — allowlist reads (plus the
+     hydration verb that builds it) and refuse the rest, naming the owning hive. No
+     exceptions since bh-89wxf.2: HQ has its own store and its own surface.
   2. bare `bd github sync`/`push` would push local beads to a PUBLIC tracker — deny for every
      seat except a contributor, and even then only the gated single-item push.
 """
@@ -45,11 +46,13 @@ def test_guard_hub_mutating_verbs_refused(verb, capsys):
 # ---- hq-native allowlist: hq-prefixed writes pass, product-hive writes refused ----
 
 
-def test_guard_hub_hq_native_write_allowed():
-    """(a) An hq-prefixed bead write (control-plane) is allowed into the HQ aggregate store."""
-    guard.guard_hub(["update", "hq-123", "--status", "done"])  # no raise
-    guard.guard_hub(["close", "hq-456"])  # no raise
-    guard.guard_hub(["set-state", "hq-789", "priority=high"])  # no raise
+def test_guard_hub_hq_native_write_is_refused_here_too(capsys):
+    """(a) bh-89wxf.2: an hq-prefixed write no longer gets a carve-out. It has its own store
+    and its own surface (`bh hq bd …`, `hq.query`) — writing it into the derived aggregate
+    would strand it exactly like any other."""
+    with pytest.raises(typer.Exit):
+        guard.guard_hub(["update", "hq-123", "--status", "done"])
+    assert "ISSUES NO IDS" in capsys.readouterr().err
 
 
 def test_guard_hub_product_hive_write_refused(capsys):
@@ -70,38 +73,24 @@ def test_guard_hub_escalate_nudge_appears(capsys):
     assert "bh escalate" in capsys.readouterr().err
 
 
-# ---- dolt publish-safe allowlist: push/status/remote-list pass, everything else refused ----
-# (bh-ohx2: the guard's creation-stranding reasoning doesn't apply to a verb that publishes or
-# reads state already there — `bd dolt push` is the one write HQ legitimately needs.)
+# ---- `bd dolt` against the hub: all of it refused now (bh-89wxf.2) ----
+# The old allowance for `push`/`status`/`remote list` (bh-ohx2) existed because the aggregate
+# WAS the HQ store, which has a real remote. The hub has none and is never published, and
+# `bh hq bd dolt push` reaches HQ directly now — so there is nothing left to carve out.
 
 
 @pytest.mark.parametrize(
     "args",
     [
         ["dolt", "push"],
-        ["dolt", "push", "--force"],
         ["dolt", "status"],
-        ["dolt", "status", "--json"],
         ["dolt", "remote", "list"],
-    ],
-)
-def test_guard_hub_dolt_publish_safe_verbs_pass(args):
-    """`bd dolt push`/`status`/`remote list` are allowed through — they create nothing."""
-    guard.guard_hub(args)  # no raise
-
-
-@pytest.mark.parametrize(
-    "args",
-    [
         ["dolt", "remote", "add", "origin", "url"],
-        ["dolt", "remote", "remove", "origin"],
         ["dolt", "pull"],
         ["dolt"],
     ],
 )
-def test_guard_hub_dolt_other_verbs_still_refused(args, capsys):
-    """Every other `bd dolt` subcommand — remote add/remove, pull, and a bare `dolt` — stays
-    refused; the allowlist is narrow, not the whole `bd dolt` group."""
+def test_guard_hub_every_dolt_verb_is_refused(args, capsys):
     with pytest.raises(typer.Exit) as exc:
         guard.guard_hub(args)
     assert exc.value.exit_code == 1
@@ -146,20 +135,20 @@ def test_guard_hub_hydration_verb_passes():
 # ---- refusal message names the actual command surface invoked (hq vs hub, bh-ohx2) ----
 
 
-def test_guard_hub_refusal_names_hq_by_default(capsys):
-    """The default `label` ("hq") — matching `bh hq bd …`, the canonical passthrough — is what
-    the refusal names when the caller doesn't specify otherwise."""
+def test_guard_hub_refusal_names_hub_by_default(capsys):
+    """The default `label` ("hub") — matching `bh hub bd …`, the surface this guard serves
+    since bh-89wxf.2 — is what the refusal names when the caller doesn't specify otherwise."""
     with pytest.raises(typer.Exit):
         guard.guard_hub(["create", "-t", "boom"])
-    assert "`bh hq bd create`" in capsys.readouterr().err
+    assert "`bh hub bd create`" in capsys.readouterr().err
 
 
 def test_guard_hub_refusal_names_the_invoked_surface(capsys):
-    """A caller that names `label="hub"` (the deprecated `bh hub bd …` alias) gets a refusal
-    naming THAT command — not a hardcoded guess unrelated to what was actually typed."""
+    """A caller that names its own `label` gets a refusal naming THAT command — not a
+    hardcoded guess unrelated to what was actually typed."""
     with pytest.raises(typer.Exit):
-        guard.guard_hub(["create", "-t", "boom"], label="hub")
-    assert "`bh hub bd create`" in capsys.readouterr().err
+        guard.guard_hub(["create", "-t", "boom"], label="somewhere")
+    assert "`bh somewhere bd create`" in capsys.readouterr().err
 
 
 # ---- github push/sync: seat-scoped + gated single-item -----------------------

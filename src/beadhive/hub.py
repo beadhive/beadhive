@@ -291,16 +291,21 @@ _LEGACY_HUB_PREFIXES = frozenset({"hub"})
 _UNKNOWN_DATABASE = "\0"
 
 
-def _aggregation_target():
-    """``(dir, prefix)`` of the cross-hive aggregate: the durable Factory HQ store (kind=hq) once
-    one is registered, else the legacy disposable hub (pre-HQ back-compat). HQ subsumes the hub —
-    the aggregation role moves onto it — so hub.py points here, not at ``hub_dir()`` alone."""
-    try:
-        cfg = config.load()
-    except FileNotFoundError:
-        cfg = {}
-    if registry.hive_of_kind(cfg, registry.HQ_KIND) is not None:
-        return config.hq_dir(), registry.HQ_PREFIX
+def hub_target():
+    """``(dir, prefix)`` of the cross-hive aggregate. ALWAYS the hub — unconditionally, with no
+    branch to take (bh-89wxf.2).
+
+    This used to redirect onto the Factory HQ store whenever a ``kind=hq`` hive was registered,
+    which put two different things on one Dolt remote path: HQ's own authoritative hq-prefixed
+    beads, and a per-host DERIVED aggregate that every host rebuilt wholesale and pushed. bd's
+    sync-concepts and bucket-federation guides both govern that directly — ONE database per
+    remote path, and "one path, multiple databases" is named as creating irreconcilable
+    divergence. Since every mutation touches ``updated_at``, a per-host wholesale rebuild
+    inside a replicated database is the maximal-conflict shape there is.
+
+    So the two halves go on the correct side of the line bd already draws: HYDRATION (`bd repo
+    add` / `repo sync` over derived JSONL) lands in the hub, and DOLT REPLICATION (`bd dolt
+    push`) carries HQ and only HQ. See docs/HUB.md#contract and docs/HQ.md#hub-vs-hq."""
     return config.hub_dir(), HUB_PREFIX
 
 
@@ -336,9 +341,8 @@ def _retire_legacy_hub(store: Path) -> None:
 
 
 def ensure_hub():
-    store, prefix = _aggregation_target()
-    if store == config.hub_dir():
-        _retire_legacy_hub(store)
+    store, prefix = hub_target()
+    _retire_legacy_hub(store)
     return ensure_store(store, prefix)
 
 
@@ -621,17 +625,16 @@ def _watermark_path() -> Path:
 
 
 def _load_watermarks(aggregate: Path) -> dict[str, str]:
-    """``{prefix: last-successfully-synced Dolt commit hash}`` for `aggregate` (the CURRENT
-    hub/HQ target dir — see `_aggregation_target`).
+    """``{prefix: last-successfully-synced Dolt commit hash}`` for `aggregate` (the hub — see
+    `hub_target`).
 
     Missing / unparseable / wrong-version / aggregate-mismatch all collapse to an EMPTY dict,
     never raise — a cold cache means "treat every hive as changed", which is always safe
     (CONVERGENCE DISCIPLINE: a missed or corrupt watermark read must fail toward a full
-    re-sync, never toward silently trusting a skip it can't justify). The `aggregate` check
-    specifically covers the hub->HQ handoff: once a durable HQ is registered, `sync()`'s
-    aggregation target moves (`_aggregation_target`) to a store that has never seen any hive
-    yet, so a watermark recorded against the OLD disposable hub must never be read as if it
-    still applies.
+    re-sync, never toward silently trusting a skip it can't justify). The `aggregate` path
+    check covered the hub->HQ handoff back when the target could move between the two; it is
+    unconditionally the hub now (bh-89wxf.2), and it stays as the cheap outer half of the
+    identity check below.
 
     IDENTITY, NOT JUST PATH (bh-89wxf.1). The `aggregate` path check alone could not see a hub
     WIPED AND RE-MINTED under the same directory — precisely the `rm -rf` the hub's contract
@@ -1070,37 +1073,33 @@ def _aggregate_slot(slots: int = -1, wait: float = -1.0, slot_dir: Path | None =
         time.sleep(0.25)
 
 
-def query(args, *, label: str = "hq"):
-    """Run a bd command against the cross-hive aggregate (HQ once registered, else the
-    legacy hub — see ``_aggregation_target``). ``label`` is cosmetic: it names which command
-    surface the caller invoked (``"hq"`` vs the deprecated ``"hub"`` alias) purely so
-    ``guard.guard_hub``'s refusal message names the real command (bh-ohx2) — both surfaces
-    resolve to the SAME store and run through the SAME guard.
+def bounded_bd(store, args, *, label: str, missing_hint: str):
+    """Run ``bd -C <store> <args>`` under BOTH of bh-toitp's bounds — a per-child timeout and
+    the host-wide read ceiling. The shared body of :func:`query` (the hub) and ``hq.query``
+    (the HQ store); the bounds belong to the SPAWN, not to which store it happens to read, so
+    splitting the two surfaces (bh-89wxf.2) must not accidentally leave one unbounded.
 
-    BOUNDED on both axes since bh-toitp — see the block comment above for the measurement, and
-    for why a reaper alone would have been the wrong fix.
-    """
-    guard.guard_hub(args, label=label)  # the hub is a READ cache — refuse writes (strands beads)
-    hub, _ = _aggregation_target()
-    if not (hub / ".beads").is_dir():
-        typer.echo(f"✗ hub not initialized — run `{config.BINARY_ALIAS} sync` first", err=True)
+    ``missing_hint`` is the whole message printed when the store isn't initialized, since
+    "run `bh sync`" is right for the derived hub and wrong for HQ."""
+    store = Path(store)
+    if not (store / ".beads").is_dir():
+        typer.echo(missing_hint, err=True)
         raise typer.Exit(1)
     verb = " ".join(a for a in args if not a.startswith("-"))[:60] or "bd"
     try:
         with _aggregate_slot():
             rc = run_bounded(
-                ["bd", "-C", str(hub), *args],
+                ["bd", "-C", str(store), *args],
                 timeout=AGGREGATE_TIMEOUT,
-                label=f"{label} bd {verb} against {hub}",
+                label=f"{label} bd {verb} against {store}",
             ).returncode
     except (ChildTimeout, AggregateBusy) as exc:
         # Names the store AND the verb, and is a FAILURE. What this replaced was a call that
         # neither returned nor reported, so the work depending on it silently did not happen.
         typer.echo(f"✗ {exc}", err=True)
         typer.echo(
-            f"  the aggregate is a READ cache — rebuild it with `{config.BINARY_ALIAS} sync`. "
-            "Check for leftovers with:\n"
-            "    ps -eo pid,etimes,cmd | awk '/[b]d -C .*\\/hq/ && $2 >= 600'",
+            "  Check for leftovers with:\n"
+            "    ps -eo pid,etimes,cmd | awk '/[b]d -C .*\\.beadhive/ && $2 >= 600'",
             err=True,
         )
         raise typer.Exit(1) from None
@@ -1108,13 +1107,40 @@ def query(args, *, label: str = "hq"):
         raise typer.Exit(rc)
 
 
+def query(args, *, label: str = "hub"):
+    """Run a bd command against THE HUB — this host's derived cross-hive aggregate.
+
+    Not HQ. Since bh-89wxf.2 the two are different stores with different jobs: cross-hive reads
+    come here, and `bh hq bd …` (`hq.query`) goes to HQ's own authoritative hq-prefixed beads.
+    ``label`` names the command surface for the guard's refusal message.
+
+    BOUNDED on both axes since bh-toitp — see the block comment above for the measurement, and
+    for why a reaper alone would have been the wrong fix.
+    """
+    guard.guard_hub(args, label=label)  # derived aggregate — issues no ids, takes no writes
+    store, _ = hub_target()
+    bounded_bd(
+        store,
+        args,
+        label=label,
+        missing_hint=(
+            f"✗ hub not initialized — run `{config.BINARY_ALIAS} sync` first (it is derived; "
+            "the rebuild is the whole cost)"
+        ),
+    )
+
+
 def intake(extra=None):
-    """The superintendent's FLEET-WIDE inbox: untriaged intake across every hydrated hive.
+    """The director's FLEET-WIDE inbox: untriaged intake across every hydrated hive.
 
     Source-agnostic by construction — the `intake:untriaged` label is set by every source
     (report | github | import), so one filter surfaces the whole fleet's untriaged reports. A read
     against the hub cache (allowlisted by the write-guard); extra `bd list` flags (e.g. `--json`,
-    `--assignee`) forward through."""
+    `--assignee`) forward through.
+
+    THE CROSS-HIVE HALF, and since bh-89wxf.2 that is `bh hub intake` — not `bh hq intake`,
+    which now reads HQ's OWN escalations (`hq.intake`). One verb was carrying two different
+    scopes silently; the surface names the scope now. See docs/HQ.md#intake-naming."""
     from .state import INTAKE_UNTRIAGED
 
     query(["list", "--label", INTAKE_UNTRIAGED, "--status", "open", *(extra or [])])

@@ -211,7 +211,7 @@ Beadhive differentiator.
   **escalate up to HQ** rather than crossing rig boundaries directly.
 - **One source-agnostic queue, channel = `origin`:** `report` | `github` | `import` all land in the
   single `intake:untriaged` queue — membership *is* the state.
-- **Director intake inbox → triage → fan to 0..N rigs:** `bh hq intake` (fleet-wide,
+- **Director intake inbox → triage → fan to 0..N rigs:** `bh hub intake` (fleet-wide,
   aggregated across the hub) is the inbox; typed disposition verbs route each item:
   - `bh work reroute <id> --to <rig>` — re-file into the right rig
   - `bh work reroute <id> --super <seat>` — hold in the fleet inbox for a second look

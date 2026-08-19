@@ -205,9 +205,9 @@ def test_hive_onboard_hub_sync_flag_forwards_tri_state(monkeypatch):
     assert captured["hub_sync"] is False
 
 
-def test_hq_push_no_sync_and_git_only_flags_forward(monkeypatch):
-    """bh-d5jhc.1: `bh hq push --no-sync`/`--git-only` forward into `hq.push`'s `sync`/
-    `git_only` kwargs (default: sync=True, git_only=False)."""
+def test_hq_push_forwards_only_dry_run(monkeypatch):
+    """bh-89wxf.2: `--no-sync`/`--git-only` (bh-d5jhc.1) are GONE, along with the fleet-wide
+    aggregate refresh they existed to dodge. `hq push` publishes HQ; the hub is `bh sync`'s."""
     captured = {}
 
     def _fake_push(**kwargs):
@@ -216,15 +216,10 @@ def test_hq_push_no_sync_and_git_only_flags_forward(monkeypatch):
     monkeypatch.setattr("beadhive.hq.push", _fake_push)
 
     runner.invoke(app, ["hq", "push"])
-    assert captured == {"dry_run": False, "sync": True, "git_only": False}
+    assert captured == {"dry_run": False}
 
-    runner.invoke(app, ["hq", "push", "--no-sync"])
-    assert captured["sync"] is False
-    assert captured["git_only"] is False
-
-    runner.invoke(app, ["hq", "push", "--git-only"])
-    assert captured["sync"] is True
-    assert captured["git_only"] is True
+    for gone in ("--no-sync", "--git-only"):
+        assert runner.invoke(app, ["hq", "push", gone]).exit_code != 0, gone
 
 
 def test_hive_init_forwards_flags_to_hive_init(monkeypatch):

@@ -80,24 +80,29 @@ an unrelated command:
   daemon-thread shape `metadata.py` uses for its own background reload (see
   [METADATA-CACHE.md](METADATA-CACHE.md)). `--hub-sync` opts back into waiting for the full
   refresh synchronously; `--no-hub-sync` skips the hub step entirely.
-- **`bh hq push`** (below) refreshes the aggregate by default too; `--no-sync`/`--git-only`
-  skip that refresh so publishing fleet config doesn't pay for it.
+- **`bh hq push`** used to refresh the aggregate too, behind `--no-sync`/`--git-only` escape
+  hatches. It no longer does anything of the kind (bh-89wxf.2), and both flags are gone with
+  the walk they existed to dodge: publishing HQ has nothing to hydrate.
 
 A deferred/background sync is best-effort by design: the work only needs to **start** before
 the CLI process exits, a thread that dies with a short-lived process is fine, and a later `bh
-sync` / `bh hq push` reconciles — the hub aggregate is always derived, never authoritative.
+sync` reconciles — the hub aggregate is always derived, never authoritative.
 
-## `bh hq`
+## `bh hub`
 
-Query the HQ aggregate (the operator-facing surface; `bh hub` is a deprecated alias):
+Query the hub — this host's derived cross-hive aggregate:
 
 ```sh
-bh hq bd ready         # actionable work across all hives
-bh hq bd list
-bh hq intake           # director's fleet-wide untriaged-intake inbox
+bh hub bd ready        # actionable work across all hives
+bh hub bd list
+bh hub intake          # director's fleet-wide untriaged-intake inbox
 ```
 
-It errors with "run `bh sync` first" if the aggregate store isn't initialized.
+It errors with "run `bh sync` first" if the hub isn't initialized.
+
+`bh hq bd …` is a DIFFERENT store — HQ's own authoritative `hq-`prefixed beads, not this
+aggregate. The two were one code path until bh-89wxf.2 split them; see
+[HQ — Hub vs HQ](HQ.md#hub-vs-hq).
 
 ## The hub is derived — never sync it directly
 
@@ -155,9 +160,9 @@ unrelated mechanism's failure is not correctness.
 ## Everyday loop (even with nothing cloned)
 
 ```sh
-bh sync              # pull every hive's beads into the HQ store (data, not code)
-bh hq bd ready       # actionable work across the whole workspace
-bh hq intake         # untriaged intake inbox across all hives
+bh sync              # pull every hive's beads into the hub (data, not code)
+bh hub bd ready      # actionable work across the whole workspace
+bh hub intake        # untriaged intake inbox across all hives
 ```
 
 To work on a hive for real, clone it (via git-workspace) and `bh sync` again — that hive
