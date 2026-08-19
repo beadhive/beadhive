@@ -1014,3 +1014,63 @@ def test_bulk_schema_versions_drops_a_hive_with_no_recorded_database(tmp_path, m
     out = dolt_health.bulk_schema_versions([(a, "bh"), (b, "")])
     assert b not in out
     assert "FROM ." not in seen[0], "an empty name must never reach the query as a bare dot"
+
+
+# ---- bulk_issue_prefixes: shape A + its per-hive fallback (bh-a8sox) --------
+
+
+def test_bulk_issue_prefixes_reads_every_hive_in_one_call(tmp_path, monkeypatch):
+    a, b = tmp_path / "a", tmp_path / "b"
+    calls = []
+
+    def fake_sql(store, query, **kw):
+        calls.append(query)
+        return _bulk_res([{"db": "bh", "value": "bh"}, {"db": "obs", "value": "ob"}])
+
+    monkeypatch.setattr(dolt_health.fleet, "sql", fake_sql)
+    out = dolt_health.bulk_issue_prefixes([(a, "bh"), (b, "obs")])
+    assert len(calls) == 1, "the whole point: ONE query, not one per hive"
+    assert out[a] == "bh" and out[b] == "ob"
+
+
+def test_bulk_issue_prefixes_omits_a_hive_the_server_did_not_answer_for(tmp_path, monkeypatch):
+    """A missing key means UNANSWERED — the caller falls back per hive. Never 'no prefix'."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    monkeypatch.setattr(
+        dolt_health.fleet, "sql", lambda *a_, **k: _bulk_res([{"db": "bh", "value": "bh"}])
+    )
+    out = dolt_health.bulk_issue_prefixes([(a, "bh"), (b, "obs")])
+    assert a in out and b not in out
+
+
+def test_bulk_issue_prefixes_returns_empty_on_query_failure(tmp_path, monkeypatch):
+    """Whole-pass fallback to shape B — the safe direction."""
+
+    class Fail:
+        returncode = 1
+        stdout = ""
+
+    monkeypatch.setattr(dolt_health.fleet, "sql", lambda *a_, **k: Fail())
+    assert dolt_health.bulk_issue_prefixes([(tmp_path / "a", "bh")]) == {}
+
+
+def test_bulk_issue_prefixes_drops_a_database_name_outside_the_identifier_charset(
+    tmp_path, monkeypatch
+):
+    """Nothing unvetted reaches the query text — a qualified name cannot be a bind parameter."""
+    seen = []
+    monkeypatch.setattr(
+        dolt_health.fleet, "sql", lambda s, q, **k: (seen.append(q), _bulk_res([]))[1]
+    )
+    dolt_health.bulk_issue_prefixes([(tmp_path / "a", "bh; DROP TABLE issues")])
+    assert not seen, "a non-identifier database name must be dropped, not quoted into the query"
+
+
+def test_bulk_issue_prefixes_on_no_targets_makes_no_call(monkeypatch):
+    """An all-embedded fleet: no server databases to qualify, so no query at all."""
+    monkeypatch.setattr(
+        dolt_health.fleet,
+        "sql",
+        lambda *a_, **k: pytest.fail("must not query with nothing to query for"),
+    )
+    assert dolt_health.bulk_issue_prefixes([]) == {}

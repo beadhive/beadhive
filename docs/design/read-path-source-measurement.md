@@ -553,7 +553,7 @@ class stays on shape B.
 | `warnings` schema version | `MAX(version) FROM schema_migrations` | stored table; the per-hive path ALREADY used `bd sql`, so there is no bd-side derivation to reimplement | **A** |
 | `warnings` dolt mode | `bd dolt status` | bd's own report on a store, not a row the server serves | B |
 | `molecules` epic status | `bd show <epic>` | full bead record through bd | B |
-| `prefix_mismatches` | `bd config get issue_prefix` | bd config resolution (layered), not a plain row | B |
+| `prefix_mismatches` | `bd config get issue_prefix` | **reclassified `bh-a8sox`**: `SELECT value FROM config WHERE key = 'issue_prefix'`, a stored row with no bd-side layering for THIS key — see §15 | **A** |
 | `seats` | hitch preflights | not a bead-store read at all | B |
 | federation status / remote assess | per-hive engine + network | not a bead-store read at all | B |
 
@@ -794,7 +794,7 @@ now written down rather than assumed.
 | `bd --version` | **H** | host-global; the defect above |
 | `git config --global --get-regexp` ×8 | **H** | host-global; already memoized (`bh-z31lc`) |
 | local bd schema version | **H** | host-global; file-cached, correct |
-| `bd config get issue_prefix` ×14 | B | genuinely per-hive (shape-A retest: `bh-a8sox`) |
+| `bd config get issue_prefix` ×14 | **A** | reclassified — a stored `config` row, not layered; see §15 (`bh-a8sox`) |
 | `bd dolt status` ×15 | B | genuinely per-hive |
 | `bd show <epic>` ×10 | B | genuinely per-hive (shape-A retarget: `bh-xi0m1`) |
 | `channels.scan` release tags ×15 | B | genuinely per-hive — **each repo's OWN tags. CHECKED and ruled out; do not re-derive.** |
@@ -813,3 +813,130 @@ returns without doing work. Batching a call that is currently a no-op would opti
 measurement artefact. The real question — what these cost on a host where the user bus works,
 and whether bh should be probing units it cannot reach at all — needs measuring somewhere the
 call actually functions. Recorded rather than guessed at.
+
+---
+
+## §15 — `bd config get issue_prefix` retested: it IS shape A (bh-a8sox)
+
+§11 and §14 both classified config reads as shape B on the reasoning "bd config resolution is
+layered (global/project/local), not a plain row" (bh-0gvs3), applied to config reads AS A
+CLASS. That reasoning was never tested against `issue_prefix` specifically — and by the time of
+this bead's own read-path measurement, `bd config get issue_prefix` had become the single most
+expensive bd verb on the read path: **14 invocations at ~565 ms each, 7.91 s of summed process
+time**, warm and cold alike.
+
+### What the value MEANS — read from bd's own source before any SQL was written
+
+Traced `bd config get issue_prefix` through `cmd/bd/config.go`'s `configGetCmd`:
+
+1. `issue_prefix` is **not** a YAML-only key — `internal/config.IsYamlOnlyKey("issue_prefix")`
+   is asserted `false` by bd's own test table (`internal/config/yaml_config_test.go`).
+2. It is **not** one of the command's two special-cased derived values (`backup.enabled`,
+   which reports an auto-detected effective value with a source label, and `beads.role`, read
+   from git config) — neither branch matches `issue_prefix`.
+3. It falls straight through to `store.GetConfig(ctx, key)`, which for the sql-server-backed
+   store resolves: `DoltStore.GetConfig` (`internal/storage/dolt/config.go`) →
+   `issueops.GetConfigInTx` (`internal/storage/issueops/config_metadata.go`) →
+
+   ```go
+   func GetConfigInTx(ctx context.Context, tx DBTX, key string) (string, error) {
+       var value string
+       err := tx.QueryRowContext(ctx, "SELECT value FROM config WHERE `key` = ?", key).Scan(&value)
+       ...
+   }
+   ```
+
+   That is the WHOLE implementation. No merge of a project/global/local tier, no derivation
+   layered on top of the stored value — it is `SELECT value FROM config WHERE key = ?` inside a
+   read transaction. The only transformation anywhere near this key is on the WRITE side
+   (`SetConfigInTx` / `configSQLRepositoryImpl.SetConfig` both strip a trailing hyphen before the
+   `REPLACE INTO config` that stores it), so what `GetConfigInTx` returns is exactly what a
+   direct `SELECT` against the `config` table would return — nothing to reimplement, nothing to
+   drift out from under a hand-rolled equivalent.
+
+### Classification
+
+**Stored row in the per-database `config` table → shape A applies.** The "config resolution is
+layered" premise does hold for *some* config-adjacent reads bd exposes — `backup.enabled`'s
+effective value, `GetInfraTypes`'s YAML-then-default fallback, `GetCustomTypes`'s table-then-
+config-then-YAML union — but none of that is `issue_prefix`. Applying a class-wide rule to every
+member of the class without checking each one is exactly the gap this bead exists to close.
+
+### The `hub_bulk.DENY_TABLES` objection, engaged directly
+
+`hub_bulk.py` lists `config` in `DENY_TABLES` with the docstring: "**NEVER COPY** —
+identity/bookkeeping. Each database's OWN identity; copying one INTO the aggregate corrupts
+it." That is a real constraint, and it is not the same claim as "never read this table":
+
+- `DENY_TABLES` governs `hub_bulk`'s `INSERT ... SELECT` copy path — moving ROWS from one
+  hive's database into a DIFFERENT (aggregate) database's table. Copying hive A's
+  `issue_prefix` row into hive B's `config` table would silently overwrite B's own identity —
+  that is the corruption the deny-list prevents, and it is real.
+- `dolt_health.bulk_issue_prefixes` (this bead) does the opposite of a copy: it runs a
+  read-only `SELECT ... FROM <db>.config WHERE key = 'issue_prefix'` against EACH database by
+  its own qualified name, in a `UNION ALL`, and returns each row labelled by the database it
+  came from. Nothing is written, and nothing crosses a database boundary except the read-only
+  connection itself — the same shape `bulk_schema_versions` already uses for
+  `schema_migrations`, another table not in `DENY_TABLES`'s copy sense but also never copied by
+  this module.
+
+So `DENY_TABLES` and this change are answering different questions and do not conflict:
+"never COPY `config` between databases" (write-path identity rule) is orthogonal to
+"a cross-database read of `config` is sound" (read-path classification, this bead's question).
+
+### What changed
+
+`dolt_health.bulk_issue_prefixes` (new, mirrors `bulk_schema_versions`): one `bd sql` running a
+`SELECT '<db>' AS db, value FROM <db>.config WHERE key = 'issue_prefix'` per database, joined
+with `UNION ALL`, against every server-mode hive with a `store_locator.recorded_server_database`
+— never `server_database`, which falls back to a guess and would let one un-migrated hive's
+guessed name fail the whole union (same reasoning `warnings`' schema-version caller already
+documents). `doctor._data_prefix_mismatches` now tries the bulk read first and falls back to the
+existing per-hive `bd config get issue_prefix` (`fleet.fanout`) for whatever the bulk read
+didn't cover — embedded-mode hives (no database on the shared server to qualify) and any
+server-mode hive the bulk query didn't answer for. Input order is still preserved end to end.
+Tests: `tests/test_dolt_health.py` (`bulk_issue_prefixes`'s own unit coverage, same shape as
+`bulk_schema_versions`'s) and `tests/test_doctor.py` (the bulk-hit path, the bulk-miss fallback,
+and the embedded-mode-never-offered-to-bulk path, each asserted directly).
+
+### Numbers
+
+Measured 2026-08-19 on beadhive-factory, 14 registered hives / 14 local `.beads` stores (13
+server-mode with a recorded database, 1 embedded), `bh doctor -v`, three warm runs each side.
+
+| | before (shape B, 14 spawns) | after (shape A + 1 fallback spawn) |
+|---|---:|---:|
+| `prefix_mismatches` section | 1.47 / 2.56 / 2.27 s | 0.73 / 0.70 / 0.70 s |
+| `bh doctor` total | 12.7 / 16.1 / 17.8 s | 11.2 / 10.8 / 11.3 s |
+
+**This IS a measured wall-clock win at today's fleet size** — unlike §11's `schema_migrations`
+result, where `bh-ti7ws` had already pooled the per-hive fallback so shape A's removal fell
+inside the noise. Here the per-hive path (`fleet.fanout` over 14 sequential-cost `bd config
+get` spawns, ~565 ms each) was still the section's binding cost, so replacing 13 of those 14
+spawns with one query removes real wall time: roughly 2.1 s → 0.7 s, a ~3x section-level
+speedup. The single embedded-mode hive still costs one `bd config get` spawn under the
+fallback.
+
+**The fleet-size-scaling argument is separate from that wall-clock number, and is stated
+separately on purpose (the sizing note this bead's brief asked for):** the wall-clock win
+above is specific to today's 14-hive fleet and this host's load; what does NOT depend on
+either is that the read count for server-mode hives dropped from N to 1 — this dataset's cost
+stops growing as hives are added, independent of whatever the per-spawn cost happens to be on
+a given day. The `~565 ms`/spawn figure this bead opened with is itself evidence that per-spawn
+cost is not stable across measurements (§2/§8/§11 all show the same command's per-spawn cost
+moving with host load) — the scaling argument is the part of this result that is not
+sensitive to that noise.
+
+### Verification
+
+`_data_prefix_mismatches`'s existing suite (order-preservation under concurrency, skip-on-
+unreadable, skip-on-unparseable, end-to-end section rendering) passes unmodified against the
+new code path — on this host every registered hive has no `dolt_server_database` recorded in
+its fixture-constructed metadata (the `prefix_hive` fixture creates a bare `.beads/` dir with
+no metadata.json), which `store_locator.recorded_server_database` correctly reports as `""`,
+so the bulk map comes back empty and every existing test exercises the SAME fallback path it
+always did — behavior is unchanged for a hive with no recorded server database, exactly as
+`bulk_schema_versions`' own caller depends on. Three new tests exercise the bulk-hit, bulk-miss,
+and embedded-mode paths explicitly (`test_data_prefix_mismatches_uses_bulk_read_for_
+server_mode_hives`, `..._falls_back_per_hive_when_bulk_omits_a_hive`,
+`..._embedded_hive_skips_bulk_and_uses_fallback`).

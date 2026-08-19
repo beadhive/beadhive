@@ -883,3 +883,60 @@ def bulk_schema_versions(
         for hive_dir, db in safe
         if db in by_db
     }
+
+
+# ---- shape A: every server-mode hive's issue_prefix in ONE query (bh-a8sox) ------------------
+# CLASSIFICATION, per fleet.py's rule — read bd's own implementation before writing SQL:
+#   `bd config get issue_prefix` (cmd/bd/config.go) is not a YAML-only key and not one of the
+#   command's special-cased derived values (`backup.enabled`, `beads.role`) — it falls through
+#   to `store.GetConfig`, which for the sql-server-backed store
+#   (internal/storage/dolt/config.go -> internal/storage/issueops/config_metadata.go) runs
+#   `SELECT value FROM config WHERE key = ?` inside a transaction. That is the WHOLE
+#   implementation: no resolution layered on top, no merge of a project/global/local tier — the
+#   "config resolution is layered" reasoning bh-0gvs3 applied to config reads AS A CLASS does
+#   not hold for this specific key. `issue_prefix` is a stored row in the per-database `config`
+#   table, same as `schema_migrations`'s version above. Shape A applies.
+#
+# hub_bulk.DENY_TABLES lists `config` as NEVER-COPY, which is a different claim than NEVER-READ:
+# that list governs `INSERT ... SELECT` moving one database's rows INTO another database's
+# table (identity corruption — hive A's `issue_prefix` row overwriting hive B's). This function
+# does the opposite of a copy: it reads each database's OWN `config` row, labelled by that
+# database's own qualified name, and returns them keyed by hive — nothing crosses a database
+# boundary except the read-only connection itself, exactly as `bulk_schema_versions` already
+# does for `schema_migrations`.
+#
+# NOT COVERED, deliberately: embedded-mode hives, same as `bulk_schema_versions` — no database
+# on the shared server to qualify, so they stay on the per-hive `bd config get` under shape B.
+
+
+def bulk_issue_prefixes(
+    targets: list[tuple[Path, str]], *, timeout: float = DEFAULT_SCHEMA_PROBE_TIMEOUT
+) -> dict[Path, str]:
+    """One cross-database query for every ``(hive_dir, database)`` in *targets*'s raw
+    ``issue_prefix`` value — exactly what the stored row holds (bd's own ``SetConfig`` already
+    strips a trailing hyphen at WRITE time, so this needs no normalization to match what
+    ``bd config get issue_prefix`` prints; any further normalization, e.g.
+    ``hive_repair.normalize_prefix``, is left to the caller, same as the per-hive path already
+    does).
+
+    Returns a map for the hives that answered; a hive missing from the map is UNANSWERED (no
+    row, a dropped unsafe database name, or a query failure) — the caller falls back to the
+    per-hive ``bd config get`` for it, never treats a missing key as "no prefix configured"."""
+    if not targets:
+        return {}
+    safe = [(d, db) for d, db in targets if db and db == store_locator.sanitize_database_name(db)]
+    if not safe:
+        return {}
+    query = " UNION ALL ".join(
+        f"SELECT '{db}' AS db, value FROM {db}.config WHERE `key` = 'issue_prefix'"
+        for _dir, db in safe
+    )
+    rows = fleet.sql_rows(fleet.sql(safe[0][0], query, timeout=timeout))
+    if not isinstance(rows, list):
+        return {}
+    by_db = {
+        str(r["db"]): str(r["value"])
+        for r in rows
+        if isinstance(r, dict) and "db" in r and isinstance(r.get("value"), str)
+    }
+    return {hive_dir: by_db[db] for hive_dir, db in safe if db in by_db}
