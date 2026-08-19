@@ -351,3 +351,40 @@ covered and .2 should not pretend otherwise:
   no verb outside those five was measured at all.
 - **The `events` table's history gap is unexplained** and should be understood before .2 designs
   the event layer on top of it. Do not resolve it by compacting or flattening anything.
+
+## 8. Re-measured after bh-i6e5g (2026-08-19)
+
+The config-read cluster of §2 is gone. `sync.remote` now comes off `.beads/config.yaml`
+(`bd.sync_remote`, a plain file read) and `beads.role` off `git config --get` with the process cwd
+pinned to the hive (`bd.beads_role` — bh-s08me's scoping, kept and covered by a real-git test);
+`bd --version` is memoized for the process. Same instrument as §1/§2 (in-process
+`doctor.doctor_payload()`, chdir'd to the registered clone), same host, runs interleaved
+before/after to absorb host noise:
+
+| section | before (2 runs) | after (2 runs) |
+|---|---:|---:|
+| `node_id` | 8.40 s / 9.44 s | **0.47 s / 0.41 s** |
+| `beads_role` | 7.89 s / 8.90 s | **0.12 s / 0.11 s** |
+| `prefix_mismatches` | 7.72 s / 5.36 s | 5.81 s / 4.86 s (unchanged by design) |
+| `warnings` | 9.04 s / 7.17 s | 6.25 s / 5.57 s (the `bd --version` memo) |
+| **whole payload** | **42.11 s / 39.66 s** | **32.92 s / 29.03 s** |
+
+**~10 s off a ~41 s warm run (≈25 %), and 44 `bd config get` spawns became 14.** The two
+retargeted sections went 16.3–18.3 s → 0.5 s combined; the memo took ~1.4 s more out of
+`warnings`. `bd --version` fell 12 spawns → 1.
+
+Not changed, and why:
+
+- **`prefix_mismatches` still spawns one `bd` per hive.** `issue_prefix` lives in the dolt
+  `config` TABLE, not in any file — `.beads/config.yaml` does not carry it and `metadata.json`
+  records engine/database only. One `bd` read per hive is the floor until the cache layer covers
+  it; that is bh-13spb's job, not a source-shape one.
+- **The rest of `warnings`** (`bd sql … schema_migrations`, `bd dolt status`) is the same fan-out
+  shape with different keys and is tracked under bh-b5v4y.
+- **`molecules`** is unchanged: its `git for-each-ref` calls are 0.12 s for 20 spawns (§2), so
+  there is nothing to win there; its real cost is 11 `bd show` calls, also bh-b5v4y.
+- `seats` swings 2.8–16.3 s run to run here (hitch), independent of this change — bh-ls1ks.
+
+`just bench-read-path` was NOT the instrument for the "after" column: it shells the *installed*
+`bh`, which does not carry this change, so it can only reproduce the "before" numbers until this
+lands.
