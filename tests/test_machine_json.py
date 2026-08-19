@@ -180,7 +180,7 @@ def test_doctor_json_and_text_render_the_same_object(hive, fakebd, monkeypatch):
 
     real = doctor_mod.doctor_payload()
     seen: list[dict] = []
-    monkeypatch.setattr(doctor_mod, "doctor_payload", lambda: (seen.append(real), real)[1])
+    monkeypatch.setattr(doctor_mod, "doctor_payload", lambda **kwargs: (seen.append(real), real)[1])
 
     json_out = runner.invoke(app, ["doctor", "--json"])
     text_out = runner.invoke(app, ["doctor"])

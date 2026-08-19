@@ -2684,14 +2684,23 @@ def doctor_cmd(
     verbose: bool = typer.Option(
         False, "-v", "--verbose", help="also print the per-section timings breakdown (bh-8nnh7)"
     ),
+    seats: bool = typer.Option(
+        False,
+        "--seats",
+        help=(
+            "run the full per-seat `hitch profile preflight` check (~2.7s, 7 seats); the "
+            "default report only checks that hitch itself is usable and says so (bh-gqfrm)"
+        ),
+    ),
 ):
     """`--json` (bh-0olv9.2) emits `doctor.doctor_payload` — the same section-keyed object the
     text render is built from, and the same one the `beadhive://doctor` MCP resource serves.
     `--verbose` prints the per-section wall-clock timings under the text report; the JSON
-    payload always carries them regardless of this flag."""
+    payload always carries them regardless of this flag. `--seats` opts into the full 7-seat
+    hitch preflight fanout (bh-gqfrm) — the default Seats section skips it and says so."""
     from . import doctor
 
-    doctor.doctor(as_json=as_json, verbose=verbose)
+    doctor.doctor(as_json=as_json, verbose=verbose, seats=seats)
 
 
 # ---- backup (bh-cmqp.2, bh-5009a) --------------------------------------------

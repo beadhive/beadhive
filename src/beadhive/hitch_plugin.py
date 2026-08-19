@@ -295,7 +295,7 @@ def seat_reports(cfg) -> list[dict]:
     return fleet.fanout(_one, seats)
 
 
-def _readiness(cfg, entry) -> tuple[str, str] | None:
+def _readiness(cfg, entry, *, full: bool = True) -> tuple[str, str] | None:
     """hive-ready hook: only invoked when hitch is enabled (the generic
     ``hive_ready._plugin_checks`` loop reports "na" for a disabled plugin without calling this —
     an optional integration stays silent when unused). Checks the same prerequisites :func:`up`
@@ -305,7 +305,15 @@ def _readiness(cfg, entry) -> tuple[str, str] | None:
     rides (`doctor._data_seats`), not a second bespoke path. ``state`` degrades to ``"warn"`` when
     any seat is blocked (never ``"missing"``: the plugin itself is fine, only a seat lacks a
     capability); with no seat-aligned profiles configured this is byte-identical to the prior
-    behavior."""
+    behavior.
+
+    ``full=False`` (bh-gqfrm) skips :func:`seat_reports` entirely — the 7-way
+    ``hitch profile preflight`` fanout is the most expensive thing this hook does (~2.7s of the
+    ~8.3s a warm `bh doctor` costs; see docs/BH_DATA_PIPELINE.md §4.1) and `bh hive ready` /
+    `bh doctor`'s default report only need "is hitch usable at all" (PATH + repo + catalog
+    present), not "which of the 7 seats specifically". Only the prerequisite checks above run;
+    the returned detail says explicitly that per-seat detail was skipped and how to get it, so a
+    clean report never silently means "and all seats were fine" (bh-gqfrm's acceptance bar)."""
     command = config.hitch_command(cfg)
     if shutil.which(command) is None:
         return ("missing", f"{command!r} not found on PATH")
@@ -315,6 +323,13 @@ def _readiness(cfg, entry) -> tuple[str, str] | None:
     profiles_file, catalog_file = _repo_files(repo)
     if not profiles_file.is_file() or not catalog_file.is_file():
         return ("warn", f"{repo} missing profiles/local.yaml or catalogs/local.yaml")
+
+    if not full:
+        return (
+            "ok",
+            f"hitch on PATH; repo {repo}; per-seat checks skipped by default "
+            "(pass --seats for per-seat runnability)",
+        )
 
     seats = seat_reports(cfg)
     if not seats:
