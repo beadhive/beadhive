@@ -13,6 +13,55 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.13.0 (2026-08-19)
+
+### Feat
+
+- **fleet**: add shape H for host-global facts, and a pool-safe memo (bh-w49zv, bh-gy7bc)
+- **hive-repair**: record dolt_server_database instead of re-deriving it (bh-td8t9)
+- **hq**: HQ's Dolt half carries only hq-prefixed beads
+- **hub**: make the hub a first-class, prefix-less, per-host derived aggregate
+- **hive,claude,codex**: optional global sandbox grant (bh hive init --claude/--codex --global)
+- **hive,codex**: project-local Codex sandbox grant (bh hive init --codex)
+- **doctor**: add per-section timings to doctor's payload (bh-8nnh7)
+- **bench**: add manual read-path benchmark recipe (bh-amq08)
+- **doctor,onboard**: gate node_id and beads.role at onboard and in bh doctor
+- **hive-repair**: extend hive repair to a three-mode detect/apply/verify skeleton
+
+### Fix
+
+- **doctor**: add seats_checked machine marker to the JSON/MCP payload
+- **read-path**: ask the bulk probe only for RECORDED database names (bh-0gvs3)
+- **dolt-health**: drop --skip-agents/--skip-hooks from the scratch probe (review)
+- **dolt-health**: don't treat bd's non-fatal Warning: line as a failed schema probe
+- **doctor**: lock-guard host.py's YAML singleton, correct write-path comment
+- **docs**: tag the measurement doc's fenced blocks for markdownlint
+- **hub**: hydrate each cache into its own database on the fleet shared server
+- **worktree,hive-ready**: refuse Codex-unreachable persistent worktree roots
+- **onboard**: pin beads.role reads/writes to ctx.base too, complete the caller sweep
+- **doctor,hive-repair**: scope beads.role reads/writes to the target hive, not the runner's cwd
+- **doctor,guard**: narrow raw-bd bypass docstring, pin bh-1pg77 regression
+
+### Refactor
+
+- **hive-schema**: keep the probed= seam off refresh(), which has no production caller
+- **fleet**: two cross-hive pipeline shapes, five hand-rolled pools onto one (bh-1qxjn)
+
+### Perf
+
+- **doctor**: skip the 7-seat hitch preflight fanout by default, opt in with --seats
+- **metadata**: parallelize read_fleet's miss path, attribute the 10.66s cold cost
+- **doctor**: retarget molecules stage 2 to shape A (bh-xi0m1)
+- **read-path**: reclassify issue_prefix config reads as shape A (bh-a8sox)
+- **read-path**: memoize the two re-forked git facts; record the git inventory (bh-z31lc)
+- **read-path**: one cross-hive bd sql read for the schema-version probe (bh-0gvs3)
+- **doctor**: fan out the molecules section's 11 bd show calls (bh-7fen2)
+- **dolt-health**: confirm the cold scratch bd-init cost is unavoidable, trim its scaffolding
+- **doctor**: run warnings' 15 bd dolt-status/schema-migrations spawns concurrently
+- **doctor**: run prefix_mismatches' 15 bd config-get spawns concurrently
+- **doctor**: drop 30 bd config-get spawns; read sync.remote and beads.role directly
+- **hitch**: run seat preflights concurrently, 12.7s -> ~2.4s
+
 ## v0.12.2 (2026-08-16)
 
 ### Fix
