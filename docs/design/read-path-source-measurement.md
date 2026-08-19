@@ -488,11 +488,15 @@ bare `dolt init` (no schema migrations applied) is 90 ms. The gap is bd replayin
 migration the binary knows against a fresh embedded store — the actual `LatestVersion()` proof,
 by construction, and there is no cheaper way to get it from the outside.
 
-**What changed:** `_scratch_probe_local_version`'s `bd init` now passes `--skip-agents
---skip-hooks` — measured as free (no time cost, see table) and it removes filesystem writes
-(an `AGENTS.md`, a git-hooks install) a throwaway probe directory that gets `rm -rf`'d
-immediately has no business making. This does not move the needle on wall time; it is a
-correctness-neutral cleanup, not the fix.
+**What changed: nothing in `_scratch_probe_local_version`'s `bd init` invocation.** The table
+above shows `--skip-agents --skip-hooks` measured free on wall time, and an initial pass added
+them anyway for the filesystem-write side effect. Reviewed back out: they buy zero measured
+time against a directory that's `rm -rf`'d moments later, and some `bd` builds reject an
+unknown flag outright (`Error: unknown flag: --skip-bogus`), which would silently blank the
+entire schema-skew section on such a build (`doctor._bd_schema_skew_warnings`'s `local.version
+is None` short-circuit) rather than just failing loud. Zero upside, real downside — not worth
+it. This bead's only code change is the failure-detail plumbing that lives in bh-j50yv's
+commit; §10 itself is a documented negative result.
 
 **Full `bh doctor` cold/warm re-measurement was not run via `just bench-read-path` here**: that
 script drives the `bh` binary on `$PATH` (the machine's globally `uv tool install`ed
