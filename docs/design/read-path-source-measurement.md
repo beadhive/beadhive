@@ -499,15 +499,19 @@ it. This bead's only code change is the failure-detail plumbing that lives in bh
 commit; §10 itself is a documented negative result.
 
 **Full `bh doctor` cold/warm re-measurement was not run via `just bench-read-path` here**: that
-script drives the `bh` binary on `$PATH` (the machine's globally `uv tool install`ed
-0.12.2), not this worktree's modified `src/`, and this bead's fix lives entirely inside
-`_scratch_probe_local_version`/probe failure-detail plumbing — reinstalling the global `bh`
-mid-flight on a shared host with other concurrent seats was judged the wrong risk for a change
-already shown, at the isolated-call level, not to move the number. The isolated measurement
-above (same subprocess, same host, same load window, before/after the flag change) is the
-honest substitute: it shows the target call is unchanged at ~4.7–4.9 s, which is expected since
-§10.3 established that time is migration replay, not something `--skip-agents/--skip-hooks`
-touches. Net effect on `bh doctor` cold wall-time: **~0 s from this bead's code change**; the
-4.96 s line item stands as a measured, unavoidable cost of learning `LatestVersion()` the only
-way bd's CLI surface allows, now correctly NOT misreported as a failure when a bd `Warning:`
-line shares the same subprocess (bh-j50yv, same molecule, same file).
+script drives the `bh` binary on `$PATH` (the machine's globally `uv tool install`ed 0.12.2),
+not this worktree's modified `src/`, and re-installing the global `bh` mid-flight on a shared
+host with other concurrent seats was judged the wrong risk to take for a change already shown,
+at the isolated-call level, not to move the number. The isolated measurement above (same
+subprocess, same host, same load window) is the honest substitute: it shows the target call is
+unchanged at ~4.7–4.9 s either way, which is expected since §10.3 established that time is
+migration replay, not something `--skip-agents`/`--skip-hooks` ever touched. Net effect on `bh
+doctor` cold wall-time from this bead: **~0 s** — there is, in the end, no functional code
+change here (the flags were added, then reviewed back out; see "What changed" above), so a
+before/after wall-time delta is vacuously zero. The 4.96 s line item stands as a measured,
+unavoidable cost of learning `LatestVersion()` the only way bd's CLI surface allows. It has no
+bearing on the separate bh-j50yv fix in this same molecule — that one corrects how a probe's
+FAILURE DETAIL is reported when a real error shares a subprocess with a harmless `Warning:`
+line (see `_probe_failure`'s docstring in `dolt_health.py`), not whether the probe treats a
+`Warning:` as a failure — measurement there (bh-j50yv's own review) found `bd` already exits 0
+on a warning-only stderr, so that was never the mechanism.

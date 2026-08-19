@@ -473,6 +473,7 @@ def test_server_probe_fails_on_nonzero_exit_with_a_real_error_and_no_parseable_s
     monkeypatch.setattr(dolt_health, "run", lambda *a, **k: Completed(1, "", "connection refused"))
     result = dolt_health.probe_server_schema_version(tmp_path)
     assert result.version is None
+    assert "connection refused" in result.detail
 
 
 def test_server_probe_reports_the_real_error_not_a_buried_warning(tmp_path, monkeypatch):
