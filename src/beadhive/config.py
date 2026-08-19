@@ -16,6 +16,7 @@ import re
 import shutil
 import sys
 import tempfile
+import threading
 from collections.abc import Mapping, MutableMapping
 from importlib.resources import files
 from pathlib import Path
@@ -176,6 +177,12 @@ _yaml = YAML()
 _yaml.preserve_quotes = True
 _yaml.indent(mapping=2, sequence=4, offset=2)
 _yaml.width = 4096  # keep flow-style managed_repos entries on one line each
+
+# `_yaml` is one shared, stateful `ruamel.yaml.YAML()` instance — `load()`/`dump()` mutate its
+# internal parser/composer state, so two threads calling in at once (bh-3qo60: `load()` runs on
+# every `bd.run`, and concurrent `bd` spawns now call it concurrently) corrupt each other's parse
+# and raise spurious `ParserError`s on a perfectly valid file. One lock around every use.
+_yaml_lock = threading.Lock()
 
 
 def worktrees_ephemeral(cfg=None) -> bool:
@@ -456,7 +463,9 @@ def load_host():
             f"{BINARY_ALIAS} config not found at {p}\n"
             f"  scaffold it with:  {BINARY_ALIAS} config init"
         )
-    return _yaml.load(p.read_text())
+    text = p.read_text()
+    with _yaml_lock:
+        return _yaml.load(text)
 
 
 def load_fleet():
@@ -468,7 +477,9 @@ def load_fleet():
     p = fleet_path()
     if not p.is_file():
         return CommentedMap()
-    return _yaml.load(p.read_text()) or CommentedMap()
+    text = p.read_text()
+    with _yaml_lock:
+        return _yaml.load(text) or CommentedMap()
 
 
 def _leaf_paths(node, prefix: str = ""):
@@ -700,7 +711,7 @@ def _guard_hq_registry_controller() -> None:
 def save(data) -> None:
     _guard_hq_registry_controller()  # §2.1: controller is read-only over the HQ registry
     config_path().parent.mkdir(parents=True, exist_ok=True)
-    with config_path().open("w") as f:
+    with _yaml_lock, config_path().open("w") as f:
         _yaml.dump(data, f)
 
 
@@ -710,7 +721,7 @@ def save_fleet(data) -> None:
     HQ store (that's `bh hq push`'s job, out of scope here) — just rewrites the file
     :func:`load_fleet` reads back."""
     fleet_path().parent.mkdir(parents=True, exist_ok=True)
-    with fleet_path().open("w") as f:
+    with _yaml_lock, fleet_path().open("w") as f:
         _yaml.dump(data, f)
 
 
