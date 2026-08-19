@@ -446,9 +446,11 @@ def test_server_probe_uses_bd_sql(tmp_path, monkeypatch):
 def test_server_probe_succeeds_despite_nonzero_exit_when_a_bd_warning_is_the_only_stderr(
     tmp_path, monkeypatch
 ):
-    """bh-j50yv: a subprocess that exits non-zero but whose only stderr line is bd's own
-    non-fatal `Warning:` advisory (the real repro: `.beads` has permissions 0755) must still
-    succeed if the answer parsed off stdout — not read as a failed probe."""
+    """bh-j50yv: defensive coverage for a shape a real `bd`/`dolt` invocation does not
+    currently produce (measured: a `.beads` permissions `Warning:` exits 0, not 1 — see
+    `test_server_probe_reports_the_real_error_not_a_buried_warning` for the actual repro). If
+    a future `bd`/`dolt` build ever DOES pair a nonzero exit with an all-warning stderr, the
+    optimistic stdout-parse must still win — not read as a failed probe."""
     monkeypatch.setattr(
         dolt_health,
         "run",
@@ -471,13 +473,36 @@ def test_server_probe_fails_on_nonzero_exit_with_a_real_error_and_no_parseable_s
     monkeypatch.setattr(dolt_health, "run", lambda *a, **k: Completed(1, "", "connection refused"))
     result = dolt_health.probe_server_schema_version(tmp_path)
     assert result.version is None
-    assert "connection refused" in result.detail
+
+
+def test_server_probe_reports_the_real_error_not_a_buried_warning(tmp_path, monkeypatch):
+    """bh-j50yv's actual repro, measured directly: `bd sql` against an embedded-mode store
+    exits 1 with a `.beads` permissions `Warning:` as stderr's FIRST line and the real cause
+    (`Error: 'bd sql' is not yet supported in embedded mode`) on its second. The probe was
+    already failing correctly here (returncode-keyed, as `main` always was) — the bug was the
+    OLD detail extraction (`(res.stderr or res.stdout or ...).splitlines()[:1]`) reporting the
+    first line, i.e. the harmless warning, and discarding the real error beneath it."""
+    monkeypatch.setattr(
+        dolt_health,
+        "run",
+        lambda *a, **k: Completed(
+            1,
+            "",
+            f"Warning: {tmp_path}/.beads has permissions 0755 (recommended: 0700)\n"
+            "Error: 'bd sql' is not yet supported in embedded mode",
+        ),
+    )
+    result = dolt_health.probe_server_schema_version(tmp_path)
+    assert result.version is None
+    assert "not yet supported in embedded mode" in result.detail
+    assert "0755" not in result.detail
 
 
 def test_embedded_probe_succeeds_despite_nonzero_exit_when_a_bd_warning_is_the_only_stderr(
     tmp_path, monkeypatch
 ):
-    """Same fix, embedded path (bh-j50yv)."""
+    """Same defensive coverage, embedded path (bh-j50yv) — see the server-probe test above for
+    why this exit/stderr combination isn't the real repro."""
     db_dir = tmp_path / "db"
     (db_dir / ".dolt").mkdir(parents=True)
     monkeypatch.setattr(

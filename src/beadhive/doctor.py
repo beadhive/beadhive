@@ -1882,7 +1882,16 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
         # that prior record is still the last known-true observation and must be reported
         # (possibly stale), not discarded just because THIS run's probe didn't confirm it.
         record = hive_schema.try_load(hq_dir, e["provider"], e["org"], e["repo"])
-        return record, (None if record is not None else fail_detail)
+        if record is not None:
+            return record, None
+        if fail_detail is None and _refreshed is not None:
+            # The probe itself succeeded and refresh wrote a record, but the read-back came up
+            # empty anyway (e.g. a lost write) — say so instead of rendering "(no detail)" next
+            # to a message that claims the hive was never probed.
+            fail_detail = (
+                "probe succeeded and wrote a record, but reading it back immediately failed"
+            )
+        return record, fail_detail
 
     # `_bd_dolt_mode` (`bd dolt status`) and `refresh`'s probe (`bd sql schema_migrations`) are
     # independent, per-hive subprocess calls (bh-ti7ws: 15 hives, 1.84s + 2.41s sequential).

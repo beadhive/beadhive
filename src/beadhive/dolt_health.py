@@ -270,8 +270,10 @@ def _probe_failure(res, *, tool: str, target) -> SchemaProbeResult:
     "TWO DECOYS" section for the same lesson applied elsewhere), so a nonzero code with only a
     `Warning:` line on stderr still counts as failed HERE — the caller only reaches this helper
     once the optimistic stdout-parse (the actual fix for bh-j50yv) has already come up empty.
-    Filtering the warning out of the DETAIL string keeps the reported reason legible instead of
-    quoting bd's own harmless warning back as if it were the cause."""
+    Prefers a non-`Warning:` stderr line for the DETAIL string when one exists, so a real error
+    sharing the subprocess with a harmless advisory isn't buried behind it; when stderr is
+    ALL warning (or empty), there's nothing else to report and the fallback quotes bd's own
+    output (warning included) rather than the uninformative default `f"{tool} failed"`."""
     non_warning = _non_warning_lines(res.stderr)
     detail_source = (
         "\n".join(non_warning) if non_warning else (res.stderr or res.stdout or f"{tool} failed")
@@ -476,8 +478,6 @@ def _scratch_probe_local_version(timeout: float) -> SchemaProbeResult:
                 "--prefix",
                 prefix,
                 "--non-interactive",
-                "--skip-agents",
-                "--skip-hooks",
             ],
             check=False,
             capture=True,
