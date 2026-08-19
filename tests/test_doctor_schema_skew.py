@@ -169,6 +169,39 @@ def test_stale_prior_record_survives_a_failed_reprobe_and_is_flagged(tmp_path, m
     assert hive_schema.load(hq_dir, "github", "acme", "zf") == stale_record
 
 
+def test_never_probed_hive_with_no_prior_record_warns_instead_of_going_silent(
+    tmp_path, monkeypatch
+):
+    """bh-j50yv's second half: a hive that has NEVER been successfully probed — no prior
+    record, and this run's probe also fails — must not just `continue` past silently. Silence
+    here is exactly the failure mode this bead exists to close: nothing under hq/hives, and
+    `bh doctor` exits 0 as though the hive doesn't exist."""
+    hq_dir = _hq(tmp_path)
+    _checkout(tmp_path)
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+    monkeypatch.setattr(doctor.safety, "_bd_dolt_mode", lambda path: "embedded")
+    monkeypatch.setattr(
+        dolt_health,
+        "local_bd_schema_version",
+        lambda **k: dolt_health.SchemaProbeResult(53, "cached"),
+    )
+    monkeypatch.setattr(
+        dolt_health,
+        "probe_raw_schema_version",
+        lambda *a, **k: dolt_health.SchemaProbeResult(None, "permissions warning treated as fatal"),
+    )
+
+    warns = doctor._bd_schema_skew_warnings({}, [_entry()], tmp_path)
+
+    assert len(warns) == 1
+    assert "zf" in warns[0]
+    assert "permissions warning treated as fatal" in warns[0]
+    assert "NOT represented under hq/hives" in warns[0]
+    # And, as before the fix, still no file was written — a failed probe never manufactures a
+    # placeholder record.
+    assert hive_schema.try_load(hq_dir, "github", "acme", "zf") is None
+
+
 def test_concurrent_probes_preserve_order_and_persist_every_hive(tmp_path, monkeypatch):
     """bh-ti7ws: the per-hive `bd dolt status` / `bd sql schema_migrations` probes now run in a
     thread pool, not sequentially. The reported warnings must still come back in registry order

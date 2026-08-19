@@ -1863,7 +1863,7 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
     if not entries:
         return []
 
-    def _probe(item: tuple[dict, Path]) -> hive_schema.HiveSchemaRecord | None:
+    def _probe(item: tuple[dict, Path]) -> tuple[hive_schema.HiveSchemaRecord | None, str | None]:
         e, path = item
         dolt_mode = safety._bd_dolt_mode(str(path))
         # WRITE PATH: `refresh` -> `hive_schema.save` writes ONE file per hive
@@ -1871,13 +1871,27 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
         # there is no file-level race to serialize. The shared, mutable state that IS on this
         # path: `hive_schema`'s module-level `ruamel.yaml.YAML()` (lock-guarded, mirroring
         # config.py's bh-3qo60 fix) AND `host.py`'s own `ruamel.yaml.YAML()` singleton, reached
-        # via `refresh` -> `host.host_id()` -> `host.load()` — a THIRD instance of the same
+        # via `refresh` -> `host.host_id()` -> `load()` — a THIRD instance of the same
         # bh-3qo60 pattern, now lock-guarded the same way (`host.py`'s `_yaml_lock`). Both are
         # safe to call from a pool as-is.
-        hive_schema.refresh(
+        _refreshed, fail_detail = hive_schema.refresh_with_detail(
             path, e["provider"], e["org"], e["repo"], hq_dir=hq_dir, dolt_mode=dolt_mode
         )
-        return hive_schema.try_load(hq_dir, e["provider"], e["org"], e["repo"])
+        # ALWAYS read back, even on a failed refresh: refresh writes nothing when the probe
+        # fails, but a PRIOR record may already be on disk from an earlier successful run —
+        # that prior record is still the last known-true observation and must be reported
+        # (possibly stale), not discarded just because THIS run's probe didn't confirm it.
+        record = hive_schema.try_load(hq_dir, e["provider"], e["org"], e["repo"])
+        if record is not None:
+            return record, None
+        if fail_detail is None and _refreshed is not None:
+            # The probe itself succeeded and refresh wrote a record, but the read-back came up
+            # empty anyway (e.g. a lost write) — say so instead of rendering "(no detail)" next
+            # to a message that claims the hive was never probed.
+            fail_detail = (
+                "probe succeeded and wrote a record, but reading it back immediately failed"
+            )
+        return record, fail_detail
 
     # `_bd_dolt_mode` (`bd dolt status`) and `refresh`'s probe (`bd sql schema_migrations`) are
     # independent, per-hive subprocess calls (bh-ti7ws: 15 hives, 1.84s + 2.41s sequential).
@@ -1886,12 +1900,22 @@ def _bd_schema_skew_warnings(cfg, hives, root: Path) -> list[str]:
     # (a ContextVar, invisible to pool workers) and can't silently defeat `bd.strict_reads()`.
     # Capped like the other pooled sections rather than one-thread-per-hive.
     with ThreadPoolExecutor(max_workers=min(len(entries), 16)) as pool:
-        records = list(pool.map(_probe, entries))
+        results = list(pool.map(_probe, entries))
 
     warns: list[str] = []
-    for (e, _path), record in zip(entries, records, strict=True):
+    for (e, _path), (record, fail_detail) in zip(entries, results, strict=True):
         if record is None:
-            continue  # never successfully probed, ever — nothing recorded to compare against
+            # NEVER successfully probed for this hive — `hive_schema.refresh` writes nothing on
+            # a failed probe, so with no prior record either there is nothing to compare
+            # against AND nothing under hq/hives for this hive. Silence here is exactly the
+            # bh-j50yv failure mode: a fully-onboarded hive that reads as "doesn't exist" to
+            # anything (e.g. QM) that enumerates the fleet from hq/hives. Say so.
+            warns.append(
+                f"\u26a0 hive '{e['prefix']}': schema version could not be probed "
+                f"({fail_detail or 'no detail'}) and no prior observation is recorded \u2014 "
+                "this hive is NOT represented under hq/hives yet"
+            )
+            continue
 
         advisory = dolt_health.schema_skew_advisory(str(e["prefix"]), local, record.schema_version)
         stale = hive_schema.is_stale(record)
