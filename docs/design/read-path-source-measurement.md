@@ -601,3 +601,23 @@ future does not reap the process behind it — it would report a timeout while t
 on. Bounding stays at `run.bounded`; PDEATHSIG in a threaded pool remains **bh-0tjqd's** call,
 since `preexec_fn` is unsafe in a multi-threaded process and a pool is exactly what makes bh
 multi-threaded. `fleet.py`'s docstring names that seam rather than leaving it implicit.
+
+### §11.1 — The baseline these documents are measured against (bh-k5ogw)
+
+`bh-5sizy` (read-path cache pipeline) and `bh-b5v4y` (the read-path FLOOR) both state their
+acceptance against a **45.8 s** warm `bh doctor`. That host no longer exists. The current
+baseline, on beadhive-factory, is the table in §11: **9.8–10.2 s warm**, load average 2.5–3.4.
+
+**`metadata_rollup` is BIMODAL, and no per-section table taken this session shows it.**
+`metadata.read_fleet` runs under a TTL: **193 ms** when its cache is fresh, **2.5–4.3 s** when
+the TTL has lapsed. When it fires it is the largest single section — larger than `seats`. Every
+timing table collected during this work happened to catch it warm, which is exactly how a
+section this size stays invisible. Anything reasoning about "the top section" must account for
+which mode it was in.
+
+The re-read `bh-k5ogw` asks for is not arithmetic. `bh-5sizy` premises that CACHING is the
+lever; `bh-b5v4y` already established that the floor is inside `bd` and `hitch` startup, which a
+cache defers to the next cold read rather than removes. At ~10 s warm the binding constraint is
+`bd`'s ~278 ms fixed startup, not any one section — and §11 adds a second answer the epic was
+not designed around: a cross-hive dataset that qualifies for shape A stops scaling with fleet
+size without any cache at all. Whoever kicks off `bh-5sizy` answers the premise question first.
