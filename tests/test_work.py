@@ -1023,6 +1023,38 @@ def test_submit_rejects_noisy_history(hive, fakebd):
     assert not fakebd.did("set-state", "mr-3")
 
 
+def test_submit_reports_network_failure_as_retryable_not_a_failed_verdict(
+    hive, fakebd, monkeypatch, capsys
+):
+    """bh-u9ip: a validate_cmd component (the license gate) that could not reach a network
+    dependency exits `RETRYABLE_VALIDATION_EXIT` (75), not the ordinary 1/127 a real
+    policy/config failure uses. `submit` must surface that as a distinct, retryable condition —
+    never as a validation FAILURE — and must open no gate and mutate no bead state, exactly as
+    an ordinary validation failure already does not."""
+    fakebd.seed("mr-net", title="t")
+    work.claim(bead="mr-net", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-net"), "feat: the change")
+    monkeypatch.setattr(worktree, "clean_checkout", lambda *a, **kw: work.RETRYABLE_VALIDATION_EXIT)
+
+    with pytest.raises(typer.Exit) as exc:
+        work.submit(bead="mr-net", hive="myrepo")
+
+    assert exc.value.exit_code == work.RETRYABLE_VALIDATION_EXIT
+    err = capsys.readouterr().err
+    assert "retry" in err.lower() and "not" in err.lower() and "policy" in err.lower()
+    assert "review" not in fakebd.states.get("mr-net", {})  # no state change
+    assert not fakebd.did("set-state", "mr-net")
+    assert not fakebd.did("gate", "create")
+
+
+def test_vres_labels_retryable_distinctly_from_a_failed_verdict():
+    """bh-u9ip: the otel attribute must not fold a network-unreachable exit into `fail` — the
+    whole point is that a network blip and a real failed verdict read differently downstream."""
+    assert work._vres(0) == "pass"
+    assert work._vres(1) == "fail"
+    assert work._vres(work.RETRYABLE_VALIDATION_EXIT) == "retryable"
+
+
 def test_submit_clean_local_gate_no_push(hive, fakebd):
     fakebd.seed("mr-4", title="t")
     work.claim(bead="mr-4", as_="", hive="myrepo")
@@ -4714,6 +4746,66 @@ def test_review_demo_none_then_runs_when_configured(hive, fakebd, capsys):
     work.review(bead="mr-5", run_validate=False, demo=True, view=["log"], hive="myrepo")
     out = capsys.readouterr().out
     assert "## Demo (true)" in out and "demo exit 0" in out
+
+
+# ---- bh-87ktb: review must resolve + refuse the same way batch verbs already do -----------
+
+
+def test_review_batch_member_validates_shared_batch_branch_not_stale_per_bead(hive, fakebd, capsys):
+    """THE false green (bh-87ktb, recorded on bh-r59o1.6, group acleanup, base 7a0091b). A batch
+    member's `wt/bead/issue/<id>` branch is provisioned once and never advances; review --run used
+    to resolve THAT branch, print "no commits over {base}", and validate it anyway — green for a
+    tree that never contained the change. review must resolve + validate the shared
+    wt/batch/<group> branch instead, and a stray per-bead branch/worktree (present exactly as it
+    was on the real incident) must not shadow that redirect."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:acleanup"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:acleanup"])
+    work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")
+    _commit(_batch_wt(hive, "acleanup"), "feat(a): the real change under review")
+    # the stray per-bead branch at base — provisioned exactly as a plain `claim` would leave it
+    worktree.ensure(config.load(), "myrepo", "mr-1.1")
+    assert _wt_of(hive, "mr-1.1").exists()
+
+    work.review(bead="mr-1.1", run_validate=True, demo=False, view=["log"], hive="myrepo")
+
+    out = capsys.readouterr().out
+    assert "## Change (wt/batch/acleanup vs main)" in out
+    assert "the real change under review" in out
+    assert "no commits over" not in out
+    assert "## Validation" in out and "validate exit 0" in out
+
+
+def test_review_batch_member_with_empty_batch_branch_still_refuses(hive, fakebd, capsys):
+    """Even with resolution fixed, a batch member whose shared batch branch genuinely has 0
+    commits over base must REFUSE --run (nonzero exit, validate_cmd never invoked) rather than
+    validate a no-op tree (bh-87ktb bar (b))."""
+    fakebd.seed("mr-1.1", title="a", parent="mr-1", labels=["batch:acleanup"])
+    fakebd.seed("mr-1.2", title="b", parent="mr-1", labels=["batch:acleanup"])
+    work.claim(bead="", as_="", group="mr-1.1,mr-1.2", hive="myrepo")  # no commits made
+
+    with pytest.raises(typer.Exit):
+        work.review(bead="mr-1.1", run_validate=True, demo=False, view=["log"], hive="myrepo")
+
+    out = capsys.readouterr().out
+    assert "no commits over" in out
+    assert "## Validation" not in out  # validate_cmd never invoked
+
+
+def test_review_run_refuses_empty_non_batch_bead_branch(hive, fakebd, capsys):
+    """Non-batch leaf bead with no commits over base: review --run REFUSES (bh-87ktb bar (a))
+    instead of the old print-a-warning-then-validate-anyway false green. The molecule container
+    and plain-leaf-bead happy paths (test_review_molecule_aggregates_intent_and_change /
+    test_review_bead_mode_shows_brief_and_change) are unaffected — this is the empty-branch case
+    those don't cover."""
+    fakebd.seed("mr-9", title="t")
+    work.claim(bead="mr-9", as_="", hive="myrepo")  # no commit — branch sits at base
+
+    with pytest.raises(typer.Exit):
+        work.review(bead="mr-9", run_validate=True, demo=False, view=["log"], hive="myrepo")
+
+    out = capsys.readouterr().out
+    assert "no commits over" in out
+    assert "## Validation" not in out
 
 
 # ---- ws work schedule: work.dispatch.mode wiring (fanout | collapsed | auto) ----------------

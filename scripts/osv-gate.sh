@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # Run an osv-scanner invocation and apply an enforce|warn mode to its exit code.
 #
-# Shared by `just license-check` and `just cve-report` so the two gates cannot drift apart in
-# how they treat findings — the modes must behave identically; only their DEFAULTS differ.
+# USED BY `just cve-report` ONLY, not `just license-check` (bh-1kvq split them apart —
+# osv-license-gate.sh is license-check's gate now, re-deriving a license-only status so a CVE
+# finding in the same scan can't block it). NOT in the `just check` / `bh work submit`
+# validate_cmd path — `check` never runs `cve-report`, so a network blip here never touches
+# submit. This file's docstring said "shared by both" until bh-u9ip; it was stale.
 #
 # Usage: osv-gate.sh <enforce|warn> <label> <osv-scanner args...>
 #
@@ -13,6 +16,13 @@
 #         filename it refuses to dispatch on. ALWAYS FATAL, in BOTH modes. This is the important
 #         one: swallowing 127 under `warn` would print a clean-looking pass for a scan that
 #         never examined anything.
+#
+# NOT GIVEN osv-license-gate.sh's exit-75 network/config split (bh-u9ip), deliberately: since
+# this gate is off the submit hot path and `cve_mode` defaults to `warn` (advisory), a network
+# blip here already fails soft rather than blocking a review. If `cve_mode` is ever flipped to
+# `enforce` by default, or this script is wired into `check`, revisit — the same collapse (a
+# broken proxy and a malformed allowlist both landing on exit 127) is present here too; see
+# osv-license-gate.sh's header for the fix shape and the measured evidence.
 set -uo pipefail
 
 # Deliberately `${1-}` rather than `${1:?}`: an EMPTY mode and a MISPELLED mode are the same

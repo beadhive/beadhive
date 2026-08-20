@@ -14,7 +14,7 @@ import json
 
 import typer
 
-from . import bd, config, work_logic, worktree
+from . import bd, config, work_group, work_logic, worktree
 from .work_logic import flag_rows
 
 # ---- core payload (command + resource share the same producer) ---------------
@@ -206,7 +206,24 @@ def review(
     entry, main, _target, bead_branch = worktree.locate(cfg, hive, bead)
     mol_branch = f"{worktree._BEAD_PREFIX}epic/{bead}"
     integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
-    if worktree._branch_exists(main, mol_branch):
+    # A batch member's work lives on the ONE shared wt/batch/<group> branch, never on the
+    # never-advanced wt/bead/issue/<id> `locate` resolves above — the same redirect
+    # work_group.py's submit_group/merge_group (and work._batch_worktree for resume/check)
+    # already apply (bh-c3nf). Checked first: a batch member has no meaningful bead_branch.
+    grp = work_group.batch_label(bd.show(bead, main))
+    if grp:
+        # worktree.locate applies the wt/ prefix — this is the same resolution
+        # work_group.py's submit_group/merge_group already use for the shared branch.
+        branch = worktree.locate(cfg, hive, branch=f"{work_group.BATCH_PREFIX}{grp}")[3]
+        if not worktree._branch_exists(main, branch):
+            typer.echo(
+                f"✗ {bead} is a batch member (batch:{grp}) but no {branch} branch exists — "
+                "nothing to review",
+                err=True,
+            )
+            raise typer.Exit(1)
+        work._print_brief(cfg, entry, bead, bd.show(bead, main))
+    elif worktree._branch_exists(main, mol_branch):
         branch = mol_branch
         _review_molecule_intent(cfg, entry, bead, main)
     elif worktree._branch_exists(main, bead_branch):
@@ -219,6 +236,7 @@ def review(
 
     # change packet
     base = worktree.base_of(entry, branch, integration)
+    rows = []
     if not base:
         typer.echo(f"\n✗ cannot compare {branch} against {integration} (present?)", err=True)
     else:
@@ -230,7 +248,17 @@ def review(
             for v in view:
                 _render_view(v, rows, base, config.max_commits(cfg, entry), entry, branch)
 
-    # execution (pristine checkout — never depends on dirty local state)
+    # execution (pristine checkout — never depends on dirty local state). REFUSE rather than
+    # validate/demo a branch with no confirmed commits over its base (bh-87ktb): the old code
+    # printed "no commits over {base}" and fell straight through to clean_checkout anyway,
+    # producing a green run against a tree that never contained the change under review.
+    if (run_validate or demo) and not rows:
+        typer.echo(
+            f"\n✗ refusing to validate/demo {branch} — no commits confirmed over "
+            f"{integration} (bh-87ktb)",
+            err=True,
+        )
+        raise typer.Exit(1)
     if run_validate:
         cmd = config.validate_cmd(cfg, entry)
         typer.echo(f"\n## Validation ({cmd})")
