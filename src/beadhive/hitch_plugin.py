@@ -108,10 +108,17 @@ import typer
 from . import config, fleet, plugins, role, run
 
 # bh's own harness vocabulary (mirrors role.KNOWN_HARNESSES) mapped onto hitch's own `up` target
-# names — determined empirically: hitch's CLI accepts "claude-code"/"opencode", NOT "claude"
-# (the ADR's own example command, `bh plugin hitch up claude <profile>`, used bh's vocabulary,
-# which is why this module translates rather than passing the bh-side name straight through).
-_HITCH_TARGETS: dict[str, str] = {"claude": "claude-code", "opencode": "opencode"}
+# names — determined empirically: hitch's CLI accepts "claude-code"/"opencode"/"codex", NOT
+# "claude" (the ADR's own example command, `bh plugin hitch up claude <profile>`, used bh's
+# vocabulary, which is why this module translates rather than passing the bh-side name straight
+# through). "codex" only widens this passthrough wrapper's accepted target — it does not touch
+# role.KNOWN_HARNESSES / deps_mod.seat_runners(), bh's own internal seat-authority dispatch,
+# which bh-a7so.3 found does not (yet) support codex — a separate, unrelated system.
+_HITCH_TARGETS: dict[str, str] = {
+    "claude": "claude-code",
+    "opencode": "opencode",
+    "codex": "codex",
+}
 
 
 def _repo_files(repo):
@@ -347,9 +354,9 @@ def _readiness(cfg, entry, *, full: bool = True) -> tuple[str, str] | None:
 cli = typer.Typer(no_args_is_help=True, help="agent-hitch launch integration (optional).")
 
 
-@cli.command("up", help="launch <target> (claude|opencode) against <profile>'s hitch config.")
+@cli.command("up", help="launch <target> (claude|opencode|codex) against <profile>'s hitch config.")
 def _up_cmd(
-    target: str = typer.Argument(..., help="harness to launch: claude | opencode."),
+    target: str = typer.Argument(..., help="harness to launch: claude | opencode | codex."),
     profile: str = typer.Argument(..., help="hitch profile name (e.g. dispatcher, developer)."),
 ) -> None:
     code = up(target, profile)

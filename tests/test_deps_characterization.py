@@ -345,11 +345,19 @@ def test_residue_config_schema_literal_mirrors_the_seat_runners():
     assert typing.get_args(literal) == runners
 
 
-def test_residue_hitch_targets_keys_mirror_the_seat_runners():
+def test_residue_hitch_targets_keys_mirror_the_harness_vocabulary():
     """RESIDUE 2: `_HITCH_TARGETS` translates bh's harness names into hitch's own vocabulary
     ("claude" -> "claude-code"). The VALUES are hitch's and cannot be derived; the KEYS are
-    bh's and must not drift."""
-    assert tuple(hitch_plugin._HITCH_TARGETS) == tuple(d.name for d in deps.seat_runners())
+    bh's and must not drift.
+
+    Was `deps.seat_runners()` (bh's own internal seat-authority dispatch) until bh-98v9m —
+    that coupling was accidental, not load-bearing: this wrapper just execs the real `hitch up`
+    and inherits ITS fail-closed behavior, so it never needed to be limited to targets bh's own
+    seat-authority system can run. bh-a7so.3 found codex unsupported there for real
+    permission-translation reasons unrelated to this passthrough wrapper, so `_HITCH_TARGETS`
+    now mirrors the full harness vocabulary (`deps.harnesses()`) instead, without changing
+    `deps.seat_runners()` / `role.KNOWN_HARNESSES` at all."""
+    assert set(hitch_plugin._HITCH_TARGETS) == {d.name for d in deps.harnesses()}
 
 
 def test_residue_plugin_readiness_probes_are_not_dep_probes():
