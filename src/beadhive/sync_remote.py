@@ -99,6 +99,19 @@ def _dolt_reason(dolt: DoltRefInfo) -> str:
     if dolt.status == "unknown":
         detail = dolt.reason or "embedded engine — no read-only check ran"
         return f"dolt state could not be verified ({detail}); would attempt idempotent bd dolt push"
+    if dolt.status == "behind":
+        detail = f"{dolt.behind} behind" if dolt.behind else "behind"
+        return f"refs/dolt/data is {detail} origin — pull first (bd dolt pull)"
+    if dolt.status == "diverged" and not dolt.ahead and not dolt.behind:
+        # git-transport dolt remote (refs/dolt/data exists locally) whose remote tip isn't
+        # locally resolvable without a fetch — ls-remote proved the shas differ, but real
+        # ahead/behind counts would require a transfer (bh-ummb9.3: no-transfer constraint).
+        # Known-not-in-sync, direction unproven: name the same safe remedy as a confirmed
+        # "behind" rather than silently defaulting to an idempotent push attempt.
+        return (
+            "refs/dolt/data has diverged from origin (ahead/behind not resolvable without a "
+            "fetch) — could be behind; pull first (bd dolt pull)"
+        )
     msg = f"refs/dolt/data: {dolt.status}"
     counts = [f"{n} {label}" for n, label in ((dolt.ahead, "ahead"), (dolt.behind, "behind")) if n]
     if counts:
@@ -176,11 +189,19 @@ def assess_hive(hive_id: str, clone_path: Path, *, fetch: bool = False) -> HiveS
         reasons.append(f"unpushed git branch(es): {', '.join(unpushed_branches)}")
         if dolt_unpushed:
             reasons.append(_dolt_reason(dolt))
+        elif dolt.status == "behind":
+            reasons.append(_dolt_reason(dolt))
     elif dolt_unpushed:
         status = SyncStatus.UNPUSHED_DOLT
         reasons.append(_dolt_reason(dolt))
     else:
+        # "behind" is deliberately NOT in _DOLT_PUSHABLE (there is nothing local to push) —
+        # but it's still a real, actionable state (bh-ummb9.3): surface it as a labelled
+        # reason on an otherwise-CLEAN hive rather than staying silent, so "pull first" is
+        # visible in both --dry-run and a live run.
         status = SyncStatus.CLEAN
+        if dolt.status == "behind":
+            reasons.append(_dolt_reason(dolt))
 
     return HiveSyncRecord(
         hive=hive_id,
@@ -446,6 +467,14 @@ def sync_remote(
                 typer.echo(
                     "    would attempt: bd dolt push (idempotent — no read-only "
                     "remote-diff primitive exists for this engine to preview exactly)"
+                )
+            elif record.dolt_status == "diverged":
+                # The reason line above already names this (see _dolt_reason) — an
+                # idempotent push would still be attempted, but call out the real risk of
+                # a non-fast-forward rejection instead of the plain "would push dolt" line.
+                typer.echo(
+                    "    would attempt: bd dolt push — refs/dolt/data diverged from "
+                    "origin; may be rejected as non-fast-forward (pull first)"
                 )
             elif record.dolt_status in _DOLT_PUSHABLE:
                 typer.echo("    would push dolt: refs/dolt/data")

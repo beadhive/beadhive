@@ -193,6 +193,39 @@ def test_assess_dolt_no_remote_counts_as_unpushed(tmp_path):
     assert record.dolt_status == "no-remote"
 
 
+def test_assess_dolt_ref_behind_is_labelled_not_silently_clean(tmp_path):
+    """A hive with nothing local to push, but whose refs/dolt/data is BEHIND origin, must
+    not disappear into an unlabelled CLEAN (bh-ummb9.3 — the measured fleet failure: a
+    behind hive gave no dry-run warning before a non-fast-forward push rejection)."""
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git("init", "-q", "--bare", "-b", "main", cwd=remote)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git("remote", "add", "origin", str(remote), cwd=repo)
+    _git("push", "-q", "-u", "origin", "main", cwd=repo)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    _git("push", "-q", "origin", "refs/dolt/data:refs/dolt/data", cwd=repo)
+    # Advance refs/dolt/data with a plumbing commit-tree (never touches HEAD/main, so the
+    # branch itself stays clean/pushed) and push it, then move the local dolt ref back —
+    # origin now has a dolt commit this clone hasn't locally "caught up" to, exactly
+    # mirroring a peer pushing ahead. The new commit is created IN this repo's own odb, so
+    # it stays locally resolvable without a fetch (real "behind" counts, not "diverged").
+    behind_sha = _git("rev-parse", "refs/dolt/data", cwd=repo).stdout.strip()
+    tree_sha = _git("rev-parse", f"{behind_sha}^{{tree}}", cwd=repo).stdout.strip()
+    ahead_sha = _git(
+        "commit-tree", tree_sha, "-p", behind_sha, "-m", "dolt advance", cwd=repo
+    ).stdout.strip()
+    _git("push", "-q", "origin", f"{ahead_sha}:refs/dolt/data", cwd=repo)
+    _git("update-ref", "refs/dolt/data", behind_sha, cwd=repo)
+
+    record = assess_hive("github/o/r", repo)
+
+    assert record.status == SyncStatus.CLEAN
+    assert record.dolt_status == "behind"
+    assert any("behind" in r and "pull first" in r for r in record.reasons)
+
+
 def test_assess_embedded_dolt_engine_counts_as_unpushed(tmp_path, monkeypatch):
     """bd's embedded engine (bh-fl26) writes no refs/dolt/data at all — assess_hive must not
     silently classify it CLEAN just because the git-ref check found nothing."""
@@ -434,6 +467,38 @@ def test_dry_run_on_clean_hive_prints_no_dolt_line(world, capsys):
     assert plan.records[0].status == SyncStatus.CLEAN
     out = capsys.readouterr().out
     assert "would push dolt" not in out
+
+
+def test_dry_run_on_diverged_git_transport_dolt_warns_not_in_sync(world, capsys):
+    """A git-transport dolt remote (refs/dolt/data exists locally) whose origin tip isn't
+    locally resolvable must be named 'diverged' and warned about, not folded into the plain
+    'would push dolt' line an in-sync-looking hive gets (bh-ummb9.3: this is the exact shape
+    that gave no dry-run warning before the fleet's non-fast-forward push failures)."""
+    clone, remote = _make_clean_clone()
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=clone)
+    _git("push", "-q", "origin", "refs/dolt/data:refs/dolt/data", cwd=clone)
+    # An unrelated repo pushes over refs/dolt/data with foreign history, so `clone` can't
+    # resolve the new tip locally without a fetch. Distinct content (never touched inside
+    # `clone`) guarantees a genuinely different, unresolvable commit — not just a
+    # same-second timestamp coincidence.
+    other = clone.parent / "other"
+    other.mkdir()
+    _git("init", "-q", "-b", "main", cwd=other)
+    _git("config", "user.email", "foreign@ws.dev", cwd=other)
+    _git("config", "user.name", "Foreign Peer", cwd=other)
+    (other / "foreign.txt").write_text("foreign dolt state, unrelated history")
+    _git("add", ".", cwd=other)
+    _git("commit", "-qm", "foreign dolt advance", cwd=other)
+    _git("remote", "add", "origin", str(remote), cwd=other)
+    _git("push", "-qf", "origin", "HEAD:refs/dolt/data", cwd=other)
+    _register()
+
+    plan = sync_remote.sync_remote(dry_run=True)
+
+    assert plan.records[0].dolt_status == "diverged"
+    out = capsys.readouterr().out
+    assert "diverged from origin" in out
+    assert "pull first" in out
 
 
 def test_dry_run_on_unverifiable_dolt_state_prints_attempt_not_ahead(world, capsys, monkeypatch):

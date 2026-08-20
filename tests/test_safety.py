@@ -822,11 +822,16 @@ def test_scan_fetch_true_without_beads_dir_skips_engine(tmp_path: Path, monkeypa
     assert result.dolt_ref.status == "absent"
 
 
-def test_dolt_ref_diverged_fallback_fetch_true_delegates_to_federation(
+def test_dolt_ref_diverged_fallback_fetch_true_stays_diverged_no_federation(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """When origin's refs/dolt/data commit isn't locally resolvable, fetch=True asks
-    federation for the real counts instead of reporting a plain 'diverged'."""
+    """When origin's refs/dolt/data commit isn't locally resolvable, fetch=True must NOT
+    delegate to federation (bh-ummb9.3): federation peers are a different mechanism that,
+    on this fleet, merely duplicates the same git+ssh dolt remote — routing through it here
+    both asked the wrong primitive and, via the still-open peer-credentials defect
+    (bh-q5i2i), downgraded a known 'diverged' into an opaque, wrong 'unknown'. The honest,
+    git-native 'diverged' (real ls-remote sha mismatch, counts unresolvable without a
+    transfer) must hold regardless of `fetch`, and the engine seam must stay untouched."""
     repo, remote = _with_origin(tmp_path)
     other = tmp_path / "other"
     other.mkdir()
@@ -836,13 +841,11 @@ def test_dolt_ref_diverged_fallback_fetch_true_delegates_to_federation(
     _git("push", "origin", "HEAD:refs/dolt/data", cwd=other)
     _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
 
-    stub = _StubEngine(engine.FederationStatus(ok=True, peers=(_peer(ahead=1, behind=2),)))
-    monkeypatch.setattr(engine, "get_engine", lambda cfg=None: stub)
+    monkeypatch.setattr(engine, "get_engine", _raising_get_engine)
 
     result = scan(repo, fetch=True)
 
-    assert result.dolt_ref == DoltRefInfo(status="diverged", ahead=1, behind=2)
-    assert stub.calls == 1
+    assert result.dolt_ref == DoltRefInfo(status="diverged", ahead=0, behind=0)
 
 
 # ---------------------------------------------------------------------------
