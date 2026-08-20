@@ -1,0 +1,193 @@
+epic:
+  title: 'Unify bead-state syncing under `bh hive sync` with remotes/peers subcommands'
+  description: |
+    `bh hive sync` and `bh hive sync-remote` split the sync space along TWO axes at once —
+    destination TYPE and DIRECTION — which leaves a common operation unexpressible:
+
+                    remotes            peers
+      push          sync-remote          —
+      bidirectional     —               sync
+
+    There is no way to say "pull from everything". That gap is not theoretical: on 2026-08-20 a
+    fleet-wide `bh hive sync-remote --all` pushed 9 hives and FAILED on 3, every failure a
+    `non-fast-forward` because this host was BEHIND its remote. The fix was a manual
+    `bh bd dolt pull` then re-push, hive by hive, because no fleet-wide pull verb exists.
+
+    This epic makes `bh hive sync` the ONE sync verb, with `remotes` and `peers` as subcommands.
+  design: |
+    WHY SUBCOMMANDS RATHER THAN A FLAT `--remotes/--peers` FLAG SURFACE — decided on evidence,
+    not taste:
+
+    1. bd's two mechanisms are EXACTLY INVERTED in capability, so a flat surface would advertise
+       combinations that cannot exist:
+
+         capability          remotes (`bd dolt`)          federation (`bd federation`)
+         push                push [--remote N] [--force]  NOT EXPOSED ("infrastructure-ready")
+         pull                pull [--remote N]            NOT EXPOSED
+         bidirectional       compose push+pull            sync [--peer N] [--strategy ours|theirs]
+         all targets at once one --remote at a time       omit --peer = all peers
+         ahead/behind, no transfer   no primitive         federation status [--peer N]
+
+       A flat design needs a runtime guard rejecting `--pull --peers`. Subcommands make that
+       state UNREPRESENTABLE: `sync peers` simply has no `--pull`.
+
+    2. The flag surfaces genuinely differ. `--strategy ours|theirs` is meaningful only for peers;
+       `--force` maps to `dolt push --force` and is meaningful only for remotes.
+
+    3. MEASURED ON THIS FLEET: remotes and peers are not two axes to combine, they are two
+       mechanisms for reaching the SAME place. Only `beadhive/beadhive` has a federation peer, and
+       it duplicates the dolt remote exactly — same name `origin`, same URL
+       `git+ssh://git@github.com/beadhive/beadhive.git`. `agent-hitch` and `agentguides/infra`
+       have a remote and NO peer. Syncing both at once would transfer the same beads twice by two
+       paths and manufacture conflicts where they diverged. "Do both" is closer to a bug than a
+       feature.
+
+    THE SHAPE:
+
+      bh hive sync [HIVE...] [--all] [--pull|--push] [--dry-run] [--force]
+          -> no subcommand = remotes, the common case, so the short path stays short
+
+      bh hive sync remotes [HIVE...] [--all] [--remote NAME|all]
+                           [--pull|--push]      default: BOTH, PULL FIRST
+                           [--dry-run] [--force]
+
+      bh hive sync peers   [HIVE...] [--all] [--peer NAME|all]
+                           [--strategy ours|theirs] [--dry-run]
+                           (no --pull/--push: bd exposes no single-direction peer verb)
+
+    PULL-FIRST IS THE DEFAULT because Dolt inherits git's fast-forward rule — a push against a
+    behind ref is rejected. Pulling first is what a human does by hand; the default should do it.
+
+    WHAT MUST NOT BE LOST: `sync-remote`'s guards earned their keep in the same run that exposed
+    the gap — it refuses to push over a dirty working tree, is git+dolt-ref aware, classifies
+    clean/dirty/unpushed-git/unpushed-dolt/blocked, and exits non-zero listing offenders. It
+    correctly held back `beadhive/infra` and `briancripe/observaloop` for dirty `main`.
+
+    OUT OF SCOPE, deliberately: "ownership scope" for `--remote all`. bd has no such notion — a
+    remote is a URL. Defining one (e.g. from the hive's registry triplet vs the remote host/org)
+    is a policy this epic should not invent. Default to every configured remote.
+issues:
+- handle: subcommands
+  title: '`bh hive sync` becomes the one sync verb: remotes/peers subcommands, pull-first default'
+  type: feature
+  priority: 1
+  component: hive
+  description: |
+    Restructure `bh hive sync` into a command group with `remotes` and `peers` subcommands and a
+    default action, per the epic's design. `bh hive sync-remote` deprecates to an alias for
+    `bh hive sync remotes --push`, warning once and continuing (never breaking a caller).
+
+    Bare `bh hive sync --all` runs the common case — remotes, pull-then-push — so day-to-day use
+    needs no subcommand.
+  design: |
+    Needs a Typer command group with `invoke_without_command=True` plus a callback, composed with
+    how `bh hive` is already registered. VERIFY THAT COMPOSES before building the rest — if it
+    does not, the fallback is a bare `sync` that forwards to `remotes`, which is uglier but works.
+
+    `hive_sync.py` (federation, today's `sync`) and `sync_remote.py` (push, today's `sync-remote`)
+    keep their internals; this bead is the CLI surface plus routing, not a rewrite of either.
+  acceptance: |
+    - `bh hive sync --all` pulls then pushes every registered hive's remotes, and is equivalent to
+      `bh hive sync remotes --all`.
+    - `bh hive sync remotes` accepts `--remote NAME|all`, `--pull`, `--push`, `--dry-run`,
+      `--force`; `--pull` and `--push` are mutually exclusive and their absence means both.
+    - `bh hive sync peers` accepts `--peer NAME|all`, `--strategy ours|theirs`, `--dry-run`, and
+      has NO `--pull`/`--push` — the flags do not exist rather than erroring at runtime.
+    - `bh hive sync-remote --all` still works, warns it is deprecated, and names its replacement.
+    - Every guard `sync-remote` has today survives: refuses to push over a dirty tree, git+dolt-ref
+      aware, the five-way classification, non-zero exit listing offenders. Covered by tests, not
+      by inspection.
+    - HQ (kind=hq) stays skipped, as both verbs do today.
+- handle: pullfirst
+  title: 'Pull before push by default, so a behind ref stops failing the fleet sync'
+  type: feature
+  priority: 1
+  component: hive
+  deps: [subcommands]
+  description: |
+    Make the default `remotes` path pull-then-push per hive, and per remote when several are
+    configured. This is the bead that fixes the measured failure.
+
+    MEASURED 2026-08-20, `bh hive sync-remote --all` over 20 hives:
+      9 pushed, 3 FAILED, 2 held back dirty, 6 blocked (no clone).
+    All 3 failures were the same, e.g. `briancripe/agent-hitch`:
+
+      ! [rejected]  main -> main (non-fast-forward)
+      hint: Updates were rejected because the tip of your current branch is behind its remote
+      hint: counterpart. Integrate the remote changes (e.g. 'dolt pull ...') before pushing again.
+
+    `bh bd dolt pull` then `bh bd dolt push` cleared all three.
+  design: |
+    A pull is not free and is not always safe to assume: one of the three (`beadhive/baml-harness`)
+    auto-merged on pull and said so —
+
+      Notice: auto-merged issue [...]; updated_at settled last-write-wins (the older side's edit
+      was superseded)
+
+    So the pull leg must SURFACE an auto-merge rather than swallow it, and `--push` must remain
+    available for a caller that deliberately does not want to pull.
+  acceptance: |
+    - Default `bh hive sync remotes --all` pulls before pushing; a hive that is behind syncs
+      successfully instead of failing non-fast-forward.
+    - `--push` skips the pull leg; `--pull` skips the push leg.
+    - An auto-merge during the pull leg is REPORTED per hive, not silently absorbed.
+    - Re-running against an already-synced fleet is a clean no-op.
+    - Verified against a hive that is genuinely behind, not simulated.
+- handle: aheadbehind
+  title: 'Real ahead/behind in --dry-run, so it can say "behind — pull first"'
+  type: feature
+  priority: 2
+  component: hive
+  deps: [subcommands]
+  description: |
+    `--dry-run` cannot currently tell ahead from behind. It classifies everything with unverifiable
+    dolt state as `unpushed-dolt` and prints:
+
+      dolt state could not be verified (failed to get peer credentials: not found: federation peer
+      origin); would attempt idempotent bd dolt push
+      would attempt: bd dolt push (idempotent — no read-only remote-diff primitive exists for this
+      engine to preview exactly)
+
+    That is why the dry-run gave no warning before three pushes failed for being behind.
+  design: |
+    The primitive DOES exist for the transports in use, it is just not reached for:
+
+    * git-transport dolt remotes (every remote on this fleet is `git+ssh://`): compare local
+      `refs/dolt/data` against `git ls-remote <url> refs/dolt/data`. This is exactly how the
+      failure was diagnosed by hand.
+    * federation peers: `bd federation status [--peer N]` already reports Ahead/Behind counts
+      without transferring.
+
+    Where neither applies, keep today's honest "could not be verified" rather than guessing.
+  acceptance: |
+    - `--dry-run` distinguishes ahead / behind / in-sync / unverifiable, per hive per remote.
+    - A hive that is behind is labelled so and the output names the remedy (pull first).
+    - Unverifiable stays loudly unverifiable — never silently reported as in-sync (the existing
+      "unknown != in-sync" rule holds).
+    - The ahead/behind read performs NO transfer.
+- handle: errors
+  title: 'Report the underlying push error, not a bare "✗ failed to push dolt"'
+  type: bug
+  priority: 2
+  component: hive
+  deps: [subcommands]
+  description: |
+    On failure `sync-remote` logs only:
+
+      ✗ failed to push dolt: refs/dolt/data
+
+    with no error text, no exit code, no remote name. Diagnosing the 2026-08-20 failures required
+    re-running `bh bd dolt push` by hand inside the hive to learn it was a non-fast-forward — the
+    tool had the error and discarded it.
+
+    Same class as bh-kay1x (a bulk-sync warning that says "could not run" without saying why): a
+    failure reported without its reason is a failure the operator cannot act on.
+  design: |
+    `bd dolt push` already returns the full rejection text on stderr. Capture it and attribute it
+    to the hive and remote. Keep the summary line; add the reason beneath it, the way the existing
+    per-hive reason lines already do for `dirty` and `blocked`.
+  acceptance: |
+    - A failed push reports the hive, the remote, and the underlying error text.
+    - A non-fast-forward rejection is recognisable as such from the output alone, with no re-run.
+    - The final "could not be safely synced" list still names every offending hive.
+    - A test asserts the reason survives to the output rather than being dropped.
