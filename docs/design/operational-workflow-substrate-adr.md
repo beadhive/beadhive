@@ -1,6 +1,10 @@
 # Operational-workflow substrate ADR — beadhive declines beads' `formula` / `wisp`
 
 **Status:** accepted · **Date:** 2026-08-20 · **Supersedes:** nothing ·
+**Addendum 2026-08-20** ([`bh-bomrd.3`](#addendum--2026-08-20-bh-bomrd3-the-two-narrow-mechanical-pipelines)):
+two narrow mechanical pipelines tested, both NO-GO; **no decision below is reversed**, but
+Decision 2's *stated reasons* are corrected (A4) and Decision 5's gate-bead guarantee is
+disambiguated (A3) — read the addendum before citing either.
 **Generalises:** [loop-ownership-and-execution-memory-adr.md](loop-ownership-and-execution-memory-adr.md)
 **Decision 3**, which rejected formula/wisp for the *dispatch loop* specifically. This record
 extends that refusal to every operational workflow in the repo, on independently gathered
@@ -403,3 +407,235 @@ corpus passes ~100 MB (Decision 4). Volume alone is not a reason.
 <formula>` reports *"not found as formula or proto"* when the real failure is a formula validation
 error, and `LoopSpec.range` variable substitution is documented but non-functional. Neither
 changes a verdict; both are worth reporting upstream regardless.
+
+---
+
+## Addendum — 2026-08-20 (`bh-bomrd.3`): the two narrow mechanical pipelines
+
+**Status of this addendum:** accepted · **Extends, does not supersede, anything above.** No
+decision in this ADR is reversed, softened, or re-scoped. Two of them are *re-grounded* — the
+stated reasons change while the verdicts do not — and one measured fact makes a Decision-2 bullet
+refutable in one command, so it is corrected here rather than left to be re-derived wrongly.
+
+After reviewing the record above, the operator raised a narrower question the four `bh-gj0v9`
+spikes never tested. Those spikes were scoped to `onboard.py`'s plugin-registry DAG, a scheduling
+feedback loop, Guide's retention gap, and no-code-change work items — none of them examined an
+**already-mechanical, mostly-linear pipeline**, which is the one shape beads' own narrative docs
+(`/workflows/wisps`, not in evidence for any of the four) explicitly advertise for wisp. Molecule
+`bh-bomrd` ran two independent spikes on the two such pipelines this repo actually has, with an
+agent Guide (judgment/interaction) explicitly out of scope:
+
+| Spike | Pipeline | Shipped alternative compared against | Verdict |
+|---|---|---|---|
+| [`bh-bomrd.2`](../spikes/bh-bomrd.2-dev-loop-wisp-fit.md) | dev loop: prepare → lint-fix → `bh work check` → `bh work submit` | `bh-trgcd.2`'s OTEL self-check span attributes | **NO-GO** |
+| [`bh-bomrd.1`](../spikes/bh-bomrd.1-release-loop-wisp-fit.md) | release loop: `just attest` → `bump` → `release-preview` → `release` | `bh release preflight/attest/await/preview/recover` (`release.py`, 934 lines) | **NO-GO** |
+
+They failed for **different reasons**, and neither reason is the one this ADR gives above. That is
+the point of recording them.
+
+### A1 — dev loop: NO-GO on measured merits, *not* on the archive rule
+
+`bh-trgcd.2`'s design note (and `OBSERVABILITY.md:167`, `work.py:1870`) rests the case for keeping
+per-attempt iteration out of the bead corpus on CLAUDE.md's *"bead history is an archive — never
+squash it"* rule. A wisp claims exclusion from the audit trail, which is a **different** property,
+so that justification does not by itself dispose of the wisp option. `bh-bomrd.2` tested the claim
+and **withdrew the archive objection**:
+
+> **A wisp writes no version history at all.** A wisp and a persistent control put through
+> identical create → claim → close transitions in a scratch hive: the control returns two
+> versioned entries, the wisp returns `No history found for issue dl-wisp-bvv`.
+
+This is *stronger* than the `/workflows/wisps` page claims. The page describes federation-level
+exclusion (`federation.exclude_types` defaults to `[wisp]`) — a **config default**, one key away
+from being false. The measured behaviour is structural: the rows never reach a Dolt commit, so
+there is nothing for a `federation.exclude_types` edit to leak. **A wisp-tracked check loop would
+not violate the archive rule.** The rule is simply not the load-bearing argument, here or in
+`bh-trgcd.2`.
+
+Wisp still loses, on four independent grounds, three of them measured in that spike:
+
+- **The one theoretical advantage does not exist.** With an *open* wisp live in the store,
+  `bd list` printed *"No issues found."* and `bd ready` printed *"✨ No open issues"*; only
+  `bd mol wisp list` — a query that already names it as a wisp — showed it.
+- **Buying that visibility is buying the bug.** The only way onto the ready surface is
+  `bd dep add <dev-bead> <wisp>`, after which the dev bead leaves the queue *"blocked by
+  dependencies"* with the blocker absent from every list view — i.e. exactly `bh-gj0v9.6`'s
+  configuration, where GC strips the `DEPENDS ON` edge with no tombstone. **The benefit and the
+  bug are the same dependency edge.**
+- **Inter-attempt edges carry less information than the hash already stamped.**
+  `attempt₂ depends on attempt₁` encodes nothing a timestamp does not, and cannot distinguish
+  "re-ran unchanged" from "re-ran after an edit" — which is the actual question.
+  `bh.validation.tree` plus `tree.dirty` answers it in one hash and one boolean.
+- **Cost asymmetry, measured.** `bd create --ephemeral` medians **0.47 s**; a create/claim/close
+  triple is **~1.4 s of DB writes per check attempt, unconditionally** — there is no wisp
+  equivalent of `is_active()`, because the whole point of the record is that it exists. The
+  shipped path is 193 lines already merged, five in-process `set_attribute` calls, and **zero
+  cost when otel is off** (the default). And with otel off, `.bh/testreport/<tree>/` already
+  persists retry history keyed by tree.
+
+**Formula is NO-GO here on inapplicability, not cost.** The pipeline's only interesting structure
+is a retry loop whose length is discovered by running it, and `retry` / `rollback` / `on_failure`
+appear in none of the 18 schema structs, while `LoopSpec.range` needs a literal count. There is no
+version of this that is not two descriptions of one loop, one of which cannot express the loop.
+
+**One reading correction this addendum makes explicit:** the `/workflows/wisps` page's own examples
+— *"release checklists, health patrols, diagnostics"*, and the `--wisp-type` enum
+(`heartbeat, ping, patrol, gc_report, recovery, error, escalation`) — are, without exception,
+**unattended passes over a step list known before the run starts**. A developer's live retry loop
+discovers its length by running. Those are categorically different shapes, and "operational loops"
+on that page does not mean the second one.
+
+### A2 — release loop: NO-GO on a *new*, worse bug, plus an architectural mismatch
+
+This is the pipeline the docs advertise most directly (`bd formula schema Formula`: `phase` —
+*"Patrol and **release** workflows should typically use 'vapor'"*; `pour` — *"Reserve pour=true for
+critical, infrequent work (**e.g. releases**)"*). It was tested with a real four-step formula,
+wisped and walked end to end twice in a scratch hive. **Two of this ADR's headline disqualifiers
+turned out not to apply**, and the spike's own central hypothesis was confirmed — and then a bug
+neither this ADR nor `bh-gj0v9.6` anticipated killed it anyway:
+
+| Disqualifier above | Holds for a self-contained release run? |
+|---|---|
+| Invisible to the work queue (Decision 2, bullet 1) | **No** — `bd ready --mol <wisp-id>` lists the wisp's steps, including the gate |
+| GC strips edges off *persistent* beads (Decision 2, bullet 3) | **No** — verified live: `Removed 0 dependency link(s)`, control bead's graph intact |
+| Squash yields only a throwaway prose blob (`bh-gj0v9.1` ev. 10) | **No** — `bd mol squash` does clear the ephemeral flag; the digest is persistent and versioned |
+
+What kills it instead is **strictly worse than the bug this ADR records, and reachable with no
+persistent bead in the picture at all.** `bd mol wisp gc --closed --force` is **hive-wide and
+step-granular, with no `--mol` scope flag**. Run against a mid-flight release (attest + bump
+closed, 2/5) while one unrelated closed patrol wisp existed elsewhere in the hive — the everyday
+reason an operator types the command the wisps page tells them to type regularly — it found 3
+closed wisps (the patrol **and both completed steps of the running release**) and deleted all
+three. `bd mol current` went from *"Progress: 2/5, attest done, bump done"* to **`Progress: 0/3`**
+with no completed steps, and `release-preview` lost its `needs: bump` edge entirely.
+
+The erased fact is the load-bearing one. [`attested-green-adr.md`](attested-green-adr.md):
+*"the bump is the last safely reversible moment"* — so **"we already bumped, a local tag exists"**
+is precisely the state such a record exists to hold, and it vanishes silently at the one moment it
+would be consulted (a stopped release). This is not an oversight nobody considered:
+`bd mol wisp gc --help` documents deliberate live-work protection for the `--age` path (GH#4394,
+never reclaiming blocked/pinned/wip steps, aborting rather than risking live steps if the blocked
+set cannot be read) — **`--closed` bypasses all of it**, because a *closed step of a running
+molecule* is not in the protected set. `--exclude-type` is no mitigation: release steps are `task`.
+
+The documented escape hatch fails too. The wisps page's best practice is *"Squash before you
+delete"*; `bd mol squash` on that same still-open run deleted three open steps — including the
+**unresolved releaser gate and `just release` itself** — and marked the root complete, with no
+confirmation and no refusal. The one persistent artifact it leaves then asserts `Completed: 0/3`
+about a run that genuinely attested and bumped, because the completed steps had already been GC'd
+out from under it.
+
+**And even with every one of those defects fixed upstream, the fit would still fail**, on grounds
+that owe nothing to any bug: **the shipped release flow derives position from the world; a wisp
+asserts it.** `recover` decides on `git ls-remote` *"against the actual remote, not a local
+tracking ref"*; `preview` measures the ledger verdict, the remote tag, and PyPI; `preflight` reads
+a verdict keyed on the **tree hash** with *"no flag that turns a refusal into a pass"*; `pending` /
+`await` read a marker keyed on `tree_of(entry, sha)`, so a marker for a different tree is not a
+marker. All four share an exit contract in which **`3` = COULD NOT MEASURE is never folded into
+`1` = refused** — a contract that exists because the 0.11.5 incident was caused by a confident
+wrong sentence. A wisp step is a hand-closed assertion verified against nothing: close `bump`, then
+`git reset --hard`, and the wisp still reports bumped while the ledger, `ls-remote` and the marker
+all report otherwise. Adding a **fifth, unmeasured, non-authoritative** record beside four measured
+ones, immediately in front of a one-way door, is a net loss regardless of GC.
+
+This **moves nothing in the Decision-4 table** — the release cut stays **"Neither"** — it changes
+the reasons on that row.
+
+### A3 — gate beads: Decision 5 is UNAFFECTED, and here is the distinction that protects it
+
+`bh-bomrd.1` found that a **formula-materialised `type: gate` bead inside a wisp is ephemeral**:
+`bd history rl-wisp-v3l` on the resolved human gate returned *"No history found"*, against a full
+versioned record for a persistent control. It is unversioned, un-synced, and GC-eligible.
+
+**This does not touch Decision 5.** Read the distinction carefully, because the two things share a
+type name and nothing else:
+
+| | `bd gate create --blocks <bead> …` | a `gate:` step materialised by `bd mol wisp <formula>` |
+|---|---|---|
+| Persistent | **yes** | no — ephemeral, in the `dolt_ignore`d wisps table |
+| Versioned (`bd history`) | **yes** — both versions, timestamps, author | no — *"No history found"* |
+| Git-synced / visible to other seats | **yes** | no — host-local |
+| GC-eligible | **never** | yes, including mid-run (see A2) |
+
+Decision 5 recommends **`bd gate create` directly**, never a formula-materialised gate, and every
+property it relies on was verified against that path. Its recommendation stands exactly as
+written, unqualified: a human / out-of-band op that gates code work is a **gate bead**; an
+agent-performed op with a real outcome is an **ordinary bead whose deliverable is the evidence
+record**. Nothing in either `bh-bomrd` spike weakens it.
+
+The reason this is worth spelling out: someone reading Decision 5's *"gate beads are persistent,
+versioned, git-synced, and never GC-eligible"* and then reaching for `gate:` inside a formula
+because it is the same words would get none of those four properties. **Those are properties of
+`bd gate create`, not of the `type: gate` bead shape.** For the release loop specifically, the
+existing human gate — `environment: pypi-prod` on `release.yml`, with a real executor, real
+identity, and an audit log GitHub retains — is strictly better than either, and moving it into a
+wisp loses the executor *and* the record.
+
+### A4 — corrections to Decision 2's stated reasons (the verdict is unchanged)
+
+Three premises above are now measured more precisely. Each makes Decision 2 *better founded*, not
+weaker, but two of them are refutable as currently worded and would send the next investigation
+down a wrong path.
+
+1. **"Invisible to the work queue" is scoped-query-false.** `bd ready --mol <wisp-id>` **does**
+   list wisp steps. The closed spikes measured *bare* `bd ready` and generalised. The real barriers
+   are **discovery** — the id appears on no list surface, and `bd mol wisp list` shows only *open*
+   wisps, printing *"No wisps found"* the instant a run closes, before any GC — and **locality**
+   (host-only, no second operator, no second machine). State it that way; the current wording loses
+   an argument to one command.
+2. **The GC bullet understates the hazard while overstating its precondition.** The
+   persistent-bead form (`bh-gj0v9.6`) is a **special case**. The general form: `gc --closed`
+   destroys the completed steps of an **in-flight** molecule and their dependency edges, with **no
+   persistent bead involved**. Conversely, the persistent-edge form is *not* reachable in a
+   self-contained run — verified live.
+3. **`bd mol squash` does promote to a persistent, versioned digest**, correcting `bh-gj0v9.1`
+   evidence 10 — but on an in-flight molecule it deletes open steps and auto-closes the root, and
+   its summary can be flatly wrong about what completed.
+
+**Decision 2's reopen bar is unchanged and, if anything, tightened.** It prices re-opening at
+*"wisp gains git sync, `bd ready` visibility, and a GC that does not strip edges off persistent
+beads."* The dev loop measured the opposite of git sync and the opposite of ready-surface
+visibility, and would sit squarely on the third. The release loop adds a fourth condition specific
+to it: a release step's completion would have to become something `bh` **verifies** against the
+ledger/remote rather than accepts on a close — because A2's architectural objection survives every
+bug fix.
+
+### A5 — two `bd` defects escalated, one at elevated severity
+
+Both were reproduced live in a scratch hive (bd 1.1.0 dev) under `bh-bomrd.1` and filed via
+`bh escalate`. Neither changes a verdict above; both are worth upstream attention on their own.
+
+- **`hq-9le` — P1, silent data loss.** `bd mol wisp gc --closed --force` reclaims **closed steps of
+  an in-flight molecule**, deleting their dependency edges and resetting molecule progress,
+  bypassing the live-work protection `gc --help` documents for the `--age` path (GH#4394). No
+  `--mol` scope flag; `--exclude-type` does not cover it. **The elevated severity is deliberate,
+  not routine CLI-ergonomics triage.** All three conditions hold at once: it destroys real state
+  **silently** (the command reports success and a count, and the loss is only visible by re-running
+  `bd mol current`); it is triggered by **routine housekeeping the vendor's own docs instruct you
+  to run regularly**; and the victim is a **documented, sanctioned use case** (`phase: vapor`
+  release/patrol runs — the shape `bd formula schema` and `/workflows/wisps` both nominate). It is
+  reachable under entirely normal conditions — one unrelated closed wisp anywhere in the hive is
+  enough — and is **not release-specific and not an edge case**; the release run is simply where it
+  was caught.
+- **`hq-qe9` — P2.** `bd mol squash <id>` on a molecule with **open** steps does not refuse or
+  confirm: it deleted three open steps (including an unresolved human gate and the final
+  one-way-door step) and auto-closed the root.
+
+### A6 — consequence: nothing is warranted from either spike
+
+**No implementation beads are warranted from `bh-bomrd`, and none should be filed.** Both spikes
+returned NO-GO, so the epic's GO branch — a `/bh:replan` spike-verdict re-entry into an
+implementation molecule — is not taken. Nothing above changes any decision in this ADR, and the
+*"Explicitly not to be filed"* list stands as written; `bh-bomrd.2` reached *"per-attempt
+instrumentation, wisp telemetry"* independently, from its own evidence, on a pipeline this ADR
+never examined.
+
+Build nothing, change nothing: `bh-trgcd.2` stands as merged, `release.py` and the release recipes
+are not to be touched, and this addendum is the record that the narrower question was asked and
+answered — so it is not re-opened from intuition the next time the wisps page is read.
+
+Three **documentation-only** follow-ons are noted for a groom pass to absorb, each a
+single-paragraph edit, none an implementation bead: fold A4's three corrections into Decision 2's
+bullets; record in `OBSERVABILITY.md` (`:167`) and `work.py` (`:1870`) that the durable reasons the
+self-check signal is not a bead write are the measured ones in A1, not the archive rule alone; and
+carry A3's two-column gate table wherever Decision 5's gate-bead recommendation is cited.
