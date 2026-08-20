@@ -615,6 +615,42 @@ def set_bead(bead: str) -> None:
         span.set_attribute("bh.epic", epic)
 
 
+def set_self_check(passed: bool, *, seat: str = "", tree: str = "", dirty: bool = False) -> None:
+    """Stamp the DEVELOPER SELF-CHECK identity onto the active ``work.check`` verb span
+    (bh-trgcd.2): who ran it, over which tree content, and whether it came back green.
+
+    This is the developer's own pre-submit run — deliberately NOT the authoritative gate.
+    ``bh.work.phase`` is the discriminator, using the same vocabulary the validation metrics
+    already tag with (``check`` here, ``submit`` for the clean-checkout gate in
+    ``_validate_submit_checkout``), so a query can separate self-check iteration from gate runs
+    without knowing span names.
+
+    Together with the ``bh.bead`` :func:`set_bead` already stamped, the span is self-sufficient:
+    "attempts before green" per bead aggregates from the span stream alone, with no join against
+    (and no write to) the bead corpus — which is the whole reason this signal lives in OTel and
+    not in bead history (CLAUDE.md: bead history is an archive).
+
+    ``tree`` is the ledger's own content key (:func:`validation_ledger.tree_of`), so a re-run over
+    unchanged content is distinguishable from a re-run after an edit. ``dirty`` says the worktree
+    had uncommitted changes, i.e. ``tree`` names HEAD and NOT what actually ran — without it the
+    key would silently lie about exactly the case (iterating on uncommitted edits) this measures.
+    Empty ``seat``/``tree`` are omitted rather than blank, per the Resource convention.
+
+    No-op + zero-cost when otel is off or there's no recording span."""
+    if not _initialized:
+        return
+    span = get_current_span()
+    if not span.is_recording():
+        return
+    span.set_attribute("bh.work.phase", "check")
+    span.set_attribute("bh.validation.result", "pass" if passed else "fail")
+    span.set_attribute("bh.validation.tree.dirty", dirty)
+    if tree:
+        span.set_attribute("bh.validation.tree", tree)
+    if seat:
+        span.set_attribute("bh.seat", seat)
+
+
 def _instrument(kind: str, name: str, **kwargs):
     """Lazily create + cache the named counter/histogram against the active meter; the shared
     no-op instrument when otel is off (so no opentelemetry import, no allocation)."""
