@@ -5,6 +5,11 @@
 two narrow mechanical pipelines tested, both NO-GO; **no decision below is reversed**, but
 Decision 2's *stated reasons* are corrected (A4) and Decision 5's gate-bead guarantee is
 disambiguated (A3) — read the addendum before citing either.
+**Addendum 2 2026-08-20** ([`bh-yber2.3`](#addendum-2--2026-08-20-bh-yber23-the-guardrailed-mitigations-and-the-measured-roi)):
+the guardrailed/mitigated release loop tested and the ROI claim measured — mechanism **NO-GO**
+on a *false green* (B1), ROI direction confirmed but magnitude overstated and not model-bound
+(B4). No decision reversed; Decision 2's reopen bar gains a **fifth** condition and Decision 5 is
+reinforced (B2). This is the **final** answer on wisp adoption (B7).
 **Generalises:** [loop-ownership-and-execution-memory-adr.md](loop-ownership-and-execution-memory-adr.md)
 **Decision 3**, which rejected formula/wisp for the *dispatch loop* specifically. This record
 extends that refusal to every operational workflow in the repo, on independently gathered
@@ -639,3 +644,281 @@ single-paragraph edit, none an implementation bead: fold A4's three corrections 
 bullets; record in `OBSERVABILITY.md` (`:167`) and `work.py` (`:1870`) that the durable reasons the
 self-check signal is not a bead write are the measured ones in A1, not the archive rule alone; and
 carry A3's two-column gate table wherever Decision 5's gate-bead recommendation is cited.
+
+---
+
+## Addendum 2 — 2026-08-20 (`bh-yber2.3`): the guardrailed mitigations and the measured ROI
+
+**Status of this addendum:** accepted · **Extends, does not supersede, anything above — including
+the `bh-bomrd.3` addendum.** No decision is reversed. Decision 2's reopen bar gains a **fifth**
+condition (B6), Decision 5 / A3 is **reinforced** with one measured caveat (B2), and one risk this
+ADR and A2 had only argued abstractly is now recorded as **reproduced in the field** (B5).
+
+After `bh-bomrd` closed, the operator raised two objections to its release-loop NO-GO that neither
+`bh-gj0v9` nor `bh-bomrd` had tested: (1) the known defects could be handled as **guardrail-managed
+risk** plus two **new design mitigations** — a real `bd gate create` gate bead instead of a
+formula-materialised one, and selective replication of **measured facts** into a persistent bead's
+metadata; and (2) the reconstruct-the-release-state agent loop the shipped verbs require was
+claimed to cost real wall-clock and tokens (*"sometimes ~30s"*) against *"~3s"* for one structured
+query — a claim **nobody had measured**. Molecule `bh-yber2` ran one spike on each.
+
+| Spike | Question | Verdict |
+|---|---|---|
+| [`bh-yber2.1`](../spikes/bh-yber2.1-guardrailed-wisp-mechanism.md) | do the guardrail + the two new mitigations hold up mechanically? | **NO-GO** — on a *new*, more serious failure than either prior molecule found |
+| [`bh-yber2.2`](../spikes/bh-yber2.2-agent-loop-cost-measurement.md) | what does the agent probe loop actually cost vs one structured query? | **direction confirmed, magnitude overstated** — 1.41× median, not ~10×, and it is not LLM cost |
+
+Both point the same way, for independent reasons. Neither offsets the other, and the epic's GO
+branch is not taken.
+
+### B1 — mechanism: the gate that does not gate
+
+The mitigation stack was: a **gateless** release wisp for the cheap mechanical steps, a **separate
+persistent `bd gate create --type human --blocks <one-way-door step>`** as the sign-off, and
+metadata replication of measured facts. Run live in a fresh scratch hive (bd 1.1.0 dev), three
+runs plus three controls.
+
+**The record half of the mitigation genuinely works.** A `bd gate create` gate placed over a wisp
+step is a persistent, versioned, git-synced, GC-proof bead: `bd history` returns the full
+open→closed transition with author, timestamp and sign-off reason where the *same command against
+a wisp step* returns *"No history found"*; it never appears in `bd mol wisp list`; it is in
+`bd export`; it survives `gc --closed --force`, and GC even rewrites its dangling reference to a
+`[deleted:…]` **tombstone** — materially better than `bh-gj0v9.6`'s silent strip. **`bh-bomrd.1`'s
+E9** (*"the releaser sign-off has no audit record"*) is closed locally, in `bd`, with no GitHub
+dependency. That was the hypothesis, and it held.
+
+**The enforcement half does not.** With that gate **open** on the one-way-door step and all three
+predecessors closed, `bd mol current` reported the step **`[ready]`** and printed
+`Start with: bd update … --claim`, and `bd ready --mol` listed it as startable — while `bd show` on
+the very same step correctly listed the gate under `DEPENDS ON`. Reproduced in two independent
+runs. Three controls in the same hive isolate the cause, and none of them is the query or the gate:
+
+- the **same gate** correctly blocks a **persistent** bead (`bd ready` drops it);
+- a **formula-materialised** gate correctly blocks the **identical** step (`[pending]`, and
+  `Next ready:` routes to the gate);
+- a plain `bd dep add` of an **ordinary persistent** blocker is ignored **identically**.
+
+So the root cause is general: **molecule-scoped readiness honours only blockers that are themselves
+inside the ephemeral set.** A non-ephemeral blocker of an ephemeral step is invisible to it,
+whatever its type or provenance. (A bounded follow-up run during this decision pass pins that
+scoping down further — the *unscoped* `bd ready --include-ephemeral` gets it right; see B6.)
+
+**Why this is worse than the defect it was introduced to fix, not a lateral move.** E9 is a
+*missing record*. This is a **false green** in front of an irreversible action: the tracking
+surface does not omit the block, it affirmatively says the one-way door is clear and tells the
+operator to walk through it, while the releaser sign-off is unresolved.
+[`attested-green-adr.md`](attested-green-adr.md) exists because the 0.11.5 incident was caused by
+a confident wrong sentence; this is that shape exactly. The mitigation therefore converts into a
+strict trade rather than a win — **you buy the sign-off's audit trail with the sign-off's
+enforcement**. The formula gate enforces and leaves no record; the real gate leaves a perfect
+record and enforces nothing. There is no configuration in which a wisp step is both gated and
+audited.
+
+The accepted risk itself behaved exactly as the operator predicted and is **not** re-opened: a
+full run walked to completion and *then* GC'd lost nothing (confirming `bh-bomrd.1` **E5**), and a
+mid-flight `gc --closed --force` destroyed in-flight progress exactly as **E6** describes — the
+guardrail is load-bearing, and it held. The NO-GO does not rest on it.
+
+### B2 — salvage 1: `bd gate create` is a working, audited gate — Decision 5 is *reinforced*
+
+Keep this finding separate from the "adopt wisp" question it was tested inside, because it is the
+opposite of a negative result. Every property A3's table claims for `bd gate create` — persistent,
+versioned, git-synced, never GC-eligible — was **re-verified here by direct measurement**, on a
+harder case than A3 tested (a gate whose blocked bead is itself ephemeral and gets deleted out
+from under it), and all four held, plus a tombstone A3 did not promise.
+
+**Decision 5's recommendation — a human / out-of-band op that gates code work is a gate bead —
+stands unqualified and is better evidenced than before.** What B1 disproves is the *combination*
+with a wisp molecule, not the gate mechanism.
+
+One caveat A3's table should now carry, and the only one:
+
+> Those four properties **do not include being enforced**, once the bead being blocked is
+> ephemeral. `bd gate create` gates a **persistent** bead correctly (measured). Over a wisp step it
+> is a record only.
+
+Decision 5's own scope has always been persistent beads, so this narrows nothing it claims. It is
+written down so nobody re-derives "gate beads don't work" from B1.
+
+### B3 — salvage 2: measured-fact replication is sound, and needs no wisp
+
+The second mitigation — writing a **timestamped measurement** (`tag_sha`, the probe command run,
+`remote_has_tag`, `measured_at`) rather than a bare `done` flag to a persistent bead's
+`--metadata` at each checkpoint — is a plain `bd update --metadata`. Measured: it creates **no
+node and no edge** (`bd dep tree` byte-identical before and after), each write **is** an archived
+version, values **shallow-merge** so per-checkpoint keys accumulate, the whole map is exported,
+and it survives every GC including the mid-flight one that destroys the molecule. It therefore
+**cannot** reintroduce `bh-gj0v9.6`'s edge-stripping shape — confirmed live, not assumed, because
+no edge is ever created. (The *gate*, by contrast, necessarily does create a persistent↔ephemeral
+edge, and mildly does reintroduce it.)
+
+**Critically, nothing in that result depends on a wisp existing.** The molecule contributed
+nothing to it. If this pattern is the value, it is available **without adopting any part of the
+wisp mechanism** — which is why it is recorded here as a standing, wisp-independent option rather
+than dying with the NO-GO. Two rules if anyone takes it:
+
+1. **One distinct key per checkpoint, never reuse a key.** `metadata` is projected into neither
+   `bd history --json` nor `bd show --as-of` (both return `null` for it at every commit), so an
+   overwritten value is **unrecoverable**. Distinct keys make the record effectively append-only.
+2. **It stays a snapshot *beside* the measured verbs, never a substitute.** It narrows **E11** —
+   a timestamped measurement is strictly more than an assertion — but does not close it: what is
+   read back is *remembered*, not *re-measured*, and `remote_has_tag: false` will print forever
+   regardless of what the remote now says.
+
+**No bead is filed for it here** (spike-loop rule). It is a `/bh:replan` input if anyone wants it.
+
+### B4 — ROI: the direction is real, the magnitude is not, and the cost is not the model
+
+Measured with the harness's own reported `duration_ms` / `num_turns` / token / cost fields — not a
+hand-rolled stopwatch — **n = 5 per condition, one scenario, one model, one host**. Both conditions
+were asked the same question about the same genuine mid-flight release state (bumped, tagged
+locally, not attested, nothing pushed).
+
+| | median wall-clock | turns | output tokens | cost |
+|---|---|---|---|---|
+| **A** — probe loop over four `bh release` verbs | **12110 ms** (range 11621–32222) | 4 (one run: 7) | 615 | $0.0516 |
+| **B** — one `bd mol current --json` | **8569 ms** (range 7575–9890) | **2, every run** | 374 | $0.0333 |
+| **A ÷ B** | **1.41×** (worst A ÷ best B: 4.25×) | 2× | 1.64× | 1.55× |
+
+**The direction holds on every metric and every pair** — no A run beat the slowest B run. **The
+magnitude does not.** The *"~30s"* tail is real but atypical (one run in five: 32.2 s, 7 turns,
+237k tokens); the *"~3s"* side **never happened at all** — B never came in under 7.6 s, because any
+LLM-mediated answer costs ~7–8 s of model time whatever it is relaying. Only a *non-agentic* caller
+— a script, a hook, a status line — collects the sub-2-second number the claim assumes.
+
+**And the reproducible part of the gap is not reasoning cost.** With no LLM in the loop at all, the
+four probes cost ~5.5 s of wall clock and the single query ~1.16 s — **~1.2–1.4 s of interpreter /
+CLI startup per invocation**, with the real network measurements adding almost nothing. Subtracting
+that leaves the *model-side* cost of the two conditions **indistinguishable at this N**. The
+measured mean gap is `(4 − 1) × ~1.3 s of process startup`, not "LLM interpretation is expensive".
+Note also that the "expensive" condition's output was **half the bytes** of the "cheap" one's JSON:
+the cost is round-trips, not payload. What the structured query genuinely buys is **variance, not
+mean** — 2 turns in 5/5 runs versus 4-or-7 at the agent's discretion, with nothing capping the
+latter.
+
+**The alternative that fell out of measuring it, named here and deliberately not filed.** Since the
+gap is invocation count, it closes **without any second record**: a **`bh release status [--json]`**
+verb running the *same four measurements* `preflight` / `pending` / `preview` / `recover` already
+make, once, emitted structured. That collapses both terms at once — the extra process startups and
+the extra turns — while staying **measured**: no asserted state, nothing that can silently disagree
+with the remote, **E11 untouched**.
+
+**This is a finding, not a bead.** Per the spike-loop rule this molecule files nothing; it is
+recorded for whoever next replans this area to act on **if they choose to**. It is plain `bh` verb
+work — no formula, no wisp, no new durable record — and is therefore unaffected by everything else
+in this addendum.
+
+### B5 — E11 stopped being hypothetical: the cheap answer named the *wrong* next action
+
+The most consequential result across both spikes is **incidental to the cost measurement and more
+important than it.**
+
+All 5 probe-loop runs answered correctly: *attest the bumped tree, then await, then push* — which
+is what the world state required. **All 5 structured-query runs answered wrong**, naming the
+materialised `Gate: human` step, which has no `needs` edge and is therefore `ready` from
+instantiation and wins the topological pick over `attest-bumped`. The reviewer confirmed this is
+**not a test-setup artifact**: it is an inherited structural property of the base release formula,
+present since `bh-bomrd.1`.
+
+This ADR (A2) and `bh-bomrd.1` (**E11**) both argued *in the abstract* that **the shipped release
+flow derives position from the world while a wisp asserts it**, and that adding a fifth,
+unmeasured record beside four measured ones in front of a one-way door is a net loss. That argument
+is now **reproduced, 5 for 5, unplanned, on a record this spike had hand-seeded to be otherwise
+perfect and richer than the probe loop's** — it relayed the verified facts verbatim and precisely,
+and still pointed at the wrong door.
+
+Stated plainly, because it is the sentence to carry out of this molecule: **the 1.41× saving was
+collected in exchange for a confidently wrong next action.** E11 is no longer a prediction. Note
+that this is a *sibling* failure to B1's — B1 is a false green on *whether a step is blocked*, B5
+is a false green on *which step is next* — and they arise from different mechanisms, which is why
+neither is a mitigation for the other.
+
+### B6 — `hq-mek` escalated, and Decision 2's reopen bar gains a fifth condition
+
+**`hq-mek`** — filed via `bh escalate` from `bh-yber2.1`: *a persistent blocker of an ephemeral
+wisp step is ignored by wisp-scoped readiness.* `bd gate create --type human --blocks <wisp-step>`
+leaves the step reported `[ready]` by both `bd mol current` and `bd ready --mol` while the gate is
+open, and a plain `bd dep add` persistent blocker behaves identically, while `bd show` correctly
+lists both. It belongs at the severity **`hq-9le`** got (A5): it is **silent**, it is reachable
+under **entirely normal use of two documented commands**, and it **fails toward "go" in front of an
+irreversible operation**. No verdict here depends on it being fixed.
+
+**Bounded follow-up during the decision pass — `hq-mek` is narrower than `bh-yber2.1` states, and
+the correction is worth carrying upstream.** A ~5-minute check, **not a re-spike**, run in a fresh
+scratch hive reproducing M4's exact shape (gateless release wisp, `bd gate create --type human`
+on the one-way-door step, all predecessors closed). The spike only ever tried `bd mol current` and
+`bd ready --mol`; two documented `bd ready` flags it never tried settle where the defect lives:
+
+| invocation | one-way door, with the gate OPEN |
+|---|---|
+| `bd mol current <mol>` | **`[ready]`** + `Start with: bd update … --claim` — the M4 bug |
+| `bd ready --mol <mol>` | **listed as ready** — the M4 bug |
+| `bd ready --mol <mol> --include-ephemeral` | **listed as ready** — the M4 bug (the flag does not help here) |
+| `bd ready --include-ephemeral` (**no `--mol`**) | **correctly withheld** — *"No ready work found (all issues have blocking dependencies)"* |
+| `bd ready --include-ephemeral --explain` | **correct and specific**: *"Blocked (1 issues): … ← blocked by `yb-ovm`: Gate: releaser sign-off [open]"* |
+
+Two controls confirm the withholding is a real block and not the flag simply excluding wisps:
+resolving the gate makes `bd ready --include-ephemeral` list the same step immediately
+(*"Ready: 1 issues with no active blockers"*), and re-blocking it with a plain `bd dep add` of an
+**ordinary persistent non-gate** bead (M4c's shape) puts it back under `Blocked` with that bead
+named — while `bd mol current` calls it `[ready]` in the same breath.
+
+So: **the unscoped `GetReadyWork` path is blocker-aware for ephemeral steps and gets this right;
+the molecule-scoped path (`--mol`, and `bd mol current`) does not.** `hq-mek` should be re-scoped
+to the molecule-scoped readiness computation specifically — a materially smaller and more findable
+defect than "wisp readiness is broken", and one with an available correct query. A second, minor
+defect fell out: **`--explain` is silently ignored when `--mol` is present** (same output as
+without it), which is why the wrong answer never announces itself.
+
+**This does not move the verdict, and it is not a workaround worth relying on.** The correct query
+is the one nobody reaches for: `bd mol current` is the molecule's *natural* tracking surface and
+the one `bh-bomrd.1` **E3** singled out as a genuinely readable *"where did it stop"* report, and
+it is the one that lies. Being safe only if you avoid the obvious command, on a surface with no
+warning that it is unreliable, in front of an irreversible push, is the same false green B1
+describes. The fifth reopen condition below stands as written, now with a precise target.
+
+**Decision 2's reopen bar — the "Reopen this ADR only if" list above, as extended by A4 — takes a
+fifth condition:**
+
+> **Wisp-scoped readiness must honour non-ephemeral blockers.**
+
+The bar now reads, in full: git sync; `bd ready` visibility; a GC that does not strip edges off
+persistent beads; release-step completion becoming something `bh` **verifies** rather than accepts
+on a close (A4); **and** wisp-scoped readiness honouring non-ephemeral blockers. **All of them, not
+any one.** The fifth is not optional bookkeeping: without it, **no gate placed on a wisp step — of
+any type, from any provenance — actually gates**, so any future proposal to put a wisp in front of
+a one-way door is disqualified before its other merits are weighed.
+
+### B7 — consequence: nothing is warranted, nothing is filed, and this is the final answer
+
+**No implementation beads are warranted from `bh-yber2`, and none are filed.** Both spikes returned
+against adoption for independent reasons, so the epic's GO branch — a decision doc recommending a
+scoped `/bh:replan` into an implementation molecule, with the guardrail policy promoted into
+CLAUDE.md — is **not** taken. No product code changes. **CLAUDE.md is not amended**: the proposed
+*"never run `bd mol wisp gc --closed` or `bd mol squash` while any wisp molecule is open"* line was
+only ever needed to make wisp adoption survivable, and beadhive is not adopting wisp, so the rule
+would guard a practice that does not exist. A6 stands as written, and so does the *"Explicitly not
+to be filed"* list.
+
+**The final answer, across three spike molecules** — `bh-gj0v9` (four spikes), `bh-bomrd` (two),
+`bh-yber2` (two): **beadhive does not adopt `wisp` for any of the shapes investigated** — general
+operational workflow, no-code-change work items, the dev check loop, the release loop, and now the
+guardrailed-and-mitigated release loop with a real gate bead. Nine spikes, five shapes, three
+independent failure classes (invisibility/locality, destructive GC, and assert-vs-measure), one
+verdict. The next person who reads the `/workflows/wisps` page and has the idea should read this
+addendum and **B5** before opening a bead; the question has been asked as thoroughly as it is worth
+asking.
+
+**What is actually alive from all of this investigation is narrower than the question, and none of
+it needs formula or wisp:**
+
+1. **Gate beads via `bd gate create`, for human / out-of-band ops that gate code work** — Decision
+   5, unaffected and now better evidenced (B2). Already shipped `bd` behaviour; nothing to build.
+2. **A possible future `bh release status [--json]`**, consolidating the four existing measurement
+   verbs into one structured call (B4) — plain `bh` verb work, still measured, no new record. A
+   finding for a future replan, **not filed here**.
+3. **Optionally, measured-fact replication to a persistent bead's metadata** (B3) — one
+   `bd update --metadata` per checkpoint, wisp-independent, safe, with the two rules stated.
+   Also **not filed here**.
+
+Build nothing, change nothing. This addendum is the record that the guardrailed version of the
+question was asked, measured, and answered — so it is not re-opened from intuition.
