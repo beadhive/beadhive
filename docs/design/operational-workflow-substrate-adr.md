@@ -888,6 +888,46 @@ any one.** The fifth is not optional bookkeeping: without it, **no gate placed o
 any type, from any provenance — actually gates**, so any future proposal to put a wisp in front of
 a one-way door is disqualified before its other merits are weighed.
 
+**Note added 2026-08-20 (`bh-p66q6`) — the fifth condition is an obligation this repo's
+passthrough-gating policy already carries, not a concession invented for wisp.** Framing only; it
+changes nothing above.
+
+**This repo already gates the raw `bd` surface for precisely this reason.** `bd_pass_enabled`
+defaults **false** (`src/beadhive/config.py`, `bd_pass_enabled` / `git_pass_enabled`;
+[`docs/PASSTHROUGH.md`](../PASSTHROUGH.md)) because — its own docstring — *"the raw bd surface is
+gated so agents reach for the convention verbs (`bh work`, `bh plan`) instead of hand-driving
+beads"*, and `otel.count_passthrough` (`src/beadhive/otel.py`) exists to **measure** the gate's hit
+rate: *"the allowed/gated mix tracks how often a first-class verb is missing or undiscovered."*
+Reaching for passthrough is not merely discouraged here — it is instrumented **as the signal that a
+first-class verb is missing.**
+
+**M4 is that signal firing.** An agent or operator who needs to know whether a molecule step or a
+gate is actually ready has **no `bh`-native verb today**, so they reach past the gate for
+`bd mol current` / `bd ready --mol` — the two surfaces this section has just measured as wrong
+(`hq-mek`, as re-scoped by the bounded follow-up above, `hq-0w5`). That is the passthrough policy's
+own predicted failure mode, landing on a case where the missing verb is not merely inconvenient but
+**unsafe**. It is not a wisp-specific problem this investigation happened to trip over; wisp is only
+where it surfaced.
+
+**So the fifth condition is satisfiable two ways, and this record should not be read as naming only
+the first:**
+
+1. **An upstream `bd` fix** to the molecule-scoped readiness computation — the right long-term home,
+   on a timeline this repo does not set.
+2. **A `bh`-native verb wrapping correct molecule/gate readiness** — over the query this section has
+   already confirmed correct (`bd ready --include-ephemeral --explain`, per `hq-0w5`), or a direct
+   dependency-graph read via `bd show`, which was right in every control run above. This is work the
+   passthrough-gating policy **already commits this repo to** — a missing convention verb is a thing
+   to build whether or not wisp is ever adopted. **The operator has expressed a standing preference
+   for this path.**
+
+**What this note does not do.** It moves **no verdict**: wisp remains NO-GO, B7 is still the final
+answer, and the fifth reopen condition stands exactly as written above — **unmet**. It commits to no
+build and **no timeline**, and files **no bead**; a `bh`-native readiness verb is a `/bh:replan`
+input like B3 and B4, not an obligation created here. All it corrects is the framing, so that when
+such a verb is built it is understood as **completing an existing architectural commitment** rather
+than a bespoke concession made to make wisp adoptable.
+
 ### B7 — consequence: nothing is warranted, nothing is filed, and this is the final answer
 
 **No implementation beads are warranted from `bh-yber2`, and none are filed.** Both spikes returned
