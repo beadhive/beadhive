@@ -160,6 +160,45 @@ emitted by `record_agent_dispatch` each time the dispatcher hands a bead to a de
 The span carries `gen_ai.operation.name`, `gen_ai.system`, and `gen_ai.agent.name`; the bead
 brief is attached as a droppable span event.
 
+### Developer self-check spans
+
+A developer's pre-submit self-check (`bh work check <id>`) is **not** the authoritative gate — the
+gate is the clean-checkout validation inside `bh work submit`. Per-attempt iteration ("how many
+self-checks before one came back green") is deliberately kept **out of the bead corpus**: bead
+history is a permanent archive (see `CLAUDE.md`), while a span stream is allowed to age out. This
+instrumentation therefore adds **no bead writes** of any kind.
+
+The `work.check` verb span carries, on top of the `bh.bead`/`bh.epic` every traced verb stamps:
+
+| Attribute | Value |
+|---|---|
+| `bh.work.phase` | `check` — the discriminator vs the authoritative gate (`submit`) |
+| `bh.validation.result` | `pass` \| `fail` |
+| `bh.validation.tree` | the tree hash (the verdict ledger's own content key) |
+| `bh.validation.tree.dirty` | `true` when the worktree had uncommitted changes, i.e. the tree hash is HEAD's and **not** what actually ran |
+| `bh.seat` | the seat holding the claim (e.g. `dev/ada`), read from the local claim record |
+
+`bh.hive` / `bh.worktree` / `bh.role` ride the Resource as usual. That is enough to aggregate
+attempts-before-green per bead **from spans alone**, with no join against bead data.
+
+**Ad-hoc query — who iterates most.** In Grafana → Explore → Tempo, TraceQL:
+
+```traceql
+{ name = "work.check" && span.bh.work.phase = "check" }
+```
+
+Add `&& span.bh.validation.result = "fail"` for red attempts only, or `&& span.bh.bead = "bh-x.2"`
+for one bead. To rank beads/developers, run the same selector through the metrics-generator /
+`count_over_time` and group by the attributes:
+
+```traceql
+{ name = "work.check" && span.bh.validation.result = "fail" } | count_over_time() by (span.bh.bead, span.bh.seat)
+```
+
+Reading it: attempts per `(bh.bead, bh.seat)` up to the first `result=pass` is the
+iteration count; several attempts sharing one `bh.validation.tree` (with `tree.dirty=false`) mean
+the same content was re-checked without a change — re-running rather than fixing.
+
 ### Commit-flow (DORA) metrics
 
 Beyond the coarse lifecycle counters above, `bh work` emits a **commit-flow** metric family at the
