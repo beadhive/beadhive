@@ -1,0 +1,49 @@
+{
+  "formula": "mol-release-run",
+  "description": "SPIKE ARTIFACT (bh-bomrd.1) — beadhive's release loop transcribed into a beads formula, to measure whether a wisp fits release-loop tracking. Not wired into the package: it lives in docs/spikes/, is on no bd formula search path, and nothing in src/ references it.",
+  "version": 1,
+  "type": "workflow",
+  "phase": "vapor",
+  "pour": true,
+  "vars": {
+    "version": {
+      "description": "the version being released",
+      "required": true
+    }
+  },
+  "steps": [
+    {
+      "id": "attest",
+      "title": "just attest — prove this tree green",
+      "type": "task"
+    },
+    {
+      "id": "bump",
+      "title": "just bump — version+changelog+local tag v{{version}}",
+      "type": "task",
+      "needs": [
+        "attest"
+      ]
+    },
+    {
+      "id": "release-preview",
+      "title": "just release-preview — is the path clear?",
+      "type": "task",
+      "needs": [
+        "bump"
+      ]
+    },
+    {
+      "id": "release",
+      "title": "just release — atomic push of main+tag, ONE-WAY DOOR",
+      "type": "task",
+      "needs": [
+        "release-preview"
+      ],
+      "gate": {
+        "type": "human",
+        "description": "releaser sign-off before the one-way door"
+      }
+    }
+  ]
+}
