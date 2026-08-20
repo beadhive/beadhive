@@ -60,7 +60,7 @@ def _stub_engine(monkeypatch, fs: FederationStatus, push_calls: list | None = No
         def federation_status(self, cwd, *, timeout=None):
             return fs
 
-        def push_state(self, cwd, actor="", message=""):
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
             if push_calls is None:
                 raise AssertionError("push_state must not be called in this test")
             push_calls.append(str(cwd))
@@ -555,7 +555,7 @@ def test_dolt_state_pushed_via_engine(world, monkeypatch):
     calls = []
 
     class _FakeEngine:
-        def push_state(self, cwd, actor="", message=""):
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
             calls.append((str(cwd), message))
             return subprocess.CompletedProcess(args=[], returncode=0)
 
@@ -574,7 +574,7 @@ def test_dolt_push_failure_marks_hive_offending(world, monkeypatch):
     _git("update-ref", "refs/dolt/data", "HEAD", cwd=clone)
 
     class _FailingEngine:
-        def push_state(self, cwd, actor="", message=""):
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
             return subprocess.CompletedProcess(args=[], returncode=1)
 
     monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg: _FailingEngine())
@@ -748,6 +748,198 @@ def test_cli_dry_run_exits_zero_and_mutates_nothing(world):
     assert res.exit_code == 0
     remote_log = _git("log", "--all", "--format=%s", cwd=remote).stdout
     assert "unpushed" not in remote_log
+
+
+# ---------------------------------------------------------------------------
+# CLI wiring: `bh hive sync` — the unified group (bh-ummb9.1: remotes/peers subcommands,
+# bare = remotes). `sync-remote` deprecates to an alias for `sync remotes --push`.
+# ---------------------------------------------------------------------------
+
+
+def test_bare_sync_is_equivalent_to_sync_remotes(world):
+    """`bh hive sync --all` (no subcommand) must be `sync remotes --all` — same targets,
+    same outcome — per bh-ummb9.1's acceptance."""
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    bare = CliRunner().invoke(app, ["hive", "sync", "--all"])
+    explicit = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all"])
+
+    assert bare.exit_code == 0 == explicit.exit_code
+    assert "github/myorg/myrepo" in _strip_ansi(bare.output)
+    assert "github/myorg/myrepo" in _strip_ansi(explicit.output)
+
+
+def test_sync_remotes_still_refuses_a_dirty_tree(world):
+    """The guard `sync-remote` earned survives under the new `remotes` name: dirty is still
+    refused and offending, exit non-zero."""
+    from beadhive.cli import app
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / "file.txt").write_text("uncommitted change")
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all"])
+
+    assert res.exit_code != 0
+    assert "github/myorg/myrepo" in res.output
+
+
+def test_sync_remotes_dry_run_still_mutates_nothing(world):
+    from beadhive.cli import app
+
+    clone, remote = _make_ahead_clone()
+    _register()
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all", "--dry-run"])
+
+    assert res.exit_code == 0
+    remote_log = _git("log", "--all", "--format=%s", cwd=remote).stdout
+    assert "unpushed" not in remote_log
+
+
+def test_sync_remotes_requires_hive_or_all(world):
+    from beadhive.cli import app
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes"])
+
+    assert res.exit_code != 0
+    assert "HIVE" in res.output or "--all" in res.output
+
+
+def test_sync_remotes_pull_and_push_are_mutually_exclusive(world):
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all", "--pull", "--push"])
+
+    assert res.exit_code != 0
+    assert "mutually exclusive" in res.output
+
+
+def test_sync_remotes_push_only_skips_pull(world, monkeypatch):
+    """`--push` alone must not call `Engine.pull_state` — pull is a distinct, opt-in leg."""
+    from beadhive import sync_remote
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    class _NoPull:
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            raise AssertionError("pull_state must not be called with --push only")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _NoPull())
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all", "--push"])
+
+    assert res.exit_code == 0
+
+
+def test_sync_peers_has_no_pull_or_push_option(world):
+    """bd exposes no single-direction peer verb — `--pull`/`--push` must not exist on
+    `sync peers`, not merely error at runtime."""
+    from beadhive.cli import app
+
+    res = CliRunner().invoke(app, ["hive", "sync", "peers", "--help"])
+    out = _strip_ansi(res.output)
+
+    assert res.exit_code == 0
+    # An actual option renders as its own bulleted line in the Options panel; check that
+    # shape rather than a bare substring, since the help prose itself names `--pull`/`--push`
+    # to explain their absence.
+    assert not re.search(r"│\s*--pull\b", out)
+    assert not re.search(r"│\s*--push\b", out)
+
+
+def test_sync_peers_rejects_pull_as_an_unknown_option(world):
+    from beadhive.cli import app
+
+    res = CliRunner().invoke(app, ["hive", "sync", "peers", "--all", "--pull"])
+
+    assert res.exit_code != 0
+    assert "No such option" in res.output
+
+
+def test_sync_remotes_accepts_remote_and_force_flags(world, monkeypatch):
+    """`--remote`/`--force` must be accepted (parsed) and threaded through to the push call —
+    covered here via the engine seam rather than a real multi-remote dolt setup."""
+    from beadhive import sync_remote
+    from beadhive.cli import app
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=clone)  # local-only, no-remote → unpushed
+
+    calls = []
+
+    class _Recording:
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            calls.append((remote, force))
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _Recording())
+
+    res = CliRunner().invoke(
+        app, ["hive", "sync", "remotes", "--all", "--push", "--remote", "upstream", "--force"]
+    )
+
+    assert res.exit_code == 0
+    assert calls == [("upstream", True)]
+
+
+def test_sync_remote_deprecation_warns_once_and_still_works(world):
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    res = CliRunner().invoke(app, ["hive", "sync-remote", "--all"])
+
+    assert res.exit_code == 0
+    assert res.output.count("deprecated") == 1
+    assert "sync remotes --push" in _strip_ansi(res.output)
+
+
+def test_sync_remote_deprecation_still_refuses_missing_all(world):
+    from beadhive.cli import app
+
+    res = CliRunner().invoke(app, ["hive", "sync-remote"])
+
+    assert res.exit_code != 0
+    assert "--all" in res.output
+
+
+def test_sync_remote_deprecated_alias_is_push_only(world, monkeypatch):
+    """`sync-remote` deprecates to `sync remotes --push` — never pulls."""
+    from beadhive import sync_remote
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    class _NoPull:
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            raise AssertionError("sync-remote must never pull — push-only alias")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _NoPull())
+
+    res = CliRunner().invoke(app, ["hive", "sync-remote", "--all"])
+
+    assert res.exit_code == 0
 
 
 # ---------------------------------------------------------------------------

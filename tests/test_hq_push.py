@@ -73,7 +73,7 @@ class _StubEngine:
     def federation_status(self, cwd, *, timeout=None):
         return self.fed_status
 
-    def push_state(self, cwd, actor="", message=""):
+    def push_state(self, cwd, actor="", message="", *, remote="", force=False):
         self.push_calls.append(str(cwd))
         rc = 0 if self.push_ok else 1
         err = "" if self.push_ok else "boom"

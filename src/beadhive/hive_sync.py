@@ -36,9 +36,10 @@ def _hive_id(entry) -> str:
     return f"{entry['provider']}/{entry['org']}/{entry['repo']}"
 
 
-def _targets(cfg, hive_id: str | None) -> list[dict]:
-    """The hive entries this run addresses — one resolved hive, or (``hive_id=None``) every
-    registered hive. HQ is excluded either way: local-only by design, no federation peer.
+def _targets(cfg, hive_id: str | None, hive_ids: list[str] | None = None) -> list[dict]:
+    """The hive entries this run addresses — one or more resolved hives (``hive_id``, or the
+    plural ``hive_ids``), or (both unset) every registered hive. HQ is excluded either way:
+    local-only by design, no federation peer.
 
     "By design" is now a STATEMENT WITH AN EXPIRY DATE (bh-ab25i). It was a hard constraint
     while HQ's Dolt path carried a per-host derived aggregate alongside its own beads — bd's
@@ -46,25 +47,36 @@ def _targets(cfg, hive_id: str | None) -> list[dict]:
     the aggregate, so HQ is now a legitimate federation participant and this exclusion becomes
     correct to FIX rather than to delete. Deliberately out of scope there; tracked in bh-ab25i."""
     real_hives = registry.hives(cfg)
-    if hive_id:
-        entry = registry.resolve_hive(cfg, hive_id)
-        if entry not in real_hives:
-            typer.echo("✗ HQ is local-only by design — it has no federation peer", err=True)
-            raise typer.Exit(1)
-        return [entry]
+    ids = list(hive_ids) if hive_ids else ([hive_id] if hive_id else [])
+    if ids:
+        entries = []
+        for one in ids:
+            entry = registry.resolve_hive(cfg, one)
+            if entry not in real_hives:
+                typer.echo("✗ HQ is local-only by design — it has no federation peer", err=True)
+                raise typer.Exit(1)
+            entries.append(entry)
+        return entries
     return real_hives
 
 
-def _status_rows(hive_id: str, fs) -> tuple[list[tuple[str, ...]], bool]:
+def _status_rows(
+    hive_id: str, fs, *, peer: str | None = None
+) -> tuple[list[tuple[str, ...]], bool]:
     """Table rows for one hive's ``FederationStatus`` + whether its peer state is unverifiable.
-    An unreachable peer's counts are NOT trustworthy — render ``unknown (reason)``, never 0/0."""
+    An unreachable peer's counts are NOT trustworthy — render ``unknown (reason)``, never 0/0.
+    ``peer`` (unset or ``"all"`` = every peer) narrows the rendered rows to one named peer —
+    filtered client-side; ``bd federation status`` has no per-peer fetch to skip the others."""
     if not fs.ok:
         return [(hive_id, "-", f"unknown ({fs.error})", "?", "?", "?")], True
-    if not fs.peers:
+    peers = fs.peers
+    if peer and peer != "all":
+        peers = tuple(p for p in peers if p.peer == peer)
+    if not peers:
         return [(hive_id, "(no peers)", "-", "-", "-", "-")], False
     rows: list[tuple[str, ...]] = []
     unknown = False
-    for p in fs.peers:
+    for p in peers:
         if p.reachable:
             conflicts = "yes" if p.has_conflicts else "no"
             rows.append((hive_id, p.peer, "yes", str(p.ahead), str(p.behind), conflicts))
@@ -81,7 +93,7 @@ def _render_table(rows: list[tuple[str, ...]]) -> None:
         typer.echo("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip())
 
 
-def _status_pass(eng, entries: list[dict]) -> list[str]:
+def _status_pass(eng, entries: list[dict], *, peer: str | None = None) -> list[str]:
     """--dry-run: read-only fleet federation status, parallel (never calls ``sync_state``).
     Renders the two-axis table; returns the hive ids whose peer state could not be verified."""
     paths = [registry.hive_dir(e) for e in entries]
@@ -93,7 +105,7 @@ def _status_pass(eng, entries: list[dict]) -> list[str]:
     offending: list[str] = []
     for entry, fs in zip(entries, statuses, strict=True):
         hive_id = _hive_id(entry)
-        hive_rows, unknown = _status_rows(hive_id, fs)
+        hive_rows, unknown = _status_rows(hive_id, fs, peer=peer)
         rows.extend(hive_rows)
         if unknown:
             offending.append(hive_id)
@@ -109,13 +121,16 @@ def _status_pass(eng, entries: list[dict]) -> list[str]:
     return offending
 
 
-def _live_pass(eng, entries: list[dict], strategy: str | None) -> list[str]:
+def _live_pass(
+    eng, entries: list[dict], strategy: str | None, *, peer: str | None = None
+) -> list[str]:
     """Live sync, SERIAL per hive (writes never ride the thread pool). Returns the hive ids
     that failed or paused on conflicts — a hive with no peer towns is NOT one of them."""
     offending: list[str] = []
+    sync_peer = peer if peer and peer != "all" else None
     for entry in entries:
         hive_id = _hive_id(entry)
-        outcome = eng.sync_state(registry.hive_dir(entry), strategy=strategy)
+        outcome = eng.sync_state(registry.hive_dir(entry), peer=sync_peer, strategy=strategy)
         if outcome.ok:
             typer.echo(f"✓ {hive_id}: synced")
             continue
@@ -149,17 +164,23 @@ def _live_pass(eng, entries: list[dict], strategy: str | None) -> list[str]:
 
 
 def hive_sync(
-    *, hive_id: str | None = None, strategy: str | None = None, dry_run: bool = False
+    *,
+    hive_id: str | None = None,
+    hive_ids: list[str] | None = None,
+    peer: str | None = None,
+    strategy: str | None = None,
+    dry_run: bool = False,
 ) -> list[str]:
     """Sync the targeted hive(s) with their federation peer (or preview with ``dry_run``).
-    Returns the offending hive ids — failed, paused-on-conflicts, or (dry-run) unverifiable.
-    Never raises for a per-hive failure; the CLI decides the exit code."""
+    ``peer`` (unset or ``"all"`` = every peer) narrows to one named federation peer. Returns
+    the offending hive ids — failed, paused-on-conflicts, or (dry-run) unverifiable. Never
+    raises for a per-hive failure; the CLI decides the exit code."""
     cfg = config.load()
-    entries = _targets(cfg, hive_id)
+    entries = _targets(cfg, hive_id, hive_ids)
     if not entries:
         typer.echo("no syncable hives registered (HQ is local-only and always skipped)")
         return []
     eng = engine.get_engine(cfg)
     if dry_run:
-        return _status_pass(eng, entries)
-    return _live_pass(eng, entries, strategy)
+        return _status_pass(eng, entries, peer=peer)
+    return _live_pass(eng, entries, strategy, peer=peer)

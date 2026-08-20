@@ -258,14 +258,59 @@ def _recently_touched(clone_path: Path) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
-def _push_dolt_state(cfg, clone_path: Path) -> bool:
+def _push_dolt_state(cfg, clone_path: Path, *, remote: str = "", force: bool = False) -> bool:
     """Push this hive's ``refs/dolt/data`` via the configured ``Engine`` (bh-dw3e.6 wiring).
     Returns True on success."""
-    result = engine.get_engine(cfg).push_state(clone_path, message=f"sync-remote {clone_path}")
+    result = engine.get_engine(cfg).push_state(
+        clone_path, message=f"sync-remote {clone_path}", remote=remote, force=force
+    )
     return result.returncode == 0
 
 
-def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
+def _pull_dolt_state(cfg, clone_path: Path, *, remote: str = "") -> bool:
+    """Pull this hive's ``refs/dolt/data`` via the configured ``Engine``. Returns True on
+    success. Mutating — never called under ``--dry-run``."""
+    result = engine.get_engine(cfg).pull_state(clone_path, remote=remote)
+    return result.returncode == 0
+
+
+def _resolve_targets(cfg, hive_ids: list[str] | None) -> list[tuple[str, Path]]:
+    """The ``(hive_id, clone_path)`` pairs this run addresses: every registered hive (HQ
+    skipped, as today) when ``hive_ids`` is empty/None, else exactly the resolved hives named —
+    each resolved via ``registry.resolve_hive`` (prefix/triplet/flexible match), refusing HQ the
+    same way ``hive_sync._targets`` does."""
+    real_hives = registry.hives(cfg)
+    if not hive_ids:
+        targets: list[tuple[str, Path]] = []
+        for entry in cfg.get("managed_repos", []) or []:
+            if entry not in real_hives:
+                typer.echo("  (skipping HQ — local-only by design)")
+                continue
+            provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+            targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
+        return targets
+
+    targets = []
+    for hive_id in hive_ids:
+        entry = registry.resolve_hive(cfg, hive_id)
+        if entry not in real_hives:
+            typer.echo("✗ HQ is local-only by design — it has no remote to sync", err=True)
+            raise typer.Exit(1)
+        provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+        targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
+    return targets
+
+
+def sync_remote(
+    *,
+    dry_run: bool = False,
+    verbose: bool = False,
+    hive_ids: list[str] | None = None,
+    pull: bool = False,
+    push: bool = True,
+    remote: str = "",
+    force: bool = False,
+) -> SyncPlan:
     """Guarded fleet-wide sync: assess every registered hive, then (outside ``--dry-run``) push
     what's safe to push.
 
@@ -299,16 +344,9 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
     plan = SyncPlan(dry_run=dry_run)
 
     tag = "DRY-RUN " if dry_run else ""
-    typer.echo(f"{tag}sync-remote --all")
+    typer.echo(f"{tag}sync-remote --all" if not hive_ids else f"{tag}sync-remote {hive_ids}")
 
-    targets: list[tuple[str, Path]] = []
-    real_hives = registry.hives(cfg)
-    for entry in cfg.get("managed_repos", []) or []:
-        if entry not in real_hives:
-            typer.echo("  (skipping HQ — local-only by design)")
-            continue
-        provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
-        targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
+    targets = _resolve_targets(cfg, hive_ids)
 
     # Parallel read-only pre-assessment (fetch=True — see docstring). SHAPE B
     # (`fleet.fanout`), which preserves input order, so output below stays in deterministic
@@ -316,6 +354,23 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
     records = fleet.fanout(
         lambda t: assess_hive(t[0], t[1], fetch=True), targets, workers=_ASSESS_WORKERS
     )
+
+    # Pull-then-push (bh-ummb9.1 wiring; the pull leg's own behaviour — auto-merge reporting,
+    # per-remote nuance, dry-run ahead/behind — is bh-ummb9.2/.3's job, not this one's). Never
+    # runs under --dry-run (mutates), and only for a hive with an actual dolt remote —
+    # "absent"/"no-remote" mirrors the push leg's own `_DOLT_PUSHABLE` gate, so a plain git
+    # clone (or a bd store with no configured remote) is never handed to `bd dolt pull`.
+    pull_failed: set[str] = set()
+    if pull and not dry_run:
+        for (hive_id, clone_path), record in zip(targets, records, strict=True):
+            if record.dolt_status in ("absent", "no-remote", None):
+                continue
+            if _pull_dolt_state(cfg, clone_path, remote=remote):
+                typer.echo(f"  {hive_id}: pulled")
+            else:
+                typer.echo(f"  {hive_id}: ✗ failed to pull dolt: refs/dolt/data", err=True)
+                pull_failed.add(hive_id)
+                plan.offending.append(hive_id)
 
     for (hive_id, clone_path), record in zip(targets, records, strict=True):
         plan.records.append(record)
@@ -342,6 +397,15 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
             continue
 
         if record.status == SyncStatus.CLEAN:
+            continue
+
+        if not push:
+            typer.echo("    (--pull only: push skipped)")
+            continue
+
+        if hive_id in pull_failed:
+            # Already reported + offending above; don't compound with a push against
+            # possibly-stale local state.
             continue
 
         if dry_run:
@@ -372,7 +436,7 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
                     typer.echo(f"    ✗ failed to push git: {name}: {err}", err=True)
 
         if record.dolt_status in _DOLT_PUSHABLE:
-            if _push_dolt_state(cfg, clone_path):
+            if _push_dolt_state(cfg, clone_path, remote=remote, force=force):
                 plan.dolt_pushed.append(hive_id)
                 typer.echo("    pushed dolt: refs/dolt/data")
             else:

@@ -15,6 +15,7 @@ import time
 from pathlib import Path
 
 import typer
+from typer.core import TyperGroup
 
 from . import bd as bd_mod
 from . import (
@@ -1183,22 +1184,181 @@ def hive_reclaim(
     retire.reclaim_hive(hive_id, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
 
 
-@hive_app.command(
-    "sync",
-    help="bidirectional bead-state sync with a hive's federation peer (bd federation sync): "
-    "pull + push authoritative dolt state in one step, pausing on conflicts (re-run with "
-    "--strategy ours|theirs). NOT `bh sync` — that hydrates the hub's issue index from every "
-    "hive; this moves the dolt state channel between a hive and its remote peer. --dry-run "
-    "renders a read-only ahead/behind fleet table instead (unknown reported loudly, never as "
-    "0/0). HQ (kind=hq) is local-only by design and always skipped.",
+# ---- hive sync: remotes (bd dolt push/pull) + peers (bd federation sync) -----------------
+#
+# bh-ummb9: one sync verb, two subcommands, because bd's two mechanisms are exactly inverted
+# in capability (remotes: push/pull, no bidirectional-in-one-call; federation: bidirectional
+# `sync`, no single-direction verb) — see docs/design/hive-sync-unification-molecule.yaml for
+# the full rationale.
+#
+# COMPOSITION NOTE (bh-ummb9.1, checked before building anything else): a plain
+# `typer.Typer(invoke_without_command=True)` + callback does NOT compose with a positional
+# `[HIVE]...` argument on that callback — Click's Group parses its own declared params
+# (greedily, `nargs=-1`) before it ever looks for a subcommand name, so `bh hive sync remotes`
+# gets swallowed whole as `hive=["remotes"]` instead of dispatching to the `remotes` command
+# (verified interactively: with the positional argument present, `sync remotes --all` prints
+# the *default* callback's output, never `remotes`'s). Flag-only groups don't hit this — only
+# the plural positional argument does, which the "no subcommand = remotes, HIVE... allowed
+# bare" shape requires. `DefaultGroup` below is the documented fallback made to work in-tree
+# rather than the uglier bare-forwarding one: it strips its own positional Arguments out of
+# `self.params` for exactly one parse when the first token names a real subcommand
+# (`remotes`/`peers`), so Click's normal dispatch takes over; any other first token (a hive
+# name, `--all`, nothing) falls through to the callback exactly as before. Known limitation
+# inherited from `nargs=-1` generally (put flags before positional hives:
+# `sync --dry-run myhive`, not `sync myhive --dry-run` — the latter also swallows `--dry-run`
+# as a second hive name, same as any other Click command with a trailing variadic argument).
+class DefaultGroup(TyperGroup):
+    def parse_args(self, ctx: typer.Context, args: list[str]) -> list[str]:
+        if args and args[0] in self.commands:
+            saved = self.params
+            self.params = [p for p in saved if getattr(p, "param_type_name", "") != "argument"]
+            try:
+                return super().parse_args(ctx, args)
+            finally:
+                self.params = saved
+        return super().parse_args(ctx, args)
+
+
+sync_app = typer.Typer(
+    invoke_without_command=True,
+    cls=DefaultGroup,
+    help="bead-state sync: `remotes` (bd dolt push/pull) or `peers` (bd federation sync). "
+    "No subcommand = remotes, the common case.",
 )
-def hive_sync_cmd(
-    hive_id: str = typer.Argument(
-        None, metavar="[HIVE_ID]", help="one registered hive (prefix / triplet / org/repo)"
+
+
+def _hive_args_ok(hive: list[str], all_hives: bool) -> bool:
+    """Exactly one of positional HIVE(s) or --all — same "pick a target" rule both verbs
+    have always enforced, extended to the now-plural HIVE... form."""
+    return bool(hive) != all_hives
+
+
+def _pull_push_flags(pull: bool, push: bool) -> tuple[bool, bool]:
+    """`--pull`/`--push` are mutually exclusive; absence of both means both (pull-then-push —
+    the actual pull-first sequencing is bh-ummb9.2's job, this only routes the flags)."""
+    if pull and push:
+        typer.echo("✗ --pull and --push are mutually exclusive", err=True)
+        raise typer.Exit(1)
+    if not pull and not push:
+        return True, True
+    return pull, push
+
+
+def _run_sync_remotes(
+    hive: list[str],
+    all_hives: bool,
+    remote: str | None,
+    pull: bool,
+    push: bool,
+    dry_run: bool,
+    force: bool,
+    verbose: bool = False,
+) -> None:
+    from . import sync_remote
+
+    if not _hive_args_ok(hive, all_hives):
+        typer.echo("✗ pass one or more HIVE, or --all", err=True)
+        raise typer.Exit(1)
+    do_pull, do_push = _pull_push_flags(pull, push)
+
+    plan = sync_remote.sync_remote(
+        dry_run=dry_run,
+        verbose=verbose,
+        hive_ids=list(hive) if hive else None,
+        pull=do_pull,
+        push=do_push,
+        remote=remote or "",
+        force=force,
+    )
+    if plan.offending:
+        raise typer.Exit(1)
+
+
+def _run_sync_peers(
+    hive: list[str],
+    all_hives: bool,
+    peer: str | None,
+    strategy: str | None,
+    dry_run: bool,
+) -> None:
+    from . import hive_sync
+
+    if not _hive_args_ok(hive, all_hives):
+        typer.echo("✗ pass one or more HIVE, or --all", err=True)
+        raise typer.Exit(1)
+    if strategy and strategy not in hive_sync.STRATEGIES:
+        typer.echo(f"✗ --strategy must be ours|theirs (got {strategy!r})", err=True)
+        raise typer.Exit(1)
+
+    offending = hive_sync.hive_sync(
+        hive_ids=list(hive) if hive else None, peer=peer, strategy=strategy, dry_run=dry_run
+    )
+    if offending:
+        raise typer.Exit(1)
+
+
+_HIVE_ARG = typer.Argument(
+    None, metavar="[HIVE]...", help="one or more registered hives (prefix / triplet / org/repo)"
+)
+_ALL_OPT = typer.Option(False, "--all", help="target every registered hive (HQ excluded)")
+_DRY_RUN_OPT = typer.Option(False, "--dry-run", help="print the plan and change nothing")
+
+
+@sync_app.callback(invoke_without_command=True)
+def sync_default(
+    ctx: typer.Context,
+    hive: list[str] = _HIVE_ARG,
+    all_hives: bool = _ALL_OPT,
+    remote: str = typer.Option(
+        None, "--remote", help="target a named dolt remote instead of every configured one"
     ),
-    all_hives: bool = typer.Option(
-        False, "--all", help="target every registered hive (HQ excluded)"
+    pull: bool = typer.Option(False, "--pull", help="pull only (skip push)"),
+    push: bool = typer.Option(False, "--push", help="push only (skip pull)"),
+    dry_run: bool = _DRY_RUN_OPT,
+    force: bool = typer.Option(False, "--force", help="bd dolt push --force"),
+):
+    """No subcommand = `remotes`, the common case: pull then push every targeted hive's dolt
+    remote(s)."""
+    if ctx.invoked_subcommand is not None:
+        return
+    _run_sync_remotes(hive, all_hives, remote, pull, push, dry_run, force)
+
+
+@sync_app.command(
+    "remotes",
+    help="bd dolt push/pull with a hive's dolt remote(s). Default (no --pull/--push): pull "
+    "then push. --dry-run reports only, zero mutation.",
+)
+def sync_remotes_cmd(
+    hive: list[str] = _HIVE_ARG,
+    all_hives: bool = _ALL_OPT,
+    remote: str = typer.Option(
+        None, "--remote", help="target a named dolt remote instead of every configured one"
     ),
+    pull: bool = typer.Option(False, "--pull", help="pull only (skip push)"),
+    push: bool = typer.Option(False, "--push", help="push only (skip pull)"),
+    dry_run: bool = _DRY_RUN_OPT,
+    force: bool = typer.Option(False, "--force", help="bd dolt push --force"),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help="for hives classified unpushed-dolt (embedded engine, dolt_status 'unknown'), "
+        "also print a bounded list of recently-updated beads as approximate context.",
+    ),
+):
+    _run_sync_remotes(hive, all_hives, remote, pull, push, dry_run, force, verbose)
+
+
+@sync_app.command(
+    "peers",
+    help="bidirectional bead-state sync with a hive's federation peer(s) (bd federation sync): "
+    "pull + push authoritative dolt state in one step, pausing on conflicts (re-run with "
+    "--strategy ours|theirs). No --pull/--push — bd exposes no single-direction peer verb.",
+)
+def sync_peers_cmd(
+    hive: list[str] = _HIVE_ARG,
+    all_hives: bool = _ALL_OPT,
+    peer: str = typer.Option(None, "--peer", help="target a named federation peer, or 'all'"),
     strategy: str = typer.Option(
         None,
         "--strategy",
@@ -1208,25 +1368,17 @@ def hive_sync_cmd(
         False, "--dry-run", help="read-only: render the federation status table, sync nothing"
     ),
 ):
-    from . import hive_sync
+    _run_sync_peers(hive, all_hives, peer, strategy, dry_run)
 
-    if bool(hive_id) == all_hives:
-        typer.echo("✗ pass exactly one of HIVE_ID or --all", err=True)
-        raise typer.Exit(1)
-    if strategy and strategy not in hive_sync.STRATEGIES:
-        typer.echo(f"✗ --strategy must be ours|theirs (got {strategy!r})", err=True)
-        raise typer.Exit(1)
 
-    if hive_sync.hive_sync(hive_id=hive_id or None, strategy=strategy, dry_run=dry_run):
-        raise typer.Exit(1)
+hive_app.add_typer(sync_app, name="sync", rich_help_panel=HIVE_PANEL)
 
 
 @hive_app.command(
     "sync-remote",
-    help="guarded fleet-wide push+verify before switching physical hosts: scan every registered "
-    "hive (git + dolt-ref-aware), report clean/dirty/unpushed-git/unpushed-dolt/blocked, and push "
-    "what's safe. Refuses to push over a dirty working tree; --dry-run reports only, with zero "
-    "mutation. Exits non-zero and lists offending hives if any hive can't be safely synced.",
+    hidden=True,
+    help="DEPRECATED — alias for `bh hive sync remotes --push`. Kept working, never removed "
+    "without notice.",
 )
 def hive_sync_remote(
     all_hives: bool = typer.Option(
@@ -1243,15 +1395,13 @@ def hive_sync_remote(
         "24h) as approximate context — not a precise unpushed diff. Default output unchanged.",
     ),
 ):
-    from . import sync_remote
-
+    typer.echo(
+        "⚠ `hive sync-remote` is deprecated — use `hive sync remotes --push` instead", err=True
+    )
     if not all_hives:
         typer.echo("✗ pass --all (sync-remote targets the whole fleet)", err=True)
         raise typer.Exit(1)
-
-    plan = sync_remote.sync_remote(dry_run=dry_run, verbose=verbose)
-    if plan.offending:
-        raise typer.Exit(1)
+    _run_sync_remotes([], all_hives, None, False, True, dry_run, False, verbose)
 
 
 @hive_app.command(
