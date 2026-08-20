@@ -531,12 +531,15 @@ def _scan_dolt_ref(path: str, has_origin: bool, *, fetch: bool = False) -> DoltR
     rc, _ = _run(["cat-file", "-e", f"{remote_sha}^{{commit}}"], path)
     if rc != 0:
         # The remote's commit isn't locally resolvable (never fetched) — we know the two
-        # sides differ but not by how much, without fetching. Report the divergence plainly,
-        # unless the caller opted into a fetch — then federation gives the real counts.
-        if fetch:
-            from . import engine  # lazy: the default (fetch=False) path stays stdlib-only
-
-            return _dolt_ref_from_federation(engine.get_engine().federation_status(path))
+        # sides differ (the ls-remote shas don't match) but not by how much, and a read-only
+        # scan must never pay for a fetch to find out (bh-ummb9.3: even `git fetch --dry-run`
+        # transfers the pack to negotiate, measured — there is no free way to get exact
+        # counts here). This used to fall back to `bd federation status` when `fetch=True`,
+        # but federation peers are a DIFFERENT mechanism (bh-ummb9 epic design) that happens
+        # to duplicate this same git+ssh dolt remote on this fleet, not a lower-cost way to
+        # read it — and it fails outright on the still-open peer-credentials defect
+        # (bh-q5i2i), silently downgrading a known "diverged" into an opaque "unknown".
+        # Report the honest, git-native divergence instead, independent of `fetch`.
         return DoltRefInfo(status="diverged")
 
     rc, ab = _run(
