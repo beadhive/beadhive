@@ -16,6 +16,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from beadhive import config, sync_remote
@@ -648,6 +649,57 @@ def test_dolt_push_failure_marks_hive_offending(world, monkeypatch):
 
     assert plan.offending == ["github/myorg/myrepo"]
     assert plan.dolt_pushed == []
+
+
+# Real `bd dolt push` stderr captured on this fleet on 2026-08-20 (bh-ummb9.4 review feedback).
+# Both WRAP the actual cause and APPEND unrelated hint text after it — so a "last stderr line"
+# extraction (correct for raw `git push`, see `_last_stderr_line`) yields boilerplate for
+# either, and actively misleading boilerplate for the second (points at SSH auth instead of
+# the real cause, a missing bare clone — bh-j42f0).
+_REAL_NON_FAST_FORWARD_STDERR = (
+    "! [rejected]  main -> main (non-fast-forward)\n"
+    "hint: Updates were rejected because the tip of your current branch is behind its remote\n"
+    "hint: counterpart. Integrate the remote changes (e.g. 'dolt pull ...') before pushing "
+    "again.: exit status 1"
+)
+_REAL_MISSING_GIT_REMOTE_CACHE_STDERR = (
+    "Error 1105 (HY000): failed to read latest version of remote database "
+    "origin@git+ssh://...: fatal: not a git repository: "
+    "'.../.dolt/git-remote-cache/<hash>/repo.git'\n"
+    "hint: dolt does not support interactive credential prompts\n"
+    "hint: ensure non-interactive auth is configured for GCM: exit status 1"
+)
+
+
+@pytest.mark.parametrize(
+    "stderr,must_contain",
+    [
+        (_REAL_NON_FAST_FORWARD_STDERR, "non-fast-forward"),
+        (_REAL_MISSING_GIT_REMOTE_CACHE_STDERR, "not a git repository"),
+    ],
+)
+def test_dolt_push_failure_surfaces_underlying_error(
+    world, monkeypatch, capsys, stderr, must_contain
+):
+    """A failed dolt push must surface `bd dolt push`'s real cause verbatim beneath the summary
+    line — not a bare 'failed to push dolt' (the original defect) and not a wrong line picked
+    from bd's hint-wrapped stderr (the changes-requested defect: a last-line extraction yields
+    generic auth advice for both real fleet failures, actively misleading for the second)."""
+    clone, _remote = _make_clean_clone()
+    _register()
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=clone)
+
+    class _FailingEngine:
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg: _FailingEngine())
+
+    sync_remote.sync_remote(dry_run=False)
+
+    err = capsys.readouterr().err
+    assert "✗ failed to push dolt: refs/dolt/data" in err
+    assert must_contain in err
 
 
 def test_dry_run_does_not_call_engine_push(world, monkeypatch):

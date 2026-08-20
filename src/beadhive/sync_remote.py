@@ -280,13 +280,38 @@ def _recently_touched(clone_path: Path) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
-def _push_dolt_state(cfg, clone_path: Path, *, remote: str = "", force: bool = False) -> bool:
+def _echo_reason(reason: str) -> None:
+    """Print a (possibly multi-line) failure reason as indented lines, matching the existing
+    ``    - <reason>`` per-hive convention — one bullet per line rather than collapsing a
+    multi-line dolt stderr block onto one."""
+    for line in reason.splitlines():
+        typer.echo(f"    - {line}", err=True)
+
+
+def _dolt_stderr(result) -> str:
+    """The full captured stderr from a ``bd dolt push``/``pull``, verbatim — NOT the last line.
+
+    Unlike raw ``git push`` (see ``_last_stderr_line``), ``bd dolt push``/``pull`` WRAP the
+    underlying error and APPEND their own hint text after it (e.g. a non-fast-forward's real
+    complaint sits mid-output, followed by a generic "hint: ... before pushing again." tail; a
+    missing git-remote-cache clone is followed by unrelated "ensure non-interactive auth"
+    advice). Taking the last line there silently swaps the real cause for boilerplate — worse
+    than no reason at all, since it looks specific while being wrong. Print everything bd said
+    and let the operator read it, per the brief: surface verbatim, do not classify."""
+    return (result.stderr or "").strip()
+
+
+def _push_dolt_state(
+    cfg, clone_path: Path, *, remote: str = "", force: bool = False
+) -> tuple[bool, str]:
     """Push this hive's ``refs/dolt/data`` via the configured ``Engine`` (bh-dw3e.6 wiring).
-    Returns True on success."""
+    Returns ``(ok, reason)`` — ``reason`` is bd's full captured stderr on failure (see
+    ``_dolt_stderr``), empty on success."""
     result = engine.get_engine(cfg).push_state(
         clone_path, message=f"sync-remote {clone_path}", remote=remote, force=force
     )
-    return result.returncode == 0
+    ok = result.returncode == 0
+    return ok, ("" if ok else _dolt_stderr(result))
 
 
 def _auto_merge_notices(result) -> list[str]:
@@ -299,13 +324,15 @@ def _auto_merge_notices(result) -> list[str]:
     return [line.strip() for line in lines if "auto-merged" in line.lower()]
 
 
-def _pull_dolt_state(cfg, clone_path: Path, *, remote: str = "") -> tuple[bool, list[str]]:
+def _pull_dolt_state(cfg, clone_path: Path, *, remote: str = "") -> tuple[bool, str, list[str]]:
     """Pull this hive's ``refs/dolt/data`` via the configured ``Engine``. Returns
-    ``(success, auto_merge_notices)`` — the notices are extracted regardless of success, since
-    an auto-merge can happen on a pull that otherwise reports success. Mutating — never called
-    under ``--dry-run``."""
+    ``(ok, reason, auto_merge_notices)``: ``reason`` is bd's full captured stderr on failure
+    (see ``_dolt_stderr``), empty on success; ``notices`` are extracted regardless of
+    success/failure, since an auto-merge can happen on a pull that otherwise reports success.
+    Mutating — never called under ``--dry-run``."""
     result = engine.get_engine(cfg).pull_state(clone_path, remote=remote)
-    return result.returncode == 0, _auto_merge_notices(result)
+    ok = result.returncode == 0
+    return ok, ("" if ok else _dolt_stderr(result)), _auto_merge_notices(result)
 
 
 def _resolve_targets(cfg, hive_ids: list[str] | None) -> list[tuple[str, Path]]:
@@ -399,11 +426,13 @@ def sync_remote(
         for (hive_id, clone_path), record in zip(targets, records, strict=True):
             if record.dolt_status in ("absent", "no-remote", None):
                 continue
-            pulled_ok, auto_merges = _pull_dolt_state(cfg, clone_path, remote=remote)
-            if pulled_ok:
+            ok, reason, auto_merges = _pull_dolt_state(cfg, clone_path, remote=remote)
+            if ok:
                 typer.echo(f"  {hive_id}: pulled")
             else:
                 typer.echo(f"  {hive_id}: ✗ failed to pull dolt: refs/dolt/data", err=True)
+                if reason:
+                    _echo_reason(reason)
                 pull_failed.add(hive_id)
                 plan.offending.append(hive_id)
             for notice in auto_merges:
@@ -493,12 +522,15 @@ def sync_remote(
                     typer.echo(f"    ✗ failed to push git: {name}: {err}", err=True)
 
         if record.dolt_status in _DOLT_PUSHABLE:
-            if _push_dolt_state(cfg, clone_path, remote=remote, force=force):
+            ok, reason = _push_dolt_state(cfg, clone_path, remote=remote, force=force)
+            if ok:
                 plan.dolt_pushed.append(hive_id)
                 typer.echo("    pushed dolt: refs/dolt/data")
             else:
                 failed_here = True
                 typer.echo("    ✗ failed to push dolt: refs/dolt/data", err=True)
+                if reason:
+                    _echo_reason(reason)
 
         if failed_here:
             plan.offending.append(hive_id)
