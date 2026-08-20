@@ -1023,6 +1023,38 @@ def test_submit_rejects_noisy_history(hive, fakebd):
     assert not fakebd.did("set-state", "mr-3")
 
 
+def test_submit_reports_network_failure_as_retryable_not_a_failed_verdict(
+    hive, fakebd, monkeypatch, capsys
+):
+    """bh-u9ip: a validate_cmd component (the license gate) that could not reach a network
+    dependency exits `RETRYABLE_VALIDATION_EXIT` (75), not the ordinary 1/127 a real
+    policy/config failure uses. `submit` must surface that as a distinct, retryable condition —
+    never as a validation FAILURE — and must open no gate and mutate no bead state, exactly as
+    an ordinary validation failure already does not."""
+    fakebd.seed("mr-net", title="t")
+    work.claim(bead="mr-net", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-net"), "feat: the change")
+    monkeypatch.setattr(worktree, "clean_checkout", lambda *a, **kw: work.RETRYABLE_VALIDATION_EXIT)
+
+    with pytest.raises(typer.Exit) as exc:
+        work.submit(bead="mr-net", hive="myrepo")
+
+    assert exc.value.exit_code == work.RETRYABLE_VALIDATION_EXIT
+    err = capsys.readouterr().err
+    assert "retry" in err.lower() and "not" in err.lower() and "policy" in err.lower()
+    assert "review" not in fakebd.states.get("mr-net", {})  # no state change
+    assert not fakebd.did("set-state", "mr-net")
+    assert not fakebd.did("gate", "create")
+
+
+def test_vres_labels_retryable_distinctly_from_a_failed_verdict():
+    """bh-u9ip: the otel attribute must not fold a network-unreachable exit into `fail` — the
+    whole point is that a network blip and a real failed verdict read differently downstream."""
+    assert work._vres(0) == "pass"
+    assert work._vres(1) == "fail"
+    assert work._vres(work.RETRYABLE_VALIDATION_EXIT) == "retryable"
+
+
 def test_submit_clean_local_gate_no_push(hive, fakebd):
     fakebd.seed("mr-4", title="t")
     work.claim(bead="mr-4", as_="", hive="myrepo")
