@@ -1,0 +1,197 @@
+{
+  "formula": "mol-onboard-hive",
+  "description": "SPIKE ARTIFACT (bh-gj0v9.1) — beadhive's onboard.py step DAG transcribed into a beads formula. Not wired into the package; exists only to measure what the formula schema can and cannot express about src/beadhive/onboard.py build_steps().",
+  "version": 1,
+  "type": "workflow",
+  "phase": "vapor",
+  "pour": true,
+  "vars": {
+    "hive": {
+      "description": "provider/org/repo triplet being onboarded",
+      "required": true
+    },
+    "target_exists": {
+      "description": "does the target dir already exist (drives the clone step)",
+      "type": "bool",
+      "default": "false"
+    },
+    "fresh": {
+      "description": "hive is not already in the registry, or --force was passed",
+      "type": "bool",
+      "default": "true"
+    },
+    "furnish": {
+      "description": "furnished (tracked .beads) vs zero-footprint hive",
+      "type": "bool",
+      "default": "false"
+    },
+    "claude": { "type": "bool", "default": "false" },
+    "agents": { "type": "bool", "default": "false" },
+    "skills": { "type": "bool", "default": "false" },
+    "opencode": { "type": "bool", "default": "false" },
+    "codex": { "type": "bool", "default": "false" },
+    "observaloop": { "type": "bool", "default": "false" },
+    "hub_sync": { "type": "bool", "default": "true" }
+  },
+  "steps": [
+    {
+      "id": "resolve",
+      "title": "resolve triplet {{hive}}",
+      "type": "task",
+      "description": "checks: valid-triplet (non-overridable)"
+    },
+    {
+      "id": "clone",
+      "title": "clone {{hive}} if absent",
+      "type": "task",
+      "needs": ["resolve"],
+      "condition": "!{{target_exists}}",
+      "labels": ["mutates", "preflight"],
+      "description": "checks: clone-url-present (skipped when kind==external), clone-url-reachable (overridable), parent-writable"
+    },
+    {
+      "id": "identity",
+      "title": "workspace identity",
+      "type": "task",
+      "needs": ["clone"],
+      "description": "checks: under-git-workspace (applies only when repo present)"
+    },
+    {
+      "id": "classify",
+      "title": "classify hive",
+      "type": "task",
+      "needs": ["identity"],
+      "condition": "{{fresh}}",
+      "description": "checks: not-excluded, fork-needs-yes"
+    },
+    {
+      "id": "prefix",
+      "title": "derive prefix",
+      "type": "task",
+      "needs": ["classify"],
+      "description": "checks: prefix-policy, prefix-change-needs-yes"
+    },
+    {
+      "id": "worktree-clean",
+      "title": "working tree clean",
+      "type": "task",
+      "needs": ["identity"],
+      "description": "checks: dirty-tree (overridable), on-default-branch (overridable) — both apply only to an existing repo we did NOT just clone"
+    },
+    {
+      "id": "bd-init",
+      "title": "bd init ({{hive}})",
+      "type": "task",
+      "needs": ["prefix", "worktree-clean"],
+      "labels": ["mutates"],
+      "description": "three-way branch on a live filesystem probe: furnished / bootstrap-from-origin-refs/dolt/data / setup-exclude mint. Compensating cleanup on failure (hive.cleanup_failed_bd_init)."
+    },
+    {
+      "id": "register",
+      "title": "register hive",
+      "type": "task",
+      "needs": ["bd-init"],
+      "labels": ["mutates"]
+    },
+    {
+      "id": "node-id",
+      "title": "set host node_id",
+      "type": "task",
+      "needs": ["register"],
+      "labels": ["mutates"]
+    },
+    {
+      "id": "beads-role",
+      "title": "set beads.role",
+      "type": "task",
+      "needs": ["register"],
+      "labels": ["mutates"]
+    },
+    {
+      "id": "claude",
+      "title": "install .claude",
+      "type": "task",
+      "needs": ["register"],
+      "condition": "{{claude}}",
+      "labels": ["mutates"]
+    },
+    {
+      "id": "agents",
+      "title": "install AGENTS hint",
+      "type": "task",
+      "needs": ["register"],
+      "condition": "{{agents}}",
+      "labels": ["mutates"]
+    },
+    {
+      "id": "skills",
+      "title": "install skills",
+      "type": "task",
+      "needs": ["register"],
+      "condition": "{{skills}}",
+      "labels": ["mutates"]
+    },
+    {
+      "id": "opencode",
+      "title": "install opencode furnishing",
+      "type": "task",
+      "needs": ["register"],
+      "condition": "{{opencode}}",
+      "labels": ["mutates"]
+    },
+    {
+      "id": "codex",
+      "title": "install .codex sandbox grant",
+      "type": "task",
+      "needs": ["register"],
+      "condition": "{{codex}}",
+      "labels": ["mutates"]
+    },
+    {
+      "id": "observaloop",
+      "title": "install observaloop",
+      "type": "task",
+      "needs": ["register"],
+      "condition": "{{observaloop}}",
+      "labels": ["mutates"]
+    },
+    {
+      "id": "hq-parent",
+      "title": "escalation parent (HQ)",
+      "type": "task",
+      "needs": ["register"]
+    },
+    {
+      "id": "hub-sync",
+      "title": "sync hub",
+      "type": "task",
+      "needs": [
+        "register",
+        "claude",
+        "agents",
+        "skills",
+        "opencode",
+        "codex",
+        "observaloop"
+      ],
+      "condition": "{{hub_sync}}",
+      "labels": ["mutates"]
+    },
+    {
+      "id": "footprint",
+      "title": "settle declared footprint",
+      "type": "task",
+      "needs": [
+        "register",
+        "claude",
+        "agents",
+        "skills",
+        "opencode",
+        "codex",
+        "observaloop",
+        "hub-sync"
+      ],
+      "labels": ["mutates"]
+    }
+  ]
+}
