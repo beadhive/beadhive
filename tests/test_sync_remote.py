@@ -53,9 +53,11 @@ def _init_repo(path: Path) -> None:
 
 
 def _stub_engine(monkeypatch, fs: FederationStatus, push_calls: list | None = None) -> None:
-    """Patch `engine.get_engine` (the module object shared by sync_remote AND safety's lazy
-    fetch-path import) with a stub whose `federation_status` returns *fs*. `push_state`
-    records into *push_calls* when given, and hard-fails when not (read-only expectation)."""
+    """Patch the state engine with a stub whose `push_state` records into *push_calls*.
+
+    The federation method is intentionally present only as a tripwire: ``sync remotes`` must
+    assess its configured Dolt remote and never use federation status.
+    """
 
     class _StubEngine:
         def federation_status(self, cwd, *, timeout=None):
@@ -68,6 +70,7 @@ def _stub_engine(monkeypatch, fs: FederationStatus, push_calls: list | None = No
             return subprocess.CompletedProcess(args=[], returncode=0)
 
     monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _StubEngine())
+    _mark_managed_dolt_remote(monkeypatch)
 
 
 _FED_TIMEOUT = FederationStatus(ok=False, error="timeout")
@@ -409,9 +412,8 @@ def test_cli_clean_fleet_with_hq_exits_zero(world):
     assert res.exit_code == 0
 
 
-def test_sync_remote_assesses_with_fetch_and_surfaces_ahead_count(world, monkeypatch, capsys):
-    """The fleet pass pre-assesses with fetch=True: a reachable federation peer's verified
-    ahead count surfaces in the per-hive reason line instead of 'could not be verified'."""
+def test_sync_remote_does_not_assess_dolt_remote_through_federation(world, monkeypatch, capsys):
+    """A configured Dolt remote is not a federation peer named ``origin`` (bh-q5i2i)."""
     clone, _remote = _make_clean_clone()
     _register()
     (clone / ".beads").mkdir()
@@ -423,10 +425,10 @@ def test_sync_remote_assesses_with_fetch_and_surfaces_ahead_count(world, monkeyp
     plan = sync_remote.sync_remote(dry_run=True)
 
     assert plan.records[0].status == SyncStatus.UNPUSHED_DOLT
-    assert plan.records[0].dolt_status == "ahead"
+    assert plan.records[0].dolt_status == "unknown"
     out = capsys.readouterr().out
-    assert "4 ahead" in out
-    assert "would push dolt: refs/dolt/data" in out
+    assert "federation peer" not in out
+    assert "would attempt: bd dolt push" in out
 
 
 def test_dry_run_reports_without_mutating(world):
@@ -723,11 +725,18 @@ def test_dry_run_does_not_call_engine_push(world, monkeypatch):
 
 
 def _mark_unverifiable_dolt(clone: Path, monkeypatch) -> None:
-    """Make a clean clone look like the genuinely-unverifiable unpushed-dolt case (the
-    successor of bh-fl26's embedded-engine blanket 'unknown'): bd-managed (`.beads/`) but
-    federation status times out — dolt_status == 'unknown', status == UNPUSHED_DOLT."""
+    """Make a clean clone look like a bd-managed Dolt remote whose state is unverifiable."""
     (clone / ".beads").mkdir(exist_ok=True)
-    _stub_engine(monkeypatch, _FED_TIMEOUT)
+    _mark_managed_dolt_remote(monkeypatch)
+
+
+def _mark_managed_dolt_remote(monkeypatch) -> None:
+    """Stub bd's local status probe as an existing database with a Dolt remote."""
+    monkeypatch.setattr(
+        "beadhive.safety._bd_dolt_status_payload",
+        lambda path: {"mode": "embedded", "schema_version": 1},
+    )
+    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
 
 
 def test_verbose_false_makes_no_extra_query_on_unpushed_dolt_hive(world, monkeypatch, capsys):
@@ -1063,6 +1072,7 @@ def test_sync_remotes_pull_targets_a_named_remote(world, monkeypatch):
     clone, _remote = _make_clean_clone()
     _register()
     (clone / ".beads").mkdir()
+    _mark_managed_dolt_remote(monkeypatch)
 
     calls = []
 
@@ -1096,6 +1106,7 @@ def test_pull_surfaces_an_auto_merge_notice(world, monkeypatch, capsys):
     clone, _remote = _make_clean_clone()
     _register()
     (clone / ".beads").mkdir()
+    _mark_managed_dolt_remote(monkeypatch)
 
     notice = (
         "Notice: auto-merged issue bh-xyz; updated_at settled last-write-wins (the older "
@@ -1130,6 +1141,7 @@ def test_pull_success_with_no_auto_merge_reports_nothing_extra(world, monkeypatc
     clone, _remote = _make_clean_clone()
     _register()
     (clone / ".beads").mkdir()
+    _mark_managed_dolt_remote(monkeypatch)
 
     class _PlainPull:
         def federation_status(self, cwd, *, timeout=None):

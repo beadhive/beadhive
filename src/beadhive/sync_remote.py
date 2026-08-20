@@ -11,10 +11,11 @@ over silently when its working tree is dirty).
 HQ (``kind=hq``) is local-only by design (no origin) and is skipped entirely — same filter
 ``hub.sync`` applies — instead of misclassifying it BLOCKED and failing a clean fleet.
 
-The fleet assessment pass runs with ``fetch=True`` (``bd federation status`` — a real network
-fetch), so a reachable hive reports verified ahead/behind counts. ``_recently_touched`` (the
-``--verbose`` content hint) is therefore now a fallback that mostly fires when federation
-status could not be obtained (offline peer, timeout) and the dolt state stays ``unknown``.
+The fleet assessment is deliberately local/read-only.  A Dolt remote and a federation peer are
+different configuration surfaces: ``sync remotes`` must not try to verify a remote named
+``origin`` through ``bd federation status``.  The embedded engine therefore reports its normal
+honest ``unknown`` state during assessment and the subsequent ``bd dolt pull``/``push`` talks to
+the configured Dolt remote.
 
 Exported API
 ------------
@@ -85,8 +86,7 @@ _DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote", "unknown"})
 _RECENT_LOOKBACK = timedelta(hours=24)
 _RECENT_LIMIT = 8
 
-# Bounded fan-out for the read-only assessment pass (each fetch=True assessment pays a real
-# network fetch via `bd federation status`); the pushes themselves stay strictly serial.
+# Bounded fan-out for the read-only assessment pass; the pushes themselves stay strictly serial.
 _ASSESS_WORKERS = 4
 
 
@@ -384,12 +384,11 @@ def sync_remote(
     HQ (``kind=hq``) is skipped up front — local-only by design, matching ``hub.sync``'s
     filter — so a clean fleet can't exit non-zero just because HQ has no origin.
 
-    Assessment runs first, in parallel (``_ASSESS_WORKERS`` threads) with ``fetch=True`` —
-    read-only, but each hive pays one real network fetch (``bd federation status``) for
-    verified ahead/behind counts; a per-hive timeout is enforced inside the engine's
-    ``federation_status``, so a timed-out hive arrives as ``unknown`` (→ the idempotent
-    push-attempt path). The loop below then consumes the precomputed records in deterministic
-    config order, and all pushes stay strictly serial.
+    Assessment runs first, in parallel (``_ASSESS_WORKERS`` threads), using only local and
+    git-remote-aware checks.  It deliberately does not call ``bd federation status``: that
+    probes federation peers, while this command synchronizes configured ``bd dolt`` remotes.
+    The loop below then consumes the precomputed records in deterministic config order, and all
+    pushes stay strictly serial.
 
     ``verbose=True`` (bh-5rn7) is purely additive to the default output: for a hive classified
     ``UNPUSHED_DOLT`` with ``dolt_status == "unknown"`` (the dolt state couldn't be verified —
@@ -409,12 +408,10 @@ def sync_remote(
 
     targets = _resolve_targets(cfg, hive_ids)
 
-    # Parallel read-only pre-assessment (fetch=True — see docstring). SHAPE B
-    # (`fleet.fanout`), which preserves input order, so output below stays in deterministic
-    # config order. Keeps its own smaller cap — these are network-bound.
-    records = fleet.fanout(
-        lambda t: assess_hive(t[0], t[1], fetch=True), targets, workers=_ASSESS_WORKERS
-    )
+    # Parallel read-only pre-assessment.  Do not set ``fetch=True`` here: that is a
+    # federation-peer probe, whereas this command operates on ``bd dolt`` remotes. SHAPE B
+    # (`fleet.fanout`) preserves input order, so output stays in deterministic config order.
+    records = fleet.fanout(lambda t: assess_hive(t[0], t[1]), targets, workers=_ASSESS_WORKERS)
 
     # Pull-then-push (bh-ummb9.1 wiring; the pull leg's own behaviour — auto-merge reporting,
     # per-remote nuance, dry-run ahead/behind — is bh-ummb9.2/.3's job, not this one's). Never
