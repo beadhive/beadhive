@@ -934,6 +934,105 @@ def test_sync_remotes_accepts_remote_and_force_flags(world, monkeypatch):
     assert calls == [("upstream", True)]
 
 
+def test_sync_remotes_pull_targets_a_named_remote(world, monkeypatch):
+    """`--remote NAME` must reach the PULL leg too, not just push — this fleet has one remote
+    per hive today (measured, per bh-ummb9's design section), so a hive with several
+    configured dolt remotes can't be verified live. This exercises the routing through the
+    `Engine.pull_state` seam instead: real coverage of "the flag reaches the right call",
+    honest about not being a live multi-remote fixture."""
+    from beadhive import sync_remote
+    from beadhive.cli import app
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+
+    calls = []
+
+    class _Recording:
+        def federation_status(self, cwd, *, timeout=None):
+            return _FED_TIMEOUT  # dolt_status "unknown" — pull-eligible
+
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            calls.append(remote)
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _Recording())
+
+    res = CliRunner().invoke(
+        app, ["hive", "sync", "remotes", "--all", "--pull", "--remote", "upstream"]
+    )
+
+    assert res.exit_code == 0
+    assert calls == ["upstream"]
+
+
+def test_pull_surfaces_an_auto_merge_notice(world, monkeypatch, capsys):
+    """A pull is not inert — measured on the fleet (bh-ummb9.2's own brief):
+    `beadhive/baml-harness` auto-merged on pull and said so via a `Notice:` line. That must be
+    REPORTED per hive, not silently absorbed into a bare 'pulled'."""
+    from beadhive import sync_remote
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+
+    notice = (
+        "Notice: auto-merged issue bh-xyz; updated_at settled last-write-wins (the older "
+        "side's edit was superseded)"
+    )
+
+    class _AutoMerging:
+        def federation_status(self, cwd, *, timeout=None):
+            return _FED_TIMEOUT  # dolt_status "unknown" — pull-eligible
+
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout=notice, stderr="")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _AutoMerging())
+
+    plan = sync_remote.sync_remote(pull=True, push=True)
+    out = capsys.readouterr().out
+
+    assert "auto-merged issue bh-xyz" in out
+    assert plan.auto_merges  # keyed by hive_id, non-empty
+    assert notice in next(iter(plan.auto_merges.values()))
+
+
+def test_pull_success_with_no_auto_merge_reports_nothing_extra(world, monkeypatch, capsys):
+    """The common case (a plain pull, no LWW resolution) must stay quiet — no
+    `plan.auto_merges` entry, no extra output line."""
+    from beadhive import sync_remote
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+
+    class _PlainPull:
+        def federation_status(self, cwd, *, timeout=None):
+            return _FED_TIMEOUT  # dolt_status "unknown" — pull-eligible
+
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _PlainPull())
+
+    plan = sync_remote.sync_remote(pull=True, push=True)
+    out = capsys.readouterr().out
+
+    assert "auto-merged" not in out.lower()
+    assert plan.auto_merges == {}
+
+
 def test_sync_remote_deprecation_warns_once_and_still_works(world):
     from beadhive.cli import app
 
