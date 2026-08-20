@@ -800,6 +800,42 @@ def test_sync_remotes_dry_run_still_mutates_nothing(world):
     assert "unpushed" not in remote_log
 
 
+def test_dry_run_names_the_pull_leg_when_eligible(world, monkeypatch, capsys):
+    """Review fix (bh-ummb9.1): --dry-run must NAME the pull leg it will actually run under a
+    live invocation — a pull is not inert (it can auto-merge, LWW-resolve). Default (both
+    pull+push) says "would pull, then push"."""
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+    _stub_engine(monkeypatch, _FED_TIMEOUT)  # dolt_status "unknown" — pull-eligible
+
+    sync_remote.sync_remote(dry_run=True)  # default: pull=False, push=True (unchanged default)
+
+    out = capsys.readouterr().out
+    assert "would pull" not in out  # pull=False by default — nothing changes here
+
+    sync_remote.sync_remote(dry_run=True, pull=True, push=True)
+    out = capsys.readouterr().out
+    assert "would pull, then push: refs/dolt/data" in out
+
+    sync_remote.sync_remote(dry_run=True, pull=True, push=False)
+    out = capsys.readouterr().out
+    assert "would pull: refs/dolt/data" in out
+    assert "would pull, then push" not in out
+
+
+def test_dry_run_never_names_a_pull_for_a_plain_git_clone(world, monkeypatch, capsys):
+    """A hive with no dolt state at all (`dolt_status` "absent") is never pulled by the live
+    leg — the dry-run preview must not claim it would be, even with `pull=True`."""
+    _make_clean_clone()
+    _register()
+
+    sync_remote.sync_remote(dry_run=True, pull=True, push=True)
+
+    out = capsys.readouterr().out
+    assert "would pull" not in out
+
+
 def test_sync_remotes_requires_hive_or_all(world):
     from beadhive.cli import app
 

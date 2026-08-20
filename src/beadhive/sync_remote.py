@@ -379,6 +379,14 @@ def sync_remote(
         for reason in record.reasons:
             typer.echo(f"    - {reason}")
 
+        # bh-ummb9.1 review (changes-requested): --dry-run must NAME the pull leg it will run,
+        # not just the push leg — a pull is not inert (it can auto-merge, LWW). Mirrors the
+        # live pull loop's own eligibility exactly (same dolt_status gate, independent of this
+        # hive's push-worthiness/offending status — the live loop pulls every eligible hive
+        # regardless), so a hive that won't really be pulled is never described as if it would.
+        if dry_run and pull and record.dolt_status not in ("absent", "no-remote", None):
+            typer.echo(f"    would pull{', then push' if push else ''}: refs/dolt/data")
+
         is_unknown_dolt = (
             record.status == SyncStatus.UNPUSHED_DOLT and record.dolt_status == "unknown"
         )
