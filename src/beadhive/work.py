@@ -162,9 +162,23 @@ def _hive(entry) -> str:
     return str(entry.get("prefix", "") or "")
 
 
+#: Exit code a validate_cmd component uses to report "a network dependency was unreachable" as
+#: distinct from an ordinary failed verdict — sysexits.h's EX_TEMPFAIL, "the user is invited to
+#: retry" (bh-u9ip). `scripts/osv-license-gate.sh` (the license gate `just check` runs) is the
+#: first emitter: a transport failure reaching deps.dev/osv.dev used to collapse into the same
+#: exit 1/127 a real policy violation or config bug uses, so a network blip during `bh work
+#: submit` read as a validation FAILURE — retrying blindly, indistinguishable from a real defect.
+#: Any validate_cmd component may use it; nothing here is osv-scanner-specific.
+RETRYABLE_VALIDATION_EXIT = 75
+
+
 def _vres(rc: int) -> str:
     """The bounded ``ws.validation.result`` attribute value for a validation exit code."""
-    return "pass" if rc == 0 else "fail"
+    if rc == 0:
+        return "pass"
+    if rc == RETRYABLE_VALIDATION_EXIT:
+        return "retryable"
+    return "fail"
 
 
 def _parse_ts(value):
@@ -1835,6 +1849,14 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
             f"This is not a test failure — install it or fix PATH, then re-run.",
             err=True,
         )
+    elif rc == RETRYABLE_VALIDATION_EXIT:
+        # Same distinction `_validate_submit_checkout` makes for `submit` (bh-u9ip): a network
+        # dependency was unreachable, not a verdict on the code.
+        typer.echo(
+            f"⚠ validation could not complete (exit {rc}) — a network dependency was "
+            "unreachable. This is NOT a test failure — retry once connectivity recovers.",
+            err=True,
+        )
     if rc != 0:
         raise typer.Exit(rc)
 
@@ -2197,6 +2219,19 @@ def _validate_submit_checkout(entry, branch, cfg) -> None:
         {"bh.work.phase": "submit", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "submit"})
+    if rc == RETRYABLE_VALIDATION_EXIT:
+        # NOT a verdict (bh-u9ip): validate_cmd itself is saying it couldn't reach a network
+        # dependency (deps.dev/osv.dev for the license gate) and never got to judge anything —
+        # neither pass nor fail. Nothing was recorded green (the ledger only ever records a
+        # green verdict as reusable), so a plain re-submit re-validates fresh rather than
+        # replaying a stale answer.
+        typer.echo(
+            f"⚠ validation could not complete (exit {rc}) — a network dependency was "
+            "unreachable; nothing submitted. This is NOT a policy verdict — retry "
+            "`bh work submit` once connectivity recovers.",
+            err=True,
+        )
+        raise typer.Exit(rc)
     if rc != 0:
         typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
         raise typer.Exit(1)

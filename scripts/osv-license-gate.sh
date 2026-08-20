@@ -23,10 +23,21 @@
 # only what counts as a finding differs:
 #     0    clean — no license violations. Vulnerabilities, if any, are reported but not gated.
 #     1    license violation(s) present — fails under `enforce`, reported-and-passed under `warn`
+#    75    a NETWORK dependency (deps.dev/osv.dev) was unreachable — RETRYABLE, not a verdict.
+#          ALWAYS FATAL, in BOTH modes, same reasoning as 127 below, but callers (`bh work
+#          submit`) should treat it as "try again", never as "the policy failed" (bh-u9ip).
 #   127    osv-scanner could not run the scan (bad allowlist, bad SBOM filename, ...), or produced
 #          no report to inspect. ALWAYS FATAL, in BOTH modes — see scripts/osv-gate.sh's header
 #          for why swallowing this under `warn` is the failure mode that must never happen.
+#
+# WHY 75 AND NOT A NEW GENERIC NUMBER (bh-u9ip): it is sysexits.h's `EX_TEMPFAIL` — "temporary
+# failure, indicating something that is not really an error ... user is invited to retry". That
+# convention is exactly the distinction this gate needs to make, and reusing a named one avoids
+# inventing meaning nothing else in this repo would recognise.
 set -uo pipefail
+
+# See the exit-code table above.
+readonly _RETRYABLE_EXIT=75
 
 # Same reasoning as scripts/osv-gate.sh: an EMPTY mode and a MISPELLED mode must take the same
 # path, so `${1-}` rather than `${1:?}`.
@@ -114,10 +125,34 @@ if [ ${#subcmd[@]} -gt 0 ] && [ "$output_flag_seen" -eq 0 ]; then
 fi
 
 report=$(mktemp)
-trap 'rm -f "$report"' EXIT
+errfile=$(mktemp)
+trap 'rm -f "$report" "$errfile"' EXIT
 
-osv-scanner "$@" --format json --output "$report"
+# stderr is captured, not just inherited, so it can be READ (for the transport-failure probe
+# below) as well as shown — then replayed verbatim so a caller watching the terminal sees
+# nothing different than before.
+osv-scanner "$@" --format json --output "$report" 2>"$errfile"
 raw_rc=$?
+cat "$errfile" >&2
+
+# A NETWORK failure reaching deps.dev/osv.dev and a malformed-input config bug both come back
+# from osv-scanner as the SAME exit code (measured, bh-u9ip: a broken proxy and a non-SPDX
+# allowlist entry are both 127) — so telling them apart means reading stderr, there is no
+# cheaper signal. The patterns are the shapes actually seen from a live probe against a severed
+# connection (`dial tcp ... connection refused`, gRPC's `rpc error: code = Unavailable`) plus
+# the rest of Go's net/http transport-failure vocabulary (DNS, timeout, TLS, reset) — this is a
+# text probe, not a mapping, and only as durable as osv-scanner's own message strings.
+if grep -qE \
+  'dial tcp|proxyconnect tcp|rpc error: code = Unavailable|no such host|i/o timeout|TLS handshake timeout|context deadline exceeded|connection reset by peer' \
+  "$errfile"
+then
+  echo "osv-gate: ${label} could not reach its network dependency (deps.dev/osv.dev) — exit" >&2
+  echo "  ${raw_rc}, network unreachable (see the osv-scanner message above). This is NOT a" >&2
+  echo "  license-policy verdict — the scan never got an answer to judge, so it neither passed" >&2
+  echo "  nor failed the allowlist. RETRYABLE: re-run once connectivity recovers. Fatal in both" >&2
+  echo "  modes, same reasoning as exit 127 — a gate that could not run must not report CLEAN." >&2
+  exit "$_RETRYABLE_EXIT"
+fi
 
 if [ "$raw_rc" -eq 127 ]; then
   echo "osv-gate: ${label} FAILED TO RUN (exit 127) — osv-scanner rejected its input." >&2
