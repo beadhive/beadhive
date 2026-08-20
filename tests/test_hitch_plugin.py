@@ -163,11 +163,13 @@ def test_up_disabled_by_default_refuses_before_any_subprocess(monkeypatch):
     assert code == 1
 
 
-def test_up_unknown_target_refuses(monkeypatch):
+def test_up_unknown_target_refuses(monkeypatch, capsys):
     _no_subprocess(monkeypatch)
     cfg = {"hitch": {"enabled": True}}
     code = hitch_plugin.up("gpt", "dispatcher", cfg=cfg)
     assert code == 1
+    # "codex" is a known target now (bh-98v9m) — it must show up in the refusal's own list.
+    assert "codex" in capsys.readouterr().err
 
 
 def test_up_hitch_missing_from_path_refuses(monkeypatch):
@@ -238,6 +240,23 @@ def test_up_opencode_target_passes_through_unchanged(monkeypatch, tmp_path):
     hitch_plugin.up("opencode", "developer", cfg=cfg)
 
     assert calls[0][2] == "opencode"
+
+
+def test_up_codex_target_passes_through_unchanged(monkeypatch, tmp_path):
+    """bh-98v9m: "codex" widens only this passthrough wrapper's target list — resolves to
+    hitch's own "codex" target name, exactly like the existing claude/opencode paths."""
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: calls.append(argv) or _Result())
+
+    code = hitch_plugin.up("codex", "supervisor", cfg=cfg)
+
+    assert code == 0
+    assert calls[0][2] == "codex"
 
 
 def test_oauth_state_survives_a_subsequent_launch(monkeypatch, tmp_path):
