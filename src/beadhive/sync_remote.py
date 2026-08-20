@@ -99,6 +99,19 @@ def _dolt_reason(dolt: DoltRefInfo) -> str:
     if dolt.status == "unknown":
         detail = dolt.reason or "embedded engine — no read-only check ran"
         return f"dolt state could not be verified ({detail}); would attempt idempotent bd dolt push"
+    if dolt.status == "behind":
+        detail = f"{dolt.behind} behind" if dolt.behind else "behind"
+        return f"refs/dolt/data is {detail} origin — pull first (bd dolt pull)"
+    if dolt.status == "diverged" and not dolt.ahead and not dolt.behind:
+        # git-transport dolt remote (refs/dolt/data exists locally) whose remote tip isn't
+        # locally resolvable without a fetch — ls-remote proved the shas differ, but real
+        # ahead/behind counts would require a transfer (bh-ummb9.3: no-transfer constraint).
+        # Known-not-in-sync, direction unproven: name the same safe remedy as a confirmed
+        # "behind" rather than silently defaulting to an idempotent push attempt.
+        return (
+            "refs/dolt/data has diverged from origin (ahead/behind not resolvable without a "
+            "fetch) — could be behind; pull first (bd dolt pull)"
+        )
     msg = f"refs/dolt/data: {dolt.status}"
     counts = [f"{n} {label}" for n, label in ((dolt.ahead, "ahead"), (dolt.behind, "behind")) if n]
     if counts:
@@ -176,11 +189,19 @@ def assess_hive(hive_id: str, clone_path: Path, *, fetch: bool = False) -> HiveS
         reasons.append(f"unpushed git branch(es): {', '.join(unpushed_branches)}")
         if dolt_unpushed:
             reasons.append(_dolt_reason(dolt))
+        elif dolt.status == "behind":
+            reasons.append(_dolt_reason(dolt))
     elif dolt_unpushed:
         status = SyncStatus.UNPUSHED_DOLT
         reasons.append(_dolt_reason(dolt))
     else:
+        # "behind" is deliberately NOT in _DOLT_PUSHABLE (there is nothing local to push) —
+        # but it's still a real, actionable state (bh-ummb9.3): surface it as a labelled
+        # reason on an otherwise-CLEAN hive rather than staying silent, so "pull first" is
+        # visible in both --dry-run and a live run.
         status = SyncStatus.CLEAN
+        if dolt.status == "behind":
+            reasons.append(_dolt_reason(dolt))
 
     return HiveSyncRecord(
         hive=hive_id,
@@ -201,6 +222,7 @@ class SyncPlan:
     pushed_branches: dict[str, list[str]] = field(default_factory=dict)
     dolt_pushed: list[str] = field(default_factory=list)
     offending: list[str] = field(default_factory=list)
+    auto_merges: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _last_stderr_line(result) -> str:
@@ -258,14 +280,98 @@ def _recently_touched(clone_path: Path) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
-def _push_dolt_state(cfg, clone_path: Path) -> bool:
+def _echo_reason(reason: str) -> None:
+    """Print a (possibly multi-line) failure reason as indented lines, matching the existing
+    ``    - <reason>`` per-hive convention — one bullet per line rather than collapsing a
+    multi-line dolt stderr block onto one."""
+    for line in reason.splitlines():
+        typer.echo(f"    - {line}", err=True)
+
+
+def _dolt_stderr(result) -> str:
+    """The full captured stderr from a ``bd dolt push``/``pull``, verbatim — NOT the last line.
+
+    Unlike raw ``git push`` (see ``_last_stderr_line``), ``bd dolt push``/``pull`` WRAP the
+    underlying error and APPEND their own hint text after it (e.g. a non-fast-forward's real
+    complaint sits mid-output, followed by a generic "hint: ... before pushing again." tail; a
+    missing git-remote-cache clone is followed by unrelated "ensure non-interactive auth"
+    advice). Taking the last line there silently swaps the real cause for boilerplate — worse
+    than no reason at all, since it looks specific while being wrong. Print everything bd said
+    and let the operator read it, per the brief: surface verbatim, do not classify."""
+    return (result.stderr or "").strip()
+
+
+def _push_dolt_state(
+    cfg, clone_path: Path, *, remote: str = "", force: bool = False
+) -> tuple[bool, str]:
     """Push this hive's ``refs/dolt/data`` via the configured ``Engine`` (bh-dw3e.6 wiring).
-    Returns True on success."""
-    result = engine.get_engine(cfg).push_state(clone_path, message=f"sync-remote {clone_path}")
-    return result.returncode == 0
+    Returns ``(ok, reason)`` — ``reason`` is bd's full captured stderr on failure (see
+    ``_dolt_stderr``), empty on success."""
+    result = engine.get_engine(cfg).push_state(
+        clone_path, message=f"sync-remote {clone_path}", remote=remote, force=force
+    )
+    ok = result.returncode == 0
+    return ok, ("" if ok else _dolt_stderr(result))
 
 
-def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
+def _auto_merge_notices(result) -> list[str]:
+    """Lines from a ``bd dolt pull`` result that report an auto-merge (measured wording:
+    ``Notice: auto-merged issue [...]; updated_at settled last-write-wins (the older side's
+    edit was superseded)``) — a pull is not inert, and a silent last-write-wins resolution
+    must never be swallowed. Matched on the substring ``auto-merged`` rather than the full
+    ``Notice:`` prefix, since that's the one part of the wording this is actually about."""
+    lines = ((result.stdout or "") + (result.stderr or "")).splitlines()
+    return [line.strip() for line in lines if "auto-merged" in line.lower()]
+
+
+def _pull_dolt_state(cfg, clone_path: Path, *, remote: str = "") -> tuple[bool, str, list[str]]:
+    """Pull this hive's ``refs/dolt/data`` via the configured ``Engine``. Returns
+    ``(ok, reason, auto_merge_notices)``: ``reason`` is bd's full captured stderr on failure
+    (see ``_dolt_stderr``), empty on success; ``notices`` are extracted regardless of
+    success/failure, since an auto-merge can happen on a pull that otherwise reports success.
+    Mutating — never called under ``--dry-run``."""
+    result = engine.get_engine(cfg).pull_state(clone_path, remote=remote)
+    ok = result.returncode == 0
+    return ok, ("" if ok else _dolt_stderr(result)), _auto_merge_notices(result)
+
+
+def _resolve_targets(cfg, hive_ids: list[str] | None) -> list[tuple[str, Path]]:
+    """The ``(hive_id, clone_path)`` pairs this run addresses: every registered hive (HQ
+    skipped, as today) when ``hive_ids`` is empty/None, else exactly the resolved hives named —
+    each resolved via ``registry.resolve_hive`` (prefix/triplet/flexible match), refusing HQ the
+    same way ``hive_sync._targets`` does."""
+    real_hives = registry.hives(cfg)
+    if not hive_ids:
+        targets: list[tuple[str, Path]] = []
+        for entry in cfg.get("managed_repos", []) or []:
+            if entry not in real_hives:
+                typer.echo("  (skipping HQ — local-only by design)")
+                continue
+            provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+            targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
+        return targets
+
+    targets = []
+    for hive_id in hive_ids:
+        entry = registry.resolve_hive(cfg, hive_id)
+        if entry not in real_hives:
+            typer.echo("✗ HQ is local-only by design — it has no remote to sync", err=True)
+            raise typer.Exit(1)
+        provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+        targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
+    return targets
+
+
+def sync_remote(
+    *,
+    dry_run: bool = False,
+    verbose: bool = False,
+    hive_ids: list[str] | None = None,
+    pull: bool = False,
+    push: bool = True,
+    remote: str = "",
+    force: bool = False,
+) -> SyncPlan:
     """Guarded fleet-wide sync: assess every registered hive, then (outside ``--dry-run``) push
     what's safe to push.
 
@@ -299,16 +405,9 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
     plan = SyncPlan(dry_run=dry_run)
 
     tag = "DRY-RUN " if dry_run else ""
-    typer.echo(f"{tag}sync-remote --all")
+    typer.echo(f"{tag}sync-remote --all" if not hive_ids else f"{tag}sync-remote {hive_ids}")
 
-    targets: list[tuple[str, Path]] = []
-    real_hives = registry.hives(cfg)
-    for entry in cfg.get("managed_repos", []) or []:
-        if entry not in real_hives:
-            typer.echo("  (skipping HQ — local-only by design)")
-            continue
-        provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
-        targets.append((f"{provider}/{org}/{repo}", registry.hive_dir(entry)))
+    targets = _resolve_targets(cfg, hive_ids)
 
     # Parallel read-only pre-assessment (fetch=True — see docstring). SHAPE B
     # (`fleet.fanout`), which preserves input order, so output below stays in deterministic
@@ -317,12 +416,46 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
         lambda t: assess_hive(t[0], t[1], fetch=True), targets, workers=_ASSESS_WORKERS
     )
 
+    # Pull-then-push (bh-ummb9.1 wiring; the pull leg's own behaviour — auto-merge reporting,
+    # per-remote nuance, dry-run ahead/behind — is bh-ummb9.2/.3's job, not this one's). Never
+    # runs under --dry-run (mutates), and only for a hive with an actual dolt remote —
+    # "absent"/"no-remote" mirrors the push leg's own `_DOLT_PUSHABLE` gate, so a plain git
+    # clone (or a bd store with no configured remote) is never handed to `bd dolt pull`.
+    pull_failed: set[str] = set()
+    if pull and not dry_run:
+        for (hive_id, clone_path), record in zip(targets, records, strict=True):
+            if record.dolt_status in ("absent", "no-remote", None):
+                continue
+            ok, reason, auto_merges = _pull_dolt_state(cfg, clone_path, remote=remote)
+            if ok:
+                typer.echo(f"  {hive_id}: pulled")
+            else:
+                typer.echo(f"  {hive_id}: ✗ failed to pull dolt: refs/dolt/data", err=True)
+                if reason:
+                    _echo_reason(reason)
+                pull_failed.add(hive_id)
+                plan.offending.append(hive_id)
+            for notice in auto_merges:
+                # Surfaced regardless of pull success/failure — an auto-merge is a real,
+                # already-committed last-write-wins resolution the operator must see, not
+                # something the pull's own pass/fail verdict should swallow.
+                typer.echo(f"  {hive_id}: ⚠ {notice}")
+                plan.auto_merges.setdefault(hive_id, []).append(notice)
+
     for (hive_id, clone_path), record in zip(targets, records, strict=True):
         plan.records.append(record)
 
         typer.echo(f"  {hive_id}: {record.status}")
         for reason in record.reasons:
             typer.echo(f"    - {reason}")
+
+        # bh-ummb9.1 review (changes-requested): --dry-run must NAME the pull leg it will run,
+        # not just the push leg — a pull is not inert (it can auto-merge, LWW). Mirrors the
+        # live pull loop's own eligibility exactly (same dolt_status gate, independent of this
+        # hive's push-worthiness/offending status — the live loop pulls every eligible hive
+        # regardless), so a hive that won't really be pulled is never described as if it would.
+        if dry_run and pull and record.dolt_status not in ("absent", "no-remote", None):
+            typer.echo(f"    would pull{', then push' if push else ''}: refs/dolt/data")
 
         is_unknown_dolt = (
             record.status == SyncStatus.UNPUSHED_DOLT and record.dolt_status == "unknown"
@@ -344,6 +477,15 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
         if record.status == SyncStatus.CLEAN:
             continue
 
+        if not push:
+            typer.echo("    (--pull only: push skipped)")
+            continue
+
+        if hive_id in pull_failed:
+            # Already reported + offending above; don't compound with a push against
+            # possibly-stale local state.
+            continue
+
         if dry_run:
             if record.unpushed_branches:
                 typer.echo(f"    would push git: {', '.join(record.unpushed_branches)}")
@@ -354,6 +496,14 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
                 typer.echo(
                     "    would attempt: bd dolt push (idempotent — no read-only "
                     "remote-diff primitive exists for this engine to preview exactly)"
+                )
+            elif record.dolt_status == "diverged":
+                # The reason line above already names this (see _dolt_reason) — an
+                # idempotent push would still be attempted, but call out the real risk of
+                # a non-fast-forward rejection instead of the plain "would push dolt" line.
+                typer.echo(
+                    "    would attempt: bd dolt push — refs/dolt/data diverged from "
+                    "origin; may be rejected as non-fast-forward (pull first)"
                 )
             elif record.dolt_status in _DOLT_PUSHABLE:
                 typer.echo("    would push dolt: refs/dolt/data")
@@ -372,12 +522,15 @@ def sync_remote(*, dry_run: bool = False, verbose: bool = False) -> SyncPlan:
                     typer.echo(f"    ✗ failed to push git: {name}: {err}", err=True)
 
         if record.dolt_status in _DOLT_PUSHABLE:
-            if _push_dolt_state(cfg, clone_path):
+            ok, reason = _push_dolt_state(cfg, clone_path, remote=remote, force=force)
+            if ok:
                 plan.dolt_pushed.append(hive_id)
                 typer.echo("    pushed dolt: refs/dolt/data")
             else:
                 failed_here = True
                 typer.echo("    ✗ failed to push dolt: refs/dolt/data", err=True)
+                if reason:
+                    _echo_reason(reason)
 
         if failed_here:
             plan.offending.append(hive_id)

@@ -82,7 +82,7 @@ class _StubEngine:
         Path(out_path).write_text(lines)
         return subprocess.CompletedProcess(["bd", "export"], 0, "", "")
 
-    def push_state(self, cwd, actor="", message=""):
+    def push_state(self, cwd, actor="", message="", *, remote="", force=False):
         self.push_calls.append(str(cwd))
         rc = 0 if self.push_ok else 1
         err = "" if self.push_ok else "boom"

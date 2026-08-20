@@ -16,6 +16,7 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from beadhive import config, sync_remote
@@ -60,7 +61,7 @@ def _stub_engine(monkeypatch, fs: FederationStatus, push_calls: list | None = No
         def federation_status(self, cwd, *, timeout=None):
             return fs
 
-        def push_state(self, cwd, actor="", message=""):
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
             if push_calls is None:
                 raise AssertionError("push_state must not be called in this test")
             push_calls.append(str(cwd))
@@ -191,6 +192,39 @@ def test_assess_dolt_no_remote_counts_as_unpushed(tmp_path):
 
     assert record.status == SyncStatus.UNPUSHED_DOLT
     assert record.dolt_status == "no-remote"
+
+
+def test_assess_dolt_ref_behind_is_labelled_not_silently_clean(tmp_path):
+    """A hive with nothing local to push, but whose refs/dolt/data is BEHIND origin, must
+    not disappear into an unlabelled CLEAN (bh-ummb9.3 — the measured fleet failure: a
+    behind hive gave no dry-run warning before a non-fast-forward push rejection)."""
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git("init", "-q", "--bare", "-b", "main", cwd=remote)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git("remote", "add", "origin", str(remote), cwd=repo)
+    _git("push", "-q", "-u", "origin", "main", cwd=repo)
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=repo)
+    _git("push", "-q", "origin", "refs/dolt/data:refs/dolt/data", cwd=repo)
+    # Advance refs/dolt/data with a plumbing commit-tree (never touches HEAD/main, so the
+    # branch itself stays clean/pushed) and push it, then move the local dolt ref back —
+    # origin now has a dolt commit this clone hasn't locally "caught up" to, exactly
+    # mirroring a peer pushing ahead. The new commit is created IN this repo's own odb, so
+    # it stays locally resolvable without a fetch (real "behind" counts, not "diverged").
+    behind_sha = _git("rev-parse", "refs/dolt/data", cwd=repo).stdout.strip()
+    tree_sha = _git("rev-parse", f"{behind_sha}^{{tree}}", cwd=repo).stdout.strip()
+    ahead_sha = _git(
+        "commit-tree", tree_sha, "-p", behind_sha, "-m", "dolt advance", cwd=repo
+    ).stdout.strip()
+    _git("push", "-q", "origin", f"{ahead_sha}:refs/dolt/data", cwd=repo)
+    _git("update-ref", "refs/dolt/data", behind_sha, cwd=repo)
+
+    record = assess_hive("github/o/r", repo)
+
+    assert record.status == SyncStatus.CLEAN
+    assert record.dolt_status == "behind"
+    assert any("behind" in r and "pull first" in r for r in record.reasons)
 
 
 def test_assess_embedded_dolt_engine_counts_as_unpushed(tmp_path, monkeypatch):
@@ -436,6 +470,38 @@ def test_dry_run_on_clean_hive_prints_no_dolt_line(world, capsys):
     assert "would push dolt" not in out
 
 
+def test_dry_run_on_diverged_git_transport_dolt_warns_not_in_sync(world, capsys):
+    """A git-transport dolt remote (refs/dolt/data exists locally) whose origin tip isn't
+    locally resolvable must be named 'diverged' and warned about, not folded into the plain
+    'would push dolt' line an in-sync-looking hive gets (bh-ummb9.3: this is the exact shape
+    that gave no dry-run warning before the fleet's non-fast-forward push failures)."""
+    clone, remote = _make_clean_clone()
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=clone)
+    _git("push", "-q", "origin", "refs/dolt/data:refs/dolt/data", cwd=clone)
+    # An unrelated repo pushes over refs/dolt/data with foreign history, so `clone` can't
+    # resolve the new tip locally without a fetch. Distinct content (never touched inside
+    # `clone`) guarantees a genuinely different, unresolvable commit — not just a
+    # same-second timestamp coincidence.
+    other = clone.parent / "other"
+    other.mkdir()
+    _git("init", "-q", "-b", "main", cwd=other)
+    _git("config", "user.email", "foreign@ws.dev", cwd=other)
+    _git("config", "user.name", "Foreign Peer", cwd=other)
+    (other / "foreign.txt").write_text("foreign dolt state, unrelated history")
+    _git("add", ".", cwd=other)
+    _git("commit", "-qm", "foreign dolt advance", cwd=other)
+    _git("remote", "add", "origin", str(remote), cwd=other)
+    _git("push", "-qf", "origin", "HEAD:refs/dolt/data", cwd=other)
+    _register()
+
+    plan = sync_remote.sync_remote(dry_run=True)
+
+    assert plan.records[0].dolt_status == "diverged"
+    out = capsys.readouterr().out
+    assert "diverged from origin" in out
+    assert "pull first" in out
+
+
 def test_dry_run_on_unverifiable_dolt_state_prints_attempt_not_ahead(world, capsys, monkeypatch):
     """When even the fetch=True federation check can't verify the dolt state (timeout/offline
     peer — the successor of the embedded engine's blanket 'unknown', bh-fl26), dry-run must
@@ -555,7 +621,7 @@ def test_dolt_state_pushed_via_engine(world, monkeypatch):
     calls = []
 
     class _FakeEngine:
-        def push_state(self, cwd, actor="", message=""):
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
             calls.append((str(cwd), message))
             return subprocess.CompletedProcess(args=[], returncode=0)
 
@@ -574,7 +640,7 @@ def test_dolt_push_failure_marks_hive_offending(world, monkeypatch):
     _git("update-ref", "refs/dolt/data", "HEAD", cwd=clone)
 
     class _FailingEngine:
-        def push_state(self, cwd, actor="", message=""):
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
             return subprocess.CompletedProcess(args=[], returncode=1)
 
     monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg: _FailingEngine())
@@ -583,6 +649,57 @@ def test_dolt_push_failure_marks_hive_offending(world, monkeypatch):
 
     assert plan.offending == ["github/myorg/myrepo"]
     assert plan.dolt_pushed == []
+
+
+# Real `bd dolt push` stderr captured on this fleet on 2026-08-20 (bh-ummb9.4 review feedback).
+# Both WRAP the actual cause and APPEND unrelated hint text after it — so a "last stderr line"
+# extraction (correct for raw `git push`, see `_last_stderr_line`) yields boilerplate for
+# either, and actively misleading boilerplate for the second (points at SSH auth instead of
+# the real cause, a missing bare clone — bh-j42f0).
+_REAL_NON_FAST_FORWARD_STDERR = (
+    "! [rejected]  main -> main (non-fast-forward)\n"
+    "hint: Updates were rejected because the tip of your current branch is behind its remote\n"
+    "hint: counterpart. Integrate the remote changes (e.g. 'dolt pull ...') before pushing "
+    "again.: exit status 1"
+)
+_REAL_MISSING_GIT_REMOTE_CACHE_STDERR = (
+    "Error 1105 (HY000): failed to read latest version of remote database "
+    "origin@git+ssh://...: fatal: not a git repository: "
+    "'.../.dolt/git-remote-cache/<hash>/repo.git'\n"
+    "hint: dolt does not support interactive credential prompts\n"
+    "hint: ensure non-interactive auth is configured for GCM: exit status 1"
+)
+
+
+@pytest.mark.parametrize(
+    "stderr,must_contain",
+    [
+        (_REAL_NON_FAST_FORWARD_STDERR, "non-fast-forward"),
+        (_REAL_MISSING_GIT_REMOTE_CACHE_STDERR, "not a git repository"),
+    ],
+)
+def test_dolt_push_failure_surfaces_underlying_error(
+    world, monkeypatch, capsys, stderr, must_contain
+):
+    """A failed dolt push must surface `bd dolt push`'s real cause verbatim beneath the summary
+    line — not a bare 'failed to push dolt' (the original defect) and not a wrong line picked
+    from bd's hint-wrapped stderr (the changes-requested defect: a last-line extraction yields
+    generic auth advice for both real fleet failures, actively misleading for the second)."""
+    clone, _remote = _make_clean_clone()
+    _register()
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=clone)
+
+    class _FailingEngine:
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg: _FailingEngine())
+
+    sync_remote.sync_remote(dry_run=False)
+
+    err = capsys.readouterr().err
+    assert "✗ failed to push dolt: refs/dolt/data" in err
+    assert must_contain in err
 
 
 def test_dry_run_does_not_call_engine_push(world, monkeypatch):
@@ -748,6 +865,333 @@ def test_cli_dry_run_exits_zero_and_mutates_nothing(world):
     assert res.exit_code == 0
     remote_log = _git("log", "--all", "--format=%s", cwd=remote).stdout
     assert "unpushed" not in remote_log
+
+
+# ---------------------------------------------------------------------------
+# CLI wiring: `bh hive sync` — the unified group (bh-ummb9.1: remotes/peers subcommands,
+# bare = remotes). `sync-remote` deprecates to an alias for `sync remotes --push`.
+# ---------------------------------------------------------------------------
+
+
+def test_bare_sync_is_equivalent_to_sync_remotes(world):
+    """`bh hive sync --all` (no subcommand) must be `sync remotes --all` — same targets,
+    same outcome — per bh-ummb9.1's acceptance."""
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    bare = CliRunner().invoke(app, ["hive", "sync", "--all"])
+    explicit = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all"])
+
+    assert bare.exit_code == 0 == explicit.exit_code
+    assert "github/myorg/myrepo" in _strip_ansi(bare.output)
+    assert "github/myorg/myrepo" in _strip_ansi(explicit.output)
+
+
+def test_sync_remotes_still_refuses_a_dirty_tree(world):
+    """The guard `sync-remote` earned survives under the new `remotes` name: dirty is still
+    refused and offending, exit non-zero."""
+    from beadhive.cli import app
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / "file.txt").write_text("uncommitted change")
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all"])
+
+    assert res.exit_code != 0
+    assert "github/myorg/myrepo" in res.output
+
+
+def test_sync_remotes_dry_run_still_mutates_nothing(world):
+    from beadhive.cli import app
+
+    clone, remote = _make_ahead_clone()
+    _register()
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all", "--dry-run"])
+
+    assert res.exit_code == 0
+    remote_log = _git("log", "--all", "--format=%s", cwd=remote).stdout
+    assert "unpushed" not in remote_log
+
+
+def test_dry_run_names_the_pull_leg_when_eligible(world, monkeypatch, capsys):
+    """Review fix (bh-ummb9.1): --dry-run must NAME the pull leg it will actually run under a
+    live invocation — a pull is not inert (it can auto-merge, LWW-resolve). Default (both
+    pull+push) says "would pull, then push"."""
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+    _stub_engine(monkeypatch, _FED_TIMEOUT)  # dolt_status "unknown" — pull-eligible
+
+    sync_remote.sync_remote(dry_run=True)  # default: pull=False, push=True (unchanged default)
+
+    out = capsys.readouterr().out
+    assert "would pull" not in out  # pull=False by default — nothing changes here
+
+    sync_remote.sync_remote(dry_run=True, pull=True, push=True)
+    out = capsys.readouterr().out
+    assert "would pull, then push: refs/dolt/data" in out
+
+    sync_remote.sync_remote(dry_run=True, pull=True, push=False)
+    out = capsys.readouterr().out
+    assert "would pull: refs/dolt/data" in out
+    assert "would pull, then push" not in out
+
+
+def test_dry_run_never_names_a_pull_for_a_plain_git_clone(world, monkeypatch, capsys):
+    """A hive with no dolt state at all (`dolt_status` "absent") is never pulled by the live
+    leg — the dry-run preview must not claim it would be, even with `pull=True`."""
+    _make_clean_clone()
+    _register()
+
+    sync_remote.sync_remote(dry_run=True, pull=True, push=True)
+
+    out = capsys.readouterr().out
+    assert "would pull" not in out
+
+
+def test_sync_remotes_requires_hive_or_all(world):
+    from beadhive.cli import app
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes"])
+
+    assert res.exit_code != 0
+    assert "HIVE" in res.output or "--all" in res.output
+
+
+def test_sync_remotes_pull_and_push_are_mutually_exclusive(world):
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all", "--pull", "--push"])
+
+    assert res.exit_code != 0
+    assert "mutually exclusive" in res.output
+
+
+def test_sync_remotes_push_only_skips_pull(world, monkeypatch):
+    """`--push` alone must not call `Engine.pull_state` — pull is a distinct, opt-in leg."""
+    from beadhive import sync_remote
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    class _NoPull:
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            raise AssertionError("pull_state must not be called with --push only")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _NoPull())
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes", "--all", "--push"])
+
+    assert res.exit_code == 0
+
+
+def test_sync_peers_has_no_pull_or_push_option(world):
+    """bd exposes no single-direction peer verb — `--pull`/`--push` must not exist on
+    `sync peers`, not merely error at runtime."""
+    from beadhive.cli import app
+
+    res = CliRunner().invoke(app, ["hive", "sync", "peers", "--help"])
+    out = _strip_ansi(res.output)
+
+    assert res.exit_code == 0
+    # An actual option renders as its own bulleted line in the Options panel; check that
+    # shape rather than a bare substring, since the help prose itself names `--pull`/`--push`
+    # to explain their absence.
+    assert not re.search(r"│\s*--pull\b", out)
+    assert not re.search(r"│\s*--push\b", out)
+
+
+def test_sync_peers_rejects_pull_as_an_unknown_option(world):
+    from beadhive.cli import app
+
+    res = CliRunner().invoke(app, ["hive", "sync", "peers", "--all", "--pull"])
+
+    assert res.exit_code != 0
+    assert "No such option" in res.output
+
+
+def test_sync_remotes_accepts_remote_and_force_flags(world, monkeypatch):
+    """`--remote`/`--force` must be accepted (parsed) and threaded through to the push call —
+    covered here via the engine seam rather than a real multi-remote dolt setup."""
+    from beadhive import sync_remote
+    from beadhive.cli import app
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    _git("update-ref", "refs/dolt/data", "HEAD", cwd=clone)  # local-only, no-remote → unpushed
+
+    calls = []
+
+    class _Recording:
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            calls.append((remote, force))
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _Recording())
+
+    res = CliRunner().invoke(
+        app, ["hive", "sync", "remotes", "--all", "--push", "--remote", "upstream", "--force"]
+    )
+
+    assert res.exit_code == 0
+    assert calls == [("upstream", True)]
+
+
+def test_sync_remotes_pull_targets_a_named_remote(world, monkeypatch):
+    """`--remote NAME` must reach the PULL leg too, not just push — this fleet has one remote
+    per hive today (measured, per bh-ummb9's design section), so a hive with several
+    configured dolt remotes can't be verified live. This exercises the routing through the
+    `Engine.pull_state` seam instead: real coverage of "the flag reaches the right call",
+    honest about not being a live multi-remote fixture."""
+    from beadhive import sync_remote
+    from beadhive.cli import app
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+
+    calls = []
+
+    class _Recording:
+        def federation_status(self, cwd, *, timeout=None):
+            return _FED_TIMEOUT  # dolt_status "unknown" — pull-eligible
+
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            calls.append(remote)
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _Recording())
+
+    res = CliRunner().invoke(
+        app, ["hive", "sync", "remotes", "--all", "--pull", "--remote", "upstream"]
+    )
+
+    assert res.exit_code == 0
+    assert calls == ["upstream"]
+
+
+def test_pull_surfaces_an_auto_merge_notice(world, monkeypatch, capsys):
+    """A pull is not inert — measured on the fleet (bh-ummb9.2's own brief):
+    `beadhive/baml-harness` auto-merged on pull and said so via a `Notice:` line. That must be
+    REPORTED per hive, not silently absorbed into a bare 'pulled'."""
+    from beadhive import sync_remote
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+
+    notice = (
+        "Notice: auto-merged issue bh-xyz; updated_at settled last-write-wins (the older "
+        "side's edit was superseded)"
+    )
+
+    class _AutoMerging:
+        def federation_status(self, cwd, *, timeout=None):
+            return _FED_TIMEOUT  # dolt_status "unknown" — pull-eligible
+
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout=notice, stderr="")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _AutoMerging())
+
+    plan = sync_remote.sync_remote(pull=True, push=True)
+    out = capsys.readouterr().out
+
+    assert "auto-merged issue bh-xyz" in out
+    assert plan.auto_merges  # keyed by hive_id, non-empty
+    assert notice in next(iter(plan.auto_merges.values()))
+
+
+def test_pull_success_with_no_auto_merge_reports_nothing_extra(world, monkeypatch, capsys):
+    """The common case (a plain pull, no LWW resolution) must stay quiet — no
+    `plan.auto_merges` entry, no extra output line."""
+    from beadhive import sync_remote
+
+    clone, _remote = _make_clean_clone()
+    _register()
+    (clone / ".beads").mkdir()
+
+    class _PlainPull:
+        def federation_status(self, cwd, *, timeout=None):
+            return _FED_TIMEOUT  # dolt_status "unknown" — pull-eligible
+
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _PlainPull())
+
+    plan = sync_remote.sync_remote(pull=True, push=True)
+    out = capsys.readouterr().out
+
+    assert "auto-merged" not in out.lower()
+    assert plan.auto_merges == {}
+
+
+def test_sync_remote_deprecation_warns_once_and_still_works(world):
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    res = CliRunner().invoke(app, ["hive", "sync-remote", "--all"])
+
+    assert res.exit_code == 0
+    assert res.output.count("deprecated") == 1
+    assert "sync remotes --push" in _strip_ansi(res.output)
+
+
+def test_sync_remote_deprecation_still_refuses_missing_all(world):
+    from beadhive.cli import app
+
+    res = CliRunner().invoke(app, ["hive", "sync-remote"])
+
+    assert res.exit_code != 0
+    assert "--all" in res.output
+
+
+def test_sync_remote_deprecated_alias_is_push_only(world, monkeypatch):
+    """`sync-remote` deprecates to `sync remotes --push` — never pulls."""
+    from beadhive import sync_remote
+    from beadhive.cli import app
+
+    _make_clean_clone()
+    _register()
+
+    class _NoPull:
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
+            return subprocess.CompletedProcess(args=[], returncode=0)
+
+        def pull_state(self, cwd, *, remote=""):
+            raise AssertionError("sync-remote must never pull — push-only alias")
+
+    monkeypatch.setattr(sync_remote.engine, "get_engine", lambda cfg=None: _NoPull())
+
+    res = CliRunner().invoke(app, ["hive", "sync-remote", "--all"])
+
+    assert res.exit_code == 0
 
 
 # ---------------------------------------------------------------------------

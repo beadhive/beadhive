@@ -104,7 +104,7 @@ def test_paused_with_conflicts_exits_1_and_prints_tables(world, monkeypatch):
     )
     _install(monkeypatch, stub)
 
-    res = runner.invoke(app, ["hive", "sync", "--all"])
+    res = runner.invoke(app, ["hive", "sync", "peers", "--all"])
 
     assert res.exit_code == 1
     assert f"✗ {hive_id}: sync paused" in res.output
@@ -118,7 +118,7 @@ def test_failed_sync_exits_1_with_error(world, monkeypatch):
     stub = _StubEngine(outcome=SyncOutcome(ok=False, error="timeout"))
     _install(monkeypatch, stub)
 
-    res = runner.invoke(app, ["hive", "sync", "--all"])
+    res = runner.invoke(app, ["hive", "sync", "peers", "--all"])
 
     assert res.exit_code == 1
     assert f"✗ {hive_id}: sync failed — timeout" in res.output
@@ -164,7 +164,7 @@ def test_a_hive_with_no_peer_towns_is_reported_and_not_offending(world, monkeypa
     )
     _install(monkeypatch, stub)
 
-    res = runner.invoke(app, ["hive", "sync", "--all"])
+    res = runner.invoke(app, ["hive", "sync", "peers", "--all"])
 
     assert res.exit_code == 0
     assert f"• {hive_id}: no federation peers — nothing to sync" in res.output
@@ -210,7 +210,7 @@ def test_dry_run_unreachable_reports_unknown_not_synced_exit_1(world, monkeypatc
     stub = _StubEngine(status=_UNREACHABLE)
     _install(monkeypatch, stub)
 
-    res = runner.invoke(app, ["hive", "sync", "--all", "--dry-run"])
+    res = runner.invoke(app, ["hive", "sync", "peers", "--all", "--dry-run"])
 
     assert res.exit_code == 1
     assert "unknown (dial tcp: refused)" in res.output
@@ -224,7 +224,7 @@ def test_dry_run_status_failure_reports_unknown_exit_1(world, monkeypatch):
     hive_id = _register()
     _install(monkeypatch, _StubEngine(status=FederationStatus(ok=False, error="timeout")))
 
-    res = runner.invoke(app, ["hive", "sync", "--all", "--dry-run"])
+    res = runner.invoke(app, ["hive", "sync", "peers", "--all", "--dry-run"])
 
     assert res.exit_code == 1
     assert "unknown (timeout)" in res.output
@@ -242,8 +242,8 @@ def test_hq_hive_is_skipped_everywhere(world, monkeypatch):
     stub = _StubEngine(status=_REACHABLE_AHEAD, outcome=SyncOutcome(ok=True))
     _install(monkeypatch, stub)
 
-    live = runner.invoke(app, ["hive", "sync", "--all"])
-    dry = runner.invoke(app, ["hive", "sync", "--all", "--dry-run"])
+    live = runner.invoke(app, ["hive", "sync", "peers", "--all"])
+    dry = runner.invoke(app, ["hive", "sync", "peers", "--all", "--dry-run"])
 
     assert live.exit_code == 0 and dry.exit_code == 0
     assert hq_id not in live.output and hq_id not in dry.output
@@ -256,7 +256,7 @@ def test_targeting_hq_directly_is_refused(world, monkeypatch):
     stub = _StubEngine()
     _install(monkeypatch, stub)
 
-    res = runner.invoke(app, ["hive", "sync", "hq"])
+    res = runner.invoke(app, ["hive", "sync", "peers", "hq"])
 
     assert res.exit_code == 1
     assert "local-only" in res.output
@@ -264,23 +264,26 @@ def test_targeting_hq_directly_is_refused(world, monkeypatch):
 
 
 def test_requires_exactly_one_of_hive_id_or_all(world):
-    neither = runner.invoke(app, ["hive", "sync"])
-    both = runner.invoke(app, ["hive", "sync", "myrepo", "--all"])
+    neither = runner.invoke(app, ["hive", "sync", "peers"])
+    both = runner.invoke(app, ["hive", "sync", "peers", "myrepo", "--all"])
 
     assert neither.exit_code == 1
     assert both.exit_code == 1
-    assert "exactly one of HIVE_ID or --all" in neither.output
+    assert "pass one or more HIVE, or --all" in neither.output
 
 
 def test_bogus_strategy_is_refused(world):
-    res = runner.invoke(app, ["hive", "sync", "--all", "--strategy", "mine"])
+    res = runner.invoke(app, ["hive", "sync", "peers", "--all", "--strategy", "mine"])
 
     assert res.exit_code == 1
     assert "ours|theirs" in res.output
 
 
 def test_help_distinguishes_from_hub_sync(world):
-    res = runner.invoke(app, ["hive", "sync", "--help"])
+    res = runner.invoke(app, ["hive", "sync", "peers", "--help"])
 
     assert res.exit_code == 0
-    assert "bh sync" in res.output  # the hub-hydration verb is named explicitly
+    # names the underlying bd verb, not `bh sync` (the hub-hydration verb) — "bd federation" and
+    # "sync" can land on either side of a rich-help wrap, so check both rather than one phrase.
+    assert "bd federation" in res.output
+    assert "federation peer" in res.output
