@@ -201,6 +201,7 @@ class SyncPlan:
     pushed_branches: dict[str, list[str]] = field(default_factory=dict)
     dolt_pushed: list[str] = field(default_factory=list)
     offending: list[str] = field(default_factory=list)
+    auto_merges: dict[str, list[str]] = field(default_factory=dict)
 
 
 def _last_stderr_line(result) -> str:
@@ -267,11 +268,23 @@ def _push_dolt_state(cfg, clone_path: Path, *, remote: str = "", force: bool = F
     return result.returncode == 0
 
 
-def _pull_dolt_state(cfg, clone_path: Path, *, remote: str = "") -> bool:
-    """Pull this hive's ``refs/dolt/data`` via the configured ``Engine``. Returns True on
-    success. Mutating — never called under ``--dry-run``."""
+def _auto_merge_notices(result) -> list[str]:
+    """Lines from a ``bd dolt pull`` result that report an auto-merge (measured wording:
+    ``Notice: auto-merged issue [...]; updated_at settled last-write-wins (the older side's
+    edit was superseded)``) — a pull is not inert, and a silent last-write-wins resolution
+    must never be swallowed. Matched on the substring ``auto-merged`` rather than the full
+    ``Notice:`` prefix, since that's the one part of the wording this is actually about."""
+    lines = ((result.stdout or "") + (result.stderr or "")).splitlines()
+    return [line.strip() for line in lines if "auto-merged" in line.lower()]
+
+
+def _pull_dolt_state(cfg, clone_path: Path, *, remote: str = "") -> tuple[bool, list[str]]:
+    """Pull this hive's ``refs/dolt/data`` via the configured ``Engine``. Returns
+    ``(success, auto_merge_notices)`` — the notices are extracted regardless of success, since
+    an auto-merge can happen on a pull that otherwise reports success. Mutating — never called
+    under ``--dry-run``."""
     result = engine.get_engine(cfg).pull_state(clone_path, remote=remote)
-    return result.returncode == 0
+    return result.returncode == 0, _auto_merge_notices(result)
 
 
 def _resolve_targets(cfg, hive_ids: list[str] | None) -> list[tuple[str, Path]]:
@@ -365,12 +378,19 @@ def sync_remote(
         for (hive_id, clone_path), record in zip(targets, records, strict=True):
             if record.dolt_status in ("absent", "no-remote", None):
                 continue
-            if _pull_dolt_state(cfg, clone_path, remote=remote):
+            pulled_ok, auto_merges = _pull_dolt_state(cfg, clone_path, remote=remote)
+            if pulled_ok:
                 typer.echo(f"  {hive_id}: pulled")
             else:
                 typer.echo(f"  {hive_id}: ✗ failed to pull dolt: refs/dolt/data", err=True)
                 pull_failed.add(hive_id)
                 plan.offending.append(hive_id)
+            for notice in auto_merges:
+                # Surfaced regardless of pull success/failure — an auto-merge is a real,
+                # already-committed last-write-wins resolution the operator must see, not
+                # something the pull's own pass/fail verdict should swallow.
+                typer.echo(f"  {hive_id}: ⚠ {notice}")
+                plan.auto_merges.setdefault(hive_id, []).append(notice)
 
     for (hive_id, clone_path), record in zip(targets, records, strict=True):
         plan.records.append(record)
