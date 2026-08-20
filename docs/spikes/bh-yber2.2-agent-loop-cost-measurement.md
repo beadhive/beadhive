@@ -1,4 +1,4 @@
-# Spike `bh-yber2.2` — what does LLM-mediated release-state reconstruction actually cost, versus one deterministic query?
+# Spike `bh-yber2.2` — what does LLM-mediated release-state reconstruction cost, vs one query?
 
 **Bead:** `bh-yber2.2` · **Seat:** `dev/dev1` · **Type:** research-only (no product code)
 **Feeds decision on:** `bh-yber2.3` — *"do the guardrailed mitigations and measured ROI change
@@ -11,7 +11,7 @@ the release-loop verdict?"*
 > the gap and its **rough magnitude on this scenario**, plus — the more useful result — the
 > **shape of the variance**. Any number below re-quoted as "the" cost of an agent loop is being
 > misused.
-
+>
 > Sibling findings taken as settled and **not** re-derived (per the bead's mandatory reading):
 > `bh-bomrd.1` **E3** — `bd mol current` is a genuinely readable "where did it stop" report; and
 > **E11** — every verb in [`release.py`](../../src/beadhive/release.py) *re-measures* rather than
