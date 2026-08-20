@@ -1658,6 +1658,39 @@ def test_record_check_verdict_skips_red_run(hive, fakebd, monkeypatch):
     assert len(calls) == 1
 
 
+def test_mark_self_check_derives_seat_tree_and_dirty(hive, fakebd, monkeypatch):
+    """bh-trgcd.2: the self-check attribution `check` stamps on its verb span — the seat from the
+    claim record `claim` already wrote (no `bd` read, and no bead-corpus WRITE), the tree content
+    key, and the honest `dirty` flag. Off-path first: with otel off nothing is stamped and none of
+    those reads happen at all."""
+    seen = []
+    monkeypatch.setattr(work.otel, "set_self_check", lambda *a, **k: seen.append((a, k)))
+    monkeypatch.setattr(work.otel, "is_active", lambda: False)
+    fakebd.seed("mr-184", title="t")
+    work.claim(bead="mr-184", as_="dev/ada", hive="myrepo")
+    wt = _wt(hive, "mr-184")
+    _commit(wt, "feat: the change")
+    cfg = config.load()
+    entry, _main, _target, _branch = worktree.locate(cfg, "myrepo", "mr-184")
+
+    work._mark_self_check(cfg, entry, wt, 0)
+    assert seen == [], "otel off must stamp nothing (and pay for no git/claim reads)"
+
+    monkeypatch.setattr(work.otel, "is_active", lambda: True)
+    work._mark_self_check(cfg, entry, wt, 0)
+    (args, kw) = seen[-1]
+    tree = validation_ledger.tree_of(entry, worktree.head_full_sha(wt))
+    assert args == (True,) and kw["seat"] == "dev/ada"
+    assert kw["tree"] == tree and kw["dirty"] is False
+
+    # Dirty tree: the SAME tree hash still rides (it's all we honestly have), flagged as not
+    # being what ran — otherwise consecutive edits would look like identical content.
+    (wt / "dirty.txt").write_text("uncommitted\n")
+    work._mark_self_check(cfg, entry, wt, 1)
+    (args, kw) = seen[-1]
+    assert args == (False,) and kw["tree"] == tree and kw["dirty"] is True
+
+
 def test_check_exports_a_fresh_empty_test_report_dir(hive, fakebd, monkeypatch):
     """bh-ku9n9.20: `check` exports `BH_TEST_REPORT_DIR` into its validation subprocess too, so
     `check` and `submit` observe a run identically — and hands it a directory that is FRESH and

@@ -1828,6 +1828,7 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
     )
     otel.count_validation(rc == 0, {"bh.work.phase": "check"})
+    _mark_self_check(cfg, entry, target, rc)
     missing = missing_binary(res)
     if rc != 0 and not missing:
         # THE CONVERGE LOOP (bh-ku9n9.8), and the ONLY place it is wired: a developer loop that
@@ -1859,6 +1860,33 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
         )
     if rc != 0:
         raise typer.Exit(rc)
+
+
+def _mark_self_check(cfg, entry, target, rc) -> None:
+    """Stamp this SELF-CHECK attempt onto the `work.check` verb span (bh-trgcd.2) — seat, tree
+    content key, and green/red — so "how many self-checks did this bead take before one came back
+    green" is answerable from the span stream alone.
+
+    Emphatically NOT a bead write: per-attempt developer iteration is exactly the signal
+    CLAUDE.md keeps OUT of bead history (an archive that must never be squashed), and exactly what
+    an event stream is allowed to age out of. It goes to OTel or nowhere.
+
+    Everything here is gated on `otel.is_active()` because the reads are not free — the tree
+    resolve is a `git rev-parse`, and the seat is a claim-record read — and the off-path must stay
+    zero-cost. The seat comes from the claim record `claim`/`resume` already wrote in this
+    worktree, the same source `_resolve_submit_actor` trusts, so no `bd` read is added either.
+    A dirty tree names no tree that ran (see `_checked_sha`), so HEAD's tree rides with
+    `dirty=True` rather than posing as the content key."""
+    if not otel.is_active():
+        return
+    sha = _checked_sha(target)
+    record = claim_authority.get_authority(config.claim_authority(cfg, entry)).read(target)
+    otel.set_self_check(
+        rc == 0,
+        seat=record.seat if record else "",
+        tree=validation_ledger.tree_of(entry, sha or worktree.head_full_sha(target)),
+        dirty=not sha,
+    )
 
 
 def _record_check_verdict(

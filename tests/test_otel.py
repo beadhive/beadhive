@@ -357,6 +357,63 @@ def test_set_bead_noop_for_empty_bead(monkeypatch):
     assert span.attrs == {}
 
 
+# ---- developer self-check attribution (otel.set_self_check, bh-trgcd.2) -----
+#
+# The `work.check` verb span must carry enough on its own to aggregate "attempts before green"
+# per bead WITHOUT joining against the bead corpus (and without writing to it): the phase
+# discriminator vs the authoritative `submit` gate, the outcome, the tree content key, and the
+# seat that ran it.
+
+
+def test_set_self_check_stamps_phase_outcome_tree_and_seat(monkeypatch):
+    span = _RecordingSpan()
+    otel._initialized = True
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_self_check(False, seat="dev/ada", tree="4b825dc", dirty=False)
+    assert span.attrs == {
+        "bh.work.phase": "check",  # NOT "submit" — the gate's own runs stay distinguishable
+        "bh.validation.result": "fail",
+        "bh.validation.tree.dirty": False,
+        "bh.validation.tree": "4b825dc",
+        "bh.seat": "dev/ada",
+    }
+
+
+def test_set_self_check_green_run(monkeypatch):
+    span = _RecordingSpan()
+    otel._initialized = True
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_self_check(True, seat="dev/ada", tree="4b825dc")
+    assert span.attrs["bh.validation.result"] == "pass"
+
+
+def test_set_self_check_dirty_tree_flags_the_key_as_not_what_ran(monkeypatch):
+    span = _RecordingSpan()
+    otel._initialized = True
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_self_check(False, tree="4b825dc", dirty=True)
+    # The flag must ride even though a tree hash IS present — it says the hash is HEAD's, not
+    # the content that actually ran. Empty seat is omitted, never blank.
+    assert span.attrs["bh.validation.tree.dirty"] is True
+    assert "bh.seat" not in span.attrs
+
+
+def test_set_self_check_noop_when_otel_off(monkeypatch):
+    span = _RecordingSpan()
+    otel._initialized = False  # off-path: never touches the span
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_self_check(True, seat="dev/ada", tree="4b825dc")
+    assert span.attrs == {}
+
+
+def test_set_self_check_noop_when_span_not_recording(monkeypatch):
+    span = _RecordingSpan(recording=False)
+    otel._initialized = True
+    monkeypatch.setattr(otel, "get_current_span", lambda: span)
+    otel.set_self_check(True, seat="dev/ada", tree="4b825dc")
+    assert span.attrs == {}
+
+
 # ---- transport selection (otel.protocol) ------------------------------------
 #
 # otel.protocol picks the OTLP exporter CLASS for all three signals: grpc → the proto.grpc.*
