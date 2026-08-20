@@ -143,7 +143,7 @@ def _stub_engine(monkeypatch, *, ahead=0, behind=0, reachable=True, push_ok=True
         def federation_status(self, cwd, *, timeout=None):
             return fed
 
-        def push_state(self, cwd, actor="", message=""):
+        def push_state(self, cwd, actor="", message="", *, remote="", force=False):
             rc = 0 if push_ok else 1
             err = "" if push_ok else "boom"
             return subprocess.CompletedProcess(["bd", "dolt", "push"], rc, "", err)

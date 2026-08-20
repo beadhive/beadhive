@@ -144,12 +144,17 @@ class Engine(Protocol):
         `cwd`."""
         ...
 
-    def push_state(self, cwd, actor: str = "", message: str = ""):
-        """Publish authoritative bead state (commit + push for `bd`/Dolt)."""
+    def push_state(
+        self, cwd, actor: str = "", message: str = "", *, remote: str = "", force: bool = False
+    ):
+        """Publish authoritative bead state (commit + push for `bd`/Dolt). `remote` targets a
+        named remote instead of the default; `force` overwrites remote changes (`bd dolt push
+        --remote/--force`)."""
         ...
 
-    def pull_state(self, cwd):
-        """Refresh `cwd`'s bead state from the authoritative remote."""
+    def pull_state(self, cwd, *, remote: str = ""):
+        """Refresh `cwd`'s bead state from the authoritative remote. `remote` pulls from a
+        named remote instead of the default (`bd dolt pull --remote`)."""
         ...
 
     def bootstrap(self, cwd, *, env=None):
@@ -281,16 +286,24 @@ class BdEngine:
         # extraction (the original inline body used `cwd=cwd`).
         return bd_mod._run(["bd", "import", *args], check=False, capture=True, cwd=cwd)
 
-    def push_state(self, cwd, actor="", message=""):
+    def push_state(self, cwd, actor="", message="", *, remote="", force=False):
         # Extracted from report.py's `file_report()` cache-push tail: commit (result unchecked,
         # matching the original — an empty commit is not itself a failure) then push.
         # Both go through `_state_call`: the push is the network leg, and the commit can itself
         # block on the dolt LOCK a wedged sibling process is holding.
         self._state_call(["dolt", "commit", "-m", message], cwd, actor=actor)
-        return self._state_call(["dolt", "push"], cwd, actor=actor)
+        args = ["dolt", "push"]
+        if remote:
+            args += ["--remote", remote]
+        if force:
+            args.append("--force")
+        return self._state_call(args, cwd, actor=actor)
 
-    def pull_state(self, cwd):
-        return self._state_call(["dolt", "pull"], cwd)
+    def pull_state(self, cwd, *, remote=""):
+        args = ["dolt", "pull"]
+        if remote:
+            args += ["--remote", remote]
+        return self._state_call(args, cwd)
 
     def backup(self, cwd, dest, *, actor=""):
         # `bd backup add` + `bd backup sync` — bd's own wrapper around Dolt-native
