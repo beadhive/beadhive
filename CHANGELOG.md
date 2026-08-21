@@ -13,6 +13,40 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.14.0 (2026-08-21)
+
+### Feat
+
+- **runtime**: launch agents with shared model decisions
+- **schedule**: route grouped work by maximum complexity
+- **routing**: resolve canonical models from live availability
+- **migration**: backfill complexity labels safely
+- **planning**: compile complexity routing labels
+- **routing**: add typed model tier configuration
+- **routing**: add versioned complexity classifier
+- **checkpoint**: couple measured facts to commands
+- **work**: report blocker-correct molecule readiness
+- **hitch**: accept codex as a bh plugin hitch up target
+- **otel**: attribute developer self-check attempts on the work.check span
+- **hive**: surface auto-merge notices from the sync pull leg
+- **hive**: unify `bh hive sync` into remotes/peers subcommands
+
+### Fix
+
+- **migration**: exclude merge slot artifacts
+- **routing**: keep harness aliases out of decisions
+- **checkpoint**: serialize append-only writes
+- **passthrough**: close wisp cleanup guard bypasses
+- **work**: derive molecule members from parent edges
+- **passthrough**: guard destructive wisp cleanup
+- **sync**: skip remote-only hives in fleet sync
+- keep dolt remote sync out of federation
+- **license-gate**: distinguish a network failure from a license verdict
+- **work-show**: review resolves the shared batch branch and refuses on 0 commits
+- **sync-remote**: surface the underlying dolt push/pull error text
+- **hive-sync**: real ahead/behind in --dry-run instead of a broken federation guess
+- **hive**: name the pull leg in `sync remotes --dry-run`
+
 ## v0.13.0 (2026-08-19)
 
 ### Feat
