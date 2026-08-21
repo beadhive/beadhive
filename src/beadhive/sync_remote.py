@@ -79,7 +79,7 @@ _OFFENDING = frozenset({SyncStatus.DIRTY, SyncStatus.BLOCKED})
 # aggregation refresh) without removing it. Tracked, not closed by implication.
 _DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote", "unknown"})
 
-# bh-5rn7: bd has no read-only remote-diff primitive for the embedded engine (no `bd dolt
+# bh-5rn7: bd has no read-only remote-diff primitive for bd-managed stores (no `bd dolt
 # fetch`), so an "unknown" dolt_status can't be resolved to an exact unpushed-bead set. As a
 # bounded, honest approximation, `--verbose` instead surfaces recently-*touched* beads — a
 # fixed 24h lookback (simpler than tracking "since last successful push", which bd also has no
@@ -94,12 +94,12 @@ _ASSESS_WORKERS = 4
 
 def _dolt_reason(dolt: DoltRefInfo) -> str:
     """Human-readable reason line for a pushable dolt state — "unknown" (couldn't be verified:
-    unreachable peer, timeout, or — on the no-network path — bd's embedded engine, bh-fl26)
+    unreachable peer, timeout, or — on the no-network path — a bd-managed store, bh-fl26)
     gets its own honest wording instead of the git-ref-flavored message. Verified ahead/behind
     counts (a ``fetch=True`` federation check) and ``DoltRefInfo.reason`` are appended when
     present."""
     if dolt.status == "unknown":
-        detail = dolt.reason or "embedded engine — no read-only check ran"
+        detail = dolt.reason or "bd-managed store — no read-only remote check ran"
         return f"dolt state could not be verified ({detail}); would attempt idempotent bd dolt push"
     if dolt.status == "behind":
         detail = f"{dolt.behind} behind" if dolt.behind else "behind"

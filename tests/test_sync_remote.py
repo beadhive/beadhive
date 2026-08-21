@@ -254,6 +254,46 @@ def test_assess_embedded_dolt_engine_counts_as_unpushed(tmp_path, monkeypatch):
     assert any("embedded engine" in r for r in record.reasons)
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        (
+            {"mode": "external", "database": "bh", "host": "127.0.0.1"},
+            "external/shared-server engine",
+        ),
+        ({"data_dir": "", "running": False}, "bd-managed store"),
+    ],
+    ids=["external-shared-server", "legacy-mode-omitted"],
+)
+def test_assess_bd_managed_unknown_does_not_guess_embedded(
+    tmp_path, monkeypatch, payload, expected
+):
+    remote = tmp_path / "remote.git"
+    remote.mkdir()
+    _git("init", "-q", "--bare", "-b", "main", cwd=remote)
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    _git("remote", "add", "origin", str(remote), cwd=repo)
+    _git("push", "-q", "-u", "origin", "main", cwd=repo)
+    (repo / ".beads").mkdir()
+    monkeypatch.setattr("beadhive.safety._bd_dolt_status_payload", lambda path: payload)
+    monkeypatch.setattr("beadhive.safety._bd_has_dolt_remote", lambda path: True)
+
+    record = assess_hive("github/o/r", repo)
+
+    assert record.status == SyncStatus.UNPUSHED_DOLT
+    assert record.dolt_status == "unknown"
+    assert any(expected in reason for reason in record.reasons)
+    assert all("embedded" not in reason for reason in record.reasons)
+
+
+def test_dolt_reason_unknown_without_probe_metadata_is_engine_neutral():
+    reason = sync_remote._dolt_reason(sync_remote.DoltRefInfo(status="unknown"))
+
+    assert "bd-managed store" in reason
+    assert "embedded" not in reason
+
+
 def test_assess_dirty_wins_over_unpushed(tmp_path):
     """Dirty takes precedence: a hive both dirty AND ahead reports DIRTY, not UNPUSHED_GIT —
     refuse-to-push-over-dirty must never be masked by an also-true unpushed signal."""

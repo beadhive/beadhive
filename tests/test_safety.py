@@ -459,6 +459,7 @@ def test_bd_dolt_state_unknown_when_embedded_engine_has_remote(tmp_path: Path) -
     assert result.dolt_ref.status == "unknown"
     assert result.dolt_ref.ahead == 0
     assert result.dolt_ref.behind == 0
+    assert result.dolt_ref.reason == "embedded engine — no read-only remote check ran"
 
 
 def test_bd_dolt_state_no_remote_when_embedded_engine_has_no_remote(tmp_path: Path) -> None:
@@ -514,6 +515,31 @@ def test_bd_dolt_state_unknown_when_local_external_engine_has_no_mode_key(tmp_pa
         result = scan(repo)
 
     assert result.dolt_ref.status == "unknown"
+    assert result.dolt_ref.reason == "bd-managed store — no read-only remote check ran"
+
+
+def test_bd_dolt_state_unknown_names_reported_external_engine(tmp_path: Path) -> None:
+    """A shared-server payload reports mode=external and must never be called embedded."""
+    repo, _ = _with_origin(tmp_path)
+    (repo / ".beads").mkdir()
+    with (
+        patch(
+            "beadhive.safety._bd_dolt_status_payload",
+            return_value={
+                "database": "bh",
+                "host": "127.0.0.1",
+                "mode": "external",
+                "port": 3308,
+                "running": True,
+            },
+        ),
+        patch("beadhive.safety._bd_has_dolt_remote", return_value=True),
+    ):
+        result = scan(repo)
+
+    assert result.dolt_ref.status == "unknown"
+    assert result.dolt_ref.reason == "external/shared-server engine — no read-only remote check ran"
+    assert "embedded" not in result.dolt_ref.reason
 
 
 def test_bd_dolt_ref_takes_priority_over_bd_probe(tmp_path: Path) -> None:
@@ -778,7 +804,9 @@ def test_scan_fetch_false_never_touches_engine(tmp_path: Path, monkeypatch) -> N
     ):
         result = scan(repo)
 
-    assert result.dolt_ref == DoltRefInfo(status="unknown")
+    assert result.dolt_ref == DoltRefInfo(
+        status="unknown", reason="embedded engine — no read-only remote check ran"
+    )
 
 
 def test_scan_fetch_true_embedded_engine_gets_real_ahead_count(tmp_path: Path, monkeypatch) -> None:
