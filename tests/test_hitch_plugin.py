@@ -229,6 +229,53 @@ def test_up_translates_bh_target_to_hitch_target_and_shells_out(monkeypatch, tmp
     assert "--root" in argv
 
 
+def test_up_forwards_workspace_task_detached_role_explain(monkeypatch, tmp_path):
+    """bh-6t49w.1: --workspace/--task/-d/--role/--explain reach the real hitch up argv,
+    forwarded unchanged (hitch's own CLI validates them, e.g. -d without --task per ADR 0003)."""
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: calls.append(argv) or _Result())
+
+    code = hitch_plugin.up(
+        "claude",
+        "dispatcher",
+        cfg=cfg,
+        workspace="/work/foo",
+        task="say hello",
+        detached=True,
+        role_="dev1",
+        explain=True,
+    )
+
+    assert code == 0
+    argv = calls[0]
+    assert "--workspace" in argv and argv[argv.index("--workspace") + 1] == "/work/foo"
+    assert "--task" in argv and argv[argv.index("--task") + 1] == "say hello"
+    assert "-d" in argv
+    assert "--role" in argv and argv[argv.index("--role") + 1] == "dev1"
+    assert "--explain" in argv
+
+
+def test_up_omits_optional_flags_when_unset(monkeypatch, tmp_path):
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: calls.append(argv) or _Result())
+
+    hitch_plugin.up("claude", "dispatcher", cfg=cfg)
+
+    argv = calls[0]
+    for flag in ("--workspace", "--task", "-d", "--role", "--explain"):
+        assert flag not in argv
+
+
 def test_up_opencode_target_passes_through_unchanged(monkeypatch, tmp_path):
     cfg = _stub_ready(monkeypatch, tmp_path)
     calls = []
@@ -734,6 +781,37 @@ def test_route_hitch_backend_passes_bh_harness_vocab_to_up(monkeypatch, tmp_path
     hitch_plugin.route("developer", cfg=cfg)
 
     assert up_calls == ["opencode"]
+
+
+def test_cli_up_forwards_flags_to_the_real_argv(monkeypatch, tmp_path):
+    cfg = {"hitch": {"enabled": True, "repo": str(tmp_path)}}
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: calls.append(argv) or _Result())
+
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "hitch",
+            "up",
+            "claude",
+            "dispatcher",
+            "--task",
+            "say hello",
+            "-d",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    argv = calls[0]
+    assert "--task" in argv and argv[argv.index("--task") + 1] == "say hello"
+    assert "-d" in argv
 
 
 # ---- degradation: bh's existing default launch path is unaffected -----------------------------
