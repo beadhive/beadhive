@@ -49,6 +49,10 @@ def test_m4_open_persistent_gate_blocks_ephemeral_release_step(tmp_path):
     bd("dep", "add", bump, "--depends-on", attest, cwd=hive, capture=True)
     bd("dep", "add", preview, "--depends-on", bump, cwd=hive, capture=True)
     bd("dep", "add", release, "--depends-on", preview, cwd=hive, capture=True)
+    external = _create(hive, "unrelated consumer")
+    # A reverse dependency-tree walk includes this bead even though it is NOT a molecule child.
+    # Membership must come from the parent-child edge, not reachability from the molecule root.
+    bd("dep", "add", external, "--depends-on", preview, cwd=hive, capture=True)
     for step in (attest, bump, preview):
         bd("close", step, "--reason", "measured complete", cwd=hive, capture=True)
     gate = bd(
@@ -69,6 +73,8 @@ def test_m4_open_persistent_gate_blocks_ephemeral_release_step(tmp_path):
     payload = work.molecule_readiness_payload(molecule, hive)
     release_row = next(row for row in payload["steps"] if row["id"] == release)
 
+    assert {row["id"] for row in payload["steps"]} == {attest, bump, preview, release}
+    assert external not in {row["id"] for row in payload["steps"]}
     assert release_row["readiness"] == "blocked"
     assert len(release_row["blocked_by"]) == 1
     assert release_row["blocked_by"][0]["id"] in (gate.stdout or "")
@@ -86,5 +92,6 @@ def test_satisfied_persistent_molecule_step_remains_ready(tmp_path):
     payload = work.molecule_readiness_payload(molecule, hive)
     step_row = next(row for row in payload["steps"] if row["id"] == step)
 
+    assert {row["id"] for row in payload["steps"]} == {predecessor, step}
     assert step_row["readiness"] == "ready"
     assert step_row["blocked_by"] == []

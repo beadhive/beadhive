@@ -832,18 +832,16 @@ def molecule_readiness_payload(molecule: str, cwd) -> dict:
     omits blocker-free rows whenever blocked rows also exist.  Both reads are global and include
     ephemeral issues, so they share the blocker-aware implementation confirmed by bh-yber2.3.
 
-    Membership is a graph read, not a readiness read.  ``dep tree --direction=up`` covers both
-    persistent and ephemeral parent-child edges, unlike ``bd list --parent`` (which omits wisps).
-    Only parent-child traversal edges are steps; external dependents are not molecule members.
+    Membership is a direct parent-child read, not a readiness read.  ``bd show --children`` covers
+    both persistent and ephemeral children, unlike ``bd list --parent`` (which omits wisps), and
+    does not admit unrelated beads that merely depend on a molecule step.  Do not derive membership
+    from ``dep tree --direction=up``: its de-duplicated traversal can reach a real child through a
+    predecessor edge first, making ``edge_from_parent`` say ``blocks`` instead of ``parent-child``.
     """
-    graph = _readiness_json(["dep", "tree", molecule, "--direction=up"], cwd)
-    if not isinstance(graph, list) or not graph or str(graph[0].get("id") or "") != molecule:
+    children = _readiness_json(["show", molecule, "--children"], cwd)
+    members = children.get(molecule) if isinstance(children, dict) else None
+    if not isinstance(members, list) or not all(isinstance(row, dict) for row in members):
         raise MoleculeReadinessError(f"cannot read molecule {molecule}")
-    members = [
-        row
-        for row in graph[1:]
-        if isinstance(row, dict) and row.get("edge_from_parent") == "parent-child"
-    ]
 
     # Keep this argv shape explicit.  It is the settled-safe query from the ADR addendum; adding
     # --mol, or routing through mol current, reintroduces the false green this verb exists to close.

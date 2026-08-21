@@ -270,26 +270,28 @@ def test_ready_has_flag_strips_equals_form():
 class FakeMoleculeReadinessBd:
     """Shape-aware fake for the three reads behind ``work readiness``."""
 
-    def __init__(self, *, blocked=(), ready=()):
+    def __init__(self, *, blocked=(), ready=(), members=None):
         self.calls: list[list[str]] = []
         self.blocked = list(blocked)
         self.ready = list(ready)
-
-    def __call__(self, cmd, **_kw):
-        argv = list(cmd)
-        self.calls.append(argv)
-        if "tree" in argv:
-            payload = [
-                {"id": "mr-wisp-run", "title": "run", "status": "open", "depth": 0},
+        self.members = (
+            list(members)
+            if members is not None
+            else [
                 {
                     "id": "mr-wisp-release",
                     "title": "release",
                     "status": "open",
-                    "depth": 1,
-                    "parent_id": "mr-wisp-run",
-                    "edge_from_parent": "parent-child",
-                },
+                    "dependency_type": "parent-child",
+                }
             ]
+        )
+
+    def __call__(self, cmd, **_kw):
+        argv = list(cmd)
+        self.calls.append(argv)
+        if "show" in argv and "--children" in argv:
+            payload = {"mr-wisp-run": self.members, "schema_version": 1}
         elif "--explain" in argv:
             payload = {"ready": [], "blocked": self.blocked, "summary": {}}
         else:
@@ -324,8 +326,18 @@ def test_molecule_readiness_m4_persistent_gate_blocks_wisp_step(monkeypatch):
     commands = [call[call.index("bd") + 1 :] for call in fake.calls]
     safe_shape = ["ready", "--include-ephemeral", "--explain", "--limit", "0", "--json"]
     assert any(any(cmd[i : i + 6] == safe_shape for i in range(len(cmd) - 5)) for cmd in commands)
+    assert any(
+        any(
+            cmd[i : i + 4] == ["show", "mr-wisp-run", "--children", "--json"]
+            for i in range(len(cmd) - 3)
+        )
+        for cmd in commands
+    )
     assert all("--mol" not in cmd for cmd in commands)
-    assert all(cmd[:2] != ["mol", "current"] for cmd in commands)
+    assert all(
+        not any(cmd[i : i + 2] == ["mol", "current"] for i in range(len(cmd) - 1))
+        for cmd in commands
+    )
 
 
 def test_molecule_readiness_reports_satisfied_step_ready(monkeypatch):
