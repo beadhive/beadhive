@@ -31,6 +31,7 @@ from .identity import resolve_actor
 SCHEMA_VERSION = 1
 MIGRATION = "complexity-label-backfill"
 ROUTABLE_STATUSES = frozenset({"open", "blocked", "in_progress", "deferred", "closed"})
+SYSTEM_ARTIFACT_LABELS = frozenset({"gt:slot"})
 
 _PLAN_OPTION = typer.Option(
     None, "--plan", help="write this plan on dry-run; required and read back on --apply"
@@ -82,7 +83,22 @@ def _model_labels(row: Mapping[str, Any]) -> list[str]:
     return [label for label in _labels(row) if label.startswith(complexity.MODEL_LABEL_PREFIX)]
 
 
+def _system_artifact_reason(row: Mapping[str, Any]) -> str | None:
+    """A conservative semantic exclusion for records owned by factory infrastructure.
+
+    ``gt:slot`` is the durable marker on the singleton merge-coordination record.  Its title and
+    issue type intentionally look like ordinary work, so title/id matching would be both fragile
+    and liable to exclude a real task.  Add future system artifacts here only when they have an
+    equally explicit semantic label.
+    """
+    labels = set(_labels(row))
+    matched = sorted(labels & SYSTEM_ARTIFACT_LABELS)
+    return f"system_artifact:{matched[0]}" if matched else None
+
+
 def _scope_reason(row: Mapping[str, Any]) -> str | None:
+    if reason := _system_artifact_reason(row):
+        return reason
     issue_type = _issue_type(row)
     if not complexity.is_routable_issue_type(issue_type):
         return f"non_routable_type:{issue_type or '<missing>'}"
@@ -93,9 +109,11 @@ def _scope_reason(row: Mapping[str, Any]) -> str | None:
 
 
 def _corpus_projection(records: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """Stable inputs whose change invalidates a plan, including excluded-record membership."""
+    """Stable inputs whose change invalidates a plan, restricted to migration targets."""
     projected = []
     for row in records:
+        if _scope_reason(row):
+            continue
         projected.append(
             {
                 "id": str(row.get("id") or ""),
@@ -404,7 +422,7 @@ def apply_plan(
             f"(planned {plan['corpus_hash']}, current {actual_hash}) — rerun dry-run"
         )
 
-    planned_models = _models_by_id(before)
+    planned_models = _models_by_id(row for row in before if _scope_reason(row) is None)
     expected_after_hash = corpus_hash(_expected_after(before, plan))
     planned_updates = [
         str(entry["id"]) for entry in plan.get("entries") or [] if entry.get("changes")

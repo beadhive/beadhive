@@ -86,6 +86,54 @@ def test_plan_covers_history_epics_fallbacks_and_counts_exclusions():
     }
 
 
+def test_merge_slot_is_counted_but_never_becomes_a_migration_target():
+    title = "Reserved coordination record"
+    merge_slot = _row("bh-merge-slot", title=title, labels=["gt:slot"])
+    ordinary = _row("h-ordinary", title=title)
+
+    plan = complexity_backfill.build_plan([merge_slot, ordinary])
+    repeated = complexity_backfill.build_plan([merge_slot, ordinary])
+
+    assert plan == repeated
+    assert plan["totals"] == {"records": 2, "in_scope": 1, "excluded": 1, "changes": 1}
+    assert plan["excluded_by_reason"] == {"system_artifact:gt:slot": 1}
+    assert [entry["id"] for entry in plan["entries"]] == ["h-ordinary"]
+    assert plan["unknown_to_medium_fallbacks"] == ["h-ordinary"]
+    assert complexity_backfill.corpus_hash([merge_slot, ordinary]) == (
+        complexity_backfill.corpus_hash([ordinary])
+    )
+
+    target = plan["entries"][0]["target_label"]
+    converged = _row("h-ordinary", title=title, labels=[target])
+    second_dry_run = complexity_backfill.build_plan([merge_slot, converged])
+    assert second_dry_run["totals"]["changes"] == 0
+    assert [entry["id"] for entry in second_dry_run["entries"]] == ["h-ordinary"]
+
+
+def test_merge_slot_never_enters_apply_checkpoints_or_verification(tmp_path):
+    merge_slot = _row("bh-merge-slot", title="Reserved coordination record", labels=["gt:slot"])
+    ordinary = _row("h-ordinary", title="Reserved coordination record")
+    store = Store([merge_slot, ordinary])
+    plan = complexity_backfill.build_plan(store.load())
+
+    audit = complexity_backfill.apply_plan(
+        plan,
+        load_records=store.load,
+        mutate=store.mutate,
+        export_pre_state=store.export,
+        audit_path=tmp_path / "audit.json",
+    )
+
+    assert audit["planned_updates"] == ["h-ordinary"]
+    assert audit["attempted"] == ["h-ordinary"]
+    assert audit["completed"] == ["h-ordinary"]
+    assert all(iid == "h-ordinary" for _operation, iid, _label in store.calls)
+    slot_after = next(row for row in store.load() if row["id"] == "bh-merge-slot")
+    assert slot_after["labels"] == ["gt:slot"]
+    assert complexity_backfill._complexity_errors(store.load()) == []
+    assert audit["second_dry_run_changes"] == 0
+
+
 def test_plan_repairs_bad_complexity_but_preserves_and_reports_legacy_model_history():
     rows = [
         _row(
@@ -233,7 +281,7 @@ def test_apply_detects_drift_during_write_window_and_rolls_back(tmp_path):
         loads += 1
         rows = store.load()
         if loads == 2:
-            rows.append(_row("h-concurrent-event", issue_type="event"))
+            rows.append(_row("h-concurrent-task"))
         return rows
 
     audit_path = tmp_path / "audit.json"
