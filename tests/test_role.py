@@ -668,3 +668,15 @@ def test_cli_role_no_harness_flag_passes_none(monkeypatch):
 
     assert result.exit_code == 0
     mock_launch.assert_called_once_with("developer", harness=None)
+
+
+def test_cli_role_no_hitch_flag_threaded_through(monkeypatch):
+    """`bh role <seat> --no-hitch` reaches hitch_plugin.route(no_hitch=True) (bh-6t49w.3)."""
+    from beadhive import hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    with patch.object(hitch_plugin, "route") as mock_route:
+        result = cli_runner.invoke(app, ["role", "developer", "--no-hitch"])
+
+    assert result.exit_code == 0
+    mock_route.assert_called_once_with("developer", harness=None, no_hitch=True)
