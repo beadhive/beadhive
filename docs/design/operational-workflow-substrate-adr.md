@@ -989,20 +989,22 @@ four-step release shape and does not satisfy Decision 2 for primary work items g
 
 | Reopen condition | `bh-a74aa` evidence | Result for the narrow design |
 |---|---|---|
-| Git-synced durable state | `bh checkpoint run` appends a timestamped concrete measurement under a new key on a **persistent** control bead only after the real command exits 0; the persistent `bd gate create` sign-off is likewise versioned and synced | **Met by substitution.** Wisp rows still do not sync, but they carry no canonical release fact; completed checkpoints and sign-off do |
-| Ready-surface visibility | `bh work readiness <molecule-id>` reports every member step through `dep tree` plus the unscoped `bd ready --include-ephemeral` paths, in human and JSON forms | **Met for a known release molecule.** The implementation molecule must own and retain the run id; bare `bd ready` remains the wrong interface |
-| Cleanup cannot destroy live progress | the `bh bd` passthrough refuses `mol wisp gc --closed` and `mol squash` while **any** wisp molecule is non-closed hive-wide, names every open molecule, and fails closed when the safety query cannot be read | **Met at the bh boundary.** `BH_DEBUG=1` remains an explicit operator escape hatch; genuinely raw `bd` stays outside bh's control, as `PASSTHROUGH.md` already states |
-| Completion is verified, not hand-asserted | `bh checkpoint run` runs the real command first, propagates any non-zero exit without metadata or step mutation, writes the persistent fact next, and only then closes the optional wisp step | **Met.** Key reuse is refused, the helper creates no dependency edge, and metadata failure cannot advance the wisp |
+| Git-synced durable state | `bh checkpoint run` writes a timestamped concrete measurement under a new key on a **persistent** control bead only after the real command exits 0; the persistent `bd gate create` sign-off is likewise versioned and synced | **Met by substitution.** Wisp rows still do not sync, but they carry no canonical release fact; completed checkpoints and sign-off do |
+| Ready-surface visibility | `bh work readiness <molecule-id>` gets the molecule's direct members from `bd show <id> --children`, then classifies them through the unscoped `bd ready --include-ephemeral` paths, in human and JSON forms | **Met for a known release molecule.** Direct parent-child membership includes ephemeral children without admitting unrelated dependency-tree nodes. The implementation molecule must own and retain the run id; bare `bd ready` remains the wrong interface |
+| Cleanup cannot destroy live progress | the `bh bd` passthrough queries all wisps without a type filter, selects both `epic` and `molecule` roots, and refuses `mol wisp gc --closed` or `mol squash` while any root is non-closed hive-wide; its classifier removes documented Cobra global flags and their values wherever Cobra permits them, so interspersed forms such as `mol --actor ops/a squash` cannot evade the guard | **Met at the bh boundary.** Query/parse failure refuses closed and names the open roots. `BH_DEBUG=1` remains an explicit operator escape hatch; genuinely raw `bd` stays outside bh's control, as `PASSTHROUGH.md` already states |
+| Completion is verified, not hand-asserted | `bh checkpoint run` takes a host-wide `flock` keyed by hive, persistent bead and checkpoint key across the precheck, real command, postcheck, metadata write and optional step close; a competing helper refuses before running its command | **Met for cooperating helpers on the active write host.** A command failure leaves metadata and step untouched; metadata failure cannot advance the wisp; key reuse is refused; and the helper creates no dependency edge. Raw `bd update --metadata` does not cooperate with the lock and receives no atomicity guarantee |
 | Non-ephemeral blockers gate wisp steps | `bh work readiness` deliberately never calls `bd mol current` or `bd ready --mol`; its real-bd regression reproduces M4 and reports the one-way-door step blocked by the open persistent gate | **Met.** The false green in B1 is closed on the first-class bh surface |
 
 The three implementations are separately reviewable and merged on the `bh-a74aa` integration
 branch:
 
-1. `bh-a74aa.1` — blocker-correct `bh work readiness`, including a real-bd M4 regression;
-2. `bh-a74aa.2` — hive-wide destructive-cleanup guard with E6/E7 negative tests and safe-case
-   regressions;
-3. `bh-a74aa.3` — command → append-only persistent checkpoint → optional step-close ordering,
-   with failure, key-reuse, concurrency and no-edge tests.
+1. `bh-a74aa.1` — blocker-correct `bh work readiness`, using `bd show --children` for exact
+   membership and including a real-bd M4 regression;
+2. `bh-a74aa.2` — hive-wide destructive-cleanup guard over unfiltered `epic`/`molecule` roots,
+   including interspersed-global-flag, real-bd root-discovery, E6/E7 negative and safe-case tests;
+3. `bh-a74aa.3` — command → new-key persistent checkpoint → optional step-close ordering,
+   serialized between cooperating host-local helpers, with failure, key-reuse, simultaneous-helper
+   and no-edge tests.
 
 ### C2 — what this GO does not claim
 
@@ -1014,7 +1016,10 @@ branch:
   dispatch, or general primary work.** All prior NO-GOs stand.
 - **It does not claim bare-command enforcement.** The safety layer follows bh's existing
   passthrough model: first-class verbs are the supported path, the raw substrate remains an
-  operator escape. The implementation plan must not introduce a direct raw-`bd` cleanup or
+  operator escape. The cleanup classifier covers documented Cobra global-flag placements, but a
+  direct raw-`bd` cleanup never enters it. Likewise, the checkpoint `flock` serializes cooperating
+  `bh checkpoint` processes host-wide; a raw `bd update --metadata` can bypass that lock. The
+  implementation plan must not introduce a direct raw-`bd` cleanup, metadata-write or
   molecule-readiness path.
 - **It does not establish product ROI.** `bh-yber2.2` measured only a 1.41× median wall-clock
   difference at n=5 per condition, mostly attributable to process startup, and the cheaper query
@@ -1027,9 +1032,10 @@ branch:
 Re-enter planning with `/bh:replan` and produce a fresh, scoped implementation molecule for the
 release-loop tracker. That plan must use `bh work readiness` for all molecule/gate decisions,
 route every real release command through `bh checkpoint run` with one never-reused key and a
-timestamped concrete fact, keep the real sign-off as a persistent `bd gate create` gate, and
-permit destructive cleanup only through the guarded `bh bd` path after all wisp molecules are
-closed. It must also compare the resulting maintenance cost with the one-invocation, still-measured
-`bh release status [--json]` alternative before committing to the wisp layer.
+timestamped concrete fact so every concurrent release writer cooperates with the same host-wide
+lock, keep the real sign-off as a persistent `bd gate create` gate, and permit destructive cleanup
+only through the guarded `bh bd` path after all `epic` and `molecule` wisp roots are closed. It must
+also compare the resulting maintenance cost with the one-invocation, still-measured `bh release
+status [--json]` alternative before committing to the wisp layer.
 
 This decision bead files no implementation work. Its output is this bounded permission to replan.
