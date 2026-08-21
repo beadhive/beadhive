@@ -451,6 +451,13 @@ react to a `bd gate` the scheduler was waiting on. `config.work_runtime()` reads
 implementation, raising `NotImplementedError` naming the sibling bead for any tier not yet
 built (today: `temporal`, bh-c6dk.4).
 
+Every manual/Task launch and local-runtime launch consumes the same canonical routing decision
+shown by `bh work schedule`: required complexity, optional preferred model, selected
+`provider/model`, availability source, reason, and warnings. Canonical identity stays in the
+runtime/pass envelope and GenAI telemetry. Only the final harness adapter translates it for argv
+(for example, Claude receives its Anthropic model name without the `anthropic/` prefix). A strict
+blocked verdict never spawns; a loose fallback spawns and remains visible in the envelope.
+
 ### The `local` tier — `bh work loop <epic>`
 
 `bh work loop <epic>` drives one molecule to completion with **no human present and no server
@@ -855,7 +862,7 @@ fails **as a unit** — there is no partial landing.
 |---|---|
 | **Cohesion** | Members must share a `component` or be contiguous in the dep DAG. A scattered group is hard to review and fails together. |
 | **Size cap** | At most `work.batch_max_size` (default 5) members. Keeps the merge bubble small enough to review and bisect. |
-| **Single model preference** | A group runs on one model; explicit `model:` conflicts are refused (members may omit `model` to inherit). |
+| **Complexity/model resolution** | Mixed complexity never prevents grouping: the session takes the maximum required tier. Mixed `model:` preferences are a visible tier fallback in loose policy and an actionable launch block in strict policy. |
 | **No mixed review gates** | Members must share a review gate; mixing `gate:` overrides is refused so one approval covers the whole bubble. |
 
 Planner-declared `batch:<group>` groups are validated against these rules at `bh plan file`

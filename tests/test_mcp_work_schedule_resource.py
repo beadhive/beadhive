@@ -28,6 +28,7 @@ from beadhive import config as config_mod
 from beadhive import mcp as mcp_mod
 from beadhive import work as work_mod
 from beadhive import worktree as worktree_mod
+from beadhive.config_schema import RoutingTierConfig
 
 # ---- constants ---------------------------------------------------------------
 
@@ -87,6 +88,13 @@ def _patch_schedule_deps(monkeypatch, beads: list):
     monkeypatch.setattr(config_mod, "dispatch_max_depth", lambda cfg, entry: 2)
     monkeypatch.setattr(config_mod, "dispatch_auto_budget", lambda cfg, entry: 8)
     monkeypatch.setattr(config_mod, "dispatch_max_beads_per_session", lambda cfg, entry: 8)
+    monkeypatch.setattr(
+        config_mod,
+        "routing_tiers",
+        lambda cfg, entry: [RoutingTierConfig(model="anthropic/claude-opus-4-1")],
+    )
+    monkeypatch.setattr(config_mod, "routing_policy", lambda cfg, entry: "loose")
+    monkeypatch.setattr(config_mod, "harness_name", lambda cfg, entry: "claude")
 
 
 def test_schedule_payload_returns_required_keys(monkeypatch):
@@ -101,7 +109,10 @@ def test_schedule_payload_singletons_is_list(monkeypatch):
     _patch_schedule_deps(monkeypatch, [_bead("mr-1"), _bead("mr-2")])
     result = work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
     assert isinstance(result["singletons"], list)
-    assert sorted(result["singletons"]) == ["mr-1", "mr-2"]
+    assert sorted(row["id"] for row in result["singletons"]) == ["mr-1", "mr-2"]
+    assert all(row["selected_model"] == "anthropic/claude-opus-4-1" for row in result["singletons"])
+    assert all("launch_model" not in row for row in result["singletons"])
+    assert all("model_deprecation" not in row for row in result["singletons"])
 
 
 def test_schedule_payload_group_carries_model_field(monkeypatch):
@@ -112,6 +123,9 @@ def test_schedule_payload_group_carries_model_field(monkeypatch):
     assert len(result["groups"]) == 1
     g = result["groups"][0]
     assert "model" in g
+    assert g["selected_model"] == "anthropic/claude-opus-4-1"
+    assert "launch_model" not in g
+    assert "model_deprecation" not in g
     assert "kind" in g and "ids" in g and "reason" in g
 
 
@@ -125,7 +139,9 @@ def test_schedule_payload_coordinator_carries_dispatch_and_model(monkeypatch):
     assert c["id"] == "mr-ws.1"
     assert "dispatch" in c
     assert "model" in c
-    assert c["model"] == "opus"
+    assert c["model"] == "anthropic/claude-opus-4-1"
+    assert "launch_model" not in c
+    assert "model_deprecation" not in c
 
 
 def test_schedule_payload_max_depth_reflected(monkeypatch):
@@ -148,7 +164,9 @@ def test_schedule_payload_excludes_closed_beads(monkeypatch):
     beads = [_bead("mr-1"), {**_bead("mr-2"), "status": "closed"}]
     _patch_schedule_deps(monkeypatch, beads)
     result = work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
-    all_ids = result["singletons"] + [i for g in result["groups"] for i in g["ids"]]
+    all_ids = [row["id"] for row in result["singletons"]] + [
+        i for g in result["groups"] for i in g["ids"]
+    ]
     assert "mr-2" not in all_ids
     assert "mr-1" in all_ids
 
@@ -206,7 +224,7 @@ def test_schedule_payload_marks_deferred_bead_on_high_overlap(monkeypatch):
     assert [d["id"] for d in deferred] == ["mr-2"]  # mr-1 is head-of-order → startable
     assert deferred[0]["likelihood"] >= 0.5
     assert "mr-1" in deferred[0]["reason"]
-    assert "mr-2" in result["singletons"]  # deferral is advisory — the bead stays in the plan
+    assert "mr-2" in [row["id"] for row in result["singletons"]]
 
 
 def test_schedule_payload_emits_deferred_start_counter_on_overlap(monkeypatch):
@@ -304,6 +322,7 @@ def test_work_schedule_resource_returns_payload(monkeypatch):
     assert data["singletons"] == ["mr-3"]
     assert len(data["groups"]) == 1
     assert data["groups"][0]["kind"] == "chain"
+    assert "launch_model" not in contents[0].text
 
 
 def test_work_schedule_resource_raises_error_on_missing_epic(monkeypatch):

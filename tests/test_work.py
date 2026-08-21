@@ -4831,7 +4831,7 @@ def test_schedule_fanout_mode_is_the_default_and_fans_out(hive, fakebd, capsys):
     work.schedule(epic="mr-epic", hive="myrepo", as_json=True)
     payload = json.loads(capsys.readouterr().out)
     assert payload["groups"] == []
-    assert sorted(payload["singletons"]) == ["mr-1", "mr-2"]
+    assert sorted(row["id"] for row in payload["singletons"]) == ["mr-1", "mr-2"]
 
 
 def test_schedule_skips_batch_whose_group_branch_already_merged(hive, fakebd, capsys):
@@ -4845,7 +4845,7 @@ def test_schedule_skips_batch_whose_group_branch_already_merged(hive, fakebd, ca
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["groups"] == []
-    assert sorted(payload["singletons"]) == ["mr-1", "mr-2"]
+    assert sorted(row["id"] for row in payload["singletons"]) == ["mr-1", "mr-2"]
 
 
 def test_schedule_honors_batch_when_group_branch_not_merged(hive, fakebd, capsys):
@@ -4868,9 +4868,12 @@ def test_schedule_honors_batch_when_group_branch_not_merged(hive, fakebd, capsys
     assert sorted(payload["groups"][0]["ids"]) == ["mr-1", "mr-2"]
 
 
-def test_schedule_collapsed_mode_forces_one_group_with_max_model_tier(hive, fakebd, capsys):
+def test_schedule_collapsed_mode_forces_one_group_with_complete_blocked_decision(
+    hive, fakebd, capsys
+):
     # mode=collapsed collapses beads that would otherwise fan out into ONE collapsed group,
-    # and the group reports the hardest member's tier (opus > sonnet).
+    # and reports the full model decision. This legacy config has no canonical routes, so the
+    # launch is explicitly blocked rather than inventing a concrete model.
     hive.cfg_path.write_text(_dispatch_cfg("collapsed"))
     _seed_child(fakebd, "mr-1", labels=["model:sonnet"])
     _seed_child(fakebd, "mr-2", labels=["model:opus"])
@@ -4880,7 +4883,13 @@ def test_schedule_collapsed_mode_forces_one_group_with_max_model_tier(hive, fake
     g = payload["groups"][0]
     assert g["kind"] == "collapsed"
     assert sorted(g["ids"]) == ["mr-1", "mr-2"]
-    assert g["model"] == "opus"
+    assert g["complexity"] == "MEDIUM"
+    assert g["selected_model"] is None
+    assert g["model"] is None  # deprecated alias follows selected_model
+    assert "launch_model" not in g
+    assert "model_deprecation" not in g
+    assert g["blocked"] is True
+    assert "launch_model" not in json.dumps(payload)
     assert payload["singletons"] == []
 
 
@@ -4916,7 +4925,7 @@ def test_schedule_auto_mode_fans_out_when_over_budget(hive, fakebd, capsys):
     work.schedule(epic="mr-epic", hive="myrepo", as_json=True)
     payload = json.loads(capsys.readouterr().out)
     assert payload["groups"] == []
-    assert sorted(payload["singletons"]) == ["mr-1", "mr-2"]
+    assert sorted(row["id"] for row in payload["singletons"]) == ["mr-1", "mr-2"]
 
 
 def test_schedule_dispatches_child_epic_to_a_nested_coordinator(hive, fakebd, capsys):
@@ -4929,10 +4938,11 @@ def test_schedule_dispatches_child_epic_to_a_nested_coordinator(hive, fakebd, ca
     _seed_child(fakebd, "mr-2", labels=["model:sonnet"])
     work.schedule(epic="mr-epic", hive="myrepo", as_json=True)
     payload = json.loads(capsys.readouterr().out)
-    assert payload["coordinators"] == [
-        {"id": "mr-ws.1", "dispatch": "nested-coordinator Task", "model": "opus"}
-    ]
-    assert payload["singletons"] == ["mr-2"]  # leaf still fans out
+    coordinator = payload["coordinators"][0]
+    assert coordinator["id"] == "mr-ws.1"
+    assert coordinator["dispatch"] == "nested-coordinator Task"
+    assert coordinator["selected_model"] is None
+    assert [row["id"] for row in payload["singletons"]] == ["mr-2"]  # leaf still fans out
     assert all("mr-ws.1" not in g["ids"] for g in payload["groups"])
     assert payload["max_depth"] == 2
 

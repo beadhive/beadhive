@@ -66,6 +66,7 @@ class RoleOutcome:
 
     status: str  # "running" | "done" | "blocked" | "handoff" | "failed"
     summary: str = ""
+    routing: dict | None = None
 
 
 @runtime_checkable
@@ -88,11 +89,14 @@ class Runtime(Protocol):
         instructions,
         session_id: str,
         model: str | None = None,
+        decision=None,
     ) -> RoleHandle:
         """Start (or hand off to a worker that will start) the role binary
         (`bh-<role> --workspace <workspace> --bead <bead_id> --instructions <instructions>
         --session_id <session_id>`, the contract `docs/design/work-runtime-tiers-adr.md`
         Amendment 2 §1 settles) against `bead_id`, and return a handle to observe it by.
+        ``decision`` carries the canonical shared routing verdict when the caller has resolved
+        one; concrete runtimes translate its model only at their harness launch boundary.
         Idempotent on the caller's side the same way the contract requires the binary itself to
         be: scheduling an already-advanced bead is a no-op a tier is free to detect however it
         likes (immediately-`done` `observe()`, a dedup on `session_id`, ...)."""
@@ -132,7 +136,9 @@ class ClaudeRuntime:
         "docs/WORK.md#runtime-tiers."
     )
 
-    def schedule(self, bead_id, role, *, workspace, instructions, session_id, model=None):
+    def schedule(
+        self, bead_id, role, *, workspace, instructions, session_id, model=None, decision=None
+    ):
         raise NotImplementedError(self._MSG)
 
     def observe(self, handle):

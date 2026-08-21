@@ -366,13 +366,10 @@ def test_unbatched_spec_has_no_batch_problems():
     assert molecule.validate_spec(_valid_spec(), CFG) == []
 
 
-def test_mixed_model_batch_flags_one_problem():
+def test_mixed_model_batch_is_deferred_to_runtime_routing_policy():
     spec = _batched_spec()
     spec["issues"][1]["model"] = "anthropic/sonnet"
-    problems = molecule.validate_spec(spec, CFG)
-    assert len(problems) == 1
-    assert "batch 'g'" in problems[0]
-    assert "model" in problems[0]
+    assert molecule.validate_spec(spec, CFG) == []
 
 
 def test_batch_members_may_omit_model_to_inherit():

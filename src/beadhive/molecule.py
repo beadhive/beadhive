@@ -394,9 +394,9 @@ def _batch_groups(issues: list) -> dict[str, list[dict]]:
 def _check_batches(issues: list, cfg) -> list[str]:
     """A `batch:<group>` gathers issues the coordinator runs as ONE parallel unit — one
     worktree, validated and merged once. Each declared group must be cohesive enough to do
-    that: members share a model preference, stay within the size cap, and hang together (same
-    component OR contiguous in the dep DAG). Reject otherwise so the coordinator never
-    schedules a batch that cannot be run as a unit.
+    that: members stay within the size cap and hang together (same component OR contiguous in the
+    dep DAG). Model preferences may differ: the late-bound resolver handles that conflict under
+    the hive's strict/loose policy after taking the group's maximum required complexity.
     """
     groups = _batch_groups(issues)
     if not groups:
@@ -404,23 +404,9 @@ def _check_batches(issues: list, cfg) -> list[str]:
     cap = config.batch_max_size(cfg, None)
     problems: list[str] = []
     for group, members in groups.items():
-        problems += _check_batch_model(group, members)
         problems += _check_batch_cap(group, members, cap)
         problems += _check_batch_cohesion(group, members)
     return problems
-
-
-def _check_batch_model(group: str, members: list[dict]) -> list[str]:
-    """A batch runs as one unit, so its members cannot ask for different model preferences (members
-    may omit model to inherit; only an explicit conflict is rejected)."""
-    models = {str(m.get("model")).strip() for m in members if m.get("model") not in (None, "")}
-    if len(models) > 1:
-        return [
-            f"batch '{group}': mixed model preferences "
-            f"{{{', '.join(sorted(models))}}} — a batch runs "
-            f"as one unit and must share a model (omit model to inherit)"
-        ]
-    return []
 
 
 def _check_batch_cap(group: str, members: list[dict], cap: int) -> list[str]:
