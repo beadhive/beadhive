@@ -41,6 +41,7 @@ from . import (
     identity,
     jsonout,
     log,
+    model_routing,
     otel,
     registry,
     release_order,
@@ -2064,9 +2065,9 @@ def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:
 def schedule_payload(epic: str, cfg, entry, main) -> dict:
     """Core payload for ``ws work schedule --json`` and ``beadhive://work/schedule/{epic}``.
 
-    Returns ``{groups, singletons, coordinators, max_depth}`` — the cost-model dispatch
-    plan enriched with per-group tier labels and coordinator model/dispatch strings.
-    Wraps ``schedule_mod.plan_schedule`` + the ``_tier`` / ``_coord_model`` enrichment;
+    Returns ``{groups, singletons, coordinators, max_depth}`` — the cost-model dispatch plan with
+    a complete late-bound model decision on every launch unit. Wraps
+    ``schedule_mod.plan_schedule`` + shared model resolution;
     raises ``ValueError`` when ``epic`` is not found in this hive so callers can map the
     error to the appropriate surface (``typer.Exit`` or MCP ``ResourceError``).
     """
@@ -2094,9 +2095,42 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
         merged_groups = _merged_batch_groups(cfg, entry, main, beads)
         sched = schedule_mod.plan_schedule(beads, max_size=max_size, merged_groups=merged_groups)
 
-    def _tier(g):
-        # The tier a grouped session must run at to cover its hardest member (haiku<sonnet<opus).
-        return schedule_mod.max_model_tier([by_id[i] for i in g.ids if i in by_id])
+    routes = config.routing_tiers(cfg, entry)
+    policy = config.routing_policy(cfg, entry)
+    harness = config.harness_name(cfg, entry)
+    gateway = model_routing.GatewayAvailabilityAdapter()
+    defaults = model_routing.HarnessAvailabilityAdapter()
+    dev_availability = model_routing.discover_availability(
+        routes,
+        role="developer",
+        harness=harness,
+        gateway=gateway,
+        harness_defaults=defaults,
+    )
+    coord_availability = model_routing.discover_availability(
+        routes,
+        role="dispatcher",
+        harness=harness,
+        gateway=gateway,
+        harness_defaults=defaults,
+    )
+
+    def _decision(ids, *, role, availability):
+        members = [by_id[i] for i in ids if i in by_id]
+        decision = schedule_mod.resolve_launch_decision(
+            members,
+            policy=policy,
+            role=role,
+            harness=harness,
+            routes=routes,
+            availability=availability,
+        )
+        result = decision.as_dict()
+        # Compatibility window: old consumers read `model`. It now aliases the selected canonical
+        # provider/model (or null on a blocked decision); new consumers must use selected_model.
+        result["model"] = result["selected_model"]
+        result["model_deprecation"] = "deprecated alias; use selected_model"
+        return result
 
     # Dispatch-by-type (xn3o.8): child epics dispatch to nested COORDINATORS, one seat each, at
     # their own model tier. Live Task nesting is bounded by work.dispatch.max_depth — at depth 0 a
@@ -2104,19 +2138,30 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     max_depth = config.dispatch_max_depth(cfg, entry)
     coord_dispatch = "nested-coordinator Task" if max_depth >= 1 else "separate supervised session"
 
-    def _coord_model(cid):
-        return schedule_mod.max_model_tier([by_id[cid]] if cid in by_id else [])
-
     groups = [
-        {"kind": g.kind, "ids": list(g.ids), "reason": g.reason, "model": _tier(g)}
+        {
+            "kind": g.kind,
+            "ids": list(g.ids),
+            "reason": g.reason,
+            **_decision(g.ids, role="developer", availability=dev_availability),
+        }
         for g in sched.groups
     ]
     coordinators = [
-        {"id": c, "dispatch": coord_dispatch, "model": _coord_model(c)} for c in sched.coordinators
+        {
+            "id": c,
+            "dispatch": coord_dispatch,
+            **_decision([c], role="dispatcher", availability=coord_availability),
+        }
+        for c in sched.coordinators
+    ]
+    singletons = [
+        {"id": singleton, **_decision([singleton], role="developer", availability=dev_availability)}
+        for singleton in sched.singletons
     ]
     payload = {
         "groups": groups,
-        "singletons": list(sched.singletons),
+        "singletons": singletons,
         "coordinators": coordinators,
         "max_depth": max_depth,
     }
@@ -2178,10 +2223,12 @@ def schedule(
         typer.echo("(no open children to schedule)")
         return
     for c in payload["coordinators"]:
-        typer.echo(f"◆ coordinator {c['id']}  — child epic → {c['dispatch']} (model: {c['model']})")
+        model = c["selected_model"] or "BLOCKED"
+        typer.echo(f"◆ coordinator {c['id']}  — child epic → {c['dispatch']} (model: {model})")
     for g in payload["groups"]:
         typer.echo(
-            f"▸ group [{g['kind']}] {', '.join(g['ids'])}  — {g['reason']} (model: {g['model']})"
+            f"▸ group [{g['kind']}] {', '.join(g['ids'])}  — {g['reason']} "
+            f"(model: {g['selected_model'] or 'BLOCKED'})"
         )
         # A scheduler-forced collapsed group carries no batch:<group> label yet — print the exact
         # claim it implies so the operator doesn't have to self-label first (bh-n5z3.5); claim
@@ -2189,11 +2236,16 @@ def schedule(
         if g["kind"] == "collapsed":
             typer.echo(f"    → {config.BINARY_ALIAS} work claim --group {','.join(g['ids'])}")
     deferred = {d["id"]: d for d in payload.get("release", {}).get("deferred", [])}
-    for s in payload["singletons"]:
-        if s in deferred:
-            typer.echo(f"⏸ deferred {s}  — {deferred[s]['reason']} (start-gate: hold behind queue)")
+    for singleton in payload["singletons"]:
+        bead_id = singleton["id"]
+        if bead_id in deferred:
+            typer.echo(
+                f"⏸ deferred {bead_id}  — {deferred[bead_id]['reason']} "
+                "(start-gate: hold behind queue)"
+            )
         else:
-            typer.echo(f"· single {s}")
+            model = singleton["selected_model"] or "BLOCKED"
+            typer.echo(f"· single {bead_id} (model: {model})")
 
 
 def _guard_fork_remote(entry, remote) -> None:

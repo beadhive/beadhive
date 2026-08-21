@@ -407,8 +407,16 @@ highest tier respectively. A floor above its ceiling is invalid.
 `endpoint` is optional. It may be an HTTP(S) URL or an endpoint-profile reference (a profile name,
 optionally written as `profile:name`). Omission unambiguously selects the configured role/harness
 default. Credentials and TLS policy are resolved outside the tier entry; embedded URL credentials
-are rejected. `policy` defaults to `loose`; routing readers own what loose fallback or strict
-no-match behavior does—the configuration model only records the intent.
+are rejected. `policy` defaults to `loose`. At dispatch time the resolver intersects these ranges
+with the bead's required complexity, optional canonical `model:` preference, role/harness, and
+availability evidence. `loose` may choose the nearest available range with a warning; `strict`
+blocks an unavailable or out-of-range preference and any group preference conflict.
+
+`bh work schedule --json` and `beadhive://work/schedule/{epic}` expose a complete decision on
+every group, singleton, and nested coordinator: `complexity`, `preferred_model`,
+`selected_model`, `selection_reason`, `policy`, `availability_source`, and `warnings`. The old
+`model` field remains temporarily as a deprecated alias of `selected_model` (and is `null` when
+selection is blocked); consumers should migrate to `selected_model`.
 
 ## `work.dispatch` — collapsed dispatch
 

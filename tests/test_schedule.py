@@ -9,6 +9,8 @@ trip each guard (size cap / mixed model / mixed gate).
 from __future__ import annotations
 
 from beadhive import schedule
+from beadhive.config_schema import RoutingTierConfig
+from beadhive.model_routing import AvailabilitySnapshot, ModelBlockedVerdict
 
 
 def _bead(
@@ -18,6 +20,7 @@ def _bead(
     parent=None,
     batch=None,
     model=None,
+    complexity=None,
     gate=None,
     size=None,
     issue_type=None,
@@ -30,6 +33,8 @@ def _bead(
         labels.append(f"batch:{batch}")
     if model:
         labels.append(f"model:{model}")
+    if complexity:
+        labels.append(f"complexity:{complexity}")
     if gate:
         labels.append(f"gate:{gate}")
     if size:
@@ -154,11 +159,11 @@ def test_size_cap_refuses_an_overlong_chain():
     assert len(plan.singletons) == 4
 
 
-def test_mixed_model_tier_refuses_the_chain():
-    # A batch runs as one unit on one model; a chain mixing tiers is not batched.
-    plan = _plan([_bead("a", model="opus"), _bead("b", blocks=["a"], model="sonnet")])
-    assert plan.groups == []
-    assert sorted(plan.singletons) == ["a", "b"]
+def test_mixed_model_preferences_do_not_prevent_grouping():
+    # One late-bound resolver decision handles preferences after the grouping core runs.
+    plan = _plan([_bead("a", model="anthropic/opus"), _bead("b", blocks=["a"], model="openai/gpt")])
+    assert _group_ids(plan) == {"chain": ["a", "b"]}
+    assert plan.singletons == []
 
 
 def test_mixed_review_gate_refuses_the_chain():
@@ -324,10 +329,67 @@ def test_auto_fans_out_when_size_sum_exceeds_budget():
     assert schedule.auto_should_collapse(beads, budget=8) is False
 
 
-def test_auto_fans_out_on_mixed_model_tiers_even_under_budget():
-    # Cheap by size (xs + xs = 2 ≤ 8) but two model tiers can't share one session → fan out.
-    beads = [_bead("a", size="xs", model="opus"), _bead("b", size="xs", model="sonnet")]
-    assert schedule.auto_should_collapse(beads, budget=8) is False
+def test_auto_can_collapse_mixed_model_preferences_under_budget():
+    # Cost fits; the resolver handles preferences after auto's size decision.
+    beads = [
+        _bead("a", size="xs", model="anthropic/opus"),
+        _bead("b", size="xs", model="openai/gpt"),
+    ]
+    assert schedule.auto_should_collapse(beads, budget=8) is True
+
+
+def test_maximum_complexity_ranks_all_four_tiers_and_defaults_legacy_to_medium():
+    beads = [
+        _bead("a", complexity="SIMPLE"),
+        _bead("b", complexity="COMPLEX"),
+        _bead("c", complexity="REASONING"),
+    ]
+    assert schedule.max_required_complexity(beads).name == "REASONING"
+    assert schedule.max_required_complexity([_bead("legacy")]).name == "MEDIUM"
+
+
+def test_loose_group_conflict_resolves_by_max_complexity_with_warning():
+    beads = [
+        _bead("a", complexity="SIMPLE", model="openai/small"),
+        _bead("b", complexity="COMPLEX", model="anthropic/large"),
+    ]
+    routes = [
+        RoutingTierConfig(model="openai/small", ceiling="MEDIUM"),
+        RoutingTierConfig(model="anthropic/large", floor="COMPLEX"),
+    ]
+    evidence = [
+        AvailabilitySnapshot.live(
+            {route.model for route in routes}, source="harness_default", role="developer"
+        )
+    ]
+    decision = schedule.resolve_launch_decision(
+        beads,
+        policy="loose",
+        role="developer",
+        harness="claude",
+        routes=routes,
+        availability=evidence,
+    )
+    assert decision.required_tier.name == "COMPLEX"
+    assert decision.selected_model == "anthropic/large"
+    assert any("conflicting model preferences" in warning for warning in decision.warnings)
+
+
+def test_strict_group_conflict_is_actionable_block():
+    beads = [
+        _bead("a", complexity="MEDIUM", model="openai/one"),
+        _bead("b", complexity="MEDIUM", model="openai/two"),
+    ]
+    decision = schedule.resolve_launch_decision(
+        beads,
+        policy="strict",
+        role="developer",
+        harness="opencode",
+        routes=[],
+    )
+    assert isinstance(decision, ModelBlockedVerdict)
+    assert "conflicting model preferences" in decision.reason
+    assert "align or remove" in decision.remediation
 
 
 def test_auto_fans_out_on_mixed_gate_types_even_under_budget():
