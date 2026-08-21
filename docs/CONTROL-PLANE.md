@@ -185,8 +185,8 @@ exactly where it left off:
 
 1. **Preview.** `bh hive sync-remote --all --dry-run` scans every registered hive (the same
    dolt-ref-aware safety scan `bh hive retire` uses) and classifies each hive as `clean` /
-   `dirty` / `unpushed-git` / `unpushed-dolt` / `remote-only` / `blocked`, printing what *would* be pushed. Zero
-   mutation.
+   `dirty` / `unpushed-git` / `unpushed-dolt` / `remote-only` / `blocked`, printing what
+   *would* be pushed. Zero mutation.
 2. **Clear any offending hives.** `dirty` (uncommitted working-tree changes) and `blocked`
    (a present path that is not a git repo, or has no `origin` remote) hives are refused —
    commit/stash or fix them first. A registered hive with no local clone is a valid
