@@ -185,11 +185,13 @@ exactly where it left off:
 
 1. **Preview.** `bh hive sync-remote --all --dry-run` scans every registered hive (the same
    dolt-ref-aware safety scan `bh hive retire` uses) and classifies each hive as `clean` /
-   `dirty` / `unpushed-git` / `unpushed-dolt` / `blocked`, printing what *would* be pushed. Zero
+   `dirty` / `unpushed-git` / `unpushed-dolt` / `remote-only` / `blocked`, printing what *would* be pushed. Zero
    mutation.
 2. **Clear any offending hives.** `dirty` (uncommitted working-tree changes) and `blocked`
-   (missing clone, not a git repo, or no `origin` remote) hives are refused — commit/stash or
-   fix them first. `sync-remote` never pushes over a dirty working tree.
+   (a present path that is not a git repo, or has no `origin` remote) hives are refused —
+   commit/stash or fix them first. A registered hive with no local clone is a valid
+   remote-only entry and is skipped, not failed; use `bh sync` to hydrate its minimal Beads
+   cache. `sync-remote` never pushes over a dirty working tree.
 3. **Push for real.** `bh hive sync-remote --all` pushes every `unpushed-git` hive's tracked
    branches (`git push origin <branch>`) and every `unpushed-dolt` hive's `refs/dolt/data`
    (through the same `Engine.push_state` seam `bh work` uses). It exits non-zero and lists the
