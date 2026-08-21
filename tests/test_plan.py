@@ -1737,7 +1737,7 @@ def test_verify_noncanonical_complexity_label_exits_nonzero(hive, monkeypatch):
     assert "complexity 'complex' not in closed set" in result.output
 
 
-def test_verify_reconstructs_routing_dimensions_for_batch_checks(hive, monkeypatch):
+def test_verify_allows_batch_model_preferences_for_late_bound_policy(hive, monkeypatch):
     children = [
         _child(
             "epic-1.1",
@@ -1754,8 +1754,8 @@ def test_verify_reconstructs_routing_dimensions_for_batch_checks(hive, monkeypat
 
     result = _verify(hive, monkeypatch, children=children)
 
-    assert result.exit_code != 0
-    assert "batch 'g': mixed model preferences" in result.output
+    assert result.exit_code == 0
+    assert "mixed model preferences" not in result.output
 
 
 def test_verify_non_epic_bead_exits_nonzero(hive, monkeypatch):
