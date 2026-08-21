@@ -226,6 +226,10 @@ report.
   `work.batch_max_size` members, and be cohesive (same `component` or contiguous in the DAG).
   Filed verification reconstructs these dimensions from labels and reruns the same checks.
 
+Complexity is capability, while `size:` remains implementation effort and collapse cost. See
+[Complexity-first routing](COMPLEXITY-ROUTING.md) for the full label, resolution, and migration
+contract.
+
 `tag:` (bh-0a6g) is declarable but deliberately **not** enforced: `bh plan verify` does not fail
 a molecule that is spike-shaped (a decision-like bead depending on every other leaf) but carries
 no `tag:spike`/`tag:decision` labels. Decision: the gap that let bh-vxxw/bh-i6jp file unlabeled
