@@ -264,6 +264,88 @@ def test_ready_has_flag_strips_equals_form():
     assert work._ready_has_flag(["--label"], work._READY_LIMIT_FLAGS) is False
 
 
+# ---- readiness: one molecule, including persistent gates over wisp steps ---------------------
+
+
+class FakeMoleculeReadinessBd:
+    """Shape-aware fake for the three reads behind ``work readiness``."""
+
+    def __init__(self, *, blocked=(), ready=()):
+        self.calls: list[list[str]] = []
+        self.blocked = list(blocked)
+        self.ready = list(ready)
+
+    def __call__(self, cmd, **_kw):
+        argv = list(cmd)
+        self.calls.append(argv)
+        if "tree" in argv:
+            payload = [
+                {"id": "mr-wisp-run", "title": "run", "status": "open", "depth": 0},
+                {
+                    "id": "mr-wisp-release",
+                    "title": "release",
+                    "status": "open",
+                    "depth": 1,
+                    "parent_id": "mr-wisp-run",
+                    "edge_from_parent": "parent-child",
+                },
+            ]
+        elif "--explain" in argv:
+            payload = {"ready": [], "blocked": self.blocked, "summary": {}}
+        else:
+            payload = self.ready
+        return _CP(0, json.dumps(payload), "")
+
+
+def test_molecule_readiness_m4_persistent_gate_blocks_wisp_step(monkeypatch):
+    """bh-yber2.1 M4 exactly: an OPEN persistent gate blocks an ephemeral one-way-door step.
+
+    The first-class verb must say blocked even though ``bd mol current`` / ``bd ready --mol``
+    would say ready.  The command audit is as important as the render assertion: it pins the
+    confirmed-correct GLOBAL ``--include-ephemeral --explain`` path and forbids both unsafe
+    molecule-scoped spellings from creeping back in.
+    """
+    blocker = {"id": "mr-gate", "title": "releaser sign-off", "status": "open"}
+    blocked = [
+        {
+            "id": "mr-wisp-release",
+            "title": "release",
+            "status": "open",
+            "blocked_by": [blocker],
+        }
+    ]
+    fake = FakeMoleculeReadinessBd(blocked=blocked)
+    res = _run(monkeypatch, fake, ["readiness", "mr-wisp-run", "--json"])
+
+    assert res.exit_code == 0
+    step = json.loads(res.stdout)["steps"][0]
+    assert step["readiness"] == "blocked"
+    assert step["blocked_by"] == [blocker]
+    commands = [call[call.index("bd") + 1 :] for call in fake.calls]
+    safe_shape = ["ready", "--include-ephemeral", "--explain", "--limit", "0", "--json"]
+    assert any(any(cmd[i : i + 6] == safe_shape for i in range(len(cmd) - 5)) for cmd in commands)
+    assert all("--mol" not in cmd for cmd in commands)
+    assert all(cmd[:2] != ["mol", "current"] for cmd in commands)
+
+
+def test_molecule_readiness_reports_satisfied_step_ready(monkeypatch):
+    """A blocker-free step remains ready, including in an ordinary persistent molecule."""
+    ready = [{"id": "mr-wisp-release", "title": "release", "status": "open"}]
+    fake = FakeMoleculeReadinessBd(ready=ready)
+    res = _run(monkeypatch, fake, ["readiness", "mr-wisp-run"])
+
+    assert res.exit_code == 0
+    assert "[ready] mr-wisp-release: release" in res.stdout
+
+
+def test_molecule_readiness_rejects_an_unreadable_molecule(monkeypatch):
+    fake = FakeReadBd(stdout="[]")
+    res = _run(monkeypatch, fake, ["readiness", "missing"])
+
+    assert res.exit_code == 1
+    assert "cannot read molecule missing" in res.stderr
+
+
 # ---- issue (show a single bead) ---------------------------------------------
 
 
