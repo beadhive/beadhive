@@ -26,18 +26,33 @@ from __future__ import annotations
 import datetime
 import difflib
 import json
+import re
 import types
 import typing
 from dataclasses import dataclass
 from typing import Any, Literal
+from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+
+from .complexity import ComplexityTier, tier_names
 
 #: ISO-8601 duration parser for `WorkConfig.ledger_ttl` — pydantic's own, so `P1D` / `PT30M`
 #: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
 _TIMEDELTA = TypeAdapter(datetime.timedelta)
+_HTTP_ENDPOINT = TypeAdapter(AnyHttpUrl)
 
 #: The one placeholder `WorkConfig.validate_subset` must carry, defined here because this module
 #: imports nothing of bh's: `converge.PLACEHOLDER` and `config._validate`'s write-path check are
@@ -293,6 +308,122 @@ class IdentityConfig(_Section):
     )
 
 
+_MODEL_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._:@+-]*$")
+_ENDPOINT_PROFILE = re.compile(r"^(?:profile:)?[A-Za-z][A-Za-z0-9._-]*$")
+
+
+class RoutingTierConfig(_Section):
+    """One model route and the inclusive complexity interval it can serve.
+
+    The model identifier deliberately validates syntax, not a provider catalogue: providers and
+    model releases change independently of Beadhive. Endpoint authentication and TLS policy do
+    not belong in this entry; ``endpoint`` only selects an HTTP(S) gateway or a named profile.
+    """
+
+    model: str = Field(
+        ...,
+        description=(
+            "Model identifier in provider/model-name form; provider and model names are not "
+            "catalogue-validated."
+        ),
+    )
+    floor: ComplexityTier = Field(
+        ComplexityTier.SIMPLE,
+        description="Lowest complexity tier served (inclusive); omitted means SIMPLE.",
+    )
+    ceiling: ComplexityTier = Field(
+        ComplexityTier.REASONING,
+        description="Highest complexity tier served (inclusive); omitted means REASONING.",
+    )
+    endpoint: str | None = Field(
+        None,
+        description=(
+            "Optional HTTP(S) gateway URL or endpoint-profile reference; omitted selects the "
+            "configured role/harness default. Authentication and TLS policy are resolved outside "
+            "this entry."
+        ),
+    )
+
+    @field_validator("model")
+    @classmethod
+    def _provider_model_identifier(cls, value):
+        if not isinstance(value, str) or not _MODEL_IDENTIFIER.fullmatch(value):
+            raise ValueError(
+                "model must use non-empty provider/model-name form (for example "
+                "'openai/gpt-5'); provider catalogues are not validated"
+            )
+        return value
+
+    @field_validator("floor", "ceiling", mode="before")
+    @classmethod
+    def _canonical_complexity_tier(cls, value):
+        if isinstance(value, ComplexityTier):
+            return value
+        try:
+            return ComplexityTier.parse(value)
+        except ValueError as exc:
+            raise ValueError(
+                f"complexity bound must be one of {'|'.join(tier_names())}, got {value!r}"
+            ) from exc
+
+    @field_validator("endpoint")
+    @classmethod
+    def _gateway_or_profile(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, str) or not value or value != value.strip():
+            raise ValueError(
+                "endpoint must be a non-empty HTTP(S) URL or endpoint-profile reference"
+            )
+        if "://" not in value:
+            if not _ENDPOINT_PROFILE.fullmatch(value):
+                raise ValueError(
+                    "endpoint must be an HTTP(S) URL or endpoint-profile reference containing "
+                    "only letters, digits, '.', '_' and '-' (optionally prefixed by 'profile:')"
+                )
+            return value
+
+        try:
+            _HTTP_ENDPOINT.validate_python(value)
+        except ValidationError as exc:
+            raise ValueError(
+                "endpoint URL must be absolute and use a supported http or https scheme"
+            ) from exc
+        parsed = urlsplit(value)
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError(
+                "endpoint URL must not embed authentication; resolve credentials outside the "
+                "routing tier entry"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _ordered_bounds(self):
+        if self.floor > self.ceiling:
+            raise ValueError(f"floor {self.floor.name} must not exceed ceiling {self.ceiling.name}")
+        return self
+
+    @field_serializer("floor", "ceiling")
+    def _serialize_complexity_tier(self, value: ComplexityTier) -> str:
+        return value.name
+
+
+class RoutingConfig(_Section):
+    """Complexity-to-model routing intent; selection behavior belongs to routing readers."""
+
+    policy: Literal["loose", "strict"] = Field(
+        "loose",
+        description=(
+            "Resolution policy when no configured interval matches: loose (default, permit the "
+            "reader's fallback) or strict (require an explicit match)."
+        ),
+    )
+    tiers: list[RoutingTierConfig] = Field(
+        default_factory=list,
+        description="Ordered model routes with inclusive complexity floor/ceiling bounds.",
+    )
+
+
 class WorkConfig(_Section):
     """Integration-plane driver (`bh work`) settings — drives a bead assigned -> merged."""
 
@@ -347,6 +478,10 @@ class WorkConfig(_Section):
     )
     review_gate: str = Field(
         "human", description="bd gate type opened at submit: human | timer | gh:run | gh:pr."
+    )
+    routing: RoutingConfig = Field(
+        default_factory=RoutingConfig,
+        description="Complexity-tier model routing intent (selection is reader-owned).",
     )
     runtime: Literal["claude", "local", "temporal"] = Field(
         "local",
@@ -1071,6 +1206,8 @@ def _to_plain(value: Any) -> Any:
     instead of a python repr."""
     if isinstance(value, BaseModel):
         return value.model_dump(mode="json")
+    if isinstance(value, ComplexityTier):
+        return value.name
     if isinstance(value, list):
         return [_to_plain(v) for v in value]
     if isinstance(value, dict):

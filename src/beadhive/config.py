@@ -979,6 +979,16 @@ def _validate(parts: list[str], value) -> list[dict]:
                     f"(where bh substitutes the failing test names), got {value!r}",
                 )
             )
+    if dotted == "work.routing.tiers":
+        # A list-valued dotted write cannot be covered by the scalar Literal check below.
+        # Validate the whole nested model here so `bh config set ... --json` refuses the same
+        # malformed model/bounds/endpoint shapes as `bh config validate`.
+        from .config_schema import RoutingTierConfig
+
+        try:
+            TypeAdapter(list[RoutingTierConfig]).validate_python(value)
+        except ValueError as exc:
+            problems.append(_problem("error", f"{dotted} is invalid: {exc}"))
     if not literal_checked:
         # bh-aidze: a value outside a `Literal[...]` field's declared range (e.g.
         # `dolt.backend: shared-server` — not a member of colima|docker|podman|none) used to be
@@ -1956,6 +1966,33 @@ def work_cfg(cfg=None):
 def work_value(cfg, entry, key, default=None):
     """A work setting: per-hive `entry['work'][key]` > global `work[key]` > default."""
     return layered(cfg, entry, "work", key, default)
+
+
+def routing_policy(cfg, entry) -> str:
+    """Routing resolution policy, per-hive > global > ``loose``.
+
+    Config validation admits only ``loose`` and ``strict``. This read-side fallback keeps an
+    unrelated command usable after a hand-edited typo; the resolver that consumes this value
+    owns the actual strict/loose behavior.
+    """
+    value = str(layered(cfg, entry, "work.routing", "policy", "loose"))
+    return value if value in ("loose", "strict") else "loose"
+
+
+def routing_tiers(cfg, entry):
+    """Normalized model routes, per-hive > global > an empty list.
+
+    Each returned :class:`config_schema.RoutingTierConfig` has explicit inclusive bounds, so an
+    omitted floor is ``SIMPLE`` and an omitted ceiling is ``REASONING``. Invalid hand-edited
+    data degrades to no routes here; ``bh config validate`` remains the loud diagnostic gate.
+    """
+    from .config_schema import RoutingTierConfig
+
+    raw = layered(cfg, entry, "work.routing", "tiers", []) or []
+    try:
+        return TypeAdapter(list[RoutingTierConfig]).validate_python(raw)
+    except ValueError:
+        return []
 
 
 def validate_cmd(cfg, entry, phase=None, main_gate=False):

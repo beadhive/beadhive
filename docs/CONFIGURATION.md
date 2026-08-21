@@ -204,8 +204,9 @@ Pass `--json` to parse the value as a JSON literal — required for lists and ma
 forcing a string `"true"` / `"true"` without coercion.
 
 **Validation:** `otel.protocol` is validated against `grpc | http/protobuf` (error + no
-write on mismatch). Any `*.enabled` key must receive a boolean (error otherwise). Unknown
-config sections produce a warning but the write proceeds.
+write on mismatch). Any `*.enabled` key must receive a boolean (error otherwise), and a JSON
+write to `work.routing.tiers` validates every model, bound, and endpoint before persisting.
+Unknown config sections produce a warning but the write proceeds.
 
 ```sh
 bh config set otel.enabled true
@@ -378,6 +379,36 @@ claude:
   marketplace: .        # '.' = the workspace repo root (resolved at install time)
   scope: user           # user-scope persists across all hives
 ```
+
+## `work.routing` — model capability intent
+
+`work.routing` describes which model routes can serve each complexity tier. It is fleet-wide
+configuration and follows the usual precedence: a `managed_repos[*].work.routing` leaf overrides
+the corresponding global `work.routing` leaf for that hive.
+
+```yaml
+work:
+  routing:
+    policy: loose                 # loose (default) | strict
+    tiers:
+      - model: openai/gpt-5-mini
+        ceiling: MEDIUM           # omitted floor means SIMPLE
+      - model: anthropic/claude-opus-4-1
+        floor: COMPLEX
+        ceiling: REASONING
+        endpoint: primary-gateway # or https://gateway.example/v1
+```
+
+`model` is always written as `provider/model-name`. Beadhive validates that shape but does not
+freeze a provider or model catalogue into config. `floor` and `ceiling` are inclusive and use the
+ordered `SIMPLE | MEDIUM | COMPLEX | REASONING` vocabulary; omitting them means the lowest and
+highest tier respectively. A floor above its ceiling is invalid.
+
+`endpoint` is optional. It may be an HTTP(S) URL or an endpoint-profile reference (a profile name,
+optionally written as `profile:name`). Omission unambiguously selects the configured role/harness
+default. Credentials and TLS policy are resolved outside the tier entry; embedded URL credentials
+are rejected. `policy` defaults to `loose`; routing readers own what loose fallback or strict
+no-match behavior does—the configuration model only records the intent.
 
 ## `work.dispatch` — collapsed dispatch
 

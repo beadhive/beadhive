@@ -211,6 +211,18 @@ worktrees:
 #                                  # docs/WORK.md "The always-run set" for the measured cost.
 #   demo_cmd: "just demo"          # how `bh work review --demo` exercises the feature (default none)
 #   review_gate: "human"           # bd gate opened at submit: human | timer | gh:run | gh:pr
+#   routing:
+#     policy: loose                 # loose (default: resolver may fall back) | strict (a route
+#                                   # must match); selection behavior belongs to the resolver
+#     tiers:                        # ordered model routes; bounds are inclusive
+#       - model: openai/gpt-5-mini  # required provider/model-name; catalogues are not frozen here
+#         ceiling: MEDIUM           # floor omitted => SIMPLE
+#                                   # endpoint omitted => configured role/harness default
+#       - model: anthropic/claude-opus-4-1
+#         floor: COMPLEX
+#         ceiling: REASONING
+#         endpoint: primary-gateway # HTTP(S) URL or endpoint-profile reference; credentials and
+#                                   # TLS policy are configured outside this tier entry
 #   landing: local                 # how merge/finish land on the SHARED integration branch:
 #                                  # local (--no-ff merge, default) | pr (PR-only-main repos:
 #                                  # push + `gh pr create`; gh:pr gate + `bh work land` complete
