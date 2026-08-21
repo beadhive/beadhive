@@ -5,13 +5,17 @@ from __future__ import annotations
 import json
 from collections import namedtuple
 
+import pytest
+
 from beadhive import bd
+from harness.beads import skip_if_no_bd
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
 
 def _wisps(*rows):
-    return Completed(0, json.dumps({"count": len(rows), "schema_version": 1, "wisps": rows}), "")
+    typed = [{"type": "molecule", **row} for row in rows]
+    return Completed(0, json.dumps({"count": len(rows), "schema_version": 1, "wisps": typed}), "")
 
 
 def _allow_host_write(monkeypatch):
@@ -59,11 +63,23 @@ def test_e7_squash_refuses_on_an_in_flight_molecule(monkeypatch, capsys):
     assert calls == [bd._WISP_MOLECULE_QUERY]
 
 
-def test_guard_recognizes_leading_bd_global_flags():
-    assert bd._is_guarded_wisp_cleanup(
-        ["-C", "/hive", "--actor", "ops/a", "mol", "wisp", "gc", "--closed"]
-    )
-    assert bd._is_guarded_wisp_cleanup(["--actor", "ops/a", "mol", "squash", "x-wisp-1"])
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["-C", "/hive", "--actor", "ops/a", "mol", "wisp", "gc", "--closed"],
+        ["mol", "--actor", "ops/a", "wisp", "gc", "--closed"],
+        ["mol", "wisp", "--actor=ops/a", "gc", "--closed"],
+        ["mol", "wisp", "gc", "--actor", "ops/a", "--closed"],
+        ["--actor", "ops/a", "mol", "squash", "x-wisp-1"],
+        ["mol", "--actor", "ops/a", "squash", "x-wisp-1"],
+        ["mol", "squash", "--actor=ops/a", "x-wisp-1"],
+    ],
+)
+def test_guard_recognizes_valid_interspersed_bd_global_flags(args):
+    assert bd._is_guarded_wisp_cleanup(args)
+
+
+def test_guard_recognizes_closed_boolean_and_rejects_other_gc_modes():
     assert bd._is_guarded_wisp_cleanup(["mol", "wisp", "gc", "--closed=true"])
     assert not bd._is_guarded_wisp_cleanup(["mol", "wisp", "gc", "--closed=false"])
 
@@ -98,7 +114,7 @@ def test_gc_and_squash_are_unchanged_when_no_wisp_molecule_is_open(monkeypatch):
 
     monkeypatch.setattr(bd, "_run", fake_run)
     gc_args = ["mol", "wisp", "gc", "--closed", "--force"]
-    squash_args = ["mol", "squash", "done-wisp"]
+    squash_args = ["mol", "--actor", "ops/a", "squash", "done-wisp"]
 
     assert bd._run_one(gc_args, "/hive", {}) == 0
     assert bd._run_one(squash_args, "/hive", {}) == 0
@@ -136,3 +152,66 @@ def test_failed_or_malformed_safety_query_fails_closed(monkeypatch, capsys):
     assert "could not verify" in capsys.readouterr().err
     assert bd._run_one(args, "/hive", {}) == 1
     assert "could not parse" in capsys.readouterr().err
+
+
+def test_unfiltered_query_selects_open_epic_and_molecule_roots_only():
+    payload = {
+        "wisps": [
+            {"id": "release-epic", "title": "release", "type": "epic", "status": "open"},
+            {
+                "id": "formula-root",
+                "title": "patrol",
+                "type": "molecule",
+                "status": "in_progress",
+            },
+            {"id": "step", "title": "child", "type": "task", "status": "open"},
+            {"id": "done", "title": "old run", "type": "epic", "status": "closed"},
+        ]
+    }
+
+    assert bd._open_wisp_molecules(payload) == [
+        ("release-epic", "release"),
+        ("formula-root", "patrol"),
+    ]
+
+
+def test_missing_root_type_fails_closed(monkeypatch, capsys):
+    _allow_host_write(monkeypatch)
+    malformed = Completed(
+        0,
+        json.dumps({"wisps": [{"id": "unknown-root", "status": "open"}]}),
+        "",
+    )
+    monkeypatch.setattr(bd, "_run", lambda *a, **k: malformed)
+
+    assert bd._run_one(["mol", "--actor", "ops/a", "squash", "unknown-root"], "/hive", {}) == 1
+    assert "missing type" in capsys.readouterr().err
+
+
+@pytest.mark.integration
+@skip_if_no_bd
+def test_real_bd_open_epic_root_is_visible_to_guard_but_old_type_filter_misses_it(world):
+    """Regression: real ephemeral epic roots are wisps, but are not type ``molecule``."""
+    from harness.beads import bd as hbd
+    from harness.beads import bd_json
+    from harness.hive import make_hive
+
+    hive = make_hive(world)
+    created = hbd(
+        "create",
+        "release root",
+        "--ephemeral",
+        "--type",
+        "epic",
+        "--silent",
+        cwd=hive.main,
+        capture=True,
+    )
+    root = (created.stdout or "").strip()
+
+    old_filtered = bd_json("mol", "wisp", "list", "--all", "--type", "molecule", cwd=hive.main)
+    assert old_filtered == {"count": 0, "schema_version": 1, "wisps": []}
+
+    refusal = bd.wisp_cleanup_refusal(["mol", "--actor", "ops/a", "squash", root], str(hive.main))
+    assert "open wisp molecule(s) exist hive-wide" in refusal
+    assert f"{root} (release root)" in refusal

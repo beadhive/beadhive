@@ -726,7 +726,65 @@ def _import(import_args, cwd):
     return code
 
 
-_WISP_MOLECULE_QUERY = ["bd", "mol", "wisp", "list", "--all", "--type", "molecule", "--json"]
+_WISP_MOLECULE_QUERY = ["bd", "mol", "wisp", "list", "--all", "--json"]
+
+# Cobra persistent flags are valid before, between, or after subcommands. Classification cannot
+# simply discard tokens beginning with ``-``: a value such as ``ops/a`` would remain and shift the
+# command path in ``mol --actor ops/a squash``. Keep this list aligned with ``bd --help``. Unknown
+# flags stay in the token stream, making an unrecognised command shape fail harmlessly in bd.
+_BD_GLOBAL_VALUE_FLAGS = frozenset(
+    {
+        "--actor",
+        "--database",
+        "--db",
+        "--directory",
+        "--dolt-auto-commit",
+        "--mem-profile",
+        "-C",
+    }
+)
+_BD_GLOBAL_BOOL_FLAGS = frozenset(
+    {
+        "--cpu-profile",
+        "--global",
+        "--help",
+        "--ignore-schema-skew",
+        "--json",
+        "--no-color",
+        "--quiet",
+        "--readonly",
+        "--sandbox",
+        "--verbose",
+        "--version",
+        "-h",
+        "-q",
+        "-v",
+        "-V",
+    }
+)
+
+
+def _without_bd_global_flags(args) -> list[str]:
+    """Return bd's command tokens with Cobra persistent flags and their values removed."""
+    tokens = [str(token) for token in args]
+    command: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        name, equals, _value = token.partition("=")
+        if name in _BD_GLOBAL_VALUE_FLAGS:
+            index += 1 if equals else 2
+            continue
+        if name in _BD_GLOBAL_BOOL_FLAGS:
+            index += 1
+            continue
+        # pflag accepts the short value form ``-C/path`` as well as ``-C /path``.
+        if token.startswith("-C") and token != "-C":
+            index += 1
+            continue
+        command.append(token)
+        index += 1
+    return command
 
 
 def _is_guarded_wisp_cleanup(args) -> bool:
@@ -737,10 +795,8 @@ def _is_guarded_wisp_cleanup(args) -> bool:
     every ``mol squash`` is destructive, while GC is guarded specifically for the ``--closed``
     mode that can reclaim completed steps from a still-open molecule.
     """
-    if guard.bd_verb(args) != "mol":
-        return False
-    mol_at = list(args).index("mol")
-    positionals = [str(token) for token in list(args)[mol_at:] if not str(token).startswith("-")]
+    command = _without_bd_global_flags(args)
+    positionals = [token for token in command if not token.startswith("-")]
     closed = any(
         token == "--closed"
         or (
@@ -755,7 +811,13 @@ def _is_guarded_wisp_cleanup(args) -> bool:
 
 
 def _open_wisp_molecules(payload) -> list[tuple[str, str]]:
-    """Extract ``(id, title)`` for every non-closed wisp molecule in bd's JSON response."""
+    """Extract ``(id, title)`` for every non-closed wisp root in bd's JSON response.
+
+    Real stores contain both ``molecule`` roots (formula-instantiated wisps) and ``epic`` roots
+    (ephemeral root issues). Querying with ``--type molecule`` therefore proves too little. The
+    unfiltered response includes child tasks and gates too; only the two root types participate in
+    the hive-wide safety decision.
+    """
     rows = payload.get("wisps", []) if isinstance(payload, dict) else payload
     if not isinstance(rows, list):
         raise ValueError("the `wisps` field is not a list")
@@ -763,6 +825,18 @@ def _open_wisp_molecules(payload) -> list[tuple[str, str]]:
     for row in rows:
         if not isinstance(row, dict):
             raise ValueError("a wisp entry is not an object")
+        root_type = (
+            str(
+                row.get("type", row.get("Type", row.get("issue_type", row.get("IssueType", ""))))
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        if not root_type:
+            raise ValueError("a wisp entry is missing type")
+        if root_type not in ("epic", "molecule"):
+            continue
         status = str(row.get("status", row.get("Status", "")) or "").strip().lower()
         if status == "closed":
             continue
