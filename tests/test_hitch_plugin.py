@@ -691,12 +691,87 @@ def test_resolve_backend_translates_opencode_target(monkeypatch, tmp_path):
     )
 
 
-def test_route_empty_seat_delegates_to_role_launch_untouched(monkeypatch, capsys):
+# ---- _seat_listing_lines / route(""): annotated `bh role` listing (bh-6t49w.5) ----------------
+
+
+def test_seat_listing_native_only_when_hitch_disabled(monkeypatch):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    lines = hitch_plugin._seat_listing_lines({}, "claude", full=False)
+    assert lines == ["developer — native: ok"]
+
+
+def test_seat_listing_shows_hitch_when_resolve_backend_picks_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    lines = hitch_plugin._seat_listing_lines(cfg, "claude", full=False)
+    assert lines == ["developer — native: ok; hitch: ok"]
+
+
+def test_seat_listing_full_folds_in_seat_reports_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin,
+        "seat_reports",
+        lambda c: [{"seat": "developer", "state": "reduced", "detail": "does not support x"}],
+    )
+    lines = hitch_plugin._seat_listing_lines(cfg, "claude", full=True)
+    assert lines == ["developer — native: ok; hitch: reduced (does not support x)"]
+
+
+def test_seat_listing_full_false_never_calls_seat_reports(monkeypatch, tmp_path):
+    """the cheap default must not pay `seat_reports`'s 7-seat preflight fanout (bh-gqfrm)."""
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin,
+        "seat_reports",
+        lambda c: (_ for _ in ()).throw(AssertionError("seat_reports must not run")),
+    )
+    lines = hitch_plugin._seat_listing_lines(cfg, "claude", full=False)
+    assert lines == ["developer — native: ok; hitch: ok"]
+
+
+def test_seat_listing_shows_built_baml_binary(monkeypatch):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda name: f"/usr/bin/{name}")
+    lines = hitch_plugin._seat_listing_lines({}, "claude", full=False)
+    assert lines == ["developer — native: ok; baml: built"]
+
+
+def test_route_full_seats_forwards_to_listing(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin,
+        "seat_reports",
+        lambda c: [{"seat": "developer", "state": "blocked", "detail": "hitch missing"}],
+    )
+    hitch_plugin.route("", full_seats=True, cfg=cfg)
+    out = capsys.readouterr().out
+    assert "hitch: blocked (hitch missing)" in out
+
+
+def test_route_empty_seat_prints_annotated_listing_not_role_launch(monkeypatch, capsys):
+    """bh-6t49w.5: the bare listing is annotated in `route` itself (role.launch stays
+    hitch-unaware, per `test_role_module_never_imports_hitch_plugin`) — it no longer delegates."""
     calls = []
     monkeypatch.setattr(role, "launch", lambda seat, harness=None: calls.append((seat, harness)))
-    hitch_plugin.route("", cfg={"hitch": {"enabled": True}})
-    assert calls == [("", None)]
-    assert capsys.readouterr().out == ""  # no backend banner for the listing path
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    hitch_plugin.route("", cfg={"hitch": {"enabled": False}})
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "Available seats:" in out
+    assert "developer — native: ok" in out
 
 
 def test_route_unknown_seat_delegates_to_role_launch_untouched(monkeypatch, capsys):

@@ -277,12 +277,54 @@ def _resolve_backend(seat: str, harness: str, cfg) -> tuple[str, str | None, str
     return "hitch", hitch_target, seat
 
 
-def route(seat: str, *, harness: str | None = None, no_hitch: bool = False, cfg=None) -> None:
-    """``bh role <seat>``'s unified entry point. Listing (no seat) and an unknown seat delegate
-    straight to :func:`beadhive.role.launch` unchanged — nothing to pick a backend for. For a
-    known seat, picks hitch when it applies (see :func:`_resolve_backend`), forced off by
-    ``--no-hitch`` regardless of what would otherwise apply, and always announces which backend
-    is about to run *before* exec'ing.
+def _seat_listing_lines(cfg, harness: str, *, full: bool) -> list[str]:
+    """One annotated line per known seat for the bare ``bh role`` listing (bh-6t49w.5) —
+    which backend(s) this host would actually pick, reusing existing data rather than a new
+    capability-detection mechanism:
+
+    - ``native``: always available (`role.launch`'s own path); shown as ``native: ok``.
+    - ``hitch``: only shown when :func:`_resolve_backend` would pick it for that seat (the same
+      config-time, no-subprocess seam ``bh role <seat>`` itself uses). ``full=True`` folds in
+      :func:`seat_reports`'s live per-seat preflight state (ok/reduced/blocked, with detail on
+      anything short of ``ok``) — the SAME expensive 7-seat ``hitch profile preflight`` fanout
+      `bh doctor --seats` opts into (bh-gqfrm); ``full=False`` (the default here too) shows a
+      bare ``hitch: ok`` from the cheap profile-existence check alone, so a bare `bh role` never
+      pays that cost unconditionally.
+    - ``baml``: a built ``bh-<seat>`` binary on PATH (the settled local-runtime role-binary
+      contract, :func:`beadhive.localloop.seat_argv`) — shown as ``baml: built`` when found."""
+    reports = {r["seat"]: r for r in seat_reports(cfg)} if full else {}
+    lines = []
+    for seat in role._known_seats():
+        parts = ["native: ok"]
+        backend, _hitch_target, _profile = _resolve_backend(seat, harness, cfg)
+        if backend == "hitch":
+            report = reports.get(seat)
+            if report is None:
+                parts.append("hitch: ok")
+            else:
+                detail = f" ({report['detail']})" if report["detail"] else ""
+                parts.append(f"hitch: {report['state']}{detail}")
+        if shutil.which(f"bh-{seat}") is not None:
+            parts.append("baml: built")
+        lines.append(f"{seat} — {'; '.join(parts)}")
+    return lines
+
+
+def route(
+    seat: str,
+    *,
+    harness: str | None = None,
+    no_hitch: bool = False,
+    full_seats: bool = False,
+    cfg=None,
+) -> None:
+    """``bh role <seat>``'s unified entry point. An unknown (non-empty) seat delegates straight
+    to :func:`beadhive.role.launch` unchanged — nothing to pick a backend for. The bare listing
+    (no seat) is annotated with each seat's available backend(s) — see
+    :func:`_seat_listing_lines`; ``full_seats`` opts into its expensive per-seat hitch preflight
+    breakdown. For a known seat, picks hitch when it applies (see :func:`_resolve_backend`),
+    forced off by ``--no-hitch`` regardless of what would otherwise apply, and always announces
+    which backend is about to run *before* exec'ing.
 
     Disabled/unconfigured hitch (the default) always resolves to native — same seat, same
     harness, same argv/env `role.launch` always built (Amendment 2's degrade-to-today bar) —
@@ -290,7 +332,15 @@ def route(seat: str, *, harness: str | None = None, no_hitch: bool = False, cfg=
 
     Never raises for an ordinary failure/exit; propagates `role.launch`'s ``SystemExit`` or
     wraps `up`'s non-zero return code the same way `bh plugin hitch up` itself does."""
-    if not seat or seat not in role._known_seats():
+    if not seat:
+        cfg = cfg if cfg is not None else config.load()
+        resolved_harness = harness or config.harness_name(cfg)
+        typer.echo("Available seats:")
+        for line in _seat_listing_lines(cfg, resolved_harness, full=full_seats):
+            typer.echo(f"  {line}")
+        return
+
+    if seat not in role._known_seats():
         role.launch(seat, harness=harness)
         return
 
