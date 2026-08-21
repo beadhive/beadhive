@@ -692,3 +692,111 @@ def test_cli_role_seats_flag_threaded_through(monkeypatch):
 
     assert result.exit_code == 0
     mock_route.assert_called_once_with("", harness=None, no_hitch=False, full_seats=True)
+
+
+# ---------------------------------------------------------------------------
+# cli.py --bead/--hive workspace resolution (bh-6t49w.4)
+# ---------------------------------------------------------------------------
+
+
+def test_bead_hive_prefix_extracts_leading_token():
+    from beadhive import cli
+
+    assert cli._role_bead_hive_prefix("bh-6t49w.4") == "bh"
+    assert cli._role_bead_hive_prefix("noprefix") == "noprefix"
+
+
+def test_apply_role_workspace_noop_when_neither_given(monkeypatch):
+    from beadhive import cli
+
+    chdir_calls = []
+    monkeypatch.setattr(os, "chdir", lambda p: chdir_calls.append(p))
+    cli._apply_role_workspace("", "")
+    assert chdir_calls == []
+
+
+def test_apply_role_workspace_hive_only_chdirs_to_hive_root(monkeypatch, tmp_path):
+    from beadhive import cli
+
+    entry = {"provider": "github", "org": "acme", "repo": "core", "prefix": "bh"}
+    hive_root = tmp_path / "hive"
+    hive_root.mkdir()
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.registry, "resolve_hive", lambda cfg, hive_id: entry)
+    monkeypatch.setattr(cli.registry, "hive_dir", lambda e: hive_root)
+
+    monkeypatch.chdir(tmp_path)
+    cli._apply_role_workspace("", "bh")
+
+    assert os.getcwd() == str(hive_root.resolve())
+
+
+def test_apply_role_workspace_bead_only_resolves_hive_from_prefix_and_claims(monkeypatch, tmp_path):
+    from beadhive import cli
+
+    entry = {"provider": "github", "org": "acme", "repo": "core", "prefix": "bh"}
+    resolve_calls = []
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(
+        cli.registry,
+        "resolve_hive",
+        lambda cfg, hive_id: resolve_calls.append(hive_id) or entry,
+    )
+    monkeypatch.setattr(cli.registry, "hive_key", lambda e: f"{e['org']}/{e['repo']}")
+
+    claim_calls = []
+    monkeypatch.setattr(cli.work, "claim", lambda **kw: claim_calls.append(kw))
+
+    from beadhive import worktree
+
+    workspace = tmp_path / "wt"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        worktree,
+        "locate",
+        lambda cfg, hive, bead="": (entry, tmp_path, workspace, "br"),
+    )
+
+    cli._apply_role_workspace("bh-6t49w.4", "")
+
+    assert resolve_calls == ["bh"]  # hive resolved from the bead's own leading prefix
+    assert claim_calls == [
+        {"bead": "bh-6t49w.4", "as_": "", "group": "", "collapse": "", "hive": "bh"}
+    ]
+    assert os.getcwd() == str(workspace.resolve())
+
+
+def test_apply_role_workspace_bead_and_hive_disagree_refuses_loudly(monkeypatch):
+    from beadhive import cli
+
+    bead_entry = {"provider": "github", "org": "acme", "repo": "core", "prefix": "bh"}
+    hive_entry = {"provider": "github", "org": "other", "repo": "y", "prefix": "y"}
+
+    def _resolve(cfg, hive_id):
+        return hive_entry if hive_id == "other/y" else bead_entry
+
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.registry, "resolve_hive", _resolve)
+    monkeypatch.setattr(cli.registry, "hive_key", lambda e: f"{e['org']}/{e['repo']}")
+
+    import typer as typer_mod
+
+    with pytest.raises(typer_mod.Exit) as exc:
+        cli._apply_role_workspace("bh-6t49w.4", "other/y")
+    assert exc.value.exit_code == 1
+
+
+def test_cli_role_bead_flag_resolves_workspace_before_route(monkeypatch):
+    """`bh role <seat> --bead <id>` resolves the workspace before `hitch_plugin.route` runs,
+    for both backends (route dispatches to native/hitch, chdir already happened)."""
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    calls = []
+    monkeypatch.setattr(cli, "_apply_role_workspace", lambda bead, hive: calls.append((bead, hive)))
+    with patch.object(hitch_plugin, "route") as mock_route:
+        result = cli_runner.invoke(app, ["role", "developer", "--bead", "bh-6t49w.4"])
+
+    assert result.exit_code == 0
+    assert calls == [("bh-6t49w.4", "")]
+    mock_route.assert_called_once_with("developer", harness=None, no_hitch=False, full_seats=False)
