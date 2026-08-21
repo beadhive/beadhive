@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import threading
 from collections import namedtuple
 from pathlib import Path
 
@@ -55,10 +56,11 @@ class FakeBd:
 
 
 @pytest.fixture
-def store(monkeypatch):
+def store(monkeypatch, tmp_path):
     fake = FakeBd()
     monkeypatch.setattr(checkpoint.bd, "show", fake.show)
     monkeypatch.setattr(checkpoint.bd, "run", fake.run)
+    monkeypatch.setattr(checkpoint, "checkpoint_lock_dir", lambda: tmp_path)
     return fake
 
 
@@ -135,6 +137,49 @@ def test_key_claimed_while_command_runs_is_not_overwritten(store, monkeypatch):
 
     assert store.records["bh-control"]["metadata"]["release.bump"] == {"by": "other actor"}
     assert not any(call[0] == "update" for call in store.calls)
+
+
+def test_simultaneous_helpers_cannot_both_reach_postcheck_update(store, monkeypatch, tmp_path):
+    """The old read→update sequence let both writers pass the second read and overwrite. The
+    competing helper must now refuse before even running its command."""
+    first_started = threading.Event()
+    release_first = threading.Event()
+    first_result = []
+    command_calls = []
+    monkeypatch.setattr(checkpoint, "checkpoint_lock_dir", lambda: tmp_path)
+
+    def fake_run(args, **_kwargs):
+        command_calls.append(list(args))
+        if args == ["first-command"]:
+            first_started.set()
+            assert release_first.wait(timeout=5)
+        return _CP(0, "", "")
+
+    monkeypatch.setattr(checkpoint, "run", fake_run)
+
+    def first_writer():
+        first_result.append(
+            checkpoint.execute(
+                Path("/hive"), "bh-control", "release.bump", _FACT, ["first-command"]
+            )
+        )
+
+    thread = threading.Thread(target=first_writer)
+    thread.start()
+    assert first_started.wait(timeout=5)
+    try:
+        with pytest.raises(checkpoint.CheckpointError, match="already running"):
+            checkpoint.execute(
+                Path("/hive"), "bh-control", "release.bump", _FACT, ["second-command"]
+            )
+    finally:
+        release_first.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert first_result == [0]
+    assert command_calls == [["first-command"]]
+    assert store.records["bh-control"]["metadata"] == {"release.bump": _FACT}
 
 
 def test_metadata_failure_never_closes_step(store, monkeypatch):

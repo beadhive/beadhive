@@ -12,8 +12,12 @@ metadata history cannot recover an overwritten value (bh-yber2.1 M6).
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
+import fcntl
+import hashlib
 import json
+import tempfile
 from pathlib import Path
 
 import typer
@@ -43,6 +47,45 @@ _STEP = typer.Option(
 
 class CheckpointError(RuntimeError):
     """An operator-facing validation or checkpoint-mutation failure."""
+
+
+def checkpoint_lock_dir() -> Path:
+    """Host-wide lock directory shared by every ``bh checkpoint`` process.
+
+    The hive has one active write host, and parallel developer/releaser processes on that host
+    need one shared namespace. System temp is the established location for this repo's flock
+    coordination (see ``hub._aggregate_slot``); lock files contain no state and the kernel drops
+    ownership on process death.
+    """
+    return Path(tempfile.gettempdir()) / "bh-checkpoint-locks"
+
+
+@contextlib.contextmanager
+def _checkpoint_lock(main: Path, bead_id: str, key: str):
+    """Serialize one checkpoint key, or fail before the real command runs.
+
+    This closes the read/check/write TOCTOU between helper invocations. It deliberately does not
+    claim to make a raw ``bd update --metadata`` safe: raw bd is the convention bypass this
+    bh-native surface exists to replace.
+    """
+    identity = f"{main.resolve()}\0{bead_id}\0{key}".encode()
+    name = hashlib.sha256(identity).hexdigest()
+    directory = checkpoint_lock_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    handle = (directory / f"{name}.lock").open("a+")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise CheckpointError(
+                f"checkpoint {key} on {bead_id} is already running; no command was executed"
+            ) from None
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    finally:
+        handle.close()
 
 
 def parse_measurement(raw: str) -> dict:
@@ -118,31 +161,37 @@ def execute(
     if not command:
         raise CheckpointError("a command is required after --")
 
-    # Refuse before invoking a potentially irreversible command when its fact cannot be appended.
-    _ensure_key_free(main, bead_id, key)
-    _validate_step(main, step_id)
+    # The lock spans the operation. Locking only around either read still lets two processes pass
+    # the post-command read and then shallow-merge the same key last-writer-wins.
+    with _checkpoint_lock(main, bead_id, key):
+        # Refuse before a potentially irreversible command when its fact cannot be appended.
+        _ensure_key_free(main, bead_id, key)
+        _validate_step(main, step_id)
 
-    result = run(command, check=False, cwd=main)
-    if result.returncode != 0:
-        return result.returncode
+        result = run(command, check=False, cwd=main)
+        if result.returncode != 0:
+            return result.returncode
 
-    # If another actor claimed the key while the real command ran, preserve their value.
-    _ensure_key_free(main, bead_id, key)
-    payload = json.dumps({key: measurement}, separators=(",", ":"), sort_keys=True)
-    updated = bd.run(["update", bead_id, "--metadata", payload], main, capture=True)
-    if updated.returncode != 0:
-        raise CheckpointError(f"could not record checkpoint on {bead_id}: {bd.err_detail(updated)}")
-
-    if step_id:
-        closed = bd.run(
-            ["close", step_id, "--reason", f"checkpoint {key} command succeeded"],
-            main,
-            capture=True,
-        )
-        if closed.returncode != 0:
+        # A raw bd writer can bypass bh's lock while the command runs. The recheck catches an
+        # already-visible value; only cooperating helper invocations receive the atomic guarantee.
+        _ensure_key_free(main, bead_id, key)
+        payload = json.dumps({key: measurement}, separators=(",", ":"), sort_keys=True)
+        updated = bd.run(["update", bead_id, "--metadata", payload], main, capture=True)
+        if updated.returncode != 0:
             raise CheckpointError(
-                f"checkpoint recorded, but could not close {step_id}: {bd.err_detail(closed)}"
+                f"could not record checkpoint on {bead_id}: {bd.err_detail(updated)}"
             )
+
+        if step_id:
+            closed = bd.run(
+                ["close", step_id, "--reason", f"checkpoint {key} command succeeded"],
+                main,
+                capture=True,
+            )
+            if closed.returncode != 0:
+                raise CheckpointError(
+                    f"checkpoint recorded, but could not close {step_id}: {bd.err_detail(closed)}"
+                )
     return 0
 
 
