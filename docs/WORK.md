@@ -855,7 +855,7 @@ fails **as a unit** — there is no partial landing.
 |---|---|
 | **Cohesion** | Members must share a `component` or be contiguous in the dep DAG. A scattered group is hard to review and fails together. |
 | **Size cap** | At most `work.batch_max_size` (default 5) members. Keeps the merge bubble small enough to review and bisect. |
-| **Single model tier** | A group runs on one model; explicit `model:` conflicts are refused (members may omit `model` to inherit). |
+| **Single model preference** | A group runs on one model; explicit `model:` conflicts are refused (members may omit `model` to inherit). |
 | **No mixed review gates** | Members must share a review gate; mixing `gate:` overrides is refused so one approval covers the whole bubble. |
 
 Planner-declared `batch:<group>` groups are validated against these rules at `bh plan file`

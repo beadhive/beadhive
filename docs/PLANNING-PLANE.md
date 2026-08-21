@@ -155,6 +155,7 @@ epic:
   title: "Epic title"
   description: "intent + context"
   design: "architecture notes"
+  complexity: COMPLEX         # optional explicit route; otherwise inferred before filing
   adopts: [bd-123]              # originating report id(s) — set by `bh plan adopt` (optional)
   source_system: github        # native provenance carried onto the epic (optional)
   external_ref: gh-9           # e.g. gh-<n> — keeps a sourced request traceable (optional)
@@ -169,7 +170,8 @@ issues:
     acceptance: "done when …"   # REQUIRED (accuracy)
     design: "approach notes"
     size: m                     # closed dim
-    model: opus|sonnet|haiku    # routing (closed dim)
+    complexity: COMPLEX         # routing capability: SIMPLE|MEDIUM|COMPLEX|REASONING
+    model: provider/model-name  # optional provider/model preference (open)
     harness: claude             # routing (closed dim)
     component: runtime          # open dim
     batch: same-file            # batch:<group> — handle these as ONE parallel unit (open dim)
@@ -186,7 +188,7 @@ Declare a batch when issues **contend on the same file** (avoid repeated merge c
 `batch:<group>` label on every member bead, so membership survives filing. Authoring a batch
 that the validator will accept:
 
-- **Shared model** — members must not declare conflicting `model` tiers (omit `model` to inherit).
+- **Shared model** — members must not declare conflicting `model` preferences (omit it to inherit).
 - **Within the cap** — at most `work.batch_max_size` (default 5) members per group.
 - **Cohesive** — members must share a `component` **or** be contiguous (connected via `deps`)
   in the DAG; a scattered, unrelated set is rejected.
@@ -194,6 +196,12 @@ that the validator will accept:
 `bh plan show <spec|epic>` re-renders the molecule from either the spec file (pre-file
 view) or the filed epic (post-file round-trip view), so you can confirm what landed matches
 intent.
+
+`bh plan check` and `bh plan file` report each routing decision with its tier, normalized score,
+versioned classifier source, and `explicit` or `inferred` provenance. Existing specs do not need
+to be rewritten first: missing complexity is normalized in memory before validation and preview.
+An explicit canonical tier wins over the inferred tier while retaining the scorer evidence in the
+report.
 
 ## Validation rules
 
@@ -204,10 +212,19 @@ intent.
 - **Deps closed-set**: every handle referenced in `deps` exists in the spec.
 - **DAG / acyclic**: no dependency cycles (iterative DFS, 3-colour marking).
 - **No orphan deps**: dangling references are flagged immediately.
-- **Closed-label dimensions**: `model`, `harness`, `component`, `size` values that map to a
-  closed dimension in the hive's config must be in that dimension's allowed set.
-- **Batches** (`batch:<group>`): each declared group must share a model tier, hold no more than
+- **Routing complexity**: every filed work bead carries exactly one code-owned
+  `complexity:SIMPLE|MEDIUM|COMPLEX|REASONING` label. An explicit spec value is preserved;
+  otherwise the compiler classifies stable type/title/description/design/acceptance text.
+- **Type-aware routing**: epics, features, tasks, bugs, and chores require the singular complexity
+  label; gates, events, and internal molecule artifacts do not.
+- **Closed-label dimensions**: `harness`, `component`, `size`, and other configured closed
+  dimensions must use an allowed value. `model:` is an optional open provider/model preference,
+  not a portable alias for capability; when present it must be exactly
+  `<provider>/<model-name>`, with one non-empty label-safe component on each side. Provider and
+  model catalogues remain open, so future identifiers need no registry update.
+- **Batches** (`batch:<group>`): each declared group must share a model preference, hold no more than
   `work.batch_max_size` members, and be cohesive (same `component` or contiguous in the DAG).
+  Filed verification reconstructs these dimensions from labels and reruns the same checks.
 
 `tag:` (bh-0a6g) is declarable but deliberately **not** enforced: `bh plan verify` does not fail
 a molecule that is spike-shaped (a decision-like bead depending on every other leaf) but carries

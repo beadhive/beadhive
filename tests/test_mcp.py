@@ -138,14 +138,14 @@ def test_plan_check_happy_path_returns_structured_validation():
 
     result = asyncio.run(call())
     # Structured output (not a raw CLI string): validation verdict + acceptance block.
-    assert result.data == {
-        "valid": True,
-        "problems": [],
-        "warnings": [],
-        "missing_acceptance": [],
-        "stubbed_acceptance": [],
-        "acceptance_problems": [],
-    }
+    assert result.data["valid"] is True
+    assert result.data["problems"] == []
+    assert result.data["warnings"] == []
+    assert result.data["missing_acceptance"] == []
+    assert result.data["stubbed_acceptance"] == []
+    assert result.data["acceptance_problems"] == []
+    assert [row["subject"] for row in result.data["complexity"]] == ["epic", "a"]
+    assert all(row["provenance"] == "inferred" for row in result.data["complexity"])
     assert result.structured_content["valid"] is True
 
 

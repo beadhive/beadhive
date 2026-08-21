@@ -12,7 +12,7 @@ import pytest
 
 from beadhive import molecule
 
-# Inline config: model + harness are closed dimensions; component is open (no `values`).
+# Model values are preference suggestions, harness remains config-closed, and component is open.
 CFG = {
     "dimensions": {
         "model": {"values": ["opus", "sonnet", "haiku"]},
@@ -25,13 +25,19 @@ CFG = {
 def _valid_spec() -> dict:
     """A known-good molecule: epic + three issues forming an acyclic dep chain."""
     return {
-        "epic": {"title": "Add widgets", "description": "why", "design": "how"},
+        "epic": {
+            "title": "Add widgets",
+            "description": "why",
+            "design": "how",
+            "complexity": "MEDIUM",
+        },
         "issues": [
             {
                 "handle": "a",
                 "title": "scaffold",
                 "acceptance": "module exists",
-                "model": "opus",
+                "complexity": "MEDIUM",
+                "model": "anthropic/opus",
                 "harness": "claude",
                 "component": "runtime",
                 "deps": [],
@@ -40,13 +46,15 @@ def _valid_spec() -> dict:
                 "handle": "b",
                 "title": "implement",
                 "acceptance": "feature works",
-                "model": "sonnet",
+                "complexity": "MEDIUM",
+                "model": "anthropic/sonnet",
                 "deps": ["a"],
             },
             {
                 "handle": "c",
                 "title": "test",
                 "acceptance": "tests pass",
+                "complexity": "MEDIUM",
                 "deps": ["a", "b"],
             },
         ],
@@ -83,6 +91,24 @@ def test_missing_acceptance_flags_one_problem():
     assert "issue 'b'" in problems[0]
 
 
+def test_missing_complexity_is_rejected_after_normalization_boundary():
+    spec = _valid_spec()
+    del spec["issues"][1]["complexity"]
+
+    problems = molecule.validate_spec(spec, CFG)
+
+    assert len(problems) == 1
+    assert "missing 'complexity'" in problems[0]
+
+
+def test_nonroutable_internal_artifact_does_not_require_complexity():
+    spec = _valid_spec()
+    spec["issues"][1]["type"] = "event"
+    del spec["issues"][1]["complexity"]
+
+    assert molecule.validate_spec(spec, CFG) == []
+
+
 def test_missing_epic_flags_one_problem():
     spec = _valid_spec()
     del spec["epic"]
@@ -100,13 +126,64 @@ def test_orphan_dep_flags_one_problem():
     assert "unknown handle" in problems[0]
 
 
-def test_bad_closed_dimension_flags_one_problem():
+def test_bad_complexity_flags_one_problem():
     spec = _valid_spec()
-    spec["issues"][0]["model"] = "gpt4"  # not in the closed model set
+    spec["issues"][0]["complexity"] = "hard"  # not in the code-owned routing vocabulary
     problems = molecule.validate_spec(spec, CFG)
     assert len(problems) == 1
-    assert "gpt4" in problems[0]
-    assert "model" in problems[0]
+    assert "hard" in problems[0]
+    assert "complexity" in problems[0]
+
+
+def test_epic_complexity_uses_same_canonical_contract():
+    spec = _valid_spec()
+    spec["epic"]["complexity"] = "medium"
+
+    problems = molecule.validate_spec(spec, CFG)
+
+    assert len(problems) == 1
+    assert "epic: complexity 'medium'" in problems[0]
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["provider/new-model", "openai/gpt-9.1", "future_provider/model_v2"],
+)
+def test_model_is_an_open_optional_preference_even_when_config_lists_values(model):
+    spec = _valid_spec()
+    spec["issues"][0]["model"] = model
+
+    assert molecule.validate_spec(spec, CFG) == []
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sonnet",
+        "/model",
+        "provider/",
+        "provider/model/extra",
+        "provider//model",
+        "provider/model one",
+        "provider/model,other",
+    ],
+)
+def test_model_preference_rejects_malformed_structure(value):
+    spec = _valid_spec()
+    spec["issues"][0]["model"] = value
+
+    problems = molecule.validate_spec(spec, CFG)
+
+    assert len(problems) == 1
+    assert "<provider>/<model-name>" in problems[0]
+
+
+@pytest.mark.parametrize("value", ["SIMPLE", "MEDIUM", "COMPLEX", "REASONING"])
+def test_complexity_is_code_owned_closed_vocabulary(value):
+    spec = _valid_spec()
+    spec["issues"][0]["complexity"] = value
+
+    assert molecule.validate_spec(spec, CFG) == []
 
 
 def test_open_dimension_accepts_anything():
@@ -172,6 +249,10 @@ def test_tag_is_in_dimension_fields():
     """`tag` rides the same generic dimension-field machinery as model/harness/component/etc
     (mirrors plan._DIMENSION_FIELDS) — this is the whole mechanism (bh-0a6g)."""
     assert "tag" in molecule._DIMENSION_FIELDS
+
+
+def test_complexity_is_in_dimension_fields():
+    assert "complexity" in molecule._DIMENSION_FIELDS
 
 
 def test_epic_may_also_declare_a_tag():
@@ -247,13 +328,14 @@ def test_acceptance_summary_shape():
 def _batched_spec(**overrides) -> dict:
     """Two issues in the same batch 'g': same component, b depends on a (cohesive + valid)."""
     spec = {
-        "epic": {"title": "Add widgets"},
+        "epic": {"title": "Add widgets", "complexity": "MEDIUM"},
         "issues": [
             {
                 "handle": "a",
                 "title": "scaffold",
                 "acceptance": "exists",
-                "model": "opus",
+                "complexity": "MEDIUM",
+                "model": "anthropic/opus",
                 "component": "runtime",
                 "batch": "g",
                 "deps": [],
@@ -262,7 +344,8 @@ def _batched_spec(**overrides) -> dict:
                 "handle": "b",
                 "title": "extend",
                 "acceptance": "works",
-                "model": "opus",
+                "complexity": "MEDIUM",
+                "model": "anthropic/opus",
                 "component": "runtime",
                 "batch": "g",
                 "deps": ["a"],
@@ -285,7 +368,7 @@ def test_unbatched_spec_has_no_batch_problems():
 
 def test_mixed_model_batch_flags_one_problem():
     spec = _batched_spec()
-    spec["issues"][1]["model"] = "sonnet"  # a=opus, b=sonnet, same batch
+    spec["issues"][1]["model"] = "anthropic/sonnet"
     problems = molecule.validate_spec(spec, CFG)
     assert len(problems) == 1
     assert "batch 'g'" in problems[0]
@@ -307,7 +390,8 @@ def test_oversized_batch_flags_one_problem():
                 "handle": f"x{n}",
                 "title": f"x{n}",
                 "acceptance": "ok",
-                "model": "opus",
+                "complexity": "MEDIUM",
+                "model": "anthropic/opus",
                 "component": "runtime",
                 "batch": "g",
                 "deps": ["a"],
@@ -365,10 +449,12 @@ def test_load_spec_round_trips_yaml(tmp_path):
     p.write_text(
         "epic:\n"
         "  title: Add widgets\n"
+        "  complexity: MEDIUM\n"
         "issues:\n"
         "  - handle: a\n"
         "    title: scaffold\n"
         "    acceptance: module exists\n"
+        "    complexity: MEDIUM\n"
         "    deps: []\n"
     )
     spec = molecule.load_spec(p)

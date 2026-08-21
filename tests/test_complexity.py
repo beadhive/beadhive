@@ -40,6 +40,41 @@ def test_label_parsing_requires_the_exact_canonical_form(label):
         complexity.parse_complexity_label(label)
 
 
+@pytest.mark.parametrize(
+    "value",
+    [
+        "openai/gpt-9.1",
+        "anthropic/claude-opus-9",
+        "future_provider/model_v2",
+        "amazon-bedrock/anthropic.claude-4-7",
+    ],
+)
+def test_model_preference_accepts_open_future_provider_and_model_names(value):
+    assert complexity.valid_model_preference(value)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sonnet",
+        "/model",
+        "provider/",
+        "provider/model/extra",
+        "provider//model",
+        "provider/model name",
+        "provider/model,other",
+        "provider:model/name",
+        "provider/model:name",
+        " provider/model",
+        "provider/model ",
+        "",
+        None,
+    ],
+)
+def test_model_preference_rejects_malformed_structure(value):
+    assert not complexity.valid_model_preference(value)
+
+
 def test_classifier_satisfies_stable_protocol_and_result_contract():
     classifier = complexity.BifrostLocalClassifier()
 
@@ -84,6 +119,27 @@ def test_stable_bead_text_uses_only_planning_fields_in_fixed_order():
     assert "Acceptance criteria:\nA unit test covers the timeout path." in rendered
     assert "dev/a" not in rendered
     assert "model:anything" not in rendered
+
+
+def test_stable_bead_text_accepts_molecule_spec_field_names():
+    spec_issue = {
+        "type": "feature",
+        "title": "Add a retry policy",
+        "description": "Implement bounded retry behavior.",
+        "design": "Keep fallback selection deterministic.",
+        "acceptance": "A unit test covers the timeout path.",
+        "complexity": "REASONING",
+        "model": "provider/model-preference",
+    }
+    bead = {
+        "issue_type": spec_issue["type"],
+        "title": spec_issue["title"],
+        "description": spec_issue["description"],
+        "design": spec_issue["design"],
+        "acceptance_criteria": spec_issue["acceptance"],
+    }
+
+    assert complexity.stable_bead_text(spec_issue) == complexity.stable_bead_text(bead)
 
 
 def test_classify_bead_uses_stable_render_and_requires_a_tier_by_default():

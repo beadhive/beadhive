@@ -201,7 +201,13 @@ def _write_spec(hive) -> Path:
 
 def test_file_dry_run_creates_nothing(hive, fakebd):
     spec = _write_spec(hive)
-    plan.file(spec=str(spec), dry_run=True, save="", hive="myrepo")
+    result = _runner.invoke(app, ["plan", "file", str(spec), "--dry-run", "--hive", "myrepo"])
+    assert result.exit_code == 0, result.output
+    assert "complexity epic: MEDIUM" in result.output
+    assert "complexity a: MEDIUM" in result.output
+    assert "score=0.000" in result.output
+    assert "source=beadhive/bifrost-compatible-local@" in result.output
+    assert "provenance=inferred" in result.output
     assert fakebd.calls == []  # no bd subprocess at all → nothing mutated
     assert fakebd.created == []
 
@@ -233,6 +239,7 @@ def test_file_creates_full_swarm(hive, fakebd):
     # epic first, then issues in dependency order (a before b) → mr-1, mr-2, mr-3
     epic_args = fakebd.create_args(title="Add widgets")
     assert epic_args is not None and "--type=epic" in epic_args
+    assert any("complexity:MEDIUM" in tok for tok in epic_args)
     assert fakebd.created[0][0] == "mr-1"  # epic is the first create
 
     # children parented to the epic; identity triplet injected onto every issue
@@ -241,16 +248,96 @@ def test_file_creates_full_swarm(hive, fakebd):
     assert "--parent" in a_args and a_args[a_args.index("--parent") + 1] == "mr-1"
     assert "--acceptance" in a_args  # accuracy field carried (--graph drops it; per-issue keeps)
     assert any(triplet in tok and "component:runtime" in tok for tok in a_args)
+    assert any("complexity:MEDIUM" in tok for tok in a_args)
 
     # dependent issue b carries --deps pointing at a's real id (mr-2)
     b_args = fakebd.create_args(title="wire it")
     assert "--deps" in b_args and b_args[b_args.index("--deps") + 1] == "mr-2"
+    assert any("complexity:MEDIUM" in tok for tok in b_args)
 
     # swarm built on the epic; kickoff gate blocks the ROOT (a=mr-2), not the dependent
     assert fakebd.did("swarm", "create", "mr-1")
     assert fakebd.did("gate", "create", "--blocks", "mr-2")
     assert not fakebd.did("gate", "create", "--blocks", "mr-3")
     assert fakebd.did("set-state", "mr-1", "kickoff=pending")
+
+
+def test_file_preserves_explicit_complexity_label(hive, fakebd):
+    spec = _write_spec(hive)
+    text = spec.read_text().replace(
+        "    component: runtime\n", "    complexity: REASONING\n    component: runtime\n"
+    )
+    spec.write_text(text)
+
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
+
+    a_args = fakebd.create_args(title="scaffold")
+    label_arg = a_args[a_args.index("-l") + 1]
+    assert "complexity:REASONING" in label_arg
+    assert "complexity:MEDIUM" not in label_arg
+
+
+def test_file_preserves_explicit_epic_complexity_label(hive, fakebd):
+    spec = _write_spec(hive)
+    spec.write_text(
+        spec.read_text().replace("  design: arch\n", "  design: arch\n  complexity: COMPLEX\n")
+    )
+
+    plan.file(spec=str(spec), dry_run=False, save="", hive="myrepo")
+
+    epic_args = fakebd.create_args(title="Add widgets")
+    label_arg = epic_args[epic_args.index("-l") + 1]
+    assert "complexity:COMPLEX" in label_arg
+    assert "complexity:MEDIUM" not in label_arg
+
+
+def test_check_displays_explicit_complexity_provenance(hive):
+    spec = _write_spec(hive)
+    spec.write_text(
+        spec.read_text().replace(
+            "    component: runtime\n", "    complexity: REASONING\n    component: runtime\n"
+        )
+    )
+
+    result = _runner.invoke(app, ["plan", "check", str(spec), "--hive", "myrepo"])
+
+    assert result.exit_code == 0, result.output
+    assert "complexity a: REASONING score=" in result.output
+    assert "source=beadhive/bifrost-compatible-local@" in result.output
+    assert "provenance=explicit" in result.output
+
+
+def test_compiler_uses_only_stable_bead_text_for_inferred_complexity():
+    base = {
+        "epic": {"title": "E"},
+        "issues": [
+            {
+                "handle": "a",
+                "type": "feature",
+                "title": "Implement a Python function and unit test",
+                "acceptance": "The unit test passes",
+                "status": "open",
+                "labels": ["model:first"],
+            }
+        ],
+    }
+    changed_operations = {
+        "epic": {"title": "E"},
+        "issues": [
+            {
+                **base["issues"][0],
+                "status": "closed",
+                "labels": ["model:second", "size:xl"],
+                "assignee": "someone-else",
+            }
+        ],
+    }
+
+    plan.compile_complexity_labels(base)
+    plan.compile_complexity_labels(changed_operations)
+
+    assert base["issues"][0]["complexity"] == "MEDIUM"
+    assert changed_operations["issues"][0]["complexity"] == "MEDIUM"
 
 
 def test_file_carries_batch_membership_to_filed_beads(hive, fakebd):
@@ -981,7 +1068,7 @@ _FILED_CHILDREN = [
         "title": "scaffold",
         "issue_type": "feature",
         "status": "open",
-        "labels": ["component:runtime", "model:sonnet"],
+        "labels": ["component:runtime", "model:anthropic/sonnet"],
         "acceptance_criteria": "module exists",
         "dependencies": [
             {
@@ -999,7 +1086,7 @@ _FILED_CHILDREN = [
         "title": "wire it",
         "issue_type": "task",
         "status": "open",
-        "labels": ["model:opus"],
+        "labels": ["model:anthropic/opus"],
         "acceptance_criteria": "wired up",
         "dependencies": [
             {
@@ -1113,7 +1200,7 @@ def test_show_from_epic_renders_filed_molecule(hive, monkeypatch):
     # Topo order: epic-1.1 (root) before epic-1.2 (depends on epic-1.1)
     assert result.output.index("scaffold") < result.output.index("wire it")
     # Dimension labels visible (triplet labels suppressed)
-    assert "model:sonnet" in result.output
+    assert "model:anthropic/sonnet" in result.output
     # wire it's dep on scaffold is shown
     assert "epic-1.1" in result.output
     # Root set rendered
@@ -1320,17 +1407,30 @@ def test_status_epic_shows_active_ready_blocked(hive, fakebd_status):
 _TRIPLET = ["provider:github", "org:myorg", "repo:myrepo"]
 
 
-def _child(cid, title, *, labels, deps=(), acceptance="works", issue_type="feature", status="open"):
+def _child(
+    cid,
+    title,
+    *,
+    labels,
+    deps=(),
+    acceptance="works",
+    issue_type="feature",
+    status="open",
+    complexity="MEDIUM",
+):
     """A filed-child dict shaped like `bd list --parent --all` output (sibling deps as 'blocks').
     `status="closed"` models a predecessor that has since merged out of the active molecule."""
     dependencies = [{"depends_on_id": "epic-1", "type": "parent-child"}]
     dependencies += [{"depends_on_id": d, "type": "blocks"} for d in deps]
+    labels = list(labels)
+    if complexity is not None and not any(label.startswith("complexity:") for label in labels):
+        labels.append(f"complexity:{complexity}")
     return {
         "id": cid,
         "title": title,
         "issue_type": issue_type,
         "status": status,
-        "labels": list(labels),
+        "labels": labels,
         "acceptance_criteria": acceptance,
         "dependencies": dependencies,
     }
@@ -1338,8 +1438,13 @@ def _child(cid, title, *, labels, deps=(), acceptance="works", issue_type="featu
 
 def _good_children():
     return [
-        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:sonnet"]),
-        _child("epic-1.2", "wire it", labels=_TRIPLET + ["model:sonnet"], deps=["epic-1.1"]),
+        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:anthropic/sonnet"]),
+        _child(
+            "epic-1.2",
+            "wire it",
+            labels=_TRIPLET + ["model:anthropic/sonnet"],
+            deps=["epic-1.1"],
+        ),
     ]
 
 
@@ -1357,6 +1462,7 @@ class FakeBdVerify(FakeBd):
         swarm_epics=("epic-1",),
         gate_descs=("Ad-hoc gate blocking epic-1.1\n\nReason: kickoff epic-1",),
         kickoff="approved",
+        epic_labels=("complexity:MEDIUM",),
     ):
         super().__init__()
         self._epic_type = epic_type
@@ -1365,6 +1471,7 @@ class FakeBdVerify(FakeBd):
         self._swarm_epics = list(swarm_epics)
         self._gate_descs = list(gate_descs)
         self._kickoff = kickoff
+        self._epic_labels = list(epic_labels)
 
     def __call__(
         self, cmd, *, check=True, capture=False, env=None, cwd=None, text_input=None, timeout=None
@@ -1384,6 +1491,7 @@ class FakeBdVerify(FakeBd):
                 "title": "Add widgets",
                 "issue_type": self._epic_type,
                 "description": "why",
+                "labels": self._epic_labels,
             }
             return _CP(0, json.dumps([epic]) + "\n", "")
         if args and args[0] == "list" and "--parent" in args:
@@ -1526,7 +1634,7 @@ def test_verify_unset_kickoff_state_exits_nonzero(hive, monkeypatch):
 def test_verify_missing_identity_labels_exits_nonzero(hive, monkeypatch):
     """A child missing the identity triplet → a specific 'missing identity label' problem."""
     children = [
-        _child("epic-1.1", "scaffold", labels=["model:sonnet"]),  # no provider/org/repo
+        _child("epic-1.1", "scaffold", labels=["model:anthropic/sonnet"]),  # no provider/org/repo
     ]
     result = _verify(hive, monkeypatch, children=children)
     assert result.exit_code != 0
@@ -1534,15 +1642,120 @@ def test_verify_missing_identity_labels_exits_nonzero(hive, monkeypatch):
     assert "epic-1.1" in result.output
 
 
-def test_verify_bad_closed_dimension_label_exits_nonzero(hive, monkeypatch):
-    """A child with a closed-dim label outside the allowed set → a specific problem."""
+def test_verify_model_preference_is_not_a_closed_alias(hive, monkeypatch):
+    """Provider/model preferences stay open even when dimensions.model lists suggestions."""
     children = [
-        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:gpt4"]),  # gpt4 ∉ closed set
+        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:provider/new-model"]),
     ]
     result = _verify(hive, monkeypatch, children=children)
+    assert result.exit_code == 0, result.output
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "sonnet",
+        "/model",
+        "provider/",
+        "provider/model/extra",
+        "provider//model",
+        "provider/model name",
+        "provider/model,other",
+    ],
+)
+def test_verify_rejects_malformed_model_preference(hive, monkeypatch, model):
+    children = [_child("epic-1.1", "scaffold", labels=_TRIPLET + [f"model:{model}"])]
+
+    result = _verify(hive, monkeypatch, children=children)
+
     assert result.exit_code != 0
-    assert "not in closed set" in result.output
-    assert "epic-1.1" in result.output
+    assert "model preference must match '<provider>/<model-name>'" in result.output
+
+
+def test_verify_rejects_duplicate_model_preferences(hive, monkeypatch):
+    children = [
+        _child(
+            "epic-1.1",
+            "scaffold",
+            labels=_TRIPLET + ["model:openai/gpt-9", "model:future/model-v2"],
+        )
+    ]
+
+    result = _verify(hive, monkeypatch, children=children)
+
+    assert result.exit_code != 0
+    assert "expected at most one model preference, found 2" in result.output
+
+
+def test_verify_missing_complexity_label_exits_nonzero(hive, monkeypatch):
+    children = [_child("epic-1.1", "scaffold", labels=_TRIPLET, complexity=None)]
+
+    result = _verify(hive, monkeypatch, children=children)
+
+    assert result.exit_code != 0
+    assert "expected exactly one complexity label, found 0" in result.output
+
+
+def test_verify_applies_complexity_contract_to_nested_epic(hive, monkeypatch):
+    children = [
+        _child(
+            "epic-1.1",
+            "nested workstream",
+            labels=_TRIPLET,
+            issue_type="epic",
+            complexity=None,
+        )
+    ]
+
+    result = _verify(hive, monkeypatch, children=children)
+
+    assert result.exit_code != 0
+    assert "epic-1.1: expected exactly one complexity label, found 0" in result.output
+
+
+def test_verify_duplicate_complexity_labels_exit_nonzero(hive, monkeypatch):
+    children = [
+        _child(
+            "epic-1.1",
+            "scaffold",
+            labels=_TRIPLET + ["complexity:SIMPLE", "complexity:COMPLEX"],
+        )
+    ]
+
+    result = _verify(hive, monkeypatch, children=children)
+
+    assert result.exit_code != 0
+    assert "expected exactly one complexity label, found 2" in result.output
+
+
+def test_verify_noncanonical_complexity_label_exits_nonzero(hive, monkeypatch):
+    children = [_child("epic-1.1", "scaffold", labels=_TRIPLET + ["complexity:complex"])]
+
+    result = _verify(hive, monkeypatch, children=children)
+
+    assert result.exit_code != 0
+    assert "complexity 'complex' not in closed set" in result.output
+
+
+def test_verify_reconstructs_routing_dimensions_for_batch_checks(hive, monkeypatch):
+    children = [
+        _child(
+            "epic-1.1",
+            "scaffold",
+            labels=_TRIPLET + ["batch:g", "component:runtime", "model:provider/model-a"],
+        ),
+        _child(
+            "epic-1.2",
+            "wire it",
+            labels=_TRIPLET + ["batch:g", "component:runtime", "model:provider/model-b"],
+            deps=["epic-1.1"],
+        ),
+    ]
+
+    result = _verify(hive, monkeypatch, children=children)
+
+    assert result.exit_code != 0
+    assert "batch 'g': mixed model preferences" in result.output
 
 
 def test_verify_non_epic_bead_exits_nonzero(hive, monkeypatch):
@@ -1564,7 +1777,7 @@ def test_verify_structural_problem_from_validate_spec(hive, monkeypatch):
 
 def test_verify_lists_each_problem_for_fully_malformed(hive, monkeypatch):
     """A hand-created molecule that flouts several conventions lists EACH problem at once."""
-    children = [_child("epic-1.1", "scaffold", labels=["model:gpt4"])]  # no triplet + bad model
+    children = [_child("epic-1.1", "scaffold", labels=["complexity:bogus"])]
     result = _verify(
         hive,
         monkeypatch,
@@ -1599,8 +1812,18 @@ def test_verify_merged_predecessor_root_needs_no_kickoff_gate(hive, monkeypatch)
     children = [
         # epic-1.1 has merged out of the molecule (closed); epic-1.2 blocked on it is now the
         # only live issue — a satisfied root, not a fresh entry point.
-        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:sonnet"], status="closed"),
-        _child("epic-1.2", "wire it", labels=_TRIPLET + ["model:sonnet"], deps=["epic-1.1"]),
+        _child(
+            "epic-1.1",
+            "scaffold",
+            labels=_TRIPLET + ["model:anthropic/sonnet"],
+            status="closed",
+        ),
+        _child(
+            "epic-1.2",
+            "wire it",
+            labels=_TRIPLET + ["model:anthropic/sonnet"],
+            deps=["epic-1.1"],
+        ),
     ]
     # gate_descs=() ⇒ prove NO kickoff gate is demanded for the satisfied root.
     result = _verify(hive, monkeypatch, children=children, gate_descs=())
@@ -1613,10 +1836,20 @@ def test_verify_still_catches_genuinely_ungated_root_alongside_satisfied_one(hiv
     """The satisfied-root allowance must NOT mask a genuinely ungated root: a fresh root with no
     predecessor and no kickoff gate still fails, naming that specific root."""
     children = [
-        _child("epic-1.1", "scaffold", labels=_TRIPLET + ["model:sonnet"], status="closed"),
-        _child("epic-1.2", "wire it", labels=_TRIPLET + ["model:sonnet"], deps=["epic-1.1"]),
+        _child(
+            "epic-1.1",
+            "scaffold",
+            labels=_TRIPLET + ["model:anthropic/sonnet"],
+            status="closed",
+        ),
+        _child(
+            "epic-1.2",
+            "wire it",
+            labels=_TRIPLET + ["model:anthropic/sonnet"],
+            deps=["epic-1.1"],
+        ),
         # epic-1.3 is a genuine, never-gated root (no predecessor at all).
-        _child("epic-1.3", "new work", labels=_TRIPLET + ["model:sonnet"]),
+        _child("epic-1.3", "new work", labels=_TRIPLET + ["model:anthropic/sonnet"]),
     ]
     result = _verify(hive, monkeypatch, children=children, gate_descs=())
     assert result.exit_code != 0

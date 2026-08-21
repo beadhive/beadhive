@@ -459,9 +459,12 @@ v1 does not build it (deferred to `bh-3yoh`).
 
 ### Planner hints vs. operator override — precedence
 
-The planner authors **advisory** labels on beads (`size:`, `batch:`, `model:`, `gate:`). These
+The planner authors **advisory** labels on beads (`size:`, `batch:`, `model:`, `gate:`). `model:`
+is an optional open `<provider>/<model-name>` preference; the authoritative portable capability
+route is the single closed `complexity:SIMPLE|MEDIUM|COMPLEX|REASONING` label compiled onto each
+work bead. These
 are consulted **only by `auto`** — as the cost signal (`size:` weights vs. `auto_budget`) and
-the single-tier / single-gate guards. They are estimates, never a command.
+the single-model-preference / single-gate guards. They are estimates, never a command.
 
 An explicit operator `work.dispatch.mode` of `fanout` or `collapsed` **always wins**, regardless
 of what the planner estimated:

@@ -69,12 +69,17 @@ def _child(cid, *, deps=(), labels=(), acceptance="done means done", status="ope
         {"issue_id": cid, "depends_on_id": "epic-1", "type": "parent-child"},
         *({"issue_id": cid, "depends_on_id": d, "type": "blocks"} for d in deps),
     ]
+    labels = list(labels)
+    if not any(label.startswith(("origin:", "intake:")) for label in labels) and not any(
+        label.startswith("complexity:") for label in labels
+    ):
+        labels.append("complexity:MEDIUM")
     return {
         "id": cid,
         "title": f"issue {cid}",
         "issue_type": type_,
         "status": status,
-        "labels": list(labels),
+        "labels": labels,
         "acceptance_criteria": acceptance,
         "dependencies": dependencies,
     }
@@ -142,6 +147,7 @@ class FakeBdRepair:
                 "title": "Hand-built",
                 "issue_type": self.epic_type,
                 "description": "assembled by hand",
+                "labels": ["complexity:MEDIUM"],
             }
             return _CP(0, json.dumps([epic]) + "\n", "")
         if args[:1] == ["list"] and "--parent" in args:
@@ -435,8 +441,13 @@ def test_approve_leaves_a_nested_epics_kickoff_gate_open(hive, monkeypatch):
     refuses it and verify_epic then reports the nested root as ungated."""
     fake = FakeBdRepair(
         children=[
-            _child("epic-1.1", labels=TRIPLET),
-            _child("epic-1.3", deps=["epic-1.1"], labels=TRIPLET, type_="epic"),
+            _child("epic-1.1", labels=TRIPLET + ["complexity:MEDIUM"]),
+            _child(
+                "epic-1.3",
+                deps=["epic-1.1"],
+                labels=TRIPLET + ["complexity:MEDIUM"],
+                type_="epic",
+            ),
         ],
         has_swarm=True,
         kickoff="pending",
@@ -485,10 +496,14 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
         res = hbd("create", *args, "--silent", cwd=m, capture=True)
         return (res.stdout or "").strip().splitlines()[-1].strip()
 
-    epic = _create("cleanup epic", "--type=epic", "-d", "assembled by hand")
-    root_a = _create("pre-existing root a", "--acceptance", "a done")
-    root_b = _create("pre-existing root b", "--acceptance", "b done")
-    dependent = _create("pre-existing dependent", "--acceptance", "c done")
+    epic = _create(
+        "cleanup epic", "--type=epic", "-d", "assembled by hand", "-l", "complexity:MEDIUM"
+    )
+    root_a = _create("pre-existing root a", "--acceptance", "a done", "-l", "complexity:MEDIUM")
+    root_b = _create("pre-existing root b", "--acceptance", "b done", "-l", "complexity:MEDIUM")
+    dependent = _create(
+        "pre-existing dependent", "--acceptance", "c done", "-l", "complexity:MEDIUM"
+    )
     origin = _create("reported thing", "-l", "origin:report,intake:untriaged")
 
     for child in (root_a, root_b, dependent, origin):
