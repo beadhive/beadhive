@@ -9,6 +9,7 @@ orchestration, registry/validation logic, and path-derived identity.
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import shutil
 import sys
 import time
@@ -440,6 +441,67 @@ def _root(
 # ---- workspace --------------------------------------------------------------
 
 
+def _role_bead_hive_prefix(bead: str) -> str:
+    """The leading ``<prefix>-`` token of a bead id (e.g. ``"bh"`` from ``"bh-6t49w.4"``) — not
+    a new hive-id format, just the bit of an id that ``registry._hive_matches``' ``by_prefix``
+    already accepts as a bare hive_id (flexible/prefix mode)."""
+    return bead.split("-", 1)[0] if "-" in bead else bead
+
+
+def _apply_role_workspace(bead: str, hive: str) -> None:
+    """``bh role <seat> [--bead <id>] [--hive <hive>]``'s workspace resolution (bh-6t49w.4):
+    changes bh's own cwd to the resolved workspace BEFORE ``hitch_plugin.route`` execs a seat,
+    so the launched process (native or hitch — both inherit bh's cwd) lands there for either
+    backend. Composes bh's EXISTING pieces as an explicit two-step sequence, not a new resolver
+    or a ``wt_create`` hook (see ``hitch_plugin``'s module docstring for why that hook was
+    rejected for this exact use case):
+
+    - ``registry.resolve_hive`` — the flexible bead-prefix / triplet / org-repo / bare-repo
+      resolver ``bh work claim --hive`` already uses — for hive resolution.
+    - ``bh work claim`` + ``worktree.locate`` for bead attachment.
+
+    Lives here (not in ``hitch_plugin``/``role``) because both of those sit on the static import
+    path FROM ``publish_export`` (via ``plugins``/``bd``) TO the cross-hive aggregates
+    (``hub``/``hq``, reached through ``work``) that path must never reach — see
+    ``docs/design/publish-boundary-adr.md`` and ``tests/test_publish_boundary.py``. ``cli.py`` is
+    never imported by anything on that path, so resolving+claiming here (where ``work`` and
+    ``registry`` are already module-level imports) can freely use ``bh work claim`` without
+    widening that boundary.
+
+    - neither given -> no-op (unchanged default: launch from cwd).
+    - ``--hive`` only -> chdir to that hive's root, no bead.
+    - ``--bead`` only -> the hive is resolved from the bead id's own leading ``<prefix>-`` token,
+      through the SAME resolver.
+    - both given and they name the same hive -> claim/attach the bead's worktree, chdir there.
+    - both given and they disagree -> refuse loudly, naming both (``registry.resolve_hive``'s
+      own not-found/ambiguous errors are inherited unchanged for either alone)."""
+    if not bead and not hive:
+        return
+
+    cfg = config.load()
+    hive_entry = registry.resolve_hive(cfg, hive) if hive else None
+    if not bead:
+        os.chdir(registry.hive_dir(hive_entry))
+        return
+
+    bead_hive_id = _role_bead_hive_prefix(bead)
+    bead_entry = registry.resolve_hive(cfg, bead_hive_id)
+    if hive_entry is not None and registry.hive_key(bead_entry) != registry.hive_key(hive_entry):
+        typer.echo(
+            f"✗ --bead {bead!r} belongs to hive '{registry.hive_key(bead_entry)}', which "
+            f"disagrees with --hive {hive!r} ('{registry.hive_key(hive_entry)}')",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    hive_id = hive or bead_hive_id
+    from . import worktree
+
+    work.claim(bead=bead, as_="", group="", collapse="", hive=hive_id)
+    _entry, _main, target, _branch = worktree.locate(cfg, hive_id, bead=bead)
+    os.chdir(target)
+
+
 @app.command(
     "role",
     rich_help_panel=FLEET_PANEL,
@@ -465,9 +527,19 @@ def role_cmd(
             "would be picked, cheaply (bh-gqfrm)"
         ),
     ),
+    bead: str = typer.Option(
+        "",
+        "--bead",
+        help="claim/attach this bead's worktree and launch with it as the workspace "
+        "(hive defaults to the bead's own leading prefix).",
+    ),
+    hive: str = typer.Option(
+        "", "--hive", help="launch at this hive's root, no bead (see hive_match)."
+    ),
 ):
     from . import hitch_plugin
 
+    _apply_role_workspace(bead, hive)
     hitch_plugin.route(name, harness=harness or None, no_hitch=no_hitch, full_seats=seats)
 
 
