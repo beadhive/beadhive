@@ -103,6 +103,21 @@ class BranchInfo:
 _BD_LOCAL_NO_REMOTE_REASON = "bd-managed store has no configured Dolt remote"
 
 
+def _bd_unprobed_remote_reason(payload: dict) -> str:
+    """Explain why a configured bd remote has an unknown no-network status.
+
+    Only call an engine embedded when bd positively identifies it as such.  Older bd
+    payloads omit ``mode`` for owned and local-external stores, while shared-server
+    payloads report ``external``; both need honest wording without guessing.
+    """
+    mode = payload.get("mode")
+    if mode == "embedded":
+        return "embedded engine — no read-only remote check ran"
+    if mode == "external":
+        return "external/shared-server engine — no read-only remote check ran"
+    return "bd-managed store — no read-only remote check ran"
+
+
 @dataclass
 class DoltRefInfo:
     """Status of Beads' Dolt-backed issue state (BEAD-BACKENDS.md), separate from
@@ -492,7 +507,7 @@ def _scan_bd_dolt_state(path: str, *, fetch: bool = False) -> DoltRefInfo:
         return DoltRefInfo(status="absent")
 
     if _bd_has_dolt_remote(path):
-        return DoltRefInfo(status="unknown")
+        return DoltRefInfo(status="unknown", reason=_bd_unprobed_remote_reason(payload))
     return DoltRefInfo(status="no-remote", reason=_BD_LOCAL_NO_REMOTE_REASON)
 
 
