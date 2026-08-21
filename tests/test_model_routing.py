@@ -11,8 +11,8 @@ from beadhive.model_routing import (
     ModelBlockedVerdict,
     ModelSelection,
     discover_availability,
-    launch_model,
     resolve_model,
+    translate_for_harness,
 )
 
 
@@ -253,6 +253,6 @@ def test_harness_default_adapter_distinguishes_enumeration_from_explicit_config(
 
 def test_harness_translation_is_independent_and_preserves_other_providers():
     canonical = "anthropic/claude-opus-4-1"
-    assert launch_model(canonical, "claude") == "claude-opus-4-1"
-    assert launch_model(canonical, "opencode") == canonical
-    assert launch_model("openai/gpt-5", "claude") == "openai/gpt-5"
+    assert translate_for_harness(canonical, "claude") == "claude-opus-4-1"
+    assert translate_for_harness(canonical, "opencode") == canonical
+    assert translate_for_harness("openai/gpt-5", "claude") == "openai/gpt-5"

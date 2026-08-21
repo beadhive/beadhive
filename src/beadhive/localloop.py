@@ -2098,8 +2098,8 @@ class LocalLoop:
             routing = resolved
             if isinstance(routing, model_routing.ModelSelection):
                 self._resolved_routing[bead] = routing
-        launch_model = (
-            model_routing.launch_model(routing.selected_model, routing.harness)
+        translated_model = (
+            model_routing.translate_for_harness(routing.selected_model, routing.harness)
             if isinstance(routing, model_routing.ModelSelection)
             else None
         )
@@ -2108,7 +2108,6 @@ class LocalLoop:
             routing_payload = {
                 "bead": bead,
                 **routing.as_dict(),
-                "launch_model": launch_model,
             }
             report.routing += ((bead, routing_payload),)
             for warning in routing.warnings:
@@ -2140,7 +2139,7 @@ class LocalLoop:
             bead=bead,
             instructions=self._instructions(action, bead, role),
             session_id=session_id,
-            model=launch_model,
+            model=translated_model,
             bundle=self.seat_bundle,
         )
         attrs = self._routing_attributes(routing) if routing else None
@@ -2295,14 +2294,15 @@ class LocalRuntime:
         canonical_model = decision.selected_model if decision else model
         harness = decision.harness if decision else self.harness
         translated_model = (
-            model_routing.launch_model(canonical_model, harness) if canonical_model else None
+            model_routing.translate_for_harness(canonical_model, harness)
+            if canonical_model
+            else None
         )
         routing_payload = None
         if isinstance(decision, model_routing.ModelSelection):
             routing_payload = {
                 "bead": bead_id,
                 **decision.as_dict(),
-                "launch_model": translated_model,
             }
 
         validation = seatrun.validate_workspace(str(workspace))

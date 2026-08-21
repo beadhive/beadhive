@@ -37,14 +37,16 @@ from beadhive.model_routing import ModelBlockedVerdict, ModelSelection
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
 
 
-def _model_selection(model="anthropic/claude-sonnet-4-5", *, role="developer", warnings=()):
+def _model_selection(
+    model="anthropic/claude-sonnet-4-5", *, role="developer", harness="claude", warnings=()
+):
     return ModelSelection(
         required_tier=ComplexityTier.COMPLEX,
         preferred_model=None,
         selected_model=model,
         policy="loose",
         role=role,
-        harness="claude",
+        harness=harness,
         endpoint=None,
         availability_source="explicit_configuration",
         selection_reason="least-overpowered available model covering the required complexity",
@@ -1103,10 +1105,19 @@ def test_local_runtime_schedules_observes_and_is_idempotent(tmp_path):
     assert outcome.status == "done"
 
 
-def test_local_runtime_translates_canonical_model_only_at_launch_and_reports_routing(tmp_path):
+@pytest.mark.parametrize(
+    ("harness", "canonical_model", "argv_model"),
+    [
+        ("claude", "anthropic/claude-sonnet-4-5", "claude-sonnet-4-5"),
+        ("opencode", "openai/gpt-5", "openai/gpt-5"),
+    ],
+)
+def test_local_runtime_translates_canonical_model_only_at_launch_and_reports_routing(
+    tmp_path, harness, canonical_model, argv_model
+):
     inst = _instructions(tmp_path, "routing", "STUB_STATUS=done")
-    rt = localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}", harness="claude")
-    decision = _model_selection()
+    rt = localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}", harness=harness)
+    decision = _model_selection(canonical_model, harness=harness)
     handle = rt.schedule(
         "b1",
         "developer",
@@ -1117,9 +1128,9 @@ def test_local_runtime_translates_canonical_model_only_at_launch_and_reports_rou
     )
     seat = rt._runs["b1"]
     model_index = seat.argv.index("--model")
-    assert seat.argv[model_index + 1] == "claude-sonnet-4-5"
-    assert seat.routing["selected_model"] == "anthropic/claude-sonnet-4-5"
-    assert seat.routing["launch_model"] == "claude-sonnet-4-5"
+    assert seat.argv[model_index + 1] == argv_model
+    assert seat.routing["selected_model"] == canonical_model
+    assert "launch_model" not in seat.routing
 
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
@@ -1129,6 +1140,8 @@ def test_local_runtime_translates_canonical_model_only_at_launch_and_reports_rou
         time.sleep(0.05)
     assert outcome.status == "done"
     assert outcome.routing["complexity"] == "COMPLEX"
+    assert outcome.routing["selected_model"] == canonical_model
+    assert "launch_model" not in outcome.routing
 
 
 def test_local_runtime_strict_block_prevents_launch_with_full_remediation(tmp_path):
@@ -1193,6 +1206,7 @@ async def test_poll_loop_launches_shared_decision_for_leaf_and_nested_dispatcher
     assert seat.argv[model_index + 1] == "claude-sonnet-4-5"
     assert report.as_dict()["routing"]["b1"]["selected_model"] == decision.selected_model
     assert report.as_dict()["routing"]["b1"]["warnings"] == ["loose fallback is visible"]
+    assert "launch_model" not in report.as_dict()["routing"]["b1"]
     await loop.shutdown()
 
 

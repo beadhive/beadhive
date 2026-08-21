@@ -545,7 +545,7 @@ class ClaudeLaunchModelAdapter:
         return model if separator and provider == "anthropic" else canonical_model
 
 
-def launch_model(canonical_model: str, harness: str) -> str:
+def translate_for_harness(canonical_model: str, harness: str) -> str:
     """Return the harness token while leaving the decision's canonical identity untouched."""
     adapter: LaunchModelAdapter
     adapter = ClaudeLaunchModelAdapter() if harness == "claude" else IdentityLaunchModelAdapter()

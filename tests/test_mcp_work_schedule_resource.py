@@ -111,6 +111,8 @@ def test_schedule_payload_singletons_is_list(monkeypatch):
     assert isinstance(result["singletons"], list)
     assert sorted(row["id"] for row in result["singletons"]) == ["mr-1", "mr-2"]
     assert all(row["selected_model"] == "anthropic/claude-opus-4-1" for row in result["singletons"])
+    assert all("launch_model" not in row for row in result["singletons"])
+    assert all("model_deprecation" not in row for row in result["singletons"])
 
 
 def test_schedule_payload_group_carries_model_field(monkeypatch):
@@ -122,7 +124,8 @@ def test_schedule_payload_group_carries_model_field(monkeypatch):
     g = result["groups"][0]
     assert "model" in g
     assert g["selected_model"] == "anthropic/claude-opus-4-1"
-    assert g["launch_model"] == "claude-opus-4-1"
+    assert "launch_model" not in g
+    assert "model_deprecation" not in g
     assert "kind" in g and "ids" in g and "reason" in g
 
 
@@ -137,7 +140,8 @@ def test_schedule_payload_coordinator_carries_dispatch_and_model(monkeypatch):
     assert "dispatch" in c
     assert "model" in c
     assert c["model"] == "anthropic/claude-opus-4-1"
-    assert c["model_deprecation"] == "deprecated alias; use selected_model"
+    assert "launch_model" not in c
+    assert "model_deprecation" not in c
 
 
 def test_schedule_payload_max_depth_reflected(monkeypatch):
@@ -318,6 +322,7 @@ def test_work_schedule_resource_returns_payload(monkeypatch):
     assert data["singletons"] == ["mr-3"]
     assert len(data["groups"]) == 1
     assert data["groups"][0]["kind"] == "chain"
+    assert "launch_model" not in contents[0].text
 
 
 def test_work_schedule_resource_raises_error_on_missing_epic(monkeypatch):

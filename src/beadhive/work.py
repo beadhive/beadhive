@@ -2126,15 +2126,9 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
             availability=availability,
         )
         result = decision.as_dict()
-        result["launch_model"] = (
-            model_routing.launch_model(result["selected_model"], harness)
-            if result["selected_model"]
-            else None
-        )
         # Compatibility window: old consumers read `model`. It now aliases the selected canonical
         # provider/model (or null on a blocked decision); new consumers must use selected_model.
         result["model"] = result["selected_model"]
-        result["model_deprecation"] = "deprecated alias; use selected_model"
         return result
 
     # Dispatch-by-type (xn3o.8): child epics dispatch to nested COORDINATORS, one seat each, at

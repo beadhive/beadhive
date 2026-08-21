@@ -4886,7 +4886,10 @@ def test_schedule_collapsed_mode_forces_one_group_with_complete_blocked_decision
     assert g["complexity"] == "MEDIUM"
     assert g["selected_model"] is None
     assert g["model"] is None  # deprecated alias follows selected_model
+    assert "launch_model" not in g
+    assert "model_deprecation" not in g
     assert g["blocked"] is True
+    assert "launch_model" not in json.dumps(payload)
     assert payload["singletons"] == []
 
 
