@@ -418,6 +418,9 @@ every group, singleton, and nested coordinator: `complexity`, `preferred_model`,
 pre-existing `model` field remains temporarily as a deprecated alias of `selected_model` (and is
 `null` when selection is blocked); consumers should migrate to `selected_model`.
 
+See [Complexity-first routing](COMPLEXITY-ROUTING.md) for availability limitations, strict/loose
+decision behavior, migration recovery, and the complete public decision schema.
+
 ## `work.dispatch` — collapsed dispatch
 
 `work.dispatch.*` tunes how the root dispatcher dispatches a ready epic's beads: the default

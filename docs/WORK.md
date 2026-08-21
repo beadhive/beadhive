@@ -457,6 +457,8 @@ shown by `bh work schedule`: required complexity, optional preferred model, sele
 runtime/pass envelope and GenAI telemetry. Only the final harness adapter translates it for argv
 (for example, Claude receives its Anthropic model name without the `anthropic/` prefix). A strict
 blocked verdict never spawns; a loose fallback spawns and remains visible in the envelope.
+The public fields and availability caveats are specified in
+[Complexity-first routing](COMPLEXITY-ROUTING.md).
 
 ### The `local` tier — `bh work loop <epic>`
 

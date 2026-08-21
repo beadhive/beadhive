@@ -2,7 +2,9 @@
 
 Beadhive's provider-neutral complexity contract is its own stable API. The bundled local scorer
 is a modified, dependency-free Python port of the open-source Bifrost complexity analyzer. This
-note pins the research basis so a later Bifrost change cannot silently change Beadhive routing.
+best-effort bridge is deliberately temporary; this note pins the research basis so a later
+Bifrost change cannot silently change Beadhive routing or turn the port into an accidental
+permanent fork.
 
 ## Pinned source and licence
 
