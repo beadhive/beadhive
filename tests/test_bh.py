@@ -969,6 +969,81 @@ def test_release_dimension_is_closed_regardless_of_config(cfg_path):
     assert "wave" not in closed  # deliberately open — no declared value set
 
 
+def test_complexity_is_authoritative_and_model_is_an_open_preference(cfg_path):
+    cfg = config.load()
+    cfg.setdefault("dimensions", {})["complexity"] = {"values": ["CUSTOM"]}
+    cfg["dimensions"]["model"] = {"values": ["old-alias"]}
+
+    closed = registry.closed_dimensions(cfg)
+
+    assert closed["complexity"] == {"SIMPLE", "MEDIUM", "COMPLEX", "REASONING"}
+    assert "model" not in closed
+
+
+def test_validate_rejects_bad_complexity_but_accepts_any_model_preference(cfg_path, monkeypatch):
+    cfg = config.load()
+    labels = ["complexity:MEDIUM", "model:provider/new-model"]
+    _issues(monkeypatch, [{"id": "ag-infra-1", "issue_type": "task", "labels": labels}])
+    assert validate._issue_checks(cfg)[0] == []
+
+    _issues(
+        monkeypatch,
+        [{"id": "ag-infra-1", "issue_type": "task", "labels": ["complexity:medium"]}],
+    )
+    assert any("bad-routing:complexity 'medium'" in p for p in validate._issue_checks(cfg)[0])
+
+
+@pytest.mark.parametrize(
+    ("labels", "needle"),
+    [
+        ([], "expected exactly one complexity label, found 0"),
+        (
+            ["complexity:SIMPLE", "complexity:COMPLEX"],
+            "expected exactly one complexity label, found 2",
+        ),
+        (["complexity:UNKNOWN"], "complexity 'UNKNOWN' not in closed set"),
+        (
+            ["complexity:MEDIUM", "model:a", "model:b"],
+            "expected at most one model preference, found 2",
+        ),
+    ],
+)
+def test_generic_validation_enforces_singular_routing_labels(cfg_path, monkeypatch, labels, needle):
+    _issues(monkeypatch, [{"id": "ag-infra-1", "issue_type": "feature", "labels": labels}])
+
+    problems, _ = validate._issue_checks(config.load())
+
+    assert any(needle in problem for problem in problems)
+
+
+@pytest.mark.parametrize(
+    "model",
+    ["sonnet", "/model", "provider/", "provider/model/extra", "provider//model"],
+)
+def test_generic_validation_rejects_malformed_model_preferences(cfg_path, monkeypatch, model):
+    labels = ["complexity:MEDIUM", f"model:{model}"]
+    _issues(monkeypatch, [{"id": "ag-infra-1", "issue_type": "task", "labels": labels}])
+
+    problems, _ = validate._issue_checks(config.load())
+
+    assert any("model preference must match '<provider>/<model-name>'" in p for p in problems)
+
+
+@pytest.mark.parametrize("issue_type", ["gate", "event", "molecule"])
+def test_generic_validation_excludes_nonroutable_artifacts(cfg_path, monkeypatch, issue_type):
+    _issues(monkeypatch, [{"id": "ag-infra-1", "issue_type": issue_type, "labels": []}])
+
+    assert validate._issue_checks(config.load())[0] == []
+
+
+def test_generic_validation_requires_complexity_on_epics(cfg_path, monkeypatch):
+    _issues(monkeypatch, [{"id": "ag-infra-1", "issue_type": "epic", "labels": []}])
+
+    problems, _ = validate._issue_checks(config.load())
+
+    assert any("expected exactly one complexity label" in problem for problem in problems)
+
+
 def test_label_allowed_lists_the_release_values(cfg_path, capsys):
     registry.allowed()
     out = capsys.readouterr().out

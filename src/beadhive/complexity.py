@@ -19,7 +19,14 @@ from enum import IntEnum
 from typing import Any, Protocol, runtime_checkable
 
 COMPLEXITY_LABEL_PREFIX = "complexity:"
+MODEL_LABEL_PREFIX = "model:"
+MODEL_PREFERENCE_ERROR = (
+    "model preference must match '<provider>/<model-name>' with exactly one slash and two "
+    "non-empty label-safe components"
+)
 UNKNOWN = "UNKNOWN"
+
+ROUTABLE_ISSUE_TYPES = frozenset({"epic", "feature", "task", "bug", "chore"})
 
 LOCAL_SCORER_SOURCE = "beadhive/bifrost-compatible-local"
 LOCAL_SCORER_VERSION = "1.0.0+bifrost.c1b84fdc5a85"
@@ -73,6 +80,76 @@ def complexity_label(tier: ComplexityTier) -> str:
 def parse_complexity_label(label: str) -> ComplexityTier:
     """Parse a canonical complexity label (case-sensitive)."""
     return ComplexityTier.from_label(label)
+
+
+def is_routable_issue_type(issue_type: Any) -> bool:
+    """Whether a bead type receives capability routing.
+
+    Gates, events, and internal molecule artifacts are deliberately outside this whitelist.
+    """
+    return str(issue_type or "").strip().lower() in ROUTABLE_ISSUE_TYPES
+
+
+def label_values(labels: Any, prefix: str) -> list[str]:
+    """All values for one label prefix, preserving duplicates for singularity checks."""
+    if not isinstance(labels, (list, tuple, set)):
+        return []
+    return [str(label)[len(prefix) :] for label in labels if str(label).startswith(prefix)]
+
+
+def valid_model_preference(value: Any) -> bool:
+    """Validate the open ``provider/model-name`` preference structure.
+
+    Provider and model catalogues remain deliberately open; this validates only their durable
+    transport shape. Exactly one slash separates two non-empty, label-safe identifiers.
+    """
+    text = str(value or "")
+    parts = text.split("/")
+    if len(parts) != 2:
+        return False
+    return all(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", part) is not None for part in parts)
+
+
+def routing_label_errors(labels: Any, issue_type: Any) -> list[str]:
+    """Type-aware errors for the singular complexity/model label contract."""
+    if not is_routable_issue_type(issue_type):
+        return []
+    errors = []
+    tiers = label_values(labels, COMPLEXITY_LABEL_PREFIX)
+    if len(tiers) != 1:
+        errors.append(f"expected exactly one complexity label, found {len(tiers)}")
+    elif tiers[0] not in ComplexityTier.__members__:
+        errors.append(f"complexity '{tiers[0]}' not in closed set {{{', '.join(tier_names())}}}")
+    models = label_values(labels, MODEL_LABEL_PREFIX)
+    if len(models) > 1:
+        errors.append(f"expected at most one model preference, found {len(models)}")
+    elif models and not valid_model_preference(models[0]):
+        errors.append(MODEL_PREFERENCE_ERROR)
+    return errors
+
+
+@dataclass(frozen=True)
+class ComplexityDecision:
+    """One compiler routing decision and its user-visible provenance."""
+
+    subject: str
+    tier: ComplexityTier
+    score: float | None
+    source: str
+    version: str
+    provenance: str
+    fallback_used: bool = False
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "subject": self.subject,
+            "tier": self.tier.name,
+            "score": self.score,
+            "source": self.source,
+            "version": self.version,
+            "provenance": self.provenance,
+            "fallback_used": self.fallback_used,
+        }
 
 
 @dataclass(frozen=True)
@@ -423,15 +500,17 @@ def stable_bead_text(bead: Mapping[str, Any]) -> str:
     are intentionally ignored.  Changing them cannot perturb a bead's classification.
     """
     fields = (
-        ("Issue type", "issue_type"),
-        ("Title", "title"),
-        ("Description", "description"),
-        ("Design", "design"),
-        ("Acceptance criteria", "acceptance_criteria"),
+        ("Issue type", ("issue_type", "type")),
+        ("Title", ("title",)),
+        ("Description", ("description",)),
+        ("Design", ("design",)),
+        ("Acceptance criteria", ("acceptance_criteria", "acceptance")),
     )
     sections = []
-    for heading, key in fields:
-        value = _stable_value(bead.get(key))
+    for heading, keys in fields:
+        value = next(
+            (_stable_value(bead.get(key)) for key in keys if bead.get(key) is not None), ""
+        )
         if value:
             sections.append(f"{heading}:\n{value}")
     return "\n\n".join(sections)

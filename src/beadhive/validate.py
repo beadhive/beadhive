@@ -11,7 +11,7 @@ import json
 
 import typer
 
-from . import config
+from . import complexity, config
 from .registry import closed_dimensions, required_violations
 from .run import run
 
@@ -23,7 +23,7 @@ def _label_val(labels, prefix):
     return ""
 
 
-def _bead_problems(iid, labels, repos, closed):
+def _bead_problems(iid, labels, repos, closed, issue_type=None):
     """Per-bead label problems for ONE bead: unknown hive prefix, triplet mismatch against the
     registry, and closed-dimension values outside their declared set. Returns a list of problem
     strings (empty == clean). The shared core of both the whole-DB linter (`_issue_checks`) and
@@ -40,6 +40,8 @@ def _bead_problems(iid, labels, repos, closed):
             errs.append(f"{fld}:{val}≠{m[fld]}")
     # closed dimensions: any label value outside the declared set is invalid
     for dim, allowed in closed.items():
+        if dim == "complexity":  # type-aware routing checks below own this dimension
+            continue
         bad = [
             label[len(dim) + 1 :]
             for label in labels
@@ -47,6 +49,9 @@ def _bead_problems(iid, labels, repos, closed):
         ]
         if bad:
             errs.append(f"bad-{dim}:{','.join(bad)}")
+    errs.extend(
+        f"bad-routing:{problem}" for problem in complexity.routing_label_errors(labels, issue_type)
+    )
     return [f"{iid}\t{' '.join(errs)}"] if errs else []
 
 
@@ -66,7 +71,13 @@ def _issues_and_problems(cfg, cwd=None):
     repos = cfg.get("managed_repos", [])
     problems, historical = [], []
     for i in issues:
-        found = _bead_problems(i.get("id", ""), i.get("labels") or [], repos, closed)
+        found = _bead_problems(
+            i.get("id", ""),
+            i.get("labels") or [],
+            repos,
+            closed,
+            i.get("issue_type") or i.get("type"),
+        )
         (historical if i.get("status") == "closed" else problems).extend(found)
     return issues, problems, historical, True
 
@@ -79,14 +90,14 @@ def _issue_checks(cfg, cwd=None):
     return problems, db_ok
 
 
-def bead_violations(cfg, iid, labels) -> list[str]:
+def bead_violations(cfg, iid, labels, issue_type=None) -> list[str]:
     """Per-bead label problems for a SINGLE bead's own labels — the intake write path (report /
     escalate) validates ONLY the bead it is about to file, NOT the target hive's whole DB. A
     cross-hive reporter has no authority over the target's pre-existing label debt and must never
     be deadlocked by it. Returns a list of problem strings (empty == clean)."""
     cfg = cfg if cfg is not None else config.load()
     repos = cfg.get("managed_repos", [])
-    return _bead_problems(iid, labels or [], repos, closed_dimensions(cfg))
+    return _bead_problems(iid, labels or [], repos, closed_dimensions(cfg), issue_type)
 
 
 def has_violations(cfg=None, cwd=None) -> bool:

@@ -21,7 +21,8 @@ Spec schema (see docs/PLANNING-PLANE.md "Molecule spec format"):
         acceptance: ...      # required (accuracy)
         design: ...
         size: m              # closed dim (if declared)
-        model: opus          # closed dim (routing)
+        complexity: COMPLEX  # closed, provider-neutral routing capability
+        model: anthropic/claude-opus-4 # optional provider/model preference (open)
         harness: claude      # closed dim (routing)
         component: runtime    # open dim
         batch: same-file     # group handled as ONE parallel unit (open dim)
@@ -46,7 +47,7 @@ from pathlib import Path
 
 from ruamel.yaml import YAML
 
-from . import config
+from . import complexity, config
 from .registry import closed_dimensions
 
 # Label fields on an issue that become a `<field>:<value>` label and may map to a closed
@@ -83,7 +84,18 @@ from .registry import closed_dimensions
 #       shape-detection logic mirrored in the compiler AND the verifier, and every non-spike
 #       molecule shaped similarly (e.g. a "rollup" bead depending on every sibling) risks a false
 #       positive. Declarative (a) is enough now that the compiler can express the label at all.
-_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch", "release", "wave", "tag")
+DIMENSION_FIELDS = (
+    "complexity",
+    "model",
+    "harness",
+    "component",
+    "size",
+    "batch",
+    "release",
+    "wave",
+    "tag",
+)
+_DIMENSION_FIELDS = DIMENSION_FIELDS  # compatibility for callers predating the public declaration
 
 # THE acceptance stub-marker convention (see module docstring): text starting with this is an
 # explicit placeholder — reported as a WARNING, distinct from the missing-acceptance ERROR.
@@ -127,7 +139,7 @@ def validate_spec(spec: dict, cfg) -> list[str]:
 
     Checks: epic present with a title; every issue has a unique handle, a title,
     and an acceptance; deps reference existing handles (no dangling/orphans); the
-    dependency graph is acyclic; any label value (model/harness/component/size) mapping to
+    dependency graph is acyclic; any label value (complexity/harness/component/size) mapping to
     a CLOSED dimension is in that dimension's allowed set; and every declared `batch:<group>`
     is cohesive enough to run as one unit (shared model, within the size cap, same component
     or contiguous in the DAG).
@@ -166,9 +178,11 @@ def _check_epic(spec: dict) -> list[str]:
         return ["missing epic: spec needs a top-level 'epic' with a title"]
     if not isinstance(epic, dict):
         return ["epic must be a mapping with a 'title'"]
+    problems = []
     if not str(epic.get("title") or "").strip():
-        return ["epic is missing a title"]
-    return []
+        problems.append("epic is missing a title")
+    problems += _routing_field_problems(epic, "epic", "epic")
+    return problems
 
 
 def _handle_label(issue, index: int) -> str:
@@ -196,7 +210,28 @@ def _check_issue_fields(issues: list, problems: list[str]) -> set[str]:
             problems.append(f"{label}: missing 'title'")
         if not str(issue.get("acceptance") or "").strip():
             problems.append(f"{label}: {_MISSING_ACCEPTANCE}")
+        problems += _routing_field_problems(issue, issue.get("type") or "task", label)
     return handles
+
+
+def _routing_field_problems(item: dict, issue_type: str, label: str) -> list[str]:
+    """Validate singular spec fields for a routable item after compiler normalization."""
+    if not complexity.is_routable_issue_type(issue_type):
+        return []
+    problems = []
+    value = item.get("complexity")
+    try:
+        complexity.ComplexityTier.parse(value)
+    except ValueError:
+        expected = ", ".join(complexity.tier_names())
+        if value in (None, ""):
+            problems.append(f"{label}: missing 'complexity' (expected one of {{{expected}}})")
+        else:
+            problems.append(f"{label}: complexity '{value}' not in closed set {{{expected}}}")
+    model = item.get("model")
+    if model not in (None, "") and not complexity.valid_model_preference(model):
+        problems.append(f"{label}: {complexity.MODEL_PREFERENCE_ERROR}")
+    return problems
 
 
 # ---- acceptance records (machine surface) -----------------------------------
@@ -316,13 +351,15 @@ def _find_cycle(graph: dict[str, list[str]]) -> list[str]:
 
 
 def _check_closed_dimensions(issues: list, cfg) -> list[str]:
-    """Any model/harness/component/size value mapping to a CLOSED dim must be allowed."""
+    """Any complexity/harness/component/size value mapping to a CLOSED dim must be allowed."""
     closed = closed_dimensions(cfg)
     problems: list[str] = []
     for index, issue in enumerate(issues):
         if not isinstance(issue, dict):
             continue
-        for field in _DIMENSION_FIELDS:
+        for field in DIMENSION_FIELDS:
+            if field == "complexity":  # canonical + required is owned by _routing_field_problems
+                continue
             allowed = closed.get(field)
             if allowed is None:  # open dimension (or not declared) — accept anything
                 continue
@@ -357,7 +394,7 @@ def _batch_groups(issues: list) -> dict[str, list[dict]]:
 def _check_batches(issues: list, cfg) -> list[str]:
     """A `batch:<group>` gathers issues the coordinator runs as ONE parallel unit — one
     worktree, validated and merged once. Each declared group must be cohesive enough to do
-    that: members share a model tier, stay within the size cap, and hang together (same
+    that: members share a model preference, stay within the size cap, and hang together (same
     component OR contiguous in the dep DAG). Reject otherwise so the coordinator never
     schedules a batch that cannot be run as a unit.
     """
@@ -374,12 +411,13 @@ def _check_batches(issues: list, cfg) -> list[str]:
 
 
 def _check_batch_model(group: str, members: list[dict]) -> list[str]:
-    """A batch runs as one unit, so its members cannot ask for different model tiers (members
+    """A batch runs as one unit, so its members cannot ask for different model preferences (members
     may omit model to inherit; only an explicit conflict is rejected)."""
     models = {str(m.get("model")).strip() for m in members if m.get("model") not in (None, "")}
     if len(models) > 1:
         return [
-            f"batch '{group}': mixed model tiers {{{', '.join(sorted(models))}}} — a batch runs "
+            f"batch '{group}': mixed model preferences "
+            f"{{{', '.join(sorted(models))}}} — a batch runs "
             f"as one unit and must share a model (omit model to inherit)"
         ]
     return []

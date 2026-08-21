@@ -225,17 +225,21 @@ RELEASE_VALUES: frozenset[str] = frozenset({"breaking", "feature", "fix"})
 def closed_dimensions(cfg):
     """{dimension: {allowed values}} for every closed dimension the validator enforces.
 
-    Seeded with ws's built-in intake/outbound state vocabulary (``state.STATE_DIMENSIONS``,
-    owned in code so it's uniform fleet-wide) and the built-in ``release:`` vocabulary
-    (``RELEASE_VALUES``), then unioned with every per-hive dimension that declares `values:`
-    (a closed set). Dimensions without `values:` are open and accept anything (e.g. `wave:` —
-    deliberately left open); config may extend a built-in dimension's value set but never
-    removes a built-in value."""
+    Seeded with ws's built-in intake/outbound state vocabulary (``state.STATE_DIMENSIONS``),
+    ``release:``, and the provider-neutral ``complexity:`` routing vocabulary, then unioned with
+    every per-hive dimension that declares `values:`. ``complexity:`` is authoritative and cannot
+    be extended by config. ``model:`` is deliberately excluded even when config lists values:
+    model labels are optional provider/model preferences, not portable capability aliases.
+    Other dimensions without `values:` are open and accept anything (e.g. `wave:`)."""
+    from .complexity import tier_names
     from .state import STATE_DIMENSIONS  # code-owned intake/outbound state vocabulary
 
     out = {dim: set(vals) for dim, vals in STATE_DIMENSIONS.items()}
     out["release"] = set(RELEASE_VALUES)
+    out["complexity"] = set(tier_names())
     for dim, spec in (cfg.get("dimensions", {}) or {}).items():
+        if dim in {"complexity", "model"}:
+            continue
         vals = (spec or {}).get("values")
         if vals is not None:
             out.setdefault(dim, set()).update(str(v) for v in vals)
