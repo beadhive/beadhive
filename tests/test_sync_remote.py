@@ -575,10 +575,20 @@ def test_dirty_hive_is_refused_and_reported_offending(world):
     assert (clone / "file.txt").read_text() == "uncommitted change"
 
 
-def test_missing_clone_is_blocked_and_offending(world):
+def test_remote_only_hive_is_reported_and_not_offending_in_all_sync(world, capsys):
     _register(repo="ghost", prefix="ghost")
 
     plan = sync_remote.sync_remote(dry_run=False)
+
+    assert plan.offending == []
+    assert plan.records[0].status == SyncStatus.REMOTE_ONLY
+    assert "remote-only hive" in capsys.readouterr().out
+
+
+def test_named_missing_clone_is_blocked_and_offending(world):
+    _register(repo="ghost", prefix="ghost")
+
+    plan = sync_remote.sync_remote(dry_run=False, hive_ids=["ghost"])
 
     assert plan.offending == ["github/myorg/ghost"]
     assert plan.records[0].status == SyncStatus.BLOCKED
@@ -848,6 +858,28 @@ def test_cli_exits_zero_when_everything_clean(world):
     res = CliRunner().invoke(app, ["hive", "sync-remote", "--all"])
 
     assert res.exit_code == 0
+
+
+def test_cli_all_sync_skips_remote_only_hive(world):
+    from beadhive.cli import app
+
+    _register(repo="ghost", prefix="ghost")
+
+    res = CliRunner().invoke(app, ["hive", "sync", "--all", "--dry-run"])
+
+    assert res.exit_code == 0
+    assert "remote-only" in res.output
+
+
+def test_cli_named_sync_keeps_missing_checkout_as_failure(world):
+    from beadhive.cli import app
+
+    _register(repo="ghost", prefix="ghost")
+
+    res = CliRunner().invoke(app, ["hive", "sync", "remotes", "ghost", "--dry-run"])
+
+    assert res.exit_code != 0
+    assert "clone path does not exist" in res.output
 
 
 def test_cli_exits_nonzero_and_lists_offenders_when_dirty(world):

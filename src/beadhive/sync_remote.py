@@ -19,7 +19,7 @@ the configured Dolt remote.
 
 Exported API
 ------------
-- ``SyncStatus``       — clean | dirty | unpushed-git | unpushed-dolt | blocked
+- ``SyncStatus``       — clean | dirty | unpushed-git | unpushed-dolt | remote-only | blocked
 - ``HiveSyncRecord``    — one hive's classification + reasons (read-only assessment)
 - ``SyncPlan``          — structured outcome of ``sync_remote`` (what happened / would happen)
 - ``assess_hive(hive_id, clone_path, *, fetch=False)`` — pure, read-only classification
@@ -43,6 +43,7 @@ from .safety import Category, DoltRefInfo, scan
 # UNPUSHED_DOLT are safe-to-push states (would be pushed in a live run); CLEAN needs nothing.
 _RANK: dict[str, int] = {
     "clean": 0,
+    "remote-only": 0,
     "unpushed-dolt": 1,
     "unpushed-git": 2,
     "dirty": 3,
@@ -57,6 +58,7 @@ class SyncStatus(StrEnum):
     DIRTY = "dirty"
     UNPUSHED_GIT = "unpushed-git"
     UNPUSHED_DOLT = "unpushed-dolt"
+    REMOTE_ONLY = "remote-only"
     BLOCKED = "blocked"
 
 
@@ -133,7 +135,9 @@ class HiveSyncRecord:
     dolt_status: str = "absent"
 
 
-def assess_hive(hive_id: str, clone_path: Path, *, fetch: bool = False) -> HiveSyncRecord:
+def assess_hive(
+    hive_id: str, clone_path: Path, *, fetch: bool = False, remote_only: bool = False
+) -> HiveSyncRecord:
     """Pure, read-only classification of one hive — never mutates anything.
 
     Reuses ``safety.scan`` (the dolt-ref-aware safety scan from bh-59q1.1) rather than
@@ -143,6 +147,11 @@ def assess_hive(hive_id: str, clone_path: Path, *, fetch: bool = False) -> HiveS
     or an unpushed/diverged ``refs/dolt/data`` make it ``UNPUSHED_GIT`` / ``UNPUSHED_DOLT``;
     else ``CLEAN``.
 
+    When ``remote_only=True``, a missing clone is an intentional all-fleet omission: its
+    bead state is hydrated separately by ``bh sync`` into a minimal cache, so this git-working-
+    tree sync reports it and moves on. A named hive remains strict (the default): a missing
+    path is ``BLOCKED`` because that caller explicitly requested its local checkout.
+
     ``fetch=True`` (still read-only, but pays a real network fetch) consults ``bd federation
     status`` for the dolt state, yielding verified ahead/behind counts instead of the
     no-network path's ``unknown``. The default ``False`` keeps today's no-network behavior.
@@ -151,8 +160,12 @@ def assess_hive(hive_id: str, clone_path: Path, *, fetch: bool = False) -> HiveS
         return HiveSyncRecord(
             hive=hive_id,
             clone_path=str(clone_path),
-            status=SyncStatus.BLOCKED,
-            reasons=["clone path does not exist"],
+            status=SyncStatus.REMOTE_ONLY if remote_only else SyncStatus.BLOCKED,
+            reasons=[
+                "no local checkout — remote-only hive (hydrate with `bh sync`)"
+                if remote_only
+                else "clone path does not exist"
+            ],
         )
 
     record = scan(clone_path, fetch=fetch)
@@ -411,7 +424,16 @@ def sync_remote(
     # Parallel read-only pre-assessment.  Do not set ``fetch=True`` here: that is a
     # federation-peer probe, whereas this command operates on ``bd dolt`` remotes. SHAPE B
     # (`fleet.fanout`) preserves input order, so output stays in deterministic config order.
-    records = fleet.fanout(lambda t: assess_hive(t[0], t[1]), targets, workers=_ASSESS_WORKERS)
+    # ``--all`` deliberately includes registry-only hives. They have no checkout to assess or
+    # push here; `bh sync` owns hydrating their minimal bead cache. A named hive is different:
+    # specifying it promises that its local checkout is the target, so retain the BLOCKED error
+    # for a missing/invalid path.
+    remote_only_ok = not hive_ids
+    records = fleet.fanout(
+        lambda t: assess_hive(t[0], t[1], remote_only=remote_only_ok),
+        targets,
+        workers=_ASSESS_WORKERS,
+    )
 
     # Pull-then-push (bh-ummb9.1 wiring; the pull leg's own behaviour — auto-merge reporting,
     # per-remote nuance, dry-run ahead/behind — is bh-ummb9.2/.3's job, not this one's). Never
@@ -421,6 +443,8 @@ def sync_remote(
     pull_failed: set[str] = set()
     if pull and not dry_run:
         for (hive_id, clone_path), record in zip(targets, records, strict=True):
+            if record.status == SyncStatus.REMOTE_ONLY:
+                continue
             if record.dolt_status in ("absent", "no-remote", None):
                 continue
             ok, reason, auto_merges = _pull_dolt_state(cfg, clone_path, remote=remote)
@@ -471,7 +495,7 @@ def sync_remote(
             plan.offending.append(hive_id)
             continue
 
-        if record.status == SyncStatus.CLEAN:
+        if record.status in (SyncStatus.CLEAN, SyncStatus.REMOTE_ONLY):
             continue
 
         if not push:
