@@ -24,14 +24,32 @@ import subprocess
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from beadhive import bd as bd_mod
 from beadhive import config, localloop, seatrun, state, work_next
+from beadhive.complexity import ComplexityTier
+from beadhive.model_routing import ModelBlockedVerdict, ModelSelection
 
 STUB_SEAT = Path(__file__).parent / "fixtures" / "stub_seat.py"
+
+
+def _model_selection(model="anthropic/claude-sonnet-4-5", *, role="developer", warnings=()):
+    return ModelSelection(
+        required_tier=ComplexityTier.COMPLEX,
+        preferred_model=None,
+        selected_model=model,
+        policy="loose",
+        role=role,
+        harness="claude",
+        endpoint=None,
+        availability_source="explicit_configuration",
+        selection_reason="least-overpowered available model covering the required complexity",
+        warnings=tuple(warnings),
+    )
 
 
 def async_test(fn):
@@ -477,6 +495,9 @@ def _loop(tmp_path, **kw):
     kw.setdefault("epic", "epic-1")
     kw.setdefault("actor", "disp/loop")
     kw.setdefault("seat_command", f"{sys.executable} {STUB_SEAT}")
+    # Existing loop-mechanics tests isolate process behavior from routing. Routing-specific tests
+    # below inject a concrete shared decision explicitly.
+    kw.setdefault("routing", lambda _bead, _role: None)
     kw.setdefault("instructions", None)
     if kw["instructions"] is None:
         inst = tmp_path / "brief.md"
@@ -1080,6 +1101,157 @@ def test_local_runtime_schedules_observes_and_is_idempotent(tmp_path):
             break
         time.sleep(0.05)
     assert outcome.status == "done"
+
+
+def test_local_runtime_translates_canonical_model_only_at_launch_and_reports_routing(tmp_path):
+    inst = _instructions(tmp_path, "routing", "STUB_STATUS=done")
+    rt = localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}", harness="claude")
+    decision = _model_selection()
+    handle = rt.schedule(
+        "b1",
+        "developer",
+        workspace=str(tmp_path),
+        instructions=str(inst),
+        session_id="routing-1",
+        decision=decision,
+    )
+    seat = rt._runs["b1"]
+    model_index = seat.argv.index("--model")
+    assert seat.argv[model_index + 1] == "claude-sonnet-4-5"
+    assert seat.routing["selected_model"] == "anthropic/claude-sonnet-4-5"
+    assert seat.routing["launch_model"] == "claude-sonnet-4-5"
+
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        outcome = rt.observe(handle)
+        if outcome.status != "running":
+            break
+        time.sleep(0.05)
+    assert outcome.status == "done"
+    assert outcome.routing["complexity"] == "COMPLEX"
+
+
+def test_local_runtime_strict_block_prevents_launch_with_full_remediation(tmp_path):
+    rt = localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}")
+    blocked = ModelBlockedVerdict(
+        required_tier=ComplexityTier.REASONING,
+        preferred_model="openai/missing",
+        policy="strict",
+        role="developer",
+        harness="claude",
+        availability_source="gateway_live",
+        reason="preferred model openai/missing is unavailable",
+        remediation="configure an available route",
+    )
+    with pytest.raises(
+        ValueError,
+        match=r"b1.*REASONING.*openai/missing.*gateway_live.*configure an available route",
+    ):
+        rt.schedule(
+            "b1",
+            "developer",
+            workspace=str(tmp_path),
+            instructions=str(tmp_path),
+            session_id="blocked",
+            decision=blocked,
+        )
+    assert "b1" not in rt._runs
+
+
+def test_routing_telemetry_records_decision_without_endpoint_details():
+    decision = replace(
+        _model_selection(),
+        preferred_model="anthropic/claude-sonnet-4-5",
+        endpoint="https://gateway.example/private-tenant-token/v1",
+        availability_source="gateway_live",
+    )
+    attrs = localloop.LocalLoop._routing_attributes(decision)
+    assert attrs == {
+        "bh.routing.required_complexity": "COMPLEX",
+        "bh.routing.preferred_model": "anthropic/claude-sonnet-4-5",
+        "bh.routing.selected_model": "anthropic/claude-sonnet-4-5",
+        "bh.routing.availability_source": "gateway_live",
+        "bh.routing.selection_reason": decision.selection_reason,
+        "bh.routing.endpoint_source": "gateway",
+    }
+    assert "private-tenant-token" not in repr(attrs)
+
+
+@pytest.mark.parametrize("role", ["developer", "dispatcher"])
+@async_test
+async def test_poll_loop_launches_shared_decision_for_leaf_and_nested_dispatcher(
+    tmp_path, fakebd, role
+):
+    fakebd(FakeBd(children=[_child("b1")]))
+    decision = _model_selection(role=role, warnings=("loose fallback is visible",))
+    loop = _loop(tmp_path, routing=lambda _bead, _role: decision)
+    report = localloop.PassReport()
+    await loop._spawn_for("b1", action="dispatch", role=role, report=report)
+
+    seat = loop.in_flight["b1"]
+    model_index = seat.argv.index("--model")
+    assert seat.argv[model_index + 1] == "claude-sonnet-4-5"
+    assert report.as_dict()["routing"]["b1"]["selected_model"] == decision.selected_model
+    assert report.as_dict()["routing"]["b1"]["warnings"] == ["loose fallback is visible"]
+    await loop.shutdown()
+
+
+@async_test
+async def test_poll_loop_strict_block_records_evidence_and_never_spawns(tmp_path, fakebd):
+    fakebd(FakeBd(children=[_child("b1")]))
+    blocked = ModelBlockedVerdict(
+        required_tier=ComplexityTier.REASONING,
+        preferred_model="openai/missing",
+        policy="strict",
+        role="developer",
+        harness="claude",
+        availability_source="gateway_live",
+        reason="preferred model openai/missing is unavailable",
+        remediation="configure an available route",
+    )
+    loop = _loop(tmp_path, routing=lambda _bead, _role: blocked)
+    report = localloop.PassReport()
+    await loop._spawn_for("b1", action="dispatch", role="developer", report=report)
+
+    assert loop.in_flight == {}
+    assert report.dispatched == ()
+    assert report.causes == (("b1", localloop.CAUSE_BLOCKED),)
+    payload = report.as_dict()["routing"]["b1"]
+    assert payload["complexity"] == "REASONING"
+    assert payload["preferred_model"] == "openai/missing"
+    assert payload["availability_source"] == "gateway_live"
+    assert payload["remediation"] == "configure an available route"
+
+
+@async_test
+async def test_resume_reuses_original_launch_identity_without_refresh_or_double_spawn(
+    tmp_path, fakebd
+):
+    fakebd(FakeBd(children=[_child("b1")]))
+    decisions = iter([_model_selection(), _model_selection("anthropic/claude-opus-4-1")])
+    calls = []
+
+    def resolve(bead, role):
+        calls.append((bead, role))
+        return next(decisions)
+
+    loop = _loop(tmp_path, routing=resolve)
+    first = localloop.PassReport()
+    await loop._spawn_for("b1", action="dispatch", role="developer", report=first)
+    # An availability refresh while the first run is live cannot spawn or re-resolve.
+    await loop._spawn_for("b1", action="dispatch", role="developer", report=first)
+    assert len(calls) == 1
+
+    deadline = time.monotonic() + 15
+    while not loop.in_flight["b1"].finished and time.monotonic() < deadline:
+        await asyncio.sleep(0.05)
+    await loop._harvest(localloop.PassReport())
+    resumed = localloop.PassReport()
+    await loop._spawn_for("b1", action="resume", role="developer", report=resumed)
+    assert len(calls) == 1
+    seat = loop.in_flight["b1"]
+    assert seat.argv[seat.argv.index("--model") + 1] == "claude-sonnet-4-5"
+    await loop.shutdown()
 
 
 def test_local_runtime_rejects_a_bad_workspace_with_a_typed_error(tmp_path):

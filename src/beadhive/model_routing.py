@@ -85,6 +85,7 @@ class ModelSelection:
             "selection_reason": self.selection_reason,
             "policy": self.policy,
             "availability_source": self.availability_source,
+            "endpoint": self.endpoint,
             "warnings": list(self.warnings),
         }
 
@@ -115,6 +116,7 @@ class ModelBlockedVerdict:
             "selection_reason": self.reason,
             "policy": self.policy,
             "availability_source": self.availability_source,
+            "endpoint": None,
             "warnings": list(self.warnings),
             "blocked": True,
             "remediation": self.remediation,
@@ -461,8 +463,7 @@ class GatewayAvailabilityAdapter:
                 role=role,
                 harness=harness,
                 warning=(
-                    "catalogue fetch failed; availability not enumerated "
-                    f"({type(exc).__name__})"
+                    f"catalogue fetch failed; availability not enumerated ({type(exc).__name__})"
                 ),
             )
         self._cache[endpoint] = (now, models)
@@ -493,8 +494,7 @@ class HarnessAvailabilityAdapter:
                 role=role,
                 harness=harness,
                 warning=(
-                    "harness cannot enumerate subscription models; trusted explicit "
-                    "configuration"
+                    "harness cannot enumerate subscription models; trusted explicit configuration"
                 ),
             )
         return AvailabilitySnapshot.live(

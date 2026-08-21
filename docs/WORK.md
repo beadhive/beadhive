@@ -451,6 +451,13 @@ react to a `bd gate` the scheduler was waiting on. `config.work_runtime()` reads
 implementation, raising `NotImplementedError` naming the sibling bead for any tier not yet
 built (today: `temporal`, bh-c6dk.4).
 
+Every manual/Task launch and local-runtime launch consumes the same canonical routing decision
+shown by `bh work schedule`: required complexity, optional preferred model, selected
+`provider/model`, availability source, reason, and warnings. Canonical identity stays in the
+runtime/pass envelope and GenAI telemetry. Only the final harness adapter translates it for argv
+(for example, Claude receives its Anthropic model name without the `anthropic/` prefix). A strict
+blocked verdict never spawns; a loose fallback spawns and remains visible in the envelope.
+
 ### The `local` tier — `bh work loop <epic>`
 
 `bh work loop <epic>` drives one molecule to completion with **no human present and no server

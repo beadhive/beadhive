@@ -121,6 +121,8 @@ def test_schedule_payload_group_carries_model_field(monkeypatch):
     assert len(result["groups"]) == 1
     g = result["groups"][0]
     assert "model" in g
+    assert g["selected_model"] == "anthropic/claude-opus-4-1"
+    assert g["launch_model"] == "claude-opus-4-1"
     assert "kind" in g and "ids" in g and "reason" in g
 
 

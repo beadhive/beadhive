@@ -416,7 +416,9 @@ blocks an unavailable or out-of-range preference and any group preference confli
 every group, singleton, and nested coordinator: `complexity`, `preferred_model`,
 `selected_model`, `selection_reason`, `policy`, `availability_source`, and `warnings`. The old
 `model` field remains temporarily as a deprecated alias of `selected_model` (and is `null` when
-selection is blocked); consumers should migrate to `selected_model`.
+selection is blocked); consumers should migrate to `selected_model`. `launch_model` is the
+selected harness adapter's final token for callers that launch directly; it is never the durable
+model identity.
 
 ## `work.dispatch` — collapsed dispatch
 

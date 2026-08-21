@@ -2126,6 +2126,11 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
             availability=availability,
         )
         result = decision.as_dict()
+        result["launch_model"] = (
+            model_routing.launch_model(result["selected_model"], harness)
+            if result["selected_model"]
+            else None
+        )
         # Compatibility window: old consumers read `model`. It now aliases the selected canonical
         # provider/model (or null on a blocked decision); new consumers must use selected_model.
         result["model"] = result["selected_model"]
@@ -2222,9 +2227,17 @@ def schedule(
     if not payload["groups"] and not payload["singletons"] and not payload["coordinators"]:
         typer.echo("(no open children to schedule)")
         return
+
+    def _routing_diagnostics(item):
+        for warning in item.get("warnings", []):
+            typer.echo(f"    ⚠ {warning}")
+        if item.get("blocked"):
+            typer.echo(f"    ✗ {item['selection_reason']}; {item['remediation']}")
+
     for c in payload["coordinators"]:
         model = c["selected_model"] or "BLOCKED"
         typer.echo(f"◆ coordinator {c['id']}  — child epic → {c['dispatch']} (model: {model})")
+        _routing_diagnostics(c)
     for g in payload["groups"]:
         typer.echo(
             f"▸ group [{g['kind']}] {', '.join(g['ids'])}  — {g['reason']} "
@@ -2235,6 +2248,7 @@ def schedule(
         # self-heals the label from the shared parent epic.
         if g["kind"] == "collapsed":
             typer.echo(f"    → {config.BINARY_ALIAS} work claim --group {','.join(g['ids'])}")
+        _routing_diagnostics(g)
     deferred = {d["id"]: d for d in payload.get("release", {}).get("deferred", [])}
     for singleton in payload["singletons"]:
         bead_id = singleton["id"]
@@ -2246,6 +2260,7 @@ def schedule(
         else:
             model = singleton["selected_model"] or "BLOCKED"
             typer.echo(f"· single {bead_id} (model: {model})")
+            _routing_diagnostics(singleton)
 
 
 def _guard_fork_remote(entry, remote) -> None:
