@@ -126,14 +126,28 @@ def _repo_files(repo):
     return repo / "profiles" / "local.yaml", repo / "catalogs" / "local.yaml"
 
 
-def _hitch_argv(cfg, hitch_target: str, profile: str, *, command: str, repo) -> list[str]:
+def _hitch_argv(
+    cfg,
+    hitch_target: str,
+    profile: str,
+    *,
+    command: str,
+    repo,
+    workspace: str | None = None,
+    task: str | None = None,
+    detached: bool = False,
+    role_: str | None = None,
+    explain: bool = False,
+) -> list[str]:
     """The real ``hitch up`` invocation argv. Absolute ``--profiles-file``/``--catalog`` paths
     (derived from ``hitch.repo``) so resolution never depends on bh's own cwd; ``--root`` is
     ``hitch_config_dir_root`` — always persistent, independent of ``config.worktrees_ephemeral``
-    (ADR Amendment 5)."""
+    (ADR Amendment 5). ``workspace``/``task``/``detached``/``role_``/``explain`` are forwarded
+    unchanged when set — hitch's own CLI is the sole authority on their validity (e.g. ``-d``
+    without ``--task``, ADR 0003), never re-validated here."""
     profiles_file, catalog_file = _repo_files(repo)
     root = config.hitch_config_dir_root(cfg)
-    return [
+    argv = [
         command,
         "up",
         hitch_target,
@@ -145,15 +159,39 @@ def _hitch_argv(cfg, hitch_target: str, profile: str, *, command: str, repo) -> 
         "--root",
         str(root),
     ]
+    if workspace is not None:
+        argv += ["--workspace", workspace]
+    if task is not None:
+        argv += ["--task", task]
+    if detached:
+        argv += ["-d"]
+    if role_ is not None:
+        argv += ["--role", role_]
+    if explain:
+        argv += ["--explain"]
+    return argv
 
 
-def up(target: str, profile: str, cfg=None) -> int:
+def up(
+    target: str,
+    profile: str,
+    cfg=None,
+    *,
+    workspace: str | None = None,
+    task: str | None = None,
+    detached: bool = False,
+    role_: str | None = None,
+    explain: bool = False,
+) -> int:
     """``bh plugin hitch up <target> <profile>``'s logic: gate on ``hitch.enabled`` (disabled by
     default — refuses with a clear message, no subprocess spawned), resolve+validate prerequisites
     (known target, hitch on PATH, ``hitch.repo`` configured), then exec the real ``hitch up`` with
     **inherited stdio** (interactive hand-over, mirroring :func:`beadhive.role.launch`) and
     propagate its exit code verbatim — including a preflight failure, so "fails loudly" is
     inherited from hitch's own already-fail-closed implementation rather than re-implemented here.
+    ``workspace``/``task``/``detached``/``role_``/``explain`` pass straight through to the real
+    ``hitch up`` argv (see :func:`_hitch_argv`) — including ``-d`` without ``--task``, which hitch's
+    own CLI refuses with its own ADR-0003 message, not reimplemented here.
     Returns the process exit code (0 on success); never raises for an ordinary failure."""
     cfg = cfg if cfg is not None else config.load()
 
@@ -189,7 +227,18 @@ def up(target: str, profile: str, cfg=None) -> int:
         )
         return 1
 
-    argv = _hitch_argv(cfg, hitch_target, profile, command=command, repo=repo)
+    argv = _hitch_argv(
+        cfg,
+        hitch_target,
+        profile,
+        command=command,
+        repo=repo,
+        workspace=workspace,
+        task=task,
+        detached=detached,
+        role_=role_,
+        explain=explain,
+    )
     result = run.run(argv, check=False, capture=False)
     return result.returncode
 
@@ -426,8 +475,35 @@ cli = typer.Typer(no_args_is_help=True, help="agent-hitch launch integration (op
 def _up_cmd(
     target: str = typer.Argument(..., help="harness to launch: claude | opencode | codex."),
     profile: str = typer.Argument(..., help="hitch profile name (e.g. dispatcher, developer)."),
+    workspace: str = typer.Option(
+        None, "--workspace", help="workspace the provider acts on (default: cwd)."
+    ),
+    task: str = typer.Option(
+        None, "--task", help="run headless with this task instead of an interactive session."
+    ),
+    detached: bool = typer.Option(
+        False,
+        "-d",
+        "--detached",
+        help="detach the run; requires --task (refused by hitch without it, see ADR 0003).",
+    ),
+    role_: str = typer.Option(None, "--role", help="the declared agent to run inside the profile."),
+    explain: bool = typer.Option(
+        False,
+        "--explain",
+        "--dry-run",
+        help="write and print the redacted launch manifest without starting the provider.",
+    ),
 ) -> None:
-    code = up(target, profile)
+    code = up(
+        target,
+        profile,
+        workspace=workspace,
+        task=task,
+        detached=detached,
+        role_=role_,
+        explain=explain,
+    )
     if code != 0:
         raise typer.Exit(code)
 
