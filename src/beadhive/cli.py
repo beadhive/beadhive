@@ -1300,7 +1300,11 @@ def _run_sync_peers(
 _HIVE_ARG = typer.Argument(
     None, metavar="[HIVE]...", help="one or more registered hives (prefix / triplet / org/repo)"
 )
-_ALL_OPT = typer.Option(False, "--all", help="target every registered hive (HQ excluded)")
+_ALL_OPT = typer.Option(
+    False,
+    "--all",
+    help="target every registered hive (HQ excluded; remote-only hives are reported and skipped)",
+)
 _DRY_RUN_OPT = typer.Option(False, "--dry-run", help="print the plan and change nothing")
 
 
