@@ -31,6 +31,19 @@ This is early, legible failure — not enforcement. It gates `bh bd`, not a genu
 which nothing in bh can. The backstop is the epoch fence beside the data at push time
 (`host_fence.py`, [spike](spikes/bh-ukit.2-fence-under-a-dolt-server.md)).
 
+### Destructive wisp-cleanup guard
+
+Two `bd` cleanup operations are unsafe while any wisp molecule in the hive is still open:
+`mol wisp gc --closed` can delete completed steps from an in-flight molecule, and `mol squash`
+can delete its open steps and auto-close its root. Before forwarding either operation, `bh bd`
+queries all wisp molecule roots hive-wide and refuses when any are non-closed, naming them in the
+error. A failed or malformed safety query also refuses rather than guessing that cleanup is safe.
+
+Once every wisp molecule is closed, both operations are forwarded unchanged. An operator who has
+independently verified safety can use the standing convention-guard escape hatch,
+`BH_DEBUG=1`. This is still early, legible failure rather than enforcement: a genuinely raw
+`bd mol wisp gc` or `bd mol squash` invocation remains outside bh's control.
+
 `bh bd import` is the bulk counterpart: plain `bd import` is a raw upsert that does *not* inject
 the triplet, so a backfill JSONL would land registry-invalid. `bh bd import` merges the triplet
 into every record's labels first (idempotent — existing tags aren't duplicated), then upserts by
