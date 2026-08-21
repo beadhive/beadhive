@@ -451,10 +451,15 @@ def role_cmd(
     harness: str = typer.Option(
         "", "--harness", help="harness to exec (claude|opencode); overrides config."
     ),
+    no_hitch: bool = typer.Option(
+        False,
+        "--no-hitch",
+        help="force the native backend even when hitch (if enabled) would otherwise apply.",
+    ),
 ):
-    from . import role as role_mod
+    from . import hitch_plugin
 
-    role_mod.launch(name, harness=harness or None)
+    hitch_plugin.route(name, harness=harness or None, no_hitch=no_hitch)
 
 
 @app.command("statusline", hidden=True, help="print role/hive statusline from stdin JSON (TUI).")

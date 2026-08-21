@@ -194,6 +194,74 @@ def up(target: str, profile: str, cfg=None) -> int:
     return result.returncode
 
 
+# ---- unified `bh role <seat>` backend selection (bh-6t49w.3) ----------------------------------
+# Collapses `bh role <seat>` and `bh plugin hitch up <target> <profile>` into one entry point:
+# hitch is picked when enabled AND a seat-aligned profile exists for the resolved harness, else
+# bh's own bundled seat defs (role.launch, unchanged) — always stating which backend ran, before
+# exec'ing, per the ADR's "fails loudly, never silently" principle. Lives here (not in role.py)
+# because role.py is the plain, hitch-unaware default path (see its module docstring + the
+# `test_role_module_never_imports_hitch_plugin` structural guard) — this module already imports
+# `role` and already owns the profile-matching machinery this reuses.
+
+
+def _resolve_backend(seat: str, harness: str, cfg) -> tuple[str, str | None, str | None]:
+    """Decide native vs hitch for one seat launch under *harness* (bh's own harness vocabulary,
+    e.g. "claude"). Returns ``("native", None, None)`` unless hitch is enabled AND *harness*
+    maps to a known hitch target AND a seat-aligned profile for *seat* exists in hitch.repo's
+    ``profiles/local.yaml`` — in which case ``("hitch", hitch_target, profile)``.
+
+    Reuses :func:`_profile_names` (the same profile-name matching `seat_reports` already
+    computes for `bh doctor`'s Seats section) as the existence check — no preflight subprocess
+    here, that's :func:`seat_reports`'s job for the (expensive, per-seat) runnability report.
+    A config-time "does a profile exist" fact is cheap enough to check on every launch."""
+    if not config.hitch_enabled(cfg):
+        return "native", None, None
+    hitch_target = _HITCH_TARGETS.get(harness)
+    if hitch_target is None:
+        return "native", None, None
+    repo = config.hitch_repo(cfg)
+    if repo is None:
+        return "native", None, None
+    profiles_file, _catalog_file = _repo_files(repo)
+    if seat not in _profile_names(profiles_file):
+        return "native", None, None
+    return "hitch", hitch_target, seat
+
+
+def route(seat: str, *, harness: str | None = None, no_hitch: bool = False, cfg=None) -> None:
+    """``bh role <seat>``'s unified entry point. Listing (no seat) and an unknown seat delegate
+    straight to :func:`beadhive.role.launch` unchanged — nothing to pick a backend for. For a
+    known seat, picks hitch when it applies (see :func:`_resolve_backend`), forced off by
+    ``--no-hitch`` regardless of what would otherwise apply, and always announces which backend
+    is about to run *before* exec'ing.
+
+    Disabled/unconfigured hitch (the default) always resolves to native — same seat, same
+    harness, same argv/env `role.launch` always built (Amendment 2's degrade-to-today bar) —
+    the only difference from calling `role.launch` directly is this function's own banner line.
+
+    Never raises for an ordinary failure/exit; propagates `role.launch`'s ``SystemExit`` or
+    wraps `up`'s non-zero return code the same way `bh plugin hitch up` itself does."""
+    if not seat or seat not in role._known_seats():
+        role.launch(seat, harness=harness)
+        return
+
+    cfg = cfg if cfg is not None else config.load()
+    resolved_harness = harness or config.harness_name(cfg)
+    backend, hitch_target, profile = (
+        ("native", None, None) if no_hitch else _resolve_backend(seat, resolved_harness, cfg)
+    )
+
+    if backend == "hitch":
+        typer.echo(f"→ {seat}: launching via hitch (target={hitch_target}, profile={profile})")
+        code = up(resolved_harness, profile, cfg)
+        if code != 0:
+            raise typer.Exit(code)
+        return
+
+    typer.echo(f"→ {seat}: launching via native backend")
+    role.launch(seat, harness=harness)
+
+
 # ---- seat-runnability reporting (bh-og0q.4) ---------------------------------------------------
 # "Which seats can THIS host run" — a reporting surface over hitch's own preflight, not a second
 # capability-detection mechanism. See the module docstring for the full design rationale

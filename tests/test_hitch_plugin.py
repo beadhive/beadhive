@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import typer
 from typer.testing import CliRunner
 
 from beadhive import config, hitch_plugin, hive_ready, plugins, role
@@ -593,6 +594,146 @@ def test_cli_up_success_exits_zero(monkeypatch, tmp_path):
 
     result = runner.invoke(app, ["plugin", "hitch", "up", "claude", "dispatcher"])
     assert result.exit_code == 0, result.output
+
+
+# ---- _resolve_backend / route: unified `bh role <seat>` backend selection (bh-6t49w.3) --------
+
+
+def test_resolve_backend_native_when_hitch_disabled():
+    assert hitch_plugin._resolve_backend("developer", "claude", {}) == ("native", None, None)
+
+
+def test_resolve_backend_native_when_harness_has_no_hitch_target(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    assert hitch_plugin._resolve_backend("developer", "not-a-harness", cfg) == (
+        "native",
+        None,
+        None,
+    )
+
+
+def test_resolve_backend_native_when_repo_unconfigured():
+    cfg = {"hitch": {"enabled": True}}
+    assert hitch_plugin._resolve_backend("developer", "claude", cfg) == ("native", None, None)
+
+
+def test_resolve_backend_native_when_no_matching_profile(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["shell"])  # no profile named "developer"
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    assert hitch_plugin._resolve_backend("developer", "claude", cfg) == ("native", None, None)
+
+
+def test_resolve_backend_hitch_when_enabled_and_profile_matches(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    assert hitch_plugin._resolve_backend("developer", "claude", cfg) == (
+        "hitch",
+        "claude-code",
+        "developer",
+    )
+
+
+def test_resolve_backend_translates_opencode_target(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    assert hitch_plugin._resolve_backend("developer", "opencode", cfg) == (
+        "hitch",
+        "opencode",
+        "developer",
+    )
+
+
+def test_route_empty_seat_delegates_to_role_launch_untouched(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(role, "launch", lambda seat, harness=None: calls.append((seat, harness)))
+    hitch_plugin.route("", cfg={"hitch": {"enabled": True}})
+    assert calls == [("", None)]
+    assert capsys.readouterr().out == ""  # no backend banner for the listing path
+
+
+def test_route_unknown_seat_delegates_to_role_launch_untouched(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(role, "launch", lambda seat, harness=None: calls.append((seat, harness)))
+    hitch_plugin.route("not-a-seat", cfg={"hitch": {"enabled": True}})
+    assert calls == [("not-a-seat", None)]
+    assert capsys.readouterr().out == ""
+
+
+def test_route_native_when_hitch_disabled(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(role, "launch", lambda seat, harness=None: calls.append((seat, harness)))
+    hitch_plugin.route("developer", cfg={})
+    assert calls == [("developer", None)]
+    assert "native backend" in capsys.readouterr().out
+
+
+def test_route_picks_hitch_when_enabled_and_profile_matches(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    launch_calls = []
+    monkeypatch.setattr(
+        role, "launch", lambda seat, harness=None: launch_calls.append((seat, harness))
+    )
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    up_calls = []
+    monkeypatch.setattr(
+        hitch_plugin, "up", lambda target, profile, c: up_calls.append((target, profile, c)) or 0
+    )
+
+    hitch_plugin.route("developer", cfg=cfg)
+
+    assert launch_calls == []  # native path never invoked
+    assert up_calls == [("claude", "developer", cfg)]
+    out = capsys.readouterr().out
+    assert "hitch" in out and "claude-code" in out and "developer" in out
+
+
+def test_route_no_hitch_forces_native_even_when_hitch_would_apply(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    launch_calls = []
+    monkeypatch.setattr(
+        role, "launch", lambda seat, harness=None: launch_calls.append((seat, harness))
+    )
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin, "up", lambda *a: (_ for _ in ()).throw(AssertionError("up() must not run"))
+    )
+
+    hitch_plugin.route("developer", no_hitch=True, cfg=cfg)
+
+    assert launch_calls == [("developer", None)]
+    assert "native backend" in capsys.readouterr().out
+
+
+def test_route_hitch_backend_propagates_nonzero_exit(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(hitch_plugin, "up", lambda target, profile, c: 3)
+
+    with pytest.raises(typer.Exit) as exc:
+        hitch_plugin.route("developer", cfg=cfg)
+    assert exc.value.exit_code == 3
+
+
+def test_route_hitch_backend_passes_bh_harness_vocab_to_up(monkeypatch, tmp_path):
+    """`up()` itself re-translates target -> hitch target, so `route` must pass the plain bh
+    harness name through, not the already-translated one, or translation would double-apply."""
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}, "harness": "opencode"}
+    up_calls = []
+    monkeypatch.setattr(hitch_plugin, "up", lambda target, profile, c: up_calls.append(target) or 0)
+
+    hitch_plugin.route("developer", cfg=cfg)
+
+    assert up_calls == ["opencode"]
 
 
 # ---- degradation: bh's existing default launch path is unaffected -----------------------------
