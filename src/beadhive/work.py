@@ -807,6 +807,119 @@ _READY_SHOWING_RE = re.compile(r"Showing (\d+) of (\d+) ready issues")
 READY_TRUNCATED_EXIT = 3
 
 
+class MoleculeReadinessError(Exception):
+    """A molecule-readiness read failed or returned an unusable shape."""
+
+
+def _readiness_json(args, cwd):
+    """Run one bd JSON read, preserving its failure detail for the first-class verb."""
+    res = bd.run([*args, "--json"], cwd, capture=True)
+    if res.returncode != 0:
+        raise MoleculeReadinessError(bd.err_detail(res))
+    try:
+        return json.loads(res.stdout or "null")
+    except json.JSONDecodeError as exc:
+        raise MoleculeReadinessError(f"invalid JSON from bd {' '.join(args)}") from exc
+
+
+def molecule_readiness_payload(molecule: str, cwd) -> dict:
+    """Return blocker-correct per-step readiness for one persistent or wisp molecule.
+
+    The safety boundary is deliberately the *unscoped* GetReadyWork path.  In particular, never
+    substitute ``bd mol current`` or ``bd ready --mol`` here: both silently ignore a persistent
+    blocker of an ephemeral step (bh-yber2.1 M4).  ``--explain`` supplies the blocker identities;
+    the sibling unscoped read supplies the complete ready set because bd's explain JSON currently
+    omits blocker-free rows whenever blocked rows also exist.  Both reads are global and include
+    ephemeral issues, so they share the blocker-aware implementation confirmed by bh-yber2.3.
+
+    Membership is a direct parent-child read, not a readiness read.  ``bd show --children`` covers
+    both persistent and ephemeral children, unlike ``bd list --parent`` (which omits wisps), and
+    does not admit unrelated beads that merely depend on a molecule step.  Do not derive membership
+    from ``dep tree --direction=up``: its de-duplicated traversal can reach a real child through a
+    predecessor edge first, making ``edge_from_parent`` say ``blocks`` instead of ``parent-child``.
+    """
+    children = _readiness_json(["show", molecule, "--children"], cwd)
+    members = children.get(molecule) if isinstance(children, dict) else None
+    if not isinstance(members, list) or not all(isinstance(row, dict) for row in members):
+        raise MoleculeReadinessError(f"cannot read molecule {molecule}")
+
+    # Keep this argv shape explicit.  It is the settled-safe query from the ADR addendum; adding
+    # --mol, or routing through mol current, reintroduces the false green this verb exists to close.
+    explained = _readiness_json(["ready", "--include-ephemeral", "--explain", "--limit", "0"], cwd)
+    ready_rows = _readiness_json(["ready", "--include-ephemeral", "--limit", "0"], cwd)
+    if not isinstance(explained, dict) or not isinstance(ready_rows, list):
+        raise MoleculeReadinessError("bd ready returned an unexpected shape")
+
+    ready_ids = {
+        str(row.get("id") or "") for row in ready_rows if isinstance(row, dict) and row.get("id")
+    }
+    blocked = {
+        str(row.get("id") or ""): row
+        for row in explained.get("blocked", [])
+        if isinstance(row, dict) and row.get("id")
+    }
+    steps = []
+    for row in members:
+        step_id = str(row.get("id") or "")
+        status = str(row.get("status") or "")
+        blockers = blocked.get(step_id, {}).get("blocked_by", [])
+        if status == "closed":
+            readiness = "done"
+        elif step_id in blocked:
+            readiness = "blocked"
+        elif step_id in ready_ids:
+            readiness = "ready"
+        elif status and status != "open":
+            readiness = status
+        else:
+            readiness = "pending"
+        steps.append(
+            {
+                "id": step_id,
+                "title": str(row.get("title") or ""),
+                "status": status,
+                "readiness": readiness,
+                "blocked_by": blockers if isinstance(blockers, list) else [],
+            }
+        )
+    return {"molecule": molecule, "steps": steps}
+
+
+def _render_molecule_readiness(payload: dict) -> None:
+    typer.echo(f"Molecule {payload['molecule']}")
+    for step in payload["steps"]:
+        typer.echo(f"  [{step['readiness']}] {step['id']}: {step['title']}")
+        for blocker in step["blocked_by"]:
+            typer.echo(
+                f"    ← blocked by {blocker.get('id', '?')}: "
+                f"{blocker.get('title', '')} [{blocker.get('status', 'unknown')}]"
+            )
+
+
+@app.command("readiness")
+@otel.trace_verb("work.readiness")
+def readiness(
+    molecule: str = typer.Argument(
+        ..., metavar="<molecule-id>", help="persistent or wisp molecule"
+    ),
+    hive: str = _HIVE,
+    as_json: bool = typer.Option(False, "--json", help="emit the machine-readable per-step report"),
+):
+    """Report blocker-correct readiness for every step in a persistent or wisp molecule."""
+    otel.set_bead(molecule)
+    cfg = config.load()
+    cwd = registry.hive_dir_for(cfg, hive)
+    try:
+        payload = molecule_readiness_payload(molecule, cwd)
+    except MoleculeReadinessError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2))
+    else:
+        _render_molecule_readiness(payload)
+
+
 def _ready_arg_name(tok: str) -> str:
     """The flag name of one arg token, stripping a `--flag=value` suffix."""
     return tok.split("=", 1)[0]

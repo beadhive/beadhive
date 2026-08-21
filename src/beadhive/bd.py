@@ -726,12 +726,180 @@ def _import(import_args, cwd):
     return code
 
 
+_WISP_MOLECULE_QUERY = ["bd", "mol", "wisp", "list", "--all", "--json"]
+
+# Cobra persistent flags are valid before, between, or after subcommands. Classification cannot
+# simply discard tokens beginning with ``-``: a value such as ``ops/a`` would remain and shift the
+# command path in ``mol --actor ops/a squash``. Keep this list aligned with ``bd --help``. Unknown
+# flags stay in the token stream, making an unrecognised command shape fail harmlessly in bd.
+_BD_GLOBAL_VALUE_FLAGS = frozenset(
+    {
+        "--actor",
+        "--database",
+        "--db",
+        "--directory",
+        "--dolt-auto-commit",
+        "--mem-profile",
+        "-C",
+    }
+)
+_BD_GLOBAL_BOOL_FLAGS = frozenset(
+    {
+        "--cpu-profile",
+        "--global",
+        "--help",
+        "--ignore-schema-skew",
+        "--json",
+        "--no-color",
+        "--quiet",
+        "--readonly",
+        "--sandbox",
+        "--verbose",
+        "--version",
+        "-h",
+        "-q",
+        "-v",
+        "-V",
+    }
+)
+
+
+def _without_bd_global_flags(args) -> list[str]:
+    """Return bd's command tokens with Cobra persistent flags and their values removed."""
+    tokens = [str(token) for token in args]
+    command: list[str] = []
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        name, equals, _value = token.partition("=")
+        if name in _BD_GLOBAL_VALUE_FLAGS:
+            index += 1 if equals else 2
+            continue
+        if name in _BD_GLOBAL_BOOL_FLAGS:
+            index += 1
+            continue
+        # pflag accepts the short value form ``-C/path`` as well as ``-C /path``.
+        if token.startswith("-C") and token != "-C":
+            index += 1
+            continue
+        command.append(token)
+        index += 1
+    return command
+
+
+def _is_guarded_wisp_cleanup(args) -> bool:
+    """Whether ``args`` names one of bd's two destructive wisp cleanup shapes.
+
+    Start at bd's actual verb so leading global flags (for example ``-C <dir>``) cannot hide
+    the command from the guard. Flags within the command do not affect the classification:
+    every ``mol squash`` is destructive, while GC is guarded specifically for the ``--closed``
+    mode that can reclaim completed steps from a still-open molecule.
+    """
+    command = _without_bd_global_flags(args)
+    positionals = [token for token in command if not token.startswith("-")]
+    closed = any(
+        token == "--closed"
+        or (
+            str(token).startswith("--closed=")
+            and str(token).partition("=")[2].strip().lower() in ("1", "true", "yes", "on")
+        )
+        for token in args
+    )
+    return positionals[:2] == ["mol", "squash"] or (
+        positionals[:3] == ["mol", "wisp", "gc"] and closed
+    )
+
+
+def _open_wisp_molecules(payload) -> list[tuple[str, str]]:
+    """Extract ``(id, title)`` for every non-closed wisp root in bd's JSON response.
+
+    Real stores contain both ``molecule`` roots (formula-instantiated wisps) and ``epic`` roots
+    (ephemeral root issues). Querying with ``--type molecule`` therefore proves too little. The
+    unfiltered response includes child tasks and gates too; only the two root types participate in
+    the hive-wide safety decision.
+    """
+    rows = payload.get("wisps", []) if isinstance(payload, dict) else payload
+    if not isinstance(rows, list):
+        raise ValueError("the `wisps` field is not a list")
+    found: list[tuple[str, str]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError("a wisp entry is not an object")
+        root_type = (
+            str(
+                row.get("type", row.get("Type", row.get("issue_type", row.get("IssueType", ""))))
+                or ""
+            )
+            .strip()
+            .lower()
+        )
+        if not root_type:
+            raise ValueError("a wisp entry is missing type")
+        if root_type not in ("epic", "molecule"):
+            continue
+        status = str(row.get("status", row.get("Status", "")) or "").strip().lower()
+        if status == "closed":
+            continue
+        wisp_id = str(row.get("id", row.get("ID", "")) or "").strip()
+        title = str(row.get("title", row.get("Title", "")) or "").strip()
+        if not wisp_id or not status:
+            raise ValueError("a wisp entry is missing id or status")
+        found.append((wisp_id, title))
+    return found
+
+
+def wisp_cleanup_refusal(args, cwd) -> str:
+    """Refuse destructive wisp cleanup while any wisp molecule is open in this hive.
+
+    ``bd mol wisp gc --closed`` operates hive-wide and can erase the already-completed steps of
+    an in-flight molecule. ``bd mol squash`` can instead delete its open steps and auto-close the
+    root. The only safe precondition bh can establish is therefore hive-wide too. Query/parse
+    failures fail closed: inability to prove there are no open molecules is not evidence that
+    destructive cleanup is safe.
+
+    ``BH_DEBUG=1`` is the standing explicit operator escape hatch, matching the other bh
+    convention guards. This only protects commands routed through ``bh bd``; raw ``bd`` is
+    necessarily outside bh's control.
+    """
+    if not _is_guarded_wisp_cleanup(args) or config._env_flag("debug"):
+        return ""
+    res = _run(_WISP_MOLECULE_QUERY, check=False, capture=True, cwd=cwd)
+    if res.returncode != 0:
+        return (
+            "✗ refusing destructive wisp cleanup: could not verify hive-wide wisp molecule "
+            f"state ({err_detail(res)}).\n"
+            "  Verify safety independently, then set BH_DEBUG=1 to override."
+        )
+    try:
+        payload = _json.loads(res.stdout or "")
+        open_molecules = _open_wisp_molecules(payload)
+    except (ValueError, TypeError) as exc:
+        return (
+            "✗ refusing destructive wisp cleanup: could not parse hive-wide wisp molecule "
+            f"state ({exc}).\n"
+            "  Verify safety independently, then set BH_DEBUG=1 to override."
+        )
+    if not open_molecules:
+        return ""
+    names = ", ".join(f"{wid} ({title})" if title else wid for wid, title in open_molecules)
+    return (
+        "✗ refusing destructive wisp cleanup while open wisp molecule(s) exist hive-wide: "
+        f"{names}.\n"
+        "  Finish or close every wisp molecule first. If an operator has independently verified "
+        "cleanup is safe, set BH_DEBUG=1 to override."
+    )
+
+
 def _run_one(args, cwd, cfg=None):
     # The host-lease gate, PER TARGET (bh-edvs): `bh work claim` refuses when this host is not
     # the hive's leased primary, and `bh bd update --claim` — the same write — must too. Here
     # rather than in `passthrough` below because `-a`/`-r` fan out across hives holding
     # different leases; returning 1 lets `route.fan_out` fail this hive and still run the rest.
     refusal = guard.bd_write_refusal(args, cwd, cfg=cfg)
+    if refusal:
+        typer.echo(refusal, err=True)
+        return 1
+    refusal = wisp_cleanup_refusal(args, cwd)
     if refusal:
         typer.echo(refusal, err=True)
         return 1
