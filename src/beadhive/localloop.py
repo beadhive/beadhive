@@ -94,7 +94,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import bd as bd_mod
-from . import config, coordination, log, seatrun, state, work_next
+from . import (
+    config,
+    coordination,
+    log,
+    model_routing,
+    otel,
+    schedule,
+    seatrun,
+    state,
+    work_next,
+)
 
 _LOG = log.get_logger(__name__)
 
@@ -177,6 +187,9 @@ class SeatProcess:
     pgid: int
     argv: tuple[str, ...]
     started_at: float
+    #: Canonical late-bound model decision. Safe control-plane facts only; launch aliases stay in
+    #: argv and secrets never enter this envelope.
+    routing: dict | None = None
     #: Every signal sent to this run, in order, as names ("SIGTERM"). A test asserts SIGINT is
     #: never in here; an operator reads it to see whether the ladder had to escalate.
     signals: list[str] = field(default_factory=list)
@@ -363,6 +376,7 @@ async def spawn_seat(
     cwd: str | os.PathLike[str] | None = None,
     env: dict | None = None,
     task_group: asyncio.TaskGroup | None = None,
+    routing: dict | None = None,
 ) -> SeatProcess:
     """Spawn one seat run in **its own process group**, holding all three of its pipes.
 
@@ -407,6 +421,7 @@ async def spawn_seat(
         pgid=pgid,
         argv=tuple(str(a) for a in argv),
         started_at=time.monotonic(),
+        routing=routing,
     )
 
     async def _pump(stream, sink: list) -> None:
@@ -1096,6 +1111,9 @@ class PassReport:
     heartbeats: tuple[str, ...] = ()
     decision: work_next.Decision | None = None
     dispatched: tuple[str, ...] = ()
+    #: Canonical per-bead model decisions made or reused this pass. This is the runtime envelope
+    #: counterpart of `work schedule --json`; it records what actually reached launch argv.
+    routing: tuple[tuple[str, dict], ...] = ()
     harvested: tuple[tuple[str, str], ...] = ()  # (bead, outcome)
     cancelled: tuple[tuple[str, str], ...] = ()  # (bead, rung)
     denied: tuple[Admission, ...] = ()
@@ -1138,6 +1156,7 @@ class PassReport:
             "heartbeats": list(self.heartbeats),
             "decision": self.decision.as_dict() if self.decision else None,
             "dispatched": list(self.dispatched),
+            "routing": {bead: decision for bead, decision in self.routing},
             "harvested": [list(h) for h in self.harvested],
             "cancelled": [list(c) for c in self.cancelled],
             "denied": [{"reason": d.reason, "detail": d.detail} for d in self.denied],
@@ -1272,6 +1291,7 @@ class LocalLoop:
         caps: Caps | None = None,
         seat_command: str = "bh-{role}",
         seat_bundle: str = "",
+        harness: str = "claude",
         poll_interval: float = 5.0,
         envelope_grace: float = 3.0,
         terminate_grace: float = 5.0,
@@ -1282,6 +1302,7 @@ class LocalLoop:
         instructions: Callable[[str, str, str], str] | None = None,
         env: dict | None = None,
         workspace_for: Callable[[str], str] | None = None,
+        routing: Callable[[str, str], model_routing.ModelDecision | None] | None = None,
         dry_run: bool = False,
     ):
         self.hive_dir = Path(hive_dir)
@@ -1290,6 +1311,7 @@ class LocalLoop:
         self.caps = caps or Caps()
         self.seat_command = seat_command
         self.seat_bundle = seat_bundle
+        self.harness = harness
         self.poll_interval = poll_interval
         self.envelope_grace = envelope_grace
         self.terminate_grace = terminate_grace
@@ -1300,6 +1322,12 @@ class LocalLoop:
         self._instructions = instructions or self._default_instructions
         self.env = env
         self._workspace_for = workspace_for or (lambda bead: resolve_workspace(self.hive_dir, bead))
+        self._gateway_availability = model_routing.GatewayAvailabilityAdapter()
+        self._harness_availability = model_routing.HarnessAvailabilityAdapter()
+        self._routing = routing or self._default_routing
+        # Volatile by the same execution-memory rule as in_flight. Reuse within this loop keeps a
+        # resume on the launch identity already chosen for the bead; restart re-derives from beads.
+        self._resolved_routing: dict[str, model_routing.ModelSelection] = {}
         #: DECIDE-ONLY mode (bh-3xl60) — see the class docstring. Read once at construction and
         #: never flipped mid-run, so a dry loop cannot accidentally start acting partway through.
         self.dry_run = dry_run
@@ -1343,6 +1371,50 @@ class LocalLoop:
             encoding="utf-8",
         )
         return str(path)
+
+    def _default_routing(self, bead: str, role: str) -> model_routing.ModelDecision | None:
+        """Read current bead/config facts and call the same pure resolver as schedule advice."""
+        from . import registry
+
+        cfg = config.load()
+        entry = registry.entry_for_dir(cfg, self.hive_dir) or {}
+        data = bd_mod.show(bead, self.hive_dir, strict=True)
+        routes = config.routing_tiers(cfg, entry)
+        # Empty routing config means the feature is not enabled, preserving the established
+        # harness-default launch. An explicit model preference still asks routing to decide and
+        # therefore gets an honest blocked verdict when no route can satisfy it.
+        if not routes and not schedule.model_preference(data):
+            return None
+        harness = config.harness_name(cfg, entry)
+        availability = model_routing.discover_availability(
+            routes,
+            role=role,
+            harness=harness,
+            gateway=self._gateway_availability,
+            harness_defaults=self._harness_availability,
+        )
+        return schedule.resolve_launch_decision(
+            [data],
+            policy=config.routing_policy(cfg, entry),
+            role=role,
+            harness=harness,
+            routes=routes,
+            availability=availability,
+        )
+
+    @staticmethod
+    def _routing_attributes(decision: model_routing.ModelSelection) -> dict:
+        """Secret-safe low-cardinality routing facts for GenAI telemetry."""
+        attrs = {
+            "bh.routing.required_complexity": decision.required_tier.name,
+            "bh.routing.selected_model": decision.selected_model,
+            "bh.routing.availability_source": decision.availability_source,
+            "bh.routing.selection_reason": decision.selection_reason,
+            "bh.routing.endpoint_source": "gateway" if decision.endpoint else "harness_default",
+        }
+        if decision.preferred_model:
+            attrs["bh.routing.preferred_model"] = decision.preferred_model
+        return attrs
 
     # ---- molecule ------------------------------------------------------------------------
 
@@ -2009,6 +2081,37 @@ class LocalLoop:
         if not verdict.allowed:
             report.denied += (verdict,)
             return
+        routing = self._resolved_routing.get(bead)
+        if routing is None:
+            resolved = self._routing(bead, role)
+            if isinstance(resolved, model_routing.ModelBlockedVerdict):
+                payload = {"bead": bead, **resolved.as_dict()}
+                report.routing += ((bead, payload),)
+                reason = (
+                    f"model routing blocked {bead}: {resolved.reason}; "
+                    f"remediation: {resolved.remediation}"
+                )
+                _LOG.error("model_routing_blocked", **payload)
+                record_cause(self.hive_dir, bead, CAUSE_BLOCKED, reason=reason, actor=self.actor)
+                report.causes += ((bead, CAUSE_BLOCKED),)
+                return
+            routing = resolved
+            if isinstance(routing, model_routing.ModelSelection):
+                self._resolved_routing[bead] = routing
+        translated_model = (
+            model_routing.translate_for_harness(routing.selected_model, routing.harness)
+            if isinstance(routing, model_routing.ModelSelection)
+            else None
+        )
+        routing_payload = None
+        if isinstance(routing, model_routing.ModelSelection):
+            routing_payload = {
+                "bead": bead,
+                **routing.as_dict(),
+            }
+            report.routing += ((bead, routing_payload),)
+            for warning in routing.warnings:
+                _LOG.warning("model_routing_fallback", bead=bead, warning=warning)
         session_id = str(uuid.uuid4())
         ws = workspace or self._workspace_for(bead)
         # A developer seat pointed at the main clone means "this bead has no worktree here yet",
@@ -2036,18 +2139,27 @@ class LocalLoop:
             bead=bead,
             instructions=self._instructions(action, bead, role),
             session_id=session_id,
+            model=translated_model,
             bundle=self.seat_bundle,
         )
-        seat = await spawn_seat(
-            argv,
-            bead_id=bead,
-            role=role,
-            action=action,
-            session_id=session_id,
-            cwd=ws,
-            env=self.env,
-            task_group=self._tg,
-        )
+        attrs = self._routing_attributes(routing) if routing else None
+        with otel.record_agent_dispatch(
+            agent=role,
+            model=routing.selected_model if routing else "",
+            system=routing.harness if routing else "",
+            attributes=attrs,
+        ):
+            seat = await spawn_seat(
+                argv,
+                bead_id=bead,
+                role=role,
+                action=action,
+                session_id=session_id,
+                cwd=ws,
+                env=self.env,
+                task_group=self._tg,
+                routing=routing_payload,
+            )
         self.in_flight[bead] = seat
         report.dispatched += (bead,)
 
@@ -2118,11 +2230,13 @@ class LocalRuntime:
         *,
         seat_command: str = "bh-{role}",
         seat_bundle: str = "",
+        harness: str = "claude",
         terminate_grace: float = 5.0,
         envelope_grace: float = 3.0,
     ):
         self.seat_command = seat_command
         self.seat_bundle = seat_bundle
+        self.harness = harness
         self.terminate_grace = terminate_grace
         self.envelope_grace = envelope_grace
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -2156,6 +2270,7 @@ class LocalRuntime:
         instructions,
         session_id: str,
         model: str | None = None,
+        decision: model_routing.ModelDecision | None = None,
     ):
         """Spawn the role binary for *bead_id* and return a handle to observe it by.
 
@@ -2170,6 +2285,26 @@ class LocalRuntime:
         if live is not None and not live.finished:
             return RoleHandle(bead_id=bead_id, session_id=live.session_id)
 
+        if isinstance(decision, model_routing.ModelBlockedVerdict):
+            raise ValueError(
+                f"cannot schedule {bead_id}: {decision.reason}; required "
+                f"{decision.required_tier.name}, preferred {decision.preferred_model or '(none)'}, "
+                f"availability {decision.availability_source}; {decision.remediation}"
+            )
+        canonical_model = decision.selected_model if decision else model
+        harness = decision.harness if decision else self.harness
+        translated_model = (
+            model_routing.translate_for_harness(canonical_model, harness)
+            if canonical_model
+            else None
+        )
+        routing_payload = None
+        if isinstance(decision, model_routing.ModelSelection):
+            routing_payload = {
+                "bead": bead_id,
+                **decision.as_dict(),
+            }
+
         validation = seatrun.validate_workspace(str(workspace))
         if not validation.ok:
             raise ValueError(f"cannot schedule {bead_id}: {validation.reason}")
@@ -2180,19 +2315,27 @@ class LocalRuntime:
             bead=bead_id,
             instructions=str(instructions),
             session_id=session_id,
-            model=model,
+            model=translated_model,
             bundle=self.seat_bundle,
         )
-        seat = self._submit(
-            spawn_seat(
-                argv,
-                bead_id=bead_id,
-                role=role,
-                action="schedule",
-                session_id=session_id,
-                cwd=str(workspace),
+        attributes = LocalLoop._routing_attributes(decision) if decision else None
+        with otel.record_agent_dispatch(
+            agent=role,
+            model=canonical_model or "",
+            system=harness,
+            attributes=attributes,
+        ):
+            seat = self._submit(
+                spawn_seat(
+                    argv,
+                    bead_id=bead_id,
+                    role=role,
+                    action="schedule",
+                    session_id=session_id,
+                    cwd=str(workspace),
+                    routing=routing_payload,
+                )
             )
-        )
         self._runs[bead_id] = seat
         return RoleHandle(bead_id=bead_id, session_id=session_id)
 
@@ -2207,14 +2350,16 @@ class LocalRuntime:
         if seat is None:
             return RoleOutcome(status="failed", summary=f"no run scheduled for {handle.bead_id}")
         if not seat.finished:
-            return RoleOutcome(status="running", summary=f"pid {seat.pid}, pgid {seat.pgid}")
+            return RoleOutcome(
+                status="running", summary=f"pid {seat.pid}, pgid {seat.pgid}", routing=seat.routing
+            )
         stdout = self._submit(_collect_with_timeout(seat, self.envelope_grace))
         self._submit(reap_group(seat, grace=self.terminate_grace))
         cls = seatrun.classify_run(seat.proc.returncode or 0, stdout, bead=handle.bead_id)
         if cls.outcome is seatrun.RunOutcome.INCOMPLETE:
-            return RoleOutcome(status="failed", summary=cls.detail)
+            return RoleOutcome(status="failed", summary=cls.detail, routing=seat.routing)
         summary = cls.seat_run.outcome.summary if cls.seat_run else ""
-        return RoleOutcome(status=str(cls.outcome), summary=summary)
+        return RoleOutcome(status=str(cls.outcome), summary=summary, routing=seat.routing)
 
     def on_gate_resolved(self, gate_id: str) -> None:
         """A no-op with a reason, not an oversight. This tier notices a resolved gate on its next
@@ -2253,6 +2398,7 @@ def runtime_from_config(cfg=None, entry=None) -> LocalRuntime:
     return LocalRuntime(
         seat_command=config.dispatch_seat_command(cfg, entry),
         seat_bundle=config.dispatch_seat_bundle(cfg, entry),
+        harness=config.harness_name(cfg, entry),
         terminate_grace=config.dispatch_terminate_grace(cfg, entry),
         envelope_grace=config.dispatch_envelope_grace(cfg, entry),
     )

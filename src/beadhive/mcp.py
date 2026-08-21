@@ -554,15 +554,22 @@ def _register_plan_tools(mcp, tool, resource):
         """Validate a molecule spec passed as a structured object (no temp YAML file).
 
         Runs the same schema + closed-dimension checks as `bh plan check`; returns the
-        validation problems as JSON. `valid` is true iff `problems` is empty. The payload
-        also carries the structured acceptance block the planner skill's drafting modes
+        validation problems as JSON. `valid` is true iff `problems` is empty. The payload includes
+        normalized complexity decisions (tier/score/source/provenance) and also carries the
+        structured acceptance block the planner skill's drafting modes
         consume: `missing_acceptance` / `stubbed_acceptance` id lists, per-record
         `acceptance_problems` ({id, field, severity, message}), and stub `warnings` —
         acceptance text starting 'STUB:' is visible debt (a warning, never an error).
         """
+        decisions = plan.compile_complexity_labels(spec)
         problems = molecule.validate_spec(spec, config.load())
         summary = molecule.acceptance_summary(spec.get("issues"))
-        return {"valid": not problems, "problems": problems, **summary}
+        return {
+            "valid": not problems,
+            "problems": problems,
+            "complexity": [decision.as_dict() for decision in decisions],
+            **summary,
+        }
 
     @tool
     async def plan_file(
@@ -579,12 +586,16 @@ def _register_plan_tools(mcp, tool, resource):
         cfg = config.load()
         cwd = registry.hive_dir_for(cfg, hive)
         try:
+            decisions = plan.compile_complexity_labels(spec)
             molecule.validate_or_raise(spec, cfg)
         except molecule.MoleculeError as exc:
             raise ToolError("invalid molecule spec: " + "; ".join(exc.problems)) from exc
 
         if dry_run:
-            return _preview_payload(spec, cwd)
+            return {
+                **_preview_payload(spec, cwd),
+                "complexity": [decision.as_dict() for decision in decisions],
+            }
 
         try:
             result = plan.file_molecule(spec, cwd, resolve_actor("", "", cwd=cwd), cfg)
@@ -595,6 +606,7 @@ def _register_plan_tools(mcp, tool, resource):
             "epic_id": result.epic_id,
             "issue_count": result.issue_count,
             "root_count": result.root_count,
+            "complexity": [decision.as_dict() for decision in decisions],
         }
 
     @tool

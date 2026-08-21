@@ -204,8 +204,9 @@ Pass `--json` to parse the value as a JSON literal — required for lists and ma
 forcing a string `"true"` / `"true"` without coercion.
 
 **Validation:** `otel.protocol` is validated against `grpc | http/protobuf` (error + no
-write on mismatch). Any `*.enabled` key must receive a boolean (error otherwise). Unknown
-config sections produce a warning but the write proceeds.
+write on mismatch). Any `*.enabled` key must receive a boolean (error otherwise), and a JSON
+write to `work.routing.tiers` validates every model, bound, and endpoint before persisting.
+Unknown config sections produce a warning but the write proceeds.
 
 ```sh
 bh config set otel.enabled true
@@ -379,6 +380,47 @@ claude:
   scope: user           # user-scope persists across all hives
 ```
 
+## `work.routing` — model capability intent
+
+`work.routing` describes which model routes can serve each complexity tier. It is fleet-wide
+configuration and follows the usual precedence: a `managed_repos[*].work.routing` leaf overrides
+the corresponding global `work.routing` leaf for that hive.
+
+```yaml
+work:
+  routing:
+    policy: loose                 # loose (default) | strict
+    tiers:
+      - model: openai/gpt-5-mini
+        ceiling: MEDIUM           # omitted floor means SIMPLE
+      - model: anthropic/claude-opus-4-1
+        floor: COMPLEX
+        ceiling: REASONING
+        endpoint: primary-gateway # or https://gateway.example/v1
+```
+
+`model` is always written as `provider/model-name`. Beadhive validates that shape but does not
+freeze a provider or model catalogue into config. `floor` and `ceiling` are inclusive and use the
+ordered `SIMPLE | MEDIUM | COMPLEX | REASONING` vocabulary; omitting them means the lowest and
+highest tier respectively. A floor above its ceiling is invalid.
+
+`endpoint` is optional. It may be an HTTP(S) URL or an endpoint-profile reference (a profile name,
+optionally written as `profile:name`). Omission unambiguously selects the configured role/harness
+default. Credentials and TLS policy are resolved outside the tier entry; embedded URL credentials
+are rejected. `policy` defaults to `loose`. At dispatch time the resolver intersects these ranges
+with the bead's required complexity, optional canonical `model:` preference, role/harness, and
+availability evidence. `loose` may choose the nearest available range with a warning; `strict`
+blocks an unavailable or out-of-range preference and any group preference conflict.
+
+`bh work schedule --json` and `beadhive://work/schedule/{epic}` expose a complete decision on
+every group, singleton, and nested coordinator: `complexity`, `preferred_model`,
+`selected_model`, `selection_reason`, `policy`, `availability_source`, and `warnings`. The
+pre-existing `model` field remains temporarily as a deprecated alias of `selected_model` (and is
+`null` when selection is blocked); consumers should migrate to `selected_model`.
+
+See [Complexity-first routing](COMPLEXITY-ROUTING.md) for availability limitations, strict/loose
+decision behavior, migration recovery, and the complete public decision schema.
+
 ## `work.dispatch` — collapsed dispatch
 
 `work.dispatch.*` tunes how the root dispatcher dispatches a ready epic's beads: the default
@@ -428,9 +470,12 @@ v1 does not build it (deferred to `bh-3yoh`).
 
 ### Planner hints vs. operator override — precedence
 
-The planner authors **advisory** labels on beads (`size:`, `batch:`, `model:`, `gate:`). These
+The planner authors **advisory** labels on beads (`size:`, `batch:`, `model:`, `gate:`). `model:`
+is an optional open `<provider>/<model-name>` preference; the authoritative portable capability
+route is the single closed `complexity:SIMPLE|MEDIUM|COMPLEX|REASONING` label compiled onto each
+work bead. These
 are consulted **only by `auto`** — as the cost signal (`size:` weights vs. `auto_budget`) and
-the single-tier / single-gate guards. They are estimates, never a command.
+the single-model-preference / single-gate guards. They are estimates, never a command.
 
 An explicit operator `work.dispatch.mode` of `fanout` or `collapsed` **always wins**, regardless
 of what the planner estimated:

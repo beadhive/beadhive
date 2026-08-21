@@ -20,18 +20,26 @@ Two grouping triggers, both honored:
      fan-in / fan-out): a chain can't be parallelized anyway, so batching is strictly cheaper
      (one worktree/validate/merge instead of N sequential ones) with no wall-time lost.
 
-Auto-detected chains aren't plan-validated, so the scheduler re-applies the same guards before
-batching them: a single model tier, a single review gate, and the size cap. (Cohesion is implicit
-— a private-edge chain is contiguous in the DAG by construction.) A candidate that trips a guard
-is NOT batched; its members fall back to singletons. `ws work schedule` wraps this for the CLI.
+Auto-detected chains aren't plan-validated, so the scheduler re-applies the review-gate and size
+guards before batching them. Complexity and model preferences are deliberately *not* grouping
+guards: one session takes the maximum required tier and the shared resolver handles preferences.
+`bh work schedule` wraps this for the CLI.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from . import release_order  # advisory scorer + the start_verdict → ConflictEstimator seam
+from .complexity import COMPLEXITY_LABEL_PREFIX, ComplexityTier
+from .model_routing import (
+    AvailabilitySnapshot,
+    ModelBlockedVerdict,
+    ModelDecision,
+    ModelSelection,
+    resolve_model,
+)
 
 _BATCH = "batch:"
 _MODEL = "model:"
@@ -46,9 +54,8 @@ _SIZE_WEIGHT = {"xs": 1, "s": 2, "m": 3, "l": 4, "xl": 5}
 # bead still consumes budget rather than collapsing for free.
 _DEFAULT_SIZE_WEIGHT = _SIZE_WEIGHT["m"]
 
-# `model:` tiers ordered least→most capable. A collapsed Task covers N beads whose `model:` labels
-# may differ; the one dispatched session must be capable enough for the HARDEST bead, so
-# `max_model_tier` dispatches at the max tier across the batch (haiku < sonnet < opus).
+# Deprecated pre-canonical model tiers, retained only for callers migrating off
+# :func:`max_model_tier`. New scheduling uses ``complexity:`` plus the shared resolver.
 _MODEL_TIER_ORDER = ("haiku", "sonnet", "opus")
 
 # When no batched bead carries a `model:` label there's no signal to widen from, so the dispatch
@@ -113,8 +120,95 @@ def batch_group(bead: dict) -> str:
 
 
 def model_tier(bead: dict) -> str:
-    """The bead's `model:<tier>` label ('' ⇒ inherits / unset)."""
+    """Deprecated spelling: the bead's canonical ``model:<provider/model>`` preference."""
     return _label_value(bead, _MODEL)
+
+
+def model_preference(bead: dict) -> str:
+    """The bead's optional canonical ``model:<provider/model>`` preference."""
+    return _label_value(bead, _MODEL)
+
+
+def complexity_tier(
+    bead: dict, *, legacy_default: ComplexityTier = ComplexityTier.MEDIUM
+) -> ComplexityTier:
+    """Required complexity, defaulting unlabeled legacy beads to MEDIUM.
+
+    Newly filed routable beads are label-validated, but old hives can legitimately contain work
+    created before the contract. Scheduling must keep that work visible and must not silently
+    treat missing complexity as SIMPLE.
+    """
+    value = _label_value(bead, COMPLEXITY_LABEL_PREFIX)
+    try:
+        return ComplexityTier.parse(value)
+    except ValueError:
+        return legacy_default
+
+
+def max_required_complexity(beads: Sequence[dict]) -> ComplexityTier:
+    """Maximum required capability for any singleton, group, or coordinator launch."""
+    return max((complexity_tier(bead) for bead in beads), default=ComplexityTier.MEDIUM)
+
+
+def resolve_launch_decision(
+    beads: Sequence[dict],
+    *,
+    policy: str,
+    role: str,
+    harness: str,
+    routes,
+    availability: Sequence[AvailabilitySnapshot] = (),
+) -> ModelDecision:
+    """Resolve the shared launch decision for one scheduled unit.
+
+    Conflicting preferences are advisory in loose mode (selection falls back to the maximum
+    complexity) and an actionable typed block in strict mode. Missing/invalid complexity labels
+    use the documented MEDIUM legacy default with a visible warning.
+    """
+    required = max_required_complexity(beads)
+    preferences = list(
+        dict.fromkeys(model_preference(bead) for bead in beads if model_preference(bead))
+    )
+    warnings = []
+    legacy = [
+        str(bead.get("id") or "<unknown>")
+        for bead in beads
+        if not _label_value(bead, COMPLEXITY_LABEL_PREFIX)
+    ]
+    if legacy:
+        warnings.append(
+            f"unlabeled legacy beads defaulted to MEDIUM complexity: {', '.join(legacy)}"
+        )
+    if len(preferences) > 1:
+        conflict = f"conflicting model preferences: {', '.join(preferences)}"
+        if policy == "strict":
+            return ModelBlockedVerdict(
+                required_tier=required,
+                preferred_model=None,
+                policy=policy,
+                role=role,
+                harness=harness,
+                availability_source="not_queried_preference_conflict",
+                reason=conflict,
+                remediation=(
+                    "align or remove the members' model:provider/model preferences, or use "
+                    "work.routing.policy=loose"
+                ),
+                warnings=tuple(warnings),
+            )
+        warnings.append(conflict + "; loose policy selected by maximum complexity")
+    decision = resolve_model(
+        required,
+        preferred_model=preferences[0] if len(preferences) == 1 else None,
+        policy=policy,
+        role=role,
+        harness=harness,
+        routes=routes,
+        availability=availability,
+    )
+    if isinstance(decision, ModelSelection):
+        return replace(decision, warnings=tuple((*warnings, *decision.warnings)))
+    return replace(decision, warnings=tuple((*warnings, *decision.warnings)))
 
 
 def review_gate(bead: dict) -> str:
@@ -135,7 +229,9 @@ def _model_rank(tier: str) -> int:
 
 
 def max_model_tier(beads: list[dict], *, default: str = _DEFAULT_MODEL_TIER) -> str:
-    """The most-capable `model:<tier>` among `beads` — the tier a collapsed session must run at to
+    """Deprecated compatibility helper for the old haiku/sonnet/opus schedule contract.
+
+    The most-capable `model:<tier>` among `beads` — the tier a collapsed session must run at to
     handle its HARDEST bead. Reads each bead via `model_tier`, skips the unlabeled ones (no signal),
     and ranks the rest by `_MODEL_TIER_ORDER` (haiku < sonnet < opus). Returns `default` (opus)
     when no bead is labeled. Advisory: decides the dispatch tier only, never claims or merges."""
@@ -183,13 +279,10 @@ def _linear_chains(order: list[str], succ: dict[str, set], pred: dict[str, set])
 
 def _guard_group(ids: list[str], by_id: dict[str, dict], max_size: int) -> tuple[bool, str]:
     """Re-apply the scheduler's batch guards to an auto-detected chain (planner batches are already
-    validated at plan time). Returns (ok, reason-if-not-ok): a single model tier, a single review
-    gate, and within the size cap."""
+    validated at plan time). Returns (ok, reason-if-not-ok): a single review gate and within the
+    size cap. Mixed complexity/model preferences are resolved after grouping."""
     if len(ids) > max_size:
         return False, f"exceeds batch size cap ({len(ids)} > {max_size})"
-    models = {model_tier(by_id[i]) for i in ids if model_tier(by_id[i])}
-    if len(models) > 1:
-        return False, f"mixed model tiers {sorted(models)}"
     gates = {review_gate(by_id[i]) for i in ids if review_gate(by_id[i])}
     if len(gates) > 1:
         return False, f"mixed review gates {sorted(gates)}"
@@ -251,13 +344,13 @@ def plan_schedule(
     """Compute the dispatch plan for a molecule's open beads.
 
     Honors planner `batch:<group>` labels (≥2 members ⇒ one grouped agent) and auto-detects pure
-    linear chains among the rest, guarding each detected chain (single model tier / single review
-    gate / size cap). Everything left over is a singleton — the default parallel one-per-worktree.
+    linear chains among the rest, guarding each detected chain (single review gate / size cap).
+    Everything left over is a singleton — the default parallel one-per-worktree.
     A `batch:<group>` in `merged_groups` (its group branch already merged) is treated as a dead
     label and never grouped — its members fall through to chain/singleton scheduling (bh-bfoy).
 
     Operator override: `force_single_group` collapses every open LEAF bead into one `collapsed`
-    group, bypassing the cohesion/size/model/gate guards (`_guard_group`) — the operator is vouching
+    group, bypassing the cohesion/size/gate guards (`_guard_group`) — the operator is vouching
     for cohesion instead of the algorithm. It's split only when the molecule exceeds
     `max_beads_per_session` (each chunk its own `collapsed` group). Advisory like the default
     path: it decides grouping only and never claims or merges anything.
@@ -335,8 +428,8 @@ def auto_should_collapse(beads: list[dict], *, budget: int) -> bool:
 
     Sums each candidate bead's `size:<xs..xl>` ordinal weight (`_SIZE_WEIGHT`) and collapses the
     epic into one grouped session only when that cost stays within `budget`. Falls back to fanout
-    when the sum exceeds budget, or when the beads carry mixed `model:` tiers or mixed `gate:` types
-    — the latter two reuse `_guard_group`'s disqualifiers (the batch size-*count* cap is neutralized
+    when the sum exceeds budget, or when the beads carry mixed `gate:` types — the latter reuses
+    `_guard_group`'s disqualifier (the batch size-*count* cap is neutralized
     by passing `len(ids)`, since here the cost gate is the ordinal budget, not a bead count).
 
     Advisory like `plan_schedule`: it decides grouping only and never claims or merges anything.

@@ -20,7 +20,7 @@ from pathlib import Path
 
 import typer
 
-from . import adopt, bd, config, guard, molecule, otel, registry, state, validate
+from . import adopt, bd, complexity, config, guard, molecule, otel, registry, state, validate
 from .identity import resolve_actor, workspace_identity
 
 app = typer.Typer(no_args_is_help=True, help="Plan a molecule → swarm (planning plane).")
@@ -57,7 +57,7 @@ _ADOPT_BEADS = typer.Argument(
 # `release` (closed: breaking|feature|fix) and `wave` (open batching label) mirror the same pair.
 # `tag` (bh-0a6g, open dim) carries e.g. the spike-loop's `tag:spike` / `tag:decision` — see the
 # trade-off record on molecule._DIMENSION_FIELDS.
-_DIMENSION_FIELDS = ("model", "harness", "component", "size", "batch", "release", "wave", "tag")
+_DIMENSION_FIELDS = molecule.DIMENSION_FIELDS
 
 # --- `bd create --graph <json>` spike (bd 1.0.5) -----------------------------
 # Tried a single atomic call: `{"nodes": [{key,title,type,priority,description,labels,
@@ -87,6 +87,105 @@ def _issue_labels(issue: dict, cwd) -> list[str]:
     dims = [f"{f}:{issue[f]}" for f in _DIMENSION_FIELDS if issue.get(f) not in (None, "")]
     labels = dims + _triplet_labels(cwd)
     return ["-l", ",".join(labels)] if labels else []
+
+
+def compile_complexity_labels(
+    data: dict, classifier: complexity.ComplexityClassifier = complexity.DEFAULT_CLASSIFIER
+) -> list[complexity.ComplexityDecision]:
+    """Normalize epic + issue complexity and return user-visible provenance decisions.
+
+    An explicit ``complexity`` field is planner intent and is never overwritten (validation owns
+    canonical-value errors). Missing values are classified from only type/title/description/design/
+    acceptance through :func:`complexity.stable_bead_text`; operational fields and labels cannot
+    perturb the route. Required classification gives every compiled routable bead one tier.
+    """
+    if not isinstance(data, dict):
+        return []
+    decisions = []
+    epic = data.get("epic")
+    candidates = [("epic", epic, "epic")]
+    issues = data.get("issues")
+    if isinstance(issues, list):
+        candidates.extend(
+            (str(issue.get("handle") or f"issue #{index + 1}"), issue, issue.get("type") or "task")
+            for index, issue in enumerate(issues)
+            if isinstance(issue, dict)
+        )
+    for subject, item, issue_type in candidates:
+        if not isinstance(item, dict) or not complexity.is_routable_issue_type(issue_type):
+            continue
+        explicit = item.get("complexity") not in (None, "")
+        stable_item = dict(item)
+        stable_item.setdefault("type", issue_type)
+        if explicit:
+            try:
+                tier = complexity.ComplexityTier.parse(item["complexity"])
+            except ValueError:
+                continue  # pure schema validation renders the canonical-value error
+            scored = classifier.classify(complexity.stable_bead_text(stable_item), required=True)
+            decisions.append(
+                complexity.ComplexityDecision(
+                    subject=subject,
+                    tier=tier,
+                    score=scored.score,
+                    source=scored.source,
+                    version=scored.version,
+                    provenance="explicit",
+                )
+            )
+            continue
+        result = classifier.classify(complexity.stable_bead_text(stable_item), required=True)
+        if result.tier is None:  # protocol implementations must honor required=True
+            raise PlanError("complexity classifier returned UNKNOWN for a required route")
+        item["complexity"] = result.tier.name
+        decisions.append(
+            complexity.ComplexityDecision(
+                subject=subject,
+                tier=result.tier,
+                score=result.score,
+                source=result.source,
+                version=result.version,
+                provenance="inferred",
+                fallback_used=result.fallback_used,
+            )
+        )
+    return decisions
+
+
+def _render_complexity_decisions(decisions: list[complexity.ComplexityDecision]) -> None:
+    for decision in decisions:
+        score = "n/a" if decision.score is None else f"{decision.score:.3f}"
+        fallback = " fallback=true" if decision.fallback_used else ""
+        typer.echo(
+            f"  complexity {decision.subject}: {decision.tier.name} score={score} "
+            f"source={decision.source}@{decision.version} "
+            f"provenance={decision.provenance}{fallback}"
+        )
+
+
+def _filed_complexity_decisions(
+    epic_id: str, epic_data: dict, issues: list[dict]
+) -> list[complexity.ComplexityDecision]:
+    """Renderable provenance for already-filed labels (scores are not persisted in beads)."""
+    candidates = [(epic_id, epic_data), *((issue["handle"], issue) for issue in issues)]
+    decisions = []
+    for subject, item in candidates:
+        values = complexity.label_values(
+            item.get("labels") or [], complexity.COMPLEXITY_LABEL_PREFIX
+        )
+        if len(values) != 1 or values[0] not in complexity.ComplexityTier.__members__:
+            continue
+        decisions.append(
+            complexity.ComplexityDecision(
+                subject=subject,
+                tier=complexity.ComplexityTier.parse(values[0]),
+                score=None,
+                source="bead-label",
+                version="filed",
+                provenance="filed",
+            )
+        )
+    return decisions
 
 
 def _topo_order(issues: list[dict]) -> list[dict]:
@@ -223,6 +322,7 @@ def check_spec(spec: str, cfg) -> list[str]:
     Raises FileNotFoundError / molecule.MoleculeError on load failure (missing or malformed
     file). This is the standalone validation `check` exposes and `file` runs inline."""
     data = molecule.load_spec(spec)
+    compile_complexity_labels(data)
     return molecule.validate_spec(data, cfg)
 
 
@@ -352,7 +452,9 @@ def _preview(epic: dict, issues: list[dict], cwd) -> None:
     """Render what `file` would create — epic, each issue (labels + deps), and the kickoff gate.
     Pure echo; makes NO bd calls, so `--dry-run` is guaranteed side-effect-free."""
     typer.echo(f"would file molecule into {cwd}:")
-    typer.echo(f"  epic: {epic['title']}")
+    epic_labels = _issue_labels(epic, cwd)
+    epic_label_str = epic_labels[1] if epic_labels else "(none)"
+    typer.echo(f"  epic: {epic['title']}  labels={epic_label_str}")
     for issue in _topo_order(issues):
         labels = _issue_labels(issue, cwd)
         label_str = labels[1] if labels else "(none)"
@@ -422,6 +524,9 @@ def _render_from_spec(data: dict, path) -> None:
     typer.echo(f"epic: {epic['title']}")
     if epic.get("description"):
         typer.echo(f"  {epic['description']}")
+    epic_dims = _dim_labels_from_spec_issue(epic)
+    if epic_dims:
+        typer.echo(f"  labels: {', '.join(epic_dims)}")
     _render_epic_provenance(epic)
     adopts = adopt.adopts_of(epic)
     if adopts:
@@ -493,7 +598,7 @@ def _epic_molecule(epic_id: str, cwd):
     origin_ids = {c["id"] for c in origin_reports}
 
     def _is_sibling(c) -> bool:
-        return c.get("issue_type") not in ("epic", "gate") and c["id"] not in origin_ids
+        return complexity.is_routable_issue_type(c.get("issue_type")) and c["id"] not in origin_ids
 
     # Full sibling set (open + closed) and the closed/merged subset among them.
     sibling_ids = {c["id"] for c in children if _is_sibling(c)}
@@ -518,6 +623,8 @@ def _epic_molecule(epic_id: str, cwd):
                 "handle": cid,
                 "title": child.get("title") or "",
                 "type": child.get("issue_type") or "task",
+                "description": child.get("description") or "",
+                "design": child.get("design") or "",
                 "labels": child.get("labels") or [],
                 "deps": [d for d in blocks if d not in closed_ids],
                 "satisfied_deps": [d for d in blocks if d in closed_ids],
@@ -568,6 +675,9 @@ def _render_from_epic(epic_id: str, cwd) -> None:
     typer.echo(f"epic: {epic_data.get('title') or epic_id}")
     if epic_data.get("description"):
         typer.echo(f"  {epic_data['description']}")
+    epic_dims = _dim_labels_from_bead(epic_data.get("labels") or [])
+    if epic_dims:
+        typer.echo(f"  labels: {', '.join(epic_dims)}")
     _render_epic_provenance(epic_data)
     typer.echo()
 
@@ -602,18 +712,31 @@ def _spec_from_filed(epic_data: dict, issues: list[dict]) -> dict:
     structural checks (epic + title, unique handles, per-issue title/acceptance, deps → real
     handles, acyclic DAG). Dimension/identity LABELS are verified separately by _check_child_labels.
     """
+    epic = {
+        "title": epic_data.get("title") or "",
+        "description": epic_data.get("description") or "",
+    }
+    for field in molecule.DIMENSION_FIELDS:
+        values = complexity.label_values(epic_data.get("labels") or [], f"{field}:")
+        if len(values) == 1:
+            epic[field] = values[0]
     return {
-        "epic": {
-            "title": epic_data.get("title") or "",
-            "description": epic_data.get("description") or "",
-        },
+        "epic": epic,
         "issues": [
             {
                 "handle": i["handle"],
                 "title": i["title"],
                 "type": i["type"],
+                "description": i.get("description") or "",
+                "design": i.get("design") or "",
                 "acceptance": i["acceptance"],
                 "deps": i["deps"],
+                **{
+                    field: values[0]
+                    for field in molecule.DIMENSION_FIELDS
+                    if len(values := complexity.label_values(i.get("labels") or [], f"{field}:"))
+                    == 1
+                },
             }
             for i in issues
         ],
@@ -720,9 +843,7 @@ def _check_kickoff_gates(epic_id: str, issues: list[dict], cwd) -> list[str]:
 
 
 def _check_child_labels(issues: list[dict], cfg) -> list[str]:
-    """Each child carries the provider/org/repo identity triplet, and any CLOSED-dimension label
-    it does carry holds an allowed value (reuse registry.closed_dimensions + validate._label_val).
-    """
+    """Check identity, state-label exclusion, and the authoritative routing-label contract."""
     closed = registry.closed_dimensions(cfg)
     problems: list[str] = []
     for issue in issues:
@@ -742,7 +863,13 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
                 f"{cid}: work children must not carry state labels ({', '.join(offending)}) — "
                 "origin:/intake:/kickoff: belong to intake items and epics, not molecule work"
             )
+        problems += [
+            f"{cid}: {problem}"
+            for problem in complexity.routing_label_errors(labels, issue.get("type") or "task")
+        ]
         for dim, allowed in closed.items():
+            if dim == "complexity":  # routing_label_errors owns required/singular/canonical
+                continue
             val = validate._label_val(labels, f"{dim}:")
             if val and val not in allowed:
                 problems.append(
@@ -773,6 +900,12 @@ def _verify_loaded(
     `check <epic>` so callers that also need the issue list load the molecule only once."""
     problems: list[str] = []
     problems += molecule.validate_spec(_spec_from_filed(epic_data, issues), cfg)
+    problems += [
+        f"{epic_id}: {problem}"
+        for problem in complexity.routing_label_errors(
+            epic_data.get("labels") or [], epic_data.get("issue_type") or "epic"
+        )
+    ]
     if not issues and origin_reports:
         # "no issues" is technically true but actively misleading here (bh-l9s8.1): the epic HAS
         # children — every one was filtered out of the work-sibling set as an origin report.
@@ -837,8 +970,9 @@ def file(
     cwd = registry.hive_dir_for(cfg, hive)
     try:
         data = molecule.load_spec(spec)
+        decisions = compile_complexity_labels(data)
         molecule.validate_or_raise(data, cfg)
-    except (FileNotFoundError, molecule.MoleculeError) as e:
+    except (FileNotFoundError, molecule.MoleculeError, PlanError) as e:
         _abort(str(e))
 
     epic = data["epic"]
@@ -846,6 +980,7 @@ def file(
 
     if dry_run:
         _preview(epic, issues, cwd)
+        _render_complexity_decisions(decisions)
         if save:
             _save_spec(data, save)
         return  # --dry-run creates nothing: read-only, so never gated
@@ -870,6 +1005,7 @@ def file(
         f"✓ filed {result.epic_id}: {result.issue_count} issue(s), "
         f"{result.root_count} kickoff gate(s), kickoff=pending{adopt_note}"
     )
+    _render_complexity_decisions(decisions)
     if save:
         _save_spec(data, save)
 
@@ -930,7 +1066,7 @@ def check(
     as_json: bool = typer.Option(
         False,
         "--json",
-        help="emit {valid, problems, warnings, missing_acceptance, stubbed_acceptance, "
+        help="emit {valid, problems, complexity, warnings, missing_acceptance, stubbed_acceptance, "
         "acceptance_problems} as JSON",
     ),
     hive: str = _HIVE,
@@ -941,7 +1077,8 @@ def check(
     filed epic id and runs the same convention checks as `verify`. Prints '✓ valid' on success
     (exit 0), or each validation problem (exit non-zero). Acceptance stubs (text starting
     'STUB:') are surfaced as warnings — visible debt that never blocks, so a stubbed-but-valid
-    molecule still exits 0. `--json` emits the machine shape the planner skill's
+    molecule still exits 0. Complexity decisions include tier/score/source and
+    explicit-vs-inferred provenance. `--json` emits the machine shape the planner skill's
     acceptance-drafting modes consume (notably `missing_acceptance: [ids...]`).
     """
     cfg = config.load()
@@ -951,6 +1088,7 @@ def check(
             data = molecule.load_spec(str(ref_path))
         except (FileNotFoundError, molecule.MoleculeError) as e:
             _abort(str(e))
+        decisions = compile_complexity_labels(data)
         problems = molecule.validate_spec(data, cfg)
         issues = data.get("issues")
     else:
@@ -959,11 +1097,22 @@ def check(
         if loaded is None:
             _abort(f"could not retrieve epic {ref} or its children — does it exist in this hive?")
         epic_data, issues, origin_reports = loaded
+        decisions = _filed_complexity_decisions(ref, epic_data, issues)
         problems = _verify_loaded(ref, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
 
     summary = molecule.acceptance_summary(issues)
     if as_json:
-        typer.echo(json.dumps({"valid": not problems, "problems": problems, **summary}, indent=2))
+        typer.echo(
+            json.dumps(
+                {
+                    "valid": not problems,
+                    "problems": problems,
+                    "complexity": [decision.as_dict() for decision in decisions],
+                    **summary,
+                },
+                indent=2,
+            )
+        )
         if problems:
             raise typer.Exit(1)
         return
@@ -975,6 +1124,7 @@ def check(
     if problems:
         raise typer.Exit(1)
 
+    _render_complexity_decisions(decisions)
     typer.echo("✓ valid")
 
 
@@ -1102,7 +1252,9 @@ def show(
             data = molecule.load_spec(str(ref_path))
         except (FileNotFoundError, molecule.MoleculeError) as e:
             _abort(str(e))
+        decisions = compile_complexity_labels(data)
         _render_from_spec(data, ref_path)
+        _render_complexity_decisions(decisions)
     else:
         _render_from_epic(ref, cwd)
 
