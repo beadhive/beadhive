@@ -962,3 +962,74 @@ it needs formula or wisp:**
 
 Build nothing, change nothing. This addendum is the record that the guardrailed version of the
 question was asked, measured, and answered — so it is not re-opened from intuition.
+
+---
+
+## Addendum 3 — 2026-08-21 (`bh-a74aa.4`): the narrow release-loop safety bar clears
+
+**Status of this addendum:** accepted · **Narrow GO to replan, not a general adoption reversal.**
+Decision 2 remains NO-GO for `wisp` as a work-item or general operational-workflow substrate;
+Decision 4's existing workflow rows remain unchanged. This addendum answers only whether a
+release-shaped, host-local wisp may be used as a disposable execution projection when all durable
+truth and all safety decisions pass through the three `bh` primitives delivered by `bh-a74aa`.
+
+### C1 — decision: GO to a scoped implementation replan
+
+The narrow guardrailed release-loop design now clears the five-condition reopen bar stated in A4
+and B6. The result is **GO to `/bh:replan` an implementation molecule for the release-loop
+tracking itself**, using the three primitives below. It is not approval to implement that loop in
+this decision bead, and no implementation molecule is filed here.
+
+The important qualification is that upstream wisp semantics did **not** change. Wisps remain
+host-local, unversioned and absent from the persistent audit corpus. The narrow design clears the
+bar by making the wisp a disposable projection rather than the canonical record: command-coupled
+measured facts and sign-off live on persistent beads, while `bh` owns the only readiness and
+destructive-cleanup surfaces the design may use. That substitution is specific to this static,
+four-step release shape and does not satisfy Decision 2 for primary work items generally.
+
+| Reopen condition | `bh-a74aa` evidence | Result for the narrow design |
+|---|---|---|
+| Git-synced durable state | `bh checkpoint run` appends a timestamped concrete measurement under a new key on a **persistent** control bead only after the real command exits 0; the persistent `bd gate create` sign-off is likewise versioned and synced | **Met by substitution.** Wisp rows still do not sync, but they carry no canonical release fact; completed checkpoints and sign-off do |
+| Ready-surface visibility | `bh work readiness <molecule-id>` reports every member step through `dep tree` plus the unscoped `bd ready --include-ephemeral` paths, in human and JSON forms | **Met for a known release molecule.** The implementation molecule must own and retain the run id; bare `bd ready` remains the wrong interface |
+| Cleanup cannot destroy live progress | the `bh bd` passthrough refuses `mol wisp gc --closed` and `mol squash` while **any** wisp molecule is non-closed hive-wide, names every open molecule, and fails closed when the safety query cannot be read | **Met at the bh boundary.** `BH_DEBUG=1` remains an explicit operator escape hatch; genuinely raw `bd` stays outside bh's control, as `PASSTHROUGH.md` already states |
+| Completion is verified, not hand-asserted | `bh checkpoint run` runs the real command first, propagates any non-zero exit without metadata or step mutation, writes the persistent fact next, and only then closes the optional wisp step | **Met.** Key reuse is refused, the helper creates no dependency edge, and metadata failure cannot advance the wisp |
+| Non-ephemeral blockers gate wisp steps | `bh work readiness` deliberately never calls `bd mol current` or `bd ready --mol`; its real-bd regression reproduces M4 and reports the one-way-door step blocked by the open persistent gate | **Met.** The false green in B1 is closed on the first-class bh surface |
+
+The three implementations are separately reviewable and merged on the `bh-a74aa` integration
+branch:
+
+1. `bh-a74aa.1` — blocker-correct `bh work readiness`, including a real-bd M4 regression;
+2. `bh-a74aa.2` — hive-wide destructive-cleanup guard with E6/E7 negative tests and safe-case
+   regressions;
+3. `bh-a74aa.3` — command → append-only persistent checkpoint → optional step-close ordering,
+   with failure, key-reuse, concurrency and no-edge tests.
+
+### C2 — what this GO does not claim
+
+- **It does not make a wisp authoritative.** Read-time release truth still comes from the ledger,
+  remote and package index. A checkpoint is a durable, timestamped snapshot beside those probes,
+  never a replacement for re-measurement. B5's confidently wrong `next_step` remains the reason
+  the future loop must not call `bd mol current` or treat wisp state as world state.
+- **It does not adopt formula/wisp for the developer loop, Guide runs, onboarding, no-code work,
+  dispatch, or general primary work.** All prior NO-GOs stand.
+- **It does not claim bare-command enforcement.** The safety layer follows bh's existing
+  passthrough model: first-class verbs are the supported path, the raw substrate remains an
+  operator escape. The implementation plan must not introduce a direct raw-`bd` cleanup or
+  molecule-readiness path.
+- **It does not establish product ROI.** `bh-yber2.2` measured only a 1.41× median wall-clock
+  difference at n=5 per condition, mostly attributable to process startup, and the cheaper query
+  returned the wrong next action. Safety eligibility is now established; whether the tracking
+  earns its maintenance cost remains an implementation-planning decision. The measured
+  `bh release status [--json]` alternative remains in scope for that comparison.
+
+### C3 — required next step, deliberately not performed here
+
+Re-enter planning with `/bh:replan` and produce a fresh, scoped implementation molecule for the
+release-loop tracker. That plan must use `bh work readiness` for all molecule/gate decisions,
+route every real release command through `bh checkpoint run` with one never-reused key and a
+timestamped concrete fact, keep the real sign-off as a persistent `bd gate create` gate, and
+permit destructive cleanup only through the guarded `bh bd` path after all wisp molecules are
+closed. It must also compare the resulting maintenance cost with the one-invocation, still-measured
+`bh release status [--json]` alternative before committing to the wisp layer.
+
+This decision bead files no implementation work. Its output is this bounded permission to replan.
