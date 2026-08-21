@@ -456,10 +456,19 @@ def role_cmd(
         "--no-hitch",
         help="force the native backend even when hitch (if enabled) would otherwise apply.",
     ),
+    seats: bool = typer.Option(
+        False,
+        "--seats",
+        help=(
+            "with no seat given, run the full per-seat `hitch profile preflight` check "
+            "(~2.7s, 7 seats) in the listing; the default listing only checks which backend "
+            "would be picked, cheaply (bh-gqfrm)"
+        ),
+    ),
 ):
     from . import hitch_plugin
 
-    hitch_plugin.route(name, harness=harness or None, no_hitch=no_hitch)
+    hitch_plugin.route(name, harness=harness or None, no_hitch=no_hitch, full_seats=seats)
 
 
 @app.command("statusline", hidden=True, help="print role/hive statusline from stdin JSON (TUI).")

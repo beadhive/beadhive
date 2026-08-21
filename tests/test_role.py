@@ -679,4 +679,16 @@ def test_cli_role_no_hitch_flag_threaded_through(monkeypatch):
         result = cli_runner.invoke(app, ["role", "developer", "--no-hitch"])
 
     assert result.exit_code == 0
-    mock_route.assert_called_once_with("developer", harness=None, no_hitch=True)
+    mock_route.assert_called_once_with("developer", harness=None, no_hitch=True, full_seats=False)
+
+
+def test_cli_role_seats_flag_threaded_through(monkeypatch):
+    """`bh role --seats` reaches hitch_plugin.route(full_seats=True) (bh-6t49w.5)."""
+    from beadhive import hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    with patch.object(hitch_plugin, "route") as mock_route:
+        result = cli_runner.invoke(app, ["role", "--seats"])
+
+    assert result.exit_code == 0
+    mock_route.assert_called_once_with("", harness=None, no_hitch=False, full_seats=True)
