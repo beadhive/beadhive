@@ -20,6 +20,7 @@ from typer.core import TyperGroup
 from . import bd as bd_mod
 from . import (
     checkpoint,
+    complexity_backfill,
     config,
     config_schema,
     dep_cli,
@@ -103,6 +104,11 @@ app.add_typer(work.app, name="work", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(plan.app, name="plan", rich_help_panel=PLANNING_PANEL)
 app.add_typer(release.app, name="release", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(checkpoint.app, name="checkpoint", rich_help_panel=INTEGRATION_PANEL)
+app.command(
+    "backfill-complexity",
+    rich_help_panel=HIVE_PANEL,
+    help="preview/apply a hash-gated full-corpus complexity-label migration",
+)(complexity_backfill.command)
 app.add_typer(dolt_app, name="dolt", hidden=True)  # deprecation-track: off all panels
 app.add_typer(otel_app, name="otel", hidden=True)  # deprecation-track: off all panels
 app.add_typer(plugin_app, name="plugin", rich_help_panel=ADMIN_PANEL)
