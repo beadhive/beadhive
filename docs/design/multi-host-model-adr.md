@@ -176,6 +176,28 @@ Recorded explicitly so none of these is rediscovered as a surprise.
    otherwise block the fleet until expiry. The escape hatch must exist, and using it is exactly
    how split-brain happens. Mitigation is loud logging and escalation, not prevention.
 
+   **Split-brain, detected and named (bh-s9cdk).** Measured live on this fleet, 2026-08-07: two
+   hosts, each auto-pushing by default with the epoch fence inert (limitation above, tracked as
+   bh-tfapu) and two `bd` install planes sharing one store (bh-tp38g), each built an
+   independently-`bd init`'d/rebuilt lineage and published it to the same remote — same content
+   (verified: identical id sets both directions), but two DAGs with **no common ancestor**. `bd`
+   itself cannot tell an operator this: a merge attempt reports "row conflicts require operator
+   resolution" (there are none — nothing to reconcile) and a push reports "non-fast-forward …
+   behind its remote" (implying a pull fixes it — it cannot). Both messages describe a condition
+   that has a remedy; this one doesn't, until you name it correctly.
+
+   Detect it *before* the day something tries to converge — `dolt_health.probe_embedded_lineage`
+   (a direct, local-only `dolt merge-base <local> <remote-tracking>` against the embedded store,
+   surfaced as a `bh doctor` warning) reports `LINEAGE_SPLIT_BRAIN` distinctly from the ordinary
+   ahead/behind/diverged states, since none of the existing three shares this DAG's remedy.
+
+   **Recovery, once verified content-equal** (a real id-set diff — matching `bd stats`/`bd list`
+   output is NOT that verification): **re-hydrate the non-canonical host from the remote**
+   (`bd bootstrap` against the canonical remote), discarding its local lineage. Do not attempt a
+   merge or a pull — there is no common ancestor for either to resolve against, and every
+   directly-caused enabler above (inert fence, dual install planes, default auto-push) is
+   tracked and fixed independently, not re-litigated here.
+
 4. **TTL choice is a real trade-off with no good answer.** Short TTL ⇒ frequent renewal and a
    dead host frees up fast, but a slow network looks like death. Long TTL ⇒ stable, but a dead
    host blocks work for the whole window.
