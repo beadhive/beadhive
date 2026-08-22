@@ -277,6 +277,58 @@ def _resolve_backend(seat: str, harness: str, cfg) -> tuple[str, str | None, str
     return "hitch", hitch_target, seat
 
 
+# ---- headless (`--task` / `-d`) suitability + backend selection (bh-6t49w.6) -----------------
+
+
+def headless_plan(seat: str, harness: str, cfg) -> tuple[str | None, str]:
+    """Would an unattended (`--task` / `-d`) launch of *seat* work on this host, and how?
+
+    The suitability SEAM: pure — config reads and PATH lookups only, no subprocess, no launch —
+    so "would this seat be refused, and why" is answerable without starting anything
+    (bh-6t49w.7 surfaces exactly this), rather than being a branch buried in the launch path.
+
+    Returns ``(backend, detail)``:
+
+    - ``("baml", detail)`` — a built ``bh-<seat>`` role binary is on PATH. PREFERRED over hitch:
+      it already carries the CANCEL ladder and the baked-permission (`--bundle`) contract the
+      local-runtime work settled (:func:`beadhive.localloop.seat_argv`), which a ``hitch up``
+      hand-over does not.
+    - ``("hitch", detail)`` — no such binary, but hitch is enabled with a seat-aligned profile
+      for *seat* under this *harness* (the same :func:`_resolve_backend` seam the attached path
+      uses — one selection rule, not two).
+    - ``(None, reason)`` — refused. Either *seat* is not headless-capable at all
+      (:func:`beadhive.localloop.headless_capable`), or neither backend exists; *reason* names
+      what is missing, so the refusal is loud rather than a silent fallback to attached.
+
+    ``localloop`` is imported lazily: it is a heavy asyncio module and nothing else in this
+    plugin's module-level path needs it.
+    """
+    from . import localloop
+
+    if not localloop.headless_capable(seat):
+        capable = ", ".join(sorted(set(localloop.ROLE_FOR_ACTION.values())))
+        return None, (
+            f"{seat!r} is not a headless-capable seat — nothing dispatches an unattended "
+            f"{seat} run, so one would never be picked up. Headless-capable seats: {capable}. "
+            f"Run it attached instead: `{config.BINARY_ALIAS} role {seat}`."
+        )
+
+    binary = f"bh-{seat}"
+    if shutil.which(binary) is not None:
+        return "baml", f"built role binary {binary} on PATH"
+
+    backend, hitch_target, profile = _resolve_backend(seat, harness, cfg)
+    if backend == "hitch":
+        return "hitch", f"hitch profile {profile!r} (target={hitch_target})"
+
+    return None, (
+        f"no headless backend for seat {seat!r}: no built {binary} binary on PATH, and no "
+        f"hitch profile named {seat!r} for harness {harness!r} (hitch enabled + `hitch.repo` "
+        "configured with a matching entry in profiles/local.yaml). Build the role binary or "
+        f"add the profile — or run it attached: `{config.BINARY_ALIAS} role {seat}`."
+    )
+
+
 def _seat_listing_lines(cfg, harness: str, *, full: bool) -> list[str]:
     """One annotated line per known seat for the bare ``bh role`` listing (bh-6t49w.5) —
     which backend(s) this host would actually pick, reusing existing data rather than a new

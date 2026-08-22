@@ -502,6 +502,119 @@ def _apply_role_workspace(bead: str, hive: str) -> None:
     os.chdir(target)
 
 
+def _role_instructions(seat: str, bead: str, task: str) -> str:
+    """The unattended run's brief. Deliberately a POINTER, not a restated task (bh-6t49w.6):
+    the same shape `LocalLoop._default_instructions` already writes — carry only what the
+    contract needs and let the seat read the bead's own brief through `bh work brief`, which is
+    the live spec. A restatement here would be a second, immediately-stale copy of it.
+
+    ``--task`` is therefore OPTIONAL when ``--bead`` is given; when present it is appended as an
+    extra section, so it adds to (or overrides, by being the more specific instruction) the
+    pointer rather than replacing the bead as the source of truth."""
+    lines = [f"# {seat} — {bead or 'ad-hoc run'}", ""]
+    if bead:
+        lines += [
+            f"Bead: {bead}",
+            "",
+            f"Read this bead's own brief — `{config.BINARY_ALIAS} work brief {bead}` — it is the",
+            f"spec, and nothing is restated here. Drive it through `{config.BINARY_ALIAS} work`",
+            "per your seat prompt. Commit after every step: the branch is the checkpoint, and a",
+            "restart re-dispatches a fresh turn against this same worktree rather than resuming a",
+            "dead session.",
+        ]
+    if task:
+        lines += ["", "## Task", "", task]
+    return "\n".join(lines) + "\n"
+
+
+def _role_dispatch_dir() -> Path:
+    """Scratch for headless `bh role` runs — instructions + detached logs. Under bh's own home,
+    NOT the worktree: a detached seat outlives this process, and dropping files into the bead's
+    checkout would show up as dirty tree in the very branch the seat is about to commit."""
+    d = config.home() / "dispatch"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _role_headless(
+    seat: str, harness: str, task: str, detached: bool, bead: str, hive: str, no_hitch: bool
+):
+    """`bh role <seat> --task/-d`'s launch (bh-6t49w.6). Suitability is decided FIRST, before
+    any workspace resolution, so an attached-only seat refuses immediately instead of claiming
+    a bead's worktree on the way to a launch that was never going to happen."""
+    import subprocess
+    import uuid
+
+    from . import hitch_plugin, localloop
+    from .run import child_env
+
+    cfg = config.load()
+    resolved_harness = harness or config.harness_name(cfg)
+    backend, detail = hitch_plugin.headless_plan(seat, resolved_harness, cfg)
+    if backend == "hitch" and no_hitch:
+        backend, detail = None, f"--no-hitch, and the only headless backend here is {detail}"
+    if backend is None:
+        typer.echo(f"✗ {detail}", err=True)
+        raise typer.Exit(1)
+    if not bead and not task:
+        typer.echo(
+            "✗ a headless run needs something to do — pass --bead <id> (the seat reads its "
+            "brief) and/or --task '<what to do>'",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    _apply_role_workspace(bead, hive)
+    instructions = _role_instructions(seat, bead, task)
+    typer.echo(f"→ {seat}: headless via {backend} — {detail}", err=True)
+
+    if backend == "hitch":
+        # hitch has no instructions-file flag; the SAME pointer travels as its --task string.
+        code = hitch_plugin.up(
+            resolved_harness,
+            seat,
+            cfg,
+            workspace=os.getcwd(),
+            task=instructions,
+            detached=detached,
+            role_=seat,
+        )
+        if code != 0:
+            raise typer.Exit(code)
+        return
+
+    entry = registry.entry_for_dir(cfg, Path.cwd())
+    stem = bead or seat
+    path = _role_dispatch_dir() / f"{stem}.role-{seat}.md"
+    path.write_text(instructions, encoding="utf-8")
+    argv = list(
+        localloop.seat_argv(
+            config.dispatch_seat_command(cfg, entry),
+            seat,
+            workspace=os.getcwd(),
+            bead=bead,
+            instructions=str(path),
+            session_id=str(uuid.uuid4()),
+            bundle=config.dispatch_seat_bundle(cfg, entry),
+        )
+    )
+    if not detached:
+        raise typer.Exit(run(argv, check=False, capture=False).returncode)
+
+    log_path = _role_dispatch_dir() / f"{stem}.role-{seat}.log"
+    with log_path.open("ab") as sink:
+        proc = subprocess.Popen(  # noqa: S603 — argv is built, never shell-interpreted
+            argv,
+            cwd=os.getcwd(),
+            env=child_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    typer.echo(f"→ {seat}: detached pid {proc.pid}, log {log_path}", err=True)
+
+
 @app.command(
     "role",
     rich_help_panel=FLEET_PANEL,
@@ -536,8 +649,21 @@ def role_cmd(
     hive: str = typer.Option(
         "", "--hive", help="launch at this hive's root, no bead (see hive_match)."
     ),
+    task: str = typer.Option(
+        "",
+        "--task",
+        help="run unattended with this task. OPTIONAL alongside --bead — the seat is pointed "
+        "at the bead's own brief; --task only adds to or overrides that.",
+    ),
+    detached: bool = typer.Option(
+        False, "-d", "--detached", help="detach the unattended run (implies headless)."
+    ),
 ):
     from . import hitch_plugin
+
+    if task or detached:
+        _role_headless(name, harness, task, detached, bead, hive, no_hitch)
+        return
 
     _apply_role_workspace(bead, hive)
     hitch_plugin.route(name, harness=harness or None, no_hitch=no_hitch, full_seats=seats)
