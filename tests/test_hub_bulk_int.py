@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import socket
 import time
+from pathlib import Path
 
 import pytest
 
@@ -219,6 +220,108 @@ def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_share
 
     # --- set-based ancestor validation runs clean over a real, well-formed graph ---
     assert hub_bulk.validate_ancestors(hub_b) == 0
+
+
+def _prefix_counts(hub_dir) -> dict[str, int]:
+    """``{prefix: row count}`` over every issue in `hub_dir`'s ``issues`` table, bucketed by
+    the id's leading `<prefix>-` segment — the per-prefix view bh-4o07n's own incident was
+    diagnosed from (HQ's per-prefix counts, not just the total: a total can hold steady while
+    one prefix is wiped and another grows)."""
+    rows = _rows(hub_dir, "issues", "id")
+    counts: dict[str, int] = {}
+    for row in rows:
+        prefix = row["id"].rsplit("-", 1)[0]
+        counts[prefix] = counts.get(prefix, 0) + 1
+    return counts
+
+
+def test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync(
+    tmp_path, monkeypatch, isolated_shared_server
+):
+    """bh-eu2pp / bh-4o07n regression guard: drives the REAL `hub.sync()` (real bd, real
+    shared Dolt server, real bulk pass — not a mock of any of it) over a multi-hive fixture,
+    three times in a row, and asserts every prefix's row count never decreases across a sync
+    — the invariant bh-4o07n's incident was diagnosed with (HQ's per-prefix counts fell
+    7185 -> 3477) but that nothing in CI checked before this bead, so the same shape could
+    slip through again undetected.
+
+    Manually confirmed (2026-08-22, `bd` 1.1.0) that reinstating bh-4o07n's exact defect —
+    `hub_bulk.run_bulk_pass` calling `bd repo remove` on a hive right after bulk-copying it —
+    no longer reproduces a wipe against today's `bd`: a bulk copy overwrites `source_repo` to
+    the source hive's own (blank) value before the remove runs, and `bd repo remove`'s
+    deletion is keyed on `source_repo` matching the removed path, so it now finds nothing to
+    delete. The INVARIANT this test asserts is still the right one to hold — it is what
+    would have caught bh-4o07n's actual incident (measured against a real aggregate, not a
+    hypothesis) and it makes no assumption about *how* a future `hub.sync()` regression might
+    shrink a prefix. Verified this test's own assertions have teeth by manually deleting a row
+    between two sync() calls in this test and confirming it fails (reverted before commit)."""
+    from beadhive import hub
+
+    hives: dict[str, Path] = {}
+    for i, (prefix, titles) in enumerate((("hva", ["one", "two"]), ("hvb", ["three"]))):
+        path = tmp_path / "hives" / prefix
+        _init(path, prefix)
+        if i == 0:
+            _wait_until_accepting("127.0.0.1", isolated_shared_server)
+        for title in titles:
+            bd("create", title, cwd=path)
+        run(
+            ["bd", "-C", str(path), "export", "-o", str(path / ".beads" / "issues.jsonl")],
+            check=True,
+            capture=True,
+            timeout=_TIMEOUT,
+        )
+        hives[prefix] = path
+
+    managed_repos = [
+        {"provider": "gh", "org": "x", "repo": prefix, "prefix": prefix} for prefix in hives
+    ]
+    monkeypatch.setattr(hub.config, "load", lambda: {"managed_repos": managed_repos})
+    monkeypatch.setattr(hub.registry, "hive_dir", lambda e: hives[e["prefix"]])
+
+    hub_dir, _ = hub.hub_target()
+
+    failed = hub.sync()
+    assert not failed, failed
+    before = _prefix_counts(hub_dir)
+    assert set(before) == set(hives), before
+    assert all(n > 0 for n in before.values()), before
+
+    # A second sync with nothing changed — the steady state a hub.sync() regression must not
+    # disturb.
+    failed = hub.sync()
+    assert not failed, failed
+    after = _prefix_counts(hub_dir)
+    for prefix, n in before.items():
+        assert after.get(prefix, 0) >= n, (
+            f"{prefix} shrank across a sync: {n} -> {after.get(prefix, 0)}"
+        )
+
+    # Growing one hive must show up in ITS OWN prefix without any sibling prefix shrinking —
+    # the "total holds steady while one prefix is wiped and another grows" shape the per-prefix
+    # assertion (not just a total) exists to catch.
+    bd("create", "a new one", cwd=hives["hva"])
+    run(
+        [
+            "bd",
+            "-C",
+            str(hives["hva"]),
+            "export",
+            "-o",
+            str(hives["hva"] / ".beads" / "issues.jsonl"),
+        ],
+        check=True,
+        capture=True,
+        timeout=_TIMEOUT,
+    )
+    failed = hub.sync()
+    assert not failed, failed
+    grown = _prefix_counts(hub_dir)
+    assert grown["hva"] == after["hva"] + 1, grown
+    for prefix, n in after.items():
+        assert grown.get(prefix, 0) >= n, (
+            f"{prefix} shrank across a sync: {n} -> {grown.get(prefix, 0)}"
+        )
 
 
 def test_co_located_database_and_server_databases_against_the_real_server(
