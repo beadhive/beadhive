@@ -582,6 +582,32 @@ def test_await_refuses_when_no_gate_was_ever_fired(hive):
     assert "no background gate was fired" in res.output
 
 
+def test_await_accepts_a_green_verdict_earned_with_no_marker_at_all(hive):
+    """bh-d3u1o: THE FIX. A tree proven by a foreground `just attest` — no background gate ever
+    fired for it — is exactly as green as one a background gate proved. Before this bead, `await`
+    demanded the marker first and refused a tree `preview` had already called GO on; now the
+    ledger alone decides, which is the same lookup `preview` makes."""
+    bumped = _bump(hive)
+    _attest(hive, rev=bumped)  # foreground attest — no `_fire`, no marker, ever
+
+    res = _await(hive, rev=bumped)
+
+    assert res.exit_code == 0, res.output
+    assert "attested green" in res.output
+
+
+def test_await_still_refuses_a_red_verdict_earned_with_no_marker(hive):
+    """The green case above does not become "no verdict required at all" — a RED foreground
+    verdict with no marker refuses exactly as a red backgrounded one does."""
+    bumped = _bump(hive)
+    _attest(hive, rev=bumped, rc=1)
+
+    res = _await(hive, rev=bumped)
+
+    assert res.exit_code == 1
+    assert "DO NOT PUSH" in res.output
+
+
 def test_await_refuses_a_stale_verdict_even_with_the_marker_present(hive):
     """The marker says a run happened; the ledger says its verdict has expired. The ledger wins —
     the marker is never evidence about greenness."""
@@ -1154,6 +1180,33 @@ def test_preview_reports_a_green_tree_as_green(hive):
 
     assert res.exit_code == 0
     assert "attested green" in res.output
+
+
+def test_preview_and_await_agree_on_the_fix_forward_shape(hive):
+    """bh-d3u1o, end to end: `just bump`'s background gate fires on the bump tree, goes RED, gets
+    fixed forward in more commits (a NEW tree the marker never named), and that new tree is proven
+    by hand with `just attest` — no marker, genuinely green. `preview` (the dry run) and `await`
+    (what the real release waits on) must give the SAME answer for it; before this bead `preview`
+    said GO and `await` refused."""
+    repo = hive["repo"]
+    bumped = _bump(hive)
+    _fire(hive, rev=bumped)
+    _attest(hive, rev=bumped, rc=1)  # the background gate's own verdict: RED
+
+    (repo / "fix.txt").write_text("fix\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-qm", "fix: lint", cwd=repo)
+    fixed = _git("rev-parse", "HEAD", cwd=repo)
+    _git("tag", "-f", "v0.1.1", fixed, cwd=repo)
+    _attest(hive, rev=fixed)  # `just attest` in the foreground — no marker for this tree
+
+    prev = _preview(hive, fixed)
+    aw = _await(hive, "--if-pending", rev=fixed)
+
+    assert prev.exit_code == 0
+    assert "attested green" in prev.output
+    assert aw.exit_code == 0, aw.output
+    assert "attested green" in aw.output
 
 
 def test_preview_measures_the_tag_against_the_actual_remote(hive):
