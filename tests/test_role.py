@@ -871,3 +871,80 @@ def test_cli_role_headless_needs_a_bead_or_a_task(monkeypatch):
 
     assert result.exit_code == 1
     assert "--bead" in result.output
+
+
+# ---------------------------------------------------------------------------
+# cli.py `bh role <seat> --explain`: preview backend + mode, launch nothing (bh-6t49w.7)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_role_explain_never_claims_the_bead_workspace(monkeypatch):
+    """`--explain` must not resolve/claim `--bead`'s worktree — that's a write, and this is a
+    read-only preview."""
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda *a: pytest.fail("workspace resolved under --explain")
+    )
+    monkeypatch.setattr(
+        hitch_plugin, "headless_plan", lambda seat, harness, cfg: ("baml", "built bh-developer")
+    )
+
+    result = cli_runner.invoke(app, ["role", "developer", "--bead", "bh-6t49w.7", "--explain"])
+
+    assert result.exit_code == 0, result.output
+    assert "mode=headless-safe" in result.output
+    assert "backend=baml" in result.output
+    assert "bh-6t49w.7" in result.output
+
+
+def test_cli_role_explain_reports_attached_required_for_an_unsuitable_seat(monkeypatch):
+    from beadhive import cli
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
+
+    result = cli_runner.invoke(app, ["role", "supervisor", "--explain"])
+
+    assert result.exit_code == 0, result.output
+    assert "mode=attached-required" in result.output
+    assert "backend=none" in result.output
+    assert "not a headless-capable seat" in result.output
+
+
+def test_cli_role_explain_unrecognized_seat_reports_attached_required():
+    """A seat outside `ROLE_FOR_ACTION` (never a headless target, known-and-installed or not)
+    still gets a loud, correct `attached-required` answer — no spurious "not installed" error,
+    since `--explain` deliberately does not re-check `role._known_seats()`."""
+    result = cli_runner.invoke(app, ["role", "nope", "--explain"])
+
+    assert result.exit_code == 0, result.output
+    assert "mode=attached-required" in result.output
+
+
+def test_cli_role_explain_empty_seat_refuses():
+    result = cli_runner.invoke(app, ["role", "--explain"])
+
+    assert result.exit_code == 1
+    assert "--explain needs a seat" in result.output
+
+
+def test_cli_role_explain_dry_run_alias_matches_explain(monkeypatch):
+    """`--dry-run` is accepted as an alias, mirroring hitch's own `--explain`/`--dry-run`."""
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
+    monkeypatch.setattr(
+        hitch_plugin, "headless_plan", lambda seat, harness, cfg: ("baml", "built bh-developer")
+    )
+
+    result = cli_runner.invoke(app, ["role", "developer", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "mode=headless-safe" in result.output

@@ -615,6 +615,36 @@ def _role_headless(
     typer.echo(f"→ {seat}: detached pid {proc.pid}, log {log_path}", err=True)
 
 
+def _role_explain(seat: str, harness: str, no_hitch: bool, bead: str) -> None:
+    """``bh role <seat> --explain``'s read-only preview (bh-6t49w.7): the resolved headless
+    backend + suitability mode without launching anything or claiming ``--bead``'s worktree —
+    mirrors hitch's own ``--explain``/``--dry-run`` contract (see ``hitch_plugin._up_cmd``).
+    ``mode``/``backend``/``detail`` all come straight from ``hitch_plugin.headless_plan`` — the
+    same pure, no-subprocess seam ``_role_headless`` decides suitability from before it commits
+    to anything — so there is no second predicate to keep in sync with it or with `bh work
+    schedule`'s own `mode` field. ``--bead`` is accepted for context only (echoed in the line);
+    resolving/claiming its worktree would be a write, which `--explain` must never do.
+
+    Deliberately does not re-validate ``seat`` against ``role._known_seats()`` (the bundled
+    agent-def glob): ``headless_capable`` is checked against `ROLE_FOR_ACTION` — a closed,
+    hardcoded table independent of which agent defs happen to be installed on this host — the
+    exact same seam `_role_headless` already trusts, so an unknown/unsuitable seat still gets a
+    loud, correct answer here instead of a spurious "not installed" refusal."""
+    if not seat:
+        typer.echo("✗ --explain needs a seat (e.g. `bh role developer --explain`)", err=True)
+        raise typer.Exit(1)
+    from . import hitch_plugin, localloop
+
+    cfg = config.load()
+    resolved_harness = harness or config.harness_name(cfg)
+    mode = "headless-safe" if localloop.headless_capable(seat) else "attached-required"
+    backend, detail = hitch_plugin.headless_plan(seat, resolved_harness, cfg)
+    if backend == "hitch" and no_hitch:
+        backend, detail = None, f"--no-hitch, and the only headless backend here is {detail}"
+    bead_note = f" (bead {bead})" if bead else ""
+    typer.echo(f"{seat}{bead_note}: mode={mode} backend={backend or 'none'} — {detail}")
+
+
 @app.command(
     "role",
     rich_help_panel=FLEET_PANEL,
@@ -658,8 +688,19 @@ def role_cmd(
     detached: bool = typer.Option(
         False, "-d", "--detached", help="detach the unattended run (implies headless)."
     ),
+    explain: bool = typer.Option(
+        False,
+        "--explain",
+        "--dry-run",
+        help="print the resolved headless backend + suitability mode for this seat and exit; "
+        "no launch, no --bead worktree claim (mirrors hitch's own --explain/--dry-run).",
+    ),
 ):
     from . import hitch_plugin
+
+    if explain:
+        _role_explain(name, harness, no_hitch, bead)
+        return
 
     if task or detached:
         _role_headless(name, harness, task, detached, bead, hive, no_hitch)

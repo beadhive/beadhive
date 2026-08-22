@@ -4834,6 +4834,19 @@ def test_schedule_fanout_mode_is_the_default_and_fans_out(hive, fakebd, capsys):
     assert sorted(row["id"] for row in payload["singletons"]) == ["mr-1", "mr-2"]
 
 
+def test_schedule_singletons_and_coordinators_carry_headless_mode(hive, fakebd, capsys):
+    """bh-6t49w.7: every launch unit's cost-model decision carries a `mode` field, computed
+    from `localloop.headless_capable` on the SAME `role` already threaded through
+    `resolve_launch_decision` — developer singletons and dispatcher coordinators are both in
+    `ROLE_FOR_ACTION`'s roster, so both come back `headless-safe`."""
+    _seed_child(fakebd, "mr-1")
+    fakebd.seed("mr-ws.1", title="child epic", parent="mr-epic", issue_type="epic")
+    work.schedule(epic="mr-epic", hive="myrepo", as_json=True)
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["singletons"][0]["mode"] == "headless-safe"
+    assert payload["coordinators"][0]["mode"] == "headless-safe"
+
+
 def test_schedule_skips_batch_whose_group_branch_already_merged(hive, fakebd, capsys):
     # bh-bfoy: a stale batch: label whose wt/batch/<group> branch already merged must NOT be
     # resurrected as a batch — schedule leaves its members as ordinary singletons.
