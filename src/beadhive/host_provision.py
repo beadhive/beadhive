@@ -48,10 +48,28 @@ already-done) clone — dropping the host's now-stale copies (never merging them
 just-cloned ``fleet.yaml`` is authoritative) — via :func:`_reconcile_host_config_after_clone`.
 
 Pairs with ``bh host retire`` (sibling bead, bh-twc8.2) as the other end of the host lifecycle.
+
+``harness plugin`` reconciles this module against ``INSTALL.md``'s ``configure:`` block
+(bh-tx2hp). That block lists three steps — ``bh config init``, ``bh mcp install``, then the
+``bh@beadhive`` Claude Code plugin — and this pipeline used to mechanize only the first, so a
+host provisioned by the sanctioned verb ended up in a state ``INSTALL.md`` would not call
+configured, with nothing reporting the difference: no role skill exists without the plugin, so
+a seat launched there has no seat definition at all. Deliberately still NOT step 2
+(``bh mcp install``): that wires the Claude Code *control-plane tools* (``hive_onboard`` etc.)
+for an interactive session and has no bearing on whether a role skill exists, so it stays the
+one-shot admin verb it already is. Gated on :data:`SEAT_ROLES` — a ``viewer`` (a human's
+laptop, walked through the plugin interactively by ``bh setup guide`` instead) is left alone —
+and on the ``claude`` CLI actually being on ``PATH``: a headless executor/transient host with
+no Claude Code installed cannot run a Claude Code seat and is not asked to install Claude Code
+itself (same boundary the setup Guide's own ``065-plugin.md`` step draws), so this step reports
+that plainly rather than failing. ``bh doctor`` carries the durable, re-checked twin of this
+step (its own Harness section, same :data:`SEAT_ROLES` gate) for a host that drifts after this
+step ran once — a plugin removed later, or a host provisioned before this bead landed.
 """
 
 from __future__ import annotations
 
+import shutil
 import stat
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +91,7 @@ from . import (
     store_locator,
 )
 from .bd import err_line
+from .hive import _install_plugin_claude, _is_plugin_installed
 from .identity import workspace_root
 from .run import run
 
@@ -112,6 +131,10 @@ PLAN: tuple[str, ...] = (
     "host init",
     "bead sync",
     "fix permissions",
+    # bh-tx2hp: the last MUTATING step, same footing as `fix permissions` above — the host is
+    # otherwise fully wired by here, so whatever a seat needs to actually run on it belongs
+    # right before the read-only verifying gate.
+    "harness plugin",
     "verify",
     # LAST, AND AFTER VERIFY, DELIBERATELY (bh-q160.2). Every other step is local and
     # reversible; adopt CASes the hive's epoch fence and then HQ's lease, which is
@@ -662,6 +685,51 @@ def _step_fix_permissions(*, dry_run: bool) -> StepResult:
     return StepResult("fix permissions", "done", f"chmod 700 on {len(wrong)} `.beads` dir(s)")
 
 
+# ---- step 7.5: harness plugin (INSTALL.md configure step 3) -------------------------
+# bh-tx2hp — see the module docstring's "harness plugin" paragraph for the full reconciliation.
+
+#: Roles whose whole job is running a seat (:mod:`beadhive.hosts`' ``HOST_ROLES``) — a
+#: ``viewer`` never becomes primary and is a human's own machine, onboarded interactively by
+#: `bh setup guide` instead, so this step (and `bh doctor`'s matching check) leaves it alone.
+SEAT_ROLES: tuple[str, ...] = ("executor", "transient")
+
+
+def _step_harness_plugin(*, role: str, dry_run: bool) -> StepResult:
+    """Install the Claude Code harness plugin (``bh@beadhive``) — the thing that makes a role
+    skill (dispatcher/developer/merger/work) exist for a seat launched on this host to read at
+    all (bh-tx2hp's finding: a fully-provisioned host with no plugin runs a seat with no seat
+    definition, which is the exact raw-git-improvisation failure AGF exists to prevent).
+
+    Skips for a role that never runs a seat (:data:`SEAT_ROLES`), and skips just as cleanly
+    when there is no ``claude`` CLI on PATH — a headless executor/transient (store-only, or
+    CI-runner-shaped with no Claude Code installed) is a legitimate arrival state this step
+    reports rather than fails or silently assumes away. Reuses
+    :func:`beadhive.hive._install_plugin_claude` (the exact seam ``bh hive onboard --claude``
+    already installs the plugin through) rather than a second implementation."""
+    if role not in SEAT_ROLES:
+        return StepResult(
+            "harness plugin", "skipped", f"role={role!r} never runs a seat — see `bh setup guide`"
+        )
+    if shutil.which("claude") is None:
+        return StepResult(
+            "harness plugin",
+            "skipped",
+            "no `claude` CLI on PATH — this host cannot run a Claude Code seat yet; install "
+            "Claude Code first if it is meant to",
+        )
+    cfg = _cfg_or_none()
+    plugin = config.claude_plugin_name(cfg)
+    if _is_plugin_installed(plugin):
+        return StepResult("harness plugin", "skipped", f"plugin '{plugin}' already installed")
+    if dry_run:
+        return StepResult("harness plugin", "would", f"would install plugin '{plugin}'")
+    try:
+        _install_plugin_claude(cfg)
+    except Exception as exc:  # noqa: BLE001 - marketplace/install subprocess failure, not a crash
+        return StepResult("harness plugin", "failed", f"plugin install failed: {exc}")
+    return StepResult("harness plugin", "done", f"installed plugin '{plugin}'")
+
+
 # ---- step 8: verify (the gate) -------------------------------------------------
 
 
@@ -883,6 +951,7 @@ def provision(
         lambda: _step_host_init(role=role, force=force_manifest, dry_run=dry_run),
         lambda: _step_bead_sync(dry_run=dry_run, hives=hives),
         lambda: _step_fix_permissions(dry_run=dry_run),
+        lambda: _step_harness_plugin(role=role, dry_run=dry_run),
         lambda: _step_verify(),
         lambda: _step_adopt(adopt=adopt, dry_run=dry_run, prior=results),
     )
