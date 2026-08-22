@@ -24,7 +24,7 @@ from pathlib import Path
 import typer
 from typer.testing import CliRunner
 
-from beadhive import config, hitch_plugin, hive_ready, plugins, role
+from beadhive import config, hitch_plugin, hive_ready, localloop, plugins, role
 from beadhive.cli import app
 
 runner = CliRunner()
@@ -1036,3 +1036,53 @@ def test_seat_reports_one_failing_spawn_does_not_abort_the_section(monkeypatch, 
     assert reports[0]["state"] == "blocked"
     assert "hitch vanished" in reports[0]["detail"]
     assert reports[1]["state"] == "ok"
+
+
+# ---- headless_plan: `--task`/`-d` suitability + backend selection (bh-6t49w.6) ----------------
+
+
+def test_headless_plan_refuses_seat_outside_the_loop_roster(monkeypatch):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: "/usr/bin/bh-supervisor")
+    backend, detail = hitch_plugin.headless_plan("supervisor", "claude", {})
+    assert backend is None
+    # Loud and by name — and a built binary does NOT buy an unsuitable seat a headless launch.
+    assert "supervisor" in detail
+    assert "not a headless-capable seat" in detail
+    assert "bh role supervisor" in detail
+
+
+def test_headless_plan_roster_tracks_role_for_action():
+    """The predicate is SEEDED from the loop's own table, not a second hardcoded list."""
+    for seat in set(localloop.ROLE_FOR_ACTION.values()):
+        assert localloop.headless_capable(seat)
+    for seat in ("supervisor", "director", "custodian", "controller"):
+        assert not localloop.headless_capable(seat)
+
+
+def test_headless_plan_prefers_built_role_binary_over_hitch(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])  # hitch would ALSO apply here
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin.shutil,
+        "which",
+        lambda n: "/usr/bin/bh-developer" if n == "bh-developer" else None,
+    )
+    backend, detail = hitch_plugin.headless_plan("developer", "claude", cfg)
+    assert backend == "baml"
+    assert "bh-developer" in detail
+
+
+def test_headless_plan_falls_back_to_hitch_profile(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    backend, detail = hitch_plugin.headless_plan("developer", "claude", cfg)
+    assert backend == "hitch"
+    assert "developer" in detail
+
+
+def test_headless_plan_refuses_naming_both_missing_backends(monkeypatch):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    backend, detail = hitch_plugin.headless_plan("developer", "claude", {})
+    assert backend is None
+    assert "bh-developer" in detail and "hitch profile" in detail
