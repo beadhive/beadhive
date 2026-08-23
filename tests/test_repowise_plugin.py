@@ -93,6 +93,8 @@ def test_single_repo_index_uses_no_workspace_and_skips_editor_setup(monkeypatch,
     argv, kwargs = calls[0]
     assert "--no-workspace" in argv
     assert "--all" not in argv
+    assert "--no-mcp-json" in argv
+    assert "--no-vscode" in argv
     assert kwargs["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
 
 
@@ -155,6 +157,8 @@ def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
     calls = []
     (tmp_path / ".repowise").mkdir()
     (tmp_path / ".repowise" / "state.json").write_text(json.dumps({"last_sync_commit": "old"}))
+    config_path = tmp_path / ".repowise" / "config.yaml"
+    config_path.write_text("editor_files:\n  claude_md: false\n")
     monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "new")
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -174,6 +178,40 @@ def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
         "--no-workspace",
     ]
     assert calls[0][1]["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
+    assert YAML().load(config_path.read_text())["editor_files"]["vscode"] is False
+
+
+def test_backfill_vscode_config_preserves_existing_editor_settings(tmp_path):
+    config_path = tmp_path / ".repowise" / "config.yaml"
+    config_path.parent.mkdir()
+    config_path.write_text("editor_files:\n  claude_md: false\n")
+
+    repowise_plugin._backfill_vscode_config(tmp_path, workspace=False)
+
+    config = YAML().load(config_path.read_text())
+    assert config["editor_files"] == {"claude_md": False, "vscode": False}
+
+
+def test_workspace_index_backfills_each_existing_base_config(monkeypatch, tmp_path):
+    configs = [
+        tmp_path / "github" / "acme" / "one" / ".repowise" / "config.yaml",
+        tmp_path / "gitlab" / "acme" / "two" / ".repowise" / "config.yaml",
+    ]
+    for config_path in configs:
+        config_path.parent.mkdir(parents=True)
+        config_path.write_text("editor_files:\n  claude_md: false\n")
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda: None)
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda argv, **kwargs: SimpleNamespace(returncode=0),
+    )
+
+    assert repowise_plugin._index(tmp_path, workspace=True) == 0
+
+    for config_path in configs:
+        config = YAML().load(config_path.read_text())
+        assert config["editor_files"]["vscode"] is False
 
 
 def test_refresh_base_skips_missing_and_current_indexes(monkeypatch, tmp_path):
