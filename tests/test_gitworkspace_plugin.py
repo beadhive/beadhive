@@ -23,7 +23,7 @@ runner = CliRunner()
 
 def test_git_workspace_is_not_in_the_plugin_registry():
     names = [p.name for p in plugins.registry()]
-    assert names == ["orca", "observaloop", "hitch"]
+    assert names == ["orca", "observaloop", "hitch", "herdr"]
     assert "git-workspace" not in names
 
 
