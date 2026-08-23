@@ -29,6 +29,7 @@ import json
 import re
 import types
 import typing
+from copy import copy
 from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -1184,6 +1185,21 @@ class BeadhiveConfig(BaseSettings):
         data — `BeadhiveConfig(**loaded_dict)`), matching the standing env > file > default
         precedence used everywhere else in this codebase (``config._env``, ``work_value``,
         …). Swaps the library's default init-first ordering; dotenv/secrets stay lowest."""
+        # ``BH_WORKTREES`` is a transport-only scalar override consumed by
+        # ``config.worktrees_root()``.  It must not also be interpreted by this settings model
+        # as the structured ``worktrees`` section merely because it shares the ``BH_`` prefix:
+        # pydantic then attempts to JSON-decode a filesystem path.  Filter only that runtime
+        # alias from this source; ``config._Env`` continues to read it normally.
+        # EnvSettingsSource holds a live view of the process environment.  Never mutate it:
+        # config getters are deliberately re-evaluated after tests/commands alter os.environ.
+        # A shallow source copy lets this schema omit its transport-only collision without
+        # removing the legacy WS_WORKTREES override that the rest of bh still consumes.
+        env_settings = copy(env_settings)
+        env_vars = getattr(env_settings, "env_vars", None)
+        if env_vars is not None:
+            env_settings.env_vars = {
+                name: value for name, value in env_vars.items() if name.lower() != "bh_worktrees"
+            }
         return env_settings, init_settings, dotenv_settings, file_secret_settings
 
 
