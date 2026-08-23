@@ -113,6 +113,11 @@ app.add_typer(dispatch_app, name="dispatch")
 
 _AS_JSON = typer.Option(False, "--json", help="machine payload (as_json)")
 _FORCE = typer.Option(False, "-f", "--force", help="overwrite an existing manifest")
+_REMOTE_ONLY_HIVE = typer.Option(
+    None,
+    "--remote-only-hive",
+    help="hive prefix intentionally not cloned on this host (repeatable; use with --force)",
+)
 _HIVE_ARG = typer.Argument(
     ..., metavar="<hive>", help="hive id — prefix / org/repo / full triplet (see `bh hive list`)"
 )
@@ -254,6 +259,7 @@ def ensure_manifest(
     label: str = "",
     identity_kind: str = "none",
     identity_value: str = "",
+    remote_only_hives: list[str] | None = None,
     force: bool = False,
 ) -> tuple[Path, bool]:
     """Mint/write THIS host's own manifest into HQ — the core ``bh host init`` drives, extracted
@@ -272,7 +278,8 @@ def ensure_manifest(
     hq_dir = config.hq_dir()
     hid = host.host_id()
     target = hosts.manifest_path(hq_dir, hid)
-    if target.exists() and not force:
+    existing = hosts.load(hq_dir, hid) if target.exists() else None
+    if existing is not None and not force:
         return target, False
 
     os_name, arch = _local_os_arch()
@@ -283,6 +290,14 @@ def ensure_manifest(
         arch=arch,
         role=role,
         identity=hosts.IdentityMechanism(kind=identity_kind, value=identity_value),
+        # An ordinary re-init must not accidentally turn an intentionally remote-only
+        # hive into a missing-clone warning. Passing the repeatable CLI option is the
+        # deliberate replacement operation; absent that, retain the recorded intent.
+        remote_only_hives=(
+            list(remote_only_hives)
+            if remote_only_hives is not None
+            else (list(existing.remote_only_hives) if existing is not None else [])
+        ),
     )
     written = hosts.save(hq_dir, manifest)
     return written, True
@@ -303,6 +318,7 @@ def init_cmd(
     identity_value: str = typer.Option(
         "", "--identity-value", help="the identity mechanism's concrete value"
     ),
+    remote_only_hive: list[str] | None = _REMOTE_ONLY_HIVE,
     force: bool = _FORCE,
 ):
     """CLI wrapper over :func:`ensure_manifest`: validates ``--role``/``--identity-kind``
@@ -329,6 +345,7 @@ def init_cmd(
         label=label,
         identity_kind=identity_kind,
         identity_value=identity_value,
+        remote_only_hives=remote_only_hive,
         force=force,
     )
     if not wrote:
