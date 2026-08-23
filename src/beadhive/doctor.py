@@ -1049,10 +1049,8 @@ def _section_mcp(cfg=None):
 # nothing here.
 
 
-def _this_host_role(cfg) -> str | None:
-    """This machine's own registered role (``executor``/``transient``/``viewer``), or ``None``
-    when it has no local host identity yet, no local HQ store, or isn't registered in HQ's
-    roster — a fresh/unregistered host reports no role rather than a fabricated default."""
+def _this_host_manifest() -> hosts.HostManifest | None:
+    """This machine's HQ manifest, or ``None`` when it has not been registered yet."""
     try:
         host_id = host.host_id()
     except FileNotFoundError:
@@ -1061,9 +1059,15 @@ def _this_host_role(cfg) -> str | None:
     if not (hq_dir / ".beads").is_dir():
         return None
     try:
-        return hosts.load(hq_dir, host_id).role
+        return hosts.load(hq_dir, host_id)
     except (FileNotFoundError, hosts.ManifestError):
         return None
+
+
+def _this_host_role(cfg) -> str | None:
+    """This machine's registered role, if its local HQ manifest is available."""
+    manifest = _this_host_manifest()
+    return manifest.role if manifest is not None else None
 
 
 def _data_harness_plugin(cfg=None) -> dict | None:
@@ -1743,6 +1747,15 @@ def _data_layout(cfg) -> dict:
 def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
     and per-hive checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
+    # Factory HQ is a control-plane store, not a hive checkout.  Callers historically
+    # passed raw managed_repos here, so make that boundary explicit before applying
+    # hive diagnostics.
+    hives = [e for e in hives if str(e.get("kind", "")) != registry.HQ_KIND]
+    manifest = _this_host_manifest()
+    declared_remote_only = list(manifest.remote_only_hives) if manifest is not None else []
+    known_prefixes = {str(e["prefix"]) for e in hives}
+    remote_only = set(declared_remote_only) & known_prefixes
+
     cfg_orgs = cfg.get("orgs", {}) or {}
     gw_orgs = gitworkspace.orgs(cfg)
     excluded_orgs = set((cfg.get("exclude", {}) or {}).get("orgs", []) or [])
@@ -1775,6 +1788,14 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
             f"(using auto code '{registry.sanitize(o)[:2]}', policy personal)"
         )
     warns += [f"required-org prefix: {v}" for v in registry.required_violations(cfg)]
+    warns += [
+        f"host manifest remote_only_hives has unknown hive prefix: {prefix}"
+        for prefix in sorted(set(declared_remote_only) - known_prefixes)
+    ]
+    warns += [
+        f"host manifest remote_only_hives repeats hive prefix: {prefix}"
+        for prefix in sorted({p for p in declared_remote_only if declared_remote_only.count(p) > 1})
+    ]
     by_prefix = {}
     for e in hives:
         by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
@@ -1797,6 +1818,8 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     ]
     for e in hives:
         path = root / e["provider"] / e["org"] / e["repo"]
+        if str(e["prefix"]) in remote_only:
+            continue
         if not config.validate_cmd_is_configured(cfg, e):
             cmd = config.validate_cmd(cfg, e)
             # bh-l44i: RESOLVE the default (follow `just <recipe>`'s own justfile deps) instead
