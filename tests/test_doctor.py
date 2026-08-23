@@ -1016,6 +1016,7 @@ _DOCTOR_SECTIONS = {
     "dispatch",
     "group_auth",
     "mcp",
+    "harness_plugin",
     "seats",
     "install",
     "observability",
@@ -1200,6 +1201,104 @@ def test_collect_group_auth_empty_when_no_repo_groups(hive, fakebd):  # noqa: F8
     empty and the section comes back empty on its own."""
     payload = doctor.doctor_payload()
     assert payload["group_auth"] == {"groups": [], "warnings": []}
+
+
+# ---- Harness section (bh-tx2hp) ------------------------------------------------
+# "No role skill exists without the plugin" — durable/re-checked twin of `bh host provision`'s
+# own `harness plugin` step: silent unless this host's OWN registered role implies it runs a
+# seat (executor/transient); a viewer or an unregistered host reports nothing here.
+
+
+def test_this_host_role_none_without_a_host_identity(monkeypatch):
+    def boom():
+        raise FileNotFoundError("no host.yaml")
+
+    monkeypatch.setattr(doctor.host, "host_id", boom)
+    assert doctor._this_host_role({}) is None
+
+
+def test_this_host_role_none_without_a_local_hq(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.host, "host_id", lambda: "h1")
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: tmp_path / "hq")  # no `.beads` yet
+    assert doctor._this_host_role({}) is None
+
+
+def test_this_host_role_none_when_unregistered(monkeypatch, tmp_path):
+    hq_dir = tmp_path / "hq"
+    (hq_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(doctor.host, "host_id", lambda: "h1")
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+
+    def missing(*_a):
+        raise FileNotFoundError("no manifest")
+
+    monkeypatch.setattr(doctor.hosts, "load", missing)
+    assert doctor._this_host_role({}) is None
+
+
+def test_this_host_role_reads_the_manifest(monkeypatch, tmp_path):
+    hq_dir = tmp_path / "hq"
+    (hq_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(doctor.host, "host_id", lambda: "h1")
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+    monkeypatch.setattr(doctor.hosts, "load", lambda *_a: SimpleNamespace(role="executor"))
+    assert doctor._this_host_role({}) == "executor"
+
+
+def test_data_harness_plugin_none_for_a_role_that_never_runs_a_seat(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: "viewer")
+    assert doctor._data_harness_plugin({}) is None
+
+
+def test_data_harness_plugin_none_when_role_unresolvable(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: None)
+    assert doctor._data_harness_plugin({}) is None
+
+
+def test_data_harness_plugin_reports_missing_claude_cli(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: "executor")
+    monkeypatch.setattr(doctor.shutil, "which", lambda _cmd: None)
+    d = doctor._data_harness_plugin({})
+    assert d["installed"] is False
+    assert "no `claude` CLI" in d["detail"]
+
+
+def test_data_harness_plugin_reports_installed(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: "transient")
+    monkeypatch.setattr(doctor.shutil, "which", lambda _cmd: "/usr/bin/claude")
+    monkeypatch.setattr(doctor.hive, "_is_plugin_installed", lambda _plugin: True)
+    d = doctor._data_harness_plugin({})
+    assert d == {
+        "role": "transient",
+        "plugin": "bh",
+        "installed": True,
+        "detail": "'bh' installed",
+    }
+
+
+def test_data_harness_plugin_reports_missing_plugin_with_the_install_command(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: "executor")
+    monkeypatch.setattr(doctor.shutil, "which", lambda _cmd: "/usr/bin/claude")
+    monkeypatch.setattr(doctor.hive, "_is_plugin_installed", lambda _plugin: False)
+    d = doctor._data_harness_plugin({})
+    assert d["installed"] is False
+    assert "NOT installed" in d["detail"]
+    assert "claude plugin install bh@beadhive" in d["detail"]
+
+
+def test_render_harness_plugin_silent_when_none(capsys):
+    doctor._render_harness_plugin(None)
+    assert capsys.readouterr().out == ""
+
+
+def test_render_harness_plugin_shows_role_and_state(capsys):
+    doctor._render_harness_plugin(
+        {"role": "executor", "plugin": "bh", "installed": False, "detail": "'bh' NOT installed"}
+    )
+    out = capsys.readouterr().out
+    assert "# Harness (role=executor)" in out
+    assert "✗" in out
+    assert "NOT installed" in out
 
 
 # ---- seats section (bh-og0q.4) -----------------------------------------------

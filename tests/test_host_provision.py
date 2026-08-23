@@ -47,7 +47,7 @@ class _Res:
 
 
 def test_plan_has_one_name_per_step_and_every_glyph_status_is_mapped():
-    assert len(host_provision.PLAN) == 11
+    assert len(host_provision.PLAN) == 12
     assert host_provision.PLAN[-1] == "adopt"
     # bh-1kzc: the gate provision used to require out of band is now its own first step.
     assert host_provision.PLAN[0] == "setup check"
@@ -655,6 +655,77 @@ def test_fix_permissions_dry_run_never_chmods():
     assert stat.S_IMODE(beads.stat().st_mode) == 0o750  # untouched
 
 
+# ---- step 7.5: harness plugin (bh-tx2hp) --------------------------------------------
+
+
+def test_harness_plugin_skips_for_a_role_that_never_runs_a_seat():
+    result = host_provision._step_harness_plugin(role="viewer", dry_run=False)
+
+    assert result.status == "skipped"
+    assert "never runs a seat" in result.detail
+
+
+def test_harness_plugin_skips_when_claude_cli_is_absent(monkeypatch):
+    monkeypatch.setattr(host_provision.shutil, "which", lambda _cmd: None)
+
+    result = host_provision._step_harness_plugin(role="executor", dry_run=False)
+
+    assert result.status == "skipped"
+    assert "no `claude` CLI" in result.detail
+
+
+def test_harness_plugin_skips_when_already_installed(monkeypatch):
+    monkeypatch.setattr(host_provision.shutil, "which", lambda _cmd: "/usr/bin/claude")
+    monkeypatch.setattr(host_provision, "_is_plugin_installed", lambda _plugin: True)
+    calls = []
+    monkeypatch.setattr(host_provision, "_install_plugin_claude", lambda *a, **k: calls.append(1))
+
+    result = host_provision._step_harness_plugin(role="transient", dry_run=False)
+
+    assert result.status == "skipped"
+    assert "already installed" in result.detail
+    assert calls == []
+
+
+def test_harness_plugin_dry_run_never_installs(monkeypatch):
+    monkeypatch.setattr(host_provision.shutil, "which", lambda _cmd: "/usr/bin/claude")
+    monkeypatch.setattr(host_provision, "_is_plugin_installed", lambda _plugin: False)
+    calls = []
+    monkeypatch.setattr(host_provision, "_install_plugin_claude", lambda *a, **k: calls.append(1))
+
+    result = host_provision._step_harness_plugin(role="executor", dry_run=True)
+
+    assert result.status == "would"
+    assert calls == []
+
+
+def test_harness_plugin_installs_and_reports_done(monkeypatch):
+    monkeypatch.setattr(host_provision.shutil, "which", lambda _cmd: "/usr/bin/claude")
+    monkeypatch.setattr(host_provision, "_is_plugin_installed", lambda _plugin: False)
+    calls = []
+    monkeypatch.setattr(host_provision, "_install_plugin_claude", lambda *a, **k: calls.append(1))
+
+    result = host_provision._step_harness_plugin(role="executor", dry_run=False)
+
+    assert result.status == "done"
+    assert calls == [1]
+
+
+def test_harness_plugin_reports_failed_rather_than_raising(monkeypatch):
+    monkeypatch.setattr(host_provision.shutil, "which", lambda _cmd: "/usr/bin/claude")
+    monkeypatch.setattr(host_provision, "_is_plugin_installed", lambda _plugin: False)
+
+    def boom(*_a, **_k):
+        raise RuntimeError("marketplace add failed")
+
+    monkeypatch.setattr(host_provision, "_install_plugin_claude", boom)
+
+    result = host_provision._step_harness_plugin(role="executor", dry_run=False)
+
+    assert result.status == "failed"
+    assert "marketplace add failed" in result.detail
+
+
 # ---- step 8: verify / status --------------------------------------------------------
 
 
@@ -891,6 +962,7 @@ _STEP_FUNCS = (
     "_step_host_init",
     "_step_bead_sync",
     "_step_fix_permissions",
+    "_step_harness_plugin",
     "_step_verify",
     "_step_adopt",
 )
