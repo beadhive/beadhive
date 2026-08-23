@@ -132,6 +132,52 @@ def test_init_force_overwrites_an_existing_manifest(monkeypatch):
     assert manifest.role == "executor"
 
 
+def test_init_force_preserves_remote_only_hives_when_not_redeclared(monkeypatch):
+    host_id, _label = _mint_host(monkeypatch)
+    _pin_platform(monkeypatch)
+    hosts.save(
+        config.hq_dir(),
+        hosts.HostManifest(
+            host_id=host_id,
+            label="fixture-host",
+            os="darwin",
+            arch="arm64",
+            role="viewer",
+            identity=hosts.IdentityMechanism(kind="none", value=""),
+            remote_only_hives=["hl"],
+        ),
+    )
+
+    result = runner.invoke(app, ["host", "init", "--role", "executor", "--force"])
+
+    assert result.exit_code == 0, result.output
+    assert hosts.load(config.hq_dir(), host_id).remote_only_hives == ["hl"]
+
+
+def test_init_force_replaces_remote_only_hives_when_explicitly_declared(monkeypatch):
+    host_id, _label = _mint_host(monkeypatch)
+    _pin_platform(monkeypatch)
+    runner.invoke(app, ["host", "init", "--role", "viewer"])
+
+    result = runner.invoke(
+        app,
+        [
+            "host",
+            "init",
+            "--role",
+            "executor",
+            "--force",
+            "--remote-only-hive",
+            "hl",
+            "--remote-only-hive",
+            "orca",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert hosts.load(config.hq_dir(), host_id).remote_only_hives == ["hl", "orca"]
+
+
 def test_init_rejects_a_role_outside_the_closed_set(monkeypatch):
     _mint_host(monkeypatch)
     _pin_platform(monkeypatch)

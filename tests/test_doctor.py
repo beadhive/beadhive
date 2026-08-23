@@ -15,7 +15,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive import config, doctor, dolt_health, git_identity, hitch_plugin, safety, worktree
+from beadhive import (
+    config,
+    doctor,
+    dolt_health,
+    git_identity,
+    hitch_plugin,
+    hosts,
+    safety,
+    worktree,
+)
 from beadhive.metadata import RepoMetadata
 from beadhive.safety import Category
 from test_work import _git, fakebd, hive  # noqa: F401 — fixtures resolved by name
@@ -1574,6 +1583,46 @@ def _furnish_drift_repo(tmp_path, *, track_beads: bool):
 
 def _furnish_warns(root, entry):
     return doctor._data_warnings({}, root, [entry], set(), set(), set(), set())
+
+
+def test_data_warnings_skips_hq_and_declared_remote_only_hives(monkeypatch, tmp_path):
+    manifest = hosts.HostManifest(
+        host_id="this-host",
+        label="fixture-host",
+        os="linux",
+        arch="x86_64",
+        role="executor",
+        identity=hosts.IdentityMechanism(kind="none", value=""),
+        remote_only_hives=["hl"],
+    )
+    monkeypatch.setattr(doctor, "_this_host_manifest", lambda: manifest)
+    entries = [
+        {"provider": "github", "org": "acme", "repo": "homelab", "prefix": "hl"},
+        {"provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq"},
+    ]
+
+    warns = doctor._data_warnings({}, tmp_path, entries, set(), set(), set(), set())
+
+    assert not any("has no local checkout" in warning for warning in warns)
+
+
+def test_data_warnings_diagnoses_bad_remote_only_hive_prefixes(monkeypatch, tmp_path):
+    manifest = hosts.HostManifest(
+        host_id="this-host",
+        label="fixture-host",
+        os="linux",
+        arch="x86_64",
+        role="executor",
+        identity=hosts.IdentityMechanism(kind="none", value=""),
+        remote_only_hives=["hl", "hl", "missing"],
+    )
+    monkeypatch.setattr(doctor, "_this_host_manifest", lambda: manifest)
+    entries = [{"provider": "github", "org": "acme", "repo": "homelab", "prefix": "hl"}]
+
+    warns = doctor._data_warnings({}, tmp_path, entries, set(), set(), set(), set())
+
+    assert "host manifest remote_only_hives repeats hive prefix: hl" in warns
+    assert "host manifest remote_only_hives has unknown hive prefix: missing" in warns
 
 
 def test_furnish_drift_warns_on_tracked_beads(tmp_path):

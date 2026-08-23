@@ -59,6 +59,15 @@ def test_capacity_and_harnesses_default_to_empty_and_accept_free_form_data():
     assert loaded.harnesses["claude"]["note"] == "placeholder"
 
 
+def test_remote_only_hives_round_trip_as_host_local_placement_intent(tmp_path):
+    hq_dir = tmp_path / "hq"
+    manifest = _manifest(remote_only_hives=["hl", "orca"])
+
+    hosts.save(hq_dir, manifest)
+
+    assert hosts.load(hq_dir, manifest.host_id).remote_only_hives == ["hl", "orca"]
+
+
 # ---- role: closed set, one round-trip per value --------------------------------
 
 
