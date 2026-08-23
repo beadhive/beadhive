@@ -1885,6 +1885,25 @@ def backup_total_warn_mb(cfg=None) -> int:
     return int(backup_cfg(cfg).get("total_warn_mb", 2048))
 
 
+# ---- agent-steering alerts ----------------------------------------------------
+
+
+def alerts_cfg(cfg=None):
+    """The host-local ``alerts`` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("alerts", {}) or {}
+
+
+def alerts_worktree_cap_mb(cfg=None) -> int:
+    """Per-hive managed-worktree footprint cap in MB (0 disables, default 5120)."""
+    return int(alerts_cfg(cfg).get("worktree_cap_mb", 5120))
+
+
+def alerts_disk_free_floor_mb(cfg=None) -> int:
+    """Host free-disk floor in MB (0 disables, default 10240)."""
+    return int(alerts_cfg(cfg).get("disk_free_floor_mb", 10240))
+
+
 # ---- workspace-metadata cache (ws.metadata) ---------------------------------
 
 

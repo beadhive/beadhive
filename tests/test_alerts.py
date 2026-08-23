@@ -6,7 +6,7 @@ import json
 
 from typer.testing import CliRunner
 
-from beadhive import alerts, doctor
+from beadhive import alerts, config, doctor
 from beadhive.cli import app
 
 
@@ -47,3 +47,39 @@ def test_alerts_show_json_and_clean_human_render(monkeypatch):
     machine = runner.invoke(app, ["alerts", "show", "--json"])
     assert machine.exit_code == 0
     assert json.loads(machine.output) == rows
+
+
+def test_disk_pressure_alerts_fire_only_over_configured_boundaries(monkeypatch):
+    cfg = {"alerts": {"worktree_cap_mb": 10, "disk_free_floor_mb": 20}}
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    monkeypatch.setattr(
+        doctor,
+        "_data_worktree_disk_usage",
+        lambda _cfg: {
+            "hives": [
+                {"prefix": "under", "worktree_bytes": 10 * 1024 * 1024},
+                {"prefix": "over", "worktree_bytes": 10 * 1024 * 1024 + 1},
+            ],
+            "disk_free_bytes": 20 * 1024 * 1024 - 1,
+        },
+    )
+
+    assert [alert.code for alert in alerts.disk_pressure()] == [
+        "disk.worktree-footprint",
+        "disk.free-space",
+    ]
+
+
+def test_disk_pressure_alerts_are_clean_at_configured_boundaries(monkeypatch):
+    cfg = {"alerts": {"worktree_cap_mb": 10, "disk_free_floor_mb": 20}}
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    monkeypatch.setattr(
+        doctor,
+        "_data_worktree_disk_usage",
+        lambda _cfg: {
+            "hives": [{"prefix": "at-cap", "worktree_bytes": 10 * 1024 * 1024}],
+            "disk_free_bytes": 20 * 1024 * 1024,
+        },
+    )
+
+    assert alerts.disk_pressure() == []
