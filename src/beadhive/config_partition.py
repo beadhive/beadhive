@@ -62,6 +62,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "alerts",  # local disk capacity and safe cleanup threshold: THIS host's disk budget
         "metadata",  # local metadata-cache tuning (a derived, host-local cache)
         "orca",  # local orca state path + local tool presence
+        "repowise",  # local index + user-provided binary
         "hitch",  # local agent-hitch checkout path + local tool presence
     }
 )
