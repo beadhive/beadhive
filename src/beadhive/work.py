@@ -3270,11 +3270,26 @@ def land(bead: str = _BEAD, hive: str = _HIVE):
         _close_land_origin_reports(bead, main)
         _close_swarm_bead(bead, main)  # the kickoff swarm bead rides the epic down too (bh-7tno)
         _teardown_coordinator_seat(cfg, hive, bead)
+    _prune_landed_hive(entry)
     otel.count_bead_transition("pr_landed")
     typer.echo(
         f"✓ {ref} merged — closed {bead} (close_reason: {reason}); "
-        f"`{config.BINARY_ALIAS} worktree prune` reaps the seat + branch"
+        "reaped any SAFE worktree(s)"
     )
+
+
+def _prune_landed_hive(entry) -> None:
+    """Best-effort cleanup after a PR-confirmed land.
+
+    ``worktree.prune`` applies the SAFE classifier, so this can only reclaim work that is
+    already closed, landed, and clean.  The close has already completed, however, so a metadata
+    or filesystem failure here must never turn a successful land into a failed command.
+    """
+    hive = _hive(entry)
+    try:
+        worktree.prune(hive=hive)
+    except Exception as exc:  # best-effort post-land cleanup; never unwind a completed land
+        typer.echo(f"⚠ landed but automatic worktree prune for {hive} failed: {exc}", err=True)
 
 
 def _guard_land_pr_pending(bead, main) -> None:
