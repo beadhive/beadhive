@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
@@ -47,3 +49,70 @@ def test_readiness_reports_index_drift_and_size(tmp_path, monkeypatch):
 
 def test_readiness_returns_none_without_clone_path():
     assert repowise_plugin.readiness({}, {}) is None
+
+
+def test_single_repo_index_uses_no_workspace_and_skips_editor_setup(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0),
+    )
+
+    assert repowise_plugin._index(tmp_path, workspace=False) == 0
+
+    argv, kwargs = calls[0]
+    assert "--no-workspace" in argv
+    assert "--all" not in argv
+    assert kwargs["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
+
+
+def test_workspace_index_uses_exact_host_flags_without_no_workspace(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0),
+    )
+
+    assert repowise_plugin._index(tmp_path, workspace=True) == 0
+
+    argv, kwargs = calls[0]
+    assert argv == [
+        "repowise",
+        "init",
+        str(tmp_path),
+        "--mode",
+        "fast",
+        "--no-prose",
+        "--no-claude-md",
+        "--no-codex",
+        "--no-mcp-json",
+        "--no-vscode",
+        "--all",
+        "-y",
+    ]
+    assert "--no-workspace" not in argv
+    assert kwargs["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
+
+
+def test_onboard_indexes_base_checkout_and_missing_binary_skips(monkeypatch, tmp_path):
+    ctx = SimpleNamespace(base=tmp_path)
+    monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
+    calls = []
+    monkeypatch.setattr(
+        repowise_plugin,
+        "_index",
+        lambda path, *, workspace: calls.append((path, workspace)) or 0,
+    )
+
+    repowise_plugin._on_onboard(ctx)
+
+    assert calls == [(Path(tmp_path), False)]
+
+
+def test_workspace_root_uses_selected_gitworkspace_config(monkeypatch, tmp_path):
+    config_path = tmp_path / "workspace.toml"
+    monkeypatch.setattr(repowise_plugin.gitworkspace, "config_paths", lambda cfg: [config_path])
+
+    assert repowise_plugin._workspace({}) == tmp_path
