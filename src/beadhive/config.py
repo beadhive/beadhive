@@ -210,10 +210,10 @@ def worktrees_root(cfg=None) -> Path:
 
 
 # ---- Codex sandbox reachability (bh-rpzaj) ----------------------------------
-# Codex has no bh-managed grant-file equivalent to Claude's `.claude/settings.local.json`
-# (`hive._install_sandbox_grant`): its writable roots are set by however the `codex` binary
-# itself was launched (config.toml permission profile / `--add-dir`), invisible to bh ahead
-# of time. Empirically confirmed (docs/spikes/bh-a7so.8-codex-empirical.md, Evidence 4 + 8):
+# Codex's DEFAULT writable roots (without a managed config.toml grant) are set by however the
+# `codex` binary itself was launched. In particular, a session-specific `--add-dir` remains
+# invisible to bh. Empirically confirmed (docs/spikes/bh-a7so.8-codex-empirical.md, Evidence
+# 4 + 8):
 # every command Codex runs inside its own sandbox carries CODEX_SANDBOX_NETWORK_DISABLED in
 # its environment, and codex's DEFAULT workspace-write sandbox (no `--add-dir`) covers only
 # its own cwd tree plus the OS temp dir (`sandbox: workspace-write [workdir, /tmp, $TMPDIR]`).
