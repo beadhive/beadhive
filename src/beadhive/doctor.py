@@ -1239,6 +1239,11 @@ def _data_install(cfg) -> dict:
         version = importlib.metadata.version("beadhive")
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
+    from . import repowise_plugin
+
+    repowise = None
+    if config.repowise_enabled(cfg):
+        repowise = repowise_plugin.capability_error() or "required init flags available"
     return {
         "version": version,
         "running_from": str(running),
@@ -1247,6 +1252,7 @@ def _data_install(cfg) -> dict:
         "stale": stale,
         "pin": _source_pin(source),
         "legacy": _legacy_plane(),
+        "repowise": repowise,
     }
 
 
@@ -1318,6 +1324,10 @@ def _render_install(d: dict) -> None:
     else:
         typer.echo("  ✓ installed snapshot matches source")
     _render_legacy_plane(d.get("legacy"))
+    if d.get("repowise"):
+        detail = d["repowise"]
+        mark = "✓" if detail == "required init flags available" else "⚠"
+        typer.echo(f"  {mark} repowise: {detail}")
 
 
 def _render_legacy_plane(legacy: dict | None) -> None:

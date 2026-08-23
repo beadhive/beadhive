@@ -22,6 +22,30 @@ def test_disabled_by_default_and_binary_absence_is_inert(monkeypatch):
     assert "repowise" in repowise_plugin.config.KNOWN_SECTIONS
 
 
+def test_capabilities_probe_init_help_not_version(monkeypatch):
+    repowise_plugin.capabilities.cache_clear()
+    monkeypatch.setattr(repowise_plugin.shutil, "which", lambda name: "/bin/repowise")
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda command, **kwargs: SimpleNamespace(
+            stdout="init options: --no-mcp-json --no-vscode", stderr=""
+        ),
+    )
+    assert repowise_plugin.capabilities() == frozenset({"--no-mcp-json", "--no-vscode"})
+
+
+def test_capability_error_is_actionable_for_stock_cli(monkeypatch):
+    repowise_plugin.capabilities.cache_clear()
+    monkeypatch.setattr(repowise_plugin.shutil, "which", lambda name: "/bin/repowise")
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda command, **kwargs: SimpleNamespace(stdout="init options: --mode", stderr=""),
+    )
+    assert "missing --no-mcp-json, --no-vscode" in repowise_plugin.capability_error()
+
+
 def test_plugin_cli_help_is_registered(world):
     result = runner.invoke(app, ["plugin", "repowise", "--help"])
 
@@ -53,6 +77,10 @@ def test_readiness_returns_none_without_clone_path():
 
 def test_single_repo_index_uses_no_workspace_and_skips_editor_setup(monkeypatch, tmp_path):
     calls = []
+    monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(
+        repowise_plugin, "capabilities", lambda: frozenset({"--no-mcp-json", "--no-vscode"})
+    )
     monkeypatch.setattr(
         repowise_plugin.run,
         "run",
@@ -69,6 +97,10 @@ def test_single_repo_index_uses_no_workspace_and_skips_editor_setup(monkeypatch,
 
 def test_workspace_index_uses_exact_host_flags_without_no_workspace(monkeypatch, tmp_path):
     calls = []
+    monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(
+        repowise_plugin, "capabilities", lambda: frozenset({"--no-mcp-json", "--no-vscode"})
+    )
     monkeypatch.setattr(
         repowise_plugin.run,
         "run",

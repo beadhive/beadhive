@@ -508,6 +508,18 @@ def check_payload(manifest: dict[str, Any] | None = None, *, probed: bool = Fals
     bd_advisory = dolt_fix_advisory((tools.get("bd") or {}).get("version"))
     if bd_advisory:
         advisories.append({"id": "bd-embedded-dolt", "message": bd_advisory})
+    # repowise is optional, but a configured integration must advertise the fork flags it uses.
+    # Keep this an advisory: setup's core dependency gate must not make an optional plugin a
+    # machine-wide requirement.
+    try:
+        repowise_enabled = config.repowise_enabled(config.load())
+    except FileNotFoundError:
+        repowise_enabled = False
+    if repowise_enabled:
+        from . import repowise_plugin
+
+        if (repowise_error := repowise_plugin.capability_error()) is not None:
+            advisories.append({"id": "repowise-capability", "message": repowise_error})
     # Advisory, not a gate (bh-areg.3): a down/unreachable server is an operational fact that
     # changes hour to hour, not a missing binary — `found` stays out of it entirely. Skipped
     # in-image, same as the tool probes above: the manifest path must run ZERO subprocesses
