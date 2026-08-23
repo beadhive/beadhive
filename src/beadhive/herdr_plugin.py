@@ -81,41 +81,126 @@ def _require(result, action: str):
     return _output(result)
 
 
-def _workspace_from_snapshot(label: str) -> str | None:
+def _decoded(result):
+    """Decode one Herdr JSON response, retaining legacy plain-text output."""
+    output = _output(result)
+    try:
+        return json.loads(output)
+    except (TypeError, ValueError):
+        return output
+
+
+def _response_error(action: str, field: str) -> None:
+    """Report a successful but unusable Herdr response without leaking a traceback."""
+    typer.echo(f"✗ herdr {action} failed: response missing {field}", err=True)
+    raise typer.Exit(1)
+
+
+def _result_payload(value):
+    """Unwrap Herdr's ``{id, result}`` protocol envelope when present."""
+    if isinstance(value, dict) and isinstance(value.get("result"), dict):
+        return value["result"]
+    return value
+
+
+def _string_field(value, *keys: str) -> str | None:
+    """Read the first non-empty string field from one response record."""
+    if not isinstance(value, dict):
+        return None
+    for key in keys:
+        item = value.get(key)
+        if isinstance(item, str) and item.strip():
+            return item
+    return None
+
+
+def _required_id(result, action: str, record: str, *keys: str) -> str:
+    """Extract an ID from a structured Herdr response or a legacy bare-ID response."""
+    value = _decoded(result)
+    if isinstance(value, str) and value:
+        return value
+    payload = _result_payload(value)
+    candidate = payload.get(record) if isinstance(payload, dict) else None
+    identifier = _string_field(candidate, *keys)
+    if identifier is None:
+        _response_error(action, keys[0])
+    return identifier
+
+
+def _workspace_from_snapshot(label: str) -> tuple[str, str] | None:
     """Find a previously-created bh workspace by its visible label, if snapshot is usable."""
     result = _command("api", "snapshot")
     if result is None or result.returncode != 0:
         return None
-    try:
-        data = json.loads(_output(result))
-    except (TypeError, ValueError):
+    data = _result_payload(_decoded(result))
+    if isinstance(data, dict) and isinstance(data.get("snapshot"), dict):
+        data = data["snapshot"]
+    if not isinstance(data, dict):
         return None
 
-    def visit(value):
-        if isinstance(value, dict):
-            if value.get("label") == label:
-                return str(value.get("id") or value.get("workspace_id") or "") or None
-            for child in value.values():
-                if found := visit(child):
-                    return found
-        elif isinstance(value, list):
-            for child in value:
-                if found := visit(child):
-                    return found
+    workspaces = data.get("workspaces")
+    if not isinstance(workspaces, list):
         return None
+    workspace = next(
+        (item for item in workspaces if isinstance(item, dict) and item.get("label") == label),
+        None,
+    )
+    if workspace is None:
+        return None
+    workspace_id = _string_field(workspace, "workspace_id", "id")
+    if workspace_id is None:
+        _response_error("workspace lookup", "workspace_id")
 
-    return visit(data)
+    pane_id = _string_field(workspace, "root_pane_id", "focused_pane_id", "pane_id")
+    layouts = data.get("layouts")
+    if pane_id is None and isinstance(layouts, list):
+        layout = next(
+            (
+                item
+                for item in layouts
+                if isinstance(item, dict) and item.get("workspace_id") == workspace_id
+            ),
+            None,
+        )
+        pane_id = _string_field(layout, "focused_pane_id", "root_pane_id", "pane_id")
+    panes = data.get("panes")
+    if pane_id is None and isinstance(panes, list):
+        pane = next(
+            (
+                item
+                for item in panes
+                if isinstance(item, dict) and item.get("workspace_id") == workspace_id
+            ),
+            None,
+        )
+        pane_id = _string_field(pane, "pane_id", "id")
+    if pane_id is None:
+        _response_error("workspace lookup", "pane_id")
+    return workspace_id, pane_id
 
 
-def _workspace(hive: str, cwd: Path) -> str:
+def _workspace(hive: str, cwd: Path) -> tuple[str, str]:
     """Reuse the hive's isolated workspace, or create it without focusing the operator's TTY."""
     label = f"bh:{hive}"
     if existing := _workspace_from_snapshot(label):
         return existing
-    return _require(
-        _command("workspace", "create", "--cwd", str(cwd), "--label", label, "--no-focus"),
-        "workspace create",
-    )
+    result = _command("workspace", "create", "--cwd", str(cwd), "--label", label, "--no-focus")
+    output = _require(result, "workspace create")
+    decoded = _decoded(result)
+    if isinstance(decoded, str):
+        return output, f"{output}:p1"
+    payload = _result_payload(decoded)
+    workspace = payload.get("workspace") if isinstance(payload, dict) else None
+    root_pane = payload.get("root_pane") if isinstance(payload, dict) else None
+    if root_pane is None and isinstance(payload, dict):
+        root_pane = payload.get("pane")
+    workspace_id = _string_field(workspace, "workspace_id", "id")
+    pane_id = _string_field(root_pane, "pane_id", "id")
+    if workspace_id is None:
+        _response_error("workspace create", "workspace_id")
+    if pane_id is None:
+        _response_error("workspace create", "pane_id")
+    return workspace_id, pane_id
 
 
 def _managed_worktree(hive: str, bead: str) -> Path:
@@ -203,6 +288,7 @@ def _agent_records(
             state = (
                 candidate.get("state")
                 or candidate.get("status")
+                or candidate.get("agent_status")
                 or candidate.get("lifecycle")
                 or candidate.get("lifecycle_state")
             )
@@ -247,6 +333,7 @@ def _agent_identity(record: dict) -> tuple[str, str | None, str | None, str]:
         str(
             record.get("state")
             or record.get("status")
+            or record.get("agent_status")
             or record.get("lifecycle")
             or record.get("lifecycle_state")
         ),
@@ -257,7 +344,16 @@ def _looks_like_agent_list(value) -> bool:
     """Recognize a successful (including empty) ``agent list --json`` payload."""
     if isinstance(value, list):
         return not value or all(isinstance(item, dict) for item in value)
-    return isinstance(value, dict) and isinstance(value.get("agents"), list)
+    if not isinstance(value, dict):
+        return False
+    if isinstance(value.get("agents"), list):
+        return True
+    result = value.get("result")
+    return (
+        isinstance(result, dict)
+        and result.get("type") == "agent_list"
+        and isinstance(result.get("agents"), list)
+    )
 
 
 def _read_agents() -> list[dict] | None:
@@ -266,9 +362,8 @@ def _read_agents() -> list[dict] | None:
         result = _command(*argv)
         if result is None or result.returncode != 0:
             continue
-        try:
-            data = json.loads(_output(result))
-        except (TypeError, ValueError):
+        data = _decoded(result)
+        if isinstance(data, str):
             continue
         records = _agent_records(data)
         if argv[:2] == ("agent", "list") and _looks_like_agent_list(data):
@@ -280,23 +375,28 @@ def _read_agents() -> list[dict] | None:
 
 def _live_agent_records() -> list[dict] | None:
     """Read authoritative live records without the snapshot fallback used by ``ps``."""
-    result = _command("agent", "list", "--json")
-    if result is None or result.returncode != 0:
-        return None
-    try:
-        data = json.loads(_output(result))
-    except (TypeError, ValueError):
-        return None
-    if not _looks_like_agent_list(data):
-        return None
-    return _agent_records(data, unique_by_name=False, include_pane_claims=True)
+    for argv in (("agent", "list", "--json"), ("agent", "list")):
+        result = _command(*argv)
+        if result is None or result.returncode != 0:
+            continue
+        data = _decoded(result)
+        if not _looks_like_agent_list(data):
+            continue
+        return _agent_records(data, unique_by_name=False, include_pane_claims=True)
+    return None
 
 
 def _record_pane(record: dict) -> tuple[str, str] | None:
     """Return the live pane id and visible name, only when both are unambiguous."""
     pane = record.get("pane")
     pane_id = _record_pane_id(record)
-    pane_name = record.get("pane_name") or record.get("pane_label") or record.get("pane_title")
+    pane_name = (
+        record.get("pane_name")
+        or record.get("pane_label")
+        or record.get("pane_title")
+        or record.get("label")
+        or record.get("title")
+    )
     if isinstance(pane, dict):
         pane_name = (
             pane.get("name")
@@ -461,23 +561,22 @@ def _spawn_cmd(
         typer.echo("✗ herdr: server=down (start herdr and install its agent integration)", err=True)
         raise typer.Exit(1)
     cwd = _managed_worktree(hive, bead)
-    workspace = _workspace(hive, cwd)
+    workspace, root_pane = _workspace(hive, cwd)
     pane = ""
     try:
-        pane = _require(
-            _command(
-                "pane",
-                "split",
-                "--pane",
-                f"{workspace}:p1",
-                "--direction",
-                "right",
-                "--cwd",
-                str(cwd),
-                "--no-focus",
-            ),
-            "pane split",
+        split = _command(
+            "pane",
+            "split",
+            "--pane",
+            root_pane,
+            "--direction",
+            "right",
+            "--cwd",
+            str(cwd),
+            "--no-focus",
         )
+        _require(split, "pane split")
+        pane = _required_id(split, "pane split", "pane", "pane_id", "id")
         name = f"bh-{bead}"
         _require(_command("agent", "start", name, "--kind", kind, "--pane", pane), "agent start")
         _require(_command("pane", "rename", pane, name), "pane rename")
