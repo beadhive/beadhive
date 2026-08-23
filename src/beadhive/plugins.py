@@ -69,9 +69,10 @@ def registry() -> list[Plugin]:
     last. New integrations join the list the same way.
     """
     from . import (
+        herdr_plugin,  # lazy: avoid the plugins <-> herdr_plugin import cycle
         hitch_plugin,  # lazy: avoid the plugins <-> hitch_plugin import cycle
         observaloop,  # lazy: avoid the plugins <-> observaloop import cycle
         orca,  # lazy: avoid the plugins <-> orca import cycle
     )
 
-    return [orca.PLUGIN, observaloop.PLUGIN, hitch_plugin.PLUGIN]
+    return [orca.PLUGIN, observaloop.PLUGIN, hitch_plugin.PLUGIN, herdr_plugin.PLUGIN]
