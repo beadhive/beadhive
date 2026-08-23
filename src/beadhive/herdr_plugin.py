@@ -188,16 +188,17 @@ def _agent_records(
 
     ``ps`` requests the stable, deduplicated view.  ``reap`` intentionally
     retains distinct raw records so it can refuse duplicate agent-to-pane claims.
-    ``seen`` merely avoids counting one nested record twice while walking its
-    enclosing response object.
+    A wrapper's sibling pane data is merged into its nested ``agent`` identity,
+    then that child is skipped while walking to avoid a second logical record.
     """
     records: list[dict] = []
-    seen: set[int] = set()
 
     def visit(item) -> None:
         if isinstance(item, dict):
             nested = item.get("agent")
-            candidate = nested if isinstance(nested, dict) else item
+            candidate = dict(item)
+            if isinstance(nested, dict):
+                candidate.update(nested)
             name = candidate.get("name") or candidate.get("agent_name") or candidate.get("target")
             state = (
                 candidate.get("state")
@@ -207,10 +208,11 @@ def _agent_records(
             )
             is_agent = isinstance(name, str) and isinstance(state, (str, int, float))
             is_pane_claim = include_pane_claims and _record_pane_id(candidate) is not None
-            if (is_agent or is_pane_claim) and id(candidate) not in seen:
-                seen.add(id(candidate))
+            if is_agent or is_pane_claim:
                 records.append(candidate)
-            for child in item.values():
+            for key, child in item.items():
+                if key == "agent" and isinstance(nested, dict):
+                    continue
                 visit(child)
         elif isinstance(item, list):
             for child in item:

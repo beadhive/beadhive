@@ -565,6 +565,60 @@ def test_reap_refuses_an_unnamed_partial_record_claiming_the_same_pane(monkeypat
     assert not any("close" in call for call in calls)
 
 
+def test_reap_refuses_a_wrapper_agent_with_a_sibling_pane_claim(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(
+                stdout=(
+                    '{"agents": ['
+                    '{"name": "bh-bh-1", "state": "idle", "pane_id": "w1:p2", '
+                    '"pane_name": "bh-bh-1"}, '
+                    '{"agent": {"name": "different", "state": "working"}, '
+                    '"pane": {"id": "w1:p2", "name": "different"}}]}'
+                )
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-1"])
+
+    assert result.exit_code == 1
+    assert "refusing unmanaged" in result.output
+    assert not any("close" in call for call in calls)
+
+
+def test_reap_accepts_a_target_whose_pane_is_on_its_agent_wrapper(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(
+                stdout=(
+                    '{"agents": [{"agent": {"name": "bh-bh-1", "state": "idle"}, '
+                    '"pane": {"id": "w1:p2", "name": "bh-bh-1"}}]}'
+                )
+            )
+        if "pane" in argv and "close" in argv:
+            return _result()
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-1"])
+
+    assert result.exit_code == 0, result.output
+    assert ["herdr", "--session", "bh-supervisor", "pane", "close", "w1:p2", "--no-focus"] in calls
+
+
 def test_watch_waits_for_blocked_and_translates_timeout(monkeypatch):
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
     calls = []
