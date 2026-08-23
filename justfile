@@ -461,7 +461,13 @@ test-integration-land:
         --deselect "tests/test_hub_bulk_int.py::test_bulk_copy_matches_a_real_bd_produced_aggregate" \
         --deselect "tests/test_hub_bulk_int.py::test_co_located_database_and_server_databases_against_the_real_server" \
         --deselect "tests/test_hq_backup_server_mode_int.py::test_server_mode_hq_backup_and_restore_real_round_trip" \
-        --deselect "tests/test_localloop_int.py::test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spending"
+        --deselect "tests/test_localloop_int.py::test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spending" \
+        --deselect "tests/test_hub_bulk_int.py::test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync"
+
+# ^ bh-eu2pp's new test (added 2026-08-22) hits the same bh-njdxk `bd init --shared-server`
+# contention as its two siblings above — passes serially and standalone, fails only under -n
+# auto alongside them. Quarantined here rather than left to intermittently redden the land gate;
+# delete this line too when bh-njdxk closes.
 
 # ^ the FENCE's own quarantine (test_storage_migrate_int's furnished-hive test) is GONE, not
 # forgotten (bh-gsg8x). It was never a fence incompatibility: in a linked worktree the tmpfs HOME
@@ -990,6 +996,17 @@ image-licenses ref="beadhive/core:dev":
 # report skew between the local images and this working tree
 image-drift *refs:
     scripts/image-drift.sh {{refs}}
+
+# The OTHER skew image-drift does not cover (bh-pee6m): a PUBLISHED `:dev` tag, already pulled
+# by consumers (beadhive-app, briancripe/qm), sat at bh 0.7.1 against a released 0.11.3 — four
+# minors behind — with nothing looking. image-drift's "behind HEAD is normal mid-session, report
+# don't fail" stance is right for a just-rebaked local image and wrong for a tag that other
+# projects pull expecting it to track the release, so this is a SEPARATE check with the
+# opposite verdict: it FAILS. Only applies to a PyPI-sourced image (a local-wheel build is
+# image-drift's job, comparing it against the checkout's SHA instead).
+# fail if a PyPI-sourced image's bh version is behind this checkout's release
+image-release-drift ref="beadhive/core:dev":
+    scripts/image-release-drift.sh {{ref}}
 
 # The gap image-drift and the manifest CANNOT see (bh-m4nn8): the packed baml seats are what the
 # `local` runtime tier spawns, and they are NOT image components — so a guard that compares what

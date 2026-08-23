@@ -18,6 +18,7 @@ import importlib.metadata
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -36,7 +37,9 @@ from . import (
     hive,
     hive_repair,
     hive_schema,
+    host,
     host_fence,
+    hosts,
     install_plane,
     jsonout,
     metadata,
@@ -1036,6 +1039,75 @@ def _section_mcp(cfg=None):
     _render_mcp(_data_mcp(cfg))
 
 
+# ---- Harness section (bh-tx2hp) ----------------------------------------------
+# "No role skill exists without the plugin" — a host provisioned before this bead landed, or
+# one whose plugin was later removed, has no OTHER durable check that would ever catch it
+# (`bh host provision`'s own `harness plugin` step only runs the day provisioning runs). Silent
+# unless THIS host's own registered role implies it runs a seat at all (mirrors the Seats
+# section's "an optional integration that complains when unused is not optional" convention) —
+# a viewer (a human's laptop, never primary) or a host with no role registered yet reports
+# nothing here.
+
+
+def _this_host_role(cfg) -> str | None:
+    """This machine's own registered role (``executor``/``transient``/``viewer``), or ``None``
+    when it has no local host identity yet, no local HQ store, or isn't registered in HQ's
+    roster — a fresh/unregistered host reports no role rather than a fabricated default."""
+    try:
+        host_id = host.host_id()
+    except FileNotFoundError:
+        return None
+    hq_dir = config.hq_dir()
+    if not (hq_dir / ".beads").is_dir():
+        return None
+    try:
+        return hosts.load(hq_dir, host_id).role
+    except (FileNotFoundError, hosts.ManifestError):
+        return None
+
+
+def _data_harness_plugin(cfg=None) -> dict | None:
+    """Whether this host's Claude Code harness plugin (``bh@beadhive``) is installed — ``None``
+    (no section) unless :func:`_this_host_role` is one of
+    :data:`beadhive.host_provision.SEAT_ROLES`."""
+    from . import host_provision  # lazy: avoids a doctor<->host_provision import cycle
+
+    role = _this_host_role(cfg)
+    if role not in host_provision.SEAT_ROLES:
+        return None
+    plugin = config.claude_plugin_name(cfg)
+    if shutil.which("claude") is None:
+        return {
+            "role": role,
+            "plugin": plugin,
+            "installed": False,
+            "detail": "no `claude` CLI on PATH — this host cannot run a Claude Code seat",
+        }
+    installed = hive._is_plugin_installed(plugin)
+    detail = (
+        f"'{plugin}' installed"
+        if installed
+        else f"'{plugin}' NOT installed — no role skill exists for a seat launched here; run: "
+        f"claude plugin marketplace add {config.REMOTE_MARKETPLACE} && "
+        f"claude plugin install {plugin}@beadhive"
+    )
+    return {"role": role, "plugin": plugin, "installed": installed, "detail": detail}
+
+
+def _render_harness_plugin(d: dict | None) -> None:
+    """Render the Harness section — entirely absent when `_data_harness_plugin` returned None."""
+    if d is None:
+        return
+    typer.echo(f"\n# Harness (role={d['role']})")
+    glyph = "✓" if d["installed"] else "✗"
+    typer.echo(f"  {glyph} {d['detail']}")
+
+
+def _section_harness_plugin(cfg=None):
+    """Render the Harness section (doctor entry point)."""
+    _render_harness_plugin(_data_harness_plugin(cfg))
+
+
 # ---- seats section (bh-og0q.4) -----------------------------------------------
 # "Which seats can THIS host run" — rides hitch_plugin's Plugin.readiness hook (the SAME hook
 # `bh hive ready` consumes via `hive_ready._plugin_checks`), not a bespoke doctor-only check.
@@ -1496,6 +1568,39 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
     return total, (lease.host_id or "nobody")
 
 
+def _split_brain_lineage_warning(entry, path: Path) -> str | None:
+    """Split-brain, named as such (bh-s9cdk): local and origin's embedded-Dolt histories share
+    NO COMMON ANCESTOR — two unrelated DAGs, not the row-level conflict or behind-the-remote
+    non-fast-forward `bd`'s own messages describe at sync time (see `dolt_health`'s module
+    section). Surfaced here, in `bh doctor`, so it is visible BEFORE the day something attempts
+    to converge them — `bd stats`/`bd list` agree on both sides regardless, so nothing else in
+    a routine health check would ever notice.
+
+    Embedded mode only (`store_locator.has_embedded_store`): the git-transport shape
+    (`refs/dolt/data`) already gets its own ahead/behind/diverged classification from
+    `safety._scan_dolt_ref`, which a real `git merge-base` can equally answer "no common
+    ancestor" for — out of scope here, which is specifically the embedded-Dolt gap the triage
+    for this bead named (dolt_health.py / hive_ready.py / doctor.py all had none).
+
+    Local-only, no fetch (`dolt_health.probe_embedded_lineage`'s own contract) — a host that
+    has never pushed/pulled against the diverged remote reports `LINEAGE_UNKNOWN` here, same as
+    every other doctor check that cannot verify something without a network round trip it isn't
+    willing to pay for. Returns `None` for every non-split-brain outcome."""
+    if not store_locator.has_embedded_store(path):
+        return None
+    db_dir = store_locator.embedded_database_dir(path)
+    probed = dolt_health.probe_embedded_lineage(db_dir)
+    if probed.status != dolt_health.LINEAGE_SPLIT_BRAIN:
+        return None
+    prefix = str(entry.get("prefix", "")) or f"{entry.get('org')}/{entry.get('repo')}"
+    return (
+        f"hive '{prefix}': SPLIT-BRAIN — {probed.detail}. Local and origin's Dolt histories "
+        "share no common ancestor: this is NOT a row-level merge conflict and NOT a "
+        "behind-the-remote non-fast-forward — a merge or pull here cannot succeed. "
+        f"{dolt_health.SPLIT_BRAIN_RECOVERY}"
+    )
+
+
 # ---- home layout drift (bh-cmqp.3) -------------------------------------------
 # docs/design/beadhive-home-layout-contract.md is the source of truth for what belongs at the
 # top level of `config.home()` and how each entry is classified (durable / regenerable /
@@ -1697,6 +1802,9 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
                     "these, so treat this local state as unconfirmed until you re-adopt this "
                     f"host or coordinate with {holder}"
                 )
+            split_brain = _split_brain_lineage_warning(e, path)
+            if split_brain:
+                warns.append(split_brain)
     # First: a missing required binary makes everything derived from it untrustworthy, so the
     # operator should read that before any finding it could have manufactured (bh-7m2h9).
     warns = _missing_required_dep_warnings() + warns
@@ -2270,6 +2378,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "dispatch": _timed(timings, "dispatch", _data_dispatch, cfg),
         "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
+        "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
         "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
         "install": _timed(timings, "install", _data_install, cfg),
         "observability": _timed(timings, "observability", _data_observability, cfg),
@@ -2296,7 +2405,8 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
     ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
-    ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``seats``,
+    ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``harness_plugin``,
+    ``seats``,
     ``install``, ``observability``, ``warnings``), plus ``timings`` (section name -> milliseconds
     from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
     always present regardless of ``--json``/verbosity), under the ``schema_version`` / ``command``
@@ -2377,6 +2487,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_dispatch(data["dispatch"])
     _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
+    _render_harness_plugin(data["harness_plugin"])
     _render_seats(data["seats"])
     _render_install(data["install"])
     _render_observability(data["observability"])

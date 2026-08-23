@@ -408,6 +408,113 @@ def probe_raw_schema_version(
     return probe_server_schema_version(hive_dir, timeout=timeout)
 
 
+# ---- lineage: split-brain detection (bh-s9cdk) -----------------------------------------------
+#
+# A THIRD failure shape, distinct from the two `_scan_dolt_ref`/`sync_remote` already name
+# ("behind" — a normal pull fixes it; "diverged" — ahead AND behind, but still one DAG a merge
+# can resolve): two stores whose histories share NO COMMON ANCESTOR at all. Measured directly
+# (bh-s9cdk's own repro): `bd`'s embedded engine auto-pushes by default and enforces nothing at
+# push time (the epoch fence, bh-ban1j -> bh-tfapu, is inert), so two hosts can each publish an
+# independently-`bd init`'d/rebuilt lineage to the same remote and never notice — both read
+# healthy, `bd stats`/`bd list` agree, and the two DAGs only collide the day something tries to
+# converge them. `bd`'s own messages at that point are actively misleading: a merge reports "row
+# conflicts require operator resolution" (implying beads to go reconcile — there are none) and a
+# push reports "non-fast-forward ... behind its remote" (implying a pull fixes it — it cannot).
+# Neither is true; the real condition needs its own name.
+#
+# The exact wording `dolt merge-base` prints (on stderr, exit 1) when the two commits share no
+# common ancestor — measured directly against a real dolt binary (dolt 2.2.3): two independently
+# `dolt init`'d stores force-pushed onto the same remote in turn, then fetched from a third
+# clone.
+NO_COMMON_ANCESTOR_MARKER = "no common ancestor"
+
+DEFAULT_LINEAGE_PROBE_TIMEOUT = 15.0  # seconds — local dolt subprocess, no network involved
+
+# The three outcomes `probe_embedded_lineage` distinguishes — see its docstring.
+LINEAGE_COMMON_ANCESTOR = "common-ancestor"
+LINEAGE_SPLIT_BRAIN = "split-brain"
+LINEAGE_UNKNOWN = "unknown"
+
+# Named, not left to be reinvented at each call site (doctor's warning text quotes this
+# verbatim): what the acceptance bar calls "the recovery path is documented and named" — when
+# both sides' content is verified equal (`bd list`/`bd stats` agreeing is NOT that verification;
+# it takes an actual id-set diff), the non-canonical host is re-hydrated from the other
+# (`bd bootstrap` against the canonical remote), discarding its local lineage. A merge is never
+# attempted: there is no common ancestor for one to resolve against.
+SPLIT_BRAIN_RECOVERY = (
+    "re-hydrate the non-canonical host from the remote (`bd bootstrap`), discarding its local "
+    "lineage — do not attempt a merge or pull, there is no common ancestor for either to "
+    "resolve against. Verify content equality first (a real id-set diff, not just matching "
+    "`bd stats`). See docs/design/multi-host-model-adr.md."
+)
+
+
+@dataclass(frozen=True)
+class LineageProbeResult:
+    """Outcome of :func:`probe_embedded_lineage`.
+
+    ``status``:
+      - ``LINEAGE_COMMON_ANCESTOR`` — local and the named remote-tracking branch share history;
+        ordinary ahead/behind divergence, if any, is resolvable by a normal merge/pull.
+      - ``LINEAGE_SPLIT_BRAIN``     — ``dolt merge-base`` reports no common ancestor: two
+        unrelated DAGs, the exact condition bh-s9cdk exists to name. Unmergeable by
+        construction — see :data:`SPLIT_BRAIN_RECOVERY` for the remedy.
+      - ``LINEAGE_UNKNOWN``         — could not be determined locally (not a Dolt dir, the
+        remote-tracking branch hasn't been fetched onto this host yet, or ``dolt merge-base``
+        failed for some other reason). Never coerced into either of the above — see ``detail``.
+
+    ``detail`` explains the value's provenance (success) or why it could not be determined
+    (failure) — never blank, mirroring :class:`SchemaProbeResult`."""
+
+    status: str
+    detail: str
+
+
+def probe_embedded_lineage(
+    db_dir: Path,
+    *,
+    local_branch: str = "main",
+    remote_branch: str = "remotes/origin/main",
+    timeout: float = DEFAULT_LINEAGE_PROBE_TIMEOUT,
+) -> LineageProbeResult:
+    """Whether ``local_branch`` and ``remote_branch`` share a common ancestor in the embedded
+    Dolt store at ``db_dir`` — ``dolt --data-dir <db_dir> merge-base <local> <remote>``, queried
+    directly against the on-disk store (the same "bypass bd's embedded-mode refusal" seam
+    :func:`probe_embedded_schema_version` already uses).
+
+    READ-ONLY and LOCAL-ONLY by design: this never runs ``dolt fetch``. A caller must already
+    have a resolvable ``remote_branch`` on this host — measured: ``dolt push`` updates its own
+    remote-tracking ref as a side effect of negotiating the transfer, so any host that has ever
+    pushed/pulled against this remote already has one. An unresolvable remote branch is reported
+    honestly as :data:`LINEAGE_UNKNOWN` rather than triggering a fetch this probe was never
+    asked to pay for — the same discipline ``safety._scan_dolt_ref`` already applies to the
+    git-transport shape (bh-ummb9.3)."""
+    if not (db_dir / ".dolt").is_dir():
+        return LineageProbeResult(
+            LINEAGE_UNKNOWN, f"{db_dir} is not a Dolt data directory (no .dolt/)"
+        )
+    res = run(
+        ["dolt", "--data-dir", str(db_dir), "merge-base", local_branch, remote_branch],
+        check=False,
+        capture=True,
+        timeout=timeout,
+    )
+    combined = f"{res.stdout or ''}\n{res.stderr or ''}".strip()
+    if res.returncode == 0 and (res.stdout or "").strip():
+        sha = res.stdout.strip().splitlines()[0]
+        return LineageProbeResult(LINEAGE_COMMON_ANCESTOR, f"common ancestor {sha[:12]}")
+    if NO_COMMON_ANCESTOR_MARKER in combined.lower():
+        return LineageProbeResult(
+            LINEAGE_SPLIT_BRAIN,
+            f"`dolt merge-base {local_branch} {remote_branch}` in {db_dir}: "
+            f"{NO_COMMON_ANCESTOR_MARKER}",
+        )
+    return LineageProbeResult(
+        LINEAGE_UNKNOWN,
+        combined.splitlines()[-1] if combined else f"dolt merge-base exited {res.returncode}",
+    )
+
+
 # ---- local bd binary's own supported version (LatestVersion()) ------------------------------
 
 

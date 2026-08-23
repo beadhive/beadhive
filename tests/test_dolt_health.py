@@ -421,6 +421,74 @@ def test_embedded_probe_none_on_nonzero_exit(tmp_path, monkeypatch):
     assert "boom" in result.detail
 
 
+# ---- probe_embedded_lineage (bh-s9cdk) ------------------------------------------------------
+
+
+def test_lineage_probe_reports_common_ancestor_on_a_real_sha(tmp_path, monkeypatch):
+    db_dir = tmp_path / "embeddeddolt" / "beads"
+    (db_dir / ".dolt").mkdir(parents=True)
+
+    calls = []
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return Completed(0, "abc123def456\n", "")
+
+    monkeypatch.setattr(dolt_health, "run", fake_run)
+    result = dolt_health.probe_embedded_lineage(db_dir)
+
+    assert result.status == dolt_health.LINEAGE_COMMON_ANCESTOR
+    assert "abc123def456" in result.detail
+    assert calls[0] == [
+        "dolt",
+        "--data-dir",
+        str(db_dir),
+        "merge-base",
+        "main",
+        "remotes/origin/main",
+    ]
+
+
+def test_lineage_probe_names_split_brain_on_dolts_own_no_common_ancestor_wording(
+    tmp_path, monkeypatch
+):
+    """Measured directly against a real dolt binary (dolt 2.2.3): two independently `dolt
+    init`'d stores force-pushed onto the same remote in turn, then fetched from a third clone —
+    `dolt merge-base` exits 1 with `no common ancestor` on stderr, nothing on stdout. This test
+    pins that exact contract with a double rather than re-running the real dolt every time."""
+    db_dir = tmp_path / "embeddeddolt" / "beads"
+    (db_dir / ".dolt").mkdir(parents=True)
+    monkeypatch.setattr(dolt_health, "run", lambda *a, **k: Completed(1, "", "no common ancestor"))
+
+    result = dolt_health.probe_embedded_lineage(db_dir)
+
+    assert result.status == dolt_health.LINEAGE_SPLIT_BRAIN
+    assert "no common ancestor" in result.detail
+
+
+def test_lineage_probe_unknown_when_not_a_dolt_dir(tmp_path):
+    result = dolt_health.probe_embedded_lineage(tmp_path / "nope")
+    assert result.status == dolt_health.LINEAGE_UNKNOWN
+    assert "not a Dolt data directory" in result.detail
+
+
+def test_lineage_probe_unknown_when_remote_branch_not_fetched_yet(tmp_path, monkeypatch):
+    """A remote-tracking branch this host has never fetched/pushed against — a real, honest
+    'can't tell' rather than a fabricated split-brain."""
+    db_dir = tmp_path / "embeddeddolt" / "beads"
+    (db_dir / ".dolt").mkdir(parents=True)
+    monkeypatch.setattr(
+        dolt_health,
+        "run",
+        lambda *a, **k: Completed(1, "", "branch not found: remotes/origin/main"),
+    )
+
+    result = dolt_health.probe_embedded_lineage(db_dir)
+
+    assert result.status == dolt_health.LINEAGE_UNKNOWN
+    assert "branch not found" in result.detail
+
+
 # ---- probe_server_schema_version + dispatch ------------------------------------------------
 
 

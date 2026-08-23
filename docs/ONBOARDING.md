@@ -737,6 +737,12 @@ Install `bh` ([INSTALL.md](../INSTALL.md), managed path), then:
 bh host provision --role executor    # clones HQ from the remote you just wired
 ```
 
+For an `executor`/`transient` role this also installs the `bh@beadhive` Claude Code plugin
+(INSTALL.md's step 3) when a `claude` CLI is on this host's PATH — without it, a seat launched
+here has no role skill to read at all. A headless host with no `claude` CLI is a legitimate
+arrival state too: the step reports that plainly (`bh host provision`'s own output) instead of
+failing, and `bh doctor` re-checks the same gap on every later run.
+
 ### Verify it landed
 
 From **both** machines, not just the new one:
