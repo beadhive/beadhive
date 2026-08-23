@@ -1025,6 +1025,12 @@ class OrcaConfig(_Section):
     )
 
 
+class RepowiseConfig(_Section):
+    """repowise — optional local codebase index integration."""
+
+    enabled: bool = Field(False, description="Enable the repowise index integration.")
+
+
 class HitchConfig(_Section):
     """Optional integration with agent-hitch (docs/design/managed-harness-config-adr.md,
     Amendment 2) — resolves a seat's Hitch Pack profile into a Config Directory and launches a
@@ -1109,6 +1115,9 @@ class ManagedRepoEntry(_Section):
         None, description="Per-hive `observaloop` section override."
     )
     orca: OrcaConfig | None = Field(None, description="Per-hive `orca` section override.")
+    repowise: RepowiseConfig | None = Field(
+        None, description="Per-hive `repowise` section override."
+    )
     hitch: HitchConfig | None = Field(None, description="Per-hive `hitch` section override.")
 
 
@@ -1166,6 +1175,7 @@ class BeadhiveConfig(BaseSettings):
     alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     orca: OrcaConfig = Field(default_factory=OrcaConfig)
+    repowise: RepowiseConfig = Field(default_factory=RepowiseConfig)
     hitch: HitchConfig = Field(default_factory=HitchConfig)
     managed_repos: list[ManagedRepoEntry] = Field(
         default_factory=list, description="Managed hives — maintained by `bh hive init`."

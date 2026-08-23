@@ -80,6 +80,13 @@ def registry() -> list[Plugin]:
         hitch_plugin,  # lazy: avoid the plugins <-> hitch_plugin import cycle
         observaloop,  # lazy: avoid the plugins <-> observaloop import cycle
         orca,  # lazy: avoid the plugins <-> orca import cycle
+        repowise_plugin,  # lazy: avoid the plugins <-> repowise_plugin import cycle
     )
 
-    return [orca.PLUGIN, observaloop.PLUGIN, hitch_plugin.PLUGIN, herdr_plugin.PLUGIN]
+    return [
+        orca.PLUGIN,
+        observaloop.PLUGIN,
+        hitch_plugin.PLUGIN,
+        herdr_plugin.PLUGIN,
+        repowise_plugin.PLUGIN,
+    ]
