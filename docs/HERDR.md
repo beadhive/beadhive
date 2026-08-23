@@ -43,7 +43,7 @@ outside herdr (a plain shell, `HERDR_ENV` unset) against the already-running def
 in an isolated `--no-focus` workspace (`w2`) that was closed afterward — the user's own
 workspace (`w1`) was never touched.
 
-```
+```bash
 herdr integration install claude   # -> ~/.claude/hooks/herdr-agent-state.sh, adds a SessionStart
                                     #    hook entry to settings.json alongside orca's existing
                                     #    UserPromptSubmit/Stop/Subagent* hooks — additive, not
