@@ -2076,6 +2076,9 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
         raise ValueError(f"cannot list children of {epic} — is it an epic in this hive?")
     beads = [c for c in children if str(c.get("status", "")) != "closed"]
     by_id = {str(b.get("id")): b for b in beads if b.get("id")}
+    # lazy: localloop is a heavy asyncio module, only its headless_capable() is needed here.
+    from . import localloop
+
     # Honor work.dispatch.mode: fanout (default, one-per-worktree) stays the plain plan; collapsed
     # forces a single group past the guards; auto asks the cost model whether to collapse.
     mode = config.dispatch_mode(cfg, entry)
@@ -2129,6 +2132,13 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
         # Compatibility window: old consumers read `model`. It now aliases the selected canonical
         # provider/model (or null on a blocked decision); new consumers must use selected_model.
         result["model"] = result["selected_model"]
+        # bh-6t49w.7: surface headless suitability alongside the model decision — reuses
+        # `localloop.headless_capable`'s own closed roster (ROLE_FOR_ACTION), no second
+        # predicate. `role` here is the launch seat ("developer"/"dispatcher"), the same value
+        # already threaded through `resolve_launch_decision`.
+        result["mode"] = (
+            "headless-safe" if localloop.headless_capable(role) else "attached-required"
+        )
         return result
 
     # Dispatch-by-type (xn3o.8): child epics dispatch to nested COORDINATORS, one seat each, at

@@ -208,12 +208,15 @@ class Tripwire:
       the concurrent process nor the fact that something else caused it.
     """
 
-    #: Subtrees skipped when fingerprinting. `worktrees/` under a real `~/.beadhive` holds every
-    #: hive's checked-out trees — 1.2M files on the machine this was written on — and the demo
-    #: cannot reach it anyway, because `$BH_WORKTREES` is re-pointed into the scratch root and
-    #: that is asserted separately. Walking it would make the guard so slow nobody runs it, which
-    #: is a worse outcome than a narrower guard that always runs.
-    SKIP = frozenset({"worktrees", ".git"})
+    #: Subtrees skipped when fingerprinting. `wt/` (and the retired `worktrees/`) under a real
+    #: `~/.beadhive` holds every hive's checked-out trees — 1.2M files on the machine this was
+    #: written on — and the demo cannot reach it anyway, because `$BH_WORKTREES` is re-pointed
+    #: into the scratch root and that is asserted separately. Walking it would make the guard so
+    #: slow nobody runs it, which is a worse outcome than a narrower guard that always runs.
+    #: Both names are listed: the managed-worktree root moved to `wt/` with the unified
+    #: `wt/bead/<type>/<id>` namespace, and a skip list naming only the old one silently walked
+    #: 400k+ files and hung `--check-isolation-only` past its caller's timeout (bh-ysnds).
+    SKIP = frozenset({"wt", "worktrees", ".git"})
 
     def __init__(self, label: str, path: Path):
         self.label = label
