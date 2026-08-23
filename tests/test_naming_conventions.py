@@ -34,9 +34,12 @@ SIX_PANELS = {
 #
 # The rule is a heuristic — it reads a trailing "s" as a plural — and these are the words where
 # that reading is simply wrong. `harness` (bh-pc2a.36) is singular English; its plural would be
-# `harnesses`. Renaming the group to satisfy the heuristic would make the CLI worse to please a
-# test, so the allowlist absorbs the exception instead.
-SINGULAR_ALLOWLIST: set[str] = {"harness"}
+# `harnesses`. `alerts` is the deliberate public name of the normalized alert collection
+# (bh-ni515.1): the harness-hook contract is `bh alerts show`, not an invented singular that
+# would make the documented steering command drift. Renaming either group to satisfy the
+# heuristic would make the CLI worse to please a test, so the allowlist absorbs these explicit
+# exceptions instead.
+SINGULAR_ALLOWLIST: set[str] = {"alerts", "harness"}
 
 # MCP tools that intentionally do NOT map to a native `bh <group> <verb>` (documented exceptions).
 TOOL_MAP_EXCEPTIONS = {"bd_create"}  # maps to the `bd` passthrough, not a native bh verb

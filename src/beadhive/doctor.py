@@ -1818,6 +1818,21 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     return warns
 
 
+def warning_messages(cfg: dict | None = None) -> list[str]:
+    """Return active doctor warnings without rendering the complete report.
+
+    This is the source boundary for agent-facing alerts.  It reuses
+    ``_data_warnings`` so the two surfaces cannot grow divergent warning rules.
+    """
+    cfg = config.load() if cfg is None else cfg
+    root = Path(workspace_root())
+    hives = cfg.get("managed_repos", []) or []
+    git_repos, nonrepo, unknown_top = _scan(root, registry.effective_providers(cfg))
+    tracked = _tracked(root)
+    untracked = (git_repos - tracked) if tracked is not None else set()
+    return _data_warnings(cfg, root, hives, git_repos, nonrepo, unknown_top, untracked)
+
+
 _ADR = "docs/design/release-channel-branches-adr.md"
 
 
