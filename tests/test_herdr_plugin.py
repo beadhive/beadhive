@@ -405,6 +405,105 @@ def test_spawn_fences_missing_server_before_worktree_lookup(monkeypatch):
     assert "server=down" in result.output
 
 
+def test_dispatch_verifies_a_new_prompt_landed_for_claude_and_codex(monkeypatch):
+    """Both supported harnesses pass only when the post-read adds the real turn."""
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+
+    for kind in ("claude", "codex"):
+        prompt = f"{kind} please implement the requested change"
+        calls = []
+        reads = iter(["agent: idle", f"user: {prompt}\\nassistant: working"])
+
+        def fake_run(argv, _calls=calls, _reads=reads, **kwargs):
+            _calls.append(argv)
+            if argv == ["herdr", "status"]:
+                return _result()
+            if "read" in argv:
+                return _result(stdout=next(_reads))
+            return _result(stdout="agent_status: done")
+
+        monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+        result = runner.invoke(app, ["plugin", "herdr", "dispatch", f"{kind}-1", prompt])
+
+        assert result.exit_code == 0, result.output
+        assert [
+            "herdr",
+            "--session",
+            "bh-supervisor",
+            "agent",
+            "prompt",
+            f"{kind}-1",
+            prompt,
+            "--wait",
+            "--timeout",
+            "60000",
+        ] in calls
+        assert sum("read" in call and "visible" in call for call in calls) == 2
+
+
+def test_dispatch_rejects_stale_prompt_from_a_prior_turn(monkeypatch):
+    """An unchanged pane containing an older identical prompt is not a delivery proof."""
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    prompt = "implement the requested change"
+    reads = iter([f"user: {prompt}\\nassistant: done", f"user: {prompt}\\nassistant: done"])
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "read" in argv:
+            return _result(stdout=next(reads))
+        return _result(stdout="agent_status: done")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "dispatch", "codex-1", prompt])
+
+    assert result.exit_code == 1
+    assert "did not reach a new real agent turn" in result.output
+
+
+def test_dispatch_accepts_a_repeated_prompt_only_when_a_new_copy_appears(monkeypatch):
+    """Repeating an intentional prompt remains valid, but needs a new pane occurrence."""
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    prompt = "repeat this prompt"
+    reads = iter([f"user: {prompt}", f"user: {prompt}\\nassistant: done\\nuser: {prompt}"])
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "read" in argv:
+            return _result(stdout=next(reads))
+        return _result(stdout="agent_status: done")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "dispatch", "claude-1", prompt])
+
+    assert result.exit_code == 0, result.output
+
+
+def test_dispatch_fails_when_codex_first_run_screen_drops_prompt(monkeypatch):
+    """Codex can say done after its hook-review screen consumed the first prompt."""
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    prompt = "implement the requested change"
+    calls = []
+    reads = iter(["user: old unrelated work", "Codex hook-review screen: trust hooks? [y/N]"])
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "read" in argv:
+            return _result(stdout=next(reads))
+        return _result(stdout="agent_status: done")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "dispatch", "codex-1", prompt])
+
+    assert result.exit_code == 1
+    assert "did not reach a new real agent turn" in result.output
+    assert any("prompt" in call and "--wait" in call for call in calls)
+    assert sum("read" in call and "visible" in call for call in calls) == 2
+
+
 def test_attach_only_prints_a_copy_pasteable_session_scoped_command(monkeypatch):
     def boom(*args, **kwargs):
         raise AssertionError("attach must not inspect or alter herdr state")
