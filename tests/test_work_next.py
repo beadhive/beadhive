@@ -241,6 +241,26 @@ def test_attempt_count_ignores_events_that_are_not_the_actions_failure():
     assert work_next.attempt_count(events, "merge") == 1
 
 
+def test_attempt_count_resets_after_a_later_submit():
+    """bh-7679k: a bead that failed once and then submitted must not carry that failure into its
+    next dispatch cycle — the submit (`review -> pending`) event ends the sequence, so only events
+    AFTER it count."""
+    events = [_event("dispatched"), _event("dispatched"), _event("review -> pending")]
+    assert work_next.attempt_count(events, "dispatch") == 0
+    events_with_a_later_failure = events + [_event("dispatched")]
+    assert work_next.attempt_count(events_with_a_later_failure, "dispatch") == 1
+
+
+def test_loop_breaker_never_escalates_a_bead_whose_review_gate_is_open():
+    """bh-7679k: submitted-and-awaiting-review is not stuck — the guard holds even if a stale/
+    pre-submit event count would otherwise trip the loop-breaker for the naming decision."""
+    beads = (_bead("b1", labels=["review:pending"]),)
+    events = {"b1": [_event("dispatched"), _event("dispatched")]}
+    decision = work_next.Decision("dispatch-up-to-budget", "dispatch", beads=("b1",))
+    mol = _mol(beads=beads, events=events)
+    assert work_next.loop_break(mol, decision) == decision
+
+
 def test_nothing_in_the_core_persists_a_counter():
     """The execution-memory boundary, asserted rather than trusted: counts are DERIVED from event
     beads on every call, so the SAME molecule decided twice gives the same answer and no state
