@@ -413,43 +413,45 @@ def await_cmd(
         "`_refuse-if-bump-pending` in the justfile)",
     ),
 ):
-    """BLOCK until the background bump gate records a verdict for REV's tree. Exit 0 iff GREEN.
+    """BLOCK until REV's tree has a verdict. Exit 0 iff GREEN.
 
-    This is where "the push waits on a verdict" is actually implemented, and the reason the push
-    hook is no longer where green gets established. On a green verdict the pre-push hook's own
-    lookup (`bh hive hook push-main`) then hits the same ledger entry — same key, same command,
-    one resolver, and fast relative to the full gate it replaces. Not free, though: a hive
-    declaring `work.always_run` (bh-ehmd8) pays that set on every hit, not milliseconds — see
-    docs/WORK.md's "The always-run set" for the current cost, kept there rather than restated
-    here so there is one place to keep it current.
+    **ONE PREDICATE, SHARED WITH `preview` (bh-d3u1o).** The ledger — `validation_ledger.verdict`,
+    the exact lookup `preview`'s "green" line and the pre-push hook both use — is read FIRST and is
+    ALWAYS authoritative: a recorded verdict answers the question regardless of how it was earned,
+    because a tree a foreground `just attest` proved green is exactly as green as one a background
+    gate proved. The background-gate marker is bookkeeping for HOW TO WAIT, never a second gate on
+    top of an existing verdict — before this it was read first, so a tree with a real green verdict
+    but no marker (the fix-forward shape below) was refused here while `preview` had already
+    called it GO, two answers to one question under one name.
+
+    THE FIX-FORWARD SHAPE THIS FIXES: `just bump`'s background gate fires on the bump tree, goes
+    RED, gets fixed forward in a couple of commits (a NEW tree), which is then proven by hand with
+    `just attest` — genuinely green, with no marker naming it (the marker still names the old,
+    abandoned tree). That tree used to fail here and pass in `preview`; now both agree.
+
+    This is still where "the push waits on a verdict" is implemented, and the reason the push hook
+    is no longer where green gets established. Not free, though: a hive declaring `work.always_run`
+    (bh-ehmd8) pays that set on every hit, not milliseconds — see docs/WORK.md's "The always-run
+    set" for the current cost, kept there rather than restated here so there is one place to keep
+    it current.
 
     Three answers, kept apart on purpose:
 
-    * **green** — exit 0, push.
+    * **green** — exit 0, push. From the ledger alone; no marker required.
     * **red** — exit 1 immediately, do not wait out the timeout. Nothing has left the machine
       yet, so this is the good failure: bh-67utw's undo is still fully available.
-    * **still running** — keep polling. If the background process is gone with no verdict
-      recorded, that is exit 1 too and names the log; a gate that died is not a gate that passed.
+    * **still running** — keep polling, once a genuine miss (no verdict at all) falls through to
+      the marker. If the background process is gone with no verdict recorded, that is exit 1 too
+      and names the log; a gate that died is not a gate that passed.
 
-    `--if-pending` is the only leniency and it is narrow: it skips ONLY when no marker exists for
-    this tree at all, i.e. no release is in flight. It cannot turn a pending, red, or crashed
-    gate into a pass, and it removes no protection from an ordinary push — that push still meets
-    the full pre-push gate, which runs on a miss exactly as it always did."""
+    `--if-pending` is the only leniency and it is narrower still now: it only ever applies on a
+    genuine miss (no ledger verdict at all), where it skips if no marker exists for this tree
+    either, i.e. no release is in flight. It cannot turn a pending, red, or crashed gate into a
+    pass, and it removes no protection from an ordinary push — that push still meets the full
+    pre-push gate, which runs on a miss exactly as it always did."""
     entry, cmd, refusal = _resolve(hive, gate)
     if refusal:
         typer.echo(f"{refusal} — cannot wait on a verdict", err=True)
-        raise typer.Exit(REFUSED)
-    marker, tree = _marker_for_tree(entry, rev)
-    if marker is None:
-        if if_pending:
-            typer.echo(f"• no bump gate pending for {rev} ({tree[:12]}) — nothing to wait on")
-            return
-        typer.echo(
-            f"✗ no background gate was fired for {rev} ({tree[:12]}).\n"
-            f"  A verdict nobody asked for cannot arrive. Fire one:\n"
-            f"      {config.BINARY_ALIAS} release attest {rev} --background",
-            err=True,
-        )
         raise typer.Exit(REFUSED)
 
     deadline = time.monotonic() + timeout
@@ -460,6 +462,10 @@ def await_cmd(
         # (default 5s between reads) that pays one extra `config.load()` per poll. Worth doing
         # where a caller already holds `cfg` for free (`clean_checkout`, `check_push_main`,
         # `check`); not worth the ripple here for a config re-read this infrequent.
+        #
+        # THE MARKER IS FETCHED, BUT ONLY *ENFORCED* ON A GENUINE MISS, BELOW (bh-d3u1o) — the
+        # ledger read right after it is what decides green/red, unconditionally on the marker.
+        marker, tree = _marker_for_tree(entry, rev)
         hit = validation_ledger.verdict(entry, rev, cmd)
         if hit is not None and hit.get("rc") == 0:
             when = datetime.datetime.fromtimestamp(float(hit["at"])).astimezone()
@@ -473,7 +479,19 @@ def await_cmd(
                 f"✗ the bump tree is RED (exit {hit.get('rc')!r} from {cmd!r}) — DO NOT PUSH.\n"
                 f"  Nothing has left this machine, so the bump is still fully reversible:\n"
                 f"      {config.BINARY_ALIAS} release recover\n"
-                f"  gate output: {marker.get('log', '(no log recorded)')}",
+                f"  gate output: {(marker or {}).get('log', '(no log recorded)')}",
+                err=True,
+            )
+            raise typer.Exit(REFUSED)
+        if marker is None:
+            if if_pending:
+                typer.echo(f"• no bump gate pending for {rev} ({tree[:12]}) — nothing to wait on")
+                return
+            typer.echo(
+                f"✗ no background gate was fired for {rev} ({tree[:12]}) and nothing has "
+                f"attested it yet.\n"
+                f"  A verdict nobody asked for cannot arrive. Fire one:\n"
+                f"      {config.BINARY_ALIAS} release attest {rev} --background",
                 err=True,
             )
             raise typer.Exit(REFUSED)
