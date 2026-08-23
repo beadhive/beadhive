@@ -1506,6 +1506,52 @@ def _data_disk_usage(hives, root: Path, records) -> dict:
     return {"hives": entries, "total_bytes": total_bytes}
 
 
+def _data_worktree_disk_usage(cfg) -> dict:
+    """Managed-worktree footprint per hive plus free space on their filesystem.
+
+    This intentionally measures the linked worktree directories, rather than the
+    primary clone and its shared ``.git`` object store measured by
+    :func:`_data_disk_usage`. The result is data only: alert policy and rendering
+    belong to their respective consumers.
+    """
+    entries = {
+        str(entry["prefix"]): {
+            "prefix": str(entry["prefix"]),
+            "worktree_bytes": 0,
+            "worktree_count": 0,
+        }
+        for entry in cfg.get("managed_repos", []) or []
+    }
+    for prefix, path, _branch in worktree.managed(cfg):
+        entry = entries.setdefault(
+            prefix, {"prefix": prefix, "worktree_bytes": 0, "worktree_count": 0}
+        )
+        entry["worktree_bytes"] += safety._measure_disk_usage(path)
+        entry["worktree_count"] += 1
+
+    root = config.worktrees_root(cfg)
+    try:
+        disk_free_bytes = shutil.disk_usage(root).free
+    except OSError:
+        # A configured persistent root need not exist until the first claim. Its
+        # nearest existing parent is on the same filesystem and still provides the
+        # useful host-level free-space reading.
+        parent = root
+        while not parent.exists() and parent != parent.parent:
+            parent = parent.parent
+        try:
+            disk_free_bytes = shutil.disk_usage(parent).free
+        except OSError:
+            disk_free_bytes = None
+
+    hives = list(entries.values())
+    return {
+        "hives": hives,
+        "total_worktree_bytes": sum(entry["worktree_bytes"] for entry in hives),
+        "disk_free_bytes": disk_free_bytes,
+    }
+
+
 def _render_disk_usage(d: dict) -> None:
     typer.echo("\n# Disk Usage (by hive)")
     for e in d["hives"]:
@@ -2368,6 +2414,9 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "hives": _timed(timings, "hives", _data_hives, cfg),
         "inventory": inventory,
         "disk_usage": _timed(timings, "disk_usage", _data_disk_usage, hives, root, records),
+        "worktree_disk_usage": _timed(
+            timings, "worktree_disk_usage", _data_worktree_disk_usage, cfg
+        ),
         "fleet_health": _timed(timings, "fleet_health", _data_fleet_health, records, git_repos),
         "worktrees": _timed(timings, "worktrees", _data_worktrees, cfg),
         "molecules": _timed(timings, "molecules", _data_molecules, cfg),
@@ -2404,7 +2453,8 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     """Structured `ws doctor` diagnostics — the data layer beneath the text render.
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
-    ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
+    ``inventory``, ``disk_usage``, ``worktree_disk_usage``, ``fleet_health``,
+    ``worktrees``, ``molecules``,
     ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``harness_plugin``,
     ``seats``,
     ``install``, ``observability``, ``warnings``), plus ``timings`` (section name -> milliseconds
