@@ -460,6 +460,84 @@ def test_reap_refuses_an_unmanaged_target_without_closing_anything(monkeypatch):
     assert not any("close" in call for call in calls)
 
 
+def test_reap_refuses_a_terminal_or_stale_agent_record(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(
+                stdout=(
+                    '{"agents": [{"name": "bh-bh-1", "state": "done", '
+                    '"pane_id": "w1:p2", "pane_name": "bh-bh-1"}]}'
+                )
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-1"])
+
+    assert result.exit_code == 1
+    assert "refusing unmanaged" in result.output
+    assert not any("close" in call for call in calls)
+
+
+def test_reap_refuses_a_pane_whose_visible_name_does_not_match_target(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(
+                stdout=(
+                    '{"agents": [{"name": "bh-bh-1", "state": "idle", '
+                    '"pane_id": "w1:p2", "pane_name": "manual-pane"}]}'
+                )
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-1"])
+
+    assert result.exit_code == 1
+    assert "refusing unmanaged" in result.output
+    assert not any("close" in call for call in calls)
+
+
+def test_reap_refuses_duplicate_live_agent_records_for_one_pane(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(
+                stdout=(
+                    '{"agents": ['
+                    '{"name": "bh-bh-1", "state": "idle", "pane_id": "w1:p2", '
+                    '"pane_name": "bh-bh-1"}, '
+                    '{"name": "bh-bh-other", "state": "working", "pane_id": "w1:p2", '
+                    '"pane_name": "bh-bh-other"}]}'
+                )
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-1"])
+
+    assert result.exit_code == 1
+    assert "refusing unmanaged" in result.output
+    assert not any("close" in call for call in calls)
+
+
 def test_watch_waits_for_blocked_and_translates_timeout(monkeypatch):
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
     calls = []

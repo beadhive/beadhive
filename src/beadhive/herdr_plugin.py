@@ -309,7 +309,11 @@ def _owned_live_pane(target: str) -> str | None:
     pane_id, pane_name = pane
     if pane_name != target:
         return None
-    pane_records = [record for record in records if (resolved := _record_pane(record)) is not None and resolved[0] == pane_id]
+    pane_records = [
+        record
+        for record in records
+        if (resolved := _record_pane(record)) is not None and resolved[0] == pane_id
+    ]
     if len(pane_records) != 1:
         return None
     return pane_id
