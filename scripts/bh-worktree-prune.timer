@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodically prune landed Beadhive worktrees
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=6h
+Persistent=true
+
+[Install]
+WantedBy=timers.target

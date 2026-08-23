@@ -3025,6 +3025,42 @@ def test_land_closes_bead_and_resolves_gate_when_pr_merged(hive, fakebd, fakegh)
     assert all(g["status"] != "open" for g in fakebd.gates if "pr-merge" in g["description"])
 
 
+def test_land_prunes_the_newly_safe_worktree(hive, fakebd, fakegh):
+    """PR completion records ``merged`` then reclaims the now-SAFE worker seat itself."""
+    _pr_pending(hive, fakebd, "mr-33")
+    target = _wt(hive, "mr-33")
+    assert target.exists()
+    fakegh.prs = [
+        {"number": 9, "url": fakegh.create_url, "state": "MERGED", "mergedAt": "2026-07-17T00:00Z"}
+    ]
+
+    work.land(bead="mr-33", hive="myrepo")
+
+    assert fakebd.beads["mr-33"]["status"] == "closed"
+    assert not target.exists()
+
+
+def test_land_prune_failure_does_not_mask_completed_landing(
+    hive, fakebd, fakegh, monkeypatch, capsys
+):
+    """Cleanup is post-land hygiene: a failed prune warns but does not undo the close."""
+    _pr_pending(hive, fakebd, "mr-34")
+    fakegh.prs = [
+        {"number": 10, "url": fakegh.create_url, "state": "MERGED", "mergedAt": "2026-07-17T00:00Z"}
+    ]
+
+    def broken_prune(*, hive):
+        assert hive == "mr"
+        raise RuntimeError("metadata unavailable")
+
+    monkeypatch.setattr(worktree, "prune", broken_prune)
+
+    work.land(bead="mr-34", hive="myrepo")
+
+    assert fakebd.beads["mr-34"]["status"] == "closed"
+    assert "automatic worktree prune for mr failed" in capsys.readouterr().err
+
+
 def test_land_refuses_while_pr_unmerged(hive, fakebd, fakegh):
     """Completion is driven by PR STATE: an open PR refuses the land and the bead stays open."""
     _pr_pending(hive, fakebd, "mr-31")

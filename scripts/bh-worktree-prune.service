@@ -1,0 +1,8 @@
+[Unit]
+Description=Prune landed Beadhive worktrees
+
+[Service]
+Type=oneshot
+# A user-installed bh normally lives here; preserve the conventional system path too.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=%h/.local/share/beadhive/scripts/bh-worktree-prune

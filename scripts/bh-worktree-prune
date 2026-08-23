@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Run Beadhive's fleet-wide, SAFE-only worktree cleanup.
+#
+# Kept as a separate wrapper so cron and systemd share the same executable and operators can
+# invoke exactly the scheduled action by hand while diagnosing a host.
+set -euo pipefail
+
+exec "${BH_BIN:-bh}" worktree prune
