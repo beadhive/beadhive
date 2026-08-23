@@ -882,6 +882,7 @@ KNOWN_SECTIONS = frozenset(
         "log",
         "otel",
         "observaloop",
+        "repowise",
         "worktrees",
         "archive",
         "backup",
@@ -1755,6 +1756,17 @@ def orca_data_path(cfg=None) -> Path:
 
 
 # ---- hitch (agent-hitch launch integration — optional plugin) ---------------
+
+
+def repowise_cfg(cfg=None):
+    """The top-level ``repowise`` section (or {})."""
+    cfg = cfg if cfg is not None else load()
+    return cfg.get("repowise", {}) or {}
+
+
+def repowise_enabled(cfg, entry=None) -> bool:
+    """Whether the optional repowise index integration is enabled for this hive."""
+    return layered_flag(cfg, entry, "repowise")
 
 
 def hitch_cfg(cfg=None):

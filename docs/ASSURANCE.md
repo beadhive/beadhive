@@ -177,11 +177,23 @@ That layer is acknowledged here, not audited.
 
 | tool | licence | why it is not in the image |
 |---|---|---|
-| `repowise` | AGPL-3.0 | a plugin the user installs; naming it in a comment is not depending on it |
+| `repowise` | AGPL-3.0 | optional user-installed dependency; use `briancripe/repowise@feat/no-mcp-json-no-vscode` |
 | Claude Code | `SEE LICENSE IN README.md` | proprietary — shipping it would redistribute it under Anthropic's commercial terms |
 
 Claude Code is installed at runtime with `bh dep install claude`, which names the licence before
 acting so accepting those terms is the user's own choice.
+
+The repowise plugin requires the fork's `--no-mcp-json` and `--no-vscode` flags. Both the fork
+and stock repowise report `0.45.0`, so bh probes `repowise init --help` instead of trusting a
+version. Install the fork from its branch (or another build advertising both flags); `bh setup
+check`, `bh doctor`, and `bh hive ready` report an actionable warning when the configured plugin
+cannot provide them, and indexing is skipped rather than failing each worktree.
+
+The repowise plugin requires the fork's `--no-mcp-json` and `--no-vscode` flags. Both the fork
+and stock repowise report `0.45.0`, so bh probes `repowise init --help` instead of trusting a
+version. Install the fork from its branch (or another build advertising both flags); `bh setup
+check` and `bh hive ready` report an actionable warning when the configured plugin cannot provide
+them, and indexing is skipped rather than failing each worktree.
 
 **Codex used to be the exception, and no longer is (bh-lnrn).** It declares Apache-2.0 and passes
 the allowlist outright — it was shipped for exactly that reason. It is now excluded anyway, by

@@ -109,6 +109,12 @@ dolt:
 #   # command: observaloop            # override the observaloop CLI command (default: observaloop)
 #   # per_worktree_container: false   # reserved for Mode-2 (one container per worktree); not yet active
 
+# Repowise is an optional, user-provided local code index.  Enabling it indexes each newly
+# onboarded base checkout; `bh plugin repowise index --all` indexes the whole configured
+# git-workspace (measured 34 repos: about 12 minutes and 400 MiB).  Re-running is safe.
+# repowise:
+#   enabled: true
+
 # Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <group>/<org>/<repo>,
 # so bh-made worktrees never collide with git-workspace repo roots and bulk cleanup is one
 # subtree (`bh worktree prune`). See worktrees.ephemeral / worktrees.path below.
