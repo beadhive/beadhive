@@ -652,6 +652,55 @@ def test_ensure_proceeds_under_codex_sandbox_when_root_is_reachable(tmp_path, mo
     assert target.exists()
 
 
+def test_ensure_proceeds_under_codex_sandbox_with_current_per_hive_grant(tmp_path, monkeypatch):
+    """A managed, current project-local grant is an authorized persistent-root path."""
+    cfg, _entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"ephemeral": False}
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path / "unrelated-tmp"))
+    from beadhive import hive
+
+    hive._install_codex_sandbox_grant(cfg, "github", "myorg", "myrepo", repo)
+
+    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target.exists()
+
+
+def test_ensure_refuses_stale_per_hive_grant_even_with_global_grant(tmp_path, monkeypatch):
+    """A stale project-local table shadows a current global Codex sandbox grant."""
+    cfg, _entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"ephemeral": False}
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path / "unrelated-tmp"))
+    from beadhive import hive
+
+    hive._install_codex_sandbox_grant(cfg, "github", "myorg", "myrepo", repo)
+    new_root = tmp_path / "new-wts"
+    monkeypatch.setenv("BH_WORKTREES", str(new_root))
+    hive._install_global_codex_sandbox_grant(cfg)
+
+    with pytest.raises(typer.Exit):
+        worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert not (new_root / "github" / "myorg" / "myrepo" / "ag-epic.3").exists()
+
+
+def test_ensure_proceeds_under_codex_sandbox_with_only_global_grant(tmp_path, monkeypatch):
+    """A current global grant applies when the hive has no project-local table."""
+    cfg, _entry, _repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"ephemeral": False}
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path / "unrelated-tmp"))
+    from beadhive import hive
+
+    hive._install_global_codex_sandbox_grant(cfg)
+
+    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target.exists()
+
+
 def test_ensure_ignores_codex_check_when_not_codex_sandboxed(tmp_path, monkeypatch):
     """No false positive for the common case (Claude/opencode/a human terminal): without the
     Codex sandbox env signal, an "unreachable" root is provisioned exactly as before."""
