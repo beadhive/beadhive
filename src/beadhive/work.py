@@ -3273,8 +3273,7 @@ def land(bead: str = _BEAD, hive: str = _HIVE):
     _prune_landed_hive(entry)
     otel.count_bead_transition("pr_landed")
     typer.echo(
-        f"✓ {ref} merged — closed {bead} (close_reason: {reason}); "
-        "reaped any SAFE worktree(s)"
+        f"✓ {ref} merged — closed {bead} (close_reason: {reason}); reaped any SAFE worktree(s)"
     )
 
 
