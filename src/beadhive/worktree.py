@@ -541,6 +541,28 @@ def _consult_wt_create(
     return None
 
 
+def _notify_wt_create(
+    hook: str, cfg, entry, *, main: Path, branch: str, target: Path, start_point: str = ""
+) -> None:
+    """Run an observing worktree-create hook for every enabled plugin.
+
+    Unlike ``wt_create``, these hooks never take ownership of ``git worktree add``.  They are
+    deliberately best-effort: one failed observer must not prevent either creation or a later
+    observer from running.
+    """
+    for p in plugins.registry():
+        callback = getattr(p, hook)
+        if callback is None or not p.enabled(cfg, entry):
+            continue
+        try:
+            kwargs = {"main": main, "branch": branch, "target": target}
+            if hook == "wt_creating":
+                kwargs["start_point"] = start_point
+            callback(cfg, entry, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - observers never abort worktree creation
+            typer.echo(f"⚠ plugin {p.name} {hook} failed, continuing: {exc}", err=True)
+
+
 def _consult_wt_remove(
     cfg, entry, *, main: Path, target: Path, force: bool, keep_branch: bool
 ) -> bool:
@@ -585,6 +607,9 @@ def _do_add(
     hive = str(entry.get("prefix", ""))
     started = time.monotonic()
     delegated_target: Path | None = None
+    _notify_wt_create(
+        "wt_creating", cfg, entry, main=main, branch=br, target=target, start_point=start_point
+    )
     if new_branch:
         delegated_target = _consult_wt_create(
             cfg, entry, main=main, branch=br, target=target, start_point=start_point
@@ -614,6 +639,7 @@ def _do_add(
             raise typer.Exit(res.returncode)
     else:
         target = delegated_target
+    _notify_wt_create("wt_created", cfg, entry, main=main, branch=br, target=target)
     elapsed = time.monotonic() - started
     _record_wt_op_duration("create", elapsed, "ok", hive=hive, leaf=target.name)
     run_init(cfg, entry, target)

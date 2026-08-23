@@ -2060,13 +2060,17 @@ def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch)
 # retire.py's plugin-notify fence.
 
 
-def _fake_plugin(name, *, enabled=True, wt_create=None, wt_remove=None):
+def _fake_plugin(
+    name, *, enabled=True, wt_create=None, wt_remove=None, wt_creating=None, wt_created=None
+):
     return plugins.Plugin(
         name=name,
         cli=typer.Typer(),
         enabled=lambda cfg, entry: enabled,
         wt_create=wt_create,
         wt_remove=wt_remove,
+        wt_creating=wt_creating,
+        wt_created=wt_created,
     )
 
 
@@ -2130,6 +2134,28 @@ def test_consult_wt_create_other_exception_warns_and_falls_through(monkeypatch, 
         {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
     )
     assert result == Path("/ok")  # fell through to the next plugin
+    assert "boom" in capsys.readouterr().err
+
+
+def test_notify_wt_created_continues_after_a_raising_plugin(monkeypatch, capsys):
+    called = []
+
+    def boom(cfg, entry, **kw):
+        raise RuntimeError("kaboom")
+
+    def ok(cfg, entry, **kw):
+        called.append(kw)
+
+    monkeypatch.setattr(
+        plugins,
+        "registry",
+        lambda: [_fake_plugin("boom", wt_created=boom), _fake_plugin("ok", wt_created=ok)],
+    )
+    worktree._notify_wt_create(
+        "wt_created", {}, {}, main=Path("/main"), branch="b", target=Path("/target")
+    )
+
+    assert called == [{"main": Path("/main"), "branch": "b", "target": Path("/target")}]
     assert "boom" in capsys.readouterr().err
 
 
@@ -2217,6 +2243,35 @@ def test_do_add_new_branch_delegates_to_plugin_hook(tmp_path, monkeypatch):
     assert target.exists()
     assert worktree._branch_exists(repo, branch)
     assert native_add_calls == []  # the native git worktree add subprocess never ran
+
+
+def test_do_add_notifies_before_and_after_native_create(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    target = worktree.wt_dir(entry, "observe-1")
+    branch = "wt/bead/issue/observe-1"
+    calls = []
+
+    def before(cfg, entry, **kw):
+        calls.append(("before", kw))
+
+    def after(cfg, entry, **kw):
+        calls.append(("after", kw))
+
+    monkeypatch.setattr(
+        plugins,
+        "registry",
+        lambda: [_fake_plugin("observer", wt_creating=before, wt_created=after)],
+    )
+
+    worktree._do_add(cfg, entry, repo, branch, target, new_branch=True, start_point="main")
+
+    assert calls == [
+        (
+            "before",
+            {"main": repo, "branch": branch, "target": target, "start_point": "main"},
+        ),
+        ("after", {"main": repo, "branch": branch, "target": target}),
+    ]
 
 
 def test_do_add_new_branch_falls_through_to_native_when_hook_returns_none(tmp_path, monkeypatch):
