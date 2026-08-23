@@ -15,6 +15,7 @@ did-you-mean wired into `config get`/`set`).
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,16 @@ def test_env_override_deeply_nested_field(monkeypatch):
     monkeypatch.setenv("BH_WORK__DISPATCH__MODE", "collapsed")
     cfg = BeadhiveConfig()
     assert cfg.work.dispatch.mode == "collapsed"
+
+
+def test_runtime_worktrees_override_is_not_parsed_as_the_schema_section(monkeypatch):
+    monkeypatch.setenv("BH_WORKTREES", "/runtime/worktrees")
+
+    cfg = BeadhiveConfig()
+
+    assert cfg.worktrees.path is None
+    assert os.environ["BH_WORKTREES"] == "/runtime/worktrees"
+    assert config.worktrees_root({"worktrees": {"ephemeral": True}}) == Path("/runtime/worktrees")
 
 
 # ---- nested_model_default_partial_update --------------------------------------
