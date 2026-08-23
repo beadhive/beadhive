@@ -130,6 +130,50 @@ def test_ps_falls_back_to_snapshot_and_fences_server(monkeypatch):
     assert "server=down" in result.output
 
 
+def test_ps_accepts_valid_empty_agent_list_without_snapshot(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(stdout='{"agents": []}')
+        raise AssertionError(f"empty list must not fall back: {argv}")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "ps"])
+    assert result.exit_code == 0, result.output
+    assert result.output.splitlines() == ["name\thive\tbead\tstate"]
+    assert calls == [
+        ["herdr", "status"],
+        ["herdr", "--session", "bh-supervisor", "agent", "list", "--json"],
+    ]
+
+
+def test_ps_only_claims_exact_reserved_bh_bead_names(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(
+                stdout='{"agents": [{"name": "bh-bh-good.2", "state": "idle"},'
+                '{"name": "bh-operator", "state": "idle"},'
+                '{"name": "operator-bh-other", "state": "idle"}]}'
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "ps"])
+    assert result.exit_code == 0, result.output
+    assert "bh-bh-good.2\tunmanaged\tbh-good.2\tidle" in result.output
+    assert "bh-operator\tunmanaged\tunmanaged\tidle" in result.output
+    assert "operator-bh-other\tunmanaged\tunmanaged\tidle" in result.output
+
+
 def test_integrate_installs_requested_supported_kind_idempotently(monkeypatch):
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
     calls = []

@@ -159,7 +159,10 @@ def supported_kinds() -> list[str]:
     return list(dict.fromkeys(value for value in values if value.lower() not in ignored))
 
 
-_BEAD_RE = re.compile(r"(?:^|[^A-Za-z0-9])(?P<bead>bh-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)?)$")
+# ``spawn`` reserves ``bh-<bead-id>``. Since bead ids themselves begin with
+# ``bh-``, only the resulting ``bh-bh-*`` values are claimed. Full matching
+# keeps names such as ``operator-bh-foo`` user-owned.
+_BEAD_RE = re.compile(r"^bh-(?P<bead>bh-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)?)$")
 
 
 def _agent_records(value) -> list[dict]:
@@ -176,7 +179,12 @@ def _agent_records(value) -> list[dict]:
             nested = item.get("agent")
             candidate = nested if isinstance(nested, dict) else item
             name = candidate.get("name") or candidate.get("agent_name") or candidate.get("target")
-            state = candidate.get("state") or candidate.get("status") or candidate.get("lifecycle")
+            state = (
+                candidate.get("state")
+                or candidate.get("status")
+                or candidate.get("lifecycle")
+                or candidate.get("lifecycle_state")
+            )
             if isinstance(name, str) and isinstance(state, (str, int, float)):
                 records.append(candidate)
             for child in item.values():
@@ -209,8 +217,20 @@ def _agent_identity(record: dict) -> tuple[str, str | None, str | None, str]:
         name,
         str(hive) if hive else None,
         bead,
-        str(record.get("state") or record.get("status") or record.get("lifecycle")),
+        str(
+            record.get("state")
+            or record.get("status")
+            or record.get("lifecycle")
+            or record.get("lifecycle_state")
+        ),
     )
+
+
+def _looks_like_agent_list(value) -> bool:
+    """Recognize a successful (including empty) ``agent list --json`` payload."""
+    if isinstance(value, list):
+        return not value or all(isinstance(item, dict) for item in value)
+    return isinstance(value, dict) and isinstance(value.get("agents"), list)
 
 
 def _read_agents() -> list[dict] | None:
@@ -225,6 +245,8 @@ def _read_agents() -> list[dict] | None:
         except (TypeError, ValueError):
             continue
         records = _agent_records(data)
+        if argv[:2] == ("agent", "list") and _looks_like_agent_list(data):
+            return records
         if records or argv[-1] == "snapshot":
             return records
     return None
