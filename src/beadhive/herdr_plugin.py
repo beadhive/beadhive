@@ -524,6 +524,44 @@ def _spawn_cmd(
     typer.echo(f"herdr target={name} pane={pane} workspace={workspace} bead={bead}")
 
 
+@cli.command("dispatch", help="send a prompt and verify it reached the agent pane.")
+def _dispatch_cmd(
+    target: str = typer.Argument(..., metavar="TARGET", help="herdr agent target"),
+    prompt: str = typer.Argument(..., metavar="PROMPT", help="prompt to deliver"),
+) -> None:
+    """Deliver a prompt only when a before/after pane read proves a new real turn.
+
+    Herdr's ``--wait`` observes a lifecycle transition, which can report ``done``
+    even when first-run UI consumed the prompt.  A post-dispatch substring check
+    alone is not evidence: the same text could be from an older turn.  Capture
+    the pane first, then require the requested text to occur more often after the
+    dispatch.  This preserves the exact user prompt while making the proof turn-
+    specific, including when the user deliberately repeats a prompt.
+    """
+    if not server_up():
+        typer.echo("✗ herdr: server=down (start herdr and install its agent integration)", err=True)
+        raise typer.Exit(1)
+    before = _require(
+        _command("agent", "read", target, "--source", "visible", "--lines", "80"),
+        "agent dispatch pre-read",
+    )
+    _require(
+        _command("agent", "prompt", target, prompt, "--wait", "--timeout", "60000"),
+        "agent dispatch",
+    )
+    visible = _require(
+        _command("agent", "read", target, "--source", "visible", "--lines", "80"),
+        "agent dispatch read-back",
+    )
+    if not prompt or visible.count(prompt) <= before.count(prompt):
+        typer.echo(
+            "✗ herdr dispatch did not reach a new real agent turn; prompt was absent from new pane content",
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(f"herdr dispatched target={target}")
+
+
 @cli.command("watch", help="wait for an agent to become blocked or finish.")
 def _watch_cmd(
     target: str = typer.Argument(..., metavar="TARGET"),
