@@ -935,6 +935,27 @@ class BackupConfig(_Section):
     )
 
 
+class AlertsConfig(_Section):
+    """Host-local disk-pressure policy for the agent-steering alert surface."""
+
+    worktree_cap_mb: int = Field(
+        5120,
+        ge=0,
+        description=(
+            "Per-hive managed-worktree footprint cap in MB. Above this, `bh alerts show` "
+            "asks an operator to dispatch cleanup. 0 disables this alert."
+        ),
+    )
+    disk_free_floor_mb: int = Field(
+        10240,
+        ge=0,
+        description=(
+            "Host free-disk floor in MB. Below this, `bh alerts show` asks an operator to "
+            "dispatch cleanup. 0 disables this alert."
+        ),
+    )
+
+
 class MetadataConfig(_Section):
     """Workspace-metadata cache."""
 
@@ -1142,6 +1163,7 @@ class BeadhiveConfig(BaseSettings):
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     orca: OrcaConfig = Field(default_factory=OrcaConfig)
     hitch: HitchConfig = Field(default_factory=HitchConfig)
