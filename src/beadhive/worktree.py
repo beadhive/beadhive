@@ -25,6 +25,7 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import datetime
+import importlib
 import json
 import os
 import secrets
@@ -644,7 +645,7 @@ def add(hive="", bead="", branch="", dry_run=False, as_json=False):
     if target.exists():
         typer.echo(f"✗ worktree path already exists: {target}", err=True)
         raise typer.Exit(1)
-    _refuse_if_codex_unreachable(cfg, target)
+    _refuse_if_codex_unreachable(cfg, entry, main, target)
     _do_add(cfg, entry, main, br, target, new_branch=True)
     from . import metadata
 
@@ -855,16 +856,31 @@ def pr_base_ref(cfg, entry) -> str:
     return f"{UPSTREAM_REMOTE}/{base}"
 
 
-def _refuse_if_codex_unreachable(cfg, target: Path) -> None:
+def _refuse_if_codex_unreachable(cfg, entry, main: Path, target: Path) -> None:
     """bh-rpzaj: refuse to (re)provision `target` when THIS invocation is itself running as a
     Codex tool call (`config.codex_sandbox_active`) and `target` sits outside Codex's own
     default sandbox roots (`config.codex_default_sandbox_covers`) — bh's own process can
     write there (it's the one doing the provisioning), but the SAME Codex sub-agent's later
     `apply_patch`/file-edit tool calls, routed through that session's actual sandbox, cannot.
+    A current managed project-local Codex grant makes that subtree reachable; a stale
+    project-local grant still shadows a global grant, matching `hive_ready`'s precedence.
     Fails fast with the exact remediation instead of leaving a claimed bead the agent can
-    never edit (the sandbox-grant mechanism `hive._install_sandbox_grant` uses for Claude has
-    no Codex equivalent — see docs/spikes/bh-a7so.8-codex-empirical.md)."""
+    never edit."""
     if not config.codex_sandbox_active() or config.codex_default_sandbox_covers(target):
+        return
+    # `hive` reaches the cross-hive stores, which must stay outside this module's import-time
+    # closure (the publish entry point imports worktree). Grant inspection only happens while
+    # provisioning from a Codex session, so load those existing helpers lazily at that boundary.
+    hive = importlib.import_module(".hive", package=__package__)
+
+    cur = hive.codex_grant_is_current(
+        cfg, main, str(entry["provider"]), str(entry["org"]), str(entry["repo"])
+    )
+    if cur is True:
+        return
+    # A project-local sandbox table shadows the ambient global table, including when its
+    # managed grant is stale. Only a hive with no per-hive grant can use the global fallback.
+    if cur is None and hive.global_codex_grant_is_current(cfg):
         return
     wt_root = config.worktrees_root(cfg)
     typer.echo(
@@ -897,7 +913,7 @@ def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
     if not (main / ".git").exists():
         typer.echo(f"✗ no clone for hive at {main} — clone it first", err=True)
         raise typer.Exit(1)
-    _refuse_if_codex_unreachable(cfg, target)
+    _refuse_if_codex_unreachable(cfg, entry, main, target)
     if target.exists():
         if bead:  # only a single-bead child branch tracks a refreshable container tip
             _repoint_if_stale(cfg, entry, main, br, target, base_bead or bead)

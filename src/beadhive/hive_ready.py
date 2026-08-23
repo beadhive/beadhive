@@ -208,9 +208,9 @@ def _codex_sandbox_check(cfg, root: Path, provider: str, org: str, repo: str) ->
     now CAN write Codex a project-local grant (`.codex/config.toml`), so a current one for this
     hive flips this green even when the root sits outside cwd/$TMPDIR; a stale one (root moved)
     still reports off with the exact refresh command. Does NOT touch
-    `worktree._refuse_if_codex_unreachable`'s fail-fast guard — that stays the last-resort check
-    for any session that hasn't picked up a grant yet (a config grant only takes effect on
-    Codex's *next* launch, same limitation Claude's own grant has).
+    `worktree._refuse_if_codex_unreachable` applies the same managed-grant precedence when it
+    provisions a worktree, while the readiness line remains the operator-facing signal that a
+    grant is present and current.
 
     bh-n0m7n: a THIRD ok path — a GLOBAL grant (`bh hive init --codex --global`,
     `hive.global_codex_grant_is_current`) covering the whole worktrees_root() flips this green
