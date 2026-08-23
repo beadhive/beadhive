@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -162,22 +163,42 @@ def supported_kinds() -> list[str]:
 # ``spawn`` reserves ``bh-<bead-id>``. Since bead ids themselves begin with
 # ``bh-``, only the resulting ``bh-bh-*`` values are claimed. Full matching
 # keeps names such as ``operator-bh-foo`` user-owned.
-_BEAD_RE = re.compile(r"^bh-(?P<bead>bh-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)?)$")
+_BEAD_RE = re.compile(r"^bh-(?P<bead>bh-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)$")
+_LIVE_AGENT_STATES = frozenset({"idle", "working", "blocked"})
 
 
-def _agent_records(value) -> list[dict]:
+def _record_pane_id(record: dict) -> str | None:
+    """Extract a pane ID without requiring the optional visible pane label."""
+    pane = record.get("pane")
+    pane_id = record.get("pane_id")
+    if isinstance(pane, str):
+        pane_id = pane
+    elif isinstance(pane, dict):
+        pane_id = pane.get("id") or pane.get("pane_id") or pane_id
+        nested = pane.get("pane")
+        if not pane_id and isinstance(nested, dict):
+            pane_id = nested.get("id") or nested.get("pane_id")
+    return pane_id if isinstance(pane_id, str) and pane_id.strip() else None
+
+
+def _agent_records(
+    value, *, unique_by_name: bool = True, include_pane_claims: bool = False
+) -> list[dict]:
     """Extract agent-shaped records from herdr's versioned JSON responses.
 
-    ``agent list`` and ``api snapshot`` have changed their envelope shape between
-    herdr releases.  Keep this deliberately structural: only dictionaries with a
-    name-like field and a lifecycle-like field are considered agents.
+    ``ps`` requests the stable, deduplicated view.  ``reap`` intentionally
+    retains distinct raw records so it can refuse duplicate agent-to-pane claims.
+    A wrapper's sibling pane data is merged into its nested ``agent`` identity,
+    then that child is skipped while walking to avoid a second logical record.
     """
     records: list[dict] = []
 
     def visit(item) -> None:
         if isinstance(item, dict):
             nested = item.get("agent")
-            candidate = nested if isinstance(nested, dict) else item
+            candidate = dict(item)
+            if isinstance(nested, dict):
+                candidate.update(nested)
             name = candidate.get("name") or candidate.get("agent_name") or candidate.get("target")
             state = (
                 candidate.get("state")
@@ -185,15 +206,21 @@ def _agent_records(value) -> list[dict]:
                 or candidate.get("lifecycle")
                 or candidate.get("lifecycle_state")
             )
-            if isinstance(name, str) and isinstance(state, (str, int, float)):
+            is_agent = isinstance(name, str) and isinstance(state, (str, int, float))
+            is_pane_claim = include_pane_claims and _record_pane_id(candidate) is not None
+            if is_agent or is_pane_claim:
                 records.append(candidate)
-            for child in item.values():
+            for key, child in item.items():
+                if key == "agent" and isinstance(nested, dict):
+                    continue
                 visit(child)
         elif isinstance(item, list):
             for child in item:
                 visit(child)
 
     visit(value)
+    if not unique_by_name:
+        return records
     unique: dict[str, dict] = {}
     for record in records:
         name = str(record.get("name") or record.get("agent_name") or record.get("target"))
@@ -239,9 +266,8 @@ def _read_agents() -> list[dict] | None:
         result = _command(*argv)
         if result is None or result.returncode != 0:
             continue
-        raw = _output(result)
         try:
-            data = json.loads(raw)
+            data = json.loads(_output(result))
         except (TypeError, ValueError):
             continue
         records = _agent_records(data)
@@ -250,6 +276,70 @@ def _read_agents() -> list[dict] | None:
         if records or argv[-1] == "snapshot":
             return records
     return None
+
+
+def _live_agent_records() -> list[dict] | None:
+    """Read authoritative live records without the snapshot fallback used by ``ps``."""
+    result = _command("agent", "list", "--json")
+    if result is None or result.returncode != 0:
+        return None
+    try:
+        data = json.loads(_output(result))
+    except (TypeError, ValueError):
+        return None
+    if not _looks_like_agent_list(data):
+        return None
+    return _agent_records(data, unique_by_name=False, include_pane_claims=True)
+
+
+def _record_pane(record: dict) -> tuple[str, str] | None:
+    """Return the live pane id and visible name, only when both are unambiguous."""
+    pane = record.get("pane")
+    pane_id = _record_pane_id(record)
+    pane_name = record.get("pane_name") or record.get("pane_label") or record.get("pane_title")
+    if isinstance(pane, dict):
+        pane_name = (
+            pane.get("name")
+            or pane.get("label")
+            or pane.get("title")
+            or pane.get("pane_name")
+            or pane_name
+        )
+        nested = pane.get("pane")
+        if not pane_name and isinstance(nested, dict):
+            pane_name = (
+                nested.get("name")
+                or nested.get("label")
+                or nested.get("title")
+                or nested.get("pane_name")
+            )
+    if pane_id is None:
+        return None
+    if not isinstance(pane_name, str) or not pane_name.strip():
+        return None
+    return pane_id, pane_name
+
+
+def _owned_live_pane(target: str) -> str | None:
+    """Return a pane only when the live herdr records prove bh owns it."""
+    if _BEAD_RE.fullmatch(target) is None:
+        return None
+    records = _live_agent_records()
+    if records is None:
+        return None
+    matches = [record for record in records if _agent_identity(record)[0] == target]
+    if len(matches) != 1 or _agent_identity(matches[0])[3].lower() not in _LIVE_AGENT_STATES:
+        return None
+    pane = _record_pane(matches[0])
+    if pane is None:
+        return None
+    pane_id, pane_name = pane
+    if pane_name != target:
+        return None
+    pane_records = [record for record in records if _record_pane_id(record) == pane_id]
+    if len(pane_records) != 1:
+        return None
+    return pane_id
 
 
 cli = typer.Typer(no_args_is_help=True, help="herdr terminal/agent-pane integration.")
@@ -329,6 +419,35 @@ def _integrate_cmd(kind: str = typer.Argument(..., metavar="KIND")) -> None:
     typer.echo(f"herdr: integration installed for {kind}")
     if output := _output(result):
         typer.echo(output)
+
+
+@cli.command("attach", help="print the command for a human to attach to an agent pane.")
+def _attach_cmd(target: str = typer.Argument(..., metavar="TARGET")) -> None:
+    """Print, but never run, the interactive attach command.
+
+    Attaching transfers an operator's terminal.  Keeping this as a copy/paste
+    instruction means a ``bh`` invocation cannot focus or take over their TTY.
+    """
+    typer.echo(shlex.join(["herdr", "--session", _SESSION, "agent", "attach", target]))
+
+
+@cli.command("reap", help="close a pane previously created by bh plugin herdr spawn.")
+def _reap_cmd(target: str = typer.Argument(..., metavar="TARGET")) -> None:
+    """Best-effort close of one live, bh-reserved spawned pane.
+
+    Worktrees remain native-bh resources, and a hive workspace may host several
+    bead panes, so neither is removed here.  A missing/ambiguous record is a
+    refusal rather than a guess that could close an operator-owned pane.
+    """
+    if not server_up():
+        typer.echo("✗ herdr: server=down (start herdr before reaping an agent)", err=True)
+        raise typer.Exit(1)
+    pane = _owned_live_pane(target)
+    if pane is None:
+        typer.echo(f"✗ herdr: refusing unmanaged or ambiguous target {target!r}", err=True)
+        raise typer.Exit(1)
+    _require(_command("pane", "close", pane, "--no-focus"), "pane close")
+    typer.echo(f"herdr target={target} reaped pane={pane}")
 
 
 @cli.command("spawn", help="start a warm, steerable agent pane in an existing bh worktree.")
