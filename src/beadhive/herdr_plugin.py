@@ -159,6 +159,99 @@ def supported_kinds() -> list[str]:
     return list(dict.fromkeys(value for value in values if value.lower() not in ignored))
 
 
+# ``spawn`` reserves ``bh-<bead-id>``. Since bead ids themselves begin with
+# ``bh-``, only the resulting ``bh-bh-*`` values are claimed. Full matching
+# keeps names such as ``operator-bh-foo`` user-owned.
+_BEAD_RE = re.compile(r"^bh-(?P<bead>bh-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)?)$")
+
+
+def _agent_records(value) -> list[dict]:
+    """Extract agent-shaped records from herdr's versioned JSON responses.
+
+    ``agent list`` and ``api snapshot`` have changed their envelope shape between
+    herdr releases.  Keep this deliberately structural: only dictionaries with a
+    name-like field and a lifecycle-like field are considered agents.
+    """
+    records: list[dict] = []
+
+    def visit(item) -> None:
+        if isinstance(item, dict):
+            nested = item.get("agent")
+            candidate = nested if isinstance(nested, dict) else item
+            name = candidate.get("name") or candidate.get("agent_name") or candidate.get("target")
+            state = (
+                candidate.get("state")
+                or candidate.get("status")
+                or candidate.get("lifecycle")
+                or candidate.get("lifecycle_state")
+            )
+            if isinstance(name, str) and isinstance(state, (str, int, float)):
+                records.append(candidate)
+            for child in item.values():
+                visit(child)
+        elif isinstance(item, list):
+            for child in item:
+                visit(child)
+
+    visit(value)
+    unique: dict[str, dict] = {}
+    for record in records:
+        name = str(record.get("name") or record.get("agent_name") or record.get("target"))
+        unique.setdefault(name, record)
+    return list(unique.values())
+
+
+def _agent_identity(record: dict) -> tuple[str, str | None, str | None, str]:
+    """Return name, hive, bead, and lifecycle state from one herdr record."""
+    name = str(record.get("name") or record.get("agent_name") or record.get("target"))
+    bead_match = _BEAD_RE.search(name)
+    bead = bead_match.group("bead") if bead_match else None
+    hive = record.get("hive") or record.get("hive_id")
+    if not hive:
+        workspace = record.get("workspace") or record.get("workspace_label")
+        if isinstance(workspace, dict):
+            workspace = workspace.get("label") or workspace.get("name")
+        if isinstance(workspace, str) and workspace.startswith("bh:"):
+            hive = workspace[3:]
+    return (
+        name,
+        str(hive) if hive else None,
+        bead,
+        str(
+            record.get("state")
+            or record.get("status")
+            or record.get("lifecycle")
+            or record.get("lifecycle_state")
+        ),
+    )
+
+
+def _looks_like_agent_list(value) -> bool:
+    """Recognize a successful (including empty) ``agent list --json`` payload."""
+    if isinstance(value, list):
+        return not value or all(isinstance(item, dict) for item in value)
+    return isinstance(value, dict) and isinstance(value.get("agents"), list)
+
+
+def _read_agents() -> list[dict] | None:
+    """Read live agents, falling back to a snapshot when list is unsupported."""
+    for argv in (("agent", "list", "--json"), ("agent", "list"), ("api", "snapshot")):
+        result = _command(*argv)
+        if result is None or result.returncode != 0:
+            continue
+        raw = _output(result)
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        records = _agent_records(data)
+        if argv[:2] == ("agent", "list") and _looks_like_agent_list(data):
+            return records
+        if records or argv[-1] == "snapshot":
+            return records
+    return None
+
+
 cli = typer.Typer(no_args_is_help=True, help="herdr terminal/agent-pane integration.")
 
 
@@ -184,6 +277,25 @@ def _status_cmd() -> None:
         typer.echo("herdr integrations:")
         if output := _output(integrations):
             typer.echo(output)
+
+
+@cli.command("ps", help="list live herdr agents and their bh identity.")
+def _ps_cmd() -> None:
+    """Show live agents without maintaining a bh-side identity table."""
+    if not _has_cli():
+        typer.echo("herdr: server=down (herdr CLI not on PATH)")
+        return
+    if not server_up():
+        typer.echo("herdr: server=down")
+        return
+    records = _read_agents()
+    if records is None:
+        typer.echo("herdr: agent list unavailable", err=True)
+        raise typer.Exit(1)
+    typer.echo("name\thive\tbead\tstate")
+    for record in records:
+        name, hive, bead, state = _agent_identity(record)
+        typer.echo(f"{name}\t{hive or 'unmanaged'}\t{bead or 'unmanaged'}\t{state}")
 
 
 @cli.command("integrate", help="install herdr lifecycle hooks for one agent kind.")
