@@ -117,7 +117,7 @@ sets the ownership line so this remains an optional interactive surface, not a p
 | `bh plugin herdr status` | `herdr status`, `integration status` | One-shot health: server running? which agent kinds have hooks installed? |
 | `bh plugin herdr integrate <kind>` | `herdr integration install <kind>` | Explicit opt-in per agent kind — do not auto-install every kind on onboard |
 | `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | The core primitive: stand up a pane for one bead in one hive, cwd'd to that hive's worktree |
-| `bh plugin herdr dispatch <target> "<prompt>"` | `agent prompt --wait --timeout` + post-hoc content verification | Wraps the finding above — never trust `--wait` alone on a pane's first prompt |
+| `bh plugin herdr dispatch <target> "<prompt>"` | visible-pane read before and after `agent prompt --wait --timeout` | Wraps the finding above — never trust `--wait` alone; the post-read must add a new occurrence of the exact prompt, so an older identical turn cannot falsely verify delivery |
 | `bh plugin herdr watch <target>` | `agent wait --until blocked` | For a dispatcher polling loop: block until an agent needs input or finishes |
 | `bh plugin herdr ps` | `agent list` / `api snapshot` | Fleet view: every live herdr-managed agent, its hive/bead if tagged, and its lifecycle state — the natural `bh hive status`-style dashboard row |
 | `bh plugin herdr attach <target>` | prints the `herdr agent attach <target>` command | `bh` itself never takes over a TTY; it tells the human operator what to run |
