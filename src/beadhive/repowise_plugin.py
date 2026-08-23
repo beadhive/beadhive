@@ -12,7 +12,8 @@ from pathlib import Path
 
 import typer
 
-from . import config, plugins, registry, run
+from . import config, gitworkspace, plugins, registry, run
+from .identity import workspace_root
 
 cli = typer.Typer(no_args_is_help=True, help="repowise local codebase-index integration.")
 
@@ -63,40 +64,84 @@ def readiness(cfg, entry) -> tuple[str, str] | None:
     return (state, f"{commits} commits behind; {size / 1024 / 1024:.1f} MiB")
 
 
-def _index(clone: Path) -> int:
+_BASE_ARGS = [
+    "--mode",
+    "fast",
+    "--no-prose",
+    "--no-claude-md",
+    "--no-codex",
+    "--no-mcp-json",
+    "--no-vscode",
+]
+
+
+def _index(path: Path, *, workspace: bool) -> int:
+    """Initialize an index without touching repowise's machine-wide editor settings."""
+    args = ["repowise", "init", str(path), *_BASE_ARGS]
+    if workspace:
+        args.append("--all")
+    else:
+        # A managed repo may contain fixture repositories.  Do not let repowise silently
+        # promote this one-repo request to a workspace scan.
+        args.append("--no-workspace")
+    args.append("-y")
     result = run.run(
-        [
-            "repowise",
-            "init",
-            str(clone),
-            "--mode",
-            "fast",
-            "--no-prose",
-            "--yes",
-            "--no-editor-setup",
-            "--no-claude-md",
-        ],
+        args,
         check=False,
+        env={"REPOWISE_SKIP_EDITOR_SETUP": "1"},
     )
     return result.returncode
 
 
-@cli.command("index", help="provision the current hive's repowise index.")
+def _workspace(cfg) -> Path:
+    """Resolve the configured git-workspace root rather than reading its env var here.
+
+    ``config_paths`` owns the git-workspace layering (explicit path, host workspace, then HQ).
+    Its selected config lives at the root that a host-level repowise invocation should index.
+    The normal resolver remains the graceful fallback for an unconfigured workspace.
+    """
+    paths = gitworkspace.config_paths(cfg)
+    return paths[0].parent if paths else Path(workspace_root())
+
+
+def _on_onboard(ctx) -> None:
+    """Seed the freshly onboarded base checkout for future worktree copies."""
+    if not _has_cli():
+        typer.echo("• repowise: skipped — repowise is not installed")
+        return
+    if _index(Path(ctx.base), workspace=False) != 0:
+        raise RuntimeError(f"repowise indexing failed for {ctx.base}")
+    typer.echo(f"✓ repowise indexed {ctx.base}")
+
+
+@cli.command(
+    "index",
+    help="provision a base index, or --all the workspace (~12 min / ~400 MiB for 34 repos).",
+)
 def index(all_hives: bool = typer.Option(False, "--all", help="index every managed hive")) -> None:
     cfg = config.load()
-    entries = config.managed_repos(cfg) if all_hives else [registry.current_hive(cfg)]
-    clones = [clone for entry in entries if entry and (clone := _clone(entry)) and clone.is_dir()]
-    if not clones:
+    if not _has_cli():
+        typer.echo("• repowise: skipped — repowise is not installed")
+        return
+    if all_hives:
+        root = _workspace(cfg)
+        if not root.is_dir():
+            typer.echo(f"✗ repowise workspace does not exist: {root}", err=True)
+            raise typer.Exit(1)
+        if _index(root, workspace=True) != 0:
+            typer.echo("✗ repowise workspace indexing failed", err=True)
+            raise typer.Exit(1)
+        typer.echo(f"✓ repowise indexed workspace {root}")
+        return
+
+    clone = _clone(registry.current_hive(cfg))
+    if clone is None or not clone.is_dir():
         typer.echo("repowise: no managed clone to index")
         return
-    if not _has_cli():
-        typer.echo("✗ repowise is not installed", err=True)
+    if _index(clone, workspace=False) != 0:
+        typer.echo("✗ repowise indexing failed", err=True)
         raise typer.Exit(1)
-    failed = [clone for clone in clones if _index(clone) != 0]
-    if failed:
-        typer.echo(f"✗ repowise indexing failed for {len(failed)} clone(s)", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"✓ repowise indexed {len(clones)} clone(s)")
+    typer.echo(f"✓ repowise indexed {clone}")
 
 
 @cli.command("status", help="show the current hive's repowise index freshness and size.")
@@ -115,5 +160,6 @@ PLUGIN = plugins.Plugin(
     name="repowise",
     cli=cli,
     enabled=enabled,
+    on_onboard=_on_onboard,
     readiness=readiness,
 )
