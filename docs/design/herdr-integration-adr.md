@@ -1,0 +1,117 @@
+# herdr integration ADR — isolated panes, native worktrees, visible bead identity
+
+**Status:** decided (GO) · **Date:** 2026-08-23 · **Decision owner:** `bh-ffwnu.1` ·
+**Related:** [HERDR.md](../HERDR.md),
+[work-runtime-tiers-adr.md](work-runtime-tiers-adr.md), and
+[managed-harness-config-adr.md](managed-harness-config-adr.md).
+
+## Context
+
+`herdr` can start and observe real coding-agent terminal panes, while `bh` already owns the
+bead lifecycle, managed worktrees, and the optional-plugin seam. The live experiment recorded in
+`docs/HERDR.md` confirms that herdr's lifecycle signals are useful but that a first prompt can be
+intercepted by harness onboarding, and that `HERDR_ENV` is a convention rather than a socket-level
+access control.
+
+This ADR fixes the ownership boundaries before implementing `bh plugin herdr`. It deliberately
+does not make herdr authoritative for bead state, worktree state, or normal Task-tool fanout.
+
+## Decision: GO
+
+Proceed with the `bh plugin herdr` implementation beads. The integration is an opt-in,
+best-effort interactive execution surface with explicit lifecycle boundaries below. Beads and git
+remain the durable record; herdr is a live terminal/process controller.
+
+### 1. Use a bh-owned named herdr session
+
+The plugin uses a dedicated named session, `bh-supervisor`, for every session-scoped herdr call.
+It must never enumerate, reuse, rename, close, or focus the operator's `default` session.
+
+The supervisor process may invoke herdr from outside a herdr pane; `HERDR_ENV` is not relied on
+as an authorization boundary because the experiment established that it is unenforced. Isolation
+comes from selecting the named session and from every create operation being non-focusing by
+default. A future explicit human attach command may print the command needed to attach, but `bh`
+must not take over the user's TTY or workspace.
+
+**Why:** a dedicated namespace prevents unattended dispatch from touching a human's existing
+panes while retaining the benefits of a persistent, inspectable herdr server.
+
+### 2. bh owns worktree lifecycle; herdr receives an existing worktree
+
+`bh` remains the sole creator, attacher, initializer, and remover of managed git worktrees and
+their `wt/...` branches. The herdr plugin does not register `wt_create` or `wt_remove` hooks and
+does not call herdr's `worktree create`, `open`, or `remove` commands.
+
+`spawn --hive --bead` resolves the bead's already-provisioned bh worktree and starts the pane with
+that directory as its cwd. It must fail clearly when there is no valid bh worktree for the bead;
+it must not silently create a second checkout. `reap` closes herdr resources only and never
+removes a worktree. Normal `bh work` lifecycle commands remain responsible for worktree cleanup.
+
+**Why:** `worktree.py` already owns branch naming, init/provisioning, attach behavior, and the
+durable bead-branch contract. Dual ownership would permit double-booked directories and divergent
+cleanup semantics.
+
+### 3. Put bead identity in herdr-visible deterministic names, not a bh side table
+
+Each spawned agent receives a deterministic, bh-reserved agent name containing its bead ID, and
+the corresponding pane is renamed/labeled with the same bead ID. The implementation may include a
+human-readable hive component, but the bead ID is mandatory and preserved verbatim. `bh plugin
+herdr ps` derives its bead column by parsing those herdr-visible names from `agent list` or `api
+snapshot`; it does not maintain a separate durable name-to-bead mapping.
+
+The spawn operation must complete the agent/pane naming step before reporting success. If it
+cannot tag a newly created resource, it reports failure and performs best-effort cleanup rather
+than leaving an uncorrelated pane. `ps` renders an unrecognized, manually created agent as
+unmanaged rather than guessing a bead.
+
+**Why:** herdr has no first-class bead metadata field. A bh side table would duplicate live state,
+leak on crashes or manual pane cleanup, and violate the plugin's read-through design. Visible names
+also make the association useful to an operator outside `bh`.
+
+### 4. herdr complements, never replaces, Task/Agent fanout
+
+The existing in-process Task/Agent route remains the default for ordinary fire-and-forget
+subagent work. Herdr is selected only by an explicit `bh plugin herdr spawn` / `dispatch` action
+when an operator wants a separately billed, persistent, attachable, and steerable terminal agent.
+It does not change `work.runtime`, intercept Task calls, or automatically route ready beads into
+panes.
+
+`dispatch` treats herdr's settled/`done` lifecycle signal as insufficient by itself for a newly
+started agent. It applies the warm-up and pane-content verification described in `HERDR.md` before
+claiming a prompt was delivered. Bead progression still occurs through `bh work` and git, not a
+herdr status transition.
+
+**Why:** the two mechanisms have different operational tradeoffs. Keeping both preserves the
+documented Task-tool workflow and adds an opt-in live-operations surface without making a terminal
+server a dependency of routine dispatch.
+
+## Consequences and implementation constraints
+
+- `herdr_plugin.py` is optional and import-safe: missing binary, unavailable server, or a failed
+  subprocess degrades to a clear warning/falsy result where the command contract permits it.
+- The plugin is mounted through the existing static plugin registry. It is config-gated and does
+  no onboarding-time pane creation or integration installation.
+- All plugin actions target `bh-supervisor`; no command may fall back to `default` when session
+  selection fails.
+- The initial worktree hooks remain `None`. This is an intentional boundary, not deferred
+  plumbing.
+- The implementation must test both the deterministic naming/parser contract and the invariant
+  that spawn/reap do not invoke herdr worktree commands.
+
+## Rejected alternatives
+
+1. **Drive the user's default session.** Rejected because `HERDR_ENV` does not technically
+   prevent it, so an unattended supervisor could modify a human's active workspace.
+2. **Delegate worktree management to herdr.** Rejected because it duplicates bh's durable
+   worktree/branch lifecycle and creates two cleanup authorities.
+3. **Keep a bh-side agent-to-bead database.** Rejected because it is a second, stale-prone source
+   of truth for state herdr already exposes.
+4. **Replace Task/Agent fanout.** Rejected because it would make interactive terminal management a
+   dependency of established dispatch and would erase the distinct operator-control use case.
+
+## Follow-through
+
+Unblock and implement the existing `bh-ffwnu` children in dependency order. In particular, the
+scaffold establishes the session/config/plugin registry contract; `spawn` enforces native
+worktree ownership and deterministic identity; `ps` consumes that identity; and the dispatcher
+skill documentation explains the explicit choice between Task/Agent and herdr.
