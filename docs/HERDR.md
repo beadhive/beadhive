@@ -1,9 +1,9 @@
-# herdr — terminal/agent pane control (`bh plugin herdr`, draft)
+# herdr — terminal/agent pane control (`bh plugin herdr`)
 
-Research + design notes for wiring [herdr](https://herdr.dev) (a terminal workspace manager
-purpose-built for driving coding-agent panes) into `bh` as an optional integration, in the same
-shape as the existing `orca` / `observaloop` / `hitch` plugins (`plugins.py`). **Nothing here is
-implemented yet** — this is the design captured before writing `herdr_plugin.py`.
+`bh plugin herdr` is an optional integration with [herdr](https://herdr.dev), a terminal
+workspace manager purpose-built for driving coding-agent panes. It follows the same optional
+plugin shape as `orca`, `observaloop`, and `hitch` (`plugins.py`), while `bh` remains the
+authority for beads, branches, and managed worktrees.
 
 ## What herdr is
 
@@ -92,7 +92,7 @@ first-run screens before the first real `prompt`) and should verify completion b
 content back and checking it actually contains the expected turn — not just trusting `--wait`'s
 settled state — at least for the first prompt against a newly started pane.
 
-## Draft `bh plugin herdr` design
+## `bh plugin herdr` design
 
 ### Scope
 
@@ -106,9 +106,9 @@ return, never raises), matching every other plugin's contract.
 ### Why this hive, not a new one
 
 The overlap is direct: herdr's `agent` layer is a second engine capable of running a `bh:
-developer` (or any seat) inside a real interactive pane instead of (or alongside) the in-process
-Task/Agent tool, and herdr's `worktree` group duplicates `bh`'s own worktree lifecycle. Both
-need a clear ownership line, not a parallel implementation — see open questions.
+developer` (or any seat) inside a real interactive pane alongside the in-process Task/Agent
+tool, and herdr's `worktree` group duplicates `bh`'s own worktree lifecycle. The integration ADR
+sets the ownership line so this remains an optional interactive surface, not a parallel runtime.
 
 ### Command surface (`bh plugin herdr ...`)
 
@@ -117,7 +117,7 @@ need a clear ownership line, not a parallel implementation — see open question
 | `bh plugin herdr status` | `herdr status`, `integration status` | One-shot health: server running? which agent kinds have hooks installed? |
 | `bh plugin herdr integrate <kind>` | `herdr integration install <kind>` | Explicit opt-in per agent kind — do not auto-install every kind on onboard |
 | `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | The core primitive: stand up a pane for one bead in one hive, cwd'd to that hive's worktree |
-| `bh plugin herdr dispatch <target> "<prompt>"` | `agent prompt --wait --timeout` + post-hoc content verification | Wraps the finding above — never trust `--wait` alone on a pane's first prompt |
+| `bh plugin herdr dispatch <target> "<prompt>"` | visible-pane read before and after `agent prompt --wait --timeout` | Wraps the finding above — never trust `--wait` alone; the post-read must add a new occurrence of the exact prompt, so an older identical turn cannot falsely verify delivery |
 | `bh plugin herdr watch <target>` | `agent wait --until blocked` | For a dispatcher polling loop: block until an agent needs input or finishes |
 | `bh plugin herdr ps` | `agent list` / `api snapshot` | Fleet view: every live herdr-managed agent, its hive/bead if tagged, and its lifecycle state — the natural `bh hive status`-style dashboard row |
 | `bh plugin herdr attach <target>` | prints the `herdr agent attach <target>` command | `bh` itself never takes over a TTY; it tells the human operator what to run |
@@ -132,31 +132,17 @@ need a clear ownership line, not a parallel implementation — see open question
   Leave this hook a no-op (or config-gated) rather than auto-wiring every hive into herdr.
 - `readiness(cfg, entry)` — report whether this hive's agent kind has its herdr integration
   installed, for `bh hive ready`.
-- `wt_create` / `wt_remove` — **leave unclaimed initially.** herdr's `worktree create/open` and
-  `bh`'s own worktree management would otherwise double-book the same directories; until
-  ownership is settled (see below), let native `git worktree` stay authoritative and don't
-  register these hooks, same as how `hitch` and `observaloop` leave them `None`.
+- `wt_create` / `wt_remove` — **leave unclaimed.** herdr's `worktree create/open` and `bh`'s own
+  worktree management would otherwise double-book the same directories. Native `git worktree`
+  remains authoritative, so these hooks stay `None`, as they do for `hitch` and `observaloop`.
 
-### Open questions before implementing
+### Choosing Task/Agent or herdr
 
-1. **Does the supervisor run inside a herdr pane, or does `bh` call out to a separate herdr
-   session?** The finding above shows `HERDR_ENV` is not enforced by the socket itself, but
-   herdr's own skill doc treats it as the line between "inspecting my own session" and
-   "reaching into someone else's." A `bh plugin herdr` driven by an autonomous supervisor
-   should probably run its own **named session** (`herdr --session bh-supervisor`), not the
-   user's `default` session, so it never touches a human's live workspace/panes — this session's
-   own experiment used an isolated `--no-focus` workspace inside `default` specifically to avoid
-   that, which won't scale to unattended dispatch.
-2. **Who owns worktree lifecycle** — `bh hive`'s existing worktree code, or herdr's `worktree`
-   group? Picking herdr gets pane+worktree co-located for free; picking `bh` keeps one source of
-   truth for `wt/` branch-naming conventions (the same tension the orca plugin's own docstring
-   calls out for its worktree delegation hooks).
-3. **Where does bead identity live on a herdr pane?** herdr has no first-class metadata field
-   for "this pane is running bead bh-xxxxx" beyond `--label`/pane rename — worth checking
-   whether `pane report-metadata` / `agent rename` is enough to make `bh plugin herdr ps` show
-   bead IDs, or whether bh needs to keep its own side-table mapping agent name → bead id.
-4. **Does `agent start` replace or complement the in-process Task/Agent tool?** A herdr-spawned
-   agent is a real, separately-billed, interactively-inspectable process the operator can
-   `attach` to mid-run — a materially different tradeoff from a Task subagent. Likely both stay:
-   Task/Agent for fire-and-forget work the operator won't watch, herdr `spawn`/`dispatch` for
-   work the operator wants to be able to look in on or steer live.
+Use the in-process **Task/Agent** route for ordinary fire-and-forget subagent work that the
+operator does not need to inspect while it runs. It remains the default dispatcher path.
+
+Use **herdr** only through an explicit `bh plugin herdr spawn` followed by `dispatch` when the
+operator wants a separately billed, persistent terminal agent they can inspect, attach to, or
+steer live. Herdr complements Task/Agent; it does not reroute normal fanout, own worktree
+lifecycle, or advance bead state. The complete ownership decisions are recorded in
+[the herdr integration ADR](design/herdr-integration-adr.md).

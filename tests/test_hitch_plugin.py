@@ -116,11 +116,11 @@ def test_worktree_disposability_unchanged_by_hitch_persistence(monkeypatch):
 # ---- plugins.registry() -------------------------------------------------------
 
 
-def test_registry_includes_hitch_last():
+def test_registry_includes_hitch_and_herdr():
     """bh-hsus.4: git-workspace is no longer in this registry at all — it's a required dep
     (`deps.py`), not an optional plugin."""
     reg = plugins.registry()
-    assert [p.name for p in reg] == ["orca", "observaloop", "hitch"]
+    assert [p.name for p in reg] == ["orca", "observaloop", "hitch", "herdr"]
 
 
 def test_import_is_safe_without_hitch_on_path(monkeypatch):
