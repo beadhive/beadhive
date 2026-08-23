@@ -154,9 +154,7 @@ def test_workspace_root_uses_selected_gitworkspace_config(monkeypatch, tmp_path)
 def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
     calls = []
     (tmp_path / ".repowise").mkdir()
-    (tmp_path / ".repowise" / "state.json").write_text(
-        json.dumps({"last_sync_commit": "old"})
-    )
+    (tmp_path / ".repowise" / "state.json").write_text(json.dumps({"last_sync_commit": "old"}))
     monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "new")
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -180,16 +178,12 @@ def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
 
 def test_refresh_base_skips_missing_and_current_indexes(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(
-        repowise_plugin.run, "run", lambda *args, **kwargs: calls.append(args)
-    )
+    monkeypatch.setattr(repowise_plugin.run, "run", lambda *args, **kwargs: calls.append(args))
     kwargs = dict(main=tmp_path, branch="wt/x", target=tmp_path / "wt", start_point="")
     repowise_plugin._refresh_base({}, {}, **kwargs)
 
     (tmp_path / ".repowise").mkdir()
-    (tmp_path / ".repowise" / "state.json").write_text(
-        json.dumps({"last_sync_commit": "same"})
-    )
+    (tmp_path / ".repowise" / "state.json").write_text(json.dumps({"last_sync_commit": "same"}))
     monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "same")
     repowise_plugin._refresh_base({}, {}, **kwargs)
     assert calls == []
@@ -215,9 +209,7 @@ def test_seed_uses_auto_detection_and_installs_overlay(monkeypatch, tmp_path):
         lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0),
     )
 
-    repowise_plugin._seed_worktree(
-        {}, {}, main=repo, branch="wt/x", target=target
-    )
+    repowise_plugin._seed_worktree({}, {}, main=repo, branch="wt/x", target=target)
 
     argv, kwargs = calls[0]
     assert argv == ["repowise", "init", *repowise_plugin._BASE_ARGS, "-y"]

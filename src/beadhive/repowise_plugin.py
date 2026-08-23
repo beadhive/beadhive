@@ -153,9 +153,7 @@ def _branch_point(main: Path, start_point: str) -> str:
     return run.out(["git", "-C", str(main), "rev-parse", start_point or "HEAD"]).strip()
 
 
-def _refresh_base(
-    cfg, entry, *, main: Path, branch: str, target: Path, start_point: str
-) -> None:
+def _refresh_base(cfg, entry, *, main: Path, branch: str, target: Path, start_point: str) -> None:
     """Refresh the seed source before git fixes the new worktree's branch point."""
     del cfg, entry, branch, target
     state = _state(main)
