@@ -107,11 +107,38 @@ _BASE_ARGS = [
 ]
 
 
+def _backfill_vscode_config(path: Path, *, workspace: bool) -> None:
+    """Persist the VS Code opt-out in existing base index configurations.
+
+    ``--no-vscode`` protects init, but ``repowise update`` intentionally relies on
+    its persisted editor configuration.  A workspace invocation therefore updates
+    every existing base config beneath the workspace; a single-repo invocation
+    changes only that clone's config.
+    """
+    configs = path.rglob(".repowise/config.yaml") if workspace else [path / ".repowise/config.yaml"]
+    yaml = YAML()
+    for config_path in configs:
+        if not config_path.is_file():
+            continue
+        data = yaml.load(config_path.read_text()) or {}
+        if not isinstance(data, dict):
+            continue
+        editor_files = data.get("editor_files")
+        if editor_files is None:
+            editor_files = data["editor_files"] = {}
+        if not isinstance(editor_files, dict) or editor_files.get("vscode") is False:
+            continue
+        editor_files["vscode"] = False
+        with config_path.open("w") as stream:
+            yaml.dump(data, stream)
+
+
 def _index(path: Path, *, workspace: bool) -> int:
     """Initialize an index without touching repowise's machine-wide editor settings."""
     if (error := capability_error()) is not None:
         typer.echo(f"⚠ repowise disabled: {error}; skipping index", err=True)
         return 0
+    _backfill_vscode_config(path, workspace=workspace)
     args = ["repowise", "init", str(path), *_BASE_ARGS]
     if workspace:
         args.append("--all")
@@ -156,6 +183,7 @@ def _branch_point(main: Path, start_point: str) -> str:
 def _refresh_base(cfg, entry, *, main: Path, branch: str, target: Path, start_point: str) -> None:
     """Refresh the seed source before git fixes the new worktree's branch point."""
     del cfg, entry, branch, target
+    _backfill_vscode_config(main, workspace=False)
     state = _state(main)
     last_sync = str(state.get("last_sync_commit") or "")
     if not last_sync:
