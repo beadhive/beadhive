@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
 from types import SimpleNamespace
 
 from typer.testing import CliRunner
@@ -308,3 +309,64 @@ def test_spawn_fences_missing_server_before_worktree_lookup(monkeypatch):
     )
     assert result.exit_code == 1
     assert "server=down" in result.output
+
+
+def test_watch_waits_for_blocked_and_translates_timeout(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append((argv, kwargs))
+        return _result(stdout="agent_status: blocked")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "watch", "bh-agent", "--timeout", "2.5"])
+
+    assert result.exit_code == 0, result.output
+    assert "agent_status: blocked" in result.output
+    assert calls == [
+        ((["herdr", "status"]), {"check": False, "capture": True}),
+        (
+            [
+                "herdr",
+                "--session",
+                "bh-supervisor",
+                "agent",
+                "wait",
+                "bh-agent",
+                "--until",
+                "blocked",
+                "--timeout",
+                "2500",
+            ],
+            {"check": False, "capture": True, "timeout": 2.5},
+        ),
+    ]
+
+
+def test_watch_fences_missing_binary_before_wait(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: None)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("missing herdr must not spawn a subprocess")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", boom)
+    result = runner.invoke(app, ["plugin", "herdr", "watch", "bh-agent"])
+
+    assert result.exit_code == 1
+    assert "herdr CLI not on PATH" in result.output
+
+
+def test_watch_reports_a_bounded_wait_timeout(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "watch", "bh-agent", "--timeout", "1"])
+
+    assert result.exit_code == 1
+    assert "timed out after 1s" in result.output

@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import subprocess
 from pathlib import Path
 
 import typer
@@ -31,10 +32,18 @@ def _has_cli() -> bool:
         return False
 
 
-def _invoke(argv: list[str]):
+def _invoke(argv: list[str], *, timeout: float | None = None):
     """Run a read-only herdr probe, returning ``None`` for every failure."""
     try:
-        return run.run(argv, check=False, capture=True)
+        kwargs = {"check": False, "capture": True}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        return run.run(argv, **kwargs)
+    except subprocess.TimeoutExpired:
+        # Keep a bounded wait a clean, actionable CLI failure rather than leaking a traceback.
+        return subprocess.CompletedProcess(
+            argv, 124, stdout="", stderr=f"timed out after {timeout:g}s"
+        )
     except Exception:  # noqa: BLE001 - server may be stopped or the process may fail
         return None
 
@@ -57,9 +66,9 @@ def _output(result) -> str:
     return str(getattr(result, "stdout", "") or getattr(result, "stderr", "") or "").strip()
 
 
-def _command(*args: str):
+def _command(*args: str, timeout: float | None = None):
     """Run one session-scoped herdr command, fencing every external failure."""
-    return _invoke(["herdr", "--session", _SESSION, *args])
+    return _invoke(["herdr", "--session", _SESSION, *args], timeout=timeout)
 
 
 def _require(result, action: str):
@@ -282,6 +291,39 @@ def _spawn_cmd(
             _close_pane(pane)
         raise
     typer.echo(f"herdr target={name} pane={pane} workspace={workspace} bead={bead}")
+
+
+@cli.command("watch", help="wait for an agent to become blocked or finish.")
+def _watch_cmd(
+    target: str = typer.Argument(..., metavar="TARGET"),
+    timeout: float | None = typer.Option(
+        None,
+        "--timeout",
+        min=0.0,
+        help="seconds to wait before giving up (herdr's millisecond timeout is derived from it)",
+    ),
+) -> None:
+    """Wait for TARGET's blocked/settled state without polling from bh.
+
+    Herdr owns lifecycle state and its ``agent wait`` command is the source of truth.  The
+    wrapper only fences availability and translates bh's seconds-oriented timeout option to
+    herdr's millisecond argument; a timed-out wait is reported as a normal command failure.
+    """
+    if not _has_cli():
+        typer.echo("✗ herdr: cannot watch — herdr CLI not on PATH", err=True)
+        raise typer.Exit(1)
+    if not server_up():
+        typer.echo("✗ herdr: server=down (start herdr before watching an agent)", err=True)
+        raise typer.Exit(1)
+
+    wait_args = ["agent", "wait", target, "--until", "blocked"]
+    if timeout is not None:
+        wait_args.extend(["--timeout", str(int(timeout * 1000))])
+    output = _require(_command(*wait_args, timeout=timeout), "agent wait")
+    if output:
+        typer.echo(output)
+    else:
+        typer.echo(f"herdr target={target} settled")
 
 
 PLUGIN = plugins.Plugin(
