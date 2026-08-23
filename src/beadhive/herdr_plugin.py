@@ -116,6 +116,11 @@ def _managed_worktree(hive: str, bead: str) -> Path:
     return target
 
 
+def _close_pane(pane: str) -> None:
+    """Best-effort cleanup for a failed spawn; never mask the original failure."""
+    _invoke(["herdr", "--session", _SESSION, "pane", "close", pane, "--no-focus"])
+
+
 cli = typer.Typer(no_args_is_help=True, help="herdr terminal/agent-pane integration.")
 
 
@@ -160,42 +165,25 @@ def _spawn_cmd(
         raise typer.Exit(1)
     cwd = _managed_worktree(hive, bead)
     workspace = _workspace(hive, cwd)
-    pane = _require(
-        _command(
-            "pane",
-            "split",
-            "--pane",
-            f"{workspace}:p1",
-            "--direction",
-            "right",
-            "--cwd",
-            str(cwd),
-            "--no-focus",
-        ),
-        "pane split",
-    )
-    name = f"bh-{bead}"
-    _require(_command("agent", "start", name, "--kind", kind, "--pane", pane), "agent start")
-    _require(_command("pane", "rename", pane, name), "pane rename")
-    _require(
-        _command(
-            "agent",
-            "prompt",
-            name,
-            f"Reply with exactly {_WARMUP_TOKEN}.",
-            "--wait",
-            "--timeout",
-            "60000",
-        ),
-        "agent warm-up",
-    )
-    visible = _require(
-        _command("agent", "read", name, "--source", "visible", "--lines", "80"), "agent read"
-    )
-    if _WARMUP_TOKEN not in visible:
-        # Known first-run dialogs consume a prompt. Escape is harmless at a real prompt, then
-        # resend the no-op and demand read-back rather than trusting herdr's lifecycle state.
-        _require(_command("agent", "send-keys", name, "esc"), "agent warm-up dismiss")
+    pane = ""
+    try:
+        pane = _require(
+            _command(
+                "pane",
+                "split",
+                "--pane",
+                f"{workspace}:p1",
+                "--direction",
+                "right",
+                "--cwd",
+                str(cwd),
+                "--no-focus",
+            ),
+            "pane split",
+        )
+        name = f"bh-{bead}"
+        _require(_command("agent", "start", name, "--kind", kind, "--pane", pane), "agent start")
+        _require(_command("pane", "rename", pane, name), "pane rename")
         _require(
             _command(
                 "agent",
@@ -206,14 +194,38 @@ def _spawn_cmd(
                 "--timeout",
                 "60000",
             ),
-            "agent warm-up retry",
+            "agent warm-up",
         )
         visible = _require(
             _command("agent", "read", name, "--source", "visible", "--lines", "80"), "agent read"
         )
-    if _WARMUP_TOKEN not in visible:
-        typer.echo("✗ herdr warm-up did not reach an idle agent prompt", err=True)
-        raise typer.Exit(1)
+        if _WARMUP_TOKEN not in visible:
+            # Known first-run dialogs consume a prompt. Escape is harmless at a real prompt,
+            # then resend the no-op and demand read-back rather than trusting lifecycle state.
+            _require(_command("agent", "send-keys", name, "esc"), "agent warm-up dismiss")
+            _require(
+                _command(
+                    "agent",
+                    "prompt",
+                    name,
+                    f"Reply with exactly {_WARMUP_TOKEN}.",
+                    "--wait",
+                    "--timeout",
+                    "60000",
+                ),
+                "agent warm-up retry",
+            )
+            visible = _require(
+                _command("agent", "read", name, "--source", "visible", "--lines", "80"),
+                "agent read",
+            )
+        if _WARMUP_TOKEN not in visible:
+            typer.echo("✗ herdr warm-up did not reach an idle agent prompt", err=True)
+            raise typer.Exit(1)
+    except Exception:
+        if pane:
+            _close_pane(pane)
+        raise
     typer.echo(f"herdr target={name} pane={pane} workspace={workspace} bead={bead}")
 
 

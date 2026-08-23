@@ -180,6 +180,65 @@ def test_spawn_retries_after_first_run_dialog_and_refuses_unreadable_prompt(tmp_
     assert "did not reach an idle agent prompt" in result.output
     assert any("send-keys" in call and "esc" in call for call in calls)
     assert sum("prompt" in call for call in calls) == 2
+    assert ["herdr", "--session", "bh-supervisor", "pane", "close", "w1:p2", "--no-focus"] in calls
+
+
+def test_spawn_closes_new_pane_when_setup_fails(tmp_path, monkeypatch):
+    _spawn_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-2:] == ["api", "snapshot"]:
+            return _result(stdout="{}")
+        if "workspace" in argv and "create" in argv:
+            return _result(stdout="w1")
+        if "split" in argv:
+            return _result(stdout="w1:p2")
+        if "rename" in argv:
+            return _result(1, stderr="rename failed")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app, ["plugin", "herdr", "spawn", "--hive", "h", "--bead", "bh-1", "--kind", "codex"]
+    )
+
+    assert result.exit_code == 1
+    assert "pane rename failed" in result.output
+    assert ["herdr", "--session", "bh-supervisor", "pane", "close", "w1:p2", "--no-focus"] in calls
+
+
+def test_spawn_closes_pane_when_agent_start_fails(tmp_path, monkeypatch):
+    _spawn_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-2:] == ["api", "snapshot"]:
+            return _result(stdout="{}")
+        if "workspace" in argv and "create" in argv:
+            return _result(stdout="w1")
+        if "split" in argv:
+            return _result(stdout="w1:p2")
+        if "start" in argv:
+            return _result(1, stderr="agent start failed")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app, ["plugin", "herdr", "spawn", "--hive", "h", "--bead", "bh-1", "--kind", "codex"]
+    )
+
+    assert result.exit_code == 1
+    assert "agent start failed" in result.output
+    assert ["herdr", "--session", "bh-supervisor", "pane", "close", "w1:p2", "--no-focus"] in calls
 
 
 def test_spawn_fences_missing_server_before_worktree_lookup(monkeypatch):
