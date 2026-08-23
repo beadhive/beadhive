@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from functools import lru_cache
 from pathlib import Path
 
 import typer
@@ -20,6 +21,33 @@ cli = typer.Typer(no_args_is_help=True, help="repowise local codebase-index inte
 
 def _has_cli() -> bool:
     return shutil.which("repowise") is not None
+
+
+@lru_cache(maxsize=1)
+def capabilities() -> frozenset[str]:
+    """Return init flags advertised by the installed CLI, not inferred from its version."""
+    if not _has_cli():
+        return frozenset()
+    try:
+        result = run.run(["repowise", "init", "--help"], check=False, capture=True)
+    except Exception:  # noqa: BLE001 - a capability probe must never break a hook
+        return frozenset()
+    help_text = f"{result.stdout}\n{result.stderr}"
+    return frozenset(flag for flag in ("--no-mcp-json", "--no-vscode") if flag in help_text)
+
+
+def capability_error() -> str | None:
+    """Return an actionable reason when the configured plugin cannot be safely used."""
+    if not _has_cli():
+        return "repowise is not installed"
+    missing = sorted({"--no-mcp-json", "--no-vscode"} - capabilities())
+    if missing:
+        return (
+            "repowise is present but missing "
+            + ", ".join(missing)
+            + "; install briancripe/repowise@feat/no-mcp-json-no-vscode"
+        )
+    return None
 
 
 def enabled(cfg, entry) -> bool:
@@ -43,6 +71,8 @@ def _state(clone: Path) -> dict:
 
 def readiness(cfg, entry) -> tuple[str, str] | None:
     """Report index presence, git drift, and index size without probing unavailable clones."""
+    if config.repowise_enabled(cfg, entry) and (error := capability_error()) is not None:
+        return ("warn", error)
     clone = _clone(entry)
     if clone is None:
         return None
@@ -77,6 +107,9 @@ _BASE_ARGS = [
 
 def _index(path: Path, *, workspace: bool) -> int:
     """Initialize an index without touching repowise's machine-wide editor settings."""
+    if (error := capability_error()) is not None:
+        typer.echo(f"⚠ repowise disabled: {error}; skipping index", err=True)
+        return 0
     args = ["repowise", "init", str(path), *_BASE_ARGS]
     if workspace:
         args.append("--all")
