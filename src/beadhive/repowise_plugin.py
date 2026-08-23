@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from functools import lru_cache
 from pathlib import Path
 
 import typer
+from ruamel.yaml import YAML
 
 from . import config, gitworkspace, plugins, registry, run
 from .identity import workspace_root
@@ -147,6 +149,71 @@ def _on_onboard(ctx) -> None:
     typer.echo(f"✓ repowise indexed {ctx.base}")
 
 
+def _branch_point(main: Path, start_point: str) -> str:
+    return run.out(["git", "-C", str(main), "rev-parse", start_point or "HEAD"]).strip()
+
+
+def _refresh_base(cfg, entry, *, main: Path, branch: str, target: Path, start_point: str) -> None:
+    """Refresh the seed source before git fixes the new worktree's branch point."""
+    del cfg, entry, branch, target
+    state = _state(main)
+    last_sync = str(state.get("last_sync_commit") or "")
+    if not last_sync:
+        typer.echo("• repowise: base has no index; skipping refresh")
+        return
+    branch_point = _branch_point(main, start_point)
+    if last_sync == branch_point:
+        typer.echo("• repowise: base index already current")
+        return
+
+    started = time.monotonic()
+    result = run.run(
+        ["repowise", "update", str(main), "--index-only", "--no-workspace"],
+        check=False,
+        env={"REPOWISE_SKIP_EDITOR_SETUP": "1"},
+    )
+    elapsed = time.monotonic() - started
+    if result.returncode:
+        raise RuntimeError(f"base refresh failed after {elapsed:.1f}s")
+    typer.echo(f"✓ repowise refreshed base in {elapsed:.1f}s")
+
+
+def _install_workspace_overlay(cfg, target: Path) -> None:
+    """Expose the host overlay without copying it, with paths valid from the worktree."""
+    root = _workspace(cfg)
+    source_manifest = root / ".repowise-workspace.yaml"
+    source_overlay = root / ".repowise-workspace"
+    if not source_manifest.is_file() or not source_overlay.is_dir():
+        return
+
+    yaml = YAML()
+    data = yaml.load(source_manifest.read_text()) or {}
+    for repo in data.get("repos", []):
+        path = Path(str(repo.get("path", "")))
+        if path and not path.is_absolute():
+            repo["path"] = str((root / path).resolve())
+    with (target / ".repowise-workspace.yaml").open("w") as stream:
+        yaml.dump(data, stream)
+    (target / ".repowise-workspace").symlink_to(source_overlay, target_is_directory=True)
+
+
+def _seed_worktree(cfg, entry, *, main: Path, branch: str, target: Path) -> None:
+    """Let repowise auto-detect the linked worktree's validated base and seed from it."""
+    del entry, main, branch
+    started = time.monotonic()
+    result = run.run(
+        ["repowise", "init", *_BASE_ARGS, "-y"],
+        check=False,
+        cwd=target,
+        env={"REPOWISE_SKIP_EDITOR_SETUP": "1"},
+    )
+    elapsed = time.monotonic() - started
+    if result.returncode:
+        raise RuntimeError(f"worktree seed/full-init fallback failed after {elapsed:.1f}s")
+    _install_workspace_overlay(cfg, target)
+    typer.echo(f"✓ repowise seeded worktree in {elapsed:.1f}s")
+
+
 @cli.command(
     "index",
     help="provision a base index, or --all the workspace (~12 min / ~400 MiB for 34 repos).",
@@ -195,4 +262,6 @@ PLUGIN = plugins.Plugin(
     enabled=enabled,
     on_onboard=_on_onboard,
     readiness=readiness,
+    wt_creating=_refresh_base,
+    wt_created=_seed_worktree,
 )
