@@ -252,13 +252,22 @@ def test_spawn_uses_bh_worktree_names_pane_and_verifies_warmup(tmp_path, monkeyp
         if argv == ["herdr", "status"]:
             return _result()
         if argv[-2:] == ["api", "snapshot"]:
-            return _result(stdout="{}")
-        if argv[-2:] == ["workspace", "create"]:
-            return _result(stdout="w1")
+            return _result(
+                stdout='{"id":"cli:api:snapshot","result":{"snapshot":'
+                '{"workspaces":[],"layouts":[],"panes":[]},"type":"session_snapshot"}}'
+            )
         if "workspace" in argv and "create" in argv:
-            return _result(stdout="w1")
+            return _result(
+                stdout='{"id":"cli:workspace:create","result":'
+                '{"workspace":{"workspace_id":"w1"},'
+                '"tab":{"tab_id":"w1:t1"},"root_pane":{"pane_id":"w1:p1"},'
+                '"type":"workspace_created"}}'
+            )
         if "split" in argv:
-            return _result(stdout="w1:p2")
+            return _result(
+                stdout='{"id":"cli:pane:split","result":'
+                '{"pane":{"pane_id":"w1:p2"},"type":"pane_info"}}'
+            )
         if "read" in argv:
             return _result(stdout="assistant: BH_HERDR_WARMUP_OK")
         return _result()
@@ -299,6 +308,111 @@ def test_spawn_uses_bh_worktree_names_pane_and_verifies_warmup(tmp_path, monkeyp
     )
     assert "target=bh-bh-1" in result.output
     assert not any("worktree" in call for call in calls)
+
+
+def test_spawn_reuses_snapshot_workspace_and_its_actual_pane(tmp_path, monkeypatch):
+    target = _spawn_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-2:] == ["api", "snapshot"]:
+            return _result(
+                stdout='{"id":"cli:api:snapshot","result":{"snapshot":'
+                '{"workspaces":[{"label":"bh:h","workspace_id":"w9"}],'
+                '"layouts":[{"workspace_id":"w9","focused_pane_id":"w9:p7"}],'
+                '"panes":[{"workspace_id":"w9","pane_id":"w9:p7"}]},'
+                '"type":"session_snapshot"}}'
+            )
+        if "split" in argv:
+            return _result(
+                stdout='{"id":"cli:pane:split","result":'
+                '{"pane":{"pane_id":"w9:p8"},"type":"pane_info"}}'
+            )
+        if "read" in argv:
+            return _result(stdout="assistant: BH_HERDR_WARMUP_OK")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app, ["plugin", "herdr", "spawn", "--hive", "h", "--bead", "bh-1", "--kind", "codex"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert not any("workspace" in call and "create" in call for call in calls)
+    assert [
+        "herdr",
+        "--session",
+        "bh-supervisor",
+        "pane",
+        "split",
+        "--pane",
+        "w9:p7",
+        "--direction",
+        "right",
+        "--cwd",
+        str(target),
+        "--no-focus",
+    ] in calls
+    assert "pane=w9:p8 workspace=w9" in result.output
+
+
+def test_spawn_rejects_structured_create_without_root_pane_id(tmp_path, monkeypatch):
+    _spawn_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-2:] == ["api", "snapshot"]:
+            return _result(stdout='{"id":"cli:api:snapshot","result":{"snapshot":{}}}')
+        if "workspace" in argv and "create" in argv:
+            return _result(
+                stdout='{"id":"cli:workspace:create","result":'
+                '{"workspace":{"workspace_id":"w1"},"root_pane":{}}}'
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app, ["plugin", "herdr", "spawn", "--hive", "h", "--bead", "bh-1", "--kind", "codex"]
+    )
+
+    assert result.exit_code == 1
+    assert "workspace create failed: response missing pane_id" in result.output
+    assert not any("split" in call for call in calls)
+
+
+def test_spawn_rejects_structured_split_without_pane_id(tmp_path, monkeypatch):
+    _spawn_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-2:] == ["api", "snapshot"]:
+            return _result(stdout="{}")
+        if "workspace" in argv and "create" in argv:
+            return _result(stdout="w1")
+        if "split" in argv:
+            return _result(stdout='{"id":"cli:pane:split","result":{"pane":{}}}')
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app, ["plugin", "herdr", "spawn", "--hive", "h", "--bead", "bh-1", "--kind", "codex"]
+    )
+
+    assert result.exit_code == 1
+    assert "pane split failed: response missing pane_id" in result.output
+    assert not any("agent" in call and "start" in call for call in calls)
 
 
 def test_spawn_retries_after_first_run_dialog_and_refuses_unreadable_prompt(tmp_path, monkeypatch):
@@ -374,9 +488,13 @@ def test_spawn_closes_pane_when_agent_start_fails(tmp_path, monkeypatch):
         if argv[-2:] == ["api", "snapshot"]:
             return _result(stdout="{}")
         if "workspace" in argv and "create" in argv:
-            return _result(stdout="w1")
+            return _result(
+                stdout='{"id":"cli:workspace:create","result":'
+                '{"workspace":{"workspace_id":"w1"},'
+                '"root_pane":{"pane_id":"w1:p1"}}}'
+            )
         if "split" in argv:
-            return _result(stdout="w1:p2")
+            return _result(stdout='{"id":"cli:pane:split","result":{"pane":{"pane_id":"w1:p2"}}}')
         if "start" in argv:
             return _result(1, stderr="agent start failed")
         return _result()
@@ -524,10 +642,14 @@ def test_reap_closes_only_the_exact_pane_recorded_for_a_spawned_target(monkeypat
         if argv == ["herdr", "status"]:
             return _result()
         if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(2, stderr="unexpected argument '--json'")
+        if argv[-2:] == ["agent", "list"]:
             return _result(
                 stdout=(
-                    '{"agents": [{"name": "bh-bh-1", "state": "idle", '
-                    '"pane_id": "w1:p2", "pane_name": "bh-bh-1"}]}'
+                    '{"id":"cli:agent:list","result":{"agents": ['
+                    '{"name": "bh-bh-1", "agent_status": "idle", '
+                    '"pane_id": "w1:p2", "label": "bh-bh-1"}],'
+                    '"type":"agent_list"}}'
                 )
             )
         if "pane" in argv and "close" in argv:
