@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from ruamel.yaml import YAML
 from typer.testing import CliRunner
 
 from beadhive import repowise_plugin
@@ -148,3 +149,96 @@ def test_workspace_root_uses_selected_gitworkspace_config(monkeypatch, tmp_path)
     monkeypatch.setattr(repowise_plugin.gitworkspace, "config_paths", lambda cfg: [config_path])
 
     assert repowise_plugin._workspace({}) == tmp_path
+
+
+def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
+    calls = []
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "state.json").write_text(
+        json.dumps({"last_sync_commit": "old"})
+    )
+    monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "new")
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0),
+    )
+
+    repowise_plugin._refresh_base(
+        {}, {}, main=tmp_path, branch="wt/x", target=tmp_path / "wt", start_point="base"
+    )
+
+    assert calls[0][0] == [
+        "repowise",
+        "update",
+        str(tmp_path),
+        "--index-only",
+        "--no-workspace",
+    ]
+    assert calls[0][1]["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
+
+
+def test_refresh_base_skips_missing_and_current_indexes(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        repowise_plugin.run, "run", lambda *args, **kwargs: calls.append(args)
+    )
+    kwargs = dict(main=tmp_path, branch="wt/x", target=tmp_path / "wt", start_point="")
+    repowise_plugin._refresh_base({}, {}, **kwargs)
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "state.json").write_text(
+        json.dumps({"last_sync_commit": "same"})
+    )
+    monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "same")
+    repowise_plugin._refresh_base({}, {}, **kwargs)
+    assert calls == []
+
+
+def test_seed_uses_auto_detection_and_installs_overlay(monkeypatch, tmp_path):
+    workspace = tmp_path / "workspace"
+    target = tmp_path / "worktree"
+    repo = workspace / "github" / "acme" / "widget"
+    overlay = workspace / ".repowise-workspace"
+    target.mkdir()
+    repo.mkdir(parents=True)
+    overlay.mkdir()
+    (overlay / "system_graph.json").write_text("{}")
+    (workspace / ".repowise-workspace.yaml").write_text(
+        "version: 1\nrepos:\n- path: github/acme/widget\n  alias: widget\n"
+    )
+    calls = []
+    monkeypatch.setattr(repowise_plugin, "_workspace", lambda cfg: workspace)
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0),
+    )
+
+    repowise_plugin._seed_worktree(
+        {}, {}, main=repo, branch="wt/x", target=target
+    )
+
+    argv, kwargs = calls[0]
+    assert argv == ["repowise", "init", *repowise_plugin._BASE_ARGS, "-y"]
+    assert "--seed-from" not in argv
+    assert str(target) not in argv
+    assert kwargs["cwd"] == target
+    assert (target / ".repowise-workspace").resolve() == overlay.resolve()
+    manifest = YAML().load((target / ".repowise-workspace.yaml").read_text())
+    assert manifest["repos"][0]["path"] == str(repo.resolve())
+
+
+def test_seed_cleanly_skips_absent_host_overlay(monkeypatch, tmp_path):
+    target = tmp_path / "worktree"
+    target.mkdir()
+    monkeypatch.setattr(repowise_plugin, "_workspace", lambda cfg: tmp_path / "missing")
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda argv, **kwargs: SimpleNamespace(returncode=0),
+    )
+
+    repowise_plugin._seed_worktree({}, {}, main=tmp_path, branch="wt/x", target=target)
+
+    assert not (target / ".repowise-workspace.yaml").exists()
