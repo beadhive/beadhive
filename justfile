@@ -991,6 +991,17 @@ image-licenses ref="beadhive/core:dev":
 image-drift *refs:
     scripts/image-drift.sh {{refs}}
 
+# The OTHER skew image-drift does not cover (bh-pee6m): a PUBLISHED `:dev` tag, already pulled
+# by consumers (beadhive-app, briancripe/qm), sat at bh 0.7.1 against a released 0.11.3 — four
+# minors behind — with nothing looking. image-drift's "behind HEAD is normal mid-session, report
+# don't fail" stance is right for a just-rebaked local image and wrong for a tag that other
+# projects pull expecting it to track the release, so this is a SEPARATE check with the
+# opposite verdict: it FAILS. Only applies to a PyPI-sourced image (a local-wheel build is
+# image-drift's job, comparing it against the checkout's SHA instead).
+# fail if a PyPI-sourced image's bh version is behind this checkout's release
+image-release-drift ref="beadhive/core:dev":
+    scripts/image-release-drift.sh {{ref}}
+
 # The gap image-drift and the manifest CANNOT see (bh-m4nn8): the packed baml seats are what the
 # `local` runtime tier spawns, and they are NOT image components — so a guard that compares what
 # the image CONTAINS against what it CLAIMS never looks at them. Nothing asserted that the thing
