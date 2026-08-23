@@ -167,7 +167,23 @@ _BEAD_RE = re.compile(r"^bh-(?P<bead>bh-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)$")
 _LIVE_AGENT_STATES = frozenset({"idle", "working", "blocked"})
 
 
-def _agent_records(value, *, unique_by_name: bool = True) -> list[dict]:
+def _record_pane_id(record: dict) -> str | None:
+    """Extract a pane ID without requiring the optional visible pane label."""
+    pane = record.get("pane")
+    pane_id = record.get("pane_id")
+    if isinstance(pane, str):
+        pane_id = pane
+    elif isinstance(pane, dict):
+        pane_id = pane.get("id") or pane.get("pane_id") or pane_id
+        nested = pane.get("pane")
+        if not pane_id and isinstance(nested, dict):
+            pane_id = nested.get("id") or nested.get("pane_id")
+    return pane_id if isinstance(pane_id, str) and pane_id.strip() else None
+
+
+def _agent_records(
+    value, *, unique_by_name: bool = True, include_pane_claims: bool = False
+) -> list[dict]:
     """Extract agent-shaped records from herdr's versioned JSON responses.
 
     ``ps`` requests the stable, deduplicated view.  ``reap`` intentionally
@@ -189,11 +205,9 @@ def _agent_records(value, *, unique_by_name: bool = True) -> list[dict]:
                 or candidate.get("lifecycle")
                 or candidate.get("lifecycle_state")
             )
-            if (
-                isinstance(name, str)
-                and isinstance(state, (str, int, float))
-                and id(candidate) not in seen
-            ):
+            is_agent = isinstance(name, str) and isinstance(state, (str, int, float))
+            is_pane_claim = include_pane_claims and _record_pane_id(candidate) is not None
+            if (is_agent or is_pane_claim) and id(candidate) not in seen:
                 seen.add(id(candidate))
                 records.append(candidate)
             for child in item.values():
@@ -273,20 +287,31 @@ def _live_agent_records() -> list[dict] | None:
         return None
     if not _looks_like_agent_list(data):
         return None
-    return _agent_records(data, unique_by_name=False)
+    return _agent_records(data, unique_by_name=False, include_pane_claims=True)
 
 
 def _record_pane(record: dict) -> tuple[str, str] | None:
     """Return the live pane id and visible name, only when both are unambiguous."""
     pane = record.get("pane")
-    pane_id = record.get("pane_id")
+    pane_id = _record_pane_id(record)
     pane_name = record.get("pane_name") or record.get("pane_label") or record.get("pane_title")
     if isinstance(pane, dict):
-        pane_id = pane.get("id") or pane.get("pane_id") or pane_id
-        pane_name = pane.get("name") or pane.get("label") or pane.get("title") or pane_name
-    elif isinstance(pane, str):
-        pane_id = pane
-    if not isinstance(pane_id, str) or not pane_id.strip():
+        pane_name = (
+            pane.get("name")
+            or pane.get("label")
+            or pane.get("title")
+            or pane.get("pane_name")
+            or pane_name
+        )
+        nested = pane.get("pane")
+        if not pane_name and isinstance(nested, dict):
+            pane_name = (
+                nested.get("name")
+                or nested.get("label")
+                or nested.get("title")
+                or nested.get("pane_name")
+            )
+    if pane_id is None:
         return None
     if not isinstance(pane_name, str) or not pane_name.strip():
         return None
@@ -309,11 +334,7 @@ def _owned_live_pane(target: str) -> str | None:
     pane_id, pane_name = pane
     if pane_name != target:
         return None
-    pane_records = [
-        record
-        for record in records
-        if (resolved := _record_pane(record)) is not None and resolved[0] == pane_id
-    ]
+    pane_records = [record for record in records if _record_pane_id(record) == pane_id]
     if len(pane_records) != 1:
         return None
     return pane_id

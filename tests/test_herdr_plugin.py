@@ -538,6 +538,33 @@ def test_reap_refuses_duplicate_live_agent_records_for_one_pane(monkeypatch):
     assert not any("close" in call for call in calls)
 
 
+def test_reap_refuses_an_unnamed_partial_record_claiming_the_same_pane(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(
+                stdout=(
+                    '{"agents": ['
+                    '{"name": "bh-bh-1", "state": "idle", "pane_id": "w1:p2", '
+                    '"pane_name": "bh-bh-1"}, '
+                    '{"pane": {"pane_id": "w1:p2"}}]}'
+                )
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-1"])
+
+    assert result.exit_code == 1
+    assert "refusing unmanaged" in result.output
+    assert not any("close" in call for call in calls)
+
+
 def test_watch_waits_for_blocked_and_translates_timeout(monkeypatch):
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
     calls = []
