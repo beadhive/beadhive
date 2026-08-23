@@ -151,6 +151,7 @@ Resources expose read-only state over MCP's resource subscription model. All res
 | `beadhive://config` | Resolved config dict (full workspace config state). |
 | `beadhive://config/{key}` | Single config value by dotted key path. |
 | `beadhive://doctor` | Structured workspace diagnostics (config/providers/orgs/hives overview + inventory, disk_usage, fleet_health, worktrees, molecules, mcp, observability, warnings). |
+| `beadhive://alerts` | Normalized active agent-steering alerts: severity, code, message, and remediation. |
 | `beadhive://hive/status` | Richer workspace status view: candidates (unregistered repos), collisions, violations, and all registered hives. |
 | `beadhive://hive/list` | Discoverable-but-unregistered repos; diffs git-workspace's tracked repos against registered hives. |
 | `beadhive://hive/survey` | Fleet onboarding table, one row per on-disk repo. |
@@ -179,6 +180,10 @@ Mutating MCP tools emit `resources/updated` for the URIs they invalidate:
 | `hive_add` / `hive_onboard` | `beadhive://hive/status`, `beadhive://hive/list`, `beadhive://hive/survey` |
 | `plan_file` | `beadhive://work/ready`, `beadhive://plan/list` |
 | `bd_create` | `beadhive://work/ready`, `beadhive://work/intake` |
+
+When an MCP mutation changes the normalized alert list, it also invalidates
+`beadhive://alerts`. The notification is emitted only after a client has read the
+resource and established a subscription baseline.
 
 ### CLI-change limitation and upgrade path
 

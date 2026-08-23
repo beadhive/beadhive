@@ -91,6 +91,7 @@ bh escalate <title>           fire-and-forget escalation to HQ
 bh bd <args> | bh git <args>  passthrough (+ root -a/--all, --hive) (PASSTHROUGH.md)
 bh doctor [--json]            status + diagnostics (DIAGNOSTICS.md); --json emits the same
                               payload the beadhive://doctor MCP resource serves
+bh alerts show [--json]       normalized active alerts for agent/operator steering (ALERTS.md)
 bh backup export|usage|reclaim   JSONL export mirror; disk-usage + retention across all three
                               backup roots (backup-retention-boundary-adr.md)
 bh setup check|show           post-install dependency gate (`check --json` for the
