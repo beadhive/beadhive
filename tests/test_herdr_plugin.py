@@ -77,3 +77,120 @@ def test_status_fences_missing_binary_and_stopped_server(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "server=down" in result.output
     assert "integrations: unavailable" in result.output
+
+
+def _spawn_worktree(tmp_path, monkeypatch):
+    target = tmp_path / "bh-1"
+    target.mkdir()
+    (target / ".git").write_text("gitdir: /tmp/nowhere\n")
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {})
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "locate",
+        lambda *_args: ({}, tmp_path, target, "wt/bead/issue/bh-1"),
+    )
+    return target
+
+
+def test_spawn_uses_bh_worktree_names_pane_and_verifies_warmup(tmp_path, monkeypatch):
+    target = _spawn_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-2:] == ["api", "snapshot"]:
+            return _result(stdout="{}")
+        if argv[-2:] == ["workspace", "create"]:  # kept for documentation; options follow
+            return _result(stdout="w1")
+        if "workspace" in argv and "create" in argv:
+            return _result(stdout="w1")
+        if "split" in argv:
+            return _result(stdout="w1:p2")
+        if "read" in argv:
+            return _result(stdout="assistant: BH_HERDR_WARMUP_OK")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "spawn",
+            "--hive",
+            "github/beadhive/beadhive",
+            "--bead",
+            "bh-1",
+            "--kind",
+            "codex",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert str(target) in [item for call in calls for item in call]
+    assert [
+        "herdr",
+        "--session",
+        "bh-supervisor",
+        "agent",
+        "start",
+        "bh-bh-1",
+        "--kind",
+        "codex",
+        "--pane",
+        "w1:p2",
+    ] in calls
+    assert ["herdr", "--session", "bh-supervisor", "pane", "rename", "w1:p2", "bh-bh-1"] in calls
+    assert any(
+        "prompt" in call and any("BH_HERDR_WARMUP_OK" in item for item in call) for call in calls
+    )
+    assert "target=bh-bh-1" in result.output
+    assert not any("worktree" in call for call in calls)
+
+
+def test_spawn_retries_after_first_run_dialog_and_refuses_unreadable_prompt(tmp_path, monkeypatch):
+    _spawn_worktree(tmp_path, monkeypatch)
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    reads = iter(["onboarding dialog", "still no conversational turn"])
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if argv[-2:] == ["api", "snapshot"]:
+            return _result(stdout="{}")
+        if "workspace" in argv and "create" in argv:
+            return _result(stdout="w1")
+        if "split" in argv:
+            return _result(stdout="w1:p2")
+        if "read" in argv:
+            return _result(stdout=next(reads))
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app, ["plugin", "herdr", "spawn", "--hive", "h", "--bead", "bh-1", "--kind", "claude"]
+    )
+
+    assert result.exit_code == 1
+    assert "did not reach an idle agent prompt" in result.output
+    assert any("send-keys" in call and "esc" in call for call in calls)
+    assert sum("prompt" in call for call in calls) == 2
+
+
+def test_spawn_fences_missing_server_before_worktree_lookup(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: None)
+
+    def boom(*_args):
+        raise AssertionError("must not resolve a worktree while herdr is unavailable")
+
+    monkeypatch.setattr(herdr_plugin.worktree, "locate", boom)
+    result = runner.invoke(
+        app, ["plugin", "herdr", "spawn", "--hive", "h", "--bead", "bh-1", "--kind", "codex"]
+    )
+    assert result.exit_code == 1
+    assert "server=down" in result.output
