@@ -15,7 +15,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive import config, doctor, git_identity, hitch_plugin, safety, worktree
+from beadhive import config, doctor, dolt_health, git_identity, hitch_plugin, safety, worktree
 from beadhive.metadata import RepoMetadata
 from beadhive.safety import Category
 from test_work import _git, fakebd, hive  # noqa: F401 — fixtures resolved by name
@@ -2126,6 +2126,67 @@ def test_no_proc_filesystem_says_nothing_rather_than_guessing(tmp_path, monkeypa
     """macOS has no /proc. The check must degrade to silence, not to a false positive."""
     _fake_proc_tree(monkeypatch, pid="1", cwd=tmp_path / "gone", has_proc=False)
     assert doctor._orphaned_dolt_server_warnings() == []
+
+
+# ---- bh-s9cdk: split-brain Dolt lineage is named, not left to a hand-run merge-base -------------
+
+
+def _lineage_hive(tmp_path: Path, database: str = "bh") -> Path:
+    """A hive dir with a real (empty) embedded-store `.dolt/` directory — enough for
+    `store_locator.has_embedded_store` to be true without a real bd store."""
+    db_dir = tmp_path / ".beads" / "embeddeddolt" / database
+    (db_dir / ".dolt").mkdir(parents=True)
+    return tmp_path
+
+
+def test_split_brain_lineage_is_named_when_probe_reports_it(tmp_path, monkeypatch):
+    path = _lineage_hive(tmp_path)
+    monkeypatch.setattr(
+        dolt_health,
+        "probe_embedded_lineage",
+        lambda db_dir: dolt_health.LineageProbeResult(
+            dolt_health.LINEAGE_SPLIT_BRAIN, "dolt merge-base main remotes/origin/main: boom"
+        ),
+    )
+
+    warn = doctor._split_brain_lineage_warning({"prefix": "bh"}, path)
+
+    assert warn is not None
+    assert "SPLIT-BRAIN" in warn
+    assert "bh" in warn
+    assert "not a row-level merge conflict" in warn.lower()
+    assert "re-hydrate the non-canonical host" in warn
+
+
+def test_no_lineage_warning_when_probe_reports_a_common_ancestor(tmp_path, monkeypatch):
+    path = _lineage_hive(tmp_path)
+    monkeypatch.setattr(
+        dolt_health,
+        "probe_embedded_lineage",
+        lambda db_dir: dolt_health.LineageProbeResult(
+            dolt_health.LINEAGE_COMMON_ANCESTOR, "common ancestor abc123"
+        ),
+    )
+
+    assert doctor._split_brain_lineage_warning({"prefix": "bh"}, path) is None
+
+
+def test_no_lineage_warning_when_probe_is_unknown(tmp_path, monkeypatch):
+    """An unresolvable remote-tracking branch (never fetched) must stay silent, not escalate an
+    unverified state into a false split-brain report."""
+    path = _lineage_hive(tmp_path)
+    monkeypatch.setattr(
+        dolt_health,
+        "probe_embedded_lineage",
+        lambda db_dir: dolt_health.LineageProbeResult(dolt_health.LINEAGE_UNKNOWN, "not fetched"),
+    )
+
+    assert doctor._split_brain_lineage_warning({"prefix": "bh"}, path) is None
+
+
+def test_no_lineage_warning_for_a_non_embedded_hive(tmp_path):
+    """No `.beads/embeddeddolt/` at all — the probe must never even be reached."""
+    assert doctor._split_brain_lineage_warning({"prefix": "bh"}, tmp_path) is None
 
 
 # ---- a missing required binary is NAMED, never silently absorbed (bh-7m2h9) --------------------

@@ -1568,6 +1568,39 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
     return total, (lease.host_id or "nobody")
 
 
+def _split_brain_lineage_warning(entry, path: Path) -> str | None:
+    """Split-brain, named as such (bh-s9cdk): local and origin's embedded-Dolt histories share
+    NO COMMON ANCESTOR — two unrelated DAGs, not the row-level conflict or behind-the-remote
+    non-fast-forward `bd`'s own messages describe at sync time (see `dolt_health`'s module
+    section). Surfaced here, in `bh doctor`, so it is visible BEFORE the day something attempts
+    to converge them — `bd stats`/`bd list` agree on both sides regardless, so nothing else in
+    a routine health check would ever notice.
+
+    Embedded mode only (`store_locator.has_embedded_store`): the git-transport shape
+    (`refs/dolt/data`) already gets its own ahead/behind/diverged classification from
+    `safety._scan_dolt_ref`, which a real `git merge-base` can equally answer "no common
+    ancestor" for — out of scope here, which is specifically the embedded-Dolt gap the triage
+    for this bead named (dolt_health.py / hive_ready.py / doctor.py all had none).
+
+    Local-only, no fetch (`dolt_health.probe_embedded_lineage`'s own contract) — a host that
+    has never pushed/pulled against the diverged remote reports `LINEAGE_UNKNOWN` here, same as
+    every other doctor check that cannot verify something without a network round trip it isn't
+    willing to pay for. Returns `None` for every non-split-brain outcome."""
+    if not store_locator.has_embedded_store(path):
+        return None
+    db_dir = store_locator.embedded_database_dir(path)
+    probed = dolt_health.probe_embedded_lineage(db_dir)
+    if probed.status != dolt_health.LINEAGE_SPLIT_BRAIN:
+        return None
+    prefix = str(entry.get("prefix", "")) or f"{entry.get('org')}/{entry.get('repo')}"
+    return (
+        f"hive '{prefix}': SPLIT-BRAIN — {probed.detail}. Local and origin's Dolt histories "
+        "share no common ancestor: this is NOT a row-level merge conflict and NOT a "
+        "behind-the-remote non-fast-forward — a merge or pull here cannot succeed. "
+        f"{dolt_health.SPLIT_BRAIN_RECOVERY}"
+    )
+
+
 # ---- home layout drift (bh-cmqp.3) -------------------------------------------
 # docs/design/beadhive-home-layout-contract.md is the source of truth for what belongs at the
 # top level of `config.home()` and how each entry is classified (durable / regenerable /
@@ -1769,6 +1802,9 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
                     "these, so treat this local state as unconfirmed until you re-adopt this "
                     f"host or coordinate with {holder}"
                 )
+            split_brain = _split_brain_lineage_warning(e, path)
+            if split_brain:
+                warns.append(split_brain)
     # First: a missing required binary makes everything derived from it untrustworthy, so the
     # operator should read that before any finding it could have manufactured (bh-7m2h9).
     warns = _missing_required_dep_warnings() + warns
