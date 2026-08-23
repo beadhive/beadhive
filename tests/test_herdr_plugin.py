@@ -77,3 +77,58 @@ def test_status_fences_missing_binary_and_stopped_server(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "server=down" in result.output
     assert "integrations: unavailable" in result.output
+
+
+def test_integrate_installs_requested_supported_kind_idempotently(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "agent", "start", "--help"]:
+            return _result(stdout="--kind <KIND>  [possible values: claude, codex]")
+        return _result(stdout="already installed")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    first = runner.invoke(app, ["plugin", "herdr", "integrate", "claude"])
+    second = runner.invoke(app, ["plugin", "herdr", "integrate", "claude"])
+
+    assert first.exit_code == 0, first.output
+    assert second.exit_code == 0, second.output
+    assert "integration installed for claude" in second.output
+    assert calls == [
+        ["herdr", "agent", "start", "--help"],
+        ["herdr", "integration", "install", "claude"],
+        ["herdr", "agent", "start", "--help"],
+        ["herdr", "integration", "install", "claude"],
+    ]
+
+
+def test_integrate_rejects_unsupported_kind_with_discovered_list(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return _result(stdout="Supported agent kinds: claude, codex")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "integrate", "gemini"])
+
+    assert result.exit_code == 2
+    assert "unsupported agent kind 'gemini'" in result.output
+    assert "supported kinds: claude, codex" in result.output
+    assert calls == [["herdr", "agent", "start", "--help"]]
+
+
+def test_integrate_fences_missing_binary_without_subprocess(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: None)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("missing herdr must not spawn a subprocess")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", boom)
+    result = runner.invoke(app, ["plugin", "herdr", "integrate", "claude"])
+
+    assert result.exit_code == 1
+    assert "herdr CLI not on PATH" in result.output
