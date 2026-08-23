@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import typer
@@ -66,6 +67,10 @@ _ref_sha = worktree_merge._ref_sha
 _try_union_tier = worktree_merge._try_union_tier
 
 _RAND_BYTES = 2  # 4 hex chars — collision cover for two sessions in the same second
+
+# Classification is mostly git / bead-store subprocess I/O.  A small fixed ceiling lets a hub
+# make progress across a fleet without stampeding a shared filesystem or store service.
+_CLASSIFY_MAX_WORKERS = 8
 
 
 def _run_git(args, **kw):
@@ -2181,19 +2186,76 @@ def _prune_sweep_orphans(entries_by_prefix: dict, want: str | None) -> int:
     )
 
 
-def _prune_classify(cfg, entries_by_prefix: dict, rows: list) -> tuple:
-    """Classify every candidate row (repopulates fresh metadata per entry). Returns
-    `(safe_set, skipped)` — the SAFE-to-remove and NOT-SAFE ``WtStatus`` lists."""
-    statuses_by_prefix: dict[str, list] = {}
-    with store_probe_cache():  # one store probe per hive for the whole pass (bh-ioub2)
-        for prefix in {r[0] for r in rows}:
-            entry = entries_by_prefix.get(prefix)
-            if entry is None:
-                continue
-            entry_rows = [r for r in rows if r[0] == prefix]
-            statuses_by_prefix[prefix] = _classify_entry(entry, entry_rows, cfg)
+def _classify_entries(
+    cfg,
+    entries: list,
+    rows_by_prefix: dict[str, list],
+    on_complete=None,
+) -> dict[str, list]:
+    """Classify populated hives concurrently, optionally reporting each completed hive.
 
-    all_statuses = [s for slist in statuses_by_prefix.values() for s in slist]
+    Every classification has independent git and bead-store subprocesses, so waiting for one
+    hive before starting the next only delays the fleet view.  Each worker owns a
+    :func:`store_probe_cache` context: cache entries are per main-clone path and one worker owns
+    one hive, which preserves the one-probe-per-hive command contract without sharing a mutable
+    ``ContextVar`` value between threads.
+
+    Results are keyed rather than appended in completion order.  Callers that return structured
+    data can then retain their established deterministic entry ordering, while the human status
+    renderer uses ``on_complete`` to show a hive as soon as it is ready.
+    """
+    jobs = [
+        (str(entry.get("prefix", "")), entry, rows_by_prefix.get(str(entry.get("prefix", "")), []))
+        for entry in entries
+        if rows_by_prefix.get(str(entry.get("prefix", "")), [])
+    ]
+    if not jobs:
+        return {}
+
+    def classify_one(entry, entry_rows):
+        # A context is intentionally per worker rather than around the executor: ContextVars do
+        # not propagate their values into new threads, and no two workers classify one hive.
+        with store_probe_cache():
+            return _classify_entry(entry, entry_rows, cfg)
+
+    statuses_by_prefix: dict[str, list] = {}
+    if len(jobs) == 1:
+        prefix, entry, entry_rows = jobs[0]
+        statuses = classify_one(entry, entry_rows)
+        statuses_by_prefix[prefix] = statuses
+        if on_complete is not None:
+            on_complete(prefix, statuses)
+        return statuses_by_prefix
+
+    with ThreadPoolExecutor(
+        max_workers=min(_CLASSIFY_MAX_WORKERS, len(jobs)),
+        thread_name_prefix="bh-worktree-classify",
+    ) as executor:
+        futures = {
+            executor.submit(classify_one, entry, entry_rows): prefix
+            for prefix, entry, entry_rows in jobs
+        }
+        for future in as_completed(futures):
+            prefix = futures[future]
+            statuses = future.result()
+            statuses_by_prefix[prefix] = statuses
+            if on_complete is not None:
+                on_complete(prefix, statuses)
+
+    return statuses_by_prefix
+
+
+def _prune_classify(cfg, entries_by_prefix: dict, rows: list) -> tuple:
+    """Classify every candidate row concurrently. Returns `(safe_set, skipped)` — the
+    SAFE-to-remove and NOT-SAFE ``WtStatus`` lists."""
+    prefixes = list(dict.fromkeys(r[0] for r in rows))
+    entries = [entries_by_prefix[prefix] for prefix in prefixes if prefix in entries_by_prefix]
+    rows_by_prefix: dict[str, list] = {}
+    for row in rows:
+        rows_by_prefix.setdefault(row[0], []).append(row)
+    statuses_by_prefix = _classify_entries(cfg, entries, rows_by_prefix)
+
+    all_statuses = [status for prefix in prefixes for status in statuses_by_prefix.get(prefix, [])]
     safe_set = [s for s in all_statuses if s.safe]
     skipped = [s for s in all_statuses if not s.safe]
     return safe_set, skipped
@@ -2684,6 +2746,28 @@ def _status_scope(cfg, hive: str, all_rows: list) -> tuple:
     return entries, rows_by_prefix
 
 
+def _status_classifications(hive: str = "", on_complete=None) -> tuple:
+    """Load status inputs and classify their populated hives.
+
+    ``on_complete`` receives ``(prefix, statuses)`` in completion order.  It is used only by the
+    human multi-hive CLI path; structured callers collect the returned mapping and retain entry
+    order.
+    """
+    cfg = config.load()
+    all_rows = managed(cfg)  # [(prefix, path, branch), ...]
+    entries, rows_by_prefix = _status_scope(cfg, hive, all_rows)
+    return cfg, entries, _classify_entries(cfg, entries, rows_by_prefix, on_complete=on_complete)
+
+
+def _ordered_statuses(entries: list, statuses_by_prefix: dict[str, list]) -> list:
+    """Flatten completed classifications in managed-repository order, never finish order."""
+    return [
+        status
+        for entry in entries
+        for status in statuses_by_prefix.get(str(entry.get("prefix", "")), [])
+    ]
+
+
 def status_rows(hive: str = "") -> list:
     """Return the ``WtStatus`` list for managed worktrees — Typer-free core.
 
@@ -2696,20 +2780,8 @@ def status_rows(hive: str = "") -> list:
     Called by both ``status_cmd`` (the Typer command) and the MCP
     ``beadhive://worktree/list`` resource.
     """
-    cfg = config.load()
-    all_rows = managed(cfg)  # [(prefix, path, branch), ...]
-    entries, rows_by_prefix = _status_scope(cfg, hive, all_rows)
-
-    all_statuses: list = []
-    with store_probe_cache():  # one store probe per hive for the whole pass (bh-ioub2)
-        for e in entries:
-            prefix = str(e.get("prefix", ""))
-            rows = rows_by_prefix.get(prefix, [])
-            if not rows:
-                continue
-            all_statuses.extend(_classify_entry(e, rows, cfg))
-
-    return all_statuses
+    _cfg, entries, statuses_by_prefix = _status_classifications(hive)
+    return _ordered_statuses(entries, statuses_by_prefix)
 
 
 def _warn_unregistered(unreg) -> None:
@@ -2754,8 +2826,31 @@ def status_cmd(hive: str = "", as_json: bool = False) -> None:
     """
     import json as _json
 
-    all_statuses = status_rows(hive=hive)
-    unreg = unregistered_worktrees(config.load()) if not hive else []
+    # Streaming is only for the all-hive human view.  JSON is intentionally collected first so
+    # consumers retain its deterministic managed-repository ordering, and the established
+    # single-hive rendering remains byte-for-byte the same.
+    cfg = config.load()
+    all_rows = managed(cfg)
+    entries, rows_by_prefix = _status_scope(cfg, hive, all_rows)
+    populated_entries = [
+        entry for entry in entries if rows_by_prefix.get(str(entry.get("prefix", "")), [])
+    ]
+    stream_multi = not as_json and len(populated_entries) > 1
+
+    def render_completed_hive(prefix: str, statuses: list) -> None:
+        # Render a complete one-hive tree immediately.  The standalone tree deliberately uses
+        # the same renderer and therefore keeps its hierarchy, UNKNOWN marking, and SAFE tags;
+        # only section order now follows completion order.
+        _render_status_multi({prefix: statuses})
+
+    statuses_by_prefix = _classify_entries(
+        cfg,
+        entries,
+        rows_by_prefix,
+        on_complete=render_completed_hive if stream_multi else None,
+    )
+    all_statuses = _ordered_statuses(entries, statuses_by_prefix)
+    unreg = unregistered_worktrees(cfg) if not hive else []
 
     if as_json:
         typer.echo(_json.dumps([s.as_dict() for s in all_statuses], indent=2))
@@ -2774,19 +2869,21 @@ def status_cmd(hive: str = "", as_json: bool = False) -> None:
             typer.echo("no managed worktrees")
         return
 
-    # Group by hive for the tree header when covering multiple hives
-    by_hive: dict[str, list] = {}
-    for s in all_statuses:
-        by_hive.setdefault(s.hive, []).append(s)
+    if not stream_multi:
+        # Group by hive for the tree header when covering multiple hives.  In streaming mode,
+        # each completed section has already been rendered by the callback above.
+        by_hive: dict[str, list] = {}
+        for s in all_statuses:
+            by_hive.setdefault(s.hive, []).append(s)
 
-    if len(by_hive) == 1:
-        # Single-hive: show a flat tree with no hive header
-        hive_label, statuses = next(iter(by_hive.items()))
-        typer.echo(f"worktrees: {hive_label}")
-        _render_status(statuses)
-    else:
-        # Multi-hive: nest under a hive header line
-        _render_status_multi(by_hive)
+        if len(by_hive) == 1:
+            # Single-hive: show a flat tree with no hive header
+            hive_label, statuses = next(iter(by_hive.items()))
+            typer.echo(f"worktrees: {hive_label}")
+            _render_status(statuses)
+        else:
+            # Multi-hive: nest under a hive header line
+            _render_status_multi(by_hive)
 
     _warn_untrustworthy(all_statuses)
 

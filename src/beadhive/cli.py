@@ -18,8 +18,8 @@ from pathlib import Path
 import typer
 from typer.core import TyperGroup
 
-from . import bd as bd_mod
 from . import (
+    alerts,
     checkpoint,
     complexity_backfill,
     config,
@@ -29,6 +29,7 @@ from . import (
     gitworkspace_plugin,
     home_migration,
     host_cli,
+    jsonout,
     log,
     otel,
     plan,
@@ -39,6 +40,7 @@ from . import (
     validate,
     work,
 )
+from . import bd as bd_mod
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
@@ -70,6 +72,7 @@ mcp_app = typer.Typer(
         f"Or use the convenience verb: {config.BINARY_ALIAS} mcp install"
     ),
 )
+alerts_app = typer.Typer(no_args_is_help=True, help="Active agent-steering alerts.")
 hq_app = typer.Typer(
     no_args_is_help=True, help="Factory HQ: the durable central store (kind=hq singleton)."
 )
@@ -105,6 +108,7 @@ app.add_typer(work.app, name="work", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(plan.app, name="plan", rich_help_panel=PLANNING_PANEL)
 app.add_typer(release.app, name="release", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(checkpoint.app, name="checkpoint", rich_help_panel=INTEGRATION_PANEL)
+app.add_typer(alerts_app, name="alerts", rich_help_panel=FLEET_PANEL)
 app.command(
     "backfill-complexity",
     rich_help_panel=HIVE_PANEL,
@@ -3116,6 +3120,23 @@ def doctor_cmd(
     from . import doctor
 
     doctor.doctor(as_json=as_json, verbose=verbose, seats=seats)
+
+
+@alerts_app.command("show", help="render active agent-steering alerts.")
+def alerts_show(
+    as_json: bool = typer.Option(False, "--json", help="emit the normalized alert list as JSON"),
+):
+    """Print active alerts, or an explicit clean result when there are none."""
+    rows = alerts.active()
+    if as_json:
+        jsonout.emit(rows)
+        return
+    if not rows:
+        typer.echo("✓ no active alerts")
+        return
+    for row in rows:
+        typer.echo(f"[{row['severity']}] {row['code']}: {row['message']}")
+        typer.echo(f"  Remediation: {row['remediation']}")
 
 
 # ---- backup (bh-cmqp.2, bh-5009a) --------------------------------------------

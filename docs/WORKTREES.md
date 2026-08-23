@@ -379,6 +379,43 @@ unsticks — an operator assertion; prefer `bh work land` when a PR exists to ch
 **Observaloop note**: `prune` never tears down a hive's observaloop profile.  The profile is
 shared across all of a hive's worktrees; use `bh plugin observaloop down` to take it down separately.
 
+### Scheduled fleet cleanup
+
+`bh worktree prune` with no `--hive` is fleet-wide: it inspects every managed hive and still
+removes only `SAFE` worktrees. Use the supplied user-level systemd timer when a host has systemd:
+
+```sh
+# Install the default six-hour cadence (choose any systemd duration).
+scripts/install-worktree-prune-timer.sh --interval 6h
+
+# Verify the timer is installed and see its next activation.
+scripts/install-worktree-prune-timer.sh --verify
+
+# Exercise the exact scheduled action once, without waiting.
+scripts/bh-worktree-prune
+
+# Stop and remove the timer, its service, and its interval override.
+scripts/install-worktree-prune-timer.sh --uninstall
+```
+
+The installer copies its wrapper into `~/.local/share/beadhive/scripts/` and writes only
+user-level units under `${XDG_CONFIG_HOME:-~/.config}/systemd/user/`; it needs no root access.
+The timer starts five minutes after boot, then uses the configured interval. `Persistent=true`
+makes systemd run a missed interval after the user manager returns.
+For an unattended host, enable the user manager after logout once with
+`loginctl enable-linger "$USER"`.
+
+On a host without systemd, schedule the same wrapper with cron (example: every six hours):
+
+```cron
+17 */6 * * * /absolute/path/to/beadhive/scripts/bh-worktree-prune >>$HOME/.local/state/beadhive/worktree-prune.log 2>&1
+```
+
+Create the log directory first, then verify the job by running that absolute wrapper path once.
+Cron does not inherit an interactive shell's `PATH`; set `BH_BIN=/absolute/path/to/bh` in the
+crontab when `bh` is not in cron's path. Neither scheduler adds a confirmation prompt: the
+existing classifier remains the sole removal guard.
+
 ## Commands
 
 ```text

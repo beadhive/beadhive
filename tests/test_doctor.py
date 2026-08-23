@@ -992,6 +992,45 @@ def test_section_fleet_health_stale_threshold_in_output(capsys):
     assert stale_days in out
 
 
+# ---- worktree disk measurement ---------------------------------------------
+
+
+def test_data_worktree_disk_usage_measures_only_managed_worktrees(monkeypatch, tmp_path):
+    """Worktree bytes exclude the primary clone and aggregate each hive separately."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    monkeypatch.setattr(
+        doctor.worktree,
+        "managed",
+        lambda _cfg: [("one", str(first), "wt/one"), ("one", str(second), "wt/two")],
+    )
+    monkeypatch.setattr(
+        doctor.safety,
+        "_measure_disk_usage",
+        lambda path: {str(first): 11, str(second): 29}[path],
+    )
+    monkeypatch.setattr(doctor.config, "worktrees_root", lambda _cfg: tmp_path)
+    monkeypatch.setattr(doctor.shutil, "disk_usage", lambda _path: SimpleNamespace(free=97))
+
+    data = doctor._data_worktree_disk_usage(
+        {
+            "managed_repos": [
+                {"prefix": "one"},
+                {"prefix": "two"},
+            ]
+        }
+    )
+
+    assert data == {
+        "hives": [
+            {"prefix": "one", "worktree_bytes": 40, "worktree_count": 2},
+            {"prefix": "two", "worktree_bytes": 0, "worktree_count": 0},
+        ],
+        "total_worktree_bytes": 40,
+        "disk_free_bytes": 97,
+    }
+
+
 # ---- doctor_payload structured dict -----------------------------------------
 
 # The version envelope every machine payload carries (bh-0olv9.2, `beadhive.jsonout`), named
@@ -1006,6 +1045,7 @@ _DOCTOR_SECTIONS = {
     "hives",
     "inventory",
     "disk_usage",
+    "worktree_disk_usage",
     "fleet_health",
     "worktrees",
     "molecules",
@@ -1037,6 +1077,11 @@ def test_doctor_payload_sections_are_structured(hive, fakebd):  # noqa: F811
     assert payload["config"]["git_workspace"]["enabled"] in (True, False)
     assert isinstance(payload["providers"], list)
     assert isinstance(payload["inventory"]["git_repos_on_disk"], int)
+    assert set(payload["worktree_disk_usage"]) == {
+        "hives",
+        "total_worktree_bytes",
+        "disk_free_bytes",
+    }
     assert set(payload["fleet_health"]) >= {
         "repos_scanned",
         "dirty",

@@ -66,6 +66,7 @@ import time
 from pathlib import Path
 
 from . import (
+    alerts,
     bd,
     config,
     doctor,
@@ -353,6 +354,31 @@ async def _notify_updated(ctx, uris) -> None:
         )
 
 
+_ALERTS_URI = "beadhive://alerts"
+_alerts_fingerprint: str | None = None
+
+
+def _observe_alerts(rows: list[dict] | None = None) -> bool:
+    """Remember the resource state and say whether it changed since its last read.
+
+    A subscription has no value before the client has read its initial state.  Recording
+    that read gives subsequent MCP mutations a precise, cheap comparison and avoids
+    sending spurious ``resources/updated`` notifications.
+    """
+    global _alerts_fingerprint
+    rows = alerts.active() if rows is None else rows
+    current = json.dumps(rows, sort_keys=True, separators=(",", ":"))
+    changed = _alerts_fingerprint is not None and current != _alerts_fingerprint
+    _alerts_fingerprint = current
+    return changed
+
+
+async def _notify_alerts_if_changed(ctx) -> None:
+    """Notify subscribers only when a successful MCP mutation changed alerts."""
+    if _observe_alerts():
+        await _notify_updated(ctx, [_ALERTS_URI])
+
+
 def _require_triplet(tool: str, provider: str, org: str, repo: str) -> None:
     """Map an empty triplet field to a clean ToolError (the hive cores echo + `typer.Exit`
     on a bad triplet, which would otherwise surface as an opaque boundary error)."""
@@ -469,6 +495,11 @@ def build_server():
     Tools return structured (JSON-able) dicts; core exceptions map to `ToolError`s so
     the client gets a clean message rather than a stack trace.
     """
+    # Alert subscriptions are scoped to this MCP server instance.  A fresh server must not
+    # inherit a baseline observed by a previous in-process server/test session.
+    global _alerts_fingerprint
+    _alerts_fingerprint = None
+
     # `Context` binds the module global (declared here) so the stringified `ctx: Context` tool
     # annotations resolve against module globals when FastMCP introspects the schema; the other
     # imports stay local to build_server (still lazy).
@@ -545,6 +576,17 @@ def _register_config_probes(mcp, tool, resource):
         """
         return doctor.doctor_payload()
 
+    @resource(_ALERTS_URI)
+    def alerts_resource():
+        """Resource: active normalized alerts for harness steering.
+
+        A successful read becomes the subscription baseline used to emit
+        ``resources/updated`` only when a later MCP mutation changes the alert set.
+        """
+        rows = alerts.active()
+        _observe_alerts(rows)
+        return rows
+
 
 def _register_plan_tools(mcp, tool, resource):
     """Planning + work tools: plan_check / plan_file / work_refine / bd_create."""
@@ -602,6 +644,7 @@ def _register_plan_tools(mcp, tool, resource):
         except plan.PlanError as exc:
             raise ToolError(str(exc)) from exc
         await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://plan/list"])
+        await _notify_alerts_if_changed(ctx)
         return {
             "epic_id": result.epic_id,
             "issue_count": result.issue_count,
@@ -680,6 +723,7 @@ def _register_plan_tools(mcp, tool, resource):
         if failures:
             raise ToolError("bd_create failed for: " + "; ".join(failures))
         await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://work/intake"])
+        await _notify_alerts_if_changed(ctx)
         return {"created": created, "count": len(created)}
 
 
@@ -737,6 +781,7 @@ def _register_hive_tools(mcp, tool, resource):
         result = config.set_value(key, raw, as_json=as_json)
         if result.get("ok"):
             await _notify_updated(ctx, ["beadhive://config", f"beadhive://config/{key}"])
+            await _notify_alerts_if_changed(ctx)
         return result
 
     @tool
@@ -764,6 +809,7 @@ def _register_hive_tools(mcp, tool, resource):
         await _notify_updated(
             ctx, ["beadhive://hive/status", "beadhive://hive/list", "beadhive://hive/survey"]
         )
+        await _notify_alerts_if_changed(ctx)
         return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
 
     @tool
@@ -809,6 +855,7 @@ def _register_hive_tools(mcp, tool, resource):
         await _notify_updated(
             ctx, ["beadhive://hive/status", "beadhive://hive/list", "beadhive://hive/survey"]
         )
+        await _notify_alerts_if_changed(ctx)
         return {
             "cloned": not pre_exists,
             "registered": entry is not None,

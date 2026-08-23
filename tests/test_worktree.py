@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -2463,6 +2464,143 @@ def test_remove_never_runs_native_after_successful_delegated_removal(tmp_path, m
 
 
 # ---- delegation wiring + native/delegated parity: prune() (keep_branch=False) -----------------
+
+
+def _active_status_for_hive(hive: str) -> wt_status.WtStatus:
+    return wt_status.WtStatus(
+        hive=hive,
+        leaf=f"{hive}-seat",
+        branch=f"wt/bead/issue/{hive}-seat",
+        path=f"/wts/{hive}-seat",
+        bead_id=f"{hive}-seat",
+        classification=wt_status.WtClassification.ACTIVE,
+        merged=False,
+        dirty=False,
+        safe=False,
+    )
+
+
+def test_prune_classifies_hives_concurrently(monkeypatch):
+    """A slow hive must not hold up starting classification of its peers."""
+    first_started = threading.Event()
+    second_started = threading.Event()
+    entries = {
+        "first": {"prefix": "first"},
+        "second": {"prefix": "second"},
+    }
+
+    def classify(entry, rows, cfg):
+        started, peer = (
+            (first_started, second_started)
+            if entry["prefix"] == "first"
+            else (second_started, first_started)
+        )
+        started.set()
+        assert peer.wait(1), "classification was serialized"
+        return [_active_status_for_hive(entry["prefix"])]
+
+    monkeypatch.setattr(worktree, "_classify_entry", classify)
+    rows = [
+        ("first", "/wts/first-seat", "wt/bead/issue/first-seat"),
+        ("second", "/wts/second-seat", "wt/bead/issue/second-seat"),
+    ]
+
+    safe, skipped = worktree._prune_classify({}, entries, rows)
+
+    assert safe == []
+    assert [status.hive for status in skipped] == ["first", "second"]
+
+
+def test_status_rows_classifies_concurrently_but_returns_managed_order(monkeypatch):
+    first_started = threading.Event()
+    second_started = threading.Event()
+    entries = [{"prefix": "first"}, {"prefix": "second"}]
+    rows_by_prefix = {
+        "first": [("first", "/wts/first-seat", "wt/bead/issue/first-seat")],
+        "second": [("second", "/wts/second-seat", "wt/bead/issue/second-seat")],
+    }
+
+    def classify(entry, rows, cfg):
+        started, peer = (
+            (first_started, second_started)
+            if entry["prefix"] == "first"
+            else (second_started, first_started)
+        )
+        started.set()
+        assert peer.wait(1), "classification was serialized"
+        return [_active_status_for_hive(entry["prefix"])]
+
+    monkeypatch.setattr(config, "load", lambda: {})
+    monkeypatch.setattr(worktree, "managed", lambda cfg: [])
+    monkeypatch.setattr(
+        worktree, "_status_scope", lambda cfg, hive, rows: (entries, rows_by_prefix)
+    )
+    monkeypatch.setattr(worktree, "_classify_entry", classify)
+
+    statuses = worktree.status_rows()
+
+    assert [status.hive for status in statuses] == ["first", "second"]
+
+
+def test_multi_hive_status_streams_sections_in_completion_order(monkeypatch, capsys):
+    entries = [{"prefix": "slow"}, {"prefix": "fast"}]
+    rows_by_prefix = {
+        "slow": [("slow", "/wts/slow-seat", "wt/bead/issue/slow-seat")],
+        "fast": [("fast", "/wts/fast-seat", "wt/bead/issue/fast-seat")],
+    }
+    statuses = {
+        "slow": [_active_status_for_hive("slow")],
+        "fast": [_active_status_for_hive("fast")],
+    }
+
+    def classify_entries(cfg, got_entries, got_rows, on_complete=None):
+        assert got_entries == entries
+        assert got_rows == rows_by_prefix
+        assert on_complete is not None
+        on_complete("fast", statuses["fast"])
+        on_complete("slow", statuses["slow"])
+        return statuses
+
+    monkeypatch.setattr(config, "load", lambda: {})
+    monkeypatch.setattr(worktree, "managed", lambda cfg: [])
+    monkeypatch.setattr(
+        worktree, "_status_scope", lambda cfg, hive, rows: (entries, rows_by_prefix)
+    )
+    monkeypatch.setattr(worktree, "_classify_entries", classify_entries)
+    monkeypatch.setattr(worktree, "unregistered_worktrees", lambda cfg: [])
+
+    worktree.status_cmd()
+
+    out = capsys.readouterr().out
+    assert out.index("└─ fast") < out.index("└─ slow")
+
+
+def test_multi_hive_status_json_keeps_managed_order(monkeypatch, capsys):
+    entries = [{"prefix": "first"}, {"prefix": "second"}]
+    rows_by_prefix = {
+        "first": [("first", "/wts/first-seat", "wt/bead/issue/first-seat")],
+        "second": [("second", "/wts/second-seat", "wt/bead/issue/second-seat")],
+    }
+    statuses = {
+        "second": [_active_status_for_hive("second")],
+        "first": [_active_status_for_hive("first")],
+    }
+
+    def classify_entries(cfg, got_entries, got_rows, on_complete=None):
+        assert on_complete is None
+        return statuses
+
+    monkeypatch.setattr(config, "load", lambda: {})
+    monkeypatch.setattr(worktree, "managed", lambda cfg: [])
+    monkeypatch.setattr(
+        worktree, "_status_scope", lambda cfg, hive, rows: (entries, rows_by_prefix)
+    )
+    monkeypatch.setattr(worktree, "_classify_entries", classify_entries)
+
+    worktree.status_cmd(as_json=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["hive"] for row in payload] == ["first", "second"]
 
 
 def _prune_hive(tmp_path, monkeypatch):
