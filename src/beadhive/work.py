@@ -10,17 +10,23 @@ only — never the lifecycle around it.
 Test seam: this module shells out to **`bd` only** (via `bd.run`); every git / worktree
 operation goes through `worktree` / `identity`. Tests use a real git repo and fake just
 `bd` by patching `ws.work.run`.
+
+Composition map: reads/rendering live in ``work_reads`` and ``work_show``; intake in
+``work_intake``; assignment and scheduling in ``work_assignment`` / ``work_dispatch``;
+check/submit/review gates in ``work_submission``; molecule, bead, and PR landing in
+``work_merge``; safe history rewriting in ``work_refine``. This module keeps the Typer command
+registry, public types, and injected compatibility seams used by callers and tests.
 """
 
 from __future__ import annotations
 
 import asyncio  # noqa: F401 - injected lifecycle collaborator on the stable facade
-import datetime
+import datetime  # noqa: F401 - injected refine collaborator on the stable facade
 import json
-import os
+import os  # noqa: F401 - injected merge collaborator on the stable facade
 import shlex  # noqa: F401 - injected submission collaborator on the stable facade
 import sys
-import time
+import time  # noqa: F401 - injected merge collaborator on the stable facade
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Annotated
@@ -28,14 +34,14 @@ from typing import Annotated
 import typer
 
 from . import (
-    adopt,
+    adopt,  # noqa: F401 - injected merge collaborator
     bd,
     claim_authority,  # noqa: F401 - injected submission collaborator
     config,
     converge,  # noqa: F401 - injected submission collaborator
-    ghpr,
-    git_linkage,
-    guard,
+    ghpr,  # noqa: F401 - injected merge collaborator
+    git_linkage,  # noqa: F401 - injected merge collaborator
+    guard,  # noqa: F401 - injected merge collaborator
     host,  # noqa: F401 - injected lifecycle collaborator
     identity,
     jsonout,  # noqa: F401 - injected lifecycle collaborator
@@ -48,13 +54,15 @@ from . import (
     validation_ledger,  # noqa: F401 - injected submission collaborator
     work_assignment,
     work_dispatch,
-    work_group,
+    work_group,  # noqa: F401 - injected merge collaborator
     work_guards,
     work_intake,
     work_logic,
+    work_merge,
     work_metrics,
     work_next,  # noqa: F401 - injected lifecycle collaborator
     work_reads,
+    work_refine,
     work_show,
     work_submission,
     worktree,
@@ -63,16 +71,16 @@ from . import log as dispatch_log
 from . import schedule as schedule_mod  # noqa: F401 - injected lifecycle collaborator
 from .run import missing_binary, run  # noqa: F401 - injected submission collaborator
 from .work_logic import (
-    _MARKER,
+    _MARKER,  # noqa: F401 - injected refine collaborator
     _guard_holds_claim,  # noqa: F401 - injected submission collaborator
     _guard_not_other,
     _guard_open,
-    _history_ok,
-    _simulate,
+    _history_ok,  # noqa: F401 - injected merge collaborator
+    _simulate,  # noqa: F401 - injected refine collaborator
     _stamp,
-    build_todo,
-    plan_from_since,
-    validate_plan,
+    build_todo,  # noqa: F401 - injected refine collaborator
+    plan_from_since,  # noqa: F401 - injected refine collaborator
+    validate_plan,  # noqa: F401 - injected refine collaborator
 )
 
 # Preserve the historical ``work.log`` patch/import seam without a static binding that collides
@@ -1095,10 +1103,7 @@ def _delete_branch(main, branch) -> None:
     """Best-effort delete of a landed molecule branch. The molecule already landed, so a failure
     here only warns (leaving a stale ref the coordinator can drop). GIT_* dir-pointing env is
     scrubbed so our explicit `-C <main>` always wins."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    res = run(["git", "-C", str(main), "branch", "-d", branch], check=False, capture=True, env=env)
-    if res.returncode != 0:
-        typer.echo(f"⚠ landed but failed to delete {branch} — delete it manually", err=True)
+    return work_merge.impl__delete_branch(sys.modules[__name__], main, branch)
 
 
 def _teardown_coordinator_seat(cfg, hive, epic) -> None:
@@ -1107,16 +1112,7 @@ def _teardown_coordinator_seat(cfg, hive, epic) -> None:
     `git branch -d` on a still-attached branch fails). No-op when the seat was never provisioned
     (a Phase-A / separate-merger land drove from the main clone) — a removal failure only warns,
     never blocks the completed land."""
-    _entry, _main, target, _branch = worktree.locate(cfg, hive, epic, kind="epic")
-    if not target.exists():
-        return
-    try:
-        worktree.remove(hive, epic, force=True)
-    except typer.Exit:
-        typer.echo(
-            f"⚠ landed but failed to remove coordinator seat {target} — remove it manually",
-            err=True,
-        )
+    return work_merge.impl__teardown_coordinator_seat(sys.modules[__name__], cfg, hive, epic)
 
 
 def _rollback_or_keep(entry, main, base, pre, slot_attrs) -> bool:
@@ -1125,18 +1121,14 @@ def _rollback_or_keep(entry, main, base, pre, slot_attrs) -> bool:
     bubble standing (a shared/pushed branch is fixed FORWARD, never reset). Emits the
     rolled_back/red_kept merge-outcome metric. Returns True iff the tip was rolled back — the caller
     renders the (site-specific) message and any bead bounce."""
-    base_clone = worktree.clone_for_branch(entry, base)
-    rolled = worktree.safe_to_rewrite(main, base) and worktree.reset_hard(base_clone, pre) == 0
-    how = "rolled_back" if rolled else "red_kept"
-    otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
-    return rolled
+    return work_merge.impl__rollback_or_keep(
+        sys.modules[__name__], entry, main, base, pre, slot_attrs
+    )
 
 
 def _pr_ref(pr) -> str:
     """The human/bd-facing 'PR #<n> <url>' handle for a gh PR row."""
-    num = str((pr or {}).get("number") or "").strip()
-    url = str((pr or {}).get("url") or "").strip()
-    return " ".join(x for x in ((f"PR #{num}" if num else "PR"), url) if x)
+    return work_merge.impl__pr_ref(sys.modules[__name__], pr)
 
 
 def _close_swarm_bead(epic, main) -> None:
@@ -1145,61 +1137,20 @@ def _close_swarm_bead(epic, main) -> None:
     `work list` until a manual groom sweep. Best-effort — a failure warns, never unwinds a
     completed land. Batched into ONE `bd close` for every still-open match (`bd close` accepts
     multiple ids) instead of a subprocess-per-swarm loop."""
-    data = bd.json(["swarm", "list"], main)
-    swarms = data.get("swarms") if isinstance(data, dict) else None
-    ids = [
-        str(sw.get("id") or "")
-        for sw in swarms or []
-        if str(sw.get("epic_id")) == epic and str(sw.get("status", "")) != "closed" and sw.get("id")
-    ]
-    if not ids:
-        return
-    if bd.run(["close", *ids, "--reason", f"molecule {epic} landed"], main).returncode != 0:
-        typer.echo(
-            f"⚠ landed but failed to close swarm bead(s) {', '.join(ids)} — close manually",
-            err=True,
-        )
+    return work_merge.impl__close_swarm_bead(sys.modules[__name__], epic, main)
 
 
 def _pr_merge_gates(bead, main) -> list[dict]:
     """The OPEN `pr-merge` gates blocking `bead` — the landing-PR analog of `review_gates`
     (same description-marker selector convention, bh-c3il)."""
-    return [
-        g
-        for g in work_logic._bead_gates(bead, main)
-        if str(g.get("status")) == "open" and "pr-merge" in str(g.get("description") or "").lower()
-    ]
+    return work_merge.impl__pr_merge_gates(sys.modules[__name__], bead, main)
 
 
 def _ensure_pr_gate(main, bead, ref) -> None:
     """Idempotently open the bd `gh:pr` gate that blocks `bead` until its landing PR merges —
     bd's own gate check/discover watcher machinery can resolve it, and `work land` resolves any
     survivor at close. Reuses an already-open pr-merge gate on re-runs (submit's reuse rule)."""
-    gates = _pr_merge_gates(bead, main)
-    if gates:
-        typer.echo(f"• gh:pr gate {gates[0].get('id')} already open for {bead} — reusing it")
-        return
-    g = bd.run(
-        ["gate", "create", "--blocks", bead, "--type", "gh:pr", "--reason", f"pr-merge {ref}"],
-        main,
-    )
-    if g.returncode != 0:
-        # Same create-then-refuse shape as submit's review gate: bd opens the gate bead, then
-        # refuses the blocking dep onto an EPIC — accept the dep-less gate it left behind.
-        opened = [
-            gg
-            for gg in _pr_merge_gates(bead, main)
-            if f"pr-merge {ref}" in str(gg.get("description") or "")
-        ]
-        if not opened:
-            typer.echo(
-                "✗ PR opened but failed to open the gh:pr gate — re-run the merge to retry",
-                err=True,
-            )
-            raise typer.Exit(1)
-        typer.echo(
-            "· gh:pr gate opened without a blocking dep (bd refuses blocks edges onto epics)"
-        )
+    return work_merge.impl__ensure_pr_gate(sys.modules[__name__], main, bead, ref)
 
 
 def _open_landing_pr(cfg, entry, main, bead, data, branch, base):
@@ -1210,39 +1161,8 @@ def _open_landing_pr(cfg, entry, main, bead, data, branch, base):
     behind a `gh:pr` gate. CI on the PR takes over the postland-validation role; the close (with
     the squash-proof close_reason) fires from `work land` once GitHub reports the PR merged.
     Idempotent: a re-run reuses the open PR and its gate."""
-    if not ghpr.available():
-        typer.echo(
-            "✗ work.landing is 'pr' but `gh` is not on PATH — install gh or set landing: local",
-            err=True,
-        )
-        raise typer.Exit(1)
-    remote = config.push_remote(cfg, entry)
-    _guard_fork_remote(entry, remote)
-    if worktree.push_branch(entry, branch, remote) != 0:
-        typer.echo(f"✗ failed to push {branch} to {remote} — nothing landed", err=True)
-        raise typer.Exit(1)
-    pr = ghpr.open_pr_for(entry, branch)
-    if pr:
-        typer.echo(f"• {_pr_ref(pr)} already open for {branch} — reusing it")
-    else:
-        title = str(_first(data, "title") or bead)
-        acceptance = _first(data, "acceptance_criteria", "acceptance") or ""
-        body = f"Lands {bead} ({branch} → {base}) via `work.landing: pr`."
-        if acceptance:
-            body += f"\n\n## Acceptance\n{acceptance}"
-        rc, out = ghpr.create_pr(entry, base, branch, title, body)
-        if rc != 0:
-            typer.echo(f"✗ `gh pr create` failed — nothing landed:\n{out}", err=True)
-            raise typer.Exit(1)
-        pr = ghpr.pr_from_url(out)
-    ref = _pr_ref(pr)
-    _ensure_pr_gate(main, bead, ref)
-    if bd.run(["set-state", bead, "landing=pr-pending", "--reason", ref], main).returncode != 0:
-        typer.echo("⚠ PR opened but failed to record landing=pr-pending — set it by hand", err=True)
-    otel.count_bead_transition("pr_pending")
-    typer.echo(
-        f"✓ opened {ref} for {bead} ({branch} → {base}); bead stays OPEN (pr-pending) — "
-        f"`{config.BINARY_ALIAS} work land {bead}` once the PR merges"
+    return work_merge.impl__open_landing_pr(
+        sys.modules[__name__], cfg, entry, main, bead, data, branch, base
     )
 
 
@@ -1254,22 +1174,7 @@ def _guard_molecule_children(epic, main) -> list[dict]:
     caller to auto-close once the epic lands. Children come from `bd.children`, which trusts the
     parent EDGE — bd's own `--parent` matches by dotted-id PREFIX, so a bead detached from this
     epic used to gate the land forever on the strength of its id alone (bh-89mrf)."""
-    children = bd.children(epic, main)
-    if not isinstance(children, list):
-        typer.echo(f"✗ cannot list children of {epic} — refusing to land", err=True)
-        raise typer.Exit(1)
-    origin_reports = [c for c in children if adopt.is_origin_report(c.get("labels"))]
-    open_kids = [
-        str(c.get("id"))
-        for c in children
-        if str(c.get("status", "")) != "closed" and not adopt.is_origin_report(c.get("labels"))
-    ]
-    if open_kids:
-        typer.echo(
-            f"✗ molecule {epic} incomplete — open child issue(s): {', '.join(open_kids)}", err=True
-        )
-        raise typer.Exit(1)
-    return origin_reports
+    return work_merge.impl__guard_molecule_children(sys.modules[__name__], epic, main)
 
 
 def _guard_molecule_land_base(entry, epic, integration) -> str:
@@ -1278,25 +1183,9 @@ def _guard_molecule_land_base(entry, epic, integration) -> str:
     a top-level epic onto main (byte-identical to the old hardcoded target), a nested epic
     <ws>.<epic> onto its workstream container. Guards a container parent-link ambiguity and a
     closed-epic land target before resolving."""
-    conflict = worktree.container_conflict(entry, epic, integration)
-    if conflict:
-        id_base, link_base = conflict
-        typer.echo(
-            f"✗ {epic}: container ambiguity — the dotted id resolves to {id_base} but the "
-            f"parent-child link resolves to {link_base}. A re-parent/split left both containers "
-            f"live; refusing to land onto a guessed container. Reconcile the parent link, retry.",
-            err=True,
-        )
-        raise typer.Exit(1)
-    base = worktree.integration_base(entry, epic, integration)
-    if worktree.container_epic_closed(entry, base):
-        typer.echo(
-            f"✗ {epic}: land target {base} belongs to a CLOSED epic — refusing to resurrect a "
-            f"landed container. Re-parent {epic} onto a live container and retry.",
-            err=True,
-        )
-        raise typer.Exit(1)
-    return base
+    return work_merge.impl__guard_molecule_land_base(
+        sys.modules[__name__], entry, epic, integration
+    )
 
 
 def _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode) -> None:
@@ -1305,15 +1194,9 @@ def _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
     from a clean checkout first (a red molecule never reaches the PR either); the
     postland/combined validation role passes to CI on the PR. Reuses an exact-tree verdict on the
     same terms as the local-land path (`_validate_molecule_checkout`)."""
-    if mode != "loose":
-        rc = worktree.clean_checkout(
-            entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"), reuse=True
-        )
-        otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
-        if rc != 0:
-            typer.echo(f"✗ molecule validation failed (exit {rc}) — no PR opened", err=True)
-            raise typer.Exit(rc)
-    _open_landing_pr(cfg, entry, main, epic, epic_data, mol_branch, base)
+    return work_merge.impl__open_molecule_pr(
+        sys.modules[__name__], cfg, entry, main, epic, epic_data, mol_branch, base, mode
+    )
 
 
 def _validate_molecule_checkout(entry, mol_branch, cfg, mode) -> None:
@@ -1328,20 +1211,9 @@ def _validate_molecule_checkout(entry, mol_branch, cfg, mode) -> None:
     relaxes to, so there is deliberately no second tree comparison layered on top of the key —
     one source of truth for "same bytes", and it is the lookup. The last bead to land onto
     mol/<epic> already validated this exact tree; re-running it here proves nothing new."""
-    if mode == "loose":
-        return
-    v_start = time.perf_counter()
-    rc = worktree.clean_checkout(
-        entry, mol_branch, config.validate_cmd(cfg, entry, "molecule"), reuse=True
+    return work_merge.impl__validate_molecule_checkout(
+        sys.modules[__name__], entry, mol_branch, cfg, mode
     )
-    otel.record_validation_duration(
-        time.perf_counter() - v_start,
-        {"bh.work.phase": "molecule", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
-    )
-    otel.count_validation(rc == 0, {"bh.work.phase": "molecule"})
-    if rc != 0:
-        typer.echo(f"✗ molecule validation failed (exit {rc}) — nothing landed", err=True)
-        raise typer.Exit(rc)
 
 
 def _postland_revalidate_molecule(
@@ -1354,38 +1226,19 @@ def _postland_revalidate_molecule(
     `_validate_molecule_checkout`): a land onto an UNMOVED base produces a merge commit whose tree
     is byte-identical to the molecule's, which the pre-land run just proved — and the `stale` arm
     above is exactly the case where the base MOVED, so that tree is new and the lookup misses."""
-    if mode == "conservative" or (mode != "loose" and stale):
-        vrc = worktree.clean_checkout(
-            entry, base, config.validate_cmd(cfg, entry, "postland"), reuse=True
-        )
-        otel.count_validation(vrc == 0, {"bh.work.phase": "postland"})
-        if vrc != 0:
-            # Only rewrite a branch that's safe to rewrite (unpushed). A shared integration
-            # branch is fixed FORWARD, never reset — the land was intentional. Roll back where
-            # `base` lives: the main clone for a top-level land, a seat for a nested tier.
-            if _rollback_or_keep(entry, main, base, pre, slot_attrs):
-                typer.echo(  # lossless: mol branch + epic preserved
-                    f"✗ post-land validation failed (exit {vrc}) — the integration tip is RED "
-                    f"after landing {epic} (main moved underneath it). Rolled {base} back to "
-                    f"{pre[:7]}; {mol_branch} preserved, epic still open. Rebase the molecule "
-                    f"on {base} and re-run the wrap-up.",
-                    err=True,
-                )
-            else:
-                typer.echo(
-                    f"✗✗ post-land validation failed (exit {vrc}) — {base} is RED after "
-                    f"landing {epic} (main moved underneath it), and {base} is shared "
-                    f"(pushed) so it is NOT rewritten. The merge bubble stands; epic left "
-                    f"open. Fix forward: revert the bubble or land a follow-up fix.",
-                    err=True,
-                )
-            raise typer.Exit(vrc)
-    elif mode == "loose" and stale:
-        typer.echo(
-            f"⚠ main advanced under {epic}; skipping post-land revalidation per loose mode — "
-            f"{base} may be red",
-            err=True,
-        )
+    return work_merge.impl__postland_revalidate_molecule(
+        sys.modules[__name__],
+        cfg,
+        entry,
+        main,
+        base,
+        pre,
+        mode,
+        stale,
+        epic,
+        mol_branch,
+        slot_attrs,
+    )
 
 
 def _close_molecule_origin_reports(origin_reports, epic, main) -> None:
@@ -1394,14 +1247,9 @@ def _close_molecule_origin_reports(origin_reports, epic, main) -> None:
     lingering open forever. Best-effort — a close failure only warns, never unwinds a completed
     land. Batched into ONE `bd close` for every still-open report (`bd close` accepts multiple
     ids) instead of a subprocess-per-report loop."""
-    ids = [str(r.get("id")) for r in origin_reports if str(r.get("status", "")) != "closed"]
-    if not ids:
-        return
-    if bd.run(["close", *ids, "--reason", f"adopted epic {epic} landed"], main).returncode != 0:
-        typer.echo(
-            f"⚠ landed but failed to close origin report(s) {', '.join(ids)} — close manually",
-            err=True,
-        )
+    return work_merge.impl__close_molecule_origin_reports(
+        sys.modules[__name__], origin_reports, epic, main
+    )
 
 
 def _reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, base, hive) -> None:
@@ -1413,25 +1261,8 @@ def _reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, ba
     seat worktree and container branch stayed alive. Reconcile does the tail the first run missed —
     close the epic, ride the origin reports and swarm bead down with it, tear the seat down, delete
     the container — and exits 0."""
-    origin_reports = _guard_molecule_children(epic, main)
-    with work_group.merge_slot(main, {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)}):
-        closed = work_logic.close_merged(epic, main, "molecule landed", data=epic_data)
-        _close_molecule_origin_reports(origin_reports, epic, main)
-        _close_swarm_bead(epic, main)
-        _teardown_coordinator_seat(cfg, hive, epic)
-        _delete_branch(worktree.clone_for_branch(entry, base), mol_branch)
-    if not closed:
-        assignee = str(epic_data.get("assignee") or "").strip()
-        typer.echo(
-            f"✗ molecule {epic} is ALREADY LANDED ({mol_branch} → {base}) but {epic} could not be "
-            f"closed{f' (assignee {assignee!r})' if assignee else ''} — close it manually; the "
-            f"molecule is on {base}, do NOT re-land it",
-            err=True,
-        )
-        raise typer.Exit(1)
-    typer.echo(
-        f"✓ molecule {epic} was already landed ({mol_branch} → {base}) — reconciled bookkeeping "
-        f"(closed {epic}, tore down the seat, deleted the container; no re-merge)"
+    return work_merge.impl__reconcile_landed_molecule(
+        sys.modules[__name__], cfg, entry, main, epic, epic_data, mol_branch, base, hive
     )
 
 
@@ -1441,116 +1272,7 @@ def _merge_molecule(cfg, epic, hive):
     molecule is complete (every child closed) + clean, holds the hive merge slot, validates the
     assembled branch from a clean checkout, lands it, closes the epic, and deletes the branch.
     On conflict / validation failure it aborts and releases the slot — never drops work."""
-    entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
-    epic_data = bd.show(epic, main)
-    _guard_open(epic_data, epic)
-
-    mol_branch = f"{worktree._BEAD_PREFIX}epic/{epic}"
-    if not worktree._branch_exists(main, mol_branch):
-        typer.echo(f"✗ no container branch {mol_branch} — was {epic} kicked off?", err=True)
-        raise typer.Exit(1)
-
-    origin_reports = _guard_molecule_children(epic, main)
-
-    if not worktree.is_clean(main):
-        typer.echo(f"✗ main clone {main} not clean — cannot land molecule", err=True)
-        raise typer.Exit(1)
-
-    integration = config.integration_branch(cfg, entry)
-    base = _guard_molecule_land_base(entry, epic, integration)
-    if already_landed(entry, mol_branch, base):
-        # ALREADY LANDED — the container merged and the epic never closed (bh-lvqs). Without this
-        # the run falls through to merge_no_ff, which reports "Already up to date" and leaves the
-        # epic open with no indication anything is wrong, so `finish` can never complete.
-        _reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, base, hive)
-        return
-    # The container carries every bead commit plus bh's own merge bubbles; the gate covers the
-    # whole range, so an unsigned merge commit bh made is caught here too, not just bead work.
-    _guard_signed_history(entry, mol_branch, base, cfg)
-    mode = config.validation_mode(cfg, entry)
-    if base == integration and config.work_landing(cfg, entry) == "pr":
-        _open_molecule_pr(cfg, entry, main, epic, epic_data, mol_branch, base, mode)
-        return
-
-    slot_attrs = {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)}
-    started = time.perf_counter()
-    with work_group.merge_slot(main, slot_attrs):
-        _validate_molecule_checkout(entry, mol_branch, cfg, mode)
-
-        # Staleness: did the integration branch advance since the molecule forked? If so the
-        # --no-ff land combines validated-mol with newer-main — a clean textual merge can still be
-        # a logical conflict, and that tree was never validated. `pre` is the rollback target.
-        pre = worktree._ref_sha(main, base)
-        stale = worktree.base_of(entry, mol_branch, base) != pre
-
-        prof = config.work_identity(cfg, entry)
-        agent = prof["mode"] == "agent"
-        mrc, out = worktree.merge_no_ff(
-            entry,
-            mol_branch,
-            base,
-            name=(prof["name"] or "") if agent else "",
-            email=(prof["email"] or "") if agent else "",
-            signing_key=(prof["signing_key"] or "") if agent else "",
-            sign=prof["sign"] if agent else False,
-            message=f"chore(merge): molecule {epic}",
-        )
-        if mrc != 0:
-            otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
-            # The merger has no write authority to hand-resolve this (bh-2p6w — merger is "not
-            # implement" per docs/design/roles-rbac-matrix.md), so the escalation is made
-            # RECORDED + ROUTABLE state on the epic, not just this stderr transcript.
-            where = work_logic.record_merge_conflict(
-                entry, mol_branch, base, main, [epic], "molecule land"
-            )
-            typer.echo(
-                f"✗ molecule merge failed — aborted, nothing landed; bounced {epic} to "
-                f"review=changes-requested (conflict in: {where}) — resolve in the {mol_branch} "
-                f"seat, then re-run `{config.BINARY_ALIAS} work finish {epic}`:\n{out}",
-                err=True,
-            )
-            raise typer.Exit(mrc)
-
-        _postland_revalidate_molecule(
-            cfg, entry, main, base, pre, mode, stale, epic, mol_branch, slot_attrs
-        )
-
-        # The container land bubble's own sha, recorded onto the epic — per-bead merge commits
-        # were already recorded onto their own beads as each child landed onto mol/<epic>
-        # (_merge_bead's _record_merge_commit); this is the OUTER bubble the whole molecule lands
-        # as (bh-1b0rc.2).
-        _record_merge_commit(epic, main, base)
-
-        otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "no_ff"})
-        # Close AS THE EPIC'S ASSIGNEE, not the merging actor (bh-r8el) — see `_merge_bead`'s
-        # matching fix. `closed` drives the final message + exit code below (bh-3nuo).
-        closed = work_logic.close_merged(epic, main, "molecule landed", data=epic_data)
-        _close_molecule_origin_reports(origin_reports, epic, main)
-        _close_swarm_bead(epic, main)  # the kickoff swarm bead rides the epic down too (bh-7tno)
-        _teardown_coordinator_seat(cfg, hive, epic)  # remove seat worktree BEFORE deleting branch
-        # Delete the container in the clone where `base` lives — its HEAD now includes the landed
-        # container, so the safe `branch -d` succeeds. For a nested land base is the workstream seat
-        # (main clone's HEAD, still on `main`, does NOT include the child container merged one tier
-        # up); for a top-level land it's the main clone. clone_for_branch resolves either.
-        _delete_branch(worktree.clone_for_branch(entry, base), mol_branch)
-
-    otel.record_merge_duration(time.perf_counter() - started, {"bh.merge.kind": "molecule"})
-    # Molecule asymmetry: emit cycle_time (+ slot, above) ONLY — never coding/review_wait/rework,
-    # which are per-bead concepts. Best-effort, never blocks the land (it already succeeded).
-    try:
-        _emit_cycle(epic_data, {"bh.merge.kind": "molecule", "bh.hive": _hive(entry)})
-    except Exception:  # best-effort: a metric read/parse must never fail a completed land
-        pass
-    otel.count_bead_transition("molecule_landed")
-    if not closed:
-        assignee = str(epic_data.get("assignee") or "").strip()
-        typer.echo(
-            f"✗ landed molecule {epic} ({mol_branch} --no-ff → {base}) but FAILED to close "
-            f"{epic}{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
-            err=True,
-        )
-        raise typer.Exit(1)
-    typer.echo(f"✓ landed molecule {epic} ({mol_branch} --no-ff → {base}); closed {epic}")
+    return work_merge.impl__merge_molecule(sys.modules[__name__], cfg, epic, hive)
 
 
 @app.command("start")
@@ -1605,15 +1327,7 @@ def finish(epic: str = _BEAD, hive: str = _HIVE):
     `merge --molecule` — guards the bead is an epic, then validates the assembled `mol/<epic>`,
     lands it onto the integration branch as ONE `--no-ff` bubble, closes the epic, and deletes the
     branch. `merge --molecule <epic>` remains the equivalent."""
-    otel.set_bead(epic)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    _entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
-    data = bd.show(epic, main)
-    _guard_open(data, epic)
-    if not _is_epic(data):
-        typer.echo(f"✗ {epic} is not an epic — nothing to finish", err=True)
-        raise typer.Exit(1)
-    _merge_molecule(cfg, epic, hive)
+    return work_merge.impl_finish(sys.modules[__name__], epic, hive)
 
 
 @app.command("land")
@@ -1627,31 +1341,7 @@ def land(bead: str = _BEAD, hive: str = _HIVE):
     an out-of-band landing is `worktree mark-landed`). For an epic it also closes adopted
     origin reports and tears down the coordinator seat, mirroring the local land; the pushed
     branch itself is left for `worktree prune` to reap."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    entry, main, _target, branch = worktree.locate(cfg, hive, bead)
-    data = bd.show(bead, main)
-    _guard_open(data, bead)
-    _guard_land_pr_pending(bead, main)
-    pr = _resolve_merged_land_pr(entry, branch)
-    ref = _pr_ref(pr)
-    _resolve_land_pr_merge_gates(bead, main, ref)
-    reason = "molecule landed" if _is_epic(data) else "merged"
-    if bd.run(["close", bead, "--reason", reason], main).returncode != 0:
-        typer.echo(f"✗ PR merged but failed to close {bead} — close it manually", err=True)
-        raise typer.Exit(1)
-    _clear_review_label(bead, data, main)  # landed → drop any stale review:pending label
-    if _is_epic(data):
-        # Epic parity with the local land: adopted origin reports ride the epic to completion,
-        # and the coordinator seat comes down. Best-effort — never unwinds a completed land.
-        _close_land_origin_reports(bead, main)
-        _close_swarm_bead(bead, main)  # the kickoff swarm bead rides the epic down too (bh-7tno)
-        _teardown_coordinator_seat(cfg, hive, bead)
-    _prune_landed_hive(entry)
-    otel.count_bead_transition("pr_landed")
-    typer.echo(
-        f"✓ {ref} merged — closed {bead} (close_reason: {reason}); reaped any SAFE worktree(s)"
-    )
+    return work_merge.impl_land(sys.modules[__name__], bead, hive)
 
 
 def _prune_landed_hive(entry) -> None:
@@ -1661,45 +1351,26 @@ def _prune_landed_hive(entry) -> None:
     already closed, landed, and clean.  The close has already completed, however, so a metadata
     or filesystem failure here must never turn a successful land into a failed command.
     """
-    hive = _hive(entry)
-    try:
-        worktree.prune(hive=hive)
-    except Exception as exc:  # best-effort post-land cleanup; never unwind a completed land
-        typer.echo(f"⚠ landed but automatic worktree prune for {hive} failed: {exc}", err=True)
+    return work_merge.impl__prune_landed_hive(sys.modules[__name__], entry)
 
 
 def _guard_land_pr_pending(bead, main) -> None:
     """Refuse `land` on a bead that isn't `pr-pending` — it only completes a `work.landing: pr`
     landing opened by `merge`/`finish`."""
-    if bd.state(bead, "landing", main) != "pr-pending":
-        typer.echo(
-            f"✗ {bead} is not pr-pending — `land` completes a `work.landing: pr` landing "
-            f"opened by merge/finish",
-            err=True,
-        )
-        raise typer.Exit(1)
+    return work_merge.impl__guard_land_pr_pending(sys.modules[__name__], bead, main)
 
 
 def _resolve_merged_land_pr(entry, branch) -> dict:
     """The MERGED PR for `branch`, or refuse — completion is driven by PR STATE, never asserted
     (the operator escape hatch for an out-of-band landing is `worktree mark-landed`)."""
-    pr = ghpr.merged_pr_for(entry, branch)
-    if pr:
-        return pr
-    cur = ghpr.pr_for_branch(entry, branch)
-    state = str((cur or {}).get("state") or "not found")
-    typer.echo(f"✗ PR for {branch} is {state}, not MERGED — nothing landed", err=True)
-    raise typer.Exit(1)
+    return work_merge.impl__resolve_merged_land_pr(sys.modules[__name__], entry, branch)
 
 
 def _resolve_land_pr_merge_gates(bead, main, ref) -> None:
     """Resolve any still-open pr-merge gate — bd's own gh:pr gate watcher may already have (both
     orders are fine); a resolve failure only warns, the merge already happened on GitHub. `bd
     gate resolve` only ever takes ONE gate id, so this stays a per-gate spawn (not batchable)."""
-    for g in _pr_merge_gates(bead, main):
-        gid = str(g.get("id") or "")
-        if bd.run(["gate", "resolve", gid, "--reason", f"{ref} merged"], main).returncode != 0:
-            typer.echo(f"⚠ failed to resolve gh:pr gate {gid} — resolve it manually", err=True)
+    return work_merge.impl__resolve_land_pr_merge_gates(sys.modules[__name__], bead, main, ref)
 
 
 def _close_land_origin_reports(bead, main) -> None:
@@ -1711,16 +1382,7 @@ def _close_land_origin_reports(bead, main) -> None:
     and WRITE halves of one feature, and a first pass at bh-89mrf fixed only the read — leaving a
     detached bead invisible to the guard yet still CLOSED by the land, which is worse than fixing
     neither."""
-    children = bd.children(bead, main)
-    ids = [
-        str(r.get("id"))
-        for r in (children if isinstance(children, list) else [])
-        if adopt.is_origin_report(r.get("labels")) and str(r.get("status", "")) != "closed"
-    ]
-    if not ids:
-        return
-    if bd.run(["close", *ids, "--reason", f"adopted epic {bead} landed"], main).returncode != 0:
-        typer.echo(f"⚠ landed but failed to close origin report(s) {', '.join(ids)}", err=True)
+    return work_merge.impl__close_land_origin_reports(sys.modules[__name__], bead, main)
 
 
 @app.command("merge")
@@ -1747,39 +1409,7 @@ def merge(
     With `--group <ids>`, lands a whole work-group: validate the shared `wt/batch/<group>` branch
     once, merge it `--no-ff` into the members' molecule as ONE bubble (per-bead commits preserved
     inside, so it stays bisectable), then close every member — release the slot either way."""
-    cfg = config.load()
-    # ONE gate, up front, before the slot is held or anything is merged. Deliberately NOT
-    # wrapped around the post-merge `bd close` below: that close is bookkeeping on a merge that
-    # already succeeded, and re-gating it (or re-gating the operator's `bd close --force`
-    # retry — bh-r8el) would block cleanup for a merge nobody can undo. See guard_primary.
-    guard.guard_primary(hive, cfg=cfg, verb="work merge")
-    group = work_logic.opt_str(group)
-    if group:
-        # Refuse `<id>` alongside `--group` — `submit` already does, and `merge` silently ignoring
-        # it is what UNDERCOUNTED bh-hsus (bh-c3nf). `--group` is ONE value: written space- rather
-        # than comma-separated, the shell binds only the first id to it and the rest land in this
-        # positional, so the batch BRANCH merged whole (every member's commits landed) while the
-        # member LIST held one id — and only that one was closed. Silence made a partial close
-        # look like a complete one, which is the failure worth refusing over.
-        if bead:
-            typer.echo(
-                f"✗ pass either <id> or --group, not both (got <id>={bead}, --group={group}).\n"
-                f"  --group takes ONE comma-separated value — ids must not be space-separated:\n"
-                f"      {config.BINARY_ALIAS} work merge --group {group},{bead}   # correct\n"
-                f"      {config.BINARY_ALIAS} work merge --group {group} {bead}   # drops {bead}",
-                err=True,
-            )
-            raise typer.Exit(1)
-        work_group.merge_group(cfg, group, hive, rm)
-        return
-    if not bead:
-        typer.echo("✗ pass a bead <id> (or --group <ids> / --molecule <epic>)", err=True)
-        raise typer.Exit(1)
-    otel.set_bead(bead)  # ws.bead/ws.epic on this verb span (bead is the epic when --molecule)
-    if molecule:
-        _merge_molecule(cfg, bead, hive)
-        return
-    _merge_bead(cfg, bead, hive, rm)
+    return work_merge.impl_merge(sys.modules[__name__], bead, hive, rm, molecule, group)
 
 
 def _guard_bead_merge_gates(bead, main, landing_pr) -> None:
@@ -1789,46 +1419,19 @@ def _guard_bead_merge_gates(bead, main, landing_pr) -> None:
     `landing: pr` the ONE exception is the landing path's own `pr-merge` gate — it must not block
     an idempotent re-run of that same path (which reuses the open PR + gate rather than opening
     duplicates)."""
-    if bd.state(bead, "review", main) == "changes-requested":
-        typer.echo(f"✗ {bead} has changes-requested — resume & resubmit, don't merge", err=True)
-        raise typer.Exit(1)
-    gate_lines = work_logic.open_gate_lines(
-        bead, main, skip_marker="pr-merge" if landing_pr else ""
-    )
-    if gate_lines:
-        typer.echo(f"✗ {bead}: open gate(s) block the merge:\n" + "\n".join(gate_lines), err=True)
-        raise typer.Exit(1)
+    return work_merge.impl__guard_bead_merge_gates(sys.modules[__name__], bead, main, landing_pr)
 
 
 def _guard_bead_land_base(entry, bead, integration) -> str:
     """Recursive land (xn3o.7): guard a container parent-link ambiguity and a closed-epic land
     target, then resolve `bead`'s land base one tier up via the integration_base climb."""
-    conflict = worktree.container_conflict(entry, bead, integration)
-    if conflict:
-        id_base, link_base = conflict
-        typer.echo(
-            f"✗ {bead}: container ambiguity — the dotted id resolves to {id_base} but the "
-            f"parent-child link resolves to {link_base}. A re-parent/split left both containers "
-            f"live; refusing to guess. Reconcile the parent link (or retire the stale container) "
-            f"and retry.",
-            err=True,
-        )
-        raise typer.Exit(1)
-    base = worktree.integration_base(entry, bead, integration)
-    if worktree.container_epic_closed(entry, base):
-        typer.echo(
-            f"✗ {bead}: {base} belongs to a CLOSED epic — refusing to land on (or resurrect) a "
-            f"landed container. Re-parent {bead} onto a live epic and retry.",
-            err=True,
-        )
-        raise typer.Exit(1)
-    return base
+    return work_merge.impl__guard_bead_land_base(sys.modules[__name__], entry, bead, integration)
 
 
 def already_landed(entry, branch: str, base: str) -> bool:
     """Merge-verb alias for :func:`worktree.landed_via_merge` — the branch's commits are on `base`
     because they were merged there, not because the branch was never implemented (bh-lvqs)."""
-    return worktree.landed_via_merge(entry, branch, base)
+    return work_merge.impl_already_landed(sys.modules[__name__], entry, branch, base)
 
 
 def _guard_bead_clean_history(entry, branch, base, cfg) -> bool:
@@ -1838,14 +1441,9 @@ def _guard_bead_clean_history(entry, branch, base, cfg) -> bool:
     Returns True when the branch is ALREADY LANDED, so the caller reconciles bookkeeping instead
     of merging (bh-lvqs); False on the ordinary path. A genuinely empty branch — no commits over
     base and NOT an ancestor of it — still takes the self-refine bounce unchanged."""
-    count, subjects = worktree.history(entry, branch, base)
-    if count == 0 and already_landed(entry, branch, base):
-        return True
-    ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
-    if not ok:
-        typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
-        raise typer.Exit(1)
-    return False
+    return work_merge.impl__guard_bead_clean_history(
+        sys.modules[__name__], entry, branch, base, cfg
+    )
 
 
 def _reconcile_landed_bead(cfg, entry, main, bead, bead_data, branch, base, hive, rm) -> None:
@@ -1860,29 +1458,8 @@ def _reconcile_landed_bead(cfg, entry, main, bead, bead_data, branch, base, hive
     not happening now, it happened then, and counting it twice would corrupt the very telemetry an
     operator would use to spot this failure. The merge slot is still held around the close so a
     concurrent merger cannot interleave with the reconcile."""
-    slot_attrs = {"bh.merge.kind": "bead", "bh.hive": _hive(entry)}
-    with work_group.merge_slot(main, slot_attrs):
-        closed = work_logic.close_merged(bead, main, "merged", data=bead_data)
-        _clear_review_label(bead, bead_data, main)
-    if rm:
-        # Tolerant: see `work_group._reconcile_landed_group` — the tree may already be gone,
-        # and reconcile must stay idempotent.
-        try:
-            worktree.remove(hive, bead, force=True)
-        except Exception:
-            pass
-    if not closed:
-        assignee = str(bead_data.get("assignee") or "").strip()
-        typer.echo(
-            f"✗ {bead} is ALREADY MERGED ({branch} → {base}) but could not be closed"
-            f"{f' (assignee {assignee!r})' if assignee else ''} — close it manually; "
-            "the code is on the integration branch, do NOT re-implement it",
-            err=True,
-        )
-        raise typer.Exit(1)
-    typer.echo(
-        f"✓ {bead} was already merged ({branch} → {base}) — reconciled bookkeeping "
-        "(closed the bead; no re-merge)"
+    return work_merge.impl__reconcile_landed_bead(
+        sys.modules[__name__], cfg, entry, main, bead, bead_data, branch, base, hive, rm
     )
 
 
@@ -1891,12 +1468,7 @@ def _guard_signed_history(entry, branch, base, cfg) -> None:
     already the pre-merge guard: with `work.enforce_signing` on, EVERY commit in the merge
     range must verify as trusted, not just the tip. A no-op when the flag is off, so default
     behaviour is byte-identical to before."""
-    if not config.enforce_signing(cfg, entry):
-        return
-    ok, msg = work_logic._signing_ok(worktree.signature_status(entry, branch, base), branch, base)
-    if not ok:
-        typer.echo(f"✗ {msg}", err=True)
-        raise typer.Exit(1)
+    return work_merge.impl__guard_signed_history(sys.modules[__name__], entry, branch, base, cfg)
 
 
 def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs) -> str:
@@ -1910,33 +1482,9 @@ def _merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs) 
     merger seat is 'not implement' per `docs/design/roles-rbac-matrix.md`), so the bounce is
     made RECORDED + ROUTABLE state (`work_logic.record_merge_conflict`: a note + bounce to
     `review=changes-requested` naming the conflicted paths), not just this stderr transcript."""
-    prof = config.work_identity(cfg, entry)
-    agent = prof["mode"] == "agent"
-    rc, out, how = worktree.try_merge_rebase(
-        entry,
-        branch,
-        base,
-        target,
-        name=(prof["name"] or "") if agent else "",
-        email=(prof["email"] or "") if agent else "",
-        signing_key=(prof["signing_key"] or "") if agent else "",
-        sign=prof["sign"] if agent else False,
-        message=f"chore(merge): bead {bead}",
-        union_globs=tuple(config.union_globs(cfg, entry)),
-        validate_cmd=config.validate_cmd(cfg, entry, "union"),
+    return work_merge.impl__merge_bead_no_ff(
+        sys.modules[__name__], entry, branch, base, target, cfg, bead, main, slot_attrs
     )
-    if rc != 0:
-        otel.count_merge_outcome({**slot_attrs, "bh.merge.how": "conflict"})
-        where = work_logic.record_merge_conflict(entry, branch, base, main, [bead], "merge")
-        typer.echo(
-            f"✗ real conflict merging {bead} — rebase retry failed, bead branch restored; "
-            f"bounced {bead} to review=changes-requested (conflict in: {where}) — "
-            f"`{config.BINARY_ALIAS} work resume {bead}`, rebase onto {base}, resolve, "
-            f"resubmit:\n{out}",
-            err=True,
-        )
-        raise typer.Exit(rc)
-    return how
 
 
 def _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main) -> None:
@@ -1952,44 +1500,9 @@ def _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_
     the branch tip submit already validated, so there is no combination to test — that is ADR
     Decision 4 (bh-ku9n9.17), and the ledger key is the entire test for it (see
     `_validate_molecule_checkout` for why no second tree comparison exists)."""
-    vrc = worktree.clean_checkout(
-        entry,
-        base,
-        config.validate_cmd(cfg, entry, "merge", main_gate=on_main),
-        reuse=True,
+    return work_merge.impl__postland_revalidate_bead(
+        sys.modules[__name__], cfg, entry, main, base, pre, bead, slot_attrs, on_main
     )
-    otel.count_validation(vrc == 0, {"bh.work.phase": "merge"})
-    if vrc == 0:
-        return
-    # Roll back `base` where it lives — the coordinator seat for a container base, else the main
-    # clone (a top-level land onto main).
-    rolled = _rollback_or_keep(entry, main, base, pre, slot_attrs)
-    bd.run(
-        [
-            "set-state",
-            bead,
-            "review=changes-requested",
-            "--reason",
-            "combined-state red after merge — may be an interaction with "
-            "already-merged siblings; rebase on the current tip and fix",
-        ],
-        main,
-    )
-    if rolled:
-        typer.echo(
-            f"✗ {bead} merged clean but the {base} tip is RED in combination (exit "
-            f"{vrc}) — rolled {base} back to {pre[:7]} and bounced the bead to "
-            f"changes-requested.",
-            err=True,
-        )
-    else:
-        typer.echo(
-            f"✗✗ {bead} merged clean but {base} is RED in combination (exit {vrc}) and "
-            f"{base} is shared (pushed) so it is NOT rewritten — the merge stands. "
-            f"Bounced the bead; fix forward.",
-            err=True,
-        )
-    raise typer.Exit(vrc)
 
 
 def _record_merge_commit(bead, main, base) -> None:
@@ -2000,12 +1513,7 @@ def _record_merge_commit(bead, main, base) -> None:
     MERGE BACK, so calling this only once control reaches here means a rolled-back sha is never
     recorded. Non-fatal by construction: a metadata write must never fail a merge that already
     landed — a failure is surfaced as a warning, never swallowed silently and never raised."""
-    try:
-        merge_sha = worktree._ref_sha(main, base)
-        if merge_sha:
-            git_linkage.record_commits(bead, main, [merge_sha])
-    except Exception as exc:  # best-effort: linkage must never fail a completed merge
-        typer.echo(f"⚠ failed to record commit linkage for {bead}: {exc}", err=True)
+    return work_merge.impl__record_merge_commit(sys.modules[__name__], bead, main, base)
 
 
 def _merge_bead(cfg, bead, hive, rm):
@@ -2013,102 +1521,7 @@ def _merge_bead(cfg, bead, hive, rm):
     resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
     `--no-ff`, re-validate the combined tip on a main-gate, close the bead. The single-bead
     sibling of `_merge_molecule` / `merge_group`; `merge` is the thin 3-way dispatch over them."""
-    started = time.perf_counter()
-    entry, main, target, branch = worktree.locate(cfg, hive, bead)
-    bead_data = bd.show(bead, main)  # reused for the at-merge cycle/stage flow metrics below
-    _guard_open(bead_data, bead)
-
-    landing_pr = config.work_landing(cfg, entry) == "pr"
-    _guard_bead_merge_gates(bead, main, landing_pr)
-
-    integration = config.integration_branch(cfg, entry)
-    base = _guard_bead_land_base(entry, bead, integration)
-    if _guard_bead_clean_history(entry, branch, base, cfg):
-        # Already on the base: finish the bookkeeping the first run missed, don't re-merge and
-        # don't bounce it for rework (bh-lvqs).
-        _reconcile_landed_bead(cfg, entry, main, bead, bead_data, branch, base, hive, rm)
-        return
-    _guard_signed_history(entry, branch, base, cfg)
-
-    # PR-only-main landing (work.landing: pr): the SHARED-branch boundary is PR-governed — push
-    # + open a PR instead of local-merging, and leave the bead open (pr-pending) until the PR
-    # merges. A bead landing into its molecule container stays a local merge in any mode.
-    if base == integration and landing_pr:
-        _open_landing_pr(cfg, entry, main, bead, bead_data, branch, base)
-        return
-
-    slot_attrs = {"bh.merge.kind": "bead", "bh.hive": _hive(entry)}
-    mode = config.validation_mode(cfg, entry)
-    # An ad-hoc bead (no molecule) merges straight into the shared integration branch — that land is
-    # a main-merge gate just like the molecule pre-land, so it gets a final re-validation in every
-    # mode except `loose` (which trusts submits and skips main-gate checks, as it does for a
-    # molecule). A bead → mol/<epic> merge stays fast (the mol→main land is its backstop).
-    on_main = base == integration
-    revalidate = mode == "conservative" or (on_main and mode != "loose")
-    pre = worktree._ref_sha(main, base) if revalidate else ""
-    with work_group.merge_slot(main, slot_attrs):
-        how = _merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs)
-
-        if revalidate:
-            _postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)
-
-        _record_merge_commit(bead, main, base)
-
-        otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
-        # Close AS THE BEAD'S ASSIGNEE, not the merging actor (bh-r8el) — the seat that did the
-        # work is never the merger's own identity in the normal dispatcher flow, so `bd close`'s
-        # actor guard refused every time until now. `closed` is the TRUE outcome and drives the
-        # final message + exit code below, never assumed (bh-3nuo).
-        #
-        # PAST THIS POINT THE CODE IS ON THE BASE (bh-lvqs). Anything that raises from here is a
-        # bookkeeping failure over a COMPLETED merge, and the operator's only dangerous mistake is
-        # to read the traceback as "the merge failed" and re-do the work. The original incident
-        # died exactly here and said nothing, leaving main carrying the change while the tracker
-        # said in-progress. So: name what is unreconciled, say plainly that the code landed, and
-        # re-raise rather than swallowing — this reports, it does not recover.
-        try:
-            closed = work_logic.close_merged(bead, main, "merged", data=bead_data)
-            _clear_review_label(bead, bead_data, main)  # merged → drop stale review:pending
-        except Exception:
-            assignee = str(bead_data.get("assignee") or "").strip()
-            typer.echo(
-                f"✗ {bead} MERGED SUCCESSFULLY ({branch} --no-ff → {base}) but its bookkeeping "
-                f"did not complete.\n"
-                f"  THE CODE IS ON {base} — do not re-implement or re-submit it.\n"
-                f"  Unreconciled: bead {bead}"
-                f"{f', assignee {assignee!r}' if assignee else ''}, branch {branch}.\n"
-                f"  Re-run `{config.BINARY_ALIAS} work merge {bead}` — it is idempotent over an "
-                f"already-landed branch and will finish the reconcile.",
-                err=True,
-            )
-            raise
-
-    otel.record_merge_duration(
-        time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}
-    )
-    # At-merge cycle/stage/rework from bd — best-effort + skew-guarded; the bead already merged, so
-    # a slow/failing read or a negative delta must never turn a successful land into a failure.
-    try:
-        _emit_bead_flow(bead, bead_data, main, {"bh.merge.kind": "bead", "bh.hive": _hive(entry)})
-    except Exception:  # best-effort: a metric read/parse must never fail a completed merge
-        pass
-    otel.count_bead_transition("merged")
-    note = ""
-    if how == "rebased":
-        note = " (rebased onto a newer base first)"
-    elif how == "union":
-        note = " (landed via union conflict resolution)"
-    if rm:
-        worktree.remove(hive, bead, force=True)
-    if not closed:
-        assignee = str(bead_data.get("assignee") or "").strip()
-        typer.echo(
-            f"✗ merged {bead} ({branch} --no-ff → {base}){note} but FAILED to close it"
-            f"{f' (assignee {assignee!r})' if assignee else ''} — close it manually",
-            err=True,
-        )
-        raise typer.Exit(1)
-    typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
+    return work_merge.impl__merge_bead(sys.modules[__name__], cfg, bead, hive, rm)
 
 
 @app.command("resume")
@@ -2249,14 +1662,12 @@ review = app.command("review")(otel.trace_verb("work.review")(work_show.review))
 
 def _load_plan(plan_arg: str) -> dict:
     """Read a squash-plan from a file path or '-' (stdin). Raises on read/JSON errors."""
-    text = sys.stdin.read() if plan_arg == "-" else Path(plan_arg).read_text()
-    return json.loads(text)
+    return work_refine.impl__load_plan(sys.modules[__name__], plan_arg)
 
 
 def _restore(target, backup) -> None:
     """Abort any in-progress rebase and hard-reset the branch back to its pre-refine tip."""
-    worktree.rebase_abort(target)
-    worktree.reset_hard(target, backup)
+    return work_refine.impl__restore(sys.modules[__name__], target, backup)
 
 
 def refine_branch(
@@ -2276,106 +1687,48 @@ def refine_branch(
     Exactly one input mode (--plan | --autosquash | --since). On a real refine the backup
     branch is created before the rebase and surfaced via RefineResult.backup (success) or
     WorkError.backup (restore paths) so callers can report it identically."""
-    entry, _main, target, branch = worktree.locate(cfg, hive, bead)
-    _guard_refine_mode(target, bead, plan, autosquash, since)
-    base = _resolve_refine_base(cfg, entry, bead, branch)
-    base, rows, groups = _build_refine_plan(entry, base, branch, plan, autosquash, since)
-
-    # --dry-run: simulate; make NO changes (no clean-tree requirement — read-only).
-    if dry_run:
-        subjects = (
-            [r["subject"] for r in rows if not _MARKER.match(r["subject"])]
-            if autosquash
-            else _simulate(rows, groups)
-        )
-        return RefineResult(base=base, dry_run=True, subjects=subjects)
-
-    backup = _apply_refine_rebase(entry, target, branch, base, autosquash, rows, groups)
-    return RefineResult(
-        base=base,
-        backup=backup,
-        branch=branch,
-        log=worktree.log_range(entry, base, branch),
-        target=target,
+    return work_refine.impl_refine_branch(
+        sys.modules[__name__],
+        cfg,
+        hive=hive,
+        bead=bead,
+        plan=plan,
+        autosquash=autosquash,
+        since=since,
+        dry_run=dry_run,
     )
 
 
 def _guard_refine_mode(target, bead, plan, autosquash, since) -> None:
     """Guard exactly one input mode (--plan | --autosquash | --since) is given and the worktree
     exists."""
-    if sum([bool(plan), autosquash, bool(since)]) != 1:
-        raise WorkError(["✗ pass exactly one of --plan / --autosquash / --since"])
-    if not target.exists():
-        raise WorkError([f"✗ no worktree for {bead} — claim it first"])
+    return work_refine.impl__guard_refine_mode(
+        sys.modules[__name__], target, bead, plan, autosquash, since
+    )
 
 
 def _resolve_refine_base(cfg, entry, bead, branch) -> str:
     """Resolve the refine base (the integration base climbed onto the branch's actual fork
     point), or raise when it can't be computed."""
-    base = worktree.base_of(
-        entry, branch, worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
-    )
-    if not base:
-        raise WorkError(["✗ cannot compute base (is the integration branch present locally?)"])
-    return base
+    return work_refine.impl__resolve_refine_base(sys.modules[__name__], cfg, entry, bead, branch)
 
 
 def _build_refine_plan(entry, base, branch, plan, autosquash, since) -> tuple[str, list, list]:
     """Build the squash plan + resolve commit rows/groups (autosquash lets git build its own
     todo, so no plan). Returns (base — possibly overridden by an explicit plan `base`, commit
     rows, groups)."""
-    if autosquash:
-        return base, worktree.commit_rows(entry, base, branch), []
-    if since:
-        plan_dict = plan_from_since(worktree.commit_rows(entry, since, branch))
-    else:
-        try:
-            plan_dict = _load_plan(plan)
-        except (OSError, json.JSONDecodeError) as e:
-            raise WorkError([f"✗ cannot read plan: {e}"]) from None
-    if isinstance(plan_dict, dict) and plan_dict.get("base"):
-        base = plan_dict["base"]  # explicit base override
-    rows = worktree.commit_rows(entry, base, branch)
-    ok, errors, groups = validate_plan(plan_dict, rows)
-    if not ok:
-        raise WorkError([f"✗ {e}" for e in errors])
-    return base, rows, groups
+    return work_refine.impl__build_refine_plan(
+        sys.modules[__name__], entry, base, branch, plan, autosquash, since
+    )
 
 
 def _apply_refine_rebase(entry, target, branch, base, autosquash, rows, groups) -> str:
     """Real refine: require a clean tree on the expected branch, snapshot a backup branch,
     rebase (autosquash or an explicit squash-plan todo), and gate on a byte-identical net tree —
     restoring from the backup on any rebase failure or tree drift. Returns the backup branch."""
-    if not worktree.is_clean(target):
-        raise WorkError(["✗ working tree not clean — commit or discard changes first"])
-    cur = worktree.current_branch(target)
-    if cur != branch:
-        raise WorkError([f"✗ on branch {cur or '(detached)'}, expected {branch}"])
-
-    ts = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup = worktree.backup_branch(entry, branch, ts)
-
-    if autosquash:
-        rc, out = worktree.rebase_autosquash(target, base)
-    else:
-        rc, out = worktree.rebase_squash(target, base, build_todo(rows, groups))
-
-    if rc != 0:
-        _restore(target, backup)
-        messages = [f"✗ refine rebase failed (exit {rc}) — restored from {backup}"]
-        if out.strip():
-            messages.append(out.strip())
-        messages.append(
-            "  keep a keep's folds contiguous, or refine-as-you-go with `git commit --fixup`"
-        )
-        raise WorkError(messages, backup=backup)
-
-    # Byte-identical gate — the net change must be untouched (guarantees a pure rewrite).
-    if not worktree.same_tree(entry, backup, branch):
-        worktree.reset_hard(target, backup)
-        raise WorkError([f"✗ refine changed the tree — restored from {backup}"], backup=backup)
-
-    return backup
+    return work_refine.impl__apply_refine_rebase(
+        sys.modules[__name__], entry, target, branch, base, autosquash, rows, groups
+    )
 
 
 @app.command("refine")
@@ -2391,31 +1744,6 @@ def refine(
     """Squash local checkpoint noise into conventional digests behind a backup branch and a
     byte-identical gate (the net tree never changes). Retains per-digest author dates. Exactly
     one input mode: --plan | --autosquash | --since."""
-    cfg = config.load()
-    try:
-        result = refine_branch(
-            cfg,
-            hive=hive,
-            bead=bead,
-            plan=plan,
-            autosquash=autosquash,
-            since=since,
-            dry_run=dry_run,
-        )
-    except WorkError as e:
-        if e.backup:
-            typer.echo(f"backup branch: {e.backup}")
-        for line in e.messages:
-            typer.echo(line, err=True)
-        raise typer.Exit(1) from None
-
-    if result.dry_run:
-        typer.echo(f"would produce {len(result.subjects)} commit(s) over {result.base[:7]}:")
-        for s in result.subjects:
-            typer.echo(f"  {s}")
-        return
-
-    typer.echo(f"backup branch: {result.backup}")
-    typer.echo(f"✓ refined {bead} ({result.branch}) — backup left at {result.backup}:")
-    typer.echo(result.log)
-    typer.echo(f"restore with: git -C {result.target} reset --hard {result.backup}")
+    return work_refine.impl_refine(
+        sys.modules[__name__], bead, plan, autosquash, since, dry_run, hive
+    )
