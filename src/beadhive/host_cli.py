@@ -113,6 +113,15 @@ dispatch_app = typer.Typer(
 )
 app.add_typer(dispatch_app, name="dispatch")
 
+# `bh host daemon` is the local singleton network runtime.  Keep its implementation import
+# lazy: ordinary host/CLI and MCP-stdio paths must remain daemon-independent and must not import
+# Starlette/Uvicorn merely because this command group is registered.
+daemon_app = typer.Typer(
+    no_args_is_help=True,
+    help="the singleton Beadhive host daemon (phase one: loopback and read-only)",
+)
+app.add_typer(daemon_app, name="daemon")
+
 _AS_JSON = typer.Option(False, "--json", help="machine payload (as_json)")
 _FORCE = typer.Option(False, "-f", "--force", help="overwrite an existing manifest")
 _REMOTE_ONLY_HIVE = typer.Option(
@@ -143,6 +152,51 @@ _DISPATCH_LOGS_LINES = typer.Option(
     "--limit",
     help="how many recent records to show",
 )
+
+
+# ---- `bh host daemon` ---------------------------------------------------------
+
+
+@daemon_app.command("serve", help="run the foreground phase-one host daemon")
+def daemon_serve(
+    listener_host: str = typer.Option("127.0.0.1", "--host", help="literal loopback address"),
+    listener_port: int = typer.Option(8420, "--port", help="listener TCP port"),
+    shutdown_budget: float = typer.Option(
+        10.0,
+        "--shutdown-budget",
+        min=0.001,
+        help="finite total graceful-shutdown budget in seconds",
+    ),
+) -> None:
+    from . import host_daemon
+
+    try:
+        host_daemon.serve(
+            listener_host=listener_host,
+            listener_port=listener_port,
+            shutdown_budget=shutdown_budget,
+        )
+    except host_daemon.DaemonError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+
+@daemon_app.command("status", help="verify singleton, host, and daemon-incarnation identity")
+def daemon_status_cmd(
+    as_json: bool = typer.Option(False, "--json", help="machine-readable status payload"),
+) -> None:
+    from . import host_daemon
+
+    try:
+        status = host_daemon.daemon_status()
+    except (FileNotFoundError, KeyError, ValueError) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc
+    payload = status.payload()
+    if as_json:
+        typer.echo(json.dumps(payload, sort_keys=True))
+    else:
+        typer.echo(f"{status.state}: {status.detail}")
 
 
 # ---- local machine facts -----------------------------------------------------

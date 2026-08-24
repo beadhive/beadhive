@@ -101,8 +101,10 @@ dependencies = [
     { name = "fastmcp" },
     { name = "pydantic-settings" },
     { name = "ruamel-yaml" },
+    { name = "starlette" },
     { name = "structlog" },
     { name = "typer" },
+    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -129,9 +131,11 @@ requires-dist = [
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.27" },
     { name = "pydantic-settings", specifier = ">=2.11" },
     { name = "ruamel-yaml", specifier = ">=0.18" },
+    { name = "starlette", specifier = ">=0.47,<2" },
     { name = "structlog", specifier = ">=24" },
     { name = "structlog", marker = "extra == 'otel'", specifier = ">=24" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "uvicorn", specifier = ">=0.34,<1" },
 ]
 provides-extras = ["mcp", "otel"]
 

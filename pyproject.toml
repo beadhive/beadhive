@@ -19,6 +19,10 @@ dependencies = [
     # were written + verified against (3.4.x: bare `@mcp.tool`, dict→structured_content,
     # ToolError propagation).
     "fastmcp>=3.4,<4",
+    # The unified host daemon owns one explicit ASGI application/listener.  These are direct
+    # product APIs now rather than implementation details reached transitively through FastMCP.
+    "starlette>=0.47,<2",
+    "uvicorn>=0.34,<1",
     # Env var config (config._Env): declares the BH_* prefix once (env_prefix) instead of
     # repeating it per var, with AliasChoices carrying the deprecated WS_* fallback names
     #. Already resolved transitively via fastmcp/pydantic; pinned direct
