@@ -7,7 +7,7 @@ import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -42,11 +42,15 @@ def raw_issue(
 class ExportBackend:
     """Only the Engine export operation exists; query fan-out is impossible by construction."""
 
-    def __init__(self, records_by_target):
+    def __init__(self, records_by_target, *, gates_by_target=None):
         self.records_by_target = {
             str(target): list(refreshes) for target, refreshes in records_by_target.items()
         }
+        self.gates_by_target = {
+            str(target): list(refreshes) for target, refreshes in (gates_by_target or {}).items()
+        }
         self.calls = []
+        self.gate_calls = []
 
     def export_jsonl(self, cwd, out_path, *, env=None):
         self.calls.append((str(cwd), str(out_path), env))
@@ -54,6 +58,12 @@ class ExportBackend:
         records = refreshes.pop(0) if len(refreshes) > 1 else refreshes[0]
         out_path.write_text("".join(f"{json.dumps(row)}\n" for row in records))
         return subprocess.CompletedProcess([], 0, "", "")
+
+    def list_gates(self, cwd):
+        self.gate_calls.append(str(cwd))
+        refreshes = self.gates_by_target.get(str(cwd), [[]])
+        records = refreshes.pop(0) if len(refreshes) > 1 else refreshes[0]
+        return subprocess.CompletedProcess([], 0, json.dumps(records), "")
 
 
 @pytest.fixture
@@ -78,12 +88,13 @@ def world(tmp_path, monkeypatch):
 
 def provider(cfg, backend, **kwargs):
     poll_interval = kwargs.pop("poll_interval", 0)
+    now = kwargs.pop("now", lambda: NOW)
     return state_stream_polling.PollingStateStreamProvider(
         cfg,
         backend=backend,
         poll_interval=poll_interval,
         sleeper=lambda _seconds: None,
-        now=lambda: NOW,
+        now=now,
         **kwargs,
     )
 
@@ -114,6 +125,7 @@ def test_factory_hub_and_hive_each_take_one_export_shaped_initial_snapshot(world
         ["bh-h"],
     ]
     assert [call[0] for call in backend.calls] == [str(factory), str(hub), str(hive)]
+    assert backend.gate_calls == [str(factory), str(hub), str(hive)]
     assert all(snapshot.as_of == "2026-08-24T00:00:00Z" for snapshot in snapshots)
 
 
@@ -274,6 +286,78 @@ def test_operator_only_change_advances_revision_and_emits_replacement(world):
     assert delta.work_dependencies_removed == ()
 
 
+def test_gate_change_and_retention_expiry_share_revision_diff_and_removal(world):
+    cfg, _entry, _factory, _hub, hive = world
+    gate_id = "gate-1"
+    dependency = {
+        "issue_id": "bh-1",
+        "depends_on_id": gate_id,
+        "type": "blocks",
+    }
+    raw_gate = {
+        "id": gate_id,
+        "issue_type": "gate",
+        "status": "open",
+        "await_type": "human",
+        "description": "Reason: bh:review abc1234",
+        "created_at": "2026-08-23T22:00:00Z",
+    }
+    resolved = {**raw_gate, "status": "closed", "closed_at": "2026-08-24T00:00:00Z"}
+    backend = ExportBackend(
+        {hive: [[raw_issue(dependencies=[dependency])]]},
+        gates_by_target={hive: [[raw_gate], [resolved], [resolved]]},
+    )
+    instants = iter((NOW, NOW + timedelta(hours=1), NOW + timedelta(hours=25)))
+    adapter = provider(cfg, backend, now=lambda: next(instants))
+    request = state_stream.StreamRequest("hive", hive="beadhive")
+    snapshots = [adapter.refresh(request) for _ in range(3)]
+
+    assert len({snapshot.revision for snapshot in snapshots}) == 3
+    _initial, resolved_delta, expired_delta = list(
+        state_stream.stream_frames(
+            type(
+                "ProviderDouble",
+                (),
+                {"name": "double", "updates": lambda _self, _request: iter(snapshots)},
+            )(),
+            request,
+        )
+    )
+    assert resolved_delta.gate_requests_changed[0].status == "resolved"
+    assert expired_delta.gate_requests_changed == ()
+    assert expired_delta.gate_requests_removed == (snapshots[0].gate_requests[0].id,)
+    assert len(backend.calls) == len(backend.gate_calls) == 3
+
+
+@pytest.mark.parametrize(
+    "gate_result",
+    [
+        subprocess.CompletedProcess([], 1, "", "gate backend unavailable"),
+        subprocess.CompletedProcess([], 0, "", ""),
+        subprocess.CompletedProcess([], 0, "null", ""),
+        subprocess.CompletedProcess([], 0, "not-json", ""),
+        subprocess.CompletedProcess([], 0, "{}", ""),
+    ],
+)
+def test_gate_source_failure_degrades_the_frame_without_suppressing_issues(world, gate_result):
+    cfg, _entry, _factory, _hub, hive = world
+
+    class FailedGateBackend(ExportBackend):
+        def list_gates(self, cwd):
+            self.gate_calls.append(str(cwd))
+            return gate_result
+
+    backend = FailedGateBackend({hive: [[raw_issue()]]})
+
+    snapshot = provider(cfg, backend).refresh(state_stream.StreamRequest("hive", hive="beadhive"))
+
+    assert [item.id for item in snapshot.issues] == ["bh-1"]
+    assert snapshot.gate_requests == ()
+    assert snapshot.partial is True
+    assert snapshot.partial_reason == "gate_source_unavailable"
+    assert len(backend.calls) == len(backend.gate_calls) == 1
+
+
 def test_aggregate_operator_hive_comes_from_accepted_registry_identity(world):
     cfg, _entry, factory, _hub, _hive = world
     identity = ["provider:github", "org:beadhive", "repo:beadhive"]
@@ -427,6 +511,7 @@ def test_concurrent_same_scope_refreshes_share_one_export(world):
         snapshots = [first.result(), second.result()]
 
     assert len(backend.calls) == 1
+    assert len(backend.gate_calls) == 1
     assert snapshots[0] is snapshots[1]
 
 

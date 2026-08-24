@@ -16,7 +16,7 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -37,6 +37,7 @@ from .state_stream import (
     WorkDependency,
     projection_id,
 )
+from .state_stream_gate_projection import project_gate_requests
 from .state_stream_process import StreamProcessScope
 
 DEFAULT_POLL_INTERVAL = 2.0
@@ -328,6 +329,35 @@ class PollingStateStreamProvider:
         records.sort(key=lambda record: record.issue.id)
         return AcceptedExport(records=tuple(records), partial_reason=partial_reason)
 
+    def _read_gate_rows(self, target: Path) -> tuple[tuple[object, ...], str | None]:
+        """Perform the one scope-level all-states gate read, degrading on source failure."""
+
+        try:
+            if self._process_scope is None:
+                result = self._backend.list_gates(target)
+            else:
+                command = getattr(self._backend, "stream_gate_list_command", None)
+                if command is None:
+                    return (), "gate_source_unavailable"
+                result = self._process_scope.run(
+                    list(command(target)),
+                    label=(
+                        f"{getattr(self._backend, 'name', 'backend')} stream gate list "
+                        f"against {target}"
+                    ),
+                )
+        except Exception:
+            return (), "gate_source_unavailable"
+        if result.returncode:
+            return (), "gate_source_unavailable"
+        try:
+            data = json.loads(result.stdout)
+        except (TypeError, ValueError):
+            return (), "gate_source_unavailable"
+        if not isinstance(data, list):
+            return (), "gate_source_unavailable"
+        return tuple(data), None
+
     def _read_export(self, request: StreamRequest) -> ProviderSnapshot:
         target = self._target(request)
         with tempfile.TemporaryDirectory(prefix="bh-state-stream-") as temp:
@@ -346,6 +376,21 @@ class PollingStateStreamProvider:
 
         accepted = self._accept_export(raw_lines, request)
         projection = project_operator_core(accepted)
+        raw_gates, gate_source_reason = self._read_gate_rows(target)
+        as_of_instant = self._now().astimezone(UTC)
+        gate_projection = project_gate_requests(
+            raw_gates,
+            request=request,
+            work_dependencies=projection.work_dependencies,
+            as_of=as_of_instant,
+        )
+        projection = replace(
+            projection,
+            gate_requests=gate_projection.gate_requests,
+            partial_reason=(
+                projection.partial_reason or gate_source_reason or gate_projection.partial_reason
+            ),
+        )
         digest_input = {
             "scope": request.scope.value,
             "hive": request.hive,
@@ -359,7 +404,7 @@ class PollingStateStreamProvider:
         digest = hashlib.sha256(
             json.dumps(digest_input, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        as_of = self._now().astimezone(UTC).isoformat().replace("+00:00", "Z")
+        as_of = as_of_instant.isoformat().replace("+00:00", "Z")
         return ProviderSnapshot(
             scope=request.scope,
             revision=f"{self._instance}:{digest}",
