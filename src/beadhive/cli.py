@@ -9,6 +9,7 @@ orchestration, registry/validation logic, and path-derived identity.
 from __future__ import annotations
 
 import importlib.metadata
+import json
 import os
 import shutil
 import sys
@@ -541,7 +542,14 @@ def _role_dispatch_dir() -> Path:
 
 
 def _role_headless(
-    seat: str, harness: str, task: str, detached: bool, bead: str, hive: str, no_hitch: bool
+    seat: str,
+    harness: str,
+    task: str,
+    detached: bool,
+    bead: str,
+    hive: str,
+    no_hitch: bool,
+    baml_required: bool,
 ):
     """`bh role <seat> --task/-d`'s launch (bh-6t49w.6). Suitability is decided FIRST, before
     any workspace resolution, so an attached-only seat refuses immediately instead of claiming
@@ -549,17 +557,23 @@ def _role_headless(
     import subprocess
     import uuid
 
-    from . import hitch_plugin, localloop
+    from . import hitch_plugin, localloop, role_execution
     from .run import child_env
 
     cfg = config.load()
     resolved_harness = harness or config.harness_name(cfg)
-    backend, detail = hitch_plugin.headless_plan(seat, resolved_harness, cfg)
-    if backend == "hitch" and no_hitch:
-        backend, detail = None, f"--no-hitch, and the only headless backend here is {detail}"
-    if backend is None:
-        typer.echo(f"✗ {detail}", err=True)
-        raise typer.Exit(1)
+    try:
+        plan = role_execution.resolve_headless_plan(
+            seat,
+            resolved_harness,
+            cfg,
+            explicit_harness=bool(harness),
+            baml_required=baml_required,
+            no_hitch=no_hitch,
+        )
+    except role_execution.RoleLaunchRefused as exc:
+        typer.echo(f"✗ {exc.code}: {exc.detail}", err=True)
+        raise typer.Exit(1) from None
     if not bead and not task:
         typer.echo(
             "✗ a headless run needs something to do — pass --bead <id> (the seat reads its "
@@ -570,9 +584,9 @@ def _role_headless(
 
     _apply_role_workspace(bead, hive)
     instructions = _role_instructions(seat, bead, task)
-    typer.echo(f"→ {seat}: headless via {backend} — {detail}", err=True)
+    typer.echo(f"→ {seat}: headless via {plan.backend} — {plan.detail}", err=True)
 
-    if backend == "hitch":
+    if plan.backend == "hitch":
         # hitch has no instructions-file flag; the SAME pointer travels as its --task string.
         code = hitch_plugin.up(
             resolved_harness,
@@ -591,26 +605,68 @@ def _role_headless(
     stem = bead or seat
     path = _role_dispatch_dir() / f"{stem}.role-{seat}.md"
     path.write_text(instructions, encoding="utf-8")
+    qualified = plan.artifact
+    command = str(qualified.binary) if qualified else config.dispatch_seat_command(cfg, entry)
+    bundle = "" if qualified else config.dispatch_seat_bundle(cfg, entry)
+    provider_continuation = str(uuid.uuid4())
     argv = list(
         localloop.seat_argv(
-            config.dispatch_seat_command(cfg, entry),
+            command,
             seat,
             workspace=os.getcwd(),
             bead=bead,
             instructions=str(path),
-            session_id=str(uuid.uuid4()),
-            bundle=config.dispatch_seat_bundle(cfg, entry),
+            session_id=provider_continuation,
+            bundle=bundle,
         )
     )
+    launch_env = child_env()
+    if qualified is not None:
+        if entry is None:
+            typer.echo("✗ launch_context_unavailable: workspace is not a registered hive", err=True)
+            raise typer.Exit(1)
+        journal = role_execution.create_role_journal(
+            qualified, hive=registry.hive_key(entry), bead=bead
+        )
+        if journal.run_id == provider_continuation:
+            # The values come from independent UUID mints, but keep the contract constructive:
+            # even an injected deterministic UUID source cannot collapse the two identities.
+            provider_continuation = f"provider-{provider_continuation}"
+            session_index = argv.index("--session_id") + 1
+            argv[session_index] = provider_continuation
+        context = json.dumps(
+            {
+                "version": "beadhive.run-journal/v1",
+                "run_id": journal.run_id,
+                "hive": registry.hive_key(entry),
+                "bead": bead or None,
+                "driver": plan.driver,
+                "provider": qualified.provider,
+                "manifest_digest": qualified.manifest_digest,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        argv += [
+            "--outer_attempt_id",
+            journal.run_id,
+            "--journal_context",
+            context,
+            "--artifact_path",
+            str(qualified.binary),
+            "--artifact_manifest",
+            str(qualified.manifest_path),
+        ]
+        launch_env = journal.child_env(launch_env)
     if not detached:
-        raise typer.Exit(run(argv, check=False, capture=False).returncode)
+        raise typer.Exit(run(argv, check=False, capture=False, env=launch_env).returncode)
 
     log_path = _role_dispatch_dir() / f"{stem}.role-{seat}.log"
     with log_path.open("ab") as sink:
         proc = subprocess.Popen(  # noqa: S603 — argv is built, never shell-interpreted
             argv,
             cwd=os.getcwd(),
-            env=child_env(),
+            env=launch_env,
             stdin=subprocess.DEVNULL,
             stdout=sink,
             stderr=subprocess.STDOUT,
@@ -619,7 +675,9 @@ def _role_headless(
     typer.echo(f"→ {seat}: detached pid {proc.pid}, log {log_path}", err=True)
 
 
-def _role_explain(seat: str, harness: str, no_hitch: bool, bead: str) -> None:
+def _role_explain(
+    seat: str, harness: str, no_hitch: bool, bead: str, baml_required: bool = False
+) -> None:
     """``bh role <seat> --explain``'s read-only preview (bh-6t49w.7): the resolved headless
     backend + suitability mode without launching anything or claiming ``--bead``'s worktree —
     mirrors hitch's own ``--explain``/``--dry-run`` contract (see ``hitch_plugin._up_cmd``).
@@ -637,14 +695,23 @@ def _role_explain(seat: str, harness: str, no_hitch: bool, bead: str) -> None:
     if not seat:
         typer.echo("✗ --explain needs a seat (e.g. `bh role developer --explain`)", err=True)
         raise typer.Exit(1)
-    from . import hitch_plugin, localloop
+    from . import localloop, role_execution
 
     cfg = config.load()
     resolved_harness = harness or config.harness_name(cfg)
     mode = "headless-safe" if localloop.headless_capable(seat) else "attached-required"
-    backend, detail = hitch_plugin.headless_plan(seat, resolved_harness, cfg)
-    if backend == "hitch" and no_hitch:
-        backend, detail = None, f"--no-hitch, and the only headless backend here is {detail}"
+    try:
+        plan = role_execution.resolve_headless_plan(
+            seat,
+            resolved_harness,
+            cfg,
+            explicit_harness=bool(harness),
+            baml_required=baml_required,
+            no_hitch=no_hitch,
+        )
+        backend, detail = plan.backend, plan.detail
+    except role_execution.RoleLaunchRefused as exc:
+        backend, detail = None, f"{exc.code}: {exc.detail}"
     bead_note = f" (bead {bead})" if bead else ""
     typer.echo(f"{seat}{bead_note}: mode={mode} backend={backend or 'none'} — {detail}")
 
@@ -664,6 +731,11 @@ def role_cmd(
         False,
         "--no-hitch",
         help="force the native backend even when hitch (if enabled) would otherwise apply.",
+    ),
+    baml_required: bool = typer.Option(
+        False,
+        "--baml-required",
+        help="require an exact provider-qualified BAML artifact; never fall back to direct Hitch.",
     ),
     seats: bool = typer.Option(
         False,
@@ -703,12 +775,18 @@ def role_cmd(
     from . import hitch_plugin
 
     if explain:
-        _role_explain(name, harness, no_hitch, bead)
+        _role_explain(name, harness, no_hitch, bead, baml_required)
         return
 
     if task or detached:
-        _role_headless(name, harness, task, detached, bead, hive, no_hitch)
+        _role_headless(name, harness, task, detached, bead, hive, no_hitch, baml_required)
         return
+
+    if baml_required:
+        typer.echo(
+            "✗ --baml-required applies to a headless --task/-d launch (or --explain)", err=True
+        )
+        raise typer.Exit(1)
 
     _apply_role_workspace(bead, hive)
     hitch_plugin.route(name, harness=harness or None, no_hitch=no_hitch, full_seats=seats)
