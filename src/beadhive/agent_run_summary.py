@@ -86,11 +86,11 @@ class Freshness:
 class AgentRunSummary:
     """One agent run, projected from `dispatch_log.py` records for a single hive.
 
-    ``bead`` and ``session_id`` are the join keys, spelled EXACTLY as `dispatch_log.py`'s
-    records carry them (verified against `bh-jksq`'s epic notes — see the design doc's
-    "Join keys" section; `bh-jksq.1` itself has not landed). ``session_id`` is ``""`` for a
-    ``waiting`` entry: no seat has been spawned yet for that attempt, so there is nothing to
-    join a session on until a `seat_spawned` record gives it one.
+    ``bead`` and ``session_id`` preserve the exact spellings and values in `dispatch_log.py`.
+    After the landed stream contract and run-journal writer truth are considered, only ``bead``
+    is a cross-source join: ``session_id`` identifies this dispatch seat process and MUST NOT be
+    treated as the journal's outer ``run_id`` or its provider continuation. ``session_id`` is
+    ``""`` for a ``waiting`` entry because no seat has been spawned yet.
     """
 
     bead: str
