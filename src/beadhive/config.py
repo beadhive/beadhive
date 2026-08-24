@@ -6,6 +6,8 @@ hives, and the Dolt backend — so it lives at ~/.beadhive/config.yaml
 under ~/.beadhive/: config.yaml, .env, docker-compose.yml, and the generated labels.md.
 """
 
+# ruff: noqa: E402, F811  # removed when the final facade extraction deletes legacy bodies
+
 from __future__ import annotations
 
 import copy
@@ -2611,3 +2613,172 @@ def claude_marketplace(cfg=None, entry=None) -> str:
 def claude_plugin_name(cfg=None, entry=None) -> str:
     """Name of the Claude Code plugin that vends Beadflow seat agents. Default ``bh``."""
     return str(claude_value(cfg, entry, "plugin", "bh"))
+
+
+# ---- compatibility facade bindings -----------------------------------------
+# Implementations receive this module as a collaborator, preserving runtime
+# monkeypatch seams while keeping path and storage ownership out of the facade.
+from . import config_paths as _config_paths
+from . import config_store as _config_store
+
+_Env = _config_paths.Env
+
+
+def _facade():
+    return sys.modules[__name__]
+
+
+def _env(field: str) -> str | None:
+    return _config_paths.env(_facade(), field)
+
+
+def home() -> Path:
+    return _config_paths.home(_facade())
+
+
+def config_path() -> Path:
+    return _config_paths.config_path(_facade())
+
+
+def hub_dir() -> Path:
+    return _config_paths.named_home(_facade(), "hub", "hub")
+
+
+def hq_dir() -> Path:
+    return _config_paths.named_home(_facade(), "hq", "hq")
+
+
+def cache_dir() -> Path:
+    return _config_paths.named_home(_facade(), "cache", "cache")
+
+
+def worktrees_root(cfg=None) -> Path:
+    return _config_paths.worktrees_root(_facade(), cfg)
+
+
+def codex_sandbox_active() -> bool:
+    return _config_paths.codex_sandbox_active()
+
+
+def codex_default_sandbox_covers(path: Path) -> bool:
+    return _config_paths.codex_default_sandbox_covers(path)
+
+
+def docs_path() -> Path:
+    return home() / "labels.md"
+
+
+def compose_file() -> Path:
+    return home() / "docker-compose.yml"
+
+
+def otel_compose_file() -> Path:
+    return home() / "docker-compose.otel.yml"
+
+
+def env_file() -> Path:
+    return home() / ".env"
+
+
+def asset(name: str) -> Path:
+    return _config_paths.package_asset("beadhive.assets", name)
+
+
+def template(name: str) -> Path:
+    return _config_paths.package_asset("beadhive.templates", name)
+
+
+def scaffold_home(force: bool = False, dry_run: bool = False) -> list[tuple[Path, bool]]:
+    return _config_paths.scaffold_home(_facade(), force, dry_run)
+
+
+def observaloop_dashboard_asset() -> Path:
+    return _config_paths.package_asset("beadhive.assets", "observaloop", "bh-dashboard.json")
+
+
+def observaloop_metrics_preset_asset() -> Path:
+    return _config_paths.package_asset(
+        "beadhive.assets", "observaloop", "cli-metrics-preset.yaml"
+    )
+
+
+def _plugin_root(cfg=None) -> Path:
+    return _config_paths.plugin_root(_facade(), cfg)
+
+
+def skills_src() -> Path:
+    return _plugin_root() / "skills"
+
+
+def agents_src() -> Path:
+    return _plugin_root() / "agents"
+
+
+def claude_home() -> Path:
+    return _config_paths.harness_home(_facade(), "claude_home", ".claude")
+
+
+def codex_home() -> Path:
+    return _config_paths.harness_home(_facade(), "codex_home", ".codex")
+
+
+def opencode_skills_home() -> Path:
+    return _config_paths.harness_home(
+        _facade(), "opencode_skills_home", ".config", "opencode", "skills"
+    )
+
+
+def fleet_path() -> Path:
+    return hq_dir() / FLEET_FILE
+
+
+def load_host():
+    return _config_store.load_path(_facade(), config_path())
+
+
+def load_fleet():
+    return _config_store.load_path(_facade(), fleet_path(), missing_ok=True)
+
+
+def _leaf_paths(node, prefix: str = ""):
+    yield from _config_store.leaf_paths(node, prefix)
+
+
+def fleet_override_violations(host) -> list[str]:
+    return _config_store.fleet_override_violations(host)
+
+
+def _deep_merge(base, over):
+    return _config_store.deep_merge(base, over)
+
+
+def _reject_fleet_overrides(host) -> None:
+    _config_store.reject_fleet_overrides(_facade(), host)
+
+
+def _reject_fleet_override_for_key(parts: list[str], value) -> None:
+    _config_store.reject_fleet_override_for_key(_facade(), parts, value)
+
+
+def load():
+    return _config_store.load(_facade())
+
+
+def key_provenance() -> dict[str, str]:
+    return _config_store.key_provenance(_facade())
+
+
+def save(data) -> None:
+    _config_store.save_host(_facade(), data)
+
+
+def save_fleet(data) -> None:
+    _config_store.save_fleet(_facade(), data)
+
+
+def reconcile_host_after_fleet() -> list[str]:
+    return _config_store.reconcile_host_after_fleet(_facade())
+
+
+def load_reconciling() -> dict:
+    return _config_store.load_reconciling(_facade())
