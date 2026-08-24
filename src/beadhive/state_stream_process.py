@@ -127,6 +127,7 @@ class StreamProcessScope:
 
         with self._lock:
             active = tuple(self._active.values())
+            self._active.clear()
         for item in active:
             _terminate_tree(item, self.term_grace)
 
@@ -161,6 +162,8 @@ class StreamProcessScope:
                 stdout, stderr = proc.communicate(timeout=self.timeout)
             except subprocess.TimeoutExpired:
                 _terminate_tree(active, self.term_grace)
+                with self._lock:
+                    self._active.pop(active.pgid, None)
                 raise run_mod.ChildTimeout(
                     f"{label} exceeded {self.timeout:g}s and was TERMINATED "
                     f"(pid {proc.pid}; its whole process group was reaped)"
@@ -170,10 +173,15 @@ class StreamProcessScope:
                 # same ownership obligation.  Never translate them: their exit semantics belong
                 # to the caller.
                 _terminate_tree(active, self.term_grace)
-                raise
-            finally:
                 with self._lock:
-                    self._active.pop(proc.pid, None)
+                    self._active.pop(active.pgid, None)
+                raise
+            # A successful direct child can still leave a descendant in its process group after
+            # closing the captured pipes.  Keep ownership of that group until scope finalization;
+            # dropping it here would make an ordinary successful refresh leak the descendant.
+            if not _group_exists(active.pgid):
+                with self._lock:
+                    self._active.pop(active.pgid, None)
             return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
 
     def export_jsonl(self, backend, cwd, out_path):

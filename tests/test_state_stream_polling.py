@@ -358,6 +358,72 @@ def test_gate_source_failure_degrades_the_frame_without_suppressing_issues(world
     assert len(backend.calls) == len(backend.gate_calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("core", "source", "projector", "expected"),
+    [
+        (
+            "dependency_data_unavailable",
+            "gate_source_unavailable",
+            "invalid_gate_record",
+            "dependency_data_unavailable",
+        ),
+        (None, "gate_source_unavailable", "invalid_gate_record", "gate_source_unavailable"),
+        (None, None, "invalid_gate_record", "invalid_gate_record"),
+        (None, None, None, None),
+    ],
+)
+def test_partial_reason_precedence_is_core_then_gate_source_then_gate_projector(
+    core, source, projector, expected
+):
+    assert state_stream_polling._partial_reason(core, source, projector) == expected
+
+
+def test_gate_source_outage_advances_revision_and_removes_previously_visible_gate(world):
+    cfg, _entry, _factory, _hub, hive = world
+    dependency = {
+        "issue_id": "bh-1",
+        "depends_on_id": "gate-1",
+        "type": "blocks",
+    }
+    raw_gate = {
+        "id": "gate-1",
+        "issue_type": "gate",
+        "status": "open",
+        "await_type": "human",
+        "description": "Reason: unknown-marker: manual",
+        "created_at": "2026-08-24T00:00:00Z",
+    }
+
+    class OutageBackend(ExportBackend):
+        def list_gates(self, cwd):
+            self.gate_calls.append(str(cwd))
+            if len(self.gate_calls) == 1:
+                return subprocess.CompletedProcess([], 0, json.dumps([raw_gate]), "")
+            return subprocess.CompletedProcess([], 1, "", "gate source unavailable")
+
+    backend = OutageBackend({hive: [[raw_issue(dependencies=[dependency])]]})
+    adapter = provider(cfg, backend)
+    request = state_stream.StreamRequest("hive", hive="beadhive")
+    first = adapter.refresh(request)
+    outage = adapter.refresh(request)
+
+    assert first.gate_requests[0].gate_kind == "other"
+    assert outage.gate_requests == ()
+    assert outage.partial_reason == "gate_source_unavailable"
+    assert first.revision != outage.revision
+    _snapshot_frame, delta = state_stream.stream_frames(
+        type(
+            "ProviderDouble",
+            (),
+            {"name": "double", "updates": lambda _self, _request: iter((first, outage))},
+        )(),
+        request,
+    )
+    assert delta.gate_requests_changed == ()
+    assert delta.gate_requests_removed == (first.gate_requests[0].id,)
+    assert len(backend.calls) == len(backend.gate_calls) == 2
+
+
 def test_aggregate_operator_hive_comes_from_accepted_registry_identity(world):
     cfg, _entry, factory, _hub, _hive = world
     identity = ["provider:github", "org:beadhive", "repo:beadhive"]

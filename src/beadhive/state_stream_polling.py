@@ -184,6 +184,16 @@ def project_operator_core(accepted: AcceptedExport) -> SnapshotProjection:
     )
 
 
+def _partial_reason(
+    core_reason: str | None,
+    gate_source_reason: str | None,
+    gate_projection_reason: str | None,
+) -> str | None:
+    """Return the normative degradation precedence for one coalesced scope refresh."""
+
+    return core_reason or gate_source_reason or gate_projection_reason
+
+
 class PollingStateStreamProvider:
     """The first concrete ``StateStreamProvider``, backed by engine JSONL exports.
 
@@ -389,8 +399,10 @@ class PollingStateStreamProvider:
             projection,
             epic_schedules=project_epic_schedules(accepted),
             gate_requests=gate_projection.gate_requests,
-            partial_reason=(
-                projection.partial_reason or gate_source_reason or gate_projection.partial_reason
+            partial_reason=_partial_reason(
+                projection.partial_reason,
+                gate_source_reason,
+                gate_projection.partial_reason,
             ),
         )
         digest_input = {
