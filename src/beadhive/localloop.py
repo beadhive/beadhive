@@ -100,6 +100,7 @@ from . import (
     log,
     model_routing,
     otel,
+    run_journal,
     schedule,
     seatrun,
     state,
@@ -190,6 +191,9 @@ class SeatProcess:
     #: Canonical late-bound model decision. Safe control-plane facts only; launch aliases stay in
     #: argv and secrets never enter this envelope.
     routing: dict | None = None
+    #: Rich activity for this immutable outer attempt.  ``None`` preserves the pre-journal
+    #: behavior for launch paths that have not yet supplied a validated launch identity.
+    journal: run_journal.RunJournal | None = None
     #: Every signal sent to this run, in order, as names ("SIGTERM"). A test asserts SIGINT is
     #: never in here; an operator reads it to see whether the ladder had to escalate.
     signals: list[str] = field(default_factory=list)
@@ -377,6 +381,7 @@ async def spawn_seat(
     env: dict | None = None,
     task_group: asyncio.TaskGroup | None = None,
     routing: dict | None = None,
+    journal: run_journal.RunJournal | None = None,
 ) -> SeatProcess:
     """Spawn one seat run in **its own process group**, holding all three of its pipes.
 
@@ -395,6 +400,10 @@ async def spawn_seat(
     environment plus this one key.
     """
     env = dict(os.environ if env is None else env)
+    if journal is not None:
+        # Reject a conflicting inherited identity before creating the process.  Journal I/O
+        # failure itself remains non-fatal; an identity conflict is a launch-contract error.
+        env = journal.child_env(env)
     profile_dir = baml_profile_dir(session_id)
     with contextlib.suppress(OSError):  # unwritable home → BAML's problem, never a failed spawn
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -422,6 +431,7 @@ async def spawn_seat(
         argv=tuple(str(a) for a in argv),
         started_at=time.monotonic(),
         routing=routing,
+        journal=journal,
     )
 
     async def _pump(stream, sink: list) -> None:
@@ -453,6 +463,15 @@ async def spawn_seat(
         pgid=pgid,
         session_id=session_id,
     )
+    if journal is not None:
+        activity: dict[str, object] = {
+            "kind": "process.spawned",
+            "phase": "starting",
+            "process": {"pid": proc.pid, "pgid": pgid},
+        }
+        if journal.degraded:
+            activity["journal_degraded"] = True
+        journal.append(activity, operation="spawn")
     return seat
 
 
@@ -678,6 +697,31 @@ async def cancel(
         group_gone=reap.group_gone,
         signals=list(result.signals),
     )
+    if seat.journal is not None:
+        outcome, usage, cost = run_journal.activity_outcome(classification)
+        process: dict[str, object] = {
+            "exit_code": exit_code,
+            # The journal contract spells a direct-child signal as ``SIGTERM`` and a group
+            # signal as ``SIGTERM(group)``.  SeatProcess keeps the more explicit internal
+            # ``SIGTERM(child)`` marker; normalize only the serialized observation.
+            "signals": [value.replace("(child)", "") for value in result.signals],
+            "group_gone": reap.group_gone,
+        }
+        if used != RUNG_EXITED:
+            process["cancel_rung"] = used
+        activity: dict[str, object] = {
+            "kind": "process.cancelled",
+            "phase": "finished" if reap.group_gone else "failed",
+            "outcome_code": outcome,
+            "process": process,
+        }
+        if usage:
+            activity["usage"] = usage
+        if cost:
+            activity["cost_usd"] = cost
+        if seat.journal.degraded:
+            activity["journal_degraded"] = True
+        seat.journal.append(activity, operation="cancel")
     return result
 
 
@@ -1316,6 +1360,8 @@ class LocalLoop:
         env: dict | None = None,
         workspace_for: Callable[[str], str] | None = None,
         routing: Callable[[str, str], model_routing.ModelDecision | None] | None = None,
+        run_identity: Callable[..., run_journal.RunIdentity | None] | None = None,
+        journal_base: Path | None = None,
         dry_run: bool = False,
     ):
         self.hive_dir = Path(hive_dir)
@@ -1338,6 +1384,10 @@ class LocalLoop:
         self._gateway_availability = model_routing.GatewayAvailabilityAdapter()
         self._harness_availability = model_routing.HarnessAvailabilityAdapter()
         self._routing = routing or self._default_routing
+        # Launch identity is supplied by the component that validates the role artifact and
+        # manifest.  LocalLoop propagates it unchanged and never guesses provider provenance.
+        self._run_identity = run_identity
+        self._journal_base = journal_base
         # Volatile by the same execution-memory rule as in_flight. Reuse within this loop keeps a
         # resume on the launch identity already chosen for the bead; restart re-derives from beads.
         self._resolved_routing: dict[str, model_routing.ModelSelection] = {}
@@ -1845,6 +1895,24 @@ class LocalLoop:
                 exit_code=seat.proc.returncode,
                 session_id=cls.seat_run.session_id if cls.seat_run else "",
             )
+            if seat.journal is not None:
+                outcome, usage, cost = run_journal.activity_outcome(cls)
+                activity: dict[str, object] = {
+                    "kind": "process.harvested",
+                    "phase": "finished" if reap.group_gone else "failed",
+                    "outcome_code": outcome,
+                    "process": {
+                        "exit_code": seat.proc.returncode,
+                        "group_gone": reap.group_gone,
+                    },
+                }
+                if usage:
+                    activity["usage"] = usage
+                if cost:
+                    activity["cost_usd"] = cost
+                if seat.journal.degraded:
+                    activity["journal_degraded"] = True
+                seat.journal.append(activity, operation="harvest")
 
     @staticmethod
     def _cause_for(cls: seatrun.Classification) -> str:
@@ -2156,6 +2224,13 @@ class LocalLoop:
             bundle=self.seat_bundle,
         )
         attrs = self._routing_attributes(routing) if routing else None
+        journal = None
+        if self._run_identity is not None:
+            identity = self._run_identity(bead, action, role, routing)
+            if identity is not None:
+                # Mint + run.created happen before create_subprocess_exec.  Calling this method
+                # again after retry creates a new object and therefore a new outer run_id.
+                journal = run_journal.RunJournal.create(identity, base=self._journal_base)
         with otel.record_agent_dispatch(
             agent=role,
             model=routing.selected_model if routing else "",
@@ -2172,6 +2247,7 @@ class LocalLoop:
                 env=self.env,
                 task_group=self._tg,
                 routing=routing_payload,
+                journal=journal,
             )
         self.in_flight[bead] = seat
         report.dispatched += (bead,)
@@ -2246,12 +2322,16 @@ class LocalRuntime:
         harness: str = "claude",
         terminate_grace: float = 5.0,
         envelope_grace: float = 3.0,
+        run_identity: Callable[..., run_journal.RunIdentity | None] | None = None,
+        journal_base: Path | None = None,
     ):
         self.seat_command = seat_command
         self.seat_bundle = seat_bundle
         self.harness = harness
         self.terminate_grace = terminate_grace
         self.envelope_grace = envelope_grace
+        self._run_identity = run_identity
+        self._journal_base = journal_base
         self._loop: asyncio.AbstractEventLoop | None = None
         self._thread = None
         self._runs: dict[str, SeatProcess] = {}
@@ -2332,6 +2412,11 @@ class LocalRuntime:
             bundle=self.seat_bundle,
         )
         attributes = LocalLoop._routing_attributes(decision) if decision else None
+        journal = None
+        if self._run_identity is not None:
+            identity = self._run_identity(bead_id, "schedule", role, decision)
+            if identity is not None:
+                journal = run_journal.RunJournal.create(identity, base=self._journal_base)
         with otel.record_agent_dispatch(
             agent=role,
             model=canonical_model or "",
@@ -2347,6 +2432,7 @@ class LocalRuntime:
                     session_id=session_id,
                     cwd=str(workspace),
                     routing=routing_payload,
+                    journal=journal,
                 )
             )
         self._runs[bead_id] = seat
