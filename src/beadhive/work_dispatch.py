@@ -129,7 +129,9 @@ def impl_next_(api, as_, hive, as_json, epic):
         raise api.typer.Exit(api.NEXT_DECLINE_EXIT)
 
 
-def impl_loop(api, epic, as_, hive, passes, as_json, dry_run, seat_binary):
+def impl_loop(
+    api, epic, as_, hive, passes, as_json, dry_run, seat_binary, harness="", baml_required=False
+):
     cfg = api.config.load()
     api.guard.guard_primary(hive, cfg=cfg, verb="work loop")
     main = api.registry.hive_dir_for(cfg, hive)
@@ -140,6 +142,55 @@ def impl_loop(api, epic, as_, hive, passes, as_json, dry_run, seat_binary):
     if dispatch_sink:
         api.log.add_file_sink(dispatch_sink)
     from . import localloop
+
+    launch_contexts = None
+    if baml_required:
+        from . import role_execution, source_descriptors
+
+        if seat_binary:
+            api.typer.echo(
+                "✗ conflicting_context: --seat-binary cannot replace a BAML-required artifact",
+                err=True,
+            )
+            raise api.typer.Exit(1)
+        resolved_harness = harness or api.config.harness_name(cfg, entry)
+        hive_identity = api.registry.hive_key(entry)
+        sources = source_descriptors.resolve_named_hive_sources(hive_identity, cfg=cfg)
+        if sources.decision is not source_descriptors.ResolutionDecision.AVAILABLE:
+            reason = sources.reasons[0].value if sources.reasons else "source_unavailable"
+            api.typer.echo(f"✗ source_descriptor_refused: {reason}", err=True)
+            raise api.typer.Exit(1)
+        descriptor = sources.descriptor
+        if descriptor is None or descriptor.identity.registered_identity != hive_identity:
+            api.typer.echo("✗ source_descriptor_refused: conflicting_context", err=True)
+            raise api.typer.Exit(1)
+
+        launch_contexts = {}
+        for role in sorted(set(localloop.ROLE_FOR_ACTION.values())):
+            try:
+                plan = role_execution.resolve_headless_plan(
+                    role,
+                    resolved_harness,
+                    cfg,
+                    explicit_harness=True,
+                    baml_required=True,
+                    no_hitch=True,
+                )
+            except role_execution.RoleLaunchRefused as exc:
+                api.typer.echo(f"✗ {exc.code}: {exc.detail}", err=True)
+                raise api.typer.Exit(1) from None
+            artifact = plan.artifact
+            if artifact is None:
+                api.typer.echo("✗ artifact_missing: qualified BAML artifact required", err=True)
+                raise api.typer.Exit(1)
+            launch_contexts[role] = localloop.SeatLaunchContext(
+                command=str(artifact.binary),
+                bundle="",
+                hive=descriptor.identity.registered_identity,
+                driver=role_execution.BAML_DRIVER,
+                provider=artifact.provider,
+                manifest_digest=artifact.manifest_digest,
+            )
 
     driver = localloop.LocalLoop(
         hive_dir=main,
@@ -157,6 +208,9 @@ def impl_loop(api, epic, as_, hive, passes, as_json, dry_run, seat_binary):
         max_action_retries=api.config.dispatch_max_action_retries(cfg, entry),
         lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
         dry_run=dry_run,
+        launch_context=(
+            (lambda role: launch_contexts[role]) if launch_contexts is not None else None
+        ),
     )
 
     def _emit(report) -> None:

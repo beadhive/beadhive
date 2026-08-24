@@ -69,6 +69,10 @@ class RunContextConflict(ValueError):
     """A child environment already carried a different run identity."""
 
 
+class ProviderContinuationConflict(ValueError):
+    """A provider continuation was rebound or collapsed onto the outer attempt."""
+
+
 @dataclass(frozen=True)
 class RunIdentity:
     """Identity facts validated by the launch owner and propagated unchanged."""
@@ -276,6 +280,29 @@ class RunJournal:
                 raise RunContextConflict(f"conflicting inherited {variable}")
             env[variable] = expected
         return env
+
+    def bind_provider_continuation(self, continuation: str) -> None:
+        """Bind one stable provider-native continuation before ``process.spawned``.
+
+        The launch owner mints the immutable outer attempt before building the packed-seat argv,
+        so the provider continuation is necessarily late-bound.  Rebinding would make one
+        journal describe two conversations; aliasing it to ``run_id`` would collapse identities
+        which intentionally have different ownership and lifetimes.
+        """
+
+        if not isinstance(continuation, str) or not continuation:
+            raise ProviderContinuationConflict("provider continuation must be non-empty")
+        if len(continuation) > 256 or not _RUN_ID.fullmatch(continuation):
+            raise ProviderContinuationConflict(
+                "provider continuation must be a path-safe opaque token of 1..256 characters"
+            )
+        if continuation == self.run_id:
+            raise ProviderContinuationConflict(
+                "provider continuation cannot alias the outer run id"
+            )
+        if self.provider_continuation not in (None, continuation):
+            raise ProviderContinuationConflict("provider continuation cannot be rebound")
+        self.provider_continuation = continuation
 
     def append(
         self,

@@ -734,6 +734,23 @@ _LoopSeatBinary = Annotated[
         ),
     ),
 ]
+_LoopHarness = Annotated[
+    str,
+    typer.Option(
+        "--harness",
+        help="provider for a BAML-required loop (claude|codex); defaults to hive config.",
+    ),
+]
+_LoopBamlRequired = Annotated[
+    bool,
+    typer.Option(
+        "--baml-required",
+        help=(
+            "require exact provider-qualified packed seats and named-hive sources; validate "
+            "every loop role before the first claim and never fall back"
+        ),
+    ),
+]
 
 
 @app.command("loop")
@@ -746,6 +763,8 @@ def loop(
     as_json: _LoopJson = False,
     dry_run: _LoopDryRun = False,
     seat_binary: _LoopSeatBinary = "",
+    harness: _LoopHarness = "",
+    baml_required: _LoopBamlRequired = False,
 ):
     """Drive one molecule to completion with **no human present and no server running** — the
     `local` work-runtime tier (bh-c6dk.5).
@@ -780,7 +799,16 @@ def loop(
     full mechanical path work against MY corpus, without an agent spending tokens?".
     """
     return work_dispatch.impl_loop(
-        sys.modules[__name__], epic, as_, hive, passes, as_json, dry_run, seat_binary
+        sys.modules[__name__],
+        epic,
+        as_,
+        hive,
+        passes,
+        as_json,
+        dry_run,
+        seat_binary,
+        harness,
+        baml_required,
     )
 
 

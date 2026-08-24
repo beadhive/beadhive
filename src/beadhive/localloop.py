@@ -183,7 +183,10 @@ class SeatProcess:
     bead_id: str
     role: str
     action: str
+    # Process-owner identity. Dispatch lifecycle logs join on this value only.
     session_id: str
+    # Provider-native continuation passed to the packed seat's ``--session_id``.
+    provider_continuation: str
     proc: asyncio.subprocess.Process
     pgid: int
     argv: tuple[str, ...]
@@ -377,11 +380,14 @@ async def spawn_seat(
     role: str,
     action: str,
     session_id: str,
+    provider_continuation: str | None = None,
     cwd: str | os.PathLike[str] | None = None,
     env: dict | None = None,
     task_group: asyncio.TaskGroup | None = None,
     routing: dict | None = None,
     journal: run_journal.RunJournal | None = None,
+    stdout_sink: Callable[[bytes], None] | None = None,
+    stderr_sink: Callable[[bytes], None] | None = None,
 ) -> SeatProcess:
     """Spawn one seat run in **its own process group**, holding all three of its pipes.
 
@@ -400,11 +406,13 @@ async def spawn_seat(
     environment plus this one key.
     """
     env = dict(os.environ if env is None else env)
+    provider_continuation = provider_continuation or session_id
     if journal is not None:
         # Reject a conflicting inherited identity before creating the process.  Journal I/O
         # failure itself remains non-fatal; an identity conflict is a launch-contract error.
+        journal.bind_provider_continuation(provider_continuation)
         env = journal.child_env(env)
-    profile_dir = baml_profile_dir(session_id)
+    profile_dir = baml_profile_dir(provider_continuation)
     with contextlib.suppress(OSError):  # unwritable home → BAML's problem, never a failed spawn
         profile_dir.mkdir(parents=True, exist_ok=True)
     env["BAML_PROFILE_DIR"] = str(profile_dir)
@@ -426,6 +434,7 @@ async def spawn_seat(
         role=role,
         action=action,
         session_id=session_id,
+        provider_continuation=provider_continuation,
         proc=proc,
         pgid=pgid,
         argv=tuple(str(a) for a in argv),
@@ -434,7 +443,7 @@ async def spawn_seat(
         journal=journal,
     )
 
-    async def _pump(stream, sink: list) -> None:
+    async def _pump(stream, sink: list, live_sink: Callable[[bytes], None] | None) -> None:
         # Chunked, not `communicate()`: communicate only returns at EOF on BOTH streams, and a
         # grandchild holding the inherited stdout keeps EOF from ever arriving. Reading chunks
         # means the envelope is in hand as soon as the child writes it.
@@ -443,6 +452,8 @@ async def spawn_seat(
             if not chunk:
                 return
             sink.append(chunk)
+            if live_sink is not None:
+                live_sink(chunk)
 
     # Under `LocalLoop.run` these are created in the loop's `asyncio.TaskGroup`, so the pump
     # tasks are genuinely supervised: an exception in one propagates up and cancellation
@@ -451,8 +462,8 @@ async def spawn_seat(
     # the ADR's own `local`-tier sketch made.
     spawn_task = task_group.create_task if task_group is not None else asyncio.create_task
     seat._pumps = (
-        spawn_task(_pump(proc.stdout, seat._out), name=f"stdout:{bead_id}"),
-        spawn_task(_pump(proc.stderr, seat._err), name=f"stderr:{bead_id}"),
+        spawn_task(_pump(proc.stdout, seat._out, stdout_sink), name=f"stdout:{bead_id}"),
+        spawn_task(_pump(proc.stderr, seat._err, stderr_sink), name=f"stderr:{bead_id}"),
     )
     _LOG.info(
         "seat_spawned",
@@ -462,6 +473,7 @@ async def spawn_seat(
         pid=proc.pid,
         pgid=pgid,
         session_id=session_id,
+        provider_continuation=provider_continuation,
     )
     if journal is not None:
         activity: dict[str, object] = {
@@ -693,7 +705,8 @@ async def cancel(
         rung=used,
         exit_code=exit_code,
         priced=result.priced,
-        session_id=result.session_id,
+        session_id=seat.session_id,
+        provider_continuation_observed=result.session_id,
         group_gone=reap.group_gone,
         signals=list(result.signals),
     )
@@ -759,6 +772,32 @@ class Caps:
 
     max_concurrency: int = 2
     max_run_seconds: float = 1800.0
+
+
+@dataclass(frozen=True)
+class SeatLaunchContext:
+    """Already-validated launch inputs supplied by the production launch owner.
+
+    LocalLoop owns process lifetime, not artifact discovery or provider provenance.  Qualified
+    BAML callers resolve those facts before any claim and pass this closed value; compatibility
+    callers leave the seam unset and retain the configured ``bh-{role}`` path.
+    """
+
+    command: str
+    bundle: str
+    hive: str
+    driver: str
+    provider: str
+    manifest_digest: str
+
+    def run_identity(self, bead: str) -> run_journal.RunIdentity:
+        return run_journal.RunIdentity(
+            hive=self.hive,
+            bead=bead,
+            driver=self.driver,
+            provider=self.provider,
+            manifest_digest=self.manifest_digest,
+        )
 
 
 ADMIT_OK = "ok"
@@ -1361,6 +1400,7 @@ class LocalLoop:
         workspace_for: Callable[[str], str] | None = None,
         routing: Callable[[str, str], model_routing.ModelDecision | None] | None = None,
         run_identity: Callable[..., run_journal.RunIdentity | None] | None = None,
+        launch_context: Callable[[str], SeatLaunchContext] | None = None,
         journal_base: Path | None = None,
         dry_run: bool = False,
     ):
@@ -1387,6 +1427,7 @@ class LocalLoop:
         # Launch identity is supplied by the component that validates the role artifact and
         # manifest.  LocalLoop propagates it unchanged and never guesses provider provenance.
         self._run_identity = run_identity
+        self._launch_context = launch_context
         self._journal_base = journal_base
         # Volatile by the same execution-memory rule as in_flight. Reuse within this loop keeps a
         # resume on the launch identity already chosen for the bead; restart re-derives from beads.
@@ -1893,7 +1934,14 @@ class LocalLoop:
                 bead=bead,
                 outcome=str(cls.outcome),
                 exit_code=seat.proc.returncode,
-                session_id=cls.seat_run.session_id if cls.seat_run else "",
+                session_id=seat.session_id,
+                provider_continuation_observed=(
+                    cls.seat_run.session_id
+                    if cls.seat_run
+                    else cls.envelope.session_id
+                    if cls.envelope
+                    else ""
+                ),
             )
             if seat.journal is not None:
                 outcome, usage, cost = run_journal.activity_outcome(cls)
@@ -2042,6 +2090,10 @@ class LocalLoop:
         the two sentences above as "the decision does not pick the bead", NOT as "any bead will
         do".
         """
+        # Qualified launch validation is launch-owner work and must finish before the atomic
+        # claim below.  A bad/missing BAML artifact can therefore never strand a claimed bead.
+        if self._launch_context is not None:
+            self._launch_context(role)
         wanted = min(room, len(decision.beads))
         for _ in range(wanted):
             verdict = self._admit(
@@ -2156,6 +2208,7 @@ class LocalLoop:
         """
         if bead in self.in_flight:
             return
+        launch = self._launch_context(role) if self._launch_context is not None else None
         verdict = self._admit(
             self.caps, in_flight=len(self.in_flight), lease_held=True, halted=self.halted
         )
@@ -2193,7 +2246,8 @@ class LocalLoop:
             report.routing += ((bead, routing_payload),)
             for warning in routing.warnings:
                 _LOG.warning("model_routing_fallback", bead=bead, warning=warning)
-        session_id = str(uuid.uuid4())
+        seat_process_id = f"seat-{uuid.uuid4()}"
+        provider_continuation = f"provider-{uuid.uuid4()}"
         ws = workspace or self._workspace_for(bead)
         # A developer seat pointed at the main clone means "this bead has no worktree here yet",
         # not "this bead may not run" — provision one rather than dead-end (bh-4kq1b). The
@@ -2214,18 +2268,22 @@ class LocalLoop:
             report.causes += ((bead, CAUSE_FAILED),)
             return
         argv = seat_argv(
-            self.seat_command,
+            launch.command if launch is not None else self.seat_command,
             role,
             workspace=ws,
             bead=bead,
             instructions=self._instructions(action, bead, role),
-            session_id=session_id,
+            session_id=provider_continuation,
             model=translated_model,
-            bundle=self.seat_bundle,
+            bundle=launch.bundle if launch is not None else self.seat_bundle,
         )
         attrs = self._routing_attributes(routing) if routing else None
         journal = None
-        if self._run_identity is not None:
+        if launch is not None:
+            journal = run_journal.RunJournal.create(
+                launch.run_identity(bead), base=self._journal_base
+            )
+        elif self._run_identity is not None:
             identity = self._run_identity(bead, action, role, routing)
             if identity is not None:
                 # Mint + run.created happen before create_subprocess_exec.  Calling this method
@@ -2242,7 +2300,8 @@ class LocalLoop:
                 bead_id=bead,
                 role=role,
                 action=action,
-                session_id=session_id,
+                session_id=seat_process_id,
+                provider_continuation=provider_continuation,
                 cwd=ws,
                 env=self.env,
                 task_group=self._tg,
@@ -2376,7 +2435,7 @@ class LocalRuntime:
 
         live = self._runs.get(bead_id)
         if live is not None and not live.finished:
-            return RoleHandle(bead_id=bead_id, session_id=live.session_id)
+            return RoleHandle(bead_id=bead_id, session_id=live.provider_continuation)
 
         if isinstance(decision, model_routing.ModelBlockedVerdict):
             raise ValueError(
@@ -2401,13 +2460,15 @@ class LocalRuntime:
         validation = seatrun.validate_workspace(str(workspace))
         if not validation.ok:
             raise ValueError(f"cannot schedule {bead_id}: {validation.reason}")
+        provider_continuation = session_id
+        seat_process_id = f"seat-{uuid.uuid4()}"
         argv = seat_argv(
             self.seat_command,
             role,
             workspace=str(workspace),
             bead=bead_id,
             instructions=str(instructions),
-            session_id=session_id,
+            session_id=provider_continuation,
             model=translated_model,
             bundle=self.seat_bundle,
         )
@@ -2429,14 +2490,15 @@ class LocalRuntime:
                     bead_id=bead_id,
                     role=role,
                     action="schedule",
-                    session_id=session_id,
+                    session_id=seat_process_id,
+                    provider_continuation=provider_continuation,
                     cwd=str(workspace),
                     routing=routing_payload,
                     journal=journal,
                 )
             )
         self._runs[bead_id] = seat
-        return RoleHandle(bead_id=bead_id, session_id=session_id)
+        return RoleHandle(bead_id=bead_id, session_id=provider_continuation)
 
     def observe(self, handle):
         """A status READ, never a blocking wait. ``running`` while the process is alive; once it

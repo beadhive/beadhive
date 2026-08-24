@@ -909,6 +909,46 @@ def test_baml_required_refusal_happens_before_claim_or_spawn(monkeypatch):
     assert "provider_unavailable" in result.output
 
 
+def test_qualified_detached_refuses_before_claim_or_spawn(monkeypatch, tmp_path):
+    from beadhive import cli, role_execution
+
+    artifact = role_execution.QualifiedArtifact(
+        binary=tmp_path / "bh-developer-codex",
+        manifest_path=tmp_path / "bh-developer-codex.manifest.json",
+        artifact_digest="sha256:" + "a" * 64,
+        manifest_digest="sha256:" + "b" * 64,
+        seat="developer",
+        provider="codex",
+        manifest={},
+    )
+    plan = role_execution.RoleLaunchPlan(
+        backend="baml", detail="qualified", provider="codex", artifact=artifact
+    )
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda *_a: pytest.fail("detached refusal claimed")
+    )
+
+    result = cli_runner.invoke(
+        app,
+        [
+            "role",
+            "developer",
+            "--harness",
+            "codex",
+            "--task",
+            "fixture",
+            "--baml-required",
+            "--detached",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "detached_baml_supervision_unavailable" in result.output
+
+
 def test_baml_required_never_falls_through_to_attached_launch(monkeypatch):
     from beadhive import cli, hitch_plugin
 
@@ -929,7 +969,7 @@ def test_baml_required_never_falls_through_to_attached_launch(monkeypatch):
 def test_qualified_baml_launch_propagates_distinct_outer_and_provider_identity(
     monkeypatch, tmp_path
 ):
-    from beadhive import cli, role_execution
+    from beadhive import cli, role_execution, role_process
 
     binary = tmp_path / "bh-developer-claude-code"
     binary.write_text("fixture", encoding="utf-8")
@@ -976,9 +1016,9 @@ def test_qualified_baml_launch_propagates_distinct_outer_and_provider_identity(
         lambda artifact, **kwargs: journal_calls.append((artifact, kwargs)) or FakeJournal(),
     )
     monkeypatch.setattr(
-        cli,
-        "run",
-        lambda argv, **kwargs: run_calls.append((argv, kwargs)) or SimpleNamespace(returncode=0),
+        role_process,
+        "run_foreground",
+        lambda argv, **kwargs: run_calls.append((argv, kwargs)) or 0,
     )
 
     result = cli_runner.invoke(
@@ -1006,6 +1046,9 @@ def test_qualified_baml_launch_propagates_distinct_outer_and_provider_identity(
     assert provider_continuation != "outer-attempt-1"
     assert kwargs["env"]["BH_RUN_ID"] == "outer-attempt-1"
     assert kwargs["env"]["BH_RUN_PROVIDER"] == "claude-code"
+    assert kwargs["provider_continuation"] == provider_continuation
+    assert kwargs["seat_process_id"].startswith("seat-")
+    assert len({"outer-attempt-1", provider_continuation, kwargs["seat_process_id"]}) == 3
     context = argv[argv.index("--journal_context") + 1]
     assert json.loads(context)["run_id"] == "outer-attempt-1"
     assert "secret task text" not in context

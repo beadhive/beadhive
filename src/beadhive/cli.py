@@ -580,6 +580,13 @@ def _role_headless(
     except role_execution.RoleLaunchRefused as exc:
         typer.echo(f"✗ {exc.code}: {exc.detail}", err=True)
         raise typer.Exit(1) from None
+    if detached and plan.artifact is not None:
+        typer.echo(
+            "✗ detached_baml_supervision_unavailable: qualified BAML roles require the "
+            "foreground bh process owner",
+            err=True,
+        )
+        raise typer.Exit(1)
     if not bead and not task:
         typer.echo(
             "✗ a headless run needs something to do — pass --bead <id> (the seat reads its "
@@ -614,7 +621,8 @@ def _role_headless(
     qualified = plan.artifact
     command = str(qualified.binary) if qualified else config.dispatch_seat_command(cfg, entry)
     bundle = "" if qualified else config.dispatch_seat_bundle(cfg, entry)
-    provider_continuation = str(uuid.uuid4())
+    seat_process_id = f"seat-{uuid.uuid4()}"
+    provider_continuation = f"provider-{uuid.uuid4()}"
     argv = list(
         localloop.seat_argv(
             command,
@@ -665,6 +673,21 @@ def _role_headless(
         ]
         launch_env = journal.child_env(launch_env)
     if not detached:
+        if qualified is not None:
+            from . import role_process
+
+            raise typer.Exit(
+                role_process.run_foreground(
+                    argv,
+                    cwd=Path.cwd(),
+                    env=launch_env,
+                    journal=journal,
+                    bead=bead,
+                    role=seat,
+                    seat_process_id=seat_process_id,
+                    provider_continuation=provider_continuation,
+                )
+            )
         raise typer.Exit(run(argv, check=False, capture=False, env=launch_env).returncode)
 
     log_path = _role_dispatch_dir() / f"{stem}.role-{seat}.log"
