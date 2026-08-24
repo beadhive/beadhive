@@ -37,6 +37,7 @@ from . import (
     plugins,
     registry,
     release,
+    stream_cli,
     toolchain,
     validate,
     work,
@@ -115,6 +116,11 @@ app.command(
     rich_help_panel=HIVE_PANEL,
     help="preview/apply a hash-gated full-corpus complexity-label migration",
 )(complexity_backfill.command)
+app.command(
+    "stream",
+    rich_help_panel=FLEET_PANEL,
+    help="stream backend-neutral bead state as snapshot-first NDJSON frames",
+)(stream_cli.command)
 app.add_typer(dolt_app, name="dolt", hidden=True)  # deprecation-track: off all panels
 app.add_typer(otel_app, name="otel", hidden=True)  # deprecation-track: off all panels
 app.add_typer(plugin_app, name="plugin", rich_help_panel=ADMIN_PANEL)
