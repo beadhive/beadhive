@@ -3,6 +3,11 @@
 `bh` emits structured logs and — when opted in — OpenTelemetry traces, metrics, and logs.
 Everything is **disabled or no-op by default**; nothing exports without explicit configuration.
 
+Run-scoped process/provider activity has a separate, host-local contract: the
+[run-journal correlation contract](design/run-journal-correlation-contract.md). Its journal is
+append-only observability, never bead lifecycle state, and a sink failure is diagnosed without
+changing the launched process or lifecycle outcome.
+
 ## Logging
 
 Diagnostics flow through structlog on stderr (never stdout). Command results stay on stdout
