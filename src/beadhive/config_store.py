@@ -3,12 +3,30 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import os
 import tempfile
+import threading
 from collections.abc import Mapping, MutableMapping
+from contextlib import contextmanager
 from pathlib import Path
 
 from ruamel.yaml.comments import CommentedMap
+
+_mutation_lock = threading.RLock()
+
+
+@contextmanager
+def mutation(path: Path):
+    """Serialize a complete read/modify/write transaction across threads and processes."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with _mutation_lock, lock_path.open("a+") as stream:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def load_path(api, path: Path, *, missing_ok: bool = False):

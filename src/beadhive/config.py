@@ -2618,6 +2618,7 @@ def claude_plugin_name(cfg=None, entry=None) -> str:
 # ---- compatibility facade bindings -----------------------------------------
 # Implementations receive this module as a collaborator, preserving runtime
 # monkeypatch seams while keeping path and storage ownership out of the facade.
+from . import config_edit as _config_edit
 from . import config_paths as _config_paths
 from . import config_store as _config_store
 
@@ -2782,3 +2783,66 @@ def reconcile_host_after_fleet() -> list[str]:
 
 def load_reconciling() -> dict:
     return _config_store.load_reconciling(_facade())
+
+
+def _write_transaction(scope: str):
+    path = fleet_path() if scope == SCOPE_FLEET else config_path()
+    return _config_store.mutation(path)
+
+
+def _problem(level: str, message: str) -> dict:
+    return _config_edit.problem(level, message)
+
+
+def _not_set_message(dotted: str) -> str:
+    return _config_edit.not_set_message(dotted)
+
+
+def _has_errors(problems) -> bool:
+    return _config_edit.has_errors(problems)
+
+
+def _split_key(dotted: str) -> list[str]:
+    return _config_edit.split_key(dotted)
+
+
+def coerce_value(raw: str, as_json: bool = False):
+    return _config_edit.coerce_value(raw, as_json)
+
+
+def _validate(parts: list[str], value) -> list[dict]:
+    return _config_edit.validate(_facade(), parts, value)
+
+
+def literal_violations(cfg=None) -> list[dict]:
+    return _config_edit.literal_violations(_facade(), cfg)
+
+
+def warn_literal_violations_if_needed() -> None:
+    _config_edit.warn_literal_violations(_facade())
+
+
+def _descend(cfg, parts: list[str]):
+    return _config_edit.descend(cfg, parts)
+
+
+def get_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
+    return _config_edit.get_value(_facade(), dotted, cfg, scope)
+
+
+def set_value(
+    dotted: str, raw: str, as_json: bool = False, cfg=None, scope: str | None = None
+) -> dict:
+    return _config_edit.set_value(_facade(), dotted, raw, as_json, cfg, scope)
+
+
+def unset_value(dotted: str, cfg=None, scope: str | None = None) -> dict:
+    return _config_edit.unset_value(_facade(), dotted, cfg, scope)
+
+
+def _delete_leaf_pruning_empty(node: dict, dotted: str) -> None:
+    unset_value(dotted, cfg=node)
+
+
+def set_hive_feature_flag(entry, feature: str, enabled: bool) -> dict:
+    return _config_edit.set_hive_feature_flag(_facade(), entry, feature, enabled)
