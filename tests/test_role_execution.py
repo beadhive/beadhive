@@ -309,6 +309,15 @@ def test_explain_report_discloses_complete_redacted_baml_plan(monkeypatch, tmp_p
         "version": "beadhive.run-journal/v1",
         "locator_environment": "BH_RUN_JOURNAL_PATH",
     }
+    assert report["sources"]["contract_version"] == "beadhive.named-hive-sources/v1"
+    assert report["sources"]["descriptor"]["correlation"] == {
+        "registered_identity": "github/acme/core",
+        "stream_repo_slug": "core",
+        "rule": "exact_registry_identity_to_repo_slug",
+    }
+    assert report["sources"]["descriptor"]["runtime"]["availability_reason"] == (
+        "writer_colocation_unverified"
+    )
     assert report["observability"] == {
         "pre_exit_possible": True,
         "mechanism": "provider-json",

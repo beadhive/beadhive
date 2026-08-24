@@ -124,15 +124,36 @@ class RunJournalStatus:
 def journal_root(identity: RunIdentity, *, base: Path | None = None) -> Path:
     """Return the host-local directory for *identity* without creating it."""
 
+    return journal_root_for_hive(identity.hive, base=base)
+
+
+def journal_root_for_hive(hive: str, *, base: Path | None = None) -> Path:
+    """Return the host-local journal directory for an exact registered hive identity.
+
+    Source descriptors know the hive before they know a launch's driver/provider/manifest, so
+    requiring a fabricated :class:`RunIdentity` here would weaken the provenance contract.
+    """
+
+    if not isinstance(hive, str) or not hive:
+        raise ValueError("journal hive must be an exact non-empty registered identity")
+
     root = Path(base) if base is not None else config.home() / "run-journals"
     root = root.expanduser().absolute()
-    return root / registry.sanitize(identity.hive)
+    return root / registry.sanitize(hive)
 
 
 def journal_path(identity: RunIdentity, run_id: str, *, base: Path | None = None) -> Path:
     """Return the run-scoped JSONL path.  The opaque id is never parsed by readers."""
 
-    return journal_root(identity, base=base) / f"{run_id}.jsonl"
+    return journal_path_for_hive(identity.hive, run_id, base=base)
+
+
+def journal_path_for_hive(hive: str, run_id: str, *, base: Path | None = None) -> Path:
+    """Resolve one run locator without inventing launch identity facts."""
+
+    if not run_id or len(run_id) > 256 or not _RUN_ID.fullmatch(run_id):
+        raise ValueError("run_id must be a path-safe opaque token of 1..256 characters")
+    return journal_root_for_hive(hive, base=base) / f"{run_id}.jsonl"
 
 
 @dataclass
