@@ -18,7 +18,6 @@ import asyncio
 import datetime
 import json
 import os
-import re
 import shlex
 import sys
 import time
@@ -45,13 +44,16 @@ from . import (
     otel,
     registry,
     release_order,
-    state,
     test_report,
     triage_store,
     validation_ledger,
     work_group,
+    work_guards,
+    work_intake,
     work_logic,
+    work_metrics,
     work_next,
+    work_reads,
     work_show,
     worktree,
 )
@@ -107,19 +109,6 @@ class RefineResult:
 # ---- bd plumbing: the shared helpers now live in bd.py / registry.py --------
 
 
-def _forward_read(sub_args, cwd):
-    """Forward a read-only `bd` subcommand (ready / show / list) and stream its output through
-    verbatim, propagating the exit code. Capture-then-write keeps bd's bytes (incl. `--json`)
-    byte-identical to the `ws bd` passthrough, so the coordinator loop's consumed shapes are
-    unchanged once the bd passthrough is gated off. Raises typer.Exit with bd's return code."""
-    res = bd.run(sub_args, cwd, capture=True)
-    if res.stdout:
-        sys.stdout.write(res.stdout)
-    if res.stderr:
-        sys.stderr.write(res.stderr)
-    raise typer.Exit(res.returncode)
-
-
 def _maybe_open_molecule(cfg, hive, bead, main):
     """Lazily open the epic's container branch (the coordinator seat `wt/bead/epic/<epic>`) when a
     child of a KICKED-OFF epic is first provisioned, BEFORE `worktree.ensure` for the child, so the
@@ -145,260 +134,32 @@ def _maybe_open_molecule(cfg, hive, bead, main):
     work_logic.ensure_container(cfg, hive, epic, main)
 
 
-def _first(data, *keys):
-    """First present, truthy value among keys (bd JSON field-name drift insurance)."""
-    return next((data[k] for k in keys if data.get(k)), None)
+_first = work_guards.first
 
-
-# ---- at-merge flow metrics (hqfy.2): best-effort, skew-guarded bd reads ------
-#
-# Everything below feeds the commit-flow metrics emitted at the merge seam. EVERY bd read here is
-# best-effort: the caller wraps the emission in try/except so a slow/failing read NEVER blocks a
-# merge, and each individual metric is skipped when its inputs are missing or its delta is negative
-# (clock skew / out-of-order data). Attributes are bounded — no bead/epic ids on the metric points.
-
-
-def _hive(entry) -> str:
-    """The low-cardinality hive name for a metric attribute (the managed-repo prefix)."""
-    return str(entry.get("prefix", "") or "")
-
-
-#: Exit code a validate_cmd component uses to report "a network dependency was unreachable" as
-#: distinct from an ordinary failed verdict — sysexits.h's EX_TEMPFAIL, "the user is invited to
-#: retry" (bh-u9ip). `scripts/osv-license-gate.sh` (the license gate `just check` runs) is the
-#: first emitter: a transport failure reaching deps.dev/osv.dev used to collapse into the same
-#: exit 1/127 a real policy violation or config bug uses, so a network blip during `bh work
-#: submit` read as a validation FAILURE — retrying blindly, indistinguishable from a real defect.
-#: Any validate_cmd component may use it; nothing here is osv-scanner-specific.
+# Compatibility exports: implementations live in work_metrics.
 RETRYABLE_VALIDATION_EXIT = 75
-
-
-def _vres(rc: int) -> str:
-    """The bounded ``ws.validation.result`` attribute value for a validation exit code."""
-    if rc == 0:
-        return "pass"
-    if rc == RETRYABLE_VALIDATION_EXIT:
-        return "retryable"
-    return "fail"
-
-
-def _parse_ts(value):
-    """Parse a bd RFC3339/ISO timestamp into an aware UTC datetime, or None when absent/unparseable
-    (so a missing field just skips its metric rather than raising)."""
-    if not value:
-        return None
-    try:
-        s = str(value).strip()
-        if s.endswith("Z"):
-            s = s[:-1] + "+00:00"
-        dt = datetime.datetime.fromisoformat(s)
-        return dt if dt.tzinfo else dt.replace(tzinfo=datetime.UTC)
-    except (ValueError, TypeError):
-        return None
-
-
-def _emit_delta(record_fn, end, start, attrs) -> None:
-    """Record ``(end-start)`` seconds via ``record_fn`` iff both timestamps are present and the
-    delta is non-negative — a negative delta (clock skew / out-of-order data) is skipped, never
-    recorded."""
-    if end is None or start is None:
-        return
-    delta = (end - start).total_seconds()
-    if delta < 0:
-        return  # skew guard: never record a negative duration
-    record_fn(delta, attrs)
-
-
-def _flow_events(bead, cwd):
-    """The bead's lifecycle event records (``type=event`` infra children), or None on read failure
-    (so the caller can tell 'no events' from 'couldn't read')."""
-    rows = bd.json(["list", "--parent", bead, "--include-infra"], cwd)
-    if not isinstance(rows, list):
-        return None
-    return [r for r in rows if isinstance(r, dict) and str(r.get("issue_type") or "") == "event"]
-
-
-def _event_text(ev) -> str:
-    """Lower-cased haystack of an event's human/text fields for transition matching."""
-    return " ".join(
-        str(ev.get(k) or "") for k in ("title", "description", "reason", "to_state", "state")
-    ).lower()
-
-
-def _is_review_pending(ev) -> bool:
-    t = _event_text(ev)
-    return "review" in t and "pending" in t
-
-
-def _is_changes_requested(ev) -> bool:
-    t = _event_text(ev)
-    return "changes-requested" in t or "changes_requested" in t
-
-
-def _is_dispatch_cause(ev, cause: str) -> bool:
-    """True if this event bead records a `dispatch=<cause>` state-change (i.e. `bd set-state
-    <bead> dispatch=<cause>`), matched on its title/description text like `_is_changes_requested`
-    — `bd set-state` writes "State change: dispatch → <cause>" as the event title, so both
-    the dimension name and the value appear as substrings."""
-    t = _event_text(ev)
-    return "dispatch" in t and cause in t
-
-
-def dispatch_cause_count(events, cause: str) -> int:
-    """How many times `cause` has already been recorded as a dispatcher failure on a bead,
-    DERIVED by counting `dispatch=<cause>` state-change events among its `issue_type='event'`
-    children — never a stored counter (docs/design/loop-ownership-and-execution-memory-adr.md,
-    Decision 2). `events` is a pre-fetched `_flow_events` result (or any iterable of event-bead
-    dicts, e.g. a test fixture); a caller with just a bead id should fetch via `_flow_events`
-    first. `cause` must be one of `state.STATE_DIMENSIONS["dispatch"]`."""
-    if cause not in state.STATE_DIMENSIONS[state.DISPATCH_DIM]:
-        raise ValueError(f"unknown dispatch cause: {cause!r}")
-    return sum(1 for ev in (events or []) if _is_dispatch_cause(ev, cause))
-
-
-def record_dispatch_failure(bead, cause: str, reason: str, cwd, *, actor="") -> bool:
-    """Write a dispatcher failure cause on the FAILURE PATH ONLY — bounces, stalls and
-    escalations, never a per-pass or per-attempt heartbeat (event beads are permanent and this
-    hive has no compaction tier; docs/design/loop-ownership-and-execution-memory-adr.md
-    Decision 2). Atomically creates the event bead `dispatch_cause_count` derives its count
-    from AND refreshes the `dispatch:<cause>` label cache, via `bd set-state <bead>
-    dispatch=<cause> --reason <reason>`. Callers must gate this behind an actual failure; a
-    clean dispatch pass must never call it. Raises `ValueError` for an unregistered `cause`
-    rather than silently writing a value `bh label validate` would reject."""
-    if cause not in state.STATE_DIMENSIONS[state.DISPATCH_DIM]:
-        raise ValueError(f"unknown dispatch cause: {cause!r}")
-    res = bd.run(["set-state", bead, f"dispatch={cause}", "--reason", reason], cwd, actor=actor)
-    return res.returncode == 0
-
-
-def _review_pending_at(events):
-    """created_at of the FIRST review→pending event (the submit moment), or None."""
-    for ev in events:
-        if _is_review_pending(ev):
-            return _parse_ts(_first(ev, "created_at", "created"))
-    return None
-
-
-def _clear_review_label(bead, data, main, actor="") -> None:
-    """Strip any stale ``review:*`` dimension label once the review lifecycle is over (approved /
-    merged / closed). ``bd set-state`` only ever *replaces* a dimension label, never clears it, so
-    without this a "what's awaiting review" query (``review:pending``) surfaces long-closed beads
-    fleet-wide. Best-effort — a label already gone is fine."""
-    labels = data.get("labels") if isinstance(data, dict) else None
-    for lbl in labels or []:
-        if str(lbl).startswith("review:"):
-            bd.run(["label", "remove", bead, str(lbl)], main, actor=actor)
-
-
-def _strip_review_pending(row, main, actor) -> int:
-    """Remove ``review:pending`` from one closed-bead row (a `bd list` result); 1 if cleared, 0 if
-    the row had no id or the removal failed. Per-bead so a partial failure never masks the others'
-    outcome in the returned count."""
-    bid = str(row.get("id") or "") if isinstance(row, dict) else ""
-    if not bid:
-        return 0
-    res = bd.run(["label", "remove", bid, "review:pending"], main, actor=actor)
-    return int(res.returncode == 0)
-
-
-def backfill_stale_review_labels(main, actor="") -> int:
-    """One-time cleanup: strip ``review:pending`` from every already-closed bead — the label was
-    never cleared on close/merge before this fix, so it lingers on historical work and pollutes
-    review queries. Returns the count cleaned; idempotent (safe to re-run). A data migration tool,
-    not a lifecycle verb — invoke once per hive (`from beadhive.work import
-    backfill_stale_review_labels`)."""
-    rows = bd.json(["list", "--status", "closed", "--label", "review:pending"], main)
-    if not isinstance(rows, list):
-        return 0
-    return sum(_strip_review_pending(r, main, actor) for r in rows)
-
-
-def _open_gates(cwd) -> list:
-    """Every gate (open + resolved) in `cwd`'s hive — the one full-window `bd gate list --all`
-    fetch `_security_gate` and `_release_hold_gate` both filter, so a caller checking both (e.g.
-    `approve`) spawns it once instead of twice."""
-    gates = bd.json(["gate", "list", "--all", "--limit", "0"], cwd)
-    return gates if isinstance(gates, list) else []
-
-
-def _match_gate(gates, bead, matcher):
-    """First gate in `gates` naming `bead` in its description and satisfying `matcher`, or None.
-
-    The THIRD `_bead_gates`-style mirror, and the one a first pass at bh-1vvdp missed while
-    claiming to have fixed "both". It feeds `_security_gate` / `_release_hold_gate`, which
-    `bh work approve` RESOLVES on match — so the unanchored substring let `<epic>.1` resolve
-    `<epic>.10`'s security gate (removing a merge-integrity boundary), and let an epic resolve a
-    child's. Anchored through the same `bd.names_bead` as the other two."""
-    for g in gates:
-        if bd.names_bead(g.get("description"), bead) and matcher(g):
-            return g
-    return None
-
-
-def _security_gate(gates, bead):
-    """The Assurance `security:*` gate for `bead` (a `security:` marker in its description), or
-    None — the warden-owned gate that blocks the merge in parallel with review (bead .33). Matched
-    like `work_logic.review_gates` (description-based) but on `guard.is_security_gate`, so
-    kickoff/review gates don't match. `gates` is a pre-fetched `_open_gates` result."""
-    return _match_gate(gates, bead, guard.is_security_gate)
-
-
-def _release_hold_gate(gates, bead):
-    """The `release-hold:` gate for `bead` (a `release-hold:` marker in its description), or None —
-    the releaser-owned gate that holds a release:breaking change out of the current release window
-    (bh-k2j8) and blocks the merge like any open gate. Matched like `_security_gate` but on
-    `guard.is_release_hold_gate`, so review/security/kickoff gates don't match. `gates` is a
-    pre-fetched `_open_gates` result."""
-    return _match_gate(gates, bead, guard.is_release_hold_gate)
-
-
-def _stage_recorder(stage):
-    """A ``(seconds, attrs)`` recorder bound to one flow ``stage`` (for ``_emit_delta``)."""
-    return lambda seconds, attrs: otel.record_stage(stage, seconds, attrs)
-
-
-def _emit_cycle(data, attrs) -> None:
-    """Emit cycle_time (now−created_at) + cycle_time.active (now−started_at) for a bead/epic.
-    Shared by the bead and molecule merge paths (molecule emits ONLY this + slot, no stage)."""
-    now = datetime.datetime.now(datetime.UTC)
-    created = _parse_ts(_first(data or {}, "created_at", "created"))
-    started = _parse_ts(_first(data or {}, "started_at", "started"))
-    _emit_delta(otel.record_cycle_time, now, created, attrs)
-    _emit_delta(otel.record_cycle_time_active, now, started, attrs)
-
-
-def _emit_bead_flow(bead, data, main, attrs) -> None:
-    """At-merge cycle + stage + rework metrics for one bead (NOT the molecule path). Best-effort
-    + skew-guarded throughout; the caller wraps this in try/except so it never blocks the merge.
-
-    Decomposition: coding = started→review_pending, review_wait = review_pending→gate_closed,
-    merge_latency = gate_closed→now; rework = count of review→changes-requested events."""
-    _emit_cycle(data, attrs)
-    now = datetime.datetime.now(datetime.UTC)
-    started = _parse_ts(_first(data or {}, "started_at", "started"))
-
-    events = _flow_events(bead, main)
-    event_pending_at = None
-    if events is not None:
-        event_pending_at = _review_pending_at(events)
-        otel.record_rework(sum(1 for e in events if _is_changes_requested(e)), attrs)
-
-    open_gates, resolved_gates = work_logic.review_gates(bead, main)
-    # At merge every review gate is resolved; superseded duplicates resolve earlier, so the
-    # LAST resolved gate (creation order) is the approved one — the submit/approve moments.
-    gate = open_gates[0] if open_gates else (resolved_gates[-1] if resolved_gates else None)
-    gate_closed_at = _parse_ts(_first(gate or {}, "closed_at", "resolved_at")) if gate else None
-    # The submit moment: `bd set-state review=pending` materializes no infra event child, so the
-    # event scan is empty in practice and coding/review_wait never emitted. The review gate is
-    # opened at that same submit, so fall back to its created_at — resurrecting both stages with
-    # zero new writes (event scan stays primary for when an event is present).
-    gate_opened_at = _parse_ts(_first(gate or {}, "created_at", "created")) if gate else None
-    review_pending_at = event_pending_at or gate_opened_at
-
-    _emit_delta(_stage_recorder("coding"), review_pending_at, started, attrs)
-    _emit_delta(_stage_recorder("review_wait"), gate_closed_at, review_pending_at, attrs)
-    _emit_delta(_stage_recorder("merge_latency"), now, gate_closed_at, attrs)
-
+_hive = work_metrics.hive
+_vres = work_metrics.validation_result
+_parse_ts = work_metrics.parse_ts
+_emit_delta = work_metrics.emit_delta
+_flow_events = work_metrics.flow_events
+_event_text = work_metrics.event_text
+_is_review_pending = work_metrics.is_review_pending
+_is_changes_requested = work_metrics.is_changes_requested
+_is_dispatch_cause = work_metrics.is_dispatch_cause
+dispatch_cause_count = work_metrics.dispatch_cause_count
+record_dispatch_failure = work_metrics.record_dispatch_failure
+_review_pending_at = work_metrics.review_pending_at
+_clear_review_label = work_metrics.clear_review_label
+_strip_review_pending = work_metrics.strip_review_pending
+backfill_stale_review_labels = work_metrics.backfill_stale_review_labels
+_open_gates = work_metrics.open_gates
+_match_gate = work_metrics.match_gate
+_security_gate = work_metrics.security_gate
+_release_hold_gate = work_metrics.release_hold_gate
+_stage_recorder = work_metrics.stage_recorder
+_emit_cycle = work_metrics.emit_cycle
+_emit_bead_flow = work_metrics.emit_bead_flow
 
 # ---- guards & shared steps ---------------------------------------------------
 
@@ -407,67 +168,13 @@ def _emit_bead_flow(bead, data, main, attrs) -> None:
 # Prefixes + returned seat literals follow the roles/RBAC matrix (docs/design/roles-rbac-matrix.md):
 # dispatcher (disp/) coordinates a set of beads on a long-lived branch; developer (dev/) implements
 # ONE bead on an ephemeral bead branch.
-_DISP_PREFIX = "disp/"
-_DEV_PREFIX = "dev/"
-
-# Back-compat shim: legacy seat prefixes (pre roles/RBAC matrix) still resolve during the
-# migration window, mapped legacy -> (seat, canonical replacement prefix). A legacy identity keeps
-# working (with a one-line deprecation warning) so in-flight coord//crew/ sessions don't break;
-# removed later per the limn/kkke sequencing.
-_LEGACY_SEAT_PREFIXES = {
-    "coord/": ("dispatcher", _DISP_PREFIX),
-    "crew/": ("developer", _DEV_PREFIX),
-}
-
-# Orchestrator seats (roles/RBAC matrix §2.2, bead .38): only a dispatcher (disp/) — the
-# Integration-plane seat that assigns work — or a director (dir/) — the Control-plane routing
-# seat — may run `ws work assign`. A developer/reviewer/merger/… can't dispatch work to itself
-# or anyone else; a bare human/supervised operator (no recognized seat prefix) is exempt.
-_DIRECTOR_PREFIX = "dir/"
-
-# Every canonical seat prefix (roles/RBAC matrix §2), plus the legacy coord//crew/ shim. An
-# identity carrying one of these is a *seat* bound by the seat conventions; anything else is a
-# bare human / supervised operator, exempt from the seat-only guards. Kept local (not sourced from
-# escalate._SEAT_ROLES, which keys on a role's *word* e.g. 'review', not the 'rev/' prefix).
-_KNOWN_SEAT_PREFIXES = frozenset(
-    {
-        # Control
-        "super/",
-        "dir/",
-        "cust/",
-        "ctrl/",
-        # Planning
-        "plan/",
-        "analyst/",
-        # Integration
-        "disp/",
-        "dev/",
-        "rev/",
-        "merge/",
-        # Assurance
-        "warden/",
-        "verify/",
-        # Release / Contribution / Delivery (roadmap)
-        "release/",
-        "contrib/",
-        "ops/",
-        # Legacy migration shim
-        "coord/",
-        "crew/",
-    }
-)
-
-
-def _is_epic(data) -> bool:
-    """True iff the bead's declared issue_type is `epic` (a container/molecule, not a leaf)."""
-    return str((data or {}).get("issue_type") or "") == "epic"
-
-
-def _kind_of(data) -> str:
-    """The `wt/bead/<type>/` namespace segment for a bead: `epic` for a container (dispatcher
-    seat), else `issue` (leaf). Threaded into `worktree.ensure`/`locate` so a bead branch is
-    provisioned under the right namespace even before it exists (nothing to probe yet)."""
-    return "epic" if _is_epic(data) else "issue"
+_DISP_PREFIX = work_guards.DISP_PREFIX
+_DEV_PREFIX = work_guards.DEV_PREFIX
+_LEGACY_SEAT_PREFIXES = work_guards.LEGACY_SEAT_PREFIXES
+_DIRECTOR_PREFIX = work_guards.DIRECTOR_PREFIX
+_KNOWN_SEAT_PREFIXES = work_guards.KNOWN_SEAT_PREFIXES
+_is_epic = work_guards.is_epic
+_kind_of = work_guards.kind_of
 
 
 def _push_state(cfg, main, actor, message) -> None:
@@ -528,125 +235,14 @@ def _print_work_preview(cfg, hive, bead, stamp_actor, op, as_json) -> None:
     typer.echo(f"  identity {ident['name']} <{ident['email']}> (mode={ident['mode']})")
 
 
-def _seat_of(name: str) -> str:
-    """The seat an identity names: 'dispatcher' (disp/<name>), 'developer' (dev/<name>),
-    or '' when neither prefix matches. Legacy coord//crew/ prefixes still resolve
-    (dispatcher/developer) via the back-compat shim, with a one-line deprecation warning."""
-    if name.startswith(_DISP_PREFIX):
-        return "dispatcher"
-    if name.startswith(_DEV_PREFIX):
-        return "developer"
-    for legacy, (seat, replacement) in _LEGACY_SEAT_PREFIXES.items():
-        if name.startswith(legacy):
-            from . import log  # lazy: avoid a hard log import at module load
-
-            log.get_logger(__name__).warning(
-                "legacy_seat_prefix_deprecated",
-                deprecated=legacy,
-                replacement=replacement,
-                seat=seat,
-                reason="seat prefixes renamed per roles/RBAC matrix (coord/->disp/, crew/->dev/)",
-            )
-            return seat
-    return ""
-
-
-def _guard_seat(data, name, bead, *, verb):
-    """Type-driven seat enforcement: an epic (container) may only be worked by a dispatcher
-    (disp/<name>), any other bead only by a developer (dev/<name>) — so a dispatcher drives a
-    molecule and a developer implements a leaf, and the two agent seats never cross wires (also
-    lets Claude bash-prefix permissions gate them). A non-seat identity (a human/supervised
-    operator, no disp//dev/ prefix) is exempt — humans aren't bound by the seat convention.
-    `verb` tails the message ('assigned to' / 'claimed by')."""
-    want = "dispatcher" if _is_epic(data) else "developer"
-    if _seat_of(name) in ("", want):
-        return
-    kind = "epic" if _is_epic(data) else "issue"
-    pfx = _DISP_PREFIX if want == "dispatcher" else _DEV_PREFIX
-    typer.echo(
-        f"✗ {bead} is an {kind} — it may only be {verb} a {want} ({pfx}<name>), not {name!r}",
-        err=True,
-    )
-    raise typer.Exit(1)
-
-
-def _is_orchestrator(name: str) -> bool:
-    """Whether `name` is an orchestrator seat allowed to dispatch work: a dispatcher (disp/) or a
-    director (dir/). Legacy coord/ still resolves (→ dispatcher) via the back-compat shim."""
-    if name.startswith(_DISP_PREFIX) or name.startswith(_DIRECTOR_PREFIX):
-        return True
-    for legacy, (seat, _replacement) in _LEGACY_SEAT_PREFIXES.items():
-        if name.startswith(legacy):
-            return seat == "dispatcher"
-    return False
-
-
-def _names_a_seat(name: str) -> bool:
-    """Whether `name` carries a recognized seat prefix (so it's bound by the seat convention). A
-    bare human / supervised operator with no recognized prefix is NOT a seat and stays exempt —
-    the same carve-out `_guard_seat` and the control-plane guards make for humans."""
-    return any(name.startswith(pfx) for pfx in _KNOWN_SEAT_PREFIXES)
-
-
-def _guard_orchestrator(actor, bead):
-    """`ws work assign` is orchestrator-only (roles/RBAC matrix §2.2, bead .38): stamping an
-    assignee + provisioning a worktree is a dispatch action, reserved for a dispatcher (disp/) or
-    director (dir/). A recognized non-orchestrator seat (developer, reviewer, merger, warden, …) is
-    hard-denied — a leaf worker cannot dispatch work. A non-seat identity (human/supervised
-    operator, no recognized prefix) is exempt, so existing supervised flows are unaffected."""
-    if _is_orchestrator(actor) or not _names_a_seat(actor):
-        return
-    typer.echo(
-        f"✗ {bead}: `{config.BINARY_ALIAS} work assign` is orchestrator-only — "
-        "only a dispatcher (disp/<name>) or "
-        f"director (dir/<name>) may assign work, not {actor!r}.",
-        err=True,
-    )
-    raise typer.Exit(1)
-
-
-def _epic_of(data, bead) -> str:
-    """The molecule (epic) a dispatch acts on: an epic is its own molecule; a child's molecule is
-    its parent epic (the `parent` field, falling back to the dotted-id stem like
-    _maybe_open_molecule does). '' when there's no molecule to gate (an orphan/ad-hoc leaf)."""
-    if _is_epic(data):
-        return bead
-    parent = str((data or {}).get("parent") or "").strip()
-    if parent:
-        return parent
-    stem, sep, _ = bead.rpartition(".")
-    return stem if sep else ""
-
-
-def _guard_conventions(cfg, data, bead, main, *, action):
-    """Dispatch gate: refuse to route work off a MALFORMED molecule, surfacing the plan-plane
-    validator's specific problem list (not a cryptic refusal / silent main fork). Resolve the
-    parent epic first, then reuse `plan.verify_epic` via `plan.enforce_epic_conventions` (BH_DEBUG
-    overrides for humans). No-op when there's no molecule to verify."""
-    from . import plan  # lazy: keep the plan<->work seam import-cycle-safe (mirrors work_group)
-
-    epic = _epic_of(data, bead)
-    if not epic:
-        return
-    plan.enforce_epic_conventions(epic, cfg, main, action=action)
-
-
-def _print_brief(cfg, entry, bead, data):
-    if not data:
-        typer.echo(f"✗ no such bead: {bead}", err=True)
-        raise typer.Exit(1)
-    typer.echo(f"# {data.get('id', bead)}  {data.get('title', '')}")
-    desc = _first(data, "description")
-    if desc:
-        typer.echo(f"\n## Requirements / goals\n{desc}")
-    acc = _first(data, "acceptance_criteria", "acceptance")
-    if acc:
-        typer.echo(f"\n## Acceptance\n{acc}")
-    design = _first(data, "design")
-    if design:
-        typer.echo(f"\n## Design\n{design}")
-    typer.echo(f"\n## Validate with\n{config.validate_cmd(cfg, entry)}")
-
+_seat_of = work_guards.seat_of
+_guard_seat = work_guards.guard_seat
+_is_orchestrator = work_guards.is_orchestrator
+_names_a_seat = work_guards.names_a_seat
+_guard_orchestrator = work_guards.guard_orchestrator
+_epic_of = work_guards.epic_of
+_guard_conventions = work_guards.guard_conventions
+_print_brief = work_guards.print_brief
 
 # ---- verbs ------------------------------------------------------------------
 
@@ -679,222 +275,32 @@ _NextEpic = Annotated[
 ]
 
 
+_READ_CTX = work_reads.READ_CTX
+_READY_LIMIT_FLAGS = work_reads.READY_LIMIT_FLAGS
+_READY_NARROWING_FLAGS = work_reads.READY_NARROWING_FLAGS
+_READY_SHOWING_RE = work_reads.READY_SHOWING_RE
+READY_TRUNCATED_EXIT = work_reads.READY_TRUNCATED_EXIT
+MoleculeReadinessError = work_reads.MoleculeReadinessError
+_forward_read = work_reads.forward_read
+_reorder_ready_lines = work_reads.reorder_ready_lines
+_count_avoided_conflicts = work_reads.count_avoided_conflicts
+_forward_ready_ordered = work_reads.forward_ready_ordered
+_readiness_json = work_reads.readiness_json
+molecule_readiness_payload = work_reads.molecule_readiness_payload
+_render_molecule_readiness = work_reads.render_molecule_readiness
+_ready_arg_name = work_reads.ready_arg_name
+_ready_has_flag = work_reads.ready_has_flag
+_widen_narrowed_ready_args = work_reads.widen_narrowed_ready_args
+_ready_truncated_exit = work_reads.ready_truncated_exit
+_forward_ready_plain = work_reads.forward_ready_plain
+_emit_start_gated_ready = work_reads.emit_start_gated_ready
+
+
 @app.command("brief")
 @otel.trace_verb("work.brief")
 def brief(bead: str = _BEAD, hive: str = _HIVE):
-    """Print the bead's requirements/goals and the repo's validation command. Read-only."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
-    _print_brief(cfg, entry, bead, bd.show(bead, main))
-
-
-# ---- first-class bead reads (replace `ws bd ready|show|list` in the loops) ---
-#
-# The coordinator/developer loops read ready work, one issue, and filtered issue lists — today via
-# the `ws bd` passthrough (`ws bd ready --json`, `ws bd show <id> --json`). These verbs surface the
-# same reads first-class so those loops never invoke `ws bd`, and stay byte/JSON-shape stable by
-# forwarding straight to `bd` (capture-then-stream) — no reshaping — so the passthrough can later be
-# gated off without touching a consumer. Each accepts arbitrary trailing `bd` flags (`--json`,
-# `--gated`, `--status …`) via `ignore_unknown_options`, on top of the ws `--hive`.
-
-_READ_CTX = {"allow_extra_args": True, "ignore_unknown_options": True}
-
-
-def _reorder_ready_lines(text: str, ordered_ids) -> str:
-    """Reorder the bead lines of a `bd ready` table by `ordered_ids` (advisory merge order), leaving
-    header/footer/blank lines in place. A bead line is any line carrying a known id as a token; the
-    lines matching ids are re-sequenced among their own slots, everything else stays put — so bd's
-    framing is preserved and only the rows move."""
-    pos = {bid: i for i, bid in enumerate(ordered_ids)}
-    lines = text.splitlines(keepends=True)
-
-    def id_of(line: str):
-        return next((t for t in line.split() if t in pos), None)
-
-    slots = [i for i, ln in enumerate(lines) if id_of(ln) is not None]
-    reordered = sorted((lines[i] for i in slots), key=lambda ln: pos[id_of(ln)])
-    for slot, line in zip(slots, reordered, strict=True):
-        lines[slot] = line
-    return "".join(lines)
-
-
-def _count_avoided_conflicts(beads, order, estimator, strategy) -> None:
-    """Counter of conflicts the release merge-order scorer avoided (bh-k2j8.8): for each pair of
-    beads ADJACENT in the natural/FCFS read order (`beads`, as `bd` returned them), ask the
-    `ConflictEstimator` (same `estimator`/threshold the start-gate uses,
-    `schedule_mod.DEFERRAL_LIKELIHOOD`) whether the pair is conflict-likely. When it is, AND the
-    scorer's `order` does NOT keep the pair adjacent (something else got sequenced between them),
-    record one `record_conflict_avoided` — the re-sequencing kept two conflict-likely beads from
-    landing back-to-back. Advisory telemetry only: an O(n) scan over adjacent pairs, never a new
-    decision surface."""
-    pos = {bid: i for i, bid in enumerate(order)}
-    for a, b in zip(beads, beads[1:], strict=False):
-        verdict = release_order.start_verdict(b, [a], estimator=estimator)
-        if verdict.likelihood < schedule_mod.DEFERRAL_LIKELIHOOD:
-            continue
-        ai = pos.get(str(a.get("id") or ""))
-        bi = pos.get(str(b.get("id") or ""))
-        if ai is None or bi is None or abs(ai - bi) == 1:
-            continue  # still adjacent (or unranked) in the scorer's order — not avoided
-        otel.record_conflict_avoided({"bh.release.strategy": strategy})
-
-
-def _forward_ready_ordered(args, cwd, strategy, fix_churn_budget, estimator) -> None:
-    """`work ready --gated` under a configured `release.strategy`: forward `bd ready` re-sequenced
-    by the advisory scorer (release_order) instead of FCFS. Reads the bead set once as JSON to
-    derive the order, then emits it in the shape the caller asked for — the JSON array reordered, or
-    the table's rows reordered in place. On any read miss it falls back to a plain verbatim forward
-    (no behavior change), so the advisory layer never breaks the base read."""
-    beads = bd.json(["ready", *[a for a in args if a != "--json"]], cwd)
-    if not isinstance(beads, list) or not beads:
-        _forward_read(["ready", *args], cwd)
-        return
-    order = release_order.merge_sequence(
-        beads, strategy=strategy, fix_churn_budget=fix_churn_budget
-    )
-    _count_avoided_conflicts(beads, order, estimator, strategy)
-    pos = {bid: i for i, bid in enumerate(order)}
-    if "--json" in args:
-        ordered = sorted(beads, key=lambda b: pos.get(str(b.get("id") or ""), len(order)))
-        sys.stdout.write(json.dumps(ordered, indent=2) + "\n")
-        return
-    res = bd.run(["ready", *args], cwd, capture=True)
-    if res.stdout:
-        sys.stdout.write(_reorder_ready_lines(res.stdout, order))
-    if res.stderr:
-        sys.stderr.write(res.stderr)
-    raise typer.Exit(res.returncode)
-
-
-# ---- bh-i0p1.2: `ready`'s truncation must never be silent --------------------
-#
-# bd's own `-n`/`--limit` defaults to 100 (bd ready --help). Below the cap the read is complete;
-# above it bd ALREADY says so — inside the table's own footer for a plain render, on bd's OWN
-# stderr for `--json` (so the array itself stays clean). Confirmed live: bd never prints the
-# "Showing X of Y" line at all when the read isn't actually truncated, so its mere presence is a
-# reliable signal — no second bd call needed to confirm a total. Two gaps remain: the table
-# footer lives in stdout, exactly what `bh work ready | grep <id>` throws away; and a `--json`
-# caller who parses stdout and checks $? for success never learns bd put anything on stderr at
-# all. Neither needs new data, just making bd's own signal impossible to miss.
-
-_READY_LIMIT_FLAGS = {"-n", "--limit"}
-_READY_NARROWING_FLAGS = {
-    "-l",
-    "--label",
-    "--label-any",
-    "--exclude-label",
-    "-t",
-    "--type",
-    "--exclude-type",
-    "-p",
-    "--priority",
-    "-a",
-    "--assignee",
-    "-u",
-    "--unassigned",
-    "--parent",
-    "--mol",
-    "--mol-type",
-    "--has-metadata-key",
-    "--metadata-field",
-}
-_READY_SHOWING_RE = re.compile(r"Showing (\d+) of (\d+) ready issues")
-
-# Distinct, documented exit code: a VALID but partial default-capped `--json` read the caller
-# never asked to cap. 0 stays "complete"; bd's own non-zero codes (1 general error, 2 for
-# --max-rows exceeded) are untouched — this is layered on top, only for `ready`, only when bd
-# itself already flagged the read as truncated.
-READY_TRUNCATED_EXIT = 3
-
-
-class MoleculeReadinessError(Exception):
-    """A molecule-readiness read failed or returned an unusable shape."""
-
-
-def _readiness_json(args, cwd):
-    """Run one bd JSON read, preserving its failure detail for the first-class verb."""
-    res = bd.run([*args, "--json"], cwd, capture=True)
-    if res.returncode != 0:
-        raise MoleculeReadinessError(bd.err_detail(res))
-    try:
-        return json.loads(res.stdout or "null")
-    except json.JSONDecodeError as exc:
-        raise MoleculeReadinessError(f"invalid JSON from bd {' '.join(args)}") from exc
-
-
-def molecule_readiness_payload(molecule: str, cwd) -> dict:
-    """Return blocker-correct per-step readiness for one persistent or wisp molecule.
-
-    The safety boundary is deliberately the *unscoped* GetReadyWork path.  In particular, never
-    substitute ``bd mol current`` or ``bd ready --mol`` here: both silently ignore a persistent
-    blocker of an ephemeral step (bh-yber2.1 M4).  ``--explain`` supplies the blocker identities;
-    the sibling unscoped read supplies the complete ready set because bd's explain JSON currently
-    omits blocker-free rows whenever blocked rows also exist.  Both reads are global and include
-    ephemeral issues, so they share the blocker-aware implementation confirmed by bh-yber2.3.
-
-    Membership is a direct parent-child read, not a readiness read.  ``bd show --children`` covers
-    both persistent and ephemeral children, unlike ``bd list --parent`` (which omits wisps), and
-    does not admit unrelated beads that merely depend on a molecule step.  Do not derive membership
-    from ``dep tree --direction=up``: its de-duplicated traversal can reach a real child through a
-    predecessor edge first, making ``edge_from_parent`` say ``blocks`` instead of ``parent-child``.
-    """
-    children = _readiness_json(["show", molecule, "--children"], cwd)
-    members = children.get(molecule) if isinstance(children, dict) else None
-    if not isinstance(members, list) or not all(isinstance(row, dict) for row in members):
-        raise MoleculeReadinessError(f"cannot read molecule {molecule}")
-
-    # Keep this argv shape explicit.  It is the settled-safe query from the ADR addendum; adding
-    # --mol, or routing through mol current, reintroduces the false green this verb exists to close.
-    explained = _readiness_json(["ready", "--include-ephemeral", "--explain", "--limit", "0"], cwd)
-    ready_rows = _readiness_json(["ready", "--include-ephemeral", "--limit", "0"], cwd)
-    if not isinstance(explained, dict) or not isinstance(ready_rows, list):
-        raise MoleculeReadinessError("bd ready returned an unexpected shape")
-
-    ready_ids = {
-        str(row.get("id") or "") for row in ready_rows if isinstance(row, dict) and row.get("id")
-    }
-    blocked = {
-        str(row.get("id") or ""): row
-        for row in explained.get("blocked", [])
-        if isinstance(row, dict) and row.get("id")
-    }
-    steps = []
-    for row in members:
-        step_id = str(row.get("id") or "")
-        status = str(row.get("status") or "")
-        blockers = blocked.get(step_id, {}).get("blocked_by", [])
-        if status == "closed":
-            readiness = "done"
-        elif step_id in blocked:
-            readiness = "blocked"
-        elif step_id in ready_ids:
-            readiness = "ready"
-        elif status and status != "open":
-            readiness = status
-        else:
-            readiness = "pending"
-        steps.append(
-            {
-                "id": step_id,
-                "title": str(row.get("title") or ""),
-                "status": status,
-                "readiness": readiness,
-                "blocked_by": blockers if isinstance(blockers, list) else [],
-            }
-        )
-    return {"molecule": molecule, "steps": steps}
-
-
-def _render_molecule_readiness(payload: dict) -> None:
-    typer.echo(f"Molecule {payload['molecule']}")
-    for step in payload["steps"]:
-        typer.echo(f"  [{step['readiness']}] {step['id']}: {step['title']}")
-        for blocker in step["blocked_by"]:
-            typer.echo(
-                f"    ← blocked by {blocker.get('id', '?')}: "
-                f"{blocker.get('title', '')} [{blocker.get('status', 'unknown')}]"
-            )
+    """Print the bead's requirements/goals and validation command. Read-only."""
+    return work_reads.brief(bead, hive)
 
 
 @app.command("readiness")
@@ -907,179 +313,28 @@ def readiness(
     as_json: bool = typer.Option(False, "--json", help="emit the machine-readable per-step report"),
 ):
     """Report blocker-correct readiness for every step in a persistent or wisp molecule."""
-    otel.set_bead(molecule)
-    cfg = config.load()
-    cwd = registry.hive_dir_for(cfg, hive)
-    try:
-        payload = molecule_readiness_payload(molecule, cwd)
-    except MoleculeReadinessError as exc:
-        typer.echo(f"✗ {exc}", err=True)
-        raise typer.Exit(1) from exc
-    if as_json:
-        typer.echo(json.dumps(payload, indent=2))
-    else:
-        _render_molecule_readiness(payload)
-
-
-def _ready_arg_name(tok: str) -> str:
-    """The flag name of one arg token, stripping a `--flag=value` suffix."""
-    return tok.split("=", 1)[0]
-
-
-def _ready_has_flag(args, names) -> bool:
-    return any(_ready_arg_name(a) in names for a in args)
-
-
-def _widen_narrowed_ready_args(args: list[str]) -> list[str]:
-    """A narrowed `ready` read (any filter flag, no explicit -n/--limit) is widened to `-n 0`
-    (unbounded) here — a narrow question ("what's ready with label X?") should get a complete
-    answer, never a silently-capped one. An unfiltered listing is left untouched: raising ITS cap
-    would only move the cliff, not remove it (bh-i0p1.2's design note)."""
-    if _ready_has_flag(args, _READY_LIMIT_FLAGS):
-        return args  # the caller's own explicit cap — never second-guessed
-    if not _ready_has_flag(args, _READY_NARROWING_FLAGS):
-        return args  # unfiltered listing — cap stays bd's default, see _forward_ready_plain
-    return [*args, "-n", "0"]
-
-
-def _ready_truncated_exit(args, res, *, as_json: bool) -> int:
-    """`res.returncode` unless bd's own output shows this default-capped read (no explicit
-    -n/--limit) was truncated, in which case `--json` gets READY_TRUNCATED_EXIT (a caller
-    checking $? — not just stdout bytes — can then tell a partial read from a complete one) and
-    plain-table mode gets bd's "Showing X of Y" line mirrored onto stderr, where a `| grep`/pipe
-    of stdout can't make it disappear the way it does when that line is the table's own last
-    row."""
-    if res.returncode != 0 or _ready_has_flag(args, _READY_LIMIT_FLAGS):
-        return res.returncode
-    haystack = res.stderr if as_json else res.stdout
-    m = _READY_SHOWING_RE.search(haystack or "")
-    if not m or m.group(1) == m.group(2):
-        return res.returncode
-    if as_json:
-        return READY_TRUNCATED_EXIT
-    typer.echo(f"⚠ {m.group(0)} — pass -n 0 for the full list", err=True)
-    return res.returncode
-
-
-def _forward_ready_plain(args, cwd) -> None:
-    """Forward a plain `bd ready` read (no --gated, no release start-gate annotation) — the SAME
-    bytes bd would produce for these exact args, on both stdout and stderr — then apply
-    `_ready_truncated_exit` on top so a truncated default-capped read is never silent."""
-    res = bd.run(["ready", *args], cwd, capture=True)
-    if res.stdout:
-        sys.stdout.write(res.stdout)
-    if res.stderr:
-        sys.stderr.write(res.stderr)
-    raise typer.Exit(_ready_truncated_exit(args, res, as_json="--json" in args))
+    return work_reads.readiness(molecule, hive, as_json)
 
 
 @app.command("ready", context_settings=_READ_CTX)
 @otel.trace_verb("work.ready")
 def ready(ctx: typer.Context, hive: str = _HIVE):
-    """List ready (unblocked, dependency-ordered) work — first-class `bd ready`. Read-only.
-
-    Pass `--json` for the coordinator loop's machine shape, `--gated` for beads whose review gate
-    just closed. Extra flags forward to `bd ready` unchanged.
-
-    When `--gated` is passed and `release.strategy` is configured, the gated set is re-sequenced by
-    the advisory release scorer (the strategy-preferred merge order) rather than FCFS; with no
-    strategy set the forward is byte-verbatim (no behavior change).
-
-    Truncation (bh-i0p1.2): bd's own `-n`/`--limit` defaults to 100. A narrowed read (any filter
-    flag — --label/--type/--priority/--assignee/--parent/--mol/…) with no explicit -n/--limit is
-    widened to unbounded here, since a narrow question should get a complete answer. An unfiltered
-    listing keeps bd's own default cap, but a truncated result is never silent: the table forward
-    mirrors bd's "Showing X of Y" line onto stderr too (a `| grep`/pipe of stdout can otherwise
-    make it disappear), and a truncated `--json` read exits READY_TRUNCATED_EXIT (3) instead of 0
-    so a caller checking $? can tell a partial read from a complete one. An explicit -n/--limit is
-    the caller's own deliberate cap and is never second-guessed."""
-    cfg = config.load()
-    cwd = registry.hive_dir_for(cfg, hive)
-    args = _widen_narrowed_ready_args(list(ctx.args))
-    # Opt-in release start-gating (bh-k2j8.6): only a plain `--json` read on a hive that set
-    # `release.strategy` gets deferred beads annotated; the merger's scorer-sorted `--gated` view is
-    # the sibling merge-order bead's (.7), handled below. Every other call — and every
-    # default-config hive — falls through to the verbatim `bd ready` forward, so today's byte-shape
-    # is untouched.
-    if "--json" in args and "--gated" not in args:
-        entry = registry.entry_for_dir(cfg, cwd)
-        if str(config.release_value(cfg, entry, "strategy", "") or ""):
-            _emit_start_gated_ready(cfg, entry, cwd, args)
-            return
-    # Merge-slot advisory ordering (bh-k2j8.7): a `--gated` read on a hive that set
-    # `release.strategy` is re-sequenced by the advisory release scorer (the strategy-preferred
-    # merge order) rather than FCFS. Scoped out of the truncation fix above — `--gated` answers a
-    # different question (molecules ready for gate-resume dispatch / the merger's scored subset),
-    # not the plain "what's ready" listing bh-i0p1.2 was filed against.
-    if "--gated" in args:
-        entry = registry.entry_for_dir(cfg, cwd)
-        strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
-        if strategy:
-            _forward_ready_ordered(
-                args,
-                cwd,
-                strategy,
-                config.release_fix_churn_budget(cfg, entry),
-                config.release_conflict_estimator(cfg, entry),
-            )
-            return
-    _forward_ready_plain(args, cwd)
-
-
-def _emit_start_gated_ready(cfg, entry, cwd, args) -> None:
-    """Emit `bd ready --json` with each bead annotated `deferred` by the release start-gate: a ready
-    bead the scorer would hold — likely to conflict with work ranked ahead of it — is flagged so
-    the dispatcher doesn't start it into a suboptimal merge slot. The queue order is the ready
-    list's own dependency/FCFS order. Only reached when the hive opted into `release.strategy`; on
-    any non-list `bd` output it forwards the raw bytes + exit code unchanged."""
-    res = bd.run(["ready", *args], cwd, capture=True)
-    try:
-        beads = json.loads(res.stdout) if res.stdout.strip() else []
-    except json.JSONDecodeError:
-        beads = None
-    if not isinstance(beads, list):
-        if res.stdout:
-            sys.stdout.write(res.stdout)
-        if res.stderr:
-            sys.stderr.write(res.stderr)
-        raise typer.Exit(res.returncode)
-    order = [str(b.get("id") or "") for b in beads]
-    deferrals = schedule_mod.start_gate(
-        beads, order, estimator=config.release_conflict_estimator(cfg, entry)
-    )
-    strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
-    for _d in deferrals:
-        otel.record_deferred_start({"bh.release.strategy": strategy})
-    deferred = {d.id for d in deferrals}
-    for bead in beads:
-        bead["deferred"] = str(bead.get("id") or "") in deferred
-    sys.stdout.write(json.dumps(beads, indent=2) + "\n")
-    if res.stderr:
-        sys.stderr.write(res.stderr)
-    # bh-i0p1.2: the start-gate is a `--json` ready read too — same truncation risk, same signal.
-    raise typer.Exit(_ready_truncated_exit(args, res, as_json=True))
+    """List ready work, preserving bd streams, ordering, and truncation signals."""
+    return work_reads.ready(ctx, hive)
 
 
 @app.command("issue", context_settings=_READ_CTX)
 @otel.trace_verb("work.issue")
 def issue(ctx: typer.Context, bead: str = _BEAD, hive: str = _HIVE):
-    """Show a single issue's fields — first-class `bd show <id>`. Read-only.
-
-    Pass `--json` for the machine shape the router reads `model:` / `harness:` labels from. Extra
-    flags forward to `bd show` unchanged."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    _forward_read(["show", bead, *ctx.args], registry.hive_dir_for(cfg, hive))
+    """Show a single issue's fields through the stable first-class read."""
+    return work_reads.issue(ctx, bead, hive)
 
 
 @app.command("list", context_settings=_READ_CTX)
 @otel.trace_verb("work.list")
 def list_(ctx: typer.Context, hive: str = _HIVE):
-    """List / filter issues (e.g. `--status <state>`) — first-class `bd list`. Read-only.
-
-    Pass `--json` for the machine shape. Extra flags forward to `bd list` unchanged."""
-    cfg = config.load()
-    _forward_read(["list", *ctx.args], registry.hive_dir_for(cfg, hive))
+    """List or filter issues through the stable first-class read."""
+    return work_reads.list_(ctx, hive)
 
 
 # ---- intake triage --------------------------------------
@@ -1095,15 +350,7 @@ _SOURCE = typer.Option(
 )
 _INTAKE_JSON = typer.Option(False, "--json", help="emit {rows, dupes} as JSON")
 _NO_DUPES = typer.Option(False, "--no-dupes", help="skip the bd find-duplicates pass")
-
-
-def _render_disposition(code, error, message):
-    """Render a triage disposition's (exit, error, message): echo the message, or fail with the
-    error on a non-zero exit."""
-    if error:
-        typer.echo(f"✗ {error}", err=True)
-        raise typer.Exit(code)
-    typer.echo(message)
+_render_disposition = work_intake.render_disposition
 
 
 @app.command("intake")
@@ -1114,17 +361,8 @@ def intake_cmd(
     as_json: bool = _INTAKE_JSON,
     no_dupes: bool = _NO_DUPES,
 ):
-    """List this hive's untriaged intake queue (source-agnostic) + surface likely dupes. Read-only.
-
-    A report lands as `intake:untriaged` no matter its channel; the resolved `origin` channel
-    (report|github|import — the `origin:` label for reports, else derived from `source_system` for
-    imports) rides each row. Dispose with `ws work accept|reject|reroute|promote`."""
-    from . import triage
-
-    cfg = config.load()
-    triage.print_intake(
-        registry.hive_dir_for(cfg, hive), source=source, dupes=not no_dupes, as_json=as_json
-    )
+    """List this hive's untriaged intake queue and surface likely duplicates."""
+    return work_intake.intake(hive, source, as_json, no_dupes)
 
 
 @app.command("accept")
@@ -1136,14 +374,8 @@ def accept_cmd(
     as_: str = _AS,
     hive: str = _HIVE,
 ):
-    """Accept an intake report into backlog: set type/priority (both optional) + clear intake."""
-    from . import triage
-
-    otel.set_bead(bead)
-    cfg = config.load()
-    cwd = registry.hive_dir_for(cfg, hive)
-    actor = identity.resolve_actor(as_)
-    _render_disposition(*triage.accept(cwd, bead, actor, issue_type=issue_type, priority=priority))
+    """Accept an intake report into backlog and clear its intake state."""
+    return work_intake.accept(bead, issue_type, priority, as_, hive)
 
 
 @app.command("reject")
@@ -1154,14 +386,8 @@ def reject_cmd(
     as_: str = _AS,
     hive: str = _HIVE,
 ):
-    """Reject an intake report: clear intake + close it with a reporter-visible reason."""
-    from . import triage
-
-    otel.set_bead(bead)
-    cfg = config.load()
-    cwd = registry.hive_dir_for(cfg, hive)
-    actor = identity.resolve_actor(as_)
-    _render_disposition(*triage.reject(cwd, bead, actor, reason=reason))
+    """Reject an intake report with a reporter-visible reason."""
+    return work_intake.reject(bead, reason, as_, hive)
 
 
 @app.command("reroute")
@@ -1173,31 +399,15 @@ def reroute_cmd(
     as_: str = _AS,
     hive: str = _HIVE,
 ):
-    """Reroute a mis-routed report: re-file into the right hive (`--to`), or bounce it to the
-    superintendent (`--super`) to keep it in the fleet-wide inbox. Exactly one destination."""
-    from . import triage
-
-    otel.set_bead(bead)
-    cfg = config.load()
-    cwd = registry.hive_dir_for(cfg, hive)
-    actor = identity.resolve_actor(as_)
-    _render_disposition(
-        *triage.reroute(cwd, bead, actor, to_hive=to, superintendent=super_, cfg=cfg)
-    )
+    """Reroute an intake report to a hive or superintendent."""
+    return work_intake.reroute(bead, to, super_, as_, hive)
 
 
 @app.command("promote")
 @otel.trace_verb("work.promote")
 def promote_cmd(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
-    """Promote an intake report to the planner (hand-off only; the adopt path is
-    ). Sets `intake:promoted` — the planner's adopt queue key."""
-    from . import triage
-
-    otel.set_bead(bead)
-    cfg = config.load()
-    cwd = registry.hive_dir_for(cfg, hive)
-    actor = identity.resolve_actor(as_)
-    _render_disposition(*triage.promote(cwd, bead, actor))
+    """Promote an intake report to the planner."""
+    return work_intake.promote(bead, as_, hive)
 
 
 @app.command("assign")
