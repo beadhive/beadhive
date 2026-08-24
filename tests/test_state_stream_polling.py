@@ -22,6 +22,7 @@ def raw_issue(
     status="open",
     labels=None,
     dependencies=None,
+    assignee=None,
     priority=1,
 ):
     return {
@@ -34,6 +35,7 @@ def raw_issue(
         "updated_at": "2026-08-24T00:00:00Z",
         "labels": labels or [],
         "dependencies": dependencies or [],
+        "assignee": assignee,
     }
 
 
@@ -160,6 +162,146 @@ def test_export_records_are_normalized_without_backend_fields(world):
     )
     assert "metadata" not in payload["issues"][0]
     assert "lease_expires_at" not in payload["issues"][0]
+
+
+def test_one_export_projects_dependency_provenance_and_verbatim_assignment(world):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = ExportBackend(
+        {
+            hive: [
+                [
+                    raw_issue(
+                        "bh-child",
+                        assignee="dev/operator-core",
+                        dependencies=[
+                            {
+                                "issue_id": "bh-child",
+                                "depends_on_id": "bh-parent",
+                                "type": "blocks",
+                                "created_at": "2026-08-24T00:00:00Z",
+                                "created_by": "planner/one",
+                                "metadata": {"ignored": True},
+                            },
+                            {
+                                "issue_id": "bh-child",
+                                "depends_on_id": "bh-origin",
+                                "type": "related",
+                            },
+                        ],
+                    )
+                ]
+            ]
+        }
+    )
+
+    snapshot = provider(cfg, backend).refresh(state_stream.StreamRequest("hive", hive="beadhive"))
+
+    assert len(backend.calls) == 1
+    assert snapshot.assignments == (
+        state_stream.Assignment(
+            id=state_stream.projection_id("assignment", ("beadhive", "bh-child")),
+            hive="beadhive",
+            issue_id="bh-child",
+            seat="dev/operator-core",
+        ),
+    )
+    dependencies = {item.depends_on_id: item for item in snapshot.work_dependencies}
+    assert dependencies["bh-parent"].created_at == "2026-08-24T00:00:00Z"
+    assert dependencies["bh-parent"].created_by == "planner/one"
+    assert dependencies["bh-origin"].created_at is None
+    assert dependencies["bh-origin"].created_by is None
+
+
+@pytest.mark.parametrize("assignee", [None, ""])
+def test_empty_assignee_has_no_assignment(world, assignee):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = ExportBackend({hive: [[raw_issue(assignee=assignee)]]})
+
+    snapshot = provider(cfg, backend).refresh(state_stream.StreamRequest("hive", hive="beadhive"))
+
+    assert snapshot.assignments == ()
+
+
+def test_missing_dependency_carrier_is_partial_not_false_empty_truth(world):
+    cfg, _entry, _factory, _hub, hive = world
+    raw = raw_issue(assignee="dev/operator-core")
+    del raw["dependencies"]
+    backend = ExportBackend({hive: [[raw]]})
+
+    snapshot = provider(cfg, backend).refresh(state_stream.StreamRequest("hive", hive="beadhive"))
+
+    assert [item.id for item in snapshot.issues] == ["bh-1"]
+    assert snapshot.assignments[0].seat == "dev/operator-core"
+    assert snapshot.work_dependencies == ()
+    assert snapshot.partial is True
+    assert snapshot.partial_reason == "dependency_data_unavailable"
+
+
+def test_operator_only_change_advances_revision_and_emits_replacement(world):
+    cfg, _entry, _factory, _hub, hive = world
+
+    def record(created_by):
+        return raw_issue(
+            dependencies=[
+                {
+                    "issue_id": "bh-1",
+                    "depends_on_id": "bh-parent",
+                    "type": "blocks",
+                    "created_by": created_by,
+                }
+            ]
+        )
+
+    backend = ExportBackend({hive: [[record("dev/one")], [record("dev/two")]]})
+    adapter = provider(cfg, backend)
+    request = state_stream.StreamRequest("hive", hive="beadhive")
+    first = adapter.refresh(request)
+    second = adapter.refresh(request)
+
+    assert first.issues == second.issues
+    assert first.revision != second.revision
+    _initial, delta = list(
+        state_stream.stream_frames(
+            type(
+                "ProviderDouble",
+                (),
+                {"name": "double", "updates": lambda _self, _request: iter((first, second))},
+            )(),
+            request,
+        )
+    )
+    assert delta.work_dependencies_changed[0].created_by == "dev/two"
+    assert delta.work_dependencies_removed == ()
+
+
+def test_aggregate_operator_hive_comes_from_accepted_registry_identity(world):
+    cfg, _entry, factory, _hub, _hive = world
+    identity = ["provider:github", "org:beadhive", "repo:beadhive"]
+    backend = ExportBackend(
+        {
+            factory: [
+                [
+                    raw_issue(
+                        "not-a-hive-prefix",
+                        labels=identity,
+                        assignee="dev/operator-core",
+                        dependencies=[
+                            {
+                                "issue_id": "not-a-hive-prefix",
+                                "depends_on_id": "another-id",
+                                "type": "blocks",
+                            }
+                        ],
+                    )
+                ]
+            ]
+        }
+    )
+
+    snapshot = provider(cfg, backend).refresh(state_stream.StreamRequest("factory"))
+
+    assert snapshot.assignments[0].hive == "beadhive"
+    assert snapshot.work_dependencies[0].hive == "beadhive"
 
 
 def test_polling_emits_only_changed_snapshots(world):
