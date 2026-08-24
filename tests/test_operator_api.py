@@ -15,6 +15,7 @@ from beadhive import (
     operator_api,
     operator_feed,
     operator_sources,
+    operator_sse,
     run_journal,
     state_stream,
 )
@@ -80,16 +81,19 @@ def _app(tmp_path: Path):
     )
     feed = operator_feed.OperatorFeed(sources, now_millis=lambda: 1000)
     daemon_runtime = host_daemon.DaemonRuntime()
+    relay = operator_sse.OperatorEventRelay(feed, daemon_runtime)
     api = operator_api.OperatorAPI(
         sources=sources,
         feed=feed,
         host_id="host-1",
         instance_id="instance-1",
         ready=lambda: daemon_runtime.ready,
+        events=relay.events,
     )
     app = host_daemon.build_application(
         runtime=daemon_runtime,
         routes=api.routes(),
+        components=[relay.component()],
         middleware=[
             Middleware(
                 operator_api.LocalReadPolicyMiddleware,
@@ -162,6 +166,22 @@ def test_host_origin_peer_and_read_only_profile_fail_closed(tmp_path: Path) -> N
             "/api/v1/factory", headers={"origin": "http://127.0.0.1:3000"}
         )
         write = await client.post("/api/v1/factory")
+        preflight = await client.options(
+            "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events",
+            headers={
+                "origin": "http://127.0.0.1:3000",
+                "access-control-request-method": "GET",
+                "access-control-request-headers": "Last-Event-ID",
+            },
+        )
+        unsafe_preflight = await client.options(
+            "/api/v1/factory",
+            headers={
+                "origin": "http://127.0.0.1:3000",
+                "access-control-request-method": "GET",
+                "access-control-request-headers": "Authorization",
+            },
+        )
         absent = [
             await client.get("/mcp"),
             await client.get("/api/v1/terminal/attach-token"),
@@ -172,9 +192,27 @@ def test_host_origin_peer_and_read_only_profile_fail_closed(tmp_path: Path) -> N
             transport=remote_transport, base_url="http://127.0.0.1:8420"
         ) as remote:
             nonloopback = await remote.get("/api/v1/factory")
-        return bad_host, bad_origin, allowed_origin, write, absent, nonloopback
+        return (
+            bad_host,
+            bad_origin,
+            allowed_origin,
+            write,
+            preflight,
+            unsafe_preflight,
+            absent,
+            nonloopback,
+        )
 
-    bad_host, bad_origin, allowed_origin, write, absent, nonloopback = _exercise(tmp_path, action)
+    (
+        bad_host,
+        bad_origin,
+        allowed_origin,
+        write,
+        preflight,
+        unsafe_preflight,
+        absent,
+        nonloopback,
+    ) = _exercise(tmp_path, action)
     assert (bad_host.status_code, bad_host.json()["error"]["code"]) == (400, "invalid_host")
     assert (bad_origin.status_code, bad_origin.json()["error"]["code"]) == (
         403,
@@ -183,6 +221,14 @@ def test_host_origin_peer_and_read_only_profile_fail_closed(tmp_path: Path) -> N
     assert allowed_origin.status_code == 200
     assert allowed_origin.headers["access-control-allow-origin"] == "http://127.0.0.1:3000"
     assert (write.status_code, write.json()["error"]["code"]) == (405, "read_only_profile")
+    assert preflight.status_code == 204
+    assert preflight.headers["access-control-allow-origin"] == "http://127.0.0.1:3000"
+    assert preflight.headers["access-control-allow-methods"] == "GET"
+    assert preflight.headers["access-control-allow-headers"] == "Last-Event-ID"
+    assert (unsafe_preflight.status_code, unsafe_preflight.json()["error"]["code"]) == (
+        403,
+        "invalid_preflight",
+    )
     assert [response.status_code for response in absent] == [404, 404, 404]
     assert (nonloopback.status_code, nonloopback.json()["error"]["code"]) == (
         403,
@@ -276,8 +322,14 @@ def test_product_factory_composes_operator_state_into_daemon_core(tmp_path: Path
         "/health",
         "/api/v1/factory",
         "/api/v1/hives/{hive_id:path}/snapshot",
+        "/api/v1/hives/{hive_id:path}/events",
         "/api/v1/runs/{run_id}/activity",
         "/openapi.json",
     }
     assert app.state.operator_feed.sources is app.state.operator_sources
     assert app.state.operator_api.feed is app.state.operator_feed
+    assert app.state.operator_sse.feed is app.state.operator_feed
+    process_scope = app.state.operator_sources._process_scope
+    assert process_scope is not None
+    assert process_scope.timeout < runtime.shutdown_budget
+    app.state.operator_sources.close()

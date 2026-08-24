@@ -34,6 +34,18 @@ class FeedTransition:
     source_revision: str
     producer_epoch: str
     base_sequence: int
+    reset_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class FeedPulse:
+    """An event allocation which does not replace the installed source snapshot."""
+
+    hive_id: str
+    snapshot: Mapping[str, object]
+    source_revision: str
+    producer_epoch: str
+    base_sequence: int
 
 
 @dataclass(frozen=True)
@@ -53,6 +65,7 @@ class _HiveState:
     sequence: int = 0
     source_key: tuple[str, str] | None = None
     snapshot: dict[str, object] | None = None
+    discontinuity_reason: str | None = None
 
 
 @dataclass
@@ -67,6 +80,7 @@ class _ActivityState:
 InstallObserver = Callable[[FeedInstall], None]
 ActivityObserver = Callable[[ActivityInstall], None]
 TransitionHandler = Callable[[FeedTransition], int]
+PulseHandler = Callable[[FeedPulse], int]
 
 
 class OperatorFeed:
@@ -171,19 +185,31 @@ class OperatorFeed:
         hive = self.sources.resolve_hive(identity)
         state = self._hive_state(hive.identity)
         with state.lock:
-            bead_state, runtime_state = self.sources.refresh_hive(hive)
+            try:
+                bead_state, runtime_state = self.sources.refresh_hive(hive)
+            except Exception:
+                if state.snapshot is not None:
+                    state.discontinuity_reason = "authoritative source continuity was interrupted"
+                raise
             source_key = (bead_state.revision, runtime_state.revision)
-            if state.snapshot is not None and state.source_key == source_key:
+            reset_reason = state.discontinuity_reason
+            if (
+                state.snapshot is not None
+                and state.source_key == source_key
+                and reset_reason is None
+            ):
                 return state.snapshot
 
             previous = state.snapshot
+            producer_epoch = uuid.uuid4().hex if reset_reason is not None else state.producer_epoch
+            base_sequence = 0 if reset_reason is not None else state.sequence
             observed_at = self._now_millis()
             snapshot = operator_contract.hive_operator_snapshot(
                 hive.entry,
                 bead_state,
                 runtime_state,
-                producer_epoch=state.producer_epoch,
-                sequence=state.sequence,
+                producer_epoch=producer_epoch,
+                sequence=base_sequence,
                 observed_at=observed_at,
             )
             if previous is not None:
@@ -193,14 +219,18 @@ class OperatorFeed:
                         previous=previous,
                         current=snapshot,
                         source_revision=str(snapshot["revision"]),
-                        producer_epoch=state.producer_epoch,
-                        base_sequence=state.sequence,
+                        producer_epoch=producer_epoch,
+                        base_sequence=base_sequence,
+                        reset_reason=reset_reason,
                     )
                 )
-                state.sequence += count
-                snapshot["cursor"]["sequence"] = state.sequence  # type: ignore[index]
+                base_sequence += count
+                snapshot["cursor"]["sequence"] = base_sequence  # type: ignore[index]
+            state.producer_epoch = producer_epoch
+            state.sequence = base_sequence
             state.source_key = source_key
             state.snapshot = snapshot
+            state.discontinuity_reason = None
             self._notify_install(
                 FeedInstall(
                     hive_id=hive.identity,
@@ -211,6 +241,42 @@ class OperatorFeed:
             )
             return snapshot
 
+    def allocate_events(self, identity: str, handler: PulseHandler) -> int:
+        """Allocate non-source events while keeping the snapshot cursor atomic.
+
+        Heartbeats use this boundary so their real event sequences can never advance ahead of
+        the cursor returned by :meth:`snapshot_with_cursor`.
+        """
+
+        hive = self.sources.resolve_hive(identity)
+        state = self._hive_state(hive.identity)
+        with state.lock:
+            if state.snapshot is None:
+                raise OperatorSourceError(
+                    "snapshot_required",
+                    "An authoritative snapshot is required before event subscription.",
+                    status_code=409,
+                )
+            count = handler(
+                FeedPulse(
+                    hive_id=hive.identity,
+                    snapshot=state.snapshot,
+                    source_revision=str(state.snapshot["revision"]),
+                    producer_epoch=state.producer_epoch,
+                    base_sequence=state.sequence,
+                )
+            )
+            if type(count) is not int or count < 1:
+                raise RuntimeError(
+                    "operator feed event allocations must install at least one event"
+                )
+            state.sequence += count
+            cursor = state.snapshot["cursor"]
+            assert isinstance(cursor, dict)
+            cursor["sequence"] = state.sequence
+            cursor["observedAt"] = self._now_millis()
+            return state.sequence
+
     def installed_snapshot(self, identity: str) -> Mapping[str, object] | None:
         """Return the installed object and cursor together; never refresh a source."""
 
@@ -218,6 +284,11 @@ class OperatorFeed:
         state = self._hive_state(hive.identity)
         with state.lock:
             return state.snapshot
+
+    def cancel_source_reads(self) -> None:
+        """Cancel daemon-owned source process trees before relay worker drain."""
+
+        self.sources.close()
 
     @staticmethod
     def _is_append(

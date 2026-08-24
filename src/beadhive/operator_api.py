@@ -13,7 +13,7 @@ from typing import Any
 from urllib.parse import quote, urlsplit
 
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import BaseRoute, Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
@@ -23,6 +23,10 @@ from .operator_sources import OperatorSourceError, OperatorSources, validate_can
 
 OPENAPI_CONTRACT = "beadhive-host-openapi-v1.json"
 _CURSOR = re.compile(r"^([A-Za-z0-9._~-]+):(0|[1-9][0-9]*)$")
+_EVENTS_RAW_PATH = re.compile(
+    rb"^/api/v1/hives/[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F"
+    rb"[A-Za-z0-9._~-]+/events$"
+)
 
 
 def error_payload(error: OperatorSourceError) -> dict[str, object]:
@@ -64,10 +68,10 @@ def _raw_parameter(request: Request, prefix: bytes, suffix: bytes) -> bytes:
     return raw_path[len(prefix) : len(raw_path) - len(suffix)]
 
 
-def canonical_hive_parameter(request: Request) -> str:
+def canonical_hive_parameter(request: Request, *, suffix: bytes = b"/snapshot") -> str:
     decoded = str(request.path_params["hive_id"])
     validate_canonical_identity(decoded)
-    raw = _raw_parameter(request, b"/api/v1/hives/", b"/snapshot")
+    raw = _raw_parameter(request, b"/api/v1/hives/", suffix)
     expected = quote(decoded, safe="-._~").encode("ascii")
     if raw != expected:
         raise OperatorSourceError(
@@ -127,12 +131,14 @@ class OperatorAPI:
         host_id: str,
         instance_id: str,
         ready: Callable[[], bool],
+        events: Callable[[Request], Any] | None = None,
     ) -> None:
         self.sources = sources
         self.feed = feed
         self.host_id = host_id
         self.instance_id = instance_id
         self.ready = ready
+        self.events = events
 
     async def factory(self, _request: Request) -> JSONResponse:
         try:
@@ -196,7 +202,7 @@ class OperatorAPI:
         return JSONResponse(openapi_document())
 
     def routes(self) -> list[BaseRoute]:
-        return [
+        routes: list[BaseRoute] = [
             Route("/api/v1/factory", self.factory, methods=["GET"], name="operator_factory"),
             Route(
                 "/api/v1/hives/{hive_id:path}/snapshot",
@@ -210,8 +216,20 @@ class OperatorAPI:
                 methods=["GET"],
                 name="operator_run_activity",
             ),
-            Route("/openapi.json", self.openapi, methods=["GET"], name="operator_openapi"),
         ]
+        if self.events is not None:
+            routes.append(
+                Route(
+                    "/api/v1/hives/{hive_id:path}/events",
+                    self.events,
+                    methods=["GET"],
+                    name="operator_hive_events",
+                )
+            )
+        routes.append(
+            Route("/openapi.json", self.openapi, methods=["GET"], name="operator_openapi")
+        )
+        return routes
 
 
 def _authority(host: str, port: int) -> str:
@@ -267,15 +285,6 @@ class LocalReadPolicyMiddleware:
                 value.decode("latin-1")
             )
         headers = {key: values[0] for key, values in header_values.items() if len(values) == 1}
-        if scope.get("method") != "GET":
-            await _error_response(
-                OperatorSourceError(
-                    "read_only_profile",
-                    "The phase-one operator profile permits read-only GET requests only.",
-                    status_code=405,
-                )
-            )(scope, receive, send)
-            return
         if (
             len(header_values.get("host", ())) != 1
             or headers.get("host", "").lower() != self.authority.lower()
@@ -325,15 +334,61 @@ class LocalReadPolicyMiddleware:
             )(scope, receive, send)
             return
 
+        if scope.get("method") == "OPTIONS":
+            raw_path = scope.get("raw_path", b"")
+            requested_method = header_values.get("access-control-request-method", ())
+            requested_headers = header_values.get("access-control-request-headers", ())
+            header_names = {
+                value.strip().lower()
+                for raw in requested_headers
+                for value in raw.split(",")
+                if value.strip()
+            }
+            if (
+                origin is None
+                or not isinstance(raw_path, bytes)
+                or _EVENTS_RAW_PATH.fullmatch(raw_path) is None
+                or requested_method != ["GET"]
+                or len(requested_headers) > 1
+                or not header_names.issubset({"last-event-id"})
+            ):
+                await _error_response(
+                    OperatorSourceError(
+                        "invalid_preflight",
+                        "Only the exact local OperatorEvent GET preflight is allowed.",
+                        status_code=403,
+                    )
+                )(scope, receive, send)
+                return
+            await Response(
+                status_code=204,
+                headers={
+                    "Access-Control-Allow-Origin": origin,
+                    "Access-Control-Allow-Methods": "GET",
+                    "Access-Control-Allow-Headers": "Last-Event-ID",
+                    "Vary": "Origin",
+                    "Cache-Control": "no-store",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )(scope, receive, send)
+            return
+
+        if scope.get("method") != "GET":
+            await _error_response(
+                OperatorSourceError(
+                    "read_only_profile",
+                    "The phase-one operator profile permits read-only GET requests only.",
+                    status_code=405,
+                )
+            )(scope, receive, send)
+            return
+
         async def secure_send(message: Message) -> None:
             if message["type"] == "http.response.start":
                 response_headers = list(message.get("headers", ()))
-                response_headers.extend(
-                    [
-                        (b"cache-control", b"no-store"),
-                        (b"x-content-type-options", b"nosniff"),
-                    ]
-                )
+                if not any(key.lower() == b"cache-control" for key, _ in response_headers):
+                    response_headers.append((b"cache-control", b"no-store"))
+                response_headers.append((b"x-content-type-options", b"nosniff"))
                 if origin is not None:
                     response_headers.extend(
                         [

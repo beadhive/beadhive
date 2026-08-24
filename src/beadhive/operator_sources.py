@@ -13,8 +13,19 @@ from . import config, dispatch_log, public_readers, registry, run_journal
 from .public_readers import AgentRunSnapshot, RunJournalFrame
 from .state_stream import ProviderSnapshot, StreamRequest, StreamScope
 from .state_stream_polling import PollingStateStreamProvider
+from .state_stream_process import StreamProcessScope
 
 _IDENTITY_SEGMENT = re.compile(r"^[A-Za-z0-9._~-]+$")
+DEFAULT_PROCESS_TIMEOUT = 8.0
+DEFAULT_PROCESS_TERM_GRACE = 0.5
+
+
+def process_limits_for_shutdown(shutdown_budget: float) -> tuple[float, float]:
+    """Reserve daemon drain time after a polling timeout and process-tree termination."""
+
+    if not 0 < shutdown_budget < float("inf"):
+        raise ValueError("shutdown budget must be finite and greater than zero")
+    return shutdown_budget * 0.6, shutdown_budget * 0.1
 
 
 class OperatorSourceError(RuntimeError):
@@ -103,6 +114,8 @@ class OperatorSources:
         journal_reader: JournalReader = _default_journal_reader,
         journal_base: Path | None = None,
         dispatch_sink_for_entry: Callable[[dict, Mapping[str, object]], Path] | None = None,
+        process_timeout: float = DEFAULT_PROCESS_TIMEOUT,
+        process_term_grace: float = DEFAULT_PROCESS_TERM_GRACE,
     ) -> None:
         self.cfg = cfg if cfg is not None else config.load()
         self.host_id = host_id
@@ -110,6 +123,7 @@ class OperatorSources:
         self._journal_reader = journal_reader
         self._journal_base = journal_base
         self._dispatch_sink_for_entry = dispatch_sink_for_entry or dispatch_log.sink_path
+        self._process_scope: StreamProcessScope | None = None
         if provider is None:
             # Pin the provider to exact triplet matching even when the interactive CLI is
             # configured for prefix/flexible resolution.  The HTTP boundary resolves and
@@ -118,8 +132,21 @@ class OperatorSources:
             workspace = dict(provider_cfg.get("git_workspace") or {})
             workspace["hive_match"] = "triplet"
             provider_cfg["git_workspace"] = workspace
-            provider = PollingStateStreamProvider(provider_cfg)
+            self._process_scope = StreamProcessScope(
+                timeout=process_timeout,
+                term_grace=process_term_grace,
+            )
+            provider = PollingStateStreamProvider(
+                provider_cfg,
+                process_scope=self._process_scope,
+            )
         self.provider = provider
+
+    def close(self) -> None:
+        """Cancel production polling process trees; injected providers remain caller-owned."""
+
+        if self._process_scope is not None:
+            self._process_scope.close()
 
     def registered_hives(self) -> tuple[ExactHive, ...]:
         seen: dict[str, Mapping[str, object]] = {}

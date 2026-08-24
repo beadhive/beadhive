@@ -679,22 +679,32 @@ def build_product_application(
     """
     from .operator_api import LocalReadPolicyMiddleware, OperatorAPI
     from .operator_feed import OperatorFeed
-    from .operator_sources import OperatorSources
+    from .operator_sources import OperatorSources, process_limits_for_shutdown
+    from .operator_sse import OperatorEventRelay
 
     host_id = control_record.host_id if control_record is not None else host_identity.host_id()
     instance_id = control_record.instance_id if control_record is not None else uuid.uuid4().hex
-    sources = OperatorSources(cfg=cfg, host_id=host_id)
+    process_timeout, process_term_grace = process_limits_for_shutdown(runtime.shutdown_budget)
+    sources = OperatorSources(
+        cfg=cfg,
+        host_id=host_id,
+        process_timeout=process_timeout,
+        process_term_grace=process_term_grace,
+    )
     feed = OperatorFeed(sources)
+    relay = OperatorEventRelay(feed, runtime)
     operator = OperatorAPI(
         sources=sources,
         feed=feed,
         host_id=host_id,
         instance_id=instance_id,
         ready=lambda: runtime.ready,
+        events=relay.events,
     )
     app = build_application(
         runtime=runtime,
         routes=operator.routes(),
+        components=[relay.component()],
         enable_mcp_http=False,
         middleware=[
             Middleware(
@@ -708,6 +718,7 @@ def build_product_application(
     app.state.operator_sources = sources
     app.state.operator_feed = feed
     app.state.operator_api = operator
+    app.state.operator_sse = relay
     return app
 
 
