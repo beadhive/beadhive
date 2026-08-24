@@ -12,7 +12,60 @@ from types import SimpleNamespace
 
 from typer.testing import CliRunner
 
-from beadhive import config, work, worktree
+from beadhive import (
+    config,
+    work,
+    work_guards,
+    work_intake,
+    work_metrics,
+    work_reads,
+    worktree,
+)
+
+
+def test_work_extraction_compatibility_matrix_keeps_historical_imports():
+    """Every moved family remains importable from ``beadhive.work`` by its historical name."""
+    matrix = {
+        "metrics/events": {
+            "_emit_bead_flow": work_metrics.emit_bead_flow,
+            "_emit_cycle": work_metrics.emit_cycle,
+            "_flow_events": work_metrics.flow_events,
+            "dispatch_cause_count": work_metrics.dispatch_cause_count,
+            "record_dispatch_failure": work_metrics.record_dispatch_failure,
+        },
+        "shared guards": {
+            "_first": work_guards.first,
+            "_is_epic": work_guards.is_epic,
+            "_guard_seat": work_guards.guard_seat,
+            "_guard_orchestrator": work_guards.guard_orchestrator,
+            "_guard_conventions": work_guards.guard_conventions,
+            "_print_brief": work_guards.print_brief,
+        },
+        "reads/readiness": {
+            "_forward_read": work_reads.forward_read,
+            "_widen_narrowed_ready_args": work_reads.widen_narrowed_ready_args,
+            "molecule_readiness_payload": work_reads.molecule_readiness_payload,
+        },
+        "intake": {"_render_disposition": work_intake.render_disposition},
+    }
+
+    for family in matrix.values():
+        for historical_name, implementation in family.items():
+            assert getattr(work, historical_name) is implementation
+
+    for command_name in (
+        "brief",
+        "readiness",
+        "ready",
+        "issue",
+        "list_",
+        "intake_cmd",
+        "accept_cmd",
+        "reject_cmd",
+        "reroute_cmd",
+        "promote_cmd",
+    ):
+        assert callable(getattr(work, command_name))
 
 
 def test_work_issue_facade_executes_the_module_local_bd_patch_point(monkeypatch):
