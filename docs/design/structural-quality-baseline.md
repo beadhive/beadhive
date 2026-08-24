@@ -134,3 +134,132 @@ The focused facade tests are intentionally more than import checks: each install
 the documented old-module patch point, invokes the facade, and asserts the sentinel's argv,
 payload, precedence, or callback result. A bare re-export that binds collaborators in a new
 module will fail these tests even if the original name still imports.
+
+## Closeout at the assembled container tip
+
+Closeout source commit: `cf0aeb417f03104f69a27a8bc805a5baea78ec4a`
+(`chore(merge): bead bh-1jhk4.11`, measured 2026-08-24 UTC). This is the assembled container tip
+after children `.1` through `.11`; the two deterministic closeout tests described below are the
+only subsequent changes in `.12` before this ledger was written.
+
+The same Python, pytest, xdist, pytest-cov, coverage.py, worker count, selection, and statement
+coverage mode recorded in the baseline produced 5,944 passed, 12 skipped, and the same known
+asyncio subprocess-cleanup warning in 108.87 seconds. The machine-readable sources are
+`/tmp/bh-1jhk4-12-final-coverage.json` and `.xml`; like the baseline artifacts they are generated,
+gitignored evidence rather than repository inputs.
+
+### Before/after structural result
+
+Physical lines count the checked-in files with `wc -l`; executable statement counts and coverage
+come from coverage.py. RepoWise 0.45.0 was explicitly refreshed to the closeout commit: its state
+records `last_sync_commit=cf0aeb41...`, 3,813 knowledge-graph nodes, four layers, and 12 tour
+steps. Its full analysis indexed 12,636 internal nodes and 36,176 edges. The health comparison is
+between the baseline table above and that exact-tip refresh.
+
+| Scope | Physical lines before -> after | Statements before -> after | Coverage before -> after | RepoWise health before -> after |
+|---|---:|---:|---:|---:|
+| all `src/beadhive` | n/a | 26,610 -> 27,482 | 23,855 / 26,610 (89.6467%) -> 24,681 / 27,482 (89.8079%) | average 7.03 / hotspot 4.58 -> average 7.34 / hotspot 5.54 |
+| `work.py` facade | 4,044 -> 1,749 (-56.8%) | 1,682 -> 469 | 82.5803% -> 95.3092% | 1.96 -> 4.81 |
+| `config.py` facade | 2,613 -> 363 (-86.1%) | 984 -> 167 | 96.5447% -> 99.4012% | 3.21 -> 5.18 |
+| `worktree.py` facade | 2,917 -> 1,477 (-49.4%) | 1,311 -> 672 | 84.3631% -> 89.2857% | 2.79 -> 4.07 |
+
+The program changed 38 files by 9,594 insertions and 6,628 deletions; production source accounts
+for 8,101 insertions and 6,612 deletions. That churn is intentionally concentrated in extracting
+service modules and executable boundary tests. The three old import locations remain facades, so
+their broad caller fan-in and test patch points do not migrate to every service file. Work now
+delegates reads, intake, assignment/dispatch, submission, merge/refine, grouping, and shared
+logic; config delegates paths/store, editing/partition, schema/policy/validation, release, and
+typed settings; worktree delegates verification/git, inventory/cleanup, and merge mechanics.
+
+The compatibility matrix remains the dependent-risk control. Five executable facade contracts,
+the claim-fence ownership contract, and the config/work/worktree boundary suites prove that
+historical imports and module-local patch seams still execute through their real owners. The
+RepoWise refresh retained four architectural layers and reported no new conformance category.
+The exact-tip dead-code presentation contained the same nine audited compatibility, demo,
+profiling, asset, and fixture signals classified in `repowise-signal-audit.md` (D01-D08 and D43),
+with zero unused exports. There is therefore no new production dead-code or cycle disposition to
+hide behind a threshold; intentional facade back-edges remain compatibility seams.
+
+### Observed coverage floors, not global thresholds
+
+These values are the closeout observations for files created or retained by this structural
+program. They are review baselines, not a global percentage gate. A later change below one of
+these per-file observations must explain the exercised behavior and update this ledger; it must
+not lower a repository-wide threshold or copy a rounded terminal percentage.
+
+| Work boundary | Covered / statements | Observed floor |
+|---|---:|---:|
+| `work.py` | 447 / 469 | 95.3092% |
+| `work_assignment.py` | 110 / 120 | 91.6667% |
+| `work_dispatch.py` | 155 / 186 | 83.3333% |
+| `work_group.py` | 284 / 338 | 84.0237% |
+| `work_guards.py` | 68 / 71 | 95.7746% |
+| `work_intake.py` | 9 / 35 | 25.7143% |
+| `work_logic.py` | 274 / 297 | 92.2559% |
+| `work_merge.py` | 338 / 411 | 82.2384% |
+| `work_metrics.py` | 107 / 109 | 98.1651% |
+| `work_next.py` | 162 / 162 | 100.0000% |
+| `work_reads.py` | 163 / 192 | 84.8958% |
+| `work_refine.py` | 15 / 84 | 17.8571% |
+| `work_show.py` | 120 / 141 | 85.1064% |
+| `work_submission.py` | 224 / 260 | 86.1538% |
+
+| Config boundary | Covered / statements | Observed floor |
+|---|---:|---:|
+| `config.py` | 166 / 167 | 99.4012% |
+| `config_edit.py` | 185 / 189 | 97.8836% |
+| `config_partition.py` | 25 / 25 | 100.0000% |
+| `config_paths.py` | 103 / 107 | 96.2617% |
+| `config_policy.py` | 50 / 50 | 100.0000% |
+| `config_release.py` | 67 / 74 | 90.5405% |
+| `config_schema.py` | 407 / 416 | 97.8365% |
+| `config_services.py` | 260 / 268 | 97.0149% |
+| `config_split_migration.py` | 59 / 59 | 100.0000% |
+| `config_store.py` | 137 / 140 | 97.8571% |
+| `config_validate.py` | 94 / 97 | 96.9072% |
+| `config_work_settings.py` | 141 / 150 | 94.0000% |
+
+| Worktree boundary | Covered / statements | Observed floor |
+|---|---:|---:|
+| `worktree.py` | 600 / 672 | 89.2857% |
+| `worktree_cleanup.py` | 208 / 217 | 95.8525% |
+| `worktree_git.py` | 195 / 258 | 75.5814% |
+| `worktree_inventory.py` | 284 / 353 | 80.4533% |
+| `worktree_merge.py` | 80 / 100 | 80.0000% |
+| `worktree_verify.py` | 238 / 267 | 89.1386% |
+
+The first closeout run exposed two environment-sensitive misses in unchanged files: the
+cross-hive scope fence lived only in the excluded integration selection, and an unreadable file
+during disk measurement depended on ambient filesystem behavior. Hermetic unit contracts now
+exercise both. The final run restored `safety.py` exactly to its baseline 623 / 706 (88.2436%)
+and improved `localloop.py` from 723 / 842 (85.8670%) to 727 / 842 (86.3420%). `doctor.py`,
+`cli.py`, and `onboard.py` remained exactly 956 / 1,054, 902 / 1,164, and 572 / 582. There is no
+unexplained coverage regression.
+
+### Stewardship and deferred-hotspot decision
+
+Changes to `work.py` or `work_*.py`, `config.py` or `config_*.py`, and `worktree.py` or
+`worktree_*.py` require a reviewer who owns the corresponding facade/service boundary. Review
+must check the compatibility matrix, the owning boundary suite, and the observed per-file floor;
+cross-boundary changes must name which facade remains the public patch surface.
+
+`.github/CODEOWNERS` intentionally remains the repository-wide `* @briancripe` rule because the
+repository still has one maintainer. The trigger is explicit: when a second active maintainer is
+added, the same change that grants that role must add path-specific CODEOWNERS entries for the
+three families above, listing the available boundary stewards so reviews are routed rather than
+silently falling back to the global owner. This closeout does not invent an unavailable second
+approver or alter the prior operator decision.
+
+| Area | Closeout disposition | Owner/evidence |
+|---|---|---|
+| Work/config/worktree structural split | **resolved** | Facade size, health, and coverage all improved; boundary and compatibility contracts own future drift. |
+| Safety | **deferred**, no replan | `bh-m8ts` owns implementation. Coverage is exactly baseline after the new unreadable-file contract. |
+| Doctor | **deferred**, no replan | `bh-5sizy.3`, `bh-il87m`, and `bh-8vx8c` retain their distinct source/cache/schema work; coverage is unchanged. |
+| LocalLoop | **deferred**, no replan | `bh-e8s3i` and `bh-c6dk` retain journal/runtime work. Coverage improved after making the scope fence unit-visible. |
+| Broad CLI | **deferred**, no replan | `bh-j4gbx` owns the operation catalog and generated surfaces; coverage is unchanged. |
+| Onboarding/raw `bd` consolidation | **deferred**, no replan | `bh-8kn42` retains transport consolidation; onboarding coverage is unchanged. |
+| RepoWise presentation signals | **resolved** | D01-D08/D43 remain the complete audited set; zero unused exports and no new production signal. |
+
+No new evidence invalidates those existing bead boundaries, so this closeout files no replan.
+Future work should be ranked by the existing safety/doctor/runtime/CLI/onboarding beads rather
+than reopening the completed structural extraction or creating a duplicate umbrella hotspot.
