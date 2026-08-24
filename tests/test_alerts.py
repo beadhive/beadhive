@@ -13,6 +13,11 @@ from beadhive.cli import app
 def test_doctor_warnings_are_normalized_alerts(monkeypatch):
     """Existing doctor findings are the first source; no rule is duplicated."""
     monkeypatch.setattr(doctor, "warning_messages", lambda: ["missing required dependency: bd"])
+    monkeypatch.setattr(
+        config,
+        "load",
+        lambda: {"alerts": {"worktree_cap_mb": 0, "disk_free_floor_mb": 0}},
+    )
 
     assert alerts.active() == [
         {
