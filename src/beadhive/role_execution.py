@@ -618,7 +618,7 @@ def explain_report(
     """Build the complete side-effect-free, redacted role execution plan."""
 
     from . import config as config_mod
-    from . import run_journal
+    from . import run_journal, source_descriptors
 
     provider = PROVIDER_FOR_HARNESS.get(harness)
     plan: RoleLaunchPlan | None = None
@@ -730,6 +730,7 @@ def explain_report(
             "source_mechanism": live_source,
             "meets_live_evidence_bar": bool(artifact and live_mechanism != "none"),
         },
+        "sources": source_descriptors.role_explain_sources(entry, hive),
         "argv": {
             "values": _redacted_argv(
                 plan,

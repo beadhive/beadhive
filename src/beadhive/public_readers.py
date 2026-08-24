@@ -515,3 +515,20 @@ class RunJournalTailReader:
                 )
                 yield self._frame(current, JournalFrameKind.SNAPSHOT, current.records)
             state = current
+
+    def snapshot(self, *, since_revision: str | None = None) -> tuple[RunJournalFrame, ...]:
+        """Return the finite initial handshake without entering the live poll loop.
+
+        Descriptor callers need the same validation/cursor semantics as the public tail, but a
+        source-discovery request must never leave a generator or polling thread behind.
+        """
+
+        stop = StopToken()
+        frames = self.frames(stop, since_revision=since_revision)
+        first = next(frames)
+        out = [first]
+        if first.frame is JournalFrameKind.RESYNC:
+            out.append(next(frames))
+        stop.stop()
+        frames.close()
+        return tuple(out)

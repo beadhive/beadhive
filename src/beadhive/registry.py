@@ -177,6 +177,18 @@ def _hive_matches(hives, hive_id, mode):
     return by_prefix() or by_triplet() or by_orgrepo() or by_repo()  # flexible
 
 
+def hive_matches(cfg, hive_id):
+    """Return registry candidates for *hive_id* without printing or exiting.
+
+    Machine-facing resolvers need the same configured matching policy as :func:`resolve_hive`,
+    but must represent missing and ambiguous input as typed data rather than Typer control flow.
+    HQ is not a hive source, so the candidate set intentionally routes through :func:`hives`.
+    """
+
+    mode = str((cfg.get("git_workspace") or {}).get("hive_match", "flexible"))
+    return tuple(_hive_matches(hives(cfg), hive_id, mode))
+
+
 def _hive_not_found(cfg, hive_id, mode):
     """Print the 'no hive matching' error + next-step hints, then exit(1)."""
     typer.echo(f"✗ no hive matching '{hive_id}' (hive_match={mode})", err=True)
