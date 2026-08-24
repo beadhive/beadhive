@@ -2,13 +2,96 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import json
 import os
 from types import SimpleNamespace
 
 import pytest
 
-from beadhive import worktree
+from beadhive import worktree, worktree_git, worktree_verify
+
+VERIFY_OPERATIONS = (
+    "_rules",
+    "run_init",
+    "_pid_alive",
+    "_pid_start",
+    "_pid_starts",
+    "_write_verify_marker",
+    "_read_verify_marker",
+    "_verify_dir_is_orphan",
+    "_verify_dir_candidates",
+    "_live_marker_pids",
+    "sweep_verify_dirs",
+    "_branch_sha",
+    "_create_verify_dir",
+    "_color_neutral_env",
+    "_reuse_verdict_hit",
+    "_prepare_verify_worktree",
+    "clean_checkout",
+)
+
+GIT_OPERATIONS = (
+    "_run_git",
+    "history",
+    "signature_status",
+    "commit_messages",
+    "commit_shas",
+    "push_branch",
+    "is_clean",
+    "dirty_paths",
+    "current_branch",
+    "head_sha",
+    "head_full_sha",
+    "base_of",
+    "commit_rows",
+    "backup_branch",
+    "_rebase_env",
+    "rebase_squash",
+    "rebase_autosquash",
+    "rebase_onto",
+    "rebase_abort",
+    "reset_hard",
+    "safe_to_rewrite",
+    "same_tree",
+    "is_merged",
+    "on_first_parent_chain",
+    "landed_via_merge",
+    "_all_cherry_landed",
+    "is_landed",
+    "bead_and_parent",
+    "diff_range",
+    "log_range",
+)
+
+
+@pytest.mark.parametrize(
+    ("module", "facade_attr", "operation"),
+    [
+        *((worktree_verify, "_worktree_verify", name) for name in VERIFY_OPERATIONS),
+        *((worktree_git, "_worktree_git", name) for name in GIT_OPERATIONS),
+    ],
+)
+def test_extracted_operations_have_one_implementation_behind_the_facade(
+    module, facade_attr, operation
+):
+    implementation = getattr(module, f"impl_{operation}")
+    facade = getattr(worktree, operation)
+
+    assert implementation.__module__ == module.__name__
+    facade_source = inspect.getsource(facade)
+    assert f"{facade_attr}.impl_{operation}" in facade_source
+    facade_node = ast.parse(facade_source).body[0]
+    assert len(facade_node.body) == 2
+    assert isinstance(facade_node.body[-1], ast.Return)
+
+
+def test_creation_ensure_and_prune_ownership_stays_in_the_facade():
+    for operation in ("add", "ensure", "prune"):
+        assert getattr(worktree, operation).__module__ == "beadhive.worktree"
+        assert not hasattr(worktree_verify, operation)
+        assert not hasattr(worktree_git, operation)
 
 
 @pytest.mark.parametrize(
@@ -37,8 +120,7 @@ def test_run_init_rule_filtering_matrix(tmp_path, monkeypatch, verify_only, pres
     monkeypatch.setattr(
         worktree,
         "run",
-        lambda command, **kwargs: calls.append((command, kwargs))
-        or SimpleNamespace(returncode=0),
+        lambda command, **kwargs: calls.append((command, kwargs)) or SimpleNamespace(returncode=0),
     )
 
     worktree.run_init(cfg, {}, tmp_path, verify_only=verify_only)

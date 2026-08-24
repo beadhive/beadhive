@@ -28,11 +28,11 @@ import datetime
 import importlib
 import json
 import os
-import secrets
-import shlex
-import shutil
-import subprocess
-import tempfile
+import secrets  # noqa: F401 - compatibility patch seam
+import shlex  # noqa: F401 - compatibility patch seam
+import shutil  # noqa: F401 - compatibility patch seam
+import subprocess  # noqa: F401 - compatibility patch seam
+import tempfile  # noqa: F401 - compatibility patch seam
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -42,20 +42,20 @@ import typer
 from . import (
     bd,
     config,
-    converge,
-    ghpr,
-    host,
+    converge,  # noqa: F401 - compatibility patch seam
+    ghpr,  # noqa: F401 - compatibility patch seam
+    host,  # noqa: F401 - compatibility patch seam
     otel,
     plugins,
     registry,
-    test_report,
-    triage_store,
-    validation_ledger,
+    test_report,  # noqa: F401 - compatibility patch seam
+    triage_store,  # noqa: F401 - compatibility patch seam
+    validation_ledger,  # noqa: F401 - compatibility patch seam
     worktree_merge,
     wt_status,
-)
+)  # noqa: F401 - compatibility patch seams retained on the facade
 from .identity import workspace_identity
-from .run import missing_binary, retry_on_index_lock, run
+from .run import missing_binary, retry_on_index_lock, run  # noqa: F401 - compatibility patch seams
 
 # Re-export the integration-merge tier (in worktree_merge) so ws.worktree.<name> still works.
 merge_no_ff = worktree_merge.merge_no_ff
@@ -74,17 +74,8 @@ _CLASSIFY_MAX_WORKERS = 8
 
 
 def _run_git(args, **kw):
-    """Run git with ambient GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE scrubbed, so our explicit
-    `-C <repo>` always wins (those env vars override -C, and a git hook exports them — without
-    this, `ws wt …` invoked inside a hook would operate on the wrong repo).
-
-    Every worktree mutation (worktree add/remove, branch -d, reset --hard, push, rebase) funnels
-    through here, so this is also where the ``.git/index.lock`` retry is generalized (bh-i6o7): a
-    detached ``git maintenance run --auto`` spawned by an earlier commit can transiently hold the
-    index, and a mutation racing it must retry, not fail. ``run`` is passed to the retry so the
-    per-module subprocess seam tests fake stays intact."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    return retry_on_index_lock(run, args, env=env, **kw)
+    """Compatibility facade for ``worktree_git.impl__run_git``."""
+    return _worktree_git.impl__run_git(args, **kw)
 
 
 # ---- naming -----------------------------------------------------------------
@@ -254,64 +245,13 @@ def _entry_for_path(cfg, path: Path):
 
 
 def _rules(cfg, entry):
-    """Global worktrees.init then the hive's worktree_init (both lists of
-    {run, if_exists?, verify?}). Explicit config only — a declared toolchain (bh-d0kb)
-    is knowledge-only metadata and never contributes rules here."""
-    out = list(config.worktrees_cfg(cfg).get("init", []) or [])
-    out += list(entry.get("worktree_init", []) or [])
-    return out
+    """Compatibility facade for ``worktree_verify.impl__rules``."""
+    return _worktree_verify.impl__rules(cfg, entry)
 
 
 def run_init(cfg, entry, path: Path, verify_only: bool = False):
-    """Evaluate init rules in `path`: run each whose if_exists glob matches (or has none).
-    Best-effort — a failing/absent command warns and we keep going.
-
-    `verify_only` filters to rules flagged `{verify: true}` — the opt-in subset a
-    `clean_checkout` verify dir needs to be provisioned enough to validate (dependency
-    sync like `uv sync`, trust stamps like `mise trust`). Heavy/side-effectful seat
-    provisioning (e.g. `just setup`) stays unflagged so it never runs per validation.
-    Flagged rules run on EVERY validation (per-invocation verify dirs), so keep them
-    idempotent and cache-friendly.
-
-    Ponytail note (bh-3oq2.2, subprocess-in-loop biomarker): this loop's one `run()` spawn per
-    rule is NOT a batchable N+1 — each rule is a distinct, config-declared external command
-    (`uv sync`, `mise trust`, `just setup`, ...) that must run in its own process, in the
-    operator's declared order, with its own independent failure handling (best-effort: one
-    rule's nonzero exit warns but never skips the rest). There's no single call that could
-    replace N different commands without changing what actually runs, so this is left as-is
-    rather than forced into an artificial batch.
-
-    bh-rcroq: a per-rule ``⚠`` is easy to miss in a wall of dependency-resolution output, so
-    failures are also collected and re-surfaced as a one-line summary after the loop — still
-    non-fatal (best-effort optional convenience, never blocks worktree creation), just no
-    longer silent-in-practice."""
-    failed: list[str] = []
-    for rule in _rules(cfg, entry):
-        rule = rule or {}
-        cmd = rule.get("run")
-        if not cmd:
-            continue
-        if verify_only and not rule.get("verify"):
-            continue
-        cond = rule.get("if_exists")
-        if cond and not any(path.glob(cond)):
-            continue
-        typer.echo(f"  → {cmd}")
-        try:
-            res = run(shlex.split(cmd), cwd=str(path), check=False)
-        except FileNotFoundError:
-            typer.echo(f"  ⚠ init: command not found: {cmd}", err=True)
-            failed.append(cmd)
-            continue
-        if res.returncode != 0:
-            typer.echo(f"  ⚠ init: '{cmd}' exited {res.returncode}", err=True)
-            failed.append(cmd)
-    if failed:
-        typer.echo(
-            f"  ⚠ init: {len(failed)} optional provisioning rule(s) failed and were skipped "
-            f"(worktree is otherwise ready): {'; '.join(failed)}",
-            err=True,
-        )
+    """Compatibility facade for ``worktree_verify.impl_run_init``."""
+    return _worktree_verify.impl_run_init(cfg, entry, path, verify_only)
 
 
 def provision_observaloop(cfg, entry, target: Path) -> None:
@@ -1017,281 +957,80 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
 
 
 def history(entry, branch, base):
-    """(count, [subjects]) for commits on `branch` not reachable from `base`.
-    (-1, []) when the range can't be computed (e.g. base missing)."""
-    main = registry.hive_dir(entry)
-    rng = f"{base}..{branch}"
-    cres = _run_git(["git", "-C", str(main), "rev-list", "--count", rng], check=False, capture=True)
-    if cres.returncode != 0:
-        return -1, []
-    count = int((cres.stdout or "0").strip() or "0")
-    lres = _run_git(["git", "-C", str(main), "log", "--format=%s", rng], check=False, capture=True)
-    subjects = [s for s in (lres.stdout or "").splitlines() if s.strip()]
-    return count, subjects
+    """Compatibility facade for ``worktree_git.impl_history``."""
+    return _worktree_git.impl_history(entry, branch, base)
 
 
 def signature_status(entry, branch, base) -> list[tuple[str, str, str]]:
-    """`(short_sha, status, subject)` for EVERY commit on `branch` not reachable from `base`,
-    newest first — the merge gate's input (bh-ijd4).
-
-    `status` is git's own `%G?` verdict, one character per commit, in ONE call rather than a
-    `git verify-commit` per commit: `G` good+trusted, `U` good but the key is not in
-    `allowed_signers`, `B` bad, `X`/`Y`/`R` expired/expired-key/revoked, `E` uncheckable, `N`
-    none. Only `G` means a signature bh can actually stand behind — and note a *correctly
-    signed* commit still reports `N` when `gpg.ssh.allowedSignersFile` is unset, or `U` when it
-    points at a missing file (measured, git 2.54), which is why the gate's config description
-    insists on that file being real. `[]` when the range can't be computed, matching
-    :func:`history`'s `-1` sentinel — the caller must treat that as a refusal, not as "clean"."""
-    main = registry.hive_dir(entry)
-    res = _run_git(
-        ["git", "-C", str(main), "log", "--format=%h%x00%G?%x00%s", f"{base}..{branch}"],
-        check=False,
-        capture=True,
-    )
-    if res.returncode != 0:
-        return []
-    rows = []
-    for line in (res.stdout or "").splitlines():
-        parts = line.split("\0")
-        if len(parts) == 3 and parts[0]:
-            rows.append((parts[0], parts[1] or "N", parts[2]))
-    return rows
+    """Compatibility facade for ``worktree_git.impl_signature_status``."""
+    return _worktree_git.impl_signature_status(entry, branch, base)
 
 
 def commit_messages(entry, branch, base) -> list[str]:
-    """Full commit messages (`%B` — subject + body) for commits on `branch` not reachable from
-    `base`, newest first; [] when the range can't be computed. The subject-only `history()` view
-    drops the body, so the submit-time release-hint reconcile (which reads `BREAKING CHANGE:`
-    footers) reads messages here. NUL-delimited so multi-line bodies split cleanly."""
-    main = registry.hive_dir(entry)
-    rng = f"{base}..{branch}"
-    res = _run_git(
-        ["git", "-C", str(main), "log", "--format=%B%x00", rng], check=False, capture=True
-    )
-    if res.returncode != 0:
-        return []
-    return [m.strip() for m in (res.stdout or "").split("\x00") if m.strip()]
+    """Compatibility facade for ``worktree_git.impl_commit_messages``."""
+    return _worktree_git.impl_commit_messages(entry, branch, base)
 
 
 def commit_shas(entry, branch, base) -> list[str]:
-    """Full 40-char SHAs for every commit on `branch` not reachable from `base`, OLDEST FIRST —
-    the order the `git.commits` bead↔commit linkage contract requires
-    (docs/design/bead-commit-linkage-contract.md: "append-only, oldest-observed-first"). `[]`
-    when the range can't be computed (e.g. base missing), matching `history()`'s failure mode."""
-    main = registry.hive_dir(entry)
-    rng = f"{base}..{branch}"
-    res = _run_git(
-        ["git", "-C", str(main), "rev-list", "--reverse", rng], check=False, capture=True
-    )
-    if res.returncode != 0:
-        return []
-    return [s for s in (res.stdout or "").splitlines() if s.strip()]
+    """Compatibility facade for ``worktree_git.impl_commit_shas``."""
+    return _worktree_git.impl_commit_shas(entry, branch, base)
 
 
 def _pid_alive(pid: int) -> bool:
-    """True iff a process with `pid` exists on this host (POSIX ``kill -0``; mirrors
-    work_group._pid_alive — kept local so worktree never imports work_group)."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True  # exists — just not ours to signal
-    except (OverflowError, ValueError, OSError):
-        return False
-    return True
+    """Compatibility facade for ``worktree_verify.impl__pid_alive``."""
+    return _worktree_verify.impl__pid_alive(pid)
 
 
 def _pid_start(pid: int) -> str:
-    """Best-effort start-time token for `pid` ('' when unprobeable). ``ps -o lstart=`` is portable
-    across macOS + Linux; a mismatched token means the pid was recycled by a NEW process, defeating
-    pid-reuse false-liveness. Deliberately calls subprocess directly (not the module `run` seam):
-    this is a pure local probe, and tests faking `worktree.run` must not intercept it."""
-    try:
-        res = subprocess.run(
-            ["ps", "-o", "lstart=", "-p", str(pid)], capture_output=True, text=True, check=False
-        )
-        return res.stdout.strip() if res.returncode == 0 else ""
-    except Exception:
-        return ""
+    """Compatibility facade for ``worktree_verify.impl__pid_start``."""
+    return _worktree_verify.impl__pid_start(pid)
 
 
 def _pid_starts(pids) -> dict:
-    """Start-time tokens for MULTIPLE pids in ONE `ps` spawn — the subprocess-in-loop N+1 fix
-    (bh-3oq2.2) for `sweep_verify_dirs`: calling `_pid_start` once per candidate verify- dir would
-    spawn one `ps` per dir on every `clean_checkout`'s hot, request-reachable path. Missing/
-    unprobeable pids are simply absent from the returned map; an empty `pids` short-circuits with
-    no subprocess spawn at all."""
-    if not pids:
-        return {}
-    try:
-        res = subprocess.run(
-            ["ps", "-o", "pid=,lstart=", "-p", ",".join(str(p) for p in sorted(set(pids)))],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except Exception:
-        return {}
-    if res.returncode != 0:
-        return {}
-    out: dict = {}
-    for line in res.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        pid_str, _, rest = line.partition(" ")
-        try:
-            out[int(pid_str)] = rest.strip()
-        except ValueError:
-            continue
-    return out
+    """Compatibility facade for ``worktree_verify.impl__pid_starts``."""
+    return _worktree_verify.impl__pid_starts(pids)
 
 
 def _write_verify_marker(tmp: Path, branch: str, cmd: str) -> None:
-    """Write the liveness marker into a fresh verify- dir (the merge-slot HolderToken analog):
-    host+pid+pid-start identify the creator so the sweep can tell a live run from an orphan.
-    Best-effort — an unwritable marker just means the grace/TTL rules apply instead. `host` is
-    the stable `host_id()` UUID (bh-ytbb.4), not `socket.gethostname()` — see `_slot_holder`."""
-    pid = os.getpid()
-    marker = {
-        "host": host.host_id(),
-        "pid": pid,
-        "pid_start": _pid_start(pid),
-        "created_at": int(time.time()),
-        "branch": branch,
-        "command": cmd,
-    }
-    try:
-        (tmp / VERIFY_MARKER).write_text(json.dumps(marker, indent=2) + "\n")
-    except OSError:
-        pass
+    """Compatibility facade for ``worktree_verify.impl__write_verify_marker``."""
+    return _worktree_verify.impl__write_verify_marker(tmp, branch, cmd)
 
 
 def _read_verify_marker(d: Path):
-    """A verify- dir's liveness marker as parsed JSON, or None when it is absent or unreadable —
-    the one reader both classifiers below share, so neither can drift from the other.
-
-    The `is_file()` guard is the point of factoring it out (bh-0tmvk, same class as bh-0jgdz's
-    `release._read_marker`): a FIFO at this path makes `read_text()` block FOREVER rather than
-    raise, and the `except` never runs. `sweep_verify_dirs` is NOT only a background reaper — it
-    runs at the top of every `clean_checkout`, so a non-regular file here wedges `bh work
-    submit` and the pre-push hook exactly like the ledger case does, silently and with no exit
-    code. None (never `{}`) marks the unreadable case so callers keep distinguishing "no marker"
-    from a marker that parsed to something falsy."""
-    p = d / VERIFY_MARKER
-    if not p.is_file():
-        return None
-    try:
-        return json.loads(p.read_text())
-    except (OSError, ValueError):
-        return None
+    """Compatibility facade for ``worktree_verify.impl__read_verify_marker``."""
+    return _worktree_verify.impl__read_verify_marker(d)
 
 
 def _verify_dir_is_orphan(
     d: Path, now: float, grace: int, ttl: int, pid_starts: dict | None = None
 ) -> bool:
-    """Whether a sibling verify- dir is a demonstrably-dead leftover safe to reap. Conservative by
-    construction: a live same-host pid (with matching start-time) is NEVER reaped; a cross-host or
-    unreadable dir falls back to the grace/TTL windows only.
-
-    `pid_starts`, when given, is a pre-fetched ``{pid: start_time_token}`` map (see `_pid_starts`)
-    — `sweep_verify_dirs` batches ALL of its candidates' probes into one map up front instead of
-    spawning `ps` once per dir here. Falls back to a direct single-pid `_pid_start` call when no
-    map is supplied, so a caller probing one dir in isolation is unaffected."""
-    try:
-        age = now - d.stat().st_mtime
-    except OSError:
-        return False  # vanished mid-sweep (its owner cleaned up) — nothing to do
-    if age > ttl:
-        return True  # hard backstop: reboots, shared FS, anything the pid probe can't see
-    marker = _read_verify_marker(d)
-    if marker is None:
-        return age > grace  # marker missing/unreadable: reap only past the grace window
-    marker_host, pid = marker.get("host"), marker.get("pid")
-    # `marker_host` compares against the stable `host_id()` UUID (bh-ytbb.4), not
-    # `socket.gethostname()` — see `_write_verify_marker`.
-    if marker_host != host.host_id() or not isinstance(pid, int):
-        return False  # cross-host / malformed marker: only the TTL backstop applies
-    if not _pid_alive(pid):
-        return True  # creator is gone
-    recorded = marker.get("pid_start") or ""
-    current = pid_starts.get(pid, "") if pid_starts is not None else _pid_start(pid)
-    return bool(recorded and current and recorded != current)  # pid recycled — creator is gone
+    """Compatibility facade for ``worktree_verify.impl__verify_dir_is_orphan``."""
+    return _worktree_verify.impl__verify_dir_is_orphan(d, now, grace, ttl, pid_starts)
 
 
 def _verify_dir_candidates(parent: Path) -> list:
-    """Sibling verify-* dirs directly under `parent`, in stable (sorted) order — the scan
-    `sweep_verify_dirs` classifies, split out so pids can be batch-fetched before classifying."""
-    return [
-        d for d in sorted(parent.iterdir()) if d.name.startswith(VERIFY_LEAF_PREFIX) and d.is_dir()
-    ]
+    """Compatibility facade for ``worktree_verify.impl__verify_dir_candidates``."""
+    return _worktree_verify.impl__verify_dir_candidates(parent)
 
 
 def _live_marker_pids(dirs) -> set:
-    """Same-host, live, int pids drawn from `dirs`' markers — exactly the set
-    `_verify_dir_is_orphan` would otherwise call `_pid_start` for, one at a time. Feeds
-    `sweep_verify_dirs`' single batched `_pid_starts` call."""
-    pids: set = set()
-    this_host = host.host_id()
-    for d in dirs:
-        marker = _read_verify_marker(d)
-        if marker is None:
-            continue
-        pid = marker.get("pid")
-        if marker.get("host") == this_host and isinstance(pid, int) and _pid_alive(pid):
-            pids.add(pid)
-    return pids
+    """Compatibility facade for ``worktree_verify.impl__live_marker_pids``."""
+    return _worktree_verify.impl__live_marker_pids(dirs)
 
 
 def sweep_verify_dirs(entry, grace=_VERIFY_GRACE_SECONDS, ttl=_VERIFY_TTL_SECONDS) -> int:
-    """Reap orphaned ephemeral verify-* clean-checkout dirs for `entry`'s hive — ALL siblings,
-    independent of creator. Called at the top of every clean_checkout (self-healing) and from
-    `prune`. Live dirs (marker pid alive with matching start-time) are always spared. Returns the
-    number of dirs reaped.
-
-    Batches every candidate's pid-start probe into ONE `ps` spawn up front (`_pid_starts`) rather
-    than one per dir (bh-3oq2.2 subprocess-in-loop fix) — this runs on `clean_checkout`'s hot,
-    request-reachable path, so an unbounded per-dir spawn count matters."""
-    main = registry.hive_dir(entry)
-    parent = wt_dir(entry, VERIFY_LEAF_PREFIX).parent
-    if not parent.is_dir():
-        return 0
-    dirs = _verify_dir_candidates(parent)
-    pid_starts = _pid_starts(_live_marker_pids(dirs))
-    reaped = 0
-    now = time.time()
-    for d in dirs:
-        if not _verify_dir_is_orphan(d, now, grace, ttl, pid_starts):
-            continue
-        _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(d)], check=False)
-        if d.exists():  # not (or no longer) a registered worktree — plain filesystem leftover
-            shutil.rmtree(d, ignore_errors=True)
-        reaped += 1
-    return reaped
+    """Compatibility facade for ``worktree_verify.impl_sweep_verify_dirs``."""
+    return _worktree_verify.impl_sweep_verify_dirs(entry, grace, ttl)
 
 
 def _branch_sha(entry, branch) -> str:
-    """Full sha of `branch` in the hive main clone — the verdict-ledger key. '' on any error
-    (a faked/failed rev-parse just disables ledger lookup + record for this invocation)."""
-    main = registry.hive_dir(entry)
-    res = _run_git(["git", "-C", str(main), "rev-parse", branch], check=False, capture=True)
-    out = getattr(res, "stdout", "") or ""
-    return out.strip() if res.returncode == 0 else ""
+    """Compatibility facade for ``worktree_verify.impl__branch_sha``."""
+    return _worktree_verify.impl__branch_sha(entry, branch)
 
 
 def _create_verify_dir(entry, leaf_base: str) -> Path | None:
-    """Atomically create a unique per-invocation verify dir (<leaf_base>-<rand6>): mkdir is the
-    atomic claim, retry-on-exists gives mkdtemp semantics — uniqueness never depends on pid."""
-    for _ in range(_VERIFY_CREATE_ATTEMPTS):
-        tmp = wt_dir(entry, f"{leaf_base}-{secrets.token_hex(_VERIFY_RAND_BYTES)}")
-        tmp.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            tmp.mkdir()
-        except FileExistsError:
-            continue
-        return tmp
-    return None
+    """Compatibility facade for ``worktree_verify.impl__create_verify_dir``."""
+    return _worktree_verify.impl__create_verify_dir(entry, leaf_base)
 
 
 # Color-forcing env stripped from a validation child's environment so a clean-checkout run never
@@ -1307,12 +1046,8 @@ _COLOR_FORCE_ENV_KEYS = ("FORCE_COLOR", "CLICOLOR_FORCE")
 
 
 def _color_neutral_env(base: dict[str, str]) -> dict[str, str]:
-    """A copy of `base` with `FORCE_COLOR` / `CLICOLOR_FORCE` dropped and `NO_COLOR=1` forced on,
-    so a validation subprocess renders plain-text output regardless of the operator's terminal
-    color env. Everything else in `base` is preserved untouched."""
-    env = {k: v for k, v in base.items() if k not in _COLOR_FORCE_ENV_KEYS}
-    env["NO_COLOR"] = "1"
-    return env
+    """Compatibility facade for ``worktree_verify.impl__color_neutral_env``."""
+    return _worktree_verify.impl__color_neutral_env(base)
 
 
 # Rendered once, centrally, when the validation command fails in a verify checkout — every
@@ -1328,159 +1063,18 @@ _BARE_CHECKOUT_HINT = (
 
 
 def _reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None) -> bool:
-    """True (after echoing the reused-verdict notice and counting telemetry) iff a fresh GREEN
-    ledger verdict exists for (entry, TREE of `sha`, cmd) — `clean_checkout`'s `reuse=True`
-    short-circuit. `sha` is a rev the ledger resolves to its tree, which is the real key
-    (bh-ku9n9.3); the notice still names the commit, and the tree the verdict was earned at, so
-    an operator can see when a hit came from a *different* commit at identical content.
-
-    A hit is "skip the expensive command", never "skip everything": `green_verdict` runs the
-    hive's declared `work.always_run` set first and withholds the hit if it fails (bh-ehmd8).
-    That decision lives there — the one seam every reuse boundary reads — not here.
-
-    `cfg` — `clean_checkout`'s own, already resolved — is forwarded to the ledger's TTL lookup
-    rather than re-read from disk (bh-ku9n9.19, item 2)."""
-    hit = validation_ledger.green_verdict(entry, sha, cmd, cfg=cfg)
-    if hit is None:
-        return False
-    when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
-    typer.echo(
-        f"✓ validation verdict reused (sha {sha[:7]}, tree {str(hit.get('tree', ''))[:7]}, "
-        f"recorded {when})"
-    )
-    otel.count_validation_reuse({"bh.hive": str(entry.get("prefix", ""))})
-    return True
+    """Compatibility facade for ``worktree_verify.impl__reuse_verdict_hit``."""
+    return _worktree_verify.impl__reuse_verdict_hit(entry, sha, cmd, cfg)
 
 
 def _prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
-    """Reap stale siblings, then create+mark a fresh detached verify-<leaf>-<rand6> worktree for
-    `branch`. Returns `(path, 0)` on success, or `(None, exit_code)` — after echoing the failure —
-    when the dir or the `git worktree add` can't be created."""
-    sweep_verify_dirs(entry)
-    leaf_base = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
-    tmp = _create_verify_dir(entry, leaf_base)
-    if tmp is None:
-        typer.echo(f"✗ could not create a unique {leaf_base}-* verify dir", err=True)
-        return None, 1
-    add_res = _run_git(
-        ["git", "-C", str(main), "worktree", "add", "--detach", str(tmp), branch], check=False
-    )
-    if add_res.returncode != 0:
-        shutil.rmtree(tmp, ignore_errors=True)  # our own claim; never adopted by git
-        return None, add_res.returncode
-    _write_verify_marker(tmp, branch, cmd)
-    return tmp, 0
+    """Compatibility facade for ``worktree_verify.impl__prepare_verify_worktree``."""
+    return _worktree_verify.impl__prepare_verify_worktree(main, entry, branch, cmd)
 
 
 def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
-    """Validate `branch` from a throwaway detached worktree, so the result never depends on
-    dirty local state. Each invocation gets its OWN verify-<leaf>-<rand6> dir (bh-nikb): two
-    processes validating the same branch can no longer destroy each other's in-flight checkout —
-    there is no entry-time pre-clean, and the finally-cleanup removes only this invocation's dir.
-    Orphans from killed runs are reaped by the marker-based sweep at entry. The validation command
-    runs with a telemetry-neutral env (`otel.telemetry_neutral_env`) so its result is independent
-    of the operator's otel config and never exports telemetry, composed with a color-neutral env
-    (`_color_neutral_env`) so it's also independent of the operator's terminal color settings
-    (`FORCE_COLOR` / `CLICOLOR_FORCE` scrubbed, `NO_COLOR=1` forced — bh-76gx: an inherited
-    FORCE_COLOR was leaking ANSI escapes into `--help` output, false-REDing a plain-substring
-    assert). Returns the validation command's exit code (or git's, if checkout fails).
-
-    Before the command runs, init rules flagged `{verify: true}` are applied (bh-7k1p) so a
-    validate_cmd that assumes a provisioned environment (`uv run …`) doesn't false-fail in the
-    bare checkout; all other init rules — and observaloop provisioning — stay excluded. `cfg`
-    defaults to `config.load()` (no config → no rules) so the many indirect callers need not
-    thread it. On a nonzero exit from the command, a one-shot bare-checkout hint is emitted to
-    stderr here — the single central place — rather than at every caller's failure render.
-
-    Verdict ledger (bh-dfx0, re-keyed by bh-ku9n9.3): every run records its (TREE, cmd) verdict
-    in the hive-local validation ledger — the commit sha rides along as metadata only. With
-    `reuse=True` a fresh GREEN verdict for the exact key short-circuits the whole checkout
-    (rc 0); a red / stale / cmd-changed / different-tree verdict always revalidates. Keying on
-    the tree is what lets a `--no-ff` merge onto an unmoved main reuse the branch tip's verdict
-    (byte-identical tree, new commit) while a merge onto a MOVED main misses and runs.
-
-    `reuse=True` is now the landing boundaries' setting too (bh-ku9n9.17, ADR Decision 4): merge,
-    postland, finish and batch land consult the ledger, because with a (tree, cmd_hash) key a hit
-    IS an exact tree match and nothing weaker can produce one. `reuse` still defaults to False,
-    so an unflagged caller — the `review --run` demo, the union-merge conflict tier — is fresh by
-    construction; `review --run` itself only reuses under an explicit `--no-fresh`."""
-    main = registry.hive_dir(entry)
-    if cfg is None:
-        try:
-            cfg = config.load()
-        except FileNotFoundError:
-            cfg = {}
-    sha = _branch_sha(entry, branch)
-    if reuse and _reuse_verdict_hit(entry, sha, cmd, cfg=cfg):
-        return 0
-    tmp, rc = _prepare_verify_worktree(main, entry, branch, cmd)
-    if tmp is None:
-        return rc
-    run_init(cfg, entry, tmp, verify_only=True)
-    # Record against the tree that ACTUALLY validated: the verify checkout's own HEAD. The
-    # branch can move between the ledger lookup above and the worktree add (TOCTOU), and a
-    # verdict recorded under the stale pre-resolved sha would vouch for content it never saw.
-    head = _run_git(["git", "-C", str(tmp), "rev-parse", "HEAD"], check=False, capture=True)
-    head_out = getattr(head, "stdout", "") or ""  # tolerate faked run() results without stdout
-    validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
-    # Synchronous-contract heartbeat (bh-i0p1.4): only printed once we're actually about to pay
-    # the real cost (the reuse short-circuit above already returned for a cheap hit), so this
-    # never fires on the fast path. `just check`-shaped commands can run 5-15 minutes on a large
-    # suite — long enough that a caller watching for output, not wall-clock, can mistake a quiet
-    # stretch for a hang and reach for backgrounding/polling instead of just waiting on the call.
-    # This line is the inline, always-seen counterpart to the guidance in docs/WORKTREES.md: stay
-    # synchronous and wait for THIS call to return rather than parking a watcher on it.
-    typer.echo(
-        f"  → validating {branch} @ {validated_sha[:7]} from a clean checkout — this can take "
-        "several minutes; invoke synchronously and wait for it to return rather than "
-        "backgrounding or polling"
-    )
-    try:
-        # BH_TEST_REPORT_DIR (bh-ku9n9.20): a fresh, empty drop zone exported into every
-        # validation subprocess, with no opt-in and no bh config. bh never invokes a runner — it
-        # names a directory and reads what appears. `rc` below stays the sole verdict; an
-        # ingested report is detail on the ledger entry and can never upgrade it.
-        # The gate log is teed live (bh-ku9n9.6): the output still streams, and now also
-        # survives the run that produced it, so a red 6-minute gate can be read instead of
-        # re-run. `triage_store` keeps it only when the write rule fires — red, or retried.
-        with test_report.drop_zone() as drop, triage_store.gate_log() as log:
-            res = run(
-                shlex.split(cmd),
-                cwd=str(tmp),
-                check=False,
-                env=test_report.export(_color_neutral_env(otel.telemetry_neutral_env()), drop),
-                tee=log,
-            )
-            rc = res.returncode
-            report = test_report.ingest(drop, rc)
-            # Inside the `with`: the drop zone is gone the moment it closes, so the raw runner
-            # output has to be copied into the durable per-tree store before then.
-            triage_store.store(entry, validated_sha, cmd, rc, report, drop, log)
-        validation_ledger.record(  # best-effort
-            entry, validated_sha, cmd, rc, report=report, cfg=cfg
-        )
-        # A clean checkout running the phase WHOLE is the confirming run — the only kind of run
-        # that may attest (bh-ku9n9.8). It never converges and never consults
-        # `work.validate_subset`; all it does here is read the tree's retry history back and say
-        # so when part of this green took a retry to get there, rather than absorbing the flake.
-        converge.warn_flakes(entry, validated_sha, rc)
-        if missing := missing_binary(res):
-            # This seam runs WITHOUT capture, so a missing binary would otherwise exit 127 having
-            # printed NOTHING — no stdout, no stderr — and _BARE_CHECKOUT_HINT would then point
-            # the operator at the checkout, which is not the problem. Silence plus a misdirection
-            # is a worse operator experience than the crash this replaced (bh-7m2h9).
-            typer.echo(
-                f"✗ validation could not RUN: `{missing}` is not on PATH. This is not a test "
-                f"failure and says nothing about {validated_sha[:7]} — install it or fix PATH, "
-                f"then re-run.",
-                err=True,
-            )
-            return rc
-        if rc != 0:
-            typer.echo(_BARE_CHECKOUT_HINT, err=True)
-        return rc
-    finally:
-        _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
+    """Compatibility facade for ``worktree_verify.impl_clean_checkout``."""
+    return _worktree_verify.impl_clean_checkout(entry, branch, cmd, cfg, reuse)
 
 
 #: External hives are pull-only (bh-uxam.1): `upstream` is a read rail, never a write target.
@@ -1490,68 +1084,33 @@ UPSTREAM_REMOTE = "upstream"
 
 
 def push_branch(entry, branch, remote="origin") -> int:
-    """Push `branch` to `remote` (same name both ends). Returns git's exit code.
-
-    Refuses outright when `remote` is `upstream` — external hives fork-and-PR (`origin` is our
-    fork, the only remote we ever own write access to); `upstream` stays pull-only until a
-    dedicated PR verb consumes it deliberately."""
-    if remote == UPSTREAM_REMOTE:
-        typer.echo(
-            "✗ refusing to push to 'upstream' — external hives are pull-only; "
-            "push to 'origin' (the fork) instead",
-            err=True,
-        )
-        return 1
-    main = registry.hive_dir(entry)
-    return _run_git(
-        ["git", "-C", str(main), "push", remote, f"{branch}:{branch}"], check=False
-    ).returncode
+    """Compatibility facade for ``worktree_git.impl_push_branch``."""
+    return _worktree_git.impl_push_branch(entry, branch, remote)
 
 
 def is_clean(target: Path) -> bool:
-    """True iff the worktree at `target` has no staged/unstaged/untracked changes."""
-    res = _run_git(["git", "-C", str(target), "status", "--porcelain"], check=False, capture=True)
-    return res.returncode == 0 and not (res.stdout or "").strip()
+    """Compatibility facade for ``worktree_git.impl_is_clean``."""
+    return _worktree_git.impl_is_clean(target)
 
 
 def dirty_paths(target: Path) -> list[str]:
-    """The ``git status --porcelain`` lines for `target` — what :func:`is_clean` said no to.
-
-    Exists so a refusal can NAME the offending files instead of guessing at them (bh-bj219).
-    The merge gate used to advise adding ``.beads/`` to .gitignore; on a repo whose churn was
-    ``.beads.gate.lock`` at the REPO ROOT that advice was both wrong (no ``.beads/`` rule
-    covers it) and actively harmful (it would also have ignored the tracked
-    ``.beads/config.yaml``)."""
-    res = _run_git(["git", "-C", str(target), "status", "--porcelain"], check=False, capture=True)
-    if res.returncode != 0:
-        return []
-    return [ln.strip() for ln in (res.stdout or "").splitlines() if ln.strip()]
+    """Compatibility facade for ``worktree_git.impl_dirty_paths``."""
+    return _worktree_git.impl_dirty_paths(target)
 
 
 def current_branch(target: Path) -> str:
-    """The checked-out branch name in `target` ('' if detached / on error)."""
-    res = _run_git(
-        ["git", "-C", str(target), "rev-parse", "--abbrev-ref", "HEAD"], check=False, capture=True
-    )
-    name = (res.stdout or "").strip() if res.returncode == 0 else ""
-    return "" if name == "HEAD" else name
+    """Compatibility facade for ``worktree_git.impl_current_branch``."""
+    return _worktree_git.impl_current_branch(target)
 
 
 def head_sha(target: Path) -> str:
-    """Short HEAD sha in `target` ('' on error)."""
-    res = _run_git(
-        ["git", "-C", str(target), "rev-parse", "--short", "HEAD"], check=False, capture=True
-    )
-    return (res.stdout or "").strip() if res.returncode == 0 else ""
+    """Compatibility facade for ``worktree_git.impl_head_sha``."""
+    return _worktree_git.impl_head_sha(target)
 
 
 def head_full_sha(target: Path) -> str:
-    """Full HEAD sha in `target` ('' on error) — the validation-ledger key format (bh-i0p1.4).
-    Distinct from `head_sha` above (short, display-only): the ledger's `(sha, cmd_hash)` key is
-    always the FULL sha (see `clean_checkout`'s `_branch_sha`), so a caller recording against the
-    ledger must use this, not the short form, or the key silently never matches."""
-    res = _run_git(["git", "-C", str(target), "rev-parse", "HEAD"], check=False, capture=True)
-    return (res.stdout or "").strip() if res.returncode == 0 else ""
+    """Compatibility facade for ``worktree_git.impl_head_full_sha``."""
+    return _worktree_git.impl_head_full_sha(target)
 
 
 # ---- show / refine git helpers (all git; no bd — keeps work.py's bd seam intact) ----
@@ -1565,360 +1124,98 @@ _ROW_FMT = _ROW_RS + _ROW_FS.join(["%H", "%h", "%P", "%an", "%ae", "%ad", "%G?",
 
 
 def base_of(entry, branch, integration) -> str:
-    """The fork point `git merge-base <integration> <branch>` — base..branch is the bead's
-    local history. '' if it can't be computed (e.g. integration branch missing locally)."""
-    main = registry.hive_dir(entry)
-    res = _run_git(
-        ["git", "-C", str(main), "merge-base", integration, branch], check=False, capture=True
-    )
-    return (res.stdout or "").strip() if res.returncode == 0 else ""
+    """Compatibility facade for ``worktree_git.impl_base_of``."""
+    return _worktree_git.impl_base_of(entry, branch, integration)
 
 
 def commit_rows(entry, base, branch) -> list[dict]:
-    """Oldest→newest commits in base..branch. Each row: {sha, short, parents, author, email,
-    date (author date, iso-strict), subject, files, sig (G/U/B/N), signer}. [] on error."""
-    main = registry.hive_dir(entry)
-    res = _run_git(
-        [
-            "git",
-            "-C",
-            str(main),
-            "log",
-            f"{base}..{branch}",
-            "--reverse",
-            "--date=iso-strict",
-            "--name-only",
-            f"--format={_ROW_FMT}",
-        ],
-        check=False,
-        capture=True,
-    )
-    if res.returncode != 0:
-        return []
-    rows = []
-    for chunk in (res.stdout or "").split(_ROW_RS):
-        chunk = chunk.strip("\n")
-        if not chunk:
-            continue
-        lines = chunk.split("\n")
-        f = lines[0].split(_ROW_FS)
-        if len(f) < 9:
-            continue
-        sha, short, parents, an, ae, ad, sig, signer, subj = f[:9]
-        rows.append(
-            {
-                "sha": sha,
-                "short": short,
-                "parents": parents.split(),
-                "author": an,
-                "email": ae,
-                "date": ad,
-                "subject": subj,
-                "files": [ln for ln in lines[1:] if ln.strip()],
-                "sig": sig,
-                "signer": signer,
-            }
-        )
-    return rows
+    """Compatibility facade for ``worktree_git.impl_commit_rows``."""
+    return _worktree_git.impl_commit_rows(entry, base, branch)
 
 
 def backup_branch(entry, branch, ts: str, label: str = "refine") -> str:
-    """Create the safety branch `<branch>.<label>-<ts>` at `branch`'s tip; return its name.
-    Caller supplies `ts` (ws runtime may stamp time freely). `label` distinguishes the operation
-    (refine vs. premerge rebase) so concurrent safety refs never collide."""
-    main = registry.hive_dir(entry)
-    name = f"{branch}.{label}-{ts}"
-    res = _run_git(["git", "-C", str(main), "branch", name, branch], check=False, capture=True)
-    if res.returncode != 0:
-        typer.echo(f"✗ could not create backup branch {name}: {res.stderr or res.stdout}", err=True)
-        raise typer.Exit(1)
-    return name
+    """Compatibility facade for ``worktree_git.impl_backup_branch``."""
+    return _worktree_git.impl_backup_branch(entry, branch, ts, label)
 
 
 def _rebase_env(**extra) -> dict:
-    """git env with the dir-pointing GIT_* scrubbed (so `-C` wins) plus our editor overrides —
-    `_run_git` can't be reused here because it scrubs ALL GIT_* incl. the ones we must set."""
-    env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
-    env.update(extra)
-    return env
+    """Compatibility facade for ``worktree_git.impl__rebase_env``."""
+    return _worktree_git.impl__rebase_env(**extra)
 
 
 def rebase_squash(target_wt, base, todo_lines) -> tuple[int, str]:
-    """Run `git rebase -i <base>` in the WORKTREE (the branch is checked out there) with a
-    non-interactive sequence editor that overwrites git's todo with `todo_lines`. GIT_EDITOR is
-    pinned to a no-op too (fixup/exec need no editor) so nothing can block. (rc, combined out)."""
-    with tempfile.NamedTemporaryFile("w", suffix=".gittodo", delete=False) as f:
-        f.write("\n".join(todo_lines) + "\n")
-        todo_path = f.name
-    env = _rebase_env(GIT_SEQUENCE_EDITOR=f"cp {shlex.quote(todo_path)}", GIT_EDITOR="true")
-    try:
-        res = run(
-            ["git", "-C", str(target_wt), "rebase", "-i", base],
-            env=env,
-            check=False,
-            capture=True,
-        )
-    finally:
-        os.unlink(todo_path)
-    return res.returncode, (res.stdout or "") + (res.stderr or "")
+    """Compatibility facade for ``worktree_git.impl_rebase_squash``."""
+    return _worktree_git.impl_rebase_squash(target_wt, base, todo_lines)
 
 
 def rebase_autosquash(target_wt, base) -> tuple[int, str]:
-    """`git rebase -i --autosquash <base>` with no-op editors: git auto-builds the todo placing
-    each `fixup!`/`squash!` after its target, and `true` accepts it unedited. (rc, combined)."""
-    env = _rebase_env(GIT_SEQUENCE_EDITOR="true", GIT_EDITOR="true")
-    res = run(
-        ["git", "-C", str(target_wt), "rebase", "-i", "--autosquash", base],
-        env=env,
-        check=False,
-        capture=True,
-    )
-    return res.returncode, (res.stdout or "") + (res.stderr or "")
+    """Compatibility facade for ``worktree_git.impl_rebase_autosquash``."""
+    return _worktree_git.impl_rebase_autosquash(target_wt, base)
 
 
 def rebase_onto(target_wt, base) -> tuple[int, str]:
-    """Plain `git rebase <base>` in the worktree (the branch is checked out there) — replay the
-    branch's commits onto a newer base. Used by `try_merge_rebase`'s conflict recovery; a clean
-    replay needs no editor, and on conflict git stops non-zero so the caller can abort. (rc, out)"""
-    # rerere off for the same reason as merge_no_ff: don't let a cached resolution mask a real
-    # replay conflict. Cherry-pick de-duplication (the actual replay win) is independent of rerere.
-    res = _run_git(
-        ["git", "-C", str(target_wt), "-c", "rerere.enabled=false", "rebase", str(base)],
-        check=False,
-        capture=True,
-    )
-    return res.returncode, (res.stdout or "") + (res.stderr or "")
+    """Compatibility facade for ``worktree_git.impl_rebase_onto``."""
+    return _worktree_git.impl_rebase_onto(target_wt, base)
 
 
 def rebase_abort(target_wt) -> None:
-    """Best-effort `git rebase --abort` (no-op if no rebase is in progress)."""
-    _run_git(["git", "-C", str(target_wt), "rebase", "--abort"], check=False, capture=True)
+    """Compatibility facade for ``worktree_git.impl_rebase_abort``."""
+    return _worktree_git.impl_rebase_abort(target_wt)
 
 
 def reset_hard(target_wt, ref) -> int:
-    """`git reset --hard <ref>` in the worktree. Returns git's exit code."""
-    return _run_git(
-        ["git", "-C", str(target_wt), "reset", "--hard", ref], check=False, capture=True
-    ).returncode
+    """Compatibility facade for ``worktree_git.impl_reset_hard``."""
+    return _worktree_git.impl_reset_hard(target_wt, ref)
 
 
 def safe_to_rewrite(clone, branch) -> bool:
-    """True iff `branch` may be `reset --hard` without rewriting shared/published history: any
-    branch with no configured upstream (not pushed). A private container integration branch
-    (`wt/bead/epic/<id>`, any tier) is local/unpushed → safe, so an intermediate tier land rolls
-    back losslessly. A pushed integration branch (e.g. `main` tracking `origin/main`) is NOT safe —
-    a red landing there must be fixed forward, not rewritten."""
-    return (
-        _run_git(
-            ["git", "-C", str(clone), "rev-parse", "--abbrev-ref", f"{branch}@{{upstream}}"],
-            check=False,
-            capture=True,
-        ).returncode
-        != 0
-    )
+    """Compatibility facade for ``worktree_git.impl_safe_to_rewrite``."""
+    return _worktree_git.impl_safe_to_rewrite(clone, branch)
 
 
 def same_tree(entry, a, b) -> bool:
-    """True iff refs `a` and `b` have byte-identical trees — the refine safety gate."""
-    main = registry.hive_dir(entry)
-    return _run_git(["git", "-C", str(main), "diff", "--quiet", a, b], check=False).returncode == 0
+    """Compatibility facade for ``worktree_git.impl_same_tree``."""
+    return _worktree_git.impl_same_tree(entry, a, b)
 
 
 def is_merged(entry, branch: str, base: str) -> bool:
-    """True iff every commit on `branch` is already reachable from `base`.
-
-    Uses ``git merge-base --is-ancestor branch base`` which exits 0 when ``branch`` is an
-    ancestor of ``base`` (i.e. all its commits are included in ``base``).  This is the
-    merge-ancestry primitive that the worktree SAFE classifier depends on — the only call that
-    performs a real git ancestry check rather than inferring merged-ness from bead status.
-    """
-    main = registry.hive_dir(entry)
-    return (
-        _run_git(
-            ["git", "-C", str(main), "merge-base", "--is-ancestor", branch, base],
-            check=False,
-        ).returncode
-        == 0
-    )
+    """Compatibility facade for ``worktree_git.impl_is_merged``."""
+    return _worktree_git.impl_is_merged(entry, branch, base)
 
 
 def on_first_parent_chain(entry, branch: str, base: str) -> bool:
-    """True iff ``branch``'s tip sits on ``base``'s own first-parent line.
-
-    This is what separates a branch that was NEVER IMPLEMENTED from one that ALREADY LANDED, and
-    :func:`is_merged` cannot tell them apart alone: a freshly-claimed branch points AT the base
-    tip, and a commit is trivially its own ancestor, so ``merge-base --is-ancestor`` answers
-    "merged" for work that does not exist (bh-lvqs).
-
-    A ``--no-ff`` land — the only kind bh performs — puts the bead's commits on a side branch
-    reachable from the base only through a merge commit's SECOND parent, so a landed tip is NOT on
-    the first-parent chain; a fork point, by construction, is. Were a branch ever fast-forwarded
-    in, its commits would sit on the chain and this returns True, so the caller treats it as
-    not-landed and takes the ordinary refusal — a false negative that bounces rather than silently
-    closing a bead, which is the safe direction to be wrong in.
-    """
-    main = registry.hive_dir(entry)
-    # EVERY FAILURE PATH RETURNS True, and the direction is deliberate. This function is consumed
-    # negated (`landed_via_merge` = is_merged AND NOT this), so True means "treat as NOT landed"
-    # and the caller takes the ordinary refusal. A git call we could not read must never be the
-    # reason a bead gets closed as already-merged: refusing a merge is recoverable in one command,
-    # silently closing unlanded work is not.
-    tip = _run_git(["git", "-C", str(main), "rev-parse", branch], check=False, capture=True)
-    if tip.returncode != 0:
-        return True
-    sha = (tip.stdout or "").strip()
-    if not sha:
-        return True
-    chain = _run_git(
-        ["git", "-C", str(main), "rev-list", "--first-parent", base], check=False, capture=True
-    )
-    if chain.returncode != 0:
-        return True
-    return sha in (chain.stdout or "").split()
+    """Compatibility facade for ``worktree_git.impl_on_first_parent_chain``."""
+    return _worktree_git.impl_on_first_parent_chain(entry, branch, base)
 
 
 def landed_via_merge(entry, branch: str, base: str) -> bool:
-    """True when ``branch``'s commits reached ``base`` BY BEING MERGED into it.
-
-    THE DISTINCTION THIS DRAWS IS THE WHOLE OF bh-lvqs. "Zero commits over base" has two causes the
-    merge verbs used to collapse into one message: work never implemented, and work that ALREADY
-    LANDED. They demand opposite responses — bounce for rework versus reconcile the bookkeeping —
-    and merge was giving the first answer to the second case, telling an operator to "bounce back
-    for self-refine" about code already on the integration branch. Acting on that means re-doing
-    landed work.
-
-    Both halves are required. :func:`is_merged` alone says True for a never-implemented branch,
-    because a freshly-claimed branch points AT the base tip and a commit is its own ancestor —
-    closing those as landed would silently mark unwritten work done, which is worse than the bug
-    being fixed. :func:`on_first_parent_chain` supplies the other half.
-
-    Lives here, beside the two ancestry primitives it composes, so both the bead path (``work``)
-    and the batch path (``work_group``) can reach it — ``work_group`` cannot import ``work``.
-    """
-    return is_merged(entry, branch, base) and not on_first_parent_chain(entry, branch, base)
+    """Compatibility facade for ``worktree_git.impl_landed_via_merge``."""
+    return _worktree_git.impl_landed_via_merge(entry, branch, base)
 
 
 def _all_cherry_landed(entry, branch: str, parent: str) -> bool:
-    """True iff every unique commit on ``branch`` (not in ``parent``) is already present
-    in ``parent`` by patch-id equivalence.
-
-    Uses ``git cherry <parent> <branch>``: commits marked ``-`` are already in parent
-    (patch-id equivalent from a rebase or cherry-pick); commits marked ``+`` are not.
-    Returns ``True`` when all unique commits are ``-`` or there are no unique commits.
-    Returns ``False`` on git failure (conservative — prefer UNMERGED over a false positive).
-
-    Limitation: pure squash-merges (N commits collapsed to one) cannot be detected here
-    because the squashed commit will not patch-id-match the individual originals.  Use the
-    merge-event check (``is_landed``) for squash-landed branches.
-    """
-    main = registry.hive_dir(entry)
-    res = _run_git(
-        ["git", "-C", str(main), "cherry", parent, branch],
-        check=False,
-        capture=True,
-    )
-    if res.returncode != 0:
-        return False
-    lines = [ln for ln in (res.stdout or "").splitlines() if ln.strip()]
-    # Empty output → branch adds no unique commits (already covered).
-    # All "-" lines → every commit already in parent by patch-id.
-    return all(ln.startswith("- ") for ln in lines) if lines else True
+    """Compatibility facade for ``worktree_git.impl__all_cherry_landed``."""
+    return _worktree_git.impl__all_cherry_landed(entry, branch, parent)
 
 
 def is_landed(entry, branch: str, parent: str, close_reason: str = "") -> bool:
-    """True iff a closed-but-non-ancestor branch has its content effectively in ``parent``.
-
-    Second-stage check for the closed+non-ancestor set (today's UNMERGED rows).  Runs
-    ONLY after the fast-path ``is_merged`` ancestor check has returned ``False``, so the
-    git work here is bounded to the cases that actually need it.
-
-    Three checks in priority order:
-
-    1. **Merge-event** (fast, authoritative, squash-proof): if ``close_reason`` is
-       ``"merged"`` or ``"molecule landed"``, the AGF lifecycle confirms the work landed
-       and the branch is safe to reclaim — regardless of SHA identity.
-
-    2. **Patch-id / cherry equivalence** (fallback for branches without a merge event):
-       ``git cherry <parent> <branch>`` marks commits already in parent with ``-``.  If
-       every unique commit is so marked, the branch was rebase/cherry-pick landed.  Not
-       reliable for pure squash-merges (which have no patch-id match).
-
-    3. **GitHub PR-merged** (squash-proof, network, last — bh-v0wu): a PR-governed land
-       (``work.landing: pr``, or any hand-opened PR) squash-merged ON GitHub leaves neither
-       a bh close_reason nor patch-id-matching commits — the seat would read UNMERGED
-       forever.  Ask gh whether a MERGED PR has this branch as head (``gh pr list --state
-       merged --head``).  Best-effort and fail-closed: GitHub-backed hives only, ``False``
-       when gh is absent or the probe errors.
-
-    Returns ``False`` on git failure (conservative: prefer UNMERGED over a false positive).
-    """
-    if close_reason in ("merged", "molecule landed"):
-        return True
-    if _all_cherry_landed(entry, branch, parent):
-        return True
-    return ghpr.merged_pr_for(entry, branch) is not None
+    """Compatibility facade for ``worktree_git.impl_is_landed``."""
+    return _worktree_git.impl_is_landed(entry, branch, parent, close_reason)
 
 
 def bead_and_parent(entry, path: str, integration: str, branch: str = "") -> tuple[str | None, str]:
-    """Map a managed worktree path to ``(bead_id | None, parent_branch)``.
-
-    The bead id is parsed from the real ``wt/bead/<type>/<id>`` branch ref (the ``branch``
-    argument from ``managed()``'s row) via :func:`_bead_id_from_branch`, which strips the
-    ``wt/bead/<type>/`` prefix.  This is the primary path: the actual ref preserves dots and other
-    characters that the sanitized directory leaf loses (e.g. wt/bead/issue/
-    vs. the dashed leaf -1).
-
-    When ``branch`` is not supplied (legacy callers), the function falls back to reconstructing
-    the branch from the directory leaf, probing each ``wt/bead/<type>/<leaf>`` namespace.
-
-    The parent branch is resolved via :func:`integration_base`: the nearest started container
-    ancestor (a parent epic/workstream branch ``wt/bead/epic/<parent>``) up the id chain, else
-    ``integration``.
-    """
-    if branch:
-        # Primary path: parse the bead id from the real branch ref supplied by managed().
-        # This preserves dots that the sanitized directory leaf converts to dashes.
-        bead_id: str | None = _bead_id_from_branch(branch)
-    else:
-        # Fallback for callers that do not supply the branch ref (legacy / no-op path).
-        rel = Path(path).relative_to(config.worktrees_root())
-        leaf = rel.parts[-1] if len(rel.parts) >= 4 else ""
-        main = registry.hive_dir(entry)
-        bead_id = None
-        if leaf:
-            for t in BEAD_KINDS:
-                if _branch_exists(main, f"{_BEAD_PREFIX}{t}/{leaf}"):
-                    bead_id = leaf
-                    break
-
-    parent = integration_base(entry, bead_id, integration) if bead_id else integration
-    return bead_id, parent
+    """Compatibility facade for ``worktree_git.impl_bead_and_parent``."""
+    return _worktree_git.impl_bead_and_parent(entry, path, integration, branch)
 
 
 def diff_range(entry, base, branch) -> int:
-    """Stream `git diff base..branch` to stdout (the net change). Returns git's exit code."""
-    main = registry.hive_dir(entry)
-    return _run_git(["git", "-C", str(main), "diff", f"{base}..{branch}"], check=False).returncode
+    """Compatibility facade for ``worktree_git.impl_diff_range``."""
+    return _worktree_git.impl_diff_range(entry, base, branch)
 
 
 def log_range(entry, base, branch) -> str:
-    """`git log --oneline base..branch` (oldest→newest) — the post-refine digest summary."""
-    main = registry.hive_dir(entry)
-    res = _run_git(
-        [
-            "git",
-            "-C",
-            str(main),
-            "log",
-            "--reverse",
-            "--format=%h %ad %s",
-            "--date=short",
-            f"{base}..{branch}",
-        ],
-        check=False,
-        capture=True,
-    )
-    return (res.stdout or "") if res.returncode == 0 else ""
+    """Compatibility facade for ``worktree_git.impl_log_range``."""
+    return _worktree_git.impl_log_range(entry, base, branch)
 
 
 def _managed_for_entry(e, root: str) -> list:
@@ -2915,3 +2212,9 @@ def status_cmd(hive: str = "", as_json: bool = False) -> None:
 
     if unreg:
         _warn_unregistered(unreg)
+
+
+# Implementation modules load after the facade is defined, avoiding circular imports while
+# keeping every historical worktree.* symbol and monkeypatch seam intact.
+_worktree_git = importlib.import_module(".worktree_git", __package__)
+_worktree_verify = importlib.import_module(".worktree_verify", __package__)
