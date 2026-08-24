@@ -22,7 +22,7 @@ relative to the new worktree; omit it to always run. Failures warn and continue.
 
 from __future__ import annotations
 
-import contextlib
+import contextlib  # noqa: F401 - compatibility patch seam
 import contextvars
 import datetime
 import importlib
@@ -34,7 +34,7 @@ import shutil  # noqa: F401 - compatibility patch seam
 import subprocess  # noqa: F401 - compatibility patch seam
 import tempfile  # noqa: F401 - compatibility patch seam
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed  # noqa: F401 - facade seam
 from pathlib import Path
 
 import typer
@@ -52,7 +52,7 @@ from . import (
     triage_store,  # noqa: F401 - compatibility patch seam
     validation_ledger,  # noqa: F401 - compatibility patch seam
     worktree_merge,
-    wt_status,
+    wt_status,  # noqa: F401 - compatibility patch seam
 )  # noqa: F401 - compatibility patch seams retained on the facade
 from .identity import workspace_identity
 from .run import missing_binary, retry_on_index_lock, run  # noqa: F401 - compatibility patch seams
@@ -1219,103 +1219,33 @@ def log_range(entry, base, branch) -> str:
 
 
 def _managed_for_entry(e, root: str) -> list:
-    """[(prefix, path, branch), ...] visible under `root` for ONE managed_repos entry, parsed
-    from `git worktree list --porcelain`. [] when the entry has no local clone or the git call
-    fails."""
-    main = registry.hive_dir(e)
-    if not (main / ".git").exists():
-        return []
-    res = _run_git(
-        ["git", "-C", str(main), "worktree", "list", "--porcelain"],
-        check=False,
-        capture=True,
-    )
-    if res.returncode != 0:
-        return []
-    out: list = []
-    path = brref = None
-    for line in (res.stdout or "").splitlines():
-        if line.startswith("worktree "):
-            path = line[len("worktree ") :]
-            brref = None
-        elif line.startswith("branch "):
-            brref = line[len("branch ") :].removeprefix("refs/heads/")
-        elif not line.strip() and path:
-            _emit(out, e, root, path, brref)
-            path = brref = None
-    if path:
-        _emit(out, e, root, path, brref)
-    return out
+    """Compatibility facade for ``worktree_inventory.impl__managed_for_entry``."""
+    return _worktree_inventory.impl__managed_for_entry(e, root)
 
 
 def managed(cfg):
-    """[(prefix, path, branch)] for every linked worktree under the shadow root."""
-    root = str(config.worktrees_root().resolve())
-    out = []
-    for e in cfg.get("managed_repos", []) or []:
-        out.extend(_managed_for_entry(e, root))
-    return out
+    """Compatibility facade for ``worktree_inventory.impl_managed``."""
+    return _worktree_inventory.impl_managed(cfg)
 
 
 def _emit(out, entry, root, path, brref):
-    try:
-        under = Path(path).resolve().is_relative_to(root)
-    except OSError:
-        under = path.startswith(root + os.sep)
-    if under:
-        out.append((str(entry["prefix"]), path, brref or "(detached)"))
+    """Compatibility facade for ``worktree_inventory.impl__emit``."""
+    return _worktree_inventory.impl__emit(out, entry, root, path, brref)
 
 
 def _worktree_branch(path) -> str:
-    """The current branch of the worktree at `path` ('(detached)' when HEAD isn't on a branch)."""
-    res = _run_git(
-        ["git", "-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"], check=False, capture=True
-    )
-    branch = (res.stdout or "").strip() if res.returncode == 0 else ""
-    return branch if branch and branch != "HEAD" else "(detached)"
+    """Compatibility facade for ``worktree_inventory.impl__worktree_branch``."""
+    return _worktree_inventory.impl__worktree_branch(path)
 
 
 def unregistered_worktrees(cfg):
-    """[(slug, leaf, path, branch)] for git worktrees under the shadow root whose repo is NOT in
-    managed_repos (bh-ea1i). The status/list sweep otherwise iterates only the hive registry, so a
-    repo with worktrees on disk but no registration is silently omitted. This walks the wt root
-    itself (``<root>/<provider>/<org>/<repo>/<leaf>``) so such orphans are surfaced, not dropped."""
-    root = config.worktrees_root().resolve()
-    if not root.exists():
-        return []
-    registered = {
-        (str(e.get("provider")), str(e.get("org")), str(e.get("repo")))
-        for e in (cfg.get("managed_repos", []) or [])
-    }
-    out = []
-    for leaf in sorted(root.glob("*/*/*/*")):
-        if not leaf.is_dir():
-            continue
-        parts = leaf.relative_to(root).parts
-        if len(parts) != 4:
-            continue
-        provider, org, repo, leaf_name = parts
-        if (provider, org, repo) in registered:
-            continue
-        if not (leaf / ".git").exists():
-            continue  # a plain dir, not a linked git worktree
-        out.append((f"{provider}/{org}/{repo}", leaf_name, str(leaf), _worktree_branch(leaf)))
-    return out
+    """Compatibility facade for ``worktree_inventory.impl_unregistered_worktrees``."""
+    return _worktree_inventory.impl_unregistered_worktrees(cfg)
 
 
 def list_cmd():
-    cfg = config.load()
-    rows = managed(cfg)
-    unreg = unregistered_worktrees(cfg)
-    if not rows and not unreg:
-        typer.echo("no managed worktrees")
-        return
-    for prefix, path, br in rows:
-        typer.echo(f"{prefix}\t{br}\t{path}")
-    for slug, _leaf, path, br in unreg:
-        typer.echo(f"{slug}\t{br}\t{path}")
-    if unreg:
-        _warn_unregistered(unreg)
+    """Compatibility facade for ``worktree_inventory.impl_list_cmd``."""
+    return _worktree_inventory.impl_list_cmd()
 
 
 def path_of(hive, ref):
@@ -1340,109 +1270,18 @@ def init_existing(path):
 
 
 def _rmdir_empty_parents(leaf_path, cfg):
-    """Climb from a removed worktree's parent toward the shadow root, removing now-empty
-    triplet dirs. Path.rmdir only deletes EMPTY dirs (raises otherwise) — that's the safety:
-    a non-empty dir (another live worktree) stops the climb, and the root is never removed.
-    Disabled by `worktrees.rmdir_empty: false` (absent ⇒ enabled)."""
-    if not config.worktrees_cfg(cfg).get("rmdir_empty", True):
-        return
-    root = config.worktrees_root().resolve()
-    d = Path(leaf_path).parent.resolve()
-    while root in d.parents and d != root:
-        try:
-            d.rmdir()
-        except OSError:
-            break
-        d = d.parent
+    """Compatibility facade for ``worktree_cleanup.impl__rmdir_empty_parents``."""
+    return _worktree_cleanup.impl__rmdir_empty_parents(leaf_path, cfg)
 
 
 def _refuse_unknown_removal(cfg, entry, target: Path, *, force: bool) -> None:
-    """Refuse to remove a worktree whose bead could not be RESOLVED (bh-167s0), unless forced.
-
-    ``rm`` names one target, so "unattended" does not bite here the way it does for ``prune`` —
-    but the operator's premise does.  Whoever types ``rm`` decided this seat was disposable, and
-    on the hive that produced this bead that decision would have been made against rows reading
-    ACTIVE that were neither active nor readable.  An UNKNOWN row means bh cannot say what is on
-    that branch; refusing is the only answer that is not a guess.
-
-    ``--force`` still removes it, deliberately: the operator may know exactly what this is (they
-    just retired the prefix, say), and a preflight that cannot be overridden becomes a preflight
-    people route around.  The refusal names ``--force`` so the escape is not a secret.
-
-    Best-effort by construction — anything that goes wrong deciding this (an unregistered path,
-    a git failure) leaves the removal alone rather than blocking it.  A safety check that turns
-    an ordinary ``rm`` into a crash is a check that gets deleted.
-    """
-    if force:
-        return
-    try:
-        rows = [r for r in managed(cfg) if Path(r[1]) == target]
-        if not rows:
-            return
-        statuses = _classify_entry(entry, rows, cfg)
-    except Exception:  # noqa: BLE001 — never let the preflight itself fail the verb
-        return
-    unknown = wt_status.untrustworthy(statuses)
-    if not unknown:
-        return
-    st = unknown[0]
-    typer.echo(
-        f"✗ refusing to remove {target}: its bead ({st.bead_id}) could NOT BE RESOLVED, so bh "
-        f"cannot tell you whether this worktree holds unmerged work.",
-        err=True,
-    )
-    if st.unknown_reason:
-        typer.echo(f"    {st.unknown_reason}", err=True)
-    typer.echo(
-        "  Resolve the hive's bead store (or the branch name) and re-check with "
-        f"`{config.BINARY_ALIAS} worktree status`; `--force` removes it anyway.",
-        err=True,
-    )
-    raise typer.Exit(1)
+    """Compatibility facade for ``worktree_cleanup.impl__refuse_unknown_removal``."""
+    return _worktree_cleanup.impl__refuse_unknown_removal(cfg, entry, target, force=force)
 
 
 def remove(hive, ref, force=False, as_json=False):
-    """Remove one managed worktree. The branch is the durable artifact here (a bead's history
-    lives on it), so a delegating plugin's `wt_remove` hook is consulted with `keep_branch=True`
-    — never call this for a disposable prune removal (see `prune`). `as_json` (bh-73rz.4) emits
-    the same `{op, hive, path, removed}` machine-readable shape an external orchestrator's
-    preview→create→…→remove flow parses, mirroring `add --json`."""
-    cfg = config.load()
-    entry = _resolve_entry(cfg, hive)
-    main = registry.hive_dir(entry)
-    target = wt_dir(entry, _leaf(ref))
-    hive_key = registry.hive_key(entry)
-    hive = str(entry.get("prefix", ""))
-    _refuse_unknown_removal(cfg, entry, target, force=force)
-    started = time.monotonic()
-    delegated = _consult_wt_remove(
-        cfg, entry, main=main, target=target, force=force, keep_branch=True
-    )
-    if not delegated:
-        cmd = ["git", "-C", str(main), "worktree", "remove", str(target)]
-        if force:
-            cmd.append("--force")
-        res = _run_git(cmd, check=False)
-        if res.returncode != 0:
-            elapsed = time.monotonic() - started
-            _record_wt_event("remove", "error", hive=hive, leaf=target.name)
-            _record_wt_op_duration("remove", elapsed, "error", hive=hive, leaf=target.name)
-            raise typer.Exit(res.returncode)
-    elapsed = time.monotonic() - started
-    _rmdir_empty_parents(target, cfg)
-    _record_wt_op_duration("remove", elapsed, "ok", hive=hive, leaf=target.name)
-    _record_wt_event("remove", hive=hive, leaf=target.name)
-    from . import metadata
-
-    metadata.invalidate(cfg, registry.hive_key(entry))  # branch/worktree churn on this hive
-    if as_json:
-        typer.echo(
-            json.dumps(
-                {"op": "rm", "hive": hive_key, "path": str(target), "removed": True}, indent=2
-            )
-        )
-        return
-    typer.echo(f"✓ removed {target}")
+    """Compatibility facade for ``worktree_cleanup.impl_remove``."""
+    return _worktree_cleanup.impl_remove(hive, ref, force, as_json)
 
 
 _LANDED_REASONS = ("merged", "molecule landed")  # the close_reasons is_landed treats as landed
@@ -1486,292 +1325,58 @@ def mark_landed(hive: str, ref: str) -> None:
 
 
 def _prune_load_entries(cfg) -> tuple:
-    """`(mains, keys, entries_by_prefix)` lookup tables, keyed by hive prefix, for every
-    managed_repos entry — the per-hive tables `prune` needs regardless of `--hive` scoping."""
-    mains: dict[str, Path] = {}
-    keys: dict[str, str] = {}
-    entries_by_prefix: dict[str, dict] = {}
-    for e in cfg.get("managed_repos", []) or []:
-        p = str(e["prefix"])
-        mains[p] = registry.hive_dir(e)
-        keys[p] = registry.hive_key(e)
-        entries_by_prefix[p] = e
-    return mains, keys, entries_by_prefix
+    """Compatibility facade for ``worktree_cleanup.impl__prune_load_entries``."""
+    return _worktree_cleanup.impl__prune_load_entries(cfg)
 
 
 def _prune_sweep_orphans(entries_by_prefix: dict, want: str | None) -> int:
-    """Reap orphaned ephemeral verify-* clean-checkout dirs across in-scope hives (bh-nikb) before
-    classification: they are not classifier rows to prune (detached, no bead) — the marker-based
-    liveness sweep shared with `clean_checkout` is what reclaims them. Live ones are always spared
-    and simply show up as DETACHED skips. Returns the number reaped."""
-    return sum(
-        sweep_verify_dirs(e) for p, e in entries_by_prefix.items() if want is None or p == want
-    )
+    """Compatibility facade for ``worktree_cleanup.impl__prune_sweep_orphans``."""
+    return _worktree_cleanup.impl__prune_sweep_orphans(entries_by_prefix, want)
 
 
 def _classify_entries(
-    cfg,
-    entries: list,
-    rows_by_prefix: dict[str, list],
-    on_complete=None,
+    cfg, entries: list, rows_by_prefix: dict[str, list], on_complete=None
 ) -> dict[str, list]:
-    """Classify populated hives concurrently, optionally reporting each completed hive.
-
-    Every classification has independent git and bead-store subprocesses, so waiting for one
-    hive before starting the next only delays the fleet view.  Each worker owns a
-    :func:`store_probe_cache` context: cache entries are per main-clone path and one worker owns
-    one hive, which preserves the one-probe-per-hive command contract without sharing a mutable
-    ``ContextVar`` value between threads.
-
-    Results are keyed rather than appended in completion order.  Callers that return structured
-    data can then retain their established deterministic entry ordering, while the human status
-    renderer uses ``on_complete`` to show a hive as soon as it is ready.
-    """
-    jobs = [
-        (str(entry.get("prefix", "")), entry, rows_by_prefix.get(str(entry.get("prefix", "")), []))
-        for entry in entries
-        if rows_by_prefix.get(str(entry.get("prefix", "")), [])
-    ]
-    if not jobs:
-        return {}
-
-    def classify_one(entry, entry_rows):
-        # A context is intentionally per worker rather than around the executor: ContextVars do
-        # not propagate their values into new threads, and no two workers classify one hive.
-        with store_probe_cache():
-            return _classify_entry(entry, entry_rows, cfg)
-
-    statuses_by_prefix: dict[str, list] = {}
-    if len(jobs) == 1:
-        prefix, entry, entry_rows = jobs[0]
-        statuses = classify_one(entry, entry_rows)
-        statuses_by_prefix[prefix] = statuses
-        if on_complete is not None:
-            on_complete(prefix, statuses)
-        return statuses_by_prefix
-
-    with ThreadPoolExecutor(
-        max_workers=min(_CLASSIFY_MAX_WORKERS, len(jobs)),
-        thread_name_prefix="bh-worktree-classify",
-    ) as executor:
-        futures = {
-            executor.submit(classify_one, entry, entry_rows): prefix
-            for prefix, entry, entry_rows in jobs
-        }
-        for future in as_completed(futures):
-            prefix = futures[future]
-            statuses = future.result()
-            statuses_by_prefix[prefix] = statuses
-            if on_complete is not None:
-                on_complete(prefix, statuses)
-
-    return statuses_by_prefix
+    """Compatibility facade for ``worktree_inventory.impl__classify_entries``."""
+    return _worktree_inventory.impl__classify_entries(cfg, entries, rows_by_prefix, on_complete)
 
 
 def _prune_classify(cfg, entries_by_prefix: dict, rows: list) -> tuple:
-    """Classify every candidate row concurrently. Returns `(safe_set, skipped)` — the
-    SAFE-to-remove and NOT-SAFE ``WtStatus`` lists."""
-    prefixes = list(dict.fromkeys(r[0] for r in rows))
-    entries = [entries_by_prefix[prefix] for prefix in prefixes if prefix in entries_by_prefix]
-    rows_by_prefix: dict[str, list] = {}
-    for row in rows:
-        rows_by_prefix.setdefault(row[0], []).append(row)
-    statuses_by_prefix = _classify_entries(cfg, entries, rows_by_prefix)
-
-    all_statuses = [status for prefix in prefixes for status in statuses_by_prefix.get(prefix, [])]
-    safe_set = [s for s in all_statuses if s.safe]
-    skipped = [s for s in all_statuses if not s.safe]
-    return safe_set, skipped
+    """Compatibility facade for ``worktree_cleanup.impl__prune_classify``."""
+    return _worktree_cleanup.impl__prune_classify(cfg, entries_by_prefix, rows)
 
 
 def _prune_withhold_untrustworthy(safe_set: list, skipped: list) -> tuple[list, list, set[str]]:
-    """Drop every hive carrying an UNKNOWN row out of the removal set (bh-167s0).
-
-    UNKNOWN is not ``safe``, so an unresolvable row was never going to be removed — but that is
-    not enough, and this is the acceptance criterion that says so: prune must "refuse to run
-    unattended over a hive containing UNKNOWN rows".  Whatever stopped one bead resolving —
-    a store bd will not open, a retired prefix — stopped every OTHER bead in that hive being
-    confirmed too, so the SAFE verdicts from the same pass are not evidence either.  They are
-    withheld, not removed, and the caller says why and exits non-zero.
-
-    Scoped to the affected HIVE rather than the whole run: a second, healthy hive in the same
-    `bh worktree prune` still prunes, because its answers were never in doubt.
-    """
-    tainted = {s.hive for s in wt_status.untrustworthy(safe_set + skipped)}
-    if not tainted:
-        return safe_set, skipped, tainted
-    withheld = [s for s in safe_set if s.hive in tainted]
-    return (
-        [s for s in safe_set if s.hive not in tainted],
-        skipped + withheld,
-        tainted,
-    )
+    """Compatibility facade for ``worktree_cleanup.impl__prune_withhold_untrustworthy``."""
+    return _worktree_cleanup.impl__prune_withhold_untrustworthy(safe_set, skipped)
 
 
 def _prune_report_skipped(skipped: list) -> None:
-    """Echo the '<n> skipped (not SAFE)' block `prune` renders both on the early "nothing to
-    prune" return and after a real removal pass."""
-    if skipped:
-        typer.echo(f"  {len(skipped)} skipped (not SAFE):")
-        for s in skipped:
-            typer.echo(f"    {s.leaf}  {s.classification}")
+    """Compatibility facade for ``worktree_cleanup.impl__prune_report_skipped``."""
+    return _worktree_cleanup.impl__prune_report_skipped(skipped)
 
 
 def _prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool:
-    """Remove one SAFE worktree (delegated plugin first, native `git worktree remove` fallback),
-    recording telemetry and native/delegated branch-deletion parity. Returns True iff removal
-    succeeded (outcome == "ok")."""
-    prefix = st.hive
-    entry = entries_by_prefix.get(prefix)
-    started = time.monotonic()
-    # SAFE (closed + merged + clean) → the branch is disposable, so keep_branch=False: a
-    # delegating plugin owns branch cleanup for its own removals (mirrors the native
-    # git-branch-D parity step below).
-    delegated = entry is not None and _consult_wt_remove(
-        cfg, entry, main=main, target=Path(st.path), force=True, keep_branch=False
-    )
-    if delegated:
-        outcome = "ok"
-    else:
-        res = _run_git(
-            ["git", "-C", str(main), "worktree", "remove", "--force", st.path],
-            check=False,
-        )
-        outcome = "ok" if res.returncode == 0 else "error"
-    elapsed = time.monotonic() - started
-    if outcome == "ok":
-        typer.echo(f"  removed {st.path}  [{st.branch}]")
-    else:
-        # Only the native fallback can fail (a delegated removal is always "ok" here) — `res`
-        # is defined in this branch. Native calls aren't captured, so stderr already printed
-        # straight to the console; this line just stops the misleading "removed" claim.
-        typer.echo(
-            f"  failed to remove {st.path}  [{st.branch}]: "
-            f"{res.stderr or 'git worktree remove failed'}"
-        )
-    _record_wt_event("prune", outcome, hive=prefix, leaf=st.leaf)
-    _record_wt_op_duration("prune", elapsed, outcome, hive=prefix, leaf=st.leaf)
-    if outcome != "ok":
-        return False
-    _rmdir_empty_parents(st.path, cfg)
-    if not delegated:
-        # Native/delegated parity (design delta): a SAFE tree is already merged, so once its
-        # worktree is gone the branch is dead weight — delete it the same way a delegated remove
-        # would. Best-effort: a stray branch never blocks the prune loop.
-        _run_git(["git", "-C", str(main), "branch", "-D", st.branch], check=False)
-    return True
+    """Compatibility facade for ``worktree_cleanup.impl__prune_remove_one``."""
+    return _worktree_cleanup.impl__prune_remove_one(cfg, entries_by_prefix, main, st)
 
 
 def _prune_remove_all(cfg, mains: dict, keys: dict, entries_by_prefix: dict, safe_set: list) -> int:
-    """Remove every SAFE worktree, `git worktree prune` each touched main clone, and invalidate
-    cached metadata for every hive touched. Returns the removed count."""
-    from . import metadata
-
-    removed_main_sets: set[str] = set()
-    removed_count = 0
-    for st in safe_set:
-        main = mains.get(st.hive)
-        if main is None:
-            continue
-        if _prune_remove_one(cfg, entries_by_prefix, main, st):
-            removed_count += 1
-        removed_main_sets.add(str(main))
-
-    for main_str in removed_main_sets:
-        _run_git(["git", "-C", main_str, "worktree", "prune"], check=False)
-
-    for prefix in {s.hive for s in safe_set}:
-        if prefix in keys:
-            metadata.invalidate(cfg, keys[prefix])
-
-    return removed_count
+    """Compatibility facade for ``worktree_cleanup.impl__prune_remove_all``."""
+    return _worktree_cleanup.impl__prune_remove_all(cfg, mains, keys, entries_by_prefix, safe_set)
 
 
 def prune(hive=""):
-    """Remove ONLY managed worktrees classified SAFE (closed + merged + clean).
-
-    Uses the classifier to determine which worktrees are safe to remove on each run — no
-    confirmation prompt and no --force flag are exposed: ``ws worktree status`` is the
-    operator's pre-flight view.
-
-    Scoping: ``--hive <id>`` limits to one hive; omit to prune all managed hives.
-
-    Mode 1 (shared per-hive observaloop profile): this function deliberately does NOT tear down
-    the hive's observaloop profile.  The profile is shared across all of the hive's worktrees and
-    must remain up until the hive itself is retired — use ``ws observaloop down`` for that.
-    Do NOT add per-worktree or per-prune observaloop teardown here; doing so would break the
-    shared-profile contract and stop telemetry routing for any remaining worktrees or processes.
-
-    Removal is consulted through a delegating plugin's `wt_remove` hook (`keep_branch=False` —
-    SAFE means merged, so the branch is disposable); when no plugin handles it, native removal
-    also deletes the now-merged branch (`git branch -D`) for native/delegated parity — the one
-    deliberate behavior change over pre-delegation prune.
-    """
-    cfg = config.load()
-    want = str(registry.resolve_hive(cfg, hive)["prefix"]) if hive else None
-
-    mains, keys, entries_by_prefix = _prune_load_entries(cfg)
-
-    swept = _prune_sweep_orphans(entries_by_prefix, want)
-    if swept:
-        typer.echo(f"  reaped {swept} orphaned verify-* checkout(s)")
-
-    all_rows = managed(cfg)
-    rows = [r for r in all_rows if want is None or r[0] == want]
-
-    # Reap dangling `.git/worktrees/<leaf>` admin entries for every hive in scope BEFORE
-    # classifying (bh-exe8): a prior partial-failure prune run can leave a hive with a stale
-    # worktree registration whose branch no longer resolves, which fires git fatals both
-    # during classification (is_merged) and on removal. `_prune_remove_all`'s own trailing
-    # `git worktree prune` call only runs for hives with at least one row in `safe_set` this
-    # run — a hive where every row classifies NOT SAFE would never get reaped and would
-    # repeat the same fatals on every future run. Prune every touched hive unconditionally so
-    # it self-heals regardless of this run's classification outcome.
-    for prefix in {r[0] for r in rows}:
-        main = mains.get(prefix)
-        if main is not None:
-            _run_git(["git", "-C", str(main), "worktree", "prune"], check=False)
-
-    safe_set, skipped = _prune_classify(cfg, entries_by_prefix, rows)
-    safe_set, skipped, tainted = _prune_withhold_untrustworthy(safe_set, skipped)
-
-    if not safe_set:
-        typer.echo("no SAFE worktrees to prune")
-        _prune_report_skipped(skipped)
-        if tainted:
-            _warn_untrustworthy(skipped)
-            raise typer.Exit(1)
-        return
-
-    removed_count = _prune_remove_all(cfg, mains, keys, entries_by_prefix, safe_set)
-
-    typer.echo(f"✓ pruned {removed_count} SAFE worktree(s)")
-    _prune_report_skipped(skipped)
-    if tainted:
-        # Non-zero even though something WAS pruned: an unattended caller that only reads the
-        # exit code must not come away believing the run was complete when a whole hive was
-        # withheld. A partial prune reported as success is the same class of lie this bead is
-        # about — a failure rendered as a normal result.
-        _warn_untrustworthy(skipped)
-        raise typer.Exit(1)
+    """Compatibility facade for ``worktree_cleanup.impl_prune``."""
+    return _worktree_cleanup.impl_prune(hive)
 
 
 # ---- worktree status helpers -----------------------------------------------
 
 
 def _wt_dirty(path: str) -> bool:
-    """True iff the worktree at `path` has uncommitted changes.
-
-    Runs ``git status --porcelain`` directly in the worktree directory — the only reliable
-    approach for linked worktrees, since the main clone's ``RepoMetadata.branches`` dirty flag
-    only reflects the main clone's checked-out branch.  Best-effort: if the path does not exist
-    or git fails, treated as clean (not dirty) so a missing worktree is never blocked by I/O.
-    """
-    try:
-        res = _run_git(["git", "-C", path, "status", "--porcelain"], check=False, capture=True)
-        return res.returncode == 0 and bool((res.stdout or "").strip())
-    except Exception:
-        return False
+    """Compatibility facade for ``worktree_inventory.impl__wt_dirty``."""
+    return _worktree_inventory.impl__wt_dirty(path)
 
 
 #: Per-COMMAND memo for :func:`_store_readable`, keyed on ``str(main)``. ``None`` outside a
@@ -1781,175 +1386,31 @@ _STORE_PROBE_CACHE: contextvars.ContextVar[dict[str, str] | None] = contextvars.
 )
 
 
-@contextlib.contextmanager
 def store_probe_cache():
-    """Resolve each hive's store readability ONCE for the duration of this block (bh-ioub2).
-
-    A CONTEXT rather than a process-lifetime memo, and the distinction is the point.
-    ``worktree status``'s own help promises it "repopulates fresh metadata before classifying —
-    the pre-flight never uses stale data"; a memo that outlived the command would quietly break
-    exactly that promise inside a long-lived process (`bh mcp serve` holds one for days). Scoping
-    it to the caller keeps the guarantee — one probe per command, never across commands — the
-    same way `bd.strict_reads` scopes strictness to a surface rather than a call site.
-
-    THE COST IT REMOVES, measured shape: `retire.teardown_worktrees` calls `worktree.remove` once
-    per worktree, and each removal's UNKNOWN preflight re-asked the SAME hive whether its store
-    could be read. Retiring the 28-worktree agentguides/runtime hive — the hive that motivated
-    bh-167s0 — therefore paid 28 store probes for one hive-level fact, against a store that is by
-    that bead's own premise either slow or refusing. An unbounded `bd` call in a loop is the
-    shape bh-toitp exists to eliminate; this is that shape, introduced by the fix next door.
-    """
-    token = _STORE_PROBE_CACHE.set({})
-    try:
-        yield
-    finally:
-        _STORE_PROBE_CACHE.reset(token)
+    """Compatibility facade for ``worktree_inventory.impl_store_probe_cache``."""
+    return _worktree_inventory.impl_store_probe_cache()
 
 
 def _store_readable(main: Path) -> str:
-    """ "" iff this hive's bead store answers with real issues; otherwise WHY it does not.
-
-    THE PRE-FLIGHT'S OWN PRE-FLIGHT (bh-167s0).  ``worktree status`` promises it "repopulates
-    fresh metadata before classifying — the pre-flight never uses stale data", and then accepted
-    an unreadable bead store without a word.  A per-bead miss cannot tell the two causes apart:
-    on the hive that produced this bead, ``bd show <id>`` came back EMPTY WITH EXIT 0 for every
-    id, because bd's schema-fork guard was refusing to open the database — identical on the wire
-    to "no such bead".  So the store is asked once, up front, and every subsequent miss is read
-    in that light.
-
-    ``bd list`` rather than a bead lookup on purpose: the question is whether the store answers
-    AT ALL, and a store holding zero issues is the measured signature of the schema-fork guard
-    (``issues=0  schema_blocked=1`` on three of the four agentguides hives, while the fourth
-    answered 102).  It is deliberately NOT fatal — an empty store is a legitimate state for a
-    fresh hive, and the caller's job is to stop CLASSIFYING confidently, not to refuse to run.
-
-    Memoized per main-clone path inside a :func:`store_probe_cache` block, and only there — see
-    that function for why the scope is the command rather than the process.
-    """
-    cache = _STORE_PROBE_CACHE.get()
-    if cache is not None and str(main) in cache:
-        return cache[str(main)]
-    reason = _probe_store(main)
-    if cache is not None:
-        cache[str(main)] = reason
-    return reason
+    """Compatibility facade for ``worktree_inventory.impl__store_readable``."""
+    return _worktree_inventory.impl__store_readable(main)
 
 
 def _probe_store(main: Path) -> str:
-    """The uncached probe itself — split out so the memo above is obviously a memo and nothing
-    more, and so a test can count invocations of the thing that actually shells out."""
-    issues = bd.json(["list"], str(main))
-    if issues is None:
-        return (
-            f"the bead store at {main} could not be READ (bd exited non-zero or returned "
-            "no JSON) — bd absent, a schema-fork guard refusing to open the database, or a "
-            "store engine that is down; try `bh bd list` there to see bd's own error"
-        )
-    if isinstance(issues, list) and not issues:
-        return (
-            f"the bead store at {main} answered with ZERO issues — an empty hive, or a store "
-            "bd is refusing to read (its schema-fork guard reports no issues rather than an "
-            "error: `bd migrate schema --inspect` reports the real version skew)"
-        )
-    return ""
+    """Compatibility facade for ``worktree_inventory.impl__probe_store``."""
+    return _worktree_inventory.impl__probe_store(main)
 
 
 def _bead_statuses_for_entry(
-    entry,
-    rows: list[tuple[str, str, str]],
+    entry, rows: list[tuple[str, str, str]]
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], str]:
-    """Fetch bead statuses and close_reasons for every bead id in ``rows`` for this entry.
-
-    Uses the same ``bd show`` seam as ``doctor._orphan_container_branches`` (bd.show).  The
-    bead id is parsed from the real ``wt/bead/<type>/<id>`` branch ref in each row via
-    :func:`_bead_id_from_branch` — this preserves dots that the sanitized directory leaf converts
-    to dashes (the same fix as ``bead_and_parent``).  Non-bead worktrees are skipped.
-
-    Returns ``(statuses, close_reasons, unknown_reasons, store_reason)``.  ``close_reasons``
-    holds the AGF lifecycle close_reason (e.g. ``"merged"``, ``"molecule landed"``) — used by
-    ``is_landed`` to confirm rebase/squash-landed branches.
-
-    ``unknown_reasons`` / ``store_reason`` are bh-167s0: an id that does not resolve is reported
-    WITH ITS REASON rather than silently becoming an empty status the classifier reads as "open".
-    The reason has to be built HERE because this is the only layer that knows both what was
-    asked and what came back; the classifier is pure and would have to guess.
-    """
-
-    main = registry.hive_dir(entry)
-    store_reason = _store_readable(main)
-    statuses: dict[str, str] = {}
-    close_reasons: dict[str, str] = {}
-    unknown_reasons: dict[str, str] = {}
-    for _, _path, branch in rows:
-        bead_id = _bead_id_from_branch(branch)
-        if not bead_id or bead_id in statuses:
-            continue
-        bead = bd.show(bead_id, str(main))
-        statuses[bead_id] = (bead or {}).get("status", "")
-        close_reasons[bead_id] = (bead or {}).get("close_reason", "")
-        if not statuses[bead_id] and not store_reason:
-            # The store answers, and this ONE id is not in it.  Measured cause on the hive that
-            # produced this bead: a retired bead PREFIX.  The store held 96 `ag-run-*` beads and
-            # zero `ag-rt-*`, while 21 of 28 worktree branches were named `wt/bead/issue/ag-rt-*`
-            # — the ids exist, under a name no longer derivable from the branch, and every one of
-            # those beads was CLOSED.  `bh hive repair` reconciles registry<->database and stops,
-            # so nothing renames the branches; the row is unclassifiable until something does.
-            unknown_reasons[bead_id] = (
-                f"the store answers, but bead {bead_id} is not in it — the branch names an id "
-                "that no longer exists (a retired bead prefix leaves every worktree created "
-                "under the old one unresolvable), or the bead was deleted"
-            )
-    return statuses, close_reasons, unknown_reasons, store_reason
+    """Compatibility facade for ``worktree_inventory.impl__bead_statuses_for_entry``."""
+    return _worktree_inventory.impl__bead_statuses_for_entry(entry, rows)
 
 
-def _classify_entry(
-    entry,
-    rows: list[tuple[str, str, str]],
-    cfg,
-) -> list:
-    """Classify all managed worktrees for one hive entry.
-
-    Repopulates fresh metadata (ttl=0) then runs the classifier.  Returns a list of
-    ``WtStatus`` objects.
-    """
-    from . import metadata
-
-    key = registry.hive_key(entry)
-    meta_map = metadata.read_fleet(cfg, [key], ttl=0)
-    meta = meta_map.get(key)
-    meta_branches = meta.branches if meta else []
-
-    integration = config.integration_branch(cfg, entry)
-    bead_statuses, bead_close_reasons, unknown_reasons, store_reason = _bead_statuses_for_entry(
-        entry, rows
-    )
-    dirty_by_path = {path: _wt_dirty(path) for _, path, _ in rows}
-
-    # Closures capture the full entry so bead_and_parent / is_merged / is_landed receive
-    # the correct provider/org/repo context; the classify signature's `entry` param is ignored.
-    def _merged_fn(_e, branch, base):
-        return is_merged(entry, branch, base)
-
-    def _parent_fn(_e, path, integ, br=""):
-        return bead_and_parent(entry, path, integ, br)
-
-    def _landed_fn(_e, branch, base, close_reason):
-        return is_landed(entry, branch, base, close_reason)
-
-    return wt_status.classify(
-        hive_prefix=str(entry.get("prefix", "")),
-        managed_rows=rows,
-        meta_branches=meta_branches,
-        bead_statuses=bead_statuses,
-        dirty_by_path=dirty_by_path,
-        is_merged_fn=_merged_fn,
-        parent_fn=_parent_fn,
-        integration=integration,
-        is_landed_fn=_landed_fn,
-        bead_close_reasons=bead_close_reasons,
-        bead_unknown_reasons=unknown_reasons,
-        store_unreadable_reason=store_reason,
-    )
+def _classify_entry(entry, rows: list[tuple[str, str, str]], cfg) -> list:
+    """Compatibility facade for ``worktree_inventory.impl__classify_entry``."""
+    return _worktree_inventory.impl__classify_entry(entry, rows, cfg)
 
 
 _BOX_PIPE = "│  "
@@ -1959,262 +1420,58 @@ _BOX_SPACE = "   "
 
 
 def _status_tags(st) -> str:
-    """The trailing tag run on one rendered row.
-
-    ``? UNKNOWN`` is deliberately the loudest thing on the line and the only class carrying a
-    glyph: it is the one classification that means "do not act on this row", and it has to be
-    findable by eye in a tree of thirty (bh-167s0 — "visually distinct in the rendered tree").
-    A ``DIRTY`` row also shows what it is masking, so a dirty-but-SAFE seat is distinguishable
-    from a dirty-and-open one and a dirty row over an unresolvable bead cannot look ordinary.
-    """
-    tags = ""
-    if st.merged:
-        tags += "  merged"
-    if st.dirty:
-        tags += "  dirty"
-    if getattr(st, "underlying", None):
-        tags += f"  (under: {str(st.underlying).upper()})"
-    if st.safe:
-        tags += "  SAFE"
-    return tags
+    """Compatibility facade for ``worktree_inventory.impl__status_tags``."""
+    return _worktree_inventory.impl__status_tags(st)
 
 
 def _render_status(statuses: list, header: str = "") -> None:
-    """Render a list of WtStatus entries as a text tree to stdout.
-
-    Format::
-
-        <header>          (omitted when empty)
-        ├─ <leaf>  [<branch>]  <CLASSIFICATION>  <merged>  SAFE
-        └─ <leaf>  [<branch>]  <CLASSIFICATION>
-
-    Box-drawing prefixes only; no rich / colour.
-    """
-    if header:
-        typer.echo(header)
-    for i, st in enumerate(statuses):
-        prefix = _BOX_LAST if i == len(statuses) - 1 else _BOX_BRANCH
-        mark = "? " if str(st.classification) == "unknown" else ""
-        typer.echo(
-            f"{prefix}{mark}{st.leaf}  [{st.branch}]  {st.classification.upper()}{_status_tags(st)}"
-        )
+    """Compatibility facade for ``worktree_inventory.impl__render_status``."""
+    return _worktree_inventory.impl__render_status(statuses, header)
 
 
 def _warn_untrustworthy(statuses: list) -> None:
-    """Say plainly, per hive, that these classifications cannot back a removal decision.
-
-    bh-167s0's third acceptance criterion, and the reason the bead is P1 rather than cosmetic:
-    an operator asking "can I archive this?" was told 16 worktrees were ACTIVE and reasonably
-    concluded there was live work.  The rows are not merely wrong — they are UNKNOWABLE from
-    here, and one bad row poisons the hive's whole answer, because whatever stopped that bead
-    resolving stopped nothing else being confirmed either.
-    """
-    by_hive: dict[str, list] = {}
-    for s in wt_status.untrustworthy(statuses):
-        by_hive.setdefault(s.hive, []).append(s)
-    for hive, rows in by_hive.items():
-        typer.echo(
-            f"\n⚠ {hive}: {len(rows)} worktree(s) UNKNOWN — the bead could not be resolved, so "
-            f"this hive's classifications are NOT a basis for a removal decision.",
-            err=True,
-        )
-        for reason in sorted({r.unknown_reason for r in rows if r.unknown_reason}):
-            typer.echo(f"    {reason}", err=True)
-        typer.echo(
-            "  `prune` will refuse this hive and `rm` will refuse these rows until it resolves.",
-            err=True,
-        )
+    """Compatibility facade for ``worktree_inventory.impl__warn_untrustworthy``."""
+    return _worktree_inventory.impl__warn_untrustworthy(statuses)
 
 
 def _status_scope(cfg, hive: str, all_rows: list) -> tuple:
-    """Resolve which managed_repos entries — and their pre-grouped rows — are in scope for
-    `status_rows`'s `hive` argument. See `status_rows`'s docstring for the scoping rules.
-    Returns `(entries, rows_by_prefix)`."""
-    if hive:
-        entry = _resolve_entry(cfg, hive)
-        target_prefix = str(entry.get("prefix", ""))
-        return [entry], {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
-
-    # Try to resolve from cwd; fall through to all-hives on failure
-    ident = workspace_identity()
-    cwd = Path.cwd()
-    root = config.worktrees_root()
-    try:
-        under_wts = cwd.resolve().is_relative_to(root.resolve())
-    except OSError:
-        under_wts = False
-
-    entry_from_cwd = None
-    if ident is not None:
-        provider, org, repo = ident
-        for e in cfg.get("managed_repos", []) or []:
-            if (str(e["provider"]), str(e["org"]), str(e["repo"])) == (provider, org, repo):
-                entry_from_cwd = e
-                break
-    elif under_wts:
-        try:
-            entry_from_cwd = _entry_for_path(cfg, cwd)
-        except SystemExit:
-            entry_from_cwd = None
-
-    if entry_from_cwd is not None:
-        target_prefix = str(entry_from_cwd.get("prefix", ""))
-        return [entry_from_cwd], {target_prefix: [r for r in all_rows if r[0] == target_prefix]}
-
-    # Hub scope: all managed hives
-    entries = list(cfg.get("managed_repos", []) or [])
-    rows_by_prefix: dict = {}
-    for r in all_rows:
-        rows_by_prefix.setdefault(r[0], []).append(r)
-    return entries, rows_by_prefix
+    """Compatibility facade for ``worktree_inventory.impl__status_scope``."""
+    return _worktree_inventory.impl__status_scope(cfg, hive, all_rows)
 
 
 def _status_classifications(hive: str = "", on_complete=None) -> tuple:
-    """Load status inputs and classify their populated hives.
-
-    ``on_complete`` receives ``(prefix, statuses)`` in completion order.  It is used only by the
-    human multi-hive CLI path; structured callers collect the returned mapping and retain entry
-    order.
-    """
-    cfg = config.load()
-    all_rows = managed(cfg)  # [(prefix, path, branch), ...]
-    entries, rows_by_prefix = _status_scope(cfg, hive, all_rows)
-    return cfg, entries, _classify_entries(cfg, entries, rows_by_prefix, on_complete=on_complete)
+    """Compatibility facade for ``worktree_inventory.impl__status_classifications``."""
+    return _worktree_inventory.impl__status_classifications(hive, on_complete)
 
 
 def _ordered_statuses(entries: list, statuses_by_prefix: dict[str, list]) -> list:
-    """Flatten completed classifications in managed-repository order, never finish order."""
-    return [
-        status
-        for entry in entries
-        for status in statuses_by_prefix.get(str(entry.get("prefix", "")), [])
-    ]
+    """Compatibility facade for ``worktree_inventory.impl__ordered_statuses``."""
+    return _worktree_inventory.impl__ordered_statuses(entries, statuses_by_prefix)
 
 
 def status_rows(hive: str = "") -> list:
-    """Return the ``WtStatus`` list for managed worktrees — Typer-free core.
-
-    Repopulates fresh metadata before classifying — never uses stale data.
-    Scoping mirrors ``status_cmd``:
-      - ``hive`` → that hive only.
-      - No ``hive`` and cwd is inside a hive → that hive.
-      - No ``hive`` and not in a hive (hub) → all managed hives.
-
-    Called by both ``status_cmd`` (the Typer command) and the MCP
-    ``beadhive://worktree/list`` resource.
-    """
-    _cfg, entries, statuses_by_prefix = _status_classifications(hive)
-    return _ordered_statuses(entries, statuses_by_prefix)
+    """Compatibility facade for ``worktree_inventory.impl_status_rows``."""
+    return _worktree_inventory.impl_status_rows(hive)
 
 
 def _warn_unregistered(unreg) -> None:
-    """Surface unregistered repos that have on-disk managed worktrees (bh-ea1i) — a warning so they
-    are never silently omitted from status/list. Lists the repo slug + each orphaned worktree."""
-    repos = sorted({slug for slug, *_ in unreg})
-    typer.echo(
-        f"⚠ {len(unreg)} managed worktree(s) under unregistered repo(s) {', '.join(repos)} — "
-        f"register with `{config.BINARY_ALIAS} hive add` to include them fully",
-        err=True,
-    )
-    for slug, leaf, path, br in unreg:
-        typer.echo(f"    {slug}  {leaf}  [{br}]  {path}", err=True)
+    """Compatibility facade for ``worktree_inventory.impl__warn_unregistered``."""
+    return _worktree_inventory.impl__warn_unregistered(unreg)
 
 
 def _render_status_multi(by_hive: dict) -> None:
-    """Nested tree-with-hive-headers rendering `status_cmd` uses when statuses span >1 hive."""
-    hive_keys = list(by_hive)
-    for ri, hive_label in enumerate(hive_keys):
-        statuses = by_hive[hive_label]
-        is_last_hive = ri == len(hive_keys) - 1
-        hive_prefix = _BOX_LAST if is_last_hive else _BOX_BRANCH
-        typer.echo(f"{hive_prefix}{hive_label}")
-        for i, st in enumerate(statuses):
-            indent = _BOX_SPACE if is_last_hive else _BOX_PIPE
-            node = _BOX_LAST if i == len(statuses) - 1 else _BOX_BRANCH
-            mark = "? " if str(st.classification) == "unknown" else ""
-            typer.echo(
-                f"{indent}{node}{mark}{st.leaf}  [{st.branch}]  {st.classification.upper()}"
-                f"{_status_tags(st)}"
-            )
+    """Compatibility facade for ``worktree_inventory.impl__render_status_multi``."""
+    return _worktree_inventory.impl__render_status_multi(by_hive)
 
 
 def status_cmd(hive: str = "", as_json: bool = False) -> None:
-    """Render per-worktree status for one hive (--hive/-r) or all managed hives.
-
-    Repopulates fresh metadata before classifying — the pre-flight never uses stale data.
-    Scoping:
-      - ``--hive <id>`` → that hive only.
-      - No ``--hive`` and cwd is inside a hive → that hive.
-      - No ``--hive`` and not in a hive (hub) → all managed hives.
-    """
-    import json as _json
-
-    # Streaming is only for the all-hive human view.  JSON is intentionally collected first so
-    # consumers retain its deterministic managed-repository ordering, and the established
-    # single-hive rendering remains byte-for-byte the same.
-    cfg = config.load()
-    all_rows = managed(cfg)
-    entries, rows_by_prefix = _status_scope(cfg, hive, all_rows)
-    populated_entries = [
-        entry for entry in entries if rows_by_prefix.get(str(entry.get("prefix", "")), [])
-    ]
-    stream_multi = not as_json and len(populated_entries) > 1
-
-    def render_completed_hive(prefix: str, statuses: list) -> None:
-        # Render a complete one-hive tree immediately.  The standalone tree deliberately uses
-        # the same renderer and therefore keeps its hierarchy, UNKNOWN marking, and SAFE tags;
-        # only section order now follows completion order.
-        _render_status_multi({prefix: statuses})
-
-    statuses_by_prefix = _classify_entries(
-        cfg,
-        entries,
-        rows_by_prefix,
-        on_complete=render_completed_hive if stream_multi else None,
-    )
-    all_statuses = _ordered_statuses(entries, statuses_by_prefix)
-    unreg = unregistered_worktrees(cfg) if not hive else []
-
-    if as_json:
-        typer.echo(_json.dumps([s.as_dict() for s in all_statuses], indent=2))
-        # …and on stderr for the JSON reader too. The payload carries `classification:
-        # "unknown"` and its `unknown_reason`, but a consumer that only counts `active` sees a
-        # plausible answer either way — the same shape bh-fzh4h closed for the MCP surface.
-        _warn_untrustworthy(all_statuses)
-        if unreg:
-            _warn_unregistered(unreg)
-        return
-
-    if not all_statuses:
-        if unreg:
-            _warn_unregistered(unreg)
-        else:
-            typer.echo("no managed worktrees")
-        return
-
-    if not stream_multi:
-        # Group by hive for the tree header when covering multiple hives.  In streaming mode,
-        # each completed section has already been rendered by the callback above.
-        by_hive: dict[str, list] = {}
-        for s in all_statuses:
-            by_hive.setdefault(s.hive, []).append(s)
-
-        if len(by_hive) == 1:
-            # Single-hive: show a flat tree with no hive header
-            hive_label, statuses = next(iter(by_hive.items()))
-            typer.echo(f"worktrees: {hive_label}")
-            _render_status(statuses)
-        else:
-            # Multi-hive: nest under a hive header line
-            _render_status_multi(by_hive)
-
-    _warn_untrustworthy(all_statuses)
-
-    if unreg:
-        _warn_unregistered(unreg)
+    """Compatibility facade for ``worktree_inventory.impl_status_cmd``."""
+    return _worktree_inventory.impl_status_cmd(hive, as_json)
 
 
 # Implementation modules load after the facade is defined, avoiding circular imports while
 # keeping every historical worktree.* symbol and monkeypatch seam intact.
 _worktree_git = importlib.import_module(".worktree_git", __package__)
 _worktree_verify = importlib.import_module(".worktree_verify", __package__)
+_worktree_inventory = importlib.import_module(".worktree_inventory", __package__)
+_worktree_cleanup = importlib.import_module(".worktree_cleanup", __package__)
