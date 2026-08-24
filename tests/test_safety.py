@@ -28,6 +28,7 @@ from beadhive.safety import (
     ScanResult,
     _default_branch,
     _dolt_ref_from_federation,
+    _measure_disk_usage,
     _non_hive_dirty_paths,
     _parse_worktrees,
     assess_retire,
@@ -1027,6 +1028,24 @@ def test_disk_bytes_scales_with_content(tmp_path: Path) -> None:
     # Size should increase significantly
     assert large_size > small_size
     assert large_size >= small_size + 1_000_000 - 100000  # Allow some overhead/compression
+
+
+def test_disk_measurement_skips_an_unreadable_file(monkeypatch, tmp_path: Path) -> None:
+    """One disappearing file must not discard the bytes measured for readable siblings."""
+    readable = tmp_path / "readable.bin"
+    unreadable = tmp_path / "unreadable.bin"
+    readable.write_bytes(b"readable")
+    unreadable.write_bytes(b"vanishes")
+    real_stat = Path.stat
+
+    def stat_or_disappear(path: Path, *args, **kwargs):
+        if path == unreadable:
+            raise OSError("file disappeared during the walk")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", stat_or_disappear)
+
+    assert _measure_disk_usage(str(tmp_path)) == len(b"readable")
 
 
 # ---------------------------------------------------------------------------

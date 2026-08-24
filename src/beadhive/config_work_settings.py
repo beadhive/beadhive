@@ -6,9 +6,13 @@ import datetime
 
 from pydantic import TypeAdapter
 
-from . import config as _config
+from .config_binding import FacadeBinding
 
-_UNSET = _config._UNSET
+_config = FacadeBinding(f"{__package__}.config")
+
+
+def bind(api) -> None:
+    _config.bind(api)
 
 
 def load():
@@ -93,7 +97,8 @@ def validate_cmd_is_configured(cfg, entry) -> bool:
     Whether an unconfigured default actually looks test-free is a separate question — see
     ``validate_probe.probe_validate_cmd``, which resolves (rather than pattern-matches) the
     command against the hive's own justfile."""
-    return layered(cfg, entry, "work", "validate_cmd", _UNSET) is not _UNSET
+    unset = _config._UNSET
+    return layered(cfg, entry, "work", "validate_cmd", unset) is not unset
 
 
 def validation_mode(cfg, entry):
@@ -268,10 +273,9 @@ def dispatch_review_mode(cfg, entry):
     gate."""
     mode = str(dispatch_value(cfg, entry, "review_mode", "self"))
     if mode == "paired":
-        from . import log  # lazy: keep config free of the log↔config import cycle
-
-        log.get_logger(__name__).warning(
+        _config._warning(
             "review_mode_paired_fallback",
+            logger_name=__name__,
             requested="paired",
             effective="fresh",
             reason="paired review depends on the resumable-agent spike; not yet wired",

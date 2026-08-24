@@ -2,11 +2,32 @@
 
 from __future__ import annotations
 
+import ast
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
-from beadhive import config, config_edit, config_paths, config_store
+from beadhive import (
+    config,
+    config_edit,
+    config_paths,
+    config_policy,
+    config_release,
+    config_services,
+    config_store,
+    config_work_settings,
+)
+
+CONFIG_SERVICES = (
+    config_edit,
+    config_paths,
+    config_policy,
+    config_release,
+    config_services,
+    config_store,
+    config_work_settings,
+)
 
 
 def test_facade_uses_named_path_and_store_modules(monkeypatch, tmp_path):
@@ -17,6 +38,26 @@ def test_facade_uses_named_path_and_store_modules(monkeypatch, tmp_path):
     monkeypatch.setattr(config_store, "load", lambda api: calls.append(api) or {"ok": True})
     assert config.load() == {"ok": True}
     assert calls == [config]
+
+
+def test_config_services_do_not_close_a_static_cycle_through_core_modules():
+    forbidden = {"config", "deps", "guard", "host", "identity", "log"}
+    for module in CONFIG_SERVICES:
+        tree = ast.parse(Path(module.__file__).read_text())
+        imported = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom):
+                continue
+            if node.module:
+                imported.add(node.module.rsplit(".", 1)[-1])
+            else:
+                imported.update(alias.name for alias in node.names)
+        assert not (imported & forbidden), (module.__name__, imported & forbidden)
+
+
+def test_typed_services_are_explicitly_bound_to_the_patchable_facade():
+    for module in (config_release, config_services, config_work_settings):
+        assert module._config.get() is config
 
 
 def test_atomic_save_failure_preserves_original_bytes(monkeypatch):

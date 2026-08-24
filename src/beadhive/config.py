@@ -79,6 +79,37 @@ def _facade():
     return sys.modules[__name__]
 
 
+def _warning(event: str, *, logger_name: str | None = None, **fields) -> None:
+    """Emit a config diagnostic without making implementation modules import ``log``."""
+    from . import log
+
+    log.get_logger(logger_name or __name__).warning(event, **fields)
+
+
+def _host_module():
+    from . import host
+
+    return host
+
+
+def _guard_module():
+    from . import guard
+
+    return guard
+
+
+def _identity_module():
+    from . import identity
+
+    return identity
+
+
+def _seat_runners():
+    from . import deps
+
+    return deps.seat_runners()
+
+
 def layered(cfg, entry, section, key, default=None):
     """Resolve per-hive > global > default for a possibly dotted section."""
     parts = section.split(".")
@@ -355,6 +386,7 @@ def _install_domain_facades() -> None:
     from . import config_release, config_services, config_work_settings
 
     for module in (config_services, config_work_settings, config_release):
+        module.bind(_facade())
         for name in module.__all__:
             globals()[name] = getattr(module, name)
 
