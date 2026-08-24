@@ -2,12 +2,92 @@
 
 from __future__ import annotations
 
+import ast
+import inspect
 import threading
 from types import SimpleNamespace
 
 import pytest
 
-from beadhive import metadata, worktree
+from beadhive import (
+    metadata,
+    worktree,
+    worktree_cleanup,
+    worktree_inventory,
+    worktree_merge,
+    wt_status,
+)
+
+INVENTORY_OPERATIONS = (
+    "_managed_for_entry",
+    "managed",
+    "_emit",
+    "_worktree_branch",
+    "unregistered_worktrees",
+    "list_cmd",
+    "_classify_entries",
+    "_wt_dirty",
+    "store_probe_cache",
+    "_store_readable",
+    "_probe_store",
+    "_bead_statuses_for_entry",
+    "_classify_entry",
+    "_status_tags",
+    "_render_status",
+    "_warn_untrustworthy",
+    "_status_scope",
+    "_status_classifications",
+    "_ordered_statuses",
+    "status_rows",
+    "_warn_unregistered",
+    "_render_status_multi",
+    "status_cmd",
+)
+
+CLEANUP_OPERATIONS = (
+    "_rmdir_empty_parents",
+    "_refuse_unknown_removal",
+    "remove",
+    "_prune_load_entries",
+    "_prune_sweep_orphans",
+    "_prune_classify",
+    "_prune_withhold_untrustworthy",
+    "_prune_report_skipped",
+    "_prune_remove_one",
+    "_prune_remove_all",
+    "prune",
+)
+
+
+@pytest.mark.parametrize(
+    ("module", "facade_attr", "operation"),
+    [
+        *((worktree_inventory, "_worktree_inventory", name) for name in INVENTORY_OPERATIONS),
+        *((worktree_cleanup, "_worktree_cleanup", name) for name in CLEANUP_OPERATIONS),
+    ],
+)
+def test_inventory_and_cleanup_have_one_implementation_behind_the_facade(
+    module, facade_attr, operation
+):
+    implementation = getattr(module, f"impl_{operation}")
+    facade = getattr(worktree, operation)
+    facade_source = inspect.getsource(facade)
+
+    assert implementation.__module__ == module.__name__
+    assert f"{facade_attr}.impl_{operation}" in facade_source
+    facade_node = ast.parse(facade_source).body[0]
+    assert len(facade_node.body) == 2
+    assert isinstance(facade_node.body[-1], ast.Return)
+
+
+def test_related_policy_and_creation_boundaries_remain_owned_by_their_existing_modules():
+    for operation in ("add", "ensure", "mark_landed"):
+        assert getattr(worktree, operation).__module__ == "beadhive.worktree"
+        assert not hasattr(worktree_inventory, operation)
+        assert not hasattr(worktree_cleanup, operation)
+
+    assert worktree.wt_status.classify is wt_status.classify
+    assert worktree.merge_no_ff is worktree_merge.merge_no_ff
 
 
 @pytest.mark.parametrize(
