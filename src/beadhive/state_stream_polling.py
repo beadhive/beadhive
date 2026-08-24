@@ -37,6 +37,7 @@ from .state_stream import (
     WorkDependency,
     projection_id,
 )
+from .state_stream_epic_schedule import project_epic_schedules
 from .state_stream_gate_projection import project_gate_requests
 from .state_stream_process import StreamProcessScope
 
@@ -386,6 +387,7 @@ class PollingStateStreamProvider:
         )
         projection = replace(
             projection,
+            epic_schedules=project_epic_schedules(accepted),
             gate_requests=gate_projection.gate_requests,
             partial_reason=(
                 projection.partial_reason or gate_source_reason or gate_projection.partial_reason
