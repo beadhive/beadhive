@@ -1016,13 +1016,86 @@ def test_qualified_baml_launch_propagates_distinct_outer_and_provider_identity(
 # ---------------------------------------------------------------------------
 
 
+def test_cli_role_explain_is_json_redacted_and_starts_nothing(monkeypatch):
+    import subprocess
+
+    from beadhive import cli, identity, role_execution, run_journal, worktree
+
+    entry = {"provider": "github", "org": "beadhive", "repo": "beadhive", "prefix": "bh"}
+    plan = role_execution.RoleLaunchPlan(
+        backend="baml", provider=None, detail="provider-unspecified compatibility fixture"
+    )
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {"managed_repos": [entry]})
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(role_execution.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda *_a: pytest.fail("explain claimed a workspace")
+    )
+    monkeypatch.setattr(cli.work, "claim", lambda *_a, **_kw: pytest.fail("explain claimed a bead"))
+    monkeypatch.setattr(cli, "run", lambda *_a, **_kw: pytest.fail("explain started a process"))
+    monkeypatch.setattr(
+        worktree, "_run_git", lambda *_a, **_kw: pytest.fail("explain probed with a process")
+    )
+    monkeypatch.setattr(
+        identity, "run", lambda *_a, **_kw: pytest.fail("explain probed workspace with Git")
+    )
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda *_a, **_kw: pytest.fail("explain started a process")
+    )
+    monkeypatch.setattr(
+        run_journal.RunJournal,
+        "create",
+        lambda *_a, **_kw: pytest.fail("explain created a journal"),
+    )
+    monkeypatch.setattr(
+        cli, "_role_dispatch_dir", lambda: pytest.fail("explain wrote a dispatch artifact")
+    )
+
+    secret = "task-token-should-never-print"
+    result = cli_runner.invoke(
+        app,
+        [
+            "role",
+            "developer",
+            "--harness",
+            "claude",
+            "--bead",
+            "bh-example.1",
+            "--task",
+            secret,
+            "--explain",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == 1
+    assert payload["decision"] == "runnable"
+    assert payload["request"]["bead"] == "bh-example.1"
+    assert payload["request"]["task"] == {
+        "provided": True,
+        "content": "<redacted:instructions>",
+    }
+    assert payload["request"]["workspace"].endswith("/bh-example.1")
+    assert secret not in result.output
+
+
 def test_cli_role_explain_never_claims_the_bead_workspace(monkeypatch):
     """`--explain` must not resolve/claim `--bead`'s worktree — that's a write, and this is a
     read-only preview."""
     from beadhive import cli, hitch_plugin
 
     monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
-    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(
+        cli.config,
+        "load",
+        lambda: {
+            "managed_repos": [
+                {"provider": "github", "org": "beadhive", "repo": "beadhive", "prefix": "bh"}
+            ]
+        },
+    )
     monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
     monkeypatch.setattr(
         cli, "_apply_role_workspace", lambda *a: pytest.fail("workspace resolved under --explain")

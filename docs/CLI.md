@@ -130,6 +130,22 @@ For an accepted BAML launch, `bh role` mints one outer attempt id and a separate
 continuation id. It propagates the run-journal context through the `BH_RUN_*` environment and the
 packed-seat correlation arguments without placing task text or credential values in either.
 
+`bh role <seat> --explain` (also `--dry-run`) prints a versioned `role explain` JSON document and
+exits without claiming `--bead`, creating a journal or dispatch artifact, or starting any process.
+The plan reports a runnable/refused decision and reason codes; the normalized request; truthful
+driver/provider and BAML facts; qualified artifact, manifest, digest, provenance, authority, and
+ambient-inheritance evidence; proposed outer/provider identities and Assignment linkage; state,
+runtime, OperatorEvent, and activity channels; pre-exit live-evidence capability; and planned
+argv. Task/instructions and packed run-context arguments are redacted, configured command
+arguments are not repeated, permission rules are reduced to counts, and only the fixed
+`BH_RUN_*` environment names are emitted—never their values. Config-reference content is also
+reduced to declared/count metadata; refused manifests contribute only request-derived paths and
+content hashes, never unvalidated scalar fields.
+
+For example, `bh role developer --harness codex --bead bh-example.1 --baml-required --explain`
+either describes the validated `bh-developer-codex` path or reports a machine-readable refusal.
+Proposed paths and identities are informational: explain performs no lifecycle or launch writes.
+
 Canonical verb vocabulary is reused everywhere (`add` / `rm` / `list` / `show` / `status` /
 `init`); "many" is a `list` verb (+ mode flags) or `--all`, never a pluralized command name.
 `--json` (bound to `as_json`) is the machine-output flag on every command that has one, and

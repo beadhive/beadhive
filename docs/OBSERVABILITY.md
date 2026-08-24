@@ -15,6 +15,11 @@ manifest before a bead claim, then propagate the same immutable outer attempt th
 continuation remains a separate packed-seat argument/result and is never inferred from
 `BH_RUN_ID`.
 
+`bh role --explain` does not create this journal. Its JSON plan names the activity contract and
+the `BH_RUN_*` variables that a real launch would propagate, proposes distinct outer/provider
+identities only for a runnable decision, and reports whether the validated live-event mechanism
+can produce pre-exit observations. It emits environment names, never inherited values.
+
 ## Logging
 
 Diagnostics flow through structlog on stderr (never stdout). Command results stay on stdout
