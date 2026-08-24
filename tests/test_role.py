@@ -873,9 +873,255 @@ def test_cli_role_headless_needs_a_bead_or_a_task(monkeypatch):
     assert "--bead" in result.output
 
 
+def test_baml_required_refusal_happens_before_claim_or_spawn(monkeypatch):
+    from beadhive import cli, role_execution
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(
+        role_execution,
+        "resolve_headless_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            role_execution.RoleLaunchRefused(
+                "provider_unavailable", "Codex is not runnable in the checked artifact"
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda *_args: pytest.fail("refusal claimed a workspace")
+    )
+    monkeypatch.setattr(cli, "run", lambda *_args, **_kwargs: pytest.fail("refusal spawned"))
+
+    result = cli_runner.invoke(
+        app,
+        [
+            "role",
+            "developer",
+            "--harness",
+            "codex",
+            "--task",
+            "fixture",
+            "--baml-required",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "provider_unavailable" in result.output
+
+
+def test_qualified_detached_refuses_before_claim_or_spawn(monkeypatch, tmp_path):
+    from beadhive import cli, role_execution
+
+    artifact = role_execution.QualifiedArtifact(
+        binary=tmp_path / "bh-developer-codex",
+        manifest_path=tmp_path / "bh-developer-codex.manifest.json",
+        artifact_digest="sha256:" + "a" * 64,
+        manifest_digest="sha256:" + "b" * 64,
+        seat="developer",
+        provider="codex",
+        manifest={},
+    )
+    plan = role_execution.RoleLaunchPlan(
+        backend="baml", detail="qualified", provider="codex", artifact=artifact
+    )
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda *_a: pytest.fail("detached refusal claimed")
+    )
+
+    result = cli_runner.invoke(
+        app,
+        [
+            "role",
+            "developer",
+            "--harness",
+            "codex",
+            "--task",
+            "fixture",
+            "--baml-required",
+            "--detached",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "detached_baml_supervision_unavailable" in result.output
+
+
+def test_baml_required_never_falls_through_to_attached_launch(monkeypatch):
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda *_args: pytest.fail("attached path claimed a bead")
+    )
+    monkeypatch.setattr(
+        hitch_plugin, "route", lambda *_args, **_kwargs: pytest.fail("attached path launched")
+    )
+
+    result = cli_runner.invoke(app, ["role", "developer", "--baml-required"])
+
+    assert result.exit_code == 1
+    assert "headless --task/-d" in result.output
+
+
+def test_qualified_baml_launch_propagates_distinct_outer_and_provider_identity(
+    monkeypatch, tmp_path
+):
+    from beadhive import cli, role_execution, role_process
+
+    binary = tmp_path / "bh-developer-claude-code"
+    binary.write_text("fixture", encoding="utf-8")
+    manifest = tmp_path / "bh-developer-claude-code.manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    artifact = role_execution.QualifiedArtifact(
+        binary=binary,
+        manifest_path=manifest,
+        artifact_digest="sha256:" + "a" * 64,
+        manifest_digest="sha256:" + "b" * 64,
+        seat="developer",
+        provider="claude-code",
+        manifest={},
+    )
+    plan = role_execution.RoleLaunchPlan(
+        backend="baml", detail="validated fixture", provider="claude-code", artifact=artifact
+    )
+
+    class FakeJournal:
+        run_id = "outer-attempt-1"
+
+        @staticmethod
+        def child_env(env):
+            return {
+                **env,
+                "BH_RUN_ID": "outer-attempt-1",
+                "BH_RUN_DRIVER": "baml",
+                "BH_RUN_PROVIDER": "claude-code",
+                "BH_RUN_MANIFEST_DIGEST": artifact.manifest_digest,
+            }
+
+    entry = {"provider": "github", "org": "acme", "repo": "core"}
+    journal_calls = []
+    run_calls = []
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(cli, "_apply_role_workspace", lambda *_args: None)
+    monkeypatch.setattr(cli, "_role_dispatch_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli.registry, "entry_for_dir", lambda *_args: entry)
+    monkeypatch.setattr(
+        role_execution,
+        "create_role_journal",
+        lambda artifact, **kwargs: journal_calls.append((artifact, kwargs)) or FakeJournal(),
+    )
+    monkeypatch.setattr(
+        role_process,
+        "run_foreground",
+        lambda argv, **kwargs: run_calls.append((argv, kwargs)) or 0,
+    )
+
+    result = cli_runner.invoke(
+        app,
+        [
+            "role",
+            "developer",
+            "--harness",
+            "claude",
+            "--task",
+            "secret task text",
+            "--baml-required",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert journal_calls == [(artifact, {"hive": "github/acme/core", "bead": ""})]
+    argv, kwargs = run_calls[0]
+    assert argv[0] == str(binary)
+    assert "--bundle" not in argv
+    assert argv[argv.index("--outer_attempt_id") + 1] == "outer-attempt-1"
+    assert argv[argv.index("--artifact_path") + 1] == str(binary)
+    assert argv[argv.index("--artifact_manifest") + 1] == str(manifest)
+    provider_continuation = argv[argv.index("--session_id") + 1]
+    assert provider_continuation != "outer-attempt-1"
+    assert kwargs["env"]["BH_RUN_ID"] == "outer-attempt-1"
+    assert kwargs["env"]["BH_RUN_PROVIDER"] == "claude-code"
+    assert kwargs["provider_continuation"] == provider_continuation
+    assert kwargs["seat_process_id"].startswith("seat-")
+    assert len({"outer-attempt-1", provider_continuation, kwargs["seat_process_id"]}) == 3
+    context = argv[argv.index("--journal_context") + 1]
+    assert json.loads(context)["run_id"] == "outer-attempt-1"
+    assert "secret task text" not in context
+
+
 # ---------------------------------------------------------------------------
 # cli.py `bh role <seat> --explain`: preview backend + mode, launch nothing (bh-6t49w.7)
 # ---------------------------------------------------------------------------
+
+
+def test_cli_role_explain_is_json_redacted_and_starts_nothing(monkeypatch):
+    import subprocess
+
+    from beadhive import cli, identity, role_execution, run_journal, worktree
+
+    entry = {"provider": "github", "org": "beadhive", "repo": "beadhive", "prefix": "bh"}
+    plan = role_execution.RoleLaunchPlan(
+        backend="baml", provider=None, detail="provider-unspecified compatibility fixture"
+    )
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {"managed_repos": [entry]})
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(role_execution.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda *_a: pytest.fail("explain claimed a workspace")
+    )
+    monkeypatch.setattr(cli.work, "claim", lambda *_a, **_kw: pytest.fail("explain claimed a bead"))
+    monkeypatch.setattr(cli, "run", lambda *_a, **_kw: pytest.fail("explain started a process"))
+    monkeypatch.setattr(
+        worktree, "_run_git", lambda *_a, **_kw: pytest.fail("explain probed with a process")
+    )
+    monkeypatch.setattr(
+        identity, "run", lambda *_a, **_kw: pytest.fail("explain probed workspace with Git")
+    )
+    monkeypatch.setattr(
+        subprocess, "Popen", lambda *_a, **_kw: pytest.fail("explain started a process")
+    )
+    monkeypatch.setattr(
+        run_journal.RunJournal,
+        "create",
+        lambda *_a, **_kw: pytest.fail("explain created a journal"),
+    )
+    monkeypatch.setattr(
+        cli, "_role_dispatch_dir", lambda: pytest.fail("explain wrote a dispatch artifact")
+    )
+
+    secret = "task-token-should-never-print"
+    result = cli_runner.invoke(
+        app,
+        [
+            "role",
+            "developer",
+            "--harness",
+            "claude",
+            "--bead",
+            "bh-example.1",
+            "--task",
+            secret,
+            "--explain",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["schema_version"] == 1
+    assert payload["decision"] == "runnable"
+    assert payload["request"]["bead"] == "bh-example.1"
+    assert payload["request"]["task"] == {
+        "provided": True,
+        "content": "<redacted:instructions>",
+    }
+    assert payload["request"]["workspace"].endswith("/bh-example.1")
+    assert secret not in result.output
 
 
 def test_cli_role_explain_never_claims_the_bead_workspace(monkeypatch):
@@ -884,7 +1130,15 @@ def test_cli_role_explain_never_claims_the_bead_workspace(monkeypatch):
     from beadhive import cli, hitch_plugin
 
     monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
-    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(
+        cli.config,
+        "load",
+        lambda: {
+            "managed_repos": [
+                {"provider": "github", "org": "beadhive", "repo": "beadhive", "prefix": "bh"}
+            ]
+        },
+    )
     monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
     monkeypatch.setattr(
         cli, "_apply_role_workspace", lambda *a: pytest.fail("workspace resolved under --explain")

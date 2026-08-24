@@ -5326,3 +5326,94 @@ def test_loop_without_seat_binary_keeps_the_configured_role_binary(hive, fakebd,
     work.loop(epic="mr-1", as_="", hive="myrepo", passes=1, as_json=True, seat_binary="")
 
     assert stub_localloop.instances[-1].kwargs["seat_command"] == "bh-{role}"
+
+
+def test_baml_required_loop_consumes_descriptor_and_injects_qualified_contexts(
+    hive, fakebd, stub_localloop, monkeypatch
+):
+    from beadhive import localloop, role_execution, source_descriptors
+
+    descriptor_calls = []
+    monkeypatch.setattr(
+        source_descriptors,
+        "resolve_named_hive_sources",
+        lambda name, **kwargs: (
+            descriptor_calls.append((name, kwargs))
+            or SimpleNamespace(
+                decision=source_descriptors.ResolutionDecision.AVAILABLE,
+                reasons=(),
+                descriptor=SimpleNamespace(
+                    identity=SimpleNamespace(registered_identity="github/myorg/myrepo")
+                ),
+            )
+        ),
+    )
+
+    def plan(role, harness, *_args, **_kwargs):
+        provider = "codex"
+        return SimpleNamespace(
+            artifact=SimpleNamespace(
+                binary=Path(f"/qualified/bh-{role}-{provider}"),
+                provider=provider,
+                manifest_digest="sha256:" + "a" * 64,
+            )
+        )
+
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", plan)
+
+    work.loop(
+        epic="mr-1",
+        as_="",
+        hive="myrepo",
+        passes=1,
+        as_json=True,
+        harness="codex",
+        baml_required=True,
+    )
+
+    assert descriptor_calls[0][0] == "github/myorg/myrepo"
+    factory = stub_localloop.instances[-1].kwargs["launch_context"]
+    for role in set(localloop.ROLE_FOR_ACTION.values()):
+        context = factory(role)
+        assert context.command == f"/qualified/bh-{role}-codex"
+        assert context.hive == "github/myorg/myrepo"
+        assert context.run_identity("mr-1.2").bead == "mr-1.2"
+
+
+def test_baml_required_loop_refuses_invalid_artifact_before_loop_or_claim(
+    hive, fakebd, stub_localloop, monkeypatch
+):
+    from beadhive import role_execution, source_descriptors
+
+    monkeypatch.setattr(
+        source_descriptors,
+        "resolve_named_hive_sources",
+        lambda *_a, **_kw: SimpleNamespace(
+            decision=source_descriptors.ResolutionDecision.AVAILABLE,
+            reasons=(),
+            descriptor=SimpleNamespace(
+                identity=SimpleNamespace(registered_identity="github/myorg/myrepo")
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        role_execution,
+        "resolve_headless_plan",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            role_execution.RoleLaunchRefused("digest_mismatch", "redacted invalid artifact")
+        ),
+    )
+
+    with pytest.raises(typer.Exit):
+        work.loop(
+            epic="mr-1",
+            as_="",
+            hive="myrepo",
+            passes=1,
+            as_json=True,
+            harness="claude",
+            baml_required=True,
+        )
+
+    assert stub_localloop.instances == []
+    assert not fakebd.did("update", "--claim")

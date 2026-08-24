@@ -1,0 +1,206 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/beadhive/beadhive/main/docs/schemas/run-journal-v1.schema.json",
+  "title": "Beadhive run journal record v1",
+  "description": "One complete line in a run-scoped, append-only Beadhive activity journal. See docs/design/run-journal-correlation-contract.md.",
+  "type": "object",
+  "required": [
+    "version",
+    "source_revision",
+    "timestamp_ms",
+    "run_id",
+    "hive",
+    "bead",
+    "driver",
+    "provider",
+    "manifest_digest",
+    "provider_continuation",
+    "writer",
+    "activity"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional schema pointer for standalone examples; omitted from normal JSONL records."
+    },
+    "version": {
+      "type": "string",
+      "const": "beadhive.run-journal/v1"
+    },
+    "source_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Unique opaque revision/cursor for this record. Consumers compare and return it; they never parse or sort it."
+    },
+    "timestamp_ms": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Unix epoch milliseconds at which the named writer observed the fact."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "Immutable outer attempt id minted by the launch owner before process creation."
+    },
+    "hive": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "description": "Exact registered hive identity; never a guessed prefix."
+    },
+    "bead": {
+      "description": "Exact bead id when the run is bead-scoped, otherwise null.",
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 256 },
+        { "type": "null" }
+      ]
+    },
+    "driver": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Resolved execution driver, such as baml or hitch; distinct from provider."
+    },
+    "provider": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Resolved provider, such as claude-code or codex; distinct from driver."
+    },
+    "manifest_digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Digest of the exact validated launch manifest bytes."
+    },
+    "provider_continuation": {
+      "description": "Provider-native continuation handle when observed, otherwise null. It is never the outer run_id.",
+      "oneOf": [
+        { "type": "string", "minLength": 1, "maxLength": 1024 },
+        { "type": "null" }
+      ]
+    },
+    "writer": {
+      "type": "string",
+      "enum": [
+        "beadhive.local-loop",
+        "beadhive.role",
+        "agent-hitch.direct",
+        "baml.provider"
+      ],
+      "description": "The component that directly observed and may truthfully assert activity."
+    },
+    "activity": {
+      "$ref": "#/$defs/activity"
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "activity": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)+$",
+          "maxLength": 128,
+          "description": "Stable event name, for example run.created or process.spawned."
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "planned",
+            "starting",
+            "active",
+            "waiting",
+            "cancelling",
+            "finished",
+            "failed",
+            "observed"
+          ]
+        },
+        "outcome_code": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$",
+          "maxLength": 128
+        },
+        "reason_code": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:[._-][a-z0-9]+)*$",
+          "maxLength": 128
+        },
+        "process": {
+          "$ref": "#/$defs/process"
+        },
+        "provider_fact": {
+          "$ref": "#/$defs/provider_fact"
+        },
+        "usage": {
+          "$ref": "#/$defs/usage"
+        },
+        "cost_usd": {
+          "type": "number",
+          "minimum": 0
+        },
+        "journal_degraded": {
+          "type": "boolean",
+          "description": "True only on a later recovery record; the failed write itself is reported out of band."
+        }
+      },
+      "additionalProperties": false
+    },
+    "process": {
+      "type": "object",
+      "properties": {
+        "pid": { "type": "integer", "minimum": 1 },
+        "pgid": { "type": "integer", "minimum": 1 },
+        "exit_code": {
+          "oneOf": [{ "type": "integer" }, { "type": "null" }]
+        },
+        "cancel_rung": {
+          "type": "string",
+          "enum": ["cooperative", "hard", "signal"]
+        },
+        "signals": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^SIG[A-Z0-9]+(?:\\(group\\))?$",
+            "maxLength": 32
+          },
+          "maxItems": 16
+        },
+        "group_gone": { "type": "boolean" }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    },
+    "provider_fact": {
+      "type": "object",
+      "properties": {
+        "baml": { "type": "boolean" },
+        "model": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 256 },
+            { "type": "null" }
+          ]
+        },
+        "continuation_observed": { "type": "boolean" }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "input_tokens": { "type": "integer", "minimum": 0 },
+        "output_tokens": { "type": "integer", "minimum": 0 },
+        "cache_read_tokens": { "type": "integer", "minimum": 0 },
+        "cache_creation_tokens": { "type": "integer", "minimum": 0 }
+      },
+      "minProperties": 1,
+      "additionalProperties": false
+    }
+  }
+}

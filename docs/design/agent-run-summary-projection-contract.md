@@ -157,30 +157,23 @@ read — that ends the `waiting` state. This is the "absence of activity" deriva
 notes anticipated: no spawn activity yet, repeatedly named as denied, is what `waiting` means
 here — not a literal field on any single record.
 
-## Join keys — verified against `bh-jksq`'s epic notes, not a landed `bh-jksq.1` contract
+## Cross-source correlation after the stream and journal contracts landed
 
-`bh-jksq.1` ("Define Beadhive stream v1 contract") is **open**, not landed, as of this writing —
-this contract does not depend on it and does not block on it landing (per bh-6eu2c's own
-DESCRIPTION: "the dispatch sink must never become a backend for bh-jksq's stream... CORRELATION,
-NOT MERGER"). The join-key spelling below is taken from `bh-jksq`'s own epic NOTES (dated
-2026-08-11, written by whoever scoped that epic, specifically for this cross-epic correlation),
-which state:
+The earlier planning note called both `bead` and `session_id` “join keys” before `bh-jksq.1` or
+the run-journal contract existed. Landed writer truth narrows that claim:
 
-> `bead` and `session_id` are the join keys and both already exist in the dispatch records —
-> worth making sure v1's records carry a bead id in a compatible spelling.
+- `AgentRunSummary.bead` preserves the dispatch record's exact bead id. It can join to a stream
+  issue id after an explicit full registered-hive-identity ↔ stream repo-slug mapping succeeds.
+- `AgentRunSummary.session_id` preserves the dispatch seat-process id. The canonical bead stream
+  carries no session id. The run journal carries a separately minted outer `run_id` and a separate
+  `provider_continuation`; the dispatch summary writer carries neither.
 
-That note is itself a statement about `dispatch_log.py`'s existing spellings (verified above:
-`seat_spawned` / `seat_harvested` / `seat_cancelled` all carry `bead` and `session_id` verbatim)
-— i.e. `dispatch_log.py` already uses the spelling `bh-jksq.1` is committing to match. This
-contract's `AgentRunSummary.bead` and `AgentRunSummary.session_id` fields carry those same
-values unchanged (no renaming, no reformatting) so a consumer correlating both streams can join
-on equality without a translation layer.
-
-**Follow-up flag:** this is verified against `bh-jksq`'s epic notes, not against a landed
-`bh-jksq.1` contract, because none exists yet. If `bh-jksq.1` lands with different field names
-for its bead-id / session-id join keys than the epic notes promise, this contract's join-key
-section needs a revisit (and `AgentRunSummary`'s consumers, if any exist by then, need to hear
-about it) — this is a known, called-out risk, not something this contract can close on its own.
+Therefore exact summary-to-journal correlation is unavailable today. A consumer may correlate a
+summary and a journal to the same exact bead, but MUST NOT claim that the summary session names
+that journal attempt. It must never alias `session_id` to outer `run_id` or
+`provider_continuation`. `beadhive.public_readers.AgentRunSnapshot` exposes this absence
+explicitly. Adding exact summary↔journal correlation requires new writer truth carrying outer
+`run_id`; a reader must not recover it from naming coincidence.
 
 ## Freshness (default only — computed by the reader, bh-6eu2c.2)
 

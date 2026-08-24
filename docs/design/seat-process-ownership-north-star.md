@@ -8,7 +8,8 @@
 > **Related:** baml-harness [ADR 0010][adr10] (two supervisors, one record schema — *awaiting this
 > sign-off*), baml-harness [ADR 0011][adr11] (cancellation cannot live in BAML), agent-hitch
 > [ADR 0004][adr04] (the managed run record), `work-runtime-tiers-adr.md` Amendment 2,
-> `loop-ownership-and-execution-memory-adr.md`
+> `loop-ownership-and-execution-memory-adr.md`, and the accepted
+> [run-journal correlation contract](run-journal-correlation-contract.md)
 
 The question this answers: **now that seats are packed binaries the dispatch loop spawns directly,
 rather than Claude Code sub-agents someone else manages — who owns those processes, what stops them
@@ -60,7 +61,7 @@ All measured, none hypothetical:
 | Crash of the loop itself | restart re-derives from `bd ready` + open gates + `bd reclaim`; the in-flight map is deliberately volatile | yes, by design |
 | Loop stalled | `bh doctor` flags a running loop with no pass in `stale_after_seconds` (900) | yes |
 | **Seat stalled** | **nothing but `max_run_seconds`, a blunt wall-time cap** | **no — see gap 3** |
-| Run record | none on the beadhive side | no — see gap 2 |
+| Run record | v1 correlation/schema contract accepted; writers/readers not yet landed | no — delivery remains in `bh-e8s3i` |
 | Telemetry | OTEL spans exist; seat `usage`/`cost_usd`/footprint not yet wired to a sink | partial |
 
 ## Are we rolling our own? No — and this names what we adopt instead
@@ -136,6 +137,12 @@ turns on whether beadhive accepts a Python dependency on `agent_hitch`. *Recomme
 schema with a `PROVENANCE.json`, mirroring what baml-harness already does for agent-hitch's
 resolved-profile fixtures* — that pattern is proven between these repos, and it keeps the runtime
 dependency-free, which [ADR 0009][adr09] deliberately bought.
+
+**Update, 2026-08-24:** the
+[run-journal correlation contract](run-journal-correlation-contract.md) now fixes Beadhive's
+run-scoped envelope, writer provenance, propagation, degradation and redaction rules. That closes
+the local wire-shape ambiguity but does not choose the external schema distribution mechanism this
+open decision asks about, nor claim the writers/readers have landed.
 
 **3. Seat stall detection.** Today a wedged seat is invisible until `max_run_seconds` fires and then
 burns the whole cap. A liveness probe cannot help: a wedged `claude` is alive. *Recommendation: two

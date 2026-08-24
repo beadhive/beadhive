@@ -3,6 +3,23 @@
 `bh` emits structured logs and — when opted in — OpenTelemetry traces, metrics, and logs.
 Everything is **disabled or no-op by default**; nothing exports without explicit configuration.
 
+Run-scoped process/provider activity has a separate, host-local contract: the
+[run-journal correlation contract](design/run-journal-correlation-contract.md). Its journal is
+append-only observability, never bead lifecycle state, and a sink failure is diagnosed without
+changing the launched process or lifecycle outcome.
+
+Explicit provider-qualified `bh role --task` BAML launches validate the adjacent artifact
+manifest before a bead claim, then propagate the same immutable outer attempt through
+`BH_RUN_JOURNAL_VERSION`, `BH_RUN_JOURNAL_PATH`, `BH_RUN_ID`, `BH_RUN_HIVE`, optional
+`BH_RUN_BEAD`, `BH_RUN_DRIVER`, `BH_RUN_PROVIDER`, and `BH_RUN_MANIFEST_DIGEST`. The provider's
+continuation remains a separate packed-seat argument/result and is never inferred from
+`BH_RUN_ID`.
+
+`bh role --explain` does not create this journal. Its JSON plan names the activity contract and
+the `BH_RUN_*` variables that a real launch would propagate, proposes distinct outer/provider
+identities only for a runnable decision, and reports whether the validated live-event mechanism
+can produce pre-exit observations. It emits environment names, never inherited values.
+
 ## Logging
 
 Diagnostics flow through structlog on stderr (never stdout). Command results stay on stdout

@@ -84,6 +84,17 @@ def _entry_for_path(cfg, path: Path):
     return entry or {"provider": provider, "org": org, "repo": repo, "prefix": repo}
 
 
+def entry_for_path(cfg, path: Path):
+    """Resolve a shadow-worktree path without Git or any other subprocess.
+
+    Unlike :func:`entry_for_dir`, this intentionally does not fall back to
+    :func:`identity.workspace_identity`.  It is the no-process seam used by dry-run surfaces;
+    callers that also accept a main-clone path can compare against :func:`hive_dir` themselves.
+    """
+
+    return _entry_for_path(cfg, path)
+
+
 def current_hive(cfg):
     """The managed_repos entry owning cwd (the `hive == ""` default), or None when cwd belongs to
     no managed hive. The ONE shared cwd->hive resolver (DRY) — used by `worktree._resolve_entry`
@@ -164,6 +175,18 @@ def _hive_matches(hives, hive_id, mode):
     if mode == "triplet":
         return by_triplet()
     return by_prefix() or by_triplet() or by_orgrepo() or by_repo()  # flexible
+
+
+def hive_matches(cfg, hive_id):
+    """Return registry candidates for *hive_id* without printing or exiting.
+
+    Machine-facing resolvers need the same configured matching policy as :func:`resolve_hive`,
+    but must represent missing and ambiguous input as typed data rather than Typer control flow.
+    HQ is not a hive source, so the candidate set intentionally routes through :func:`hives`.
+    """
+
+    mode = str((cfg.get("git_workspace") or {}).get("hive_match", "flexible"))
+    return tuple(_hive_matches(hives(cfg), hive_id, mode))
 
 
 def _hive_not_found(cfg, hive_id, mode):
