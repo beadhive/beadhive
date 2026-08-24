@@ -82,9 +82,7 @@ def validate(api, parts: list[str], value) -> list[dict]:
         choices = config_schema.literal_choices(dotted)
         if choices is not None and value not in choices:
             allowed = "|".join(str(choice) for choice in choices)
-            problems.append(
-                problem("error", f"{dotted} must be one of {allowed}, got {value!r}")
-            )
+            problems.append(problem("error", f"{dotted} must be one of {allowed}, got {value!r}"))
     if parts[0] not in api.KNOWN_SECTIONS:
         message = f"unknown config section '{parts[0]}' — writing it anyway"
         suggestion = config_schema.suggest_key(dotted)

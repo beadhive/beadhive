@@ -11,9 +11,16 @@ from collections.abc import Mapping, MutableMapping
 from contextlib import contextmanager
 from pathlib import Path
 
+from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
 
 _mutation_lock = threading.RLock()
+
+yaml = YAML()
+yaml.preserve_quotes = True
+yaml.indent(mapping=2, sequence=4, offset=2)
+yaml.width = 4096
+yaml_lock = threading.Lock()
 
 
 @contextmanager
@@ -142,6 +149,13 @@ def save_host(api, data) -> None:
 
 def save_fleet(api, data) -> None:
     atomic_dump(api, data, api.fleet_path())
+
+
+def guard_hq_registry_controller(api) -> None:
+    from . import guard
+
+    actor = api._env("dev") or api._env("crew") or ""
+    guard.guard_controller_readonly(actor)
 
 
 def reject_fleet_overrides(api, host) -> None:
