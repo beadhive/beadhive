@@ -12,7 +12,7 @@
 > **Epic:** bh-jksq ("Stream backend-neutral Beadhive state"). **Sibling addendum epic:**
 > bh-5wpb6 projects richer operator entities (`WorkDependency`, `GateRequest`, `EpicSchedule`,
 > `Assignment`) onto this same transport without touching the plumbing defined here — see
-> [§8](#8-extension-policy-what-bh-5wpb6-layers-on-top).
+> [§8](#8-operator-entity-extension-bh-5wpb6).
 
 ## 0. Non-goals (inherited from the epic, restated so this doc is self-contained)
 
@@ -304,24 +304,37 @@ no shared global version across unrelated `bh` payloads.
   is a short machine-readable string (e.g. `"registry_unavailable"`); anything more detailed
   belongs on stderr (§9), not in the frame.
 
-## 8. Extension policy: what bh-5wpb6 layers on top
+## 8. Operator-entity extension (bh-5wpb6)
 
-This contract intentionally ships **one** entity type (`StreamIssue`) and leaves room for
-richer operator-semantic entities without redesigning the transport:
+The decided field and wire contract is the additive
+[`beadhive-stream-operator-entities-v1-contract.md`](beadhive-stream-operator-entities-v1-contract.md),
+with its machine-readable schema at
+[`../schemas/beadhive-stream-operator-entities-v1.schema.json`](../schemas/beadhive-stream-operator-entities-v1.schema.json).
+It is normative for the extension points summarized below.
+
+The extension adds four mandatory sibling collections to every `snapshot`:
+`work_dependencies`, `gate_requests`, `epic_schedules`, and `assignments`. Every `delta`
+contains the corresponding `<collection>_changed` and `<collection>_removed` pair. This is
+additive under §6: issue-only consumers ignore the new keys, while operator consumers never
+have to distinguish an omitted empty collection from an unavailable one.
+
+The addendum decides stable identity, exact record fields, gate classification, retention,
+and schedule derivation. It does not change §5's snapshot-first ordering, §6's envelope, §7's
+single enclosing revision, degraded-data semantics, or §9's process boundary.
+
+The original extension points remain structurally compatible:
 
 - New entity types (`GateRequest`, `EpicSchedule`, `WorkDependency`, `Assignment` — the four
-  bh-5wpb6 scopes in, per its design notes) arrive as **additional sibling top-level arrays**
-  on the same `snapshot`/`delta` frames (e.g. a future `"gates": [...]"` beside `"issues":
-  [...]"`), each gated behind its own presence — a consumer reading only `issues` today is
-  unaffected by a new array appearing, per §6's additive-field rule.
+  operator collections) arrive as **additional sibling top-level arrays**
+  on the same `snapshot`/`delta` frames, while a consumer reading only `issues` today is
+  unaffected by the arrays, per §6's additive-field rule. The addendum requires
+  all four exact arrays on every snapshot; their contents, not their presence, may be empty.
 - `dependencies` embedded on `StreamIssue` (§4) is deliberately shaped so `WorkDependency` can
   restore its trimmed fields (`created_at`, `created_by`) additively rather than as a rename —
   see bh-5wpb6's own note that this is "very close to a direct field mapping."
-- This document does **not** decide `GateRequest.gateKind`'s bd-gate-type-vs-reason-marker
-  mapping or `EpicSchedule.groups`' batch-label-vs-DAG derivation — those are bh-5wpb6.1's job,
-  explicitly, per that bead's own scoping. What this contract commits to is only that neither
-  question requires touching §5's frame kinds, §6's envelope, or §7's revision semantics to
-  answer.
+- The normative addendum decides `GateRequest.gate_kind` classification and
+  `EpicSchedule.groups` derivation. Neither requires touching §5's frame kinds, §6's envelope,
+  or §7's revision semantics.
 
 ## 9. stdout / stderr rules
 

@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/beadhive/beadhive/blob/main/docs/schemas/beadhive-stream-operator-entities-v1.schema.json",
+  "title": "Beadhive stream operator entities v1 frame",
+  "description": "Additive operator-entity fields on a Beadhive stream v1 snapshot, delta, or resync frame.",
+  "oneOf": [
+    { "$ref": "#/$defs/snapshot" },
+    { "$ref": "#/$defs/delta" },
+    { "$ref": "#/$defs/resync" }
+  ],
+  "$defs": {
+    "frameBase": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "frame",
+        "scope",
+        "as_of",
+        "partial",
+        "partial_reason"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "frame": { "enum": ["snapshot", "delta", "resync"] },
+        "scope": { "enum": ["factory", "hub", "hive"] },
+        "as_of": { "type": "string", "format": "date-time" },
+        "partial": { "type": "boolean" },
+        "partial_reason": { "type": ["string", "null"] }
+      }
+    },
+    "snapshot": {
+      "allOf": [
+        { "$ref": "#/$defs/frameBase" },
+        {
+          "type": "object",
+          "required": [
+            "revision",
+            "reason",
+            "issues",
+            "work_dependencies",
+            "gate_requests",
+            "epic_schedules",
+            "assignments"
+          ],
+          "properties": {
+            "frame": { "const": "snapshot" },
+            "revision": { "$ref": "#/$defs/nonemptyString" },
+            "reason": { "enum": ["initial", "resync"] },
+            "issues": { "type": "array", "items": { "type": "object" } },
+            "work_dependencies": {
+              "$ref": "#/$defs/workDependencyArray"
+            },
+            "gate_requests": { "$ref": "#/$defs/gateRequestArray" },
+            "epic_schedules": { "$ref": "#/$defs/epicScheduleArray" },
+            "assignments": { "$ref": "#/$defs/assignmentArray" }
+          }
+        }
+      ]
+    },
+    "delta": {
+      "allOf": [
+        { "$ref": "#/$defs/frameBase" },
+        {
+          "type": "object",
+          "required": [
+            "revision",
+            "since_revision",
+            "changed",
+            "removed",
+            "work_dependencies_changed",
+            "work_dependencies_removed",
+            "gate_requests_changed",
+            "gate_requests_removed",
+            "epic_schedules_changed",
+            "epic_schedules_removed",
+            "assignments_changed",
+            "assignments_removed"
+          ],
+          "properties": {
+            "frame": { "const": "delta" },
+            "revision": { "$ref": "#/$defs/nonemptyString" },
+            "since_revision": { "$ref": "#/$defs/nonemptyString" },
+            "changed": { "type": "array", "items": { "type": "object" } },
+            "removed": { "$ref": "#/$defs/nonemptyStringArray" },
+            "work_dependencies_changed": {
+              "$ref": "#/$defs/workDependencyArray"
+            },
+            "work_dependencies_removed": {
+              "$ref": "#/$defs/workDependencyIdArray"
+            },
+            "gate_requests_changed": { "$ref": "#/$defs/gateRequestArray" },
+            "gate_requests_removed": { "$ref": "#/$defs/gateRequestIdArray" },
+            "epic_schedules_changed": { "$ref": "#/$defs/epicScheduleArray" },
+            "epic_schedules_removed": { "$ref": "#/$defs/epicScheduleIdArray" },
+            "assignments_changed": { "$ref": "#/$defs/assignmentArray" },
+            "assignments_removed": { "$ref": "#/$defs/assignmentIdArray" }
+          }
+        }
+      ]
+    },
+    "resync": {
+      "allOf": [
+        { "$ref": "#/$defs/frameBase" },
+        {
+          "type": "object",
+          "required": ["reason"],
+          "properties": {
+            "frame": { "const": "resync" },
+            "reason": {
+              "enum": ["unknown_revision", "scope_mismatch", "adapter_error"]
+            }
+          },
+          "not": {
+            "anyOf": [
+              { "required": ["work_dependencies"] },
+              { "required": ["gate_requests"] },
+              { "required": ["epic_schedules"] },
+              { "required": ["assignments"] },
+              { "required": ["work_dependencies_changed"] },
+              { "required": ["work_dependencies_removed"] },
+              { "required": ["gate_requests_changed"] },
+              { "required": ["gate_requests_removed"] },
+              { "required": ["epic_schedules_changed"] },
+              { "required": ["epic_schedules_removed"] },
+              { "required": ["assignments_changed"] },
+              { "required": ["assignments_removed"] }
+            ]
+          }
+        }
+      ]
+    },
+    "nonemptyString": { "type": "string", "minLength": 1 },
+    "hiveSlug": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^/]+$",
+      "description": "Registry-owned repository slug; never inferred from an issue ID or description."
+    },
+    "nonemptyStringArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/nonemptyString" },
+      "uniqueItems": true
+    },
+    "workDependencyId": {
+      "type": "string",
+      "pattern": "^work-dependency:sha256:[0-9a-f]{64}$"
+    },
+    "assignmentId": {
+      "type": "string",
+      "pattern": "^assignment:sha256:[0-9a-f]{64}$"
+    },
+    "gateRequestId": {
+      "type": "string",
+      "pattern": "^gate-request:sha256:[0-9a-f]{64}$"
+    },
+    "epicScheduleId": {
+      "type": "string",
+      "pattern": "^epic-schedule:sha256:[0-9a-f]{64}$"
+    },
+    "workDependencyIdArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/workDependencyId" },
+      "uniqueItems": true
+    },
+    "assignmentIdArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/assignmentId" },
+      "uniqueItems": true
+    },
+    "gateRequestIdArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/gateRequestId" },
+      "uniqueItems": true
+    },
+    "epicScheduleIdArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/epicScheduleId" },
+      "uniqueItems": true
+    },
+    "workDependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "hive",
+        "issue_id",
+        "depends_on_id",
+        "type",
+        "created_at",
+        "created_by"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/workDependencyId" },
+        "hive": { "$ref": "#/$defs/hiveSlug" },
+        "issue_id": { "$ref": "#/$defs/nonemptyString" },
+        "depends_on_id": { "$ref": "#/$defs/nonemptyString" },
+        "type": { "$ref": "#/$defs/nonemptyString" },
+        "created_at": {
+          "oneOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        },
+        "created_by": { "type": ["string", "null"] }
+      }
+    },
+    "assignment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "hive", "issue_id", "seat"],
+      "properties": {
+        "id": { "$ref": "#/$defs/assignmentId" },
+        "hive": { "$ref": "#/$defs/hiveSlug" },
+        "issue_id": { "$ref": "#/$defs/nonemptyString" },
+        "seat": { "$ref": "#/$defs/nonemptyString" }
+      }
+    },
+    "gateRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "hive",
+        "gate_id",
+        "blocks",
+        "gate_type",
+        "gate_kind",
+        "status",
+        "reason",
+        "opened_at",
+        "resolved_at"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/gateRequestId" },
+        "hive": { "$ref": "#/$defs/hiveSlug" },
+        "gate_id": { "$ref": "#/$defs/nonemptyString" },
+        "blocks": { "$ref": "#/$defs/nonemptyStringArray" },
+        "gate_type": { "type": ["string", "null"] },
+        "gate_kind": { "enum": ["review", "security", "kickoff", "other"] },
+        "status": { "enum": ["open", "resolved"] },
+        "reason": { "type": "string" },
+        "opened_at": { "type": "string", "format": "date-time" },
+        "resolved_at": {
+          "oneOf": [
+            { "type": "string", "format": "date-time" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "scheduleGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "batch", "issue_ids"],
+      "properties": {
+        "kind": { "enum": ["planner", "chain"] },
+        "batch": { "type": ["string", "null"] },
+        "issue_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/$defs/nonemptyString" },
+          "uniqueItems": true
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "planner" } } },
+          "then": { "properties": { "batch": { "$ref": "#/$defs/nonemptyString" } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "chain" } } },
+          "then": { "properties": { "batch": { "type": "null" } } }
+        }
+      ]
+    },
+    "epicSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "hive", "epic_id", "groups", "singletons", "coordinators"],
+      "properties": {
+        "id": { "$ref": "#/$defs/epicScheduleId" },
+        "hive": { "$ref": "#/$defs/hiveSlug" },
+        "epic_id": { "$ref": "#/$defs/nonemptyString" },
+        "groups": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/scheduleGroup" }
+        },
+        "singletons": { "$ref": "#/$defs/nonemptyStringArray" },
+        "coordinators": { "$ref": "#/$defs/nonemptyStringArray" }
+      }
+    },
+    "workDependencyArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/workDependency" },
+      "uniqueItems": true
+    },
+    "assignmentArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/assignment" },
+      "uniqueItems": true
+    },
+    "gateRequestArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/gateRequest" },
+      "uniqueItems": true
+    },
+    "epicScheduleArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/epicSchedule" },
+      "uniqueItems": true
+    }
+  }
+}
