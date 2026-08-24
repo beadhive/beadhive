@@ -592,6 +592,7 @@ def build_application(
     enable_mcp_http: bool = False,
     stateless_mcp_http: bool = False,
     mcp_server_factory: Callable[[], Any] | None = None,
+    middleware: Sequence[Middleware] = (),
 ) -> Starlette:
     """Build the one host application and its one outer lifespan.
 
@@ -654,21 +655,60 @@ def build_application(
 
     app = Starlette(
         routes=[Route("/health", health, methods=["GET"]), *owned_routes],
-        middleware=[Middleware(_DrainGateMiddleware, runtime=daemon_runtime)],
+        middleware=[Middleware(_DrainGateMiddleware, runtime=daemon_runtime), *middleware],
         lifespan=lifespan,
     )
     app.state.daemon_runtime = daemon_runtime
     return app
 
 
-def build_product_application(*, runtime: DaemonRuntime) -> Starlette:
+def build_product_application(
+    *,
+    runtime: DaemonRuntime,
+    control_record: ControlRecord | None = None,
+    listener_host: str = DEFAULT_HOST,
+    listener_port: int = DEFAULT_PORT,
+    allowed_origin: str | None = None,
+    cfg: dict | None = None,
+) -> Starlette:
     """Assemble the installed daemon's current routes on the shared composition seam.
 
-    The first daemon-core slice serves only health.  Operator REST/SSE slices extend this one
-    factory with injected routes/components; they do not replace :func:`serve` or create a
-    listener.  MCP HTTP remains explicitly disabled here until its authenticated product slice.
+    Operator sources extend this one factory with injected routes and middleware; they do not
+    replace :func:`serve` or create a listener.  MCP HTTP remains explicitly disabled here until
+    its authenticated product slice.
     """
-    return build_application(runtime=runtime, enable_mcp_http=False)
+    from .operator_api import LocalReadPolicyMiddleware, OperatorAPI
+    from .operator_feed import OperatorFeed
+    from .operator_sources import OperatorSources
+
+    host_id = control_record.host_id if control_record is not None else host_identity.host_id()
+    instance_id = control_record.instance_id if control_record is not None else uuid.uuid4().hex
+    sources = OperatorSources(cfg=cfg, host_id=host_id)
+    feed = OperatorFeed(sources)
+    operator = OperatorAPI(
+        sources=sources,
+        feed=feed,
+        host_id=host_id,
+        instance_id=instance_id,
+        ready=lambda: runtime.ready,
+    )
+    app = build_application(
+        runtime=runtime,
+        routes=operator.routes(),
+        enable_mcp_http=False,
+        middleware=[
+            Middleware(
+                LocalReadPolicyMiddleware,
+                listener_host=listener_host,
+                listener_port=listener_port,
+                allowed_origin=allowed_origin,
+            )
+        ],
+    )
+    app.state.operator_sources = sources
+    app.state.operator_feed = feed
+    app.state.operator_api = operator
+    return app
 
 
 def validate_listener(listener_host: str, listener_port: int) -> None:
@@ -704,7 +744,13 @@ def serve(
         import uvicorn
 
         runtime = DaemonRuntime(shutdown_budget=shutdown_budget)
-        application = build_product_application(runtime=runtime)
+        application = build_product_application(
+            runtime=runtime,
+            control_record=singleton.record,
+            listener_host=listener_host,
+            listener_port=listener_port,
+            allowed_origin=os.environ.get("BH_OPERATOR_UI_ORIGIN") or None,
+        )
         uvicorn.run(
             application,
             host=listener_host,
