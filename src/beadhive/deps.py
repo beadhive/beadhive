@@ -486,6 +486,12 @@ DEPS: tuple[Dep, ...] = (
         # asymmetry against codex (installable + authable, cannot run a seat) is exactly what
         # the single word "harness" used to hide.
     ),
+    Dep(
+        name="repowise",
+        binary="repowise",
+        version_cmd=("repowise", "--version"),
+        required=NEVER,
+    ),
 )
 
 

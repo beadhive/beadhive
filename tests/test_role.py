@@ -668,3 +668,283 @@ def test_cli_role_no_harness_flag_passes_none(monkeypatch):
 
     assert result.exit_code == 0
     mock_launch.assert_called_once_with("developer", harness=None)
+
+
+def test_cli_role_no_hitch_flag_threaded_through(monkeypatch):
+    """`bh role <seat> --no-hitch` reaches hitch_plugin.route(no_hitch=True) (bh-6t49w.3)."""
+    from beadhive import hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    with patch.object(hitch_plugin, "route") as mock_route:
+        result = cli_runner.invoke(app, ["role", "developer", "--no-hitch"])
+
+    assert result.exit_code == 0
+    mock_route.assert_called_once_with("developer", harness=None, no_hitch=True, full_seats=False)
+
+
+def test_cli_role_seats_flag_threaded_through(monkeypatch):
+    """`bh role --seats` reaches hitch_plugin.route(full_seats=True) (bh-6t49w.5)."""
+    from beadhive import hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    with patch.object(hitch_plugin, "route") as mock_route:
+        result = cli_runner.invoke(app, ["role", "--seats"])
+
+    assert result.exit_code == 0
+    mock_route.assert_called_once_with("", harness=None, no_hitch=False, full_seats=True)
+
+
+# ---------------------------------------------------------------------------
+# cli.py --bead/--hive workspace resolution (bh-6t49w.4)
+# ---------------------------------------------------------------------------
+
+
+def test_bead_hive_prefix_extracts_leading_token():
+    from beadhive import cli
+
+    assert cli._role_bead_hive_prefix("bh-6t49w.4") == "bh"
+    assert cli._role_bead_hive_prefix("noprefix") == "noprefix"
+
+
+def test_apply_role_workspace_noop_when_neither_given(monkeypatch):
+    from beadhive import cli
+
+    chdir_calls = []
+    monkeypatch.setattr(os, "chdir", lambda p: chdir_calls.append(p))
+    cli._apply_role_workspace("", "")
+    assert chdir_calls == []
+
+
+def test_apply_role_workspace_hive_only_chdirs_to_hive_root(monkeypatch, tmp_path):
+    from beadhive import cli
+
+    entry = {"provider": "github", "org": "acme", "repo": "core", "prefix": "bh"}
+    hive_root = tmp_path / "hive"
+    hive_root.mkdir()
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.registry, "resolve_hive", lambda cfg, hive_id: entry)
+    monkeypatch.setattr(cli.registry, "hive_dir", lambda e: hive_root)
+
+    monkeypatch.chdir(tmp_path)
+    cli._apply_role_workspace("", "bh")
+
+    assert os.getcwd() == str(hive_root.resolve())
+
+
+def test_apply_role_workspace_bead_only_resolves_hive_from_prefix_and_claims(monkeypatch, tmp_path):
+    from beadhive import cli
+
+    entry = {"provider": "github", "org": "acme", "repo": "core", "prefix": "bh"}
+    resolve_calls = []
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(
+        cli.registry,
+        "resolve_hive",
+        lambda cfg, hive_id: resolve_calls.append(hive_id) or entry,
+    )
+    monkeypatch.setattr(cli.registry, "hive_key", lambda e: f"{e['org']}/{e['repo']}")
+
+    claim_calls = []
+    monkeypatch.setattr(cli.work, "claim", lambda **kw: claim_calls.append(kw))
+
+    from beadhive import worktree
+
+    workspace = tmp_path / "wt"
+    workspace.mkdir()
+    monkeypatch.setattr(
+        worktree,
+        "locate",
+        lambda cfg, hive, bead="": (entry, tmp_path, workspace, "br"),
+    )
+
+    cli._apply_role_workspace("bh-6t49w.4", "")
+
+    assert resolve_calls == ["bh"]  # hive resolved from the bead's own leading prefix
+    assert claim_calls == [
+        {"bead": "bh-6t49w.4", "as_": "", "group": "", "collapse": "", "hive": "bh"}
+    ]
+    assert os.getcwd() == str(workspace.resolve())
+
+
+def test_apply_role_workspace_bead_and_hive_disagree_refuses_loudly(monkeypatch):
+    from beadhive import cli
+
+    bead_entry = {"provider": "github", "org": "acme", "repo": "core", "prefix": "bh"}
+    hive_entry = {"provider": "github", "org": "other", "repo": "y", "prefix": "y"}
+
+    def _resolve(cfg, hive_id):
+        return hive_entry if hive_id == "other/y" else bead_entry
+
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.registry, "resolve_hive", _resolve)
+    monkeypatch.setattr(cli.registry, "hive_key", lambda e: f"{e['org']}/{e['repo']}")
+
+    import typer as typer_mod
+
+    with pytest.raises(typer_mod.Exit) as exc:
+        cli._apply_role_workspace("bh-6t49w.4", "other/y")
+    assert exc.value.exit_code == 1
+
+
+def test_cli_role_bead_flag_resolves_workspace_before_route(monkeypatch):
+    """`bh role <seat> --bead <id>` resolves the workspace before `hitch_plugin.route` runs,
+    for both backends (route dispatches to native/hitch, chdir already happened)."""
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    calls = []
+    monkeypatch.setattr(cli, "_apply_role_workspace", lambda bead, hive: calls.append((bead, hive)))
+    with patch.object(hitch_plugin, "route") as mock_route:
+        result = cli_runner.invoke(app, ["role", "developer", "--bead", "bh-6t49w.4"])
+
+    assert result.exit_code == 0
+    assert calls == [("bh-6t49w.4", "")]
+    mock_route.assert_called_once_with("developer", harness=None, no_hitch=False, full_seats=False)
+
+
+# ---------------------------------------------------------------------------
+# cli.py headless dispatch: --task / -d (bh-6t49w.6)
+# ---------------------------------------------------------------------------
+
+
+def test_role_instructions_point_at_the_bead_brief_not_a_restated_task():
+    from beadhive import cli
+
+    text = cli._role_instructions("developer", "bh-6t49w.6", "")
+    assert "bh work brief bh-6t49w.6" in text
+    assert "## Task" not in text
+
+
+def test_role_instructions_append_task_when_given():
+    from beadhive import cli
+
+    text = cli._role_instructions("developer", "bh-6t49w.6", "only touch role.py")
+    assert "bh work brief bh-6t49w.6" in text  # the bead stays the source of truth
+    assert text.rstrip().endswith("only touch role.py")
+
+
+def test_cli_role_headless_refuses_unsuitable_seat_before_touching_the_workspace(monkeypatch):
+    """`bh role supervisor --bead <id> -d` refuses immediately — no claim, no launch."""
+    from beadhive import cli
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda *a: pytest.fail("workspace resolved before refusal")
+    )
+    result = cli_runner.invoke(app, ["role", "supervisor", "--bead", "bh-6t49w.6", "-d"])
+
+    assert result.exit_code == 1
+    assert "not a headless-capable seat" in result.output
+    assert "bh role supervisor" in result.output
+
+
+def test_cli_role_headless_hitch_backend_forwards_the_brief_pointer_as_task(monkeypatch):
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
+    monkeypatch.setattr(cli, "_apply_role_workspace", lambda *a: None)
+    monkeypatch.setattr(
+        hitch_plugin, "headless_plan", lambda seat, harness, cfg: ("hitch", "hitch profile x")
+    )
+    with patch.object(hitch_plugin, "up", return_value=0) as mock_up:
+        result = cli_runner.invoke(app, ["role", "developer", "--bead", "bh-6t49w.6", "-d"])
+
+    assert result.exit_code == 0, result.output
+    kwargs = mock_up.call_args.kwargs
+    assert kwargs["detached"] is True
+    assert kwargs["role_"] == "developer"
+    assert "bh work brief bh-6t49w.6" in kwargs["task"]
+
+
+def test_cli_role_headless_needs_a_bead_or_a_task(monkeypatch):
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
+    monkeypatch.setattr(
+        hitch_plugin, "headless_plan", lambda seat, harness, cfg: ("baml", "built bh-developer")
+    )
+    result = cli_runner.invoke(app, ["role", "developer", "-d"])
+
+    assert result.exit_code == 1
+    assert "--bead" in result.output
+
+
+# ---------------------------------------------------------------------------
+# cli.py `bh role <seat> --explain`: preview backend + mode, launch nothing (bh-6t49w.7)
+# ---------------------------------------------------------------------------
+
+
+def test_cli_role_explain_never_claims_the_bead_workspace(monkeypatch):
+    """`--explain` must not resolve/claim `--bead`'s worktree — that's a write, and this is a
+    read-only preview."""
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda *a: pytest.fail("workspace resolved under --explain")
+    )
+    monkeypatch.setattr(
+        hitch_plugin, "headless_plan", lambda seat, harness, cfg: ("baml", "built bh-developer")
+    )
+
+    result = cli_runner.invoke(app, ["role", "developer", "--bead", "bh-6t49w.7", "--explain"])
+
+    assert result.exit_code == 0, result.output
+    assert "mode=headless-safe" in result.output
+    assert "backend=baml" in result.output
+    assert "bh-6t49w.7" in result.output
+
+
+def test_cli_role_explain_reports_attached_required_for_an_unsuitable_seat(monkeypatch):
+    from beadhive import cli
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
+
+    result = cli_runner.invoke(app, ["role", "supervisor", "--explain"])
+
+    assert result.exit_code == 0, result.output
+    assert "mode=attached-required" in result.output
+    assert "backend=none" in result.output
+    assert "not a headless-capable seat" in result.output
+
+
+def test_cli_role_explain_unrecognized_seat_reports_attached_required():
+    """A seat outside `ROLE_FOR_ACTION` (never a headless target, known-and-installed or not)
+    still gets a loud, correct `attached-required` answer — no spurious "not installed" error,
+    since `--explain` deliberately does not re-check `role._known_seats()`."""
+    result = cli_runner.invoke(app, ["role", "nope", "--explain"])
+
+    assert result.exit_code == 0, result.output
+    assert "mode=attached-required" in result.output
+
+
+def test_cli_role_explain_empty_seat_refuses():
+    result = cli_runner.invoke(app, ["role", "--explain"])
+
+    assert result.exit_code == 1
+    assert "--explain needs a seat" in result.output
+
+
+def test_cli_role_explain_dry_run_alias_matches_explain(monkeypatch):
+    """`--dry-run` is accepted as an alias, mirroring hitch's own `--explain`/`--dry-run`."""
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
+    monkeypatch.setattr(
+        hitch_plugin, "headless_plan", lambda seat, harness, cfg: ("baml", "built bh-developer")
+    )
+
+    result = cli_runner.invoke(app, ["role", "developer", "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "mode=headless-safe" in result.output

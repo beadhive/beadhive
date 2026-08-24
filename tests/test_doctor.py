@@ -15,7 +15,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive import config, doctor, git_identity, hitch_plugin, safety, worktree
+from beadhive import (
+    config,
+    doctor,
+    dolt_health,
+    git_identity,
+    hitch_plugin,
+    hosts,
+    safety,
+    worktree,
+)
 from beadhive.metadata import RepoMetadata
 from beadhive.safety import Category
 from test_work import _git, fakebd, hive  # noqa: F401 — fixtures resolved by name
@@ -992,6 +1001,45 @@ def test_section_fleet_health_stale_threshold_in_output(capsys):
     assert stale_days in out
 
 
+# ---- worktree disk measurement ---------------------------------------------
+
+
+def test_data_worktree_disk_usage_measures_only_managed_worktrees(monkeypatch, tmp_path):
+    """Worktree bytes exclude the primary clone and aggregate each hive separately."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    monkeypatch.setattr(
+        doctor.worktree,
+        "managed",
+        lambda _cfg: [("one", str(first), "wt/one"), ("one", str(second), "wt/two")],
+    )
+    monkeypatch.setattr(
+        doctor.safety,
+        "_measure_disk_usage",
+        lambda path: {str(first): 11, str(second): 29}[path],
+    )
+    monkeypatch.setattr(doctor.config, "worktrees_root", lambda _cfg: tmp_path)
+    monkeypatch.setattr(doctor.shutil, "disk_usage", lambda _path: SimpleNamespace(free=97))
+
+    data = doctor._data_worktree_disk_usage(
+        {
+            "managed_repos": [
+                {"prefix": "one"},
+                {"prefix": "two"},
+            ]
+        }
+    )
+
+    assert data == {
+        "hives": [
+            {"prefix": "one", "worktree_bytes": 40, "worktree_count": 2},
+            {"prefix": "two", "worktree_bytes": 0, "worktree_count": 0},
+        ],
+        "total_worktree_bytes": 40,
+        "disk_free_bytes": 97,
+    }
+
+
 # ---- doctor_payload structured dict -----------------------------------------
 
 # The version envelope every machine payload carries (bh-0olv9.2, `beadhive.jsonout`), named
@@ -1006,6 +1054,7 @@ _DOCTOR_SECTIONS = {
     "hives",
     "inventory",
     "disk_usage",
+    "worktree_disk_usage",
     "fleet_health",
     "worktrees",
     "molecules",
@@ -1016,6 +1065,7 @@ _DOCTOR_SECTIONS = {
     "dispatch",
     "group_auth",
     "mcp",
+    "harness_plugin",
     "seats",
     "install",
     "observability",
@@ -1036,6 +1086,11 @@ def test_doctor_payload_sections_are_structured(hive, fakebd):  # noqa: F811
     assert payload["config"]["git_workspace"]["enabled"] in (True, False)
     assert isinstance(payload["providers"], list)
     assert isinstance(payload["inventory"]["git_repos_on_disk"], int)
+    assert set(payload["worktree_disk_usage"]) == {
+        "hives",
+        "total_worktree_bytes",
+        "disk_free_bytes",
+    }
     assert set(payload["fleet_health"]) >= {
         "repos_scanned",
         "dirty",
@@ -1200,6 +1255,104 @@ def test_collect_group_auth_empty_when_no_repo_groups(hive, fakebd):  # noqa: F8
     empty and the section comes back empty on its own."""
     payload = doctor.doctor_payload()
     assert payload["group_auth"] == {"groups": [], "warnings": []}
+
+
+# ---- Harness section (bh-tx2hp) ------------------------------------------------
+# "No role skill exists without the plugin" — durable/re-checked twin of `bh host provision`'s
+# own `harness plugin` step: silent unless this host's OWN registered role implies it runs a
+# seat (executor/transient); a viewer or an unregistered host reports nothing here.
+
+
+def test_this_host_role_none_without_a_host_identity(monkeypatch):
+    def boom():
+        raise FileNotFoundError("no host.yaml")
+
+    monkeypatch.setattr(doctor.host, "host_id", boom)
+    assert doctor._this_host_role({}) is None
+
+
+def test_this_host_role_none_without_a_local_hq(monkeypatch, tmp_path):
+    monkeypatch.setattr(doctor.host, "host_id", lambda: "h1")
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: tmp_path / "hq")  # no `.beads` yet
+    assert doctor._this_host_role({}) is None
+
+
+def test_this_host_role_none_when_unregistered(monkeypatch, tmp_path):
+    hq_dir = tmp_path / "hq"
+    (hq_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(doctor.host, "host_id", lambda: "h1")
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+
+    def missing(*_a):
+        raise FileNotFoundError("no manifest")
+
+    monkeypatch.setattr(doctor.hosts, "load", missing)
+    assert doctor._this_host_role({}) is None
+
+
+def test_this_host_role_reads_the_manifest(monkeypatch, tmp_path):
+    hq_dir = tmp_path / "hq"
+    (hq_dir / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(doctor.host, "host_id", lambda: "h1")
+    monkeypatch.setattr(doctor.config, "hq_dir", lambda: hq_dir)
+    monkeypatch.setattr(doctor.hosts, "load", lambda *_a: SimpleNamespace(role="executor"))
+    assert doctor._this_host_role({}) == "executor"
+
+
+def test_data_harness_plugin_none_for_a_role_that_never_runs_a_seat(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: "viewer")
+    assert doctor._data_harness_plugin({}) is None
+
+
+def test_data_harness_plugin_none_when_role_unresolvable(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: None)
+    assert doctor._data_harness_plugin({}) is None
+
+
+def test_data_harness_plugin_reports_missing_claude_cli(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: "executor")
+    monkeypatch.setattr(doctor.shutil, "which", lambda _cmd: None)
+    d = doctor._data_harness_plugin({})
+    assert d["installed"] is False
+    assert "no `claude` CLI" in d["detail"]
+
+
+def test_data_harness_plugin_reports_installed(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: "transient")
+    monkeypatch.setattr(doctor.shutil, "which", lambda _cmd: "/usr/bin/claude")
+    monkeypatch.setattr(doctor.hive, "_is_plugin_installed", lambda _plugin: True)
+    d = doctor._data_harness_plugin({})
+    assert d == {
+        "role": "transient",
+        "plugin": "bh",
+        "installed": True,
+        "detail": "'bh' installed",
+    }
+
+
+def test_data_harness_plugin_reports_missing_plugin_with_the_install_command(monkeypatch):
+    monkeypatch.setattr(doctor, "_this_host_role", lambda cfg: "executor")
+    monkeypatch.setattr(doctor.shutil, "which", lambda _cmd: "/usr/bin/claude")
+    monkeypatch.setattr(doctor.hive, "_is_plugin_installed", lambda _plugin: False)
+    d = doctor._data_harness_plugin({})
+    assert d["installed"] is False
+    assert "NOT installed" in d["detail"]
+    assert "claude plugin install bh@beadhive" in d["detail"]
+
+
+def test_render_harness_plugin_silent_when_none(capsys):
+    doctor._render_harness_plugin(None)
+    assert capsys.readouterr().out == ""
+
+
+def test_render_harness_plugin_shows_role_and_state(capsys):
+    doctor._render_harness_plugin(
+        {"role": "executor", "plugin": "bh", "installed": False, "detail": "'bh' NOT installed"}
+    )
+    out = capsys.readouterr().out
+    assert "# Harness (role=executor)" in out
+    assert "✗" in out
+    assert "NOT installed" in out
 
 
 # ---- seats section (bh-og0q.4) -----------------------------------------------
@@ -1430,6 +1583,46 @@ def _furnish_drift_repo(tmp_path, *, track_beads: bool):
 
 def _furnish_warns(root, entry):
     return doctor._data_warnings({}, root, [entry], set(), set(), set(), set())
+
+
+def test_data_warnings_skips_hq_and_declared_remote_only_hives(monkeypatch, tmp_path):
+    manifest = hosts.HostManifest(
+        host_id="this-host",
+        label="fixture-host",
+        os="linux",
+        arch="x86_64",
+        role="executor",
+        identity=hosts.IdentityMechanism(kind="none", value=""),
+        remote_only_hives=["hl"],
+    )
+    monkeypatch.setattr(doctor, "_this_host_manifest", lambda: manifest)
+    entries = [
+        {"provider": "github", "org": "acme", "repo": "homelab", "prefix": "hl"},
+        {"provider": "local", "org": "factory", "repo": "hq", "prefix": "hq", "kind": "hq"},
+    ]
+
+    warns = doctor._data_warnings({}, tmp_path, entries, set(), set(), set(), set())
+
+    assert not any("has no local checkout" in warning for warning in warns)
+
+
+def test_data_warnings_diagnoses_bad_remote_only_hive_prefixes(monkeypatch, tmp_path):
+    manifest = hosts.HostManifest(
+        host_id="this-host",
+        label="fixture-host",
+        os="linux",
+        arch="x86_64",
+        role="executor",
+        identity=hosts.IdentityMechanism(kind="none", value=""),
+        remote_only_hives=["hl", "hl", "missing"],
+    )
+    monkeypatch.setattr(doctor, "_this_host_manifest", lambda: manifest)
+    entries = [{"provider": "github", "org": "acme", "repo": "homelab", "prefix": "hl"}]
+
+    warns = doctor._data_warnings({}, tmp_path, entries, set(), set(), set(), set())
+
+    assert "host manifest remote_only_hives repeats hive prefix: hl" in warns
+    assert "host manifest remote_only_hives has unknown hive prefix: missing" in warns
 
 
 def test_furnish_drift_warns_on_tracked_beads(tmp_path):
@@ -2027,6 +2220,67 @@ def test_no_proc_filesystem_says_nothing_rather_than_guessing(tmp_path, monkeypa
     """macOS has no /proc. The check must degrade to silence, not to a false positive."""
     _fake_proc_tree(monkeypatch, pid="1", cwd=tmp_path / "gone", has_proc=False)
     assert doctor._orphaned_dolt_server_warnings() == []
+
+
+# ---- bh-s9cdk: split-brain Dolt lineage is named, not left to a hand-run merge-base -------------
+
+
+def _lineage_hive(tmp_path: Path, database: str = "bh") -> Path:
+    """A hive dir with a real (empty) embedded-store `.dolt/` directory — enough for
+    `store_locator.has_embedded_store` to be true without a real bd store."""
+    db_dir = tmp_path / ".beads" / "embeddeddolt" / database
+    (db_dir / ".dolt").mkdir(parents=True)
+    return tmp_path
+
+
+def test_split_brain_lineage_is_named_when_probe_reports_it(tmp_path, monkeypatch):
+    path = _lineage_hive(tmp_path)
+    monkeypatch.setattr(
+        dolt_health,
+        "probe_embedded_lineage",
+        lambda db_dir: dolt_health.LineageProbeResult(
+            dolt_health.LINEAGE_SPLIT_BRAIN, "dolt merge-base main remotes/origin/main: boom"
+        ),
+    )
+
+    warn = doctor._split_brain_lineage_warning({"prefix": "bh"}, path)
+
+    assert warn is not None
+    assert "SPLIT-BRAIN" in warn
+    assert "bh" in warn
+    assert "not a row-level merge conflict" in warn.lower()
+    assert "re-hydrate the non-canonical host" in warn
+
+
+def test_no_lineage_warning_when_probe_reports_a_common_ancestor(tmp_path, monkeypatch):
+    path = _lineage_hive(tmp_path)
+    monkeypatch.setattr(
+        dolt_health,
+        "probe_embedded_lineage",
+        lambda db_dir: dolt_health.LineageProbeResult(
+            dolt_health.LINEAGE_COMMON_ANCESTOR, "common ancestor abc123"
+        ),
+    )
+
+    assert doctor._split_brain_lineage_warning({"prefix": "bh"}, path) is None
+
+
+def test_no_lineage_warning_when_probe_is_unknown(tmp_path, monkeypatch):
+    """An unresolvable remote-tracking branch (never fetched) must stay silent, not escalate an
+    unverified state into a false split-brain report."""
+    path = _lineage_hive(tmp_path)
+    monkeypatch.setattr(
+        dolt_health,
+        "probe_embedded_lineage",
+        lambda db_dir: dolt_health.LineageProbeResult(dolt_health.LINEAGE_UNKNOWN, "not fetched"),
+    )
+
+    assert doctor._split_brain_lineage_warning({"prefix": "bh"}, path) is None
+
+
+def test_no_lineage_warning_for_a_non_embedded_hive(tmp_path):
+    """No `.beads/embeddeddolt/` at all — the probe must never even be reached."""
+    assert doctor._split_brain_lineage_warning({"prefix": "bh"}, tmp_path) is None
 
 
 # ---- a missing required binary is NAMED, never silently absorbed (bh-7m2h9) --------------------

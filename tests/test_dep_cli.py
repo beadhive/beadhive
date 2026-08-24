@@ -230,7 +230,13 @@ def test_bh_plugin_keeps_exactly_its_optional_integrations():
     `credentials`' own docstring forbids."""
     from beadhive import plugins
 
-    assert sorted(p.name for p in plugins.registry()) == ["hitch", "observaloop", "orca"]
+    assert sorted(p.name for p in plugins.registry()) == [
+        "herdr",
+        "hitch",
+        "observaloop",
+        "orca",
+        "repowise",
+    ]
 
     result = runner.invoke(app, ["plugin", "--help"])
     assert "gh" not in result.output.split("Commands")[-1]

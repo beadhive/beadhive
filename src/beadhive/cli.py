@@ -9,6 +9,7 @@ orchestration, registry/validation logic, and path-derived identity.
 from __future__ import annotations
 
 import importlib.metadata
+import os
 import shutil
 import sys
 import time
@@ -17,8 +18,8 @@ from pathlib import Path
 import typer
 from typer.core import TyperGroup
 
-from . import bd as bd_mod
 from . import (
+    alerts,
     checkpoint,
     complexity_backfill,
     config,
@@ -28,6 +29,7 @@ from . import (
     gitworkspace_plugin,
     home_migration,
     host_cli,
+    jsonout,
     log,
     otel,
     plan,
@@ -38,6 +40,7 @@ from . import (
     validate,
     work,
 )
+from . import bd as bd_mod
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
@@ -69,6 +72,7 @@ mcp_app = typer.Typer(
         f"Or use the convenience verb: {config.BINARY_ALIAS} mcp install"
     ),
 )
+alerts_app = typer.Typer(no_args_is_help=True, help="Active agent-steering alerts.")
 hq_app = typer.Typer(
     no_args_is_help=True, help="Factory HQ: the durable central store (kind=hq singleton)."
 )
@@ -104,6 +108,7 @@ app.add_typer(work.app, name="work", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(plan.app, name="plan", rich_help_panel=PLANNING_PANEL)
 app.add_typer(release.app, name="release", rich_help_panel=INTEGRATION_PANEL)
 app.add_typer(checkpoint.app, name="checkpoint", rich_help_panel=INTEGRATION_PANEL)
+app.add_typer(alerts_app, name="alerts", rich_help_panel=FLEET_PANEL)
 app.command(
     "backfill-complexity",
     rich_help_panel=HIVE_PANEL,
@@ -440,6 +445,210 @@ def _root(
 # ---- workspace --------------------------------------------------------------
 
 
+def _role_bead_hive_prefix(bead: str) -> str:
+    """The leading ``<prefix>-`` token of a bead id (e.g. ``"bh"`` from ``"bh-6t49w.4"``) — not
+    a new hive-id format, just the bit of an id that ``registry._hive_matches``' ``by_prefix``
+    already accepts as a bare hive_id (flexible/prefix mode)."""
+    return bead.split("-", 1)[0] if "-" in bead else bead
+
+
+def _apply_role_workspace(bead: str, hive: str) -> None:
+    """``bh role <seat> [--bead <id>] [--hive <hive>]``'s workspace resolution (bh-6t49w.4):
+    changes bh's own cwd to the resolved workspace BEFORE ``hitch_plugin.route`` execs a seat,
+    so the launched process (native or hitch — both inherit bh's cwd) lands there for either
+    backend. Composes bh's EXISTING pieces as an explicit two-step sequence, not a new resolver
+    or a ``wt_create`` hook (see ``hitch_plugin``'s module docstring for why that hook was
+    rejected for this exact use case):
+
+    - ``registry.resolve_hive`` — the flexible bead-prefix / triplet / org-repo / bare-repo
+      resolver ``bh work claim --hive`` already uses — for hive resolution.
+    - ``bh work claim`` + ``worktree.locate`` for bead attachment.
+
+    Lives here (not in ``hitch_plugin``/``role``) because both of those sit on the static import
+    path FROM ``publish_export`` (via ``plugins``/``bd``) TO the cross-hive aggregates
+    (``hub``/``hq``, reached through ``work``) that path must never reach — see
+    ``docs/design/publish-boundary-adr.md`` and ``tests/test_publish_boundary.py``. ``cli.py`` is
+    never imported by anything on that path, so resolving+claiming here (where ``work`` and
+    ``registry`` are already module-level imports) can freely use ``bh work claim`` without
+    widening that boundary.
+
+    - neither given -> no-op (unchanged default: launch from cwd).
+    - ``--hive`` only -> chdir to that hive's root, no bead.
+    - ``--bead`` only -> the hive is resolved from the bead id's own leading ``<prefix>-`` token,
+      through the SAME resolver.
+    - both given and they name the same hive -> claim/attach the bead's worktree, chdir there.
+    - both given and they disagree -> refuse loudly, naming both (``registry.resolve_hive``'s
+      own not-found/ambiguous errors are inherited unchanged for either alone)."""
+    if not bead and not hive:
+        return
+
+    cfg = config.load()
+    hive_entry = registry.resolve_hive(cfg, hive) if hive else None
+    if not bead:
+        os.chdir(registry.hive_dir(hive_entry))
+        return
+
+    bead_hive_id = _role_bead_hive_prefix(bead)
+    bead_entry = registry.resolve_hive(cfg, bead_hive_id)
+    if hive_entry is not None and registry.hive_key(bead_entry) != registry.hive_key(hive_entry):
+        typer.echo(
+            f"✗ --bead {bead!r} belongs to hive '{registry.hive_key(bead_entry)}', which "
+            f"disagrees with --hive {hive!r} ('{registry.hive_key(hive_entry)}')",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    hive_id = hive or bead_hive_id
+    from . import worktree
+
+    work.claim(bead=bead, as_="", group="", collapse="", hive=hive_id)
+    _entry, _main, target, _branch = worktree.locate(cfg, hive_id, bead=bead)
+    os.chdir(target)
+
+
+def _role_instructions(seat: str, bead: str, task: str) -> str:
+    """The unattended run's brief. Deliberately a POINTER, not a restated task (bh-6t49w.6):
+    the same shape `LocalLoop._default_instructions` already writes — carry only what the
+    contract needs and let the seat read the bead's own brief through `bh work brief`, which is
+    the live spec. A restatement here would be a second, immediately-stale copy of it.
+
+    ``--task`` is therefore OPTIONAL when ``--bead`` is given; when present it is appended as an
+    extra section, so it adds to (or overrides, by being the more specific instruction) the
+    pointer rather than replacing the bead as the source of truth."""
+    lines = [f"# {seat} — {bead or 'ad-hoc run'}", ""]
+    if bead:
+        lines += [
+            f"Bead: {bead}",
+            "",
+            f"Read this bead's own brief — `{config.BINARY_ALIAS} work brief {bead}` — it is the",
+            f"spec, and nothing is restated here. Drive it through `{config.BINARY_ALIAS} work`",
+            "per your seat prompt. Commit after every step: the branch is the checkpoint, and a",
+            "restart re-dispatches a fresh turn against this same worktree rather than resuming a",
+            "dead session.",
+        ]
+    if task:
+        lines += ["", "## Task", "", task]
+    return "\n".join(lines) + "\n"
+
+
+def _role_dispatch_dir() -> Path:
+    """Scratch for headless `bh role` runs — instructions + detached logs. Under bh's own home,
+    NOT the worktree: a detached seat outlives this process, and dropping files into the bead's
+    checkout would show up as dirty tree in the very branch the seat is about to commit."""
+    d = config.home() / "dispatch"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _role_headless(
+    seat: str, harness: str, task: str, detached: bool, bead: str, hive: str, no_hitch: bool
+):
+    """`bh role <seat> --task/-d`'s launch (bh-6t49w.6). Suitability is decided FIRST, before
+    any workspace resolution, so an attached-only seat refuses immediately instead of claiming
+    a bead's worktree on the way to a launch that was never going to happen."""
+    import subprocess
+    import uuid
+
+    from . import hitch_plugin, localloop
+    from .run import child_env
+
+    cfg = config.load()
+    resolved_harness = harness or config.harness_name(cfg)
+    backend, detail = hitch_plugin.headless_plan(seat, resolved_harness, cfg)
+    if backend == "hitch" and no_hitch:
+        backend, detail = None, f"--no-hitch, and the only headless backend here is {detail}"
+    if backend is None:
+        typer.echo(f"✗ {detail}", err=True)
+        raise typer.Exit(1)
+    if not bead and not task:
+        typer.echo(
+            "✗ a headless run needs something to do — pass --bead <id> (the seat reads its "
+            "brief) and/or --task '<what to do>'",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    _apply_role_workspace(bead, hive)
+    instructions = _role_instructions(seat, bead, task)
+    typer.echo(f"→ {seat}: headless via {backend} — {detail}", err=True)
+
+    if backend == "hitch":
+        # hitch has no instructions-file flag; the SAME pointer travels as its --task string.
+        code = hitch_plugin.up(
+            resolved_harness,
+            seat,
+            cfg,
+            workspace=os.getcwd(),
+            task=instructions,
+            detached=detached,
+            role_=seat,
+        )
+        if code != 0:
+            raise typer.Exit(code)
+        return
+
+    entry = registry.entry_for_dir(cfg, Path.cwd())
+    stem = bead or seat
+    path = _role_dispatch_dir() / f"{stem}.role-{seat}.md"
+    path.write_text(instructions, encoding="utf-8")
+    argv = list(
+        localloop.seat_argv(
+            config.dispatch_seat_command(cfg, entry),
+            seat,
+            workspace=os.getcwd(),
+            bead=bead,
+            instructions=str(path),
+            session_id=str(uuid.uuid4()),
+            bundle=config.dispatch_seat_bundle(cfg, entry),
+        )
+    )
+    if not detached:
+        raise typer.Exit(run(argv, check=False, capture=False).returncode)
+
+    log_path = _role_dispatch_dir() / f"{stem}.role-{seat}.log"
+    with log_path.open("ab") as sink:
+        proc = subprocess.Popen(  # noqa: S603 — argv is built, never shell-interpreted
+            argv,
+            cwd=os.getcwd(),
+            env=child_env(),
+            stdin=subprocess.DEVNULL,
+            stdout=sink,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    typer.echo(f"→ {seat}: detached pid {proc.pid}, log {log_path}", err=True)
+
+
+def _role_explain(seat: str, harness: str, no_hitch: bool, bead: str) -> None:
+    """``bh role <seat> --explain``'s read-only preview (bh-6t49w.7): the resolved headless
+    backend + suitability mode without launching anything or claiming ``--bead``'s worktree —
+    mirrors hitch's own ``--explain``/``--dry-run`` contract (see ``hitch_plugin._up_cmd``).
+    ``mode``/``backend``/``detail`` all come straight from ``hitch_plugin.headless_plan`` — the
+    same pure, no-subprocess seam ``_role_headless`` decides suitability from before it commits
+    to anything — so there is no second predicate to keep in sync with it or with `bh work
+    schedule`'s own `mode` field. ``--bead`` is accepted for context only (echoed in the line);
+    resolving/claiming its worktree would be a write, which `--explain` must never do.
+
+    Deliberately does not re-validate ``seat`` against ``role._known_seats()`` (the bundled
+    agent-def glob): ``headless_capable`` is checked against `ROLE_FOR_ACTION` — a closed,
+    hardcoded table independent of which agent defs happen to be installed on this host — the
+    exact same seam `_role_headless` already trusts, so an unknown/unsuitable seat still gets a
+    loud, correct answer here instead of a spurious "not installed" refusal."""
+    if not seat:
+        typer.echo("✗ --explain needs a seat (e.g. `bh role developer --explain`)", err=True)
+        raise typer.Exit(1)
+    from . import hitch_plugin, localloop
+
+    cfg = config.load()
+    resolved_harness = harness or config.harness_name(cfg)
+    mode = "headless-safe" if localloop.headless_capable(seat) else "attached-required"
+    backend, detail = hitch_plugin.headless_plan(seat, resolved_harness, cfg)
+    if backend == "hitch" and no_hitch:
+        backend, detail = None, f"--no-hitch, and the only headless backend here is {detail}"
+    bead_note = f" (bead {bead})" if bead else ""
+    typer.echo(f"{seat}{bead_note}: mode={mode} backend={backend or 'none'} — {detail}")
+
+
 @app.command(
     "role",
     rich_help_panel=FLEET_PANEL,
@@ -451,10 +660,58 @@ def role_cmd(
     harness: str = typer.Option(
         "", "--harness", help="harness to exec (claude|opencode); overrides config."
     ),
+    no_hitch: bool = typer.Option(
+        False,
+        "--no-hitch",
+        help="force the native backend even when hitch (if enabled) would otherwise apply.",
+    ),
+    seats: bool = typer.Option(
+        False,
+        "--seats",
+        help=(
+            "with no seat given, run the full per-seat `hitch profile preflight` check "
+            "(~2.7s, 7 seats) in the listing; the default listing only checks which backend "
+            "would be picked, cheaply (bh-gqfrm)"
+        ),
+    ),
+    bead: str = typer.Option(
+        "",
+        "--bead",
+        help="claim/attach this bead's worktree and launch with it as the workspace "
+        "(hive defaults to the bead's own leading prefix).",
+    ),
+    hive: str = typer.Option(
+        "", "--hive", help="launch at this hive's root, no bead (see hive_match)."
+    ),
+    task: str = typer.Option(
+        "",
+        "--task",
+        help="run unattended with this task. OPTIONAL alongside --bead — the seat is pointed "
+        "at the bead's own brief; --task only adds to or overrides that.",
+    ),
+    detached: bool = typer.Option(
+        False, "-d", "--detached", help="detach the unattended run (implies headless)."
+    ),
+    explain: bool = typer.Option(
+        False,
+        "--explain",
+        "--dry-run",
+        help="print the resolved headless backend + suitability mode for this seat and exit; "
+        "no launch, no --bead worktree claim (mirrors hitch's own --explain/--dry-run).",
+    ),
 ):
-    from . import role as role_mod
+    from . import hitch_plugin
 
-    role_mod.launch(name, harness=harness or None)
+    if explain:
+        _role_explain(name, harness, no_hitch, bead)
+        return
+
+    if task or detached:
+        _role_headless(name, harness, task, detached, bead, hive, no_hitch)
+        return
+
+    _apply_role_workspace(bead, hive)
+    hitch_plugin.route(name, harness=harness or None, no_hitch=no_hitch, full_seats=seats)
 
 
 @app.command("statusline", hidden=True, help="print role/hive statusline from stdin JSON (TUI).")
@@ -2863,6 +3120,23 @@ def doctor_cmd(
     from . import doctor
 
     doctor.doctor(as_json=as_json, verbose=verbose, seats=seats)
+
+
+@alerts_app.command("show", help="render active agent-steering alerts.")
+def alerts_show(
+    as_json: bool = typer.Option(False, "--json", help="emit the normalized alert list as JSON"),
+):
+    """Print active alerts, or an explicit clean result when there are none."""
+    rows = alerts.active()
+    if as_json:
+        jsonout.emit(rows)
+        return
+    if not rows:
+        typer.echo("✓ no active alerts")
+        return
+    for row in rows:
+        typer.echo(f"[{row['severity']}] {row['code']}: {row['message']}")
+        typer.echo(f"  Remediation: {row['remediation']}")
 
 
 # ---- backup (bh-cmqp.2, bh-5009a) --------------------------------------------

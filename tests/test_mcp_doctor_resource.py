@@ -26,6 +26,7 @@ _SECTIONS = {
     "hives",
     "inventory",
     "disk_usage",
+    "worktree_disk_usage",
     "fleet_health",
     "worktrees",
     "molecules",

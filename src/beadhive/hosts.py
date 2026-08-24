@@ -178,6 +178,13 @@ class HostManifest(_Section):
             "model lands."
         ),
     )
+    remote_only_hives: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Hive prefixes intentionally not cloned on this host. This is host-local "
+            "placement intent, not a change to the fleet-wide managed_repos registry."
+        ),
+    )
 
 
 class ManifestError(ValueError):

@@ -311,9 +311,20 @@ def loop_break(mol: Molecule, decision: Decision) -> Decision:
     A decision naming several beads (a budgeted dispatch) escalates on the FIRST looping member
     rather than the whole set — the other beads are innocent, and a driver that dropped them would
     turn one stuck bead into a stalled molecule.
+
+    A bead whose review gate is currently open (`review:pending`) is NEVER escalated by a
+    non-`review` action here, no matter what its event count says: it is waiting on a human, not
+    stuck on dispatch/resume/merge. This is a belt-and-suspenders check alongside the row 7
+    (`review`) ordering, not a substitute for it — a bead can only reach here via a stale/
+    pre-submit count. The `review` action itself is exempt: a bead can be genuinely stuck IN
+    review (`ambiguous_gate`), and that escalation must still fire.
     """
     limit = max(int(mol.max_action_retries), 1)
+    by_id = {_bid(b): b for b in mol.beads}
     for bead in decision.beads:
+        row = by_id.get(bead)
+        if decision.action != "review" and row is not None and review_state(row) == REVIEW_PENDING:
+            continue
         seen = attempt_count(mol.events.get(bead) or (), decision.action)
         if seen >= limit:
             _markers, reason = _ACTION_SIGNATURES.get(decision.action, ((), "stuck"))
@@ -335,7 +346,17 @@ def attempt_count(events: Iterable[Mapping], action: str) -> int:
     limit) simply isn't counted, so the loop-breaker fires late rather than early. An action with
     no registered signature counts every event on the bead — a bead accumulating events while the
     driver re-picks the same action is the same evidence, read coarsely.
+
+    Terminal success ends the sequence: events at or before the most recent `review -> pending`
+    (submit) event are excluded, so an earlier failure can never outlive a later success — a bead
+    that failed once and then submitted cleanly starts its next dispatch cycle at zero, rather than
+    carrying a strike from before the submit forever (bh-7679k).
     """
+    events = list(events)
+    for i in range(len(events) - 1, -1, -1):
+        if _is_success_event(events[i]):
+            events = events[i + 1 :]
+            break
     markers, _reason = _ACTION_SIGNATURES.get(action, ((), "stuck"))
     total = 0
     for ev in events:
@@ -343,6 +364,13 @@ def attempt_count(events: Iterable[Mapping], action: str) -> int:
         if not markers or any(m in text for m in markers):
             total += 1
     return total
+
+
+def _is_success_event(ev: Mapping) -> bool:
+    """True for the event bead that records a submit (`bd set-state review=pending`) — the
+    terminal SUCCESS of a dispatch turn. Mirrors `work._is_review_pending`'s text match."""
+    text = event_text(ev)
+    return "review" in text and "pending" in text
 
 
 def event_text(ev: Mapping) -> str:

@@ -21,9 +21,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import typer
 from typer.testing import CliRunner
 
-from beadhive import config, hitch_plugin, hive_ready, plugins, role
+from beadhive import config, hitch_plugin, hive_ready, localloop, plugins, role
 from beadhive.cli import app
 
 runner = CliRunner()
@@ -115,11 +116,11 @@ def test_worktree_disposability_unchanged_by_hitch_persistence(monkeypatch):
 # ---- plugins.registry() -------------------------------------------------------
 
 
-def test_registry_includes_hitch_last():
+def test_registry_includes_hitch_and_herdr():
     """bh-hsus.4: git-workspace is no longer in this registry at all — it's a required dep
     (`deps.py`), not an optional plugin."""
     reg = plugins.registry()
-    assert [p.name for p in reg] == ["orca", "observaloop", "hitch"]
+    assert [p.name for p in reg] == ["orca", "observaloop", "hitch", "herdr", "repowise"]
 
 
 def test_import_is_safe_without_hitch_on_path(monkeypatch):
@@ -226,6 +227,53 @@ def test_up_translates_bh_target_to_hitch_target_and_shells_out(monkeypatch, tmp
     assert "--catalog" in argv
     assert str(tmp_path / "catalogs" / "local.yaml") in argv
     assert "--root" in argv
+
+
+def test_up_forwards_workspace_task_detached_role_explain(monkeypatch, tmp_path):
+    """bh-6t49w.1: --workspace/--task/-d/--role/--explain reach the real hitch up argv,
+    forwarded unchanged (hitch's own CLI validates them, e.g. -d without --task per ADR 0003)."""
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: calls.append(argv) or _Result())
+
+    code = hitch_plugin.up(
+        "claude",
+        "dispatcher",
+        cfg=cfg,
+        workspace="/work/foo",
+        task="say hello",
+        detached=True,
+        role_="dev1",
+        explain=True,
+    )
+
+    assert code == 0
+    argv = calls[0]
+    assert "--workspace" in argv and argv[argv.index("--workspace") + 1] == "/work/foo"
+    assert "--task" in argv and argv[argv.index("--task") + 1] == "say hello"
+    assert "-d" in argv
+    assert "--role" in argv and argv[argv.index("--role") + 1] == "dev1"
+    assert "--explain" in argv
+
+
+def test_up_omits_optional_flags_when_unset(monkeypatch, tmp_path):
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: calls.append(argv) or _Result())
+
+    hitch_plugin.up("claude", "dispatcher", cfg=cfg)
+
+    argv = calls[0]
+    for flag in ("--workspace", "--task", "-d", "--role", "--explain"):
+        assert flag not in argv
 
 
 def test_up_opencode_target_passes_through_unchanged(monkeypatch, tmp_path):
@@ -595,6 +643,252 @@ def test_cli_up_success_exits_zero(monkeypatch, tmp_path):
     assert result.exit_code == 0, result.output
 
 
+# ---- _resolve_backend / route: unified `bh role <seat>` backend selection (bh-6t49w.3) --------
+
+
+def test_resolve_backend_native_when_hitch_disabled():
+    assert hitch_plugin._resolve_backend("developer", "claude", {}) == ("native", None, None)
+
+
+def test_resolve_backend_native_when_harness_has_no_hitch_target(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    assert hitch_plugin._resolve_backend("developer", "not-a-harness", cfg) == (
+        "native",
+        None,
+        None,
+    )
+
+
+def test_resolve_backend_native_when_repo_unconfigured():
+    cfg = {"hitch": {"enabled": True}}
+    assert hitch_plugin._resolve_backend("developer", "claude", cfg) == ("native", None, None)
+
+
+def test_resolve_backend_native_when_no_matching_profile(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["shell"])  # no profile named "developer"
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    assert hitch_plugin._resolve_backend("developer", "claude", cfg) == ("native", None, None)
+
+
+def test_resolve_backend_hitch_when_enabled_and_profile_matches(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    assert hitch_plugin._resolve_backend("developer", "claude", cfg) == (
+        "hitch",
+        "claude-code",
+        "developer",
+    )
+
+
+def test_resolve_backend_translates_opencode_target(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    assert hitch_plugin._resolve_backend("developer", "opencode", cfg) == (
+        "hitch",
+        "opencode",
+        "developer",
+    )
+
+
+# ---- _seat_listing_lines / route(""): annotated `bh role` listing (bh-6t49w.5) ----------------
+
+
+def test_seat_listing_native_only_when_hitch_disabled(monkeypatch):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    lines = hitch_plugin._seat_listing_lines({}, "claude", full=False)
+    assert lines == ["developer — native: ok"]
+
+
+def test_seat_listing_shows_hitch_when_resolve_backend_picks_it(monkeypatch, tmp_path):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    lines = hitch_plugin._seat_listing_lines(cfg, "claude", full=False)
+    assert lines == ["developer — native: ok; hitch: ok"]
+
+
+def test_seat_listing_full_folds_in_seat_reports_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin,
+        "seat_reports",
+        lambda c: [{"seat": "developer", "state": "reduced", "detail": "does not support x"}],
+    )
+    lines = hitch_plugin._seat_listing_lines(cfg, "claude", full=True)
+    assert lines == ["developer — native: ok; hitch: reduced (does not support x)"]
+
+
+def test_seat_listing_full_false_never_calls_seat_reports(monkeypatch, tmp_path):
+    """the cheap default must not pay `seat_reports`'s 7-seat preflight fanout (bh-gqfrm)."""
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin,
+        "seat_reports",
+        lambda c: (_ for _ in ()).throw(AssertionError("seat_reports must not run")),
+    )
+    lines = hitch_plugin._seat_listing_lines(cfg, "claude", full=False)
+    assert lines == ["developer — native: ok; hitch: ok"]
+
+
+def test_seat_listing_shows_built_baml_binary(monkeypatch):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda name: f"/usr/bin/{name}")
+    lines = hitch_plugin._seat_listing_lines({}, "claude", full=False)
+    assert lines == ["developer — native: ok; baml: built"]
+
+
+def test_route_full_seats_forwards_to_listing(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin,
+        "seat_reports",
+        lambda c: [{"seat": "developer", "state": "blocked", "detail": "hitch missing"}],
+    )
+    hitch_plugin.route("", full_seats=True, cfg=cfg)
+    out = capsys.readouterr().out
+    assert "hitch: blocked (hitch missing)" in out
+
+
+def test_route_empty_seat_prints_annotated_listing_not_role_launch(monkeypatch, capsys):
+    """bh-6t49w.5: the bare listing is annotated in `route` itself (role.launch stays
+    hitch-unaware, per `test_role_module_never_imports_hitch_plugin`) — it no longer delegates."""
+    calls = []
+    monkeypatch.setattr(role, "launch", lambda seat, harness=None: calls.append((seat, harness)))
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    hitch_plugin.route("", cfg={"hitch": {"enabled": False}})
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "Available seats:" in out
+    assert "developer — native: ok" in out
+
+
+def test_route_unknown_seat_delegates_to_role_launch_untouched(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(role, "launch", lambda seat, harness=None: calls.append((seat, harness)))
+    hitch_plugin.route("not-a-seat", cfg={"hitch": {"enabled": True}})
+    assert calls == [("not-a-seat", None)]
+    assert capsys.readouterr().out == ""
+
+
+def test_route_native_when_hitch_disabled(monkeypatch, capsys):
+    calls = []
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    monkeypatch.setattr(role, "launch", lambda seat, harness=None: calls.append((seat, harness)))
+    hitch_plugin.route("developer", cfg={})
+    assert calls == [("developer", None)]
+    assert "native backend" in capsys.readouterr().out
+
+
+def test_route_picks_hitch_when_enabled_and_profile_matches(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    launch_calls = []
+    monkeypatch.setattr(
+        role, "launch", lambda seat, harness=None: launch_calls.append((seat, harness))
+    )
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    up_calls = []
+    monkeypatch.setattr(
+        hitch_plugin, "up", lambda target, profile, c: up_calls.append((target, profile, c)) or 0
+    )
+
+    hitch_plugin.route("developer", cfg=cfg)
+
+    assert launch_calls == []  # native path never invoked
+    assert up_calls == [("claude", "developer", cfg)]
+    out = capsys.readouterr().out
+    assert "hitch" in out and "claude-code" in out and "developer" in out
+
+
+def test_route_no_hitch_forces_native_even_when_hitch_would_apply(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    launch_calls = []
+    monkeypatch.setattr(
+        role, "launch", lambda seat, harness=None: launch_calls.append((seat, harness))
+    )
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin, "up", lambda *a: (_ for _ in ()).throw(AssertionError("up() must not run"))
+    )
+
+    hitch_plugin.route("developer", no_hitch=True, cfg=cfg)
+
+    assert launch_calls == [("developer", None)]
+    assert "native backend" in capsys.readouterr().out
+
+
+def test_route_hitch_backend_propagates_nonzero_exit(monkeypatch, tmp_path):
+    import pytest
+
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(hitch_plugin, "up", lambda target, profile, c: 3)
+
+    with pytest.raises(typer.Exit) as exc:
+        hitch_plugin.route("developer", cfg=cfg)
+    assert exc.value.exit_code == 3
+
+
+def test_route_hitch_backend_passes_bh_harness_vocab_to_up(monkeypatch, tmp_path):
+    """`up()` itself re-translates target -> hitch target, so `route` must pass the plain bh
+    harness name through, not the already-translated one, or translation would double-apply."""
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}, "harness": "opencode"}
+    up_calls = []
+    monkeypatch.setattr(hitch_plugin, "up", lambda target, profile, c: up_calls.append(target) or 0)
+
+    hitch_plugin.route("developer", cfg=cfg)
+
+    assert up_calls == ["opencode"]
+
+
+def test_cli_up_forwards_flags_to_the_real_argv(monkeypatch, tmp_path):
+    cfg = {"hitch": {"enabled": True, "repo": str(tmp_path)}}
+    monkeypatch.setattr(config, "load", lambda: cfg)
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda cmd: "/usr/local/bin/hitch")
+    calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(hitch_plugin.run, "run", lambda argv, **kw: calls.append(argv) or _Result())
+
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "hitch",
+            "up",
+            "claude",
+            "dispatcher",
+            "--task",
+            "say hello",
+            "-d",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    argv = calls[0]
+    assert "--task" in argv and argv[argv.index("--task") + 1] == "say hello"
+    assert "-d" in argv
+
+
 # ---- degradation: bh's existing default launch path is unaffected -----------------------------
 #
 # The bead's core acceptance bar: with hitch disabled, absent from PATH, or failing to load, bh
@@ -742,3 +1036,53 @@ def test_seat_reports_one_failing_spawn_does_not_abort_the_section(monkeypatch, 
     assert reports[0]["state"] == "blocked"
     assert "hitch vanished" in reports[0]["detail"]
     assert reports[1]["state"] == "ok"
+
+
+# ---- headless_plan: `--task`/`-d` suitability + backend selection (bh-6t49w.6) ----------------
+
+
+def test_headless_plan_refuses_seat_outside_the_loop_roster(monkeypatch):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: "/usr/bin/bh-supervisor")
+    backend, detail = hitch_plugin.headless_plan("supervisor", "claude", {})
+    assert backend is None
+    # Loud and by name — and a built binary does NOT buy an unsuitable seat a headless launch.
+    assert "supervisor" in detail
+    assert "not a headless-capable seat" in detail
+    assert "bh role supervisor" in detail
+
+
+def test_headless_plan_roster_tracks_role_for_action():
+    """The predicate is SEEDED from the loop's own table, not a second hardcoded list."""
+    for seat in set(localloop.ROLE_FOR_ACTION.values()):
+        assert localloop.headless_capable(seat)
+    for seat in ("supervisor", "director", "custodian", "controller"):
+        assert not localloop.headless_capable(seat)
+
+
+def test_headless_plan_prefers_built_role_binary_over_hitch(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])  # hitch would ALSO apply here
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(
+        hitch_plugin.shutil,
+        "which",
+        lambda n: "/usr/bin/bh-developer" if n == "bh-developer" else None,
+    )
+    backend, detail = hitch_plugin.headless_plan("developer", "claude", cfg)
+    assert backend == "baml"
+    assert "bh-developer" in detail
+
+
+def test_headless_plan_falls_back_to_hitch_profile(monkeypatch, tmp_path):
+    repo = _write_repo(tmp_path, ["developer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    backend, detail = hitch_plugin.headless_plan("developer", "claude", cfg)
+    assert backend == "hitch"
+    assert "developer" in detail
+
+
+def test_headless_plan_refuses_naming_both_missing_backends(monkeypatch):
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _: None)
+    backend, detail = hitch_plugin.headless_plan("developer", "claude", {})
+    assert backend is None
+    assert "bh-developer" in detail and "hitch profile" in detail

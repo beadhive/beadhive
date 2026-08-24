@@ -8,6 +8,7 @@ import json
 import os
 import socket
 import sys
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -649,6 +650,55 @@ def test_ensure_proceeds_under_codex_sandbox_when_root_is_reachable(tmp_path, mo
     _, target, br = worktree.ensure(cfg, "mr", "ag-epic.3")
 
     assert br == "wt/bead/issue/ag-epic.3"
+    assert target.exists()
+
+
+def test_ensure_proceeds_under_codex_sandbox_with_current_per_hive_grant(tmp_path, monkeypatch):
+    """A managed, current project-local grant is an authorized persistent-root path."""
+    cfg, _entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"ephemeral": False}
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path / "unrelated-tmp"))
+    from beadhive import hive
+
+    hive._install_codex_sandbox_grant(cfg, "github", "myorg", "myrepo", repo)
+
+    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert target.exists()
+
+
+def test_ensure_refuses_stale_per_hive_grant_even_with_global_grant(tmp_path, monkeypatch):
+    """A stale project-local table shadows a current global Codex sandbox grant."""
+    cfg, _entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"ephemeral": False}
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path / "unrelated-tmp"))
+    from beadhive import hive
+
+    hive._install_codex_sandbox_grant(cfg, "github", "myorg", "myrepo", repo)
+    new_root = tmp_path / "new-wts"
+    monkeypatch.setenv("BH_WORKTREES", str(new_root))
+    hive._install_global_codex_sandbox_grant(cfg)
+
+    with pytest.raises(typer.Exit):
+        worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert not (new_root / "github" / "myorg" / "myrepo" / "ag-epic.3").exists()
+
+
+def test_ensure_proceeds_under_codex_sandbox_with_only_global_grant(tmp_path, monkeypatch):
+    """A current global grant applies when the hive has no project-local table."""
+    cfg, _entry, _repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"ephemeral": False}
+    monkeypatch.setenv("CODEX_SANDBOX_NETWORK_DISABLED", "1")
+    monkeypatch.setattr(config.tempfile, "gettempdir", lambda: str(tmp_path / "unrelated-tmp"))
+    from beadhive import hive
+
+    hive._install_global_codex_sandbox_grant(cfg)
+
+    _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
+
     assert target.exists()
 
 
@@ -2010,13 +2060,17 @@ def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch)
 # retire.py's plugin-notify fence.
 
 
-def _fake_plugin(name, *, enabled=True, wt_create=None, wt_remove=None):
+def _fake_plugin(
+    name, *, enabled=True, wt_create=None, wt_remove=None, wt_creating=None, wt_created=None
+):
     return plugins.Plugin(
         name=name,
         cli=typer.Typer(),
         enabled=lambda cfg, entry: enabled,
         wt_create=wt_create,
         wt_remove=wt_remove,
+        wt_creating=wt_creating,
+        wt_created=wt_created,
     )
 
 
@@ -2080,6 +2134,28 @@ def test_consult_wt_create_other_exception_warns_and_falls_through(monkeypatch, 
         {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
     )
     assert result == Path("/ok")  # fell through to the next plugin
+    assert "boom" in capsys.readouterr().err
+
+
+def test_notify_wt_created_continues_after_a_raising_plugin(monkeypatch, capsys):
+    called = []
+
+    def boom(cfg, entry, **kw):
+        raise RuntimeError("kaboom")
+
+    def ok(cfg, entry, **kw):
+        called.append(kw)
+
+    monkeypatch.setattr(
+        plugins,
+        "registry",
+        lambda: [_fake_plugin("boom", wt_created=boom), _fake_plugin("ok", wt_created=ok)],
+    )
+    worktree._notify_wt_create(
+        "wt_created", {}, {}, main=Path("/main"), branch="b", target=Path("/target")
+    )
+
+    assert called == [{"main": Path("/main"), "branch": "b", "target": Path("/target")}]
     assert "boom" in capsys.readouterr().err
 
 
@@ -2167,6 +2243,35 @@ def test_do_add_new_branch_delegates_to_plugin_hook(tmp_path, monkeypatch):
     assert target.exists()
     assert worktree._branch_exists(repo, branch)
     assert native_add_calls == []  # the native git worktree add subprocess never ran
+
+
+def test_do_add_notifies_before_and_after_native_create(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    target = worktree.wt_dir(entry, "observe-1")
+    branch = "wt/bead/issue/observe-1"
+    calls = []
+
+    def before(cfg, entry, **kw):
+        calls.append(("before", kw))
+
+    def after(cfg, entry, **kw):
+        calls.append(("after", kw))
+
+    monkeypatch.setattr(
+        plugins,
+        "registry",
+        lambda: [_fake_plugin("observer", wt_creating=before, wt_created=after)],
+    )
+
+    worktree._do_add(cfg, entry, repo, branch, target, new_branch=True, start_point="main")
+
+    assert calls == [
+        (
+            "before",
+            {"main": repo, "branch": branch, "target": target, "start_point": "main"},
+        ),
+        ("after", {"main": repo, "branch": branch, "target": target}),
+    ]
 
 
 def test_do_add_new_branch_falls_through_to_native_when_hook_returns_none(tmp_path, monkeypatch):
@@ -2414,6 +2519,143 @@ def test_remove_never_runs_native_after_successful_delegated_removal(tmp_path, m
 
 
 # ---- delegation wiring + native/delegated parity: prune() (keep_branch=False) -----------------
+
+
+def _active_status_for_hive(hive: str) -> wt_status.WtStatus:
+    return wt_status.WtStatus(
+        hive=hive,
+        leaf=f"{hive}-seat",
+        branch=f"wt/bead/issue/{hive}-seat",
+        path=f"/wts/{hive}-seat",
+        bead_id=f"{hive}-seat",
+        classification=wt_status.WtClassification.ACTIVE,
+        merged=False,
+        dirty=False,
+        safe=False,
+    )
+
+
+def test_prune_classifies_hives_concurrently(monkeypatch):
+    """A slow hive must not hold up starting classification of its peers."""
+    first_started = threading.Event()
+    second_started = threading.Event()
+    entries = {
+        "first": {"prefix": "first"},
+        "second": {"prefix": "second"},
+    }
+
+    def classify(entry, rows, cfg):
+        started, peer = (
+            (first_started, second_started)
+            if entry["prefix"] == "first"
+            else (second_started, first_started)
+        )
+        started.set()
+        assert peer.wait(1), "classification was serialized"
+        return [_active_status_for_hive(entry["prefix"])]
+
+    monkeypatch.setattr(worktree, "_classify_entry", classify)
+    rows = [
+        ("first", "/wts/first-seat", "wt/bead/issue/first-seat"),
+        ("second", "/wts/second-seat", "wt/bead/issue/second-seat"),
+    ]
+
+    safe, skipped = worktree._prune_classify({}, entries, rows)
+
+    assert safe == []
+    assert [status.hive for status in skipped] == ["first", "second"]
+
+
+def test_status_rows_classifies_concurrently_but_returns_managed_order(monkeypatch):
+    first_started = threading.Event()
+    second_started = threading.Event()
+    entries = [{"prefix": "first"}, {"prefix": "second"}]
+    rows_by_prefix = {
+        "first": [("first", "/wts/first-seat", "wt/bead/issue/first-seat")],
+        "second": [("second", "/wts/second-seat", "wt/bead/issue/second-seat")],
+    }
+
+    def classify(entry, rows, cfg):
+        started, peer = (
+            (first_started, second_started)
+            if entry["prefix"] == "first"
+            else (second_started, first_started)
+        )
+        started.set()
+        assert peer.wait(1), "classification was serialized"
+        return [_active_status_for_hive(entry["prefix"])]
+
+    monkeypatch.setattr(config, "load", lambda: {})
+    monkeypatch.setattr(worktree, "managed", lambda cfg: [])
+    monkeypatch.setattr(
+        worktree, "_status_scope", lambda cfg, hive, rows: (entries, rows_by_prefix)
+    )
+    monkeypatch.setattr(worktree, "_classify_entry", classify)
+
+    statuses = worktree.status_rows()
+
+    assert [status.hive for status in statuses] == ["first", "second"]
+
+
+def test_multi_hive_status_streams_sections_in_completion_order(monkeypatch, capsys):
+    entries = [{"prefix": "slow"}, {"prefix": "fast"}]
+    rows_by_prefix = {
+        "slow": [("slow", "/wts/slow-seat", "wt/bead/issue/slow-seat")],
+        "fast": [("fast", "/wts/fast-seat", "wt/bead/issue/fast-seat")],
+    }
+    statuses = {
+        "slow": [_active_status_for_hive("slow")],
+        "fast": [_active_status_for_hive("fast")],
+    }
+
+    def classify_entries(cfg, got_entries, got_rows, on_complete=None):
+        assert got_entries == entries
+        assert got_rows == rows_by_prefix
+        assert on_complete is not None
+        on_complete("fast", statuses["fast"])
+        on_complete("slow", statuses["slow"])
+        return statuses
+
+    monkeypatch.setattr(config, "load", lambda: {})
+    monkeypatch.setattr(worktree, "managed", lambda cfg: [])
+    monkeypatch.setattr(
+        worktree, "_status_scope", lambda cfg, hive, rows: (entries, rows_by_prefix)
+    )
+    monkeypatch.setattr(worktree, "_classify_entries", classify_entries)
+    monkeypatch.setattr(worktree, "unregistered_worktrees", lambda cfg: [])
+
+    worktree.status_cmd()
+
+    out = capsys.readouterr().out
+    assert out.index("└─ fast") < out.index("└─ slow")
+
+
+def test_multi_hive_status_json_keeps_managed_order(monkeypatch, capsys):
+    entries = [{"prefix": "first"}, {"prefix": "second"}]
+    rows_by_prefix = {
+        "first": [("first", "/wts/first-seat", "wt/bead/issue/first-seat")],
+        "second": [("second", "/wts/second-seat", "wt/bead/issue/second-seat")],
+    }
+    statuses = {
+        "second": [_active_status_for_hive("second")],
+        "first": [_active_status_for_hive("first")],
+    }
+
+    def classify_entries(cfg, got_entries, got_rows, on_complete=None):
+        assert on_complete is None
+        return statuses
+
+    monkeypatch.setattr(config, "load", lambda: {})
+    monkeypatch.setattr(worktree, "managed", lambda cfg: [])
+    monkeypatch.setattr(
+        worktree, "_status_scope", lambda cfg, hive, rows: (entries, rows_by_prefix)
+    )
+    monkeypatch.setattr(worktree, "_classify_entries", classify_entries)
+
+    worktree.status_cmd(as_json=True)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert [row["hive"] for row in payload] == ["first", "second"]
 
 
 def _prune_hive(tmp_path, monkeypatch):

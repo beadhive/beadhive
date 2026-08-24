@@ -29,6 +29,7 @@ import json
 import re
 import types
 import typing
+from copy import copy
 from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlsplit
@@ -935,6 +936,27 @@ class BackupConfig(_Section):
     )
 
 
+class AlertsConfig(_Section):
+    """Host-local disk-pressure policy for the agent-steering alert surface."""
+
+    worktree_cap_mb: int = Field(
+        5120,
+        ge=0,
+        description=(
+            "Per-hive managed-worktree footprint cap in MB. Above this, `bh alerts show` "
+            "asks an operator to dispatch cleanup. 0 disables this alert."
+        ),
+    )
+    disk_free_floor_mb: int = Field(
+        10240,
+        ge=0,
+        description=(
+            "Host free-disk floor in MB. Below this, `bh alerts show` asks an operator to "
+            "dispatch cleanup. 0 disables this alert."
+        ),
+    )
+
+
 class MetadataConfig(_Section):
     """Workspace-metadata cache."""
 
@@ -1002,6 +1024,12 @@ class OrcaConfig(_Section):
     data_path: str | None = Field(
         None, description="Path to orca's on-disk state (orca-data.json)."
     )
+
+
+class RepowiseConfig(_Section):
+    """repowise — optional local codebase index integration."""
+
+    enabled: bool = Field(False, description="Enable the repowise index integration.")
 
 
 class HitchConfig(_Section):
@@ -1088,6 +1116,9 @@ class ManagedRepoEntry(_Section):
         None, description="Per-hive `observaloop` section override."
     )
     orca: OrcaConfig | None = Field(None, description="Per-hive `orca` section override.")
+    repowise: RepowiseConfig | None = Field(
+        None, description="Per-hive `repowise` section override."
+    )
     hitch: HitchConfig | None = Field(None, description="Per-hive `hitch` section override.")
 
 
@@ -1142,8 +1173,10 @@ class BeadhiveConfig(BaseSettings):
     claude: ClaudeConfig = Field(default_factory=ClaudeConfig)
     archive: ArchiveConfig = Field(default_factory=ArchiveConfig)
     backup: BackupConfig = Field(default_factory=BackupConfig)
+    alerts: AlertsConfig = Field(default_factory=AlertsConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
     orca: OrcaConfig = Field(default_factory=OrcaConfig)
+    repowise: RepowiseConfig = Field(default_factory=RepowiseConfig)
     hitch: HitchConfig = Field(default_factory=HitchConfig)
     managed_repos: list[ManagedRepoEntry] = Field(
         default_factory=list, description="Managed hives — maintained by `bh hive init`."
@@ -1162,6 +1195,21 @@ class BeadhiveConfig(BaseSettings):
         data — `BeadhiveConfig(**loaded_dict)`), matching the standing env > file > default
         precedence used everywhere else in this codebase (``config._env``, ``work_value``,
         …). Swaps the library's default init-first ordering; dotenv/secrets stay lowest."""
+        # ``BH_WORKTREES`` is a transport-only scalar override consumed by
+        # ``config.worktrees_root()``.  It must not also be interpreted by this settings model
+        # as the structured ``worktrees`` section merely because it shares the ``BH_`` prefix:
+        # pydantic then attempts to JSON-decode a filesystem path.  Filter only that runtime
+        # alias from this source; ``config._Env`` continues to read it normally.
+        # EnvSettingsSource holds a live view of the process environment.  Never mutate it:
+        # config getters are deliberately re-evaluated after tests/commands alter os.environ.
+        # A shallow source copy lets this schema omit its transport-only collision without
+        # removing the legacy WS_WORKTREES override that the rest of bh still consumes.
+        env_settings = copy(env_settings)
+        env_vars = getattr(env_settings, "env_vars", None)
+        if env_vars is not None:
+            env_settings.env_vars = {
+                name: value for name, value in env_vars.items() if name.lower() != "bh_worktrees"
+            }
         return env_settings, init_settings, dotenv_settings, file_secret_settings
 
 

@@ -86,3 +86,82 @@ def test_local_bd_schema_version_matches_a_fresh_store_directly(tmp_path, monkey
         store_locator.embedded_database_dir(control_dir, database=prefix)
     )
     assert control.version == local.version
+
+
+# ---- probe_embedded_lineage against a REAL dolt binary (bh-s9cdk) ---------------------------
+
+
+def _dolt(args, cwd):
+    res = run(["dolt", *args], check=False, capture=True, cwd=str(cwd), timeout=60)
+    assert res.returncode == 0, f"dolt {args}: {res.stderr}"
+    return res
+
+
+def test_real_dolt_merge_base_reports_no_common_ancestor_for_two_unrelated_histories(tmp_path):
+    """The exact repro bh-s9cdk measured: two independently `dolt init`'d stores, each pushed
+    to the same remote (the second with `-f`, simulating two hosts each publishing their own
+    rebuilt lineage), share no common ancestor — a real `dolt merge-base` proves it, and
+    `probe_embedded_lineage` must classify it as split-brain, never as an ordinary diverged/
+    behind state."""
+    remote = tmp_path / "remote"
+    remote_url = f"file://{remote}"
+
+    host1 = tmp_path / "host1"
+    host1.mkdir()
+    _dolt(["init", "--name", "h1", "--email", "h1@test.com"], host1)
+    _dolt(["sql", "-q", "create table t (id int primary key)"], host1)
+    _dolt(["add", "-A"], host1)
+    _dolt(["commit", "-m", "host1 init"], host1)
+    _dolt(["remote", "add", "origin", remote_url], host1)
+    _dolt(["push", "origin", "main"], host1)
+
+    host2 = tmp_path / "host2"
+    _dolt(["clone", remote_url, str(host2)], tmp_path)
+
+    # A SECOND, unrelated lineage force-pushed over the same remote — the split-brain trigger.
+    host1_fresh = tmp_path / "host1fresh"
+    host1_fresh.mkdir()
+    _dolt(["init", "--name", "h1", "--email", "h1@test.com"], host1_fresh)
+    _dolt(["sql", "-q", "create table t (id int primary key)"], host1_fresh)
+    _dolt(["add", "-A"], host1_fresh)
+    _dolt(["commit", "-m", "unrelated fresh history"], host1_fresh)
+    _dolt(["remote", "add", "origin", remote_url], host1_fresh)
+    _dolt(["push", "-f", "origin", "main"], host1_fresh)
+
+    # host2 fetches the now-unrelated remote main into its own remote-tracking branch.
+    _dolt(["fetch", "origin"], host2)
+
+    result = dolt_health.probe_embedded_lineage(host2)
+
+    assert result.status == dolt_health.LINEAGE_SPLIT_BRAIN, result.detail
+    assert "no common ancestor" in result.detail.lower()
+
+
+def test_real_dolt_merge_base_reports_a_common_ancestor_for_a_normal_fast_forward(tmp_path):
+    """Sanity control: two clones of the SAME lineage, one ahead by a real commit, must NOT be
+    classified split-brain — a real common ancestor exists and `dolt merge-base` finds it."""
+    remote = tmp_path / "remote"
+    remote_url = f"file://{remote}"
+
+    host1 = tmp_path / "host1"
+    host1.mkdir()
+    _dolt(["init", "--name", "h1", "--email", "h1@test.com"], host1)
+    _dolt(["sql", "-q", "create table t (id int primary key)"], host1)
+    _dolt(["add", "-A"], host1)
+    _dolt(["commit", "-m", "init"], host1)
+    _dolt(["remote", "add", "origin", remote_url], host1)
+    _dolt(["push", "origin", "main"], host1)
+
+    host2 = tmp_path / "host2"
+    _dolt(["clone", remote_url, str(host2)], tmp_path)
+
+    _dolt(["sql", "-q", "insert into t values (1)"], host1)
+    _dolt(["add", "-A"], host1)
+    _dolt(["commit", "-m", "host1 change"], host1)
+    _dolt(["push", "origin", "main"], host1)
+
+    _dolt(["fetch", "origin"], host2)
+
+    result = dolt_health.probe_embedded_lineage(host2)
+
+    assert result.status == dolt_health.LINEAGE_COMMON_ANCESTOR, result.detail

@@ -18,6 +18,7 @@ import importlib.metadata
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -36,7 +37,9 @@ from . import (
     hive,
     hive_repair,
     hive_schema,
+    host,
     host_fence,
+    hosts,
     install_plane,
     jsonout,
     metadata,
@@ -1036,6 +1039,79 @@ def _section_mcp(cfg=None):
     _render_mcp(_data_mcp(cfg))
 
 
+# ---- Harness section (bh-tx2hp) ----------------------------------------------
+# "No role skill exists without the plugin" — a host provisioned before this bead landed, or
+# one whose plugin was later removed, has no OTHER durable check that would ever catch it
+# (`bh host provision`'s own `harness plugin` step only runs the day provisioning runs). Silent
+# unless THIS host's own registered role implies it runs a seat at all (mirrors the Seats
+# section's "an optional integration that complains when unused is not optional" convention) —
+# a viewer (a human's laptop, never primary) or a host with no role registered yet reports
+# nothing here.
+
+
+def _this_host_manifest() -> hosts.HostManifest | None:
+    """This machine's HQ manifest, or ``None`` when it has not been registered yet."""
+    try:
+        host_id = host.host_id()
+    except FileNotFoundError:
+        return None
+    hq_dir = config.hq_dir()
+    if not (hq_dir / ".beads").is_dir():
+        return None
+    try:
+        return hosts.load(hq_dir, host_id)
+    except (FileNotFoundError, hosts.ManifestError):
+        return None
+
+
+def _this_host_role(cfg) -> str | None:
+    """This machine's registered role, if its local HQ manifest is available."""
+    manifest = _this_host_manifest()
+    return manifest.role if manifest is not None else None
+
+
+def _data_harness_plugin(cfg=None) -> dict | None:
+    """Whether this host's Claude Code harness plugin (``bh@beadhive``) is installed — ``None``
+    (no section) unless :func:`_this_host_role` is one of
+    :data:`beadhive.host_provision.SEAT_ROLES`."""
+    from . import host_provision  # lazy: avoids a doctor<->host_provision import cycle
+
+    role = _this_host_role(cfg)
+    if role not in host_provision.SEAT_ROLES:
+        return None
+    plugin = config.claude_plugin_name(cfg)
+    if shutil.which("claude") is None:
+        return {
+            "role": role,
+            "plugin": plugin,
+            "installed": False,
+            "detail": "no `claude` CLI on PATH — this host cannot run a Claude Code seat",
+        }
+    installed = hive._is_plugin_installed(plugin)
+    detail = (
+        f"'{plugin}' installed"
+        if installed
+        else f"'{plugin}' NOT installed — no role skill exists for a seat launched here; run: "
+        f"claude plugin marketplace add {config.REMOTE_MARKETPLACE} && "
+        f"claude plugin install {plugin}@beadhive"
+    )
+    return {"role": role, "plugin": plugin, "installed": installed, "detail": detail}
+
+
+def _render_harness_plugin(d: dict | None) -> None:
+    """Render the Harness section — entirely absent when `_data_harness_plugin` returned None."""
+    if d is None:
+        return
+    typer.echo(f"\n# Harness (role={d['role']})")
+    glyph = "✓" if d["installed"] else "✗"
+    typer.echo(f"  {glyph} {d['detail']}")
+
+
+def _section_harness_plugin(cfg=None):
+    """Render the Harness section (doctor entry point)."""
+    _render_harness_plugin(_data_harness_plugin(cfg))
+
+
 # ---- seats section (bh-og0q.4) -----------------------------------------------
 # "Which seats can THIS host run" — rides hitch_plugin's Plugin.readiness hook (the SAME hook
 # `bh hive ready` consumes via `hive_ready._plugin_checks`), not a bespoke doctor-only check.
@@ -1163,6 +1239,11 @@ def _data_install(cfg) -> dict:
         version = importlib.metadata.version("beadhive")
     except importlib.metadata.PackageNotFoundError:
         version = "unknown"
+    from . import repowise_plugin
+
+    repowise = None
+    if config.repowise_enabled(cfg):
+        repowise = repowise_plugin.capability_error() or "required init flags available"
     return {
         "version": version,
         "running_from": str(running),
@@ -1171,6 +1252,7 @@ def _data_install(cfg) -> dict:
         "stale": stale,
         "pin": _source_pin(source),
         "legacy": _legacy_plane(),
+        "repowise": repowise,
     }
 
 
@@ -1242,6 +1324,10 @@ def _render_install(d: dict) -> None:
     else:
         typer.echo("  ✓ installed snapshot matches source")
     _render_legacy_plane(d.get("legacy"))
+    if d.get("repowise"):
+        detail = d["repowise"]
+        mark = "✓" if detail == "required init flags available" else "⚠"
+        typer.echo(f"  {mark} repowise: {detail}")
 
 
 def _render_legacy_plane(legacy: dict | None) -> None:
@@ -1434,6 +1520,52 @@ def _data_disk_usage(hives, root: Path, records) -> dict:
     return {"hives": entries, "total_bytes": total_bytes}
 
 
+def _data_worktree_disk_usage(cfg) -> dict:
+    """Managed-worktree footprint per hive plus free space on their filesystem.
+
+    This intentionally measures the linked worktree directories, rather than the
+    primary clone and its shared ``.git`` object store measured by
+    :func:`_data_disk_usage`. The result is data only: alert policy and rendering
+    belong to their respective consumers.
+    """
+    entries = {
+        str(entry["prefix"]): {
+            "prefix": str(entry["prefix"]),
+            "worktree_bytes": 0,
+            "worktree_count": 0,
+        }
+        for entry in cfg.get("managed_repos", []) or []
+    }
+    for prefix, path, _branch in worktree.managed(cfg):
+        entry = entries.setdefault(
+            prefix, {"prefix": prefix, "worktree_bytes": 0, "worktree_count": 0}
+        )
+        entry["worktree_bytes"] += safety._measure_disk_usage(path)
+        entry["worktree_count"] += 1
+
+    root = config.worktrees_root(cfg)
+    try:
+        disk_free_bytes = shutil.disk_usage(root).free
+    except OSError:
+        # A configured persistent root need not exist until the first claim. Its
+        # nearest existing parent is on the same filesystem and still provides the
+        # useful host-level free-space reading.
+        parent = root
+        while not parent.exists() and parent != parent.parent:
+            parent = parent.parent
+        try:
+            disk_free_bytes = shutil.disk_usage(parent).free
+        except OSError:
+            disk_free_bytes = None
+
+    hives = list(entries.values())
+    return {
+        "hives": hives,
+        "total_worktree_bytes": sum(entry["worktree_bytes"] for entry in hives),
+        "disk_free_bytes": disk_free_bytes,
+    }
+
+
 def _render_disk_usage(d: dict) -> None:
     typer.echo("\n# Disk Usage (by hive)")
     for e in d["hives"]:
@@ -1494,6 +1626,39 @@ def _local_commits_while_not_primary(cfg, entry, path: Path) -> tuple[int, str]:
         except ValueError:
             pass
     return total, (lease.host_id or "nobody")
+
+
+def _split_brain_lineage_warning(entry, path: Path) -> str | None:
+    """Split-brain, named as such (bh-s9cdk): local and origin's embedded-Dolt histories share
+    NO COMMON ANCESTOR — two unrelated DAGs, not the row-level conflict or behind-the-remote
+    non-fast-forward `bd`'s own messages describe at sync time (see `dolt_health`'s module
+    section). Surfaced here, in `bh doctor`, so it is visible BEFORE the day something attempts
+    to converge them — `bd stats`/`bd list` agree on both sides regardless, so nothing else in
+    a routine health check would ever notice.
+
+    Embedded mode only (`store_locator.has_embedded_store`): the git-transport shape
+    (`refs/dolt/data`) already gets its own ahead/behind/diverged classification from
+    `safety._scan_dolt_ref`, which a real `git merge-base` can equally answer "no common
+    ancestor" for — out of scope here, which is specifically the embedded-Dolt gap the triage
+    for this bead named (dolt_health.py / hive_ready.py / doctor.py all had none).
+
+    Local-only, no fetch (`dolt_health.probe_embedded_lineage`'s own contract) — a host that
+    has never pushed/pulled against the diverged remote reports `LINEAGE_UNKNOWN` here, same as
+    every other doctor check that cannot verify something without a network round trip it isn't
+    willing to pay for. Returns `None` for every non-split-brain outcome."""
+    if not store_locator.has_embedded_store(path):
+        return None
+    db_dir = store_locator.embedded_database_dir(path)
+    probed = dolt_health.probe_embedded_lineage(db_dir)
+    if probed.status != dolt_health.LINEAGE_SPLIT_BRAIN:
+        return None
+    prefix = str(entry.get("prefix", "")) or f"{entry.get('org')}/{entry.get('repo')}"
+    return (
+        f"hive '{prefix}': SPLIT-BRAIN — {probed.detail}. Local and origin's Dolt histories "
+        "share no common ancestor: this is NOT a row-level merge conflict and NOT a "
+        "behind-the-remote non-fast-forward — a merge or pull here cannot succeed. "
+        f"{dolt_health.SPLIT_BRAIN_RECOVERY}"
+    )
 
 
 # ---- home layout drift (bh-cmqp.3) -------------------------------------------
@@ -1592,6 +1757,15 @@ def _data_layout(cfg) -> dict:
 def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
     and per-hive checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
+    # Factory HQ is a control-plane store, not a hive checkout.  Callers historically
+    # passed raw managed_repos here, so make that boundary explicit before applying
+    # hive diagnostics.
+    hives = [e for e in hives if str(e.get("kind", "")) != registry.HQ_KIND]
+    manifest = _this_host_manifest()
+    declared_remote_only = list(manifest.remote_only_hives) if manifest is not None else []
+    known_prefixes = {str(e["prefix"]) for e in hives}
+    remote_only = set(declared_remote_only) & known_prefixes
+
     cfg_orgs = cfg.get("orgs", {}) or {}
     gw_orgs = gitworkspace.orgs(cfg)
     excluded_orgs = set((cfg.get("exclude", {}) or {}).get("orgs", []) or [])
@@ -1624,6 +1798,14 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
             f"(using auto code '{registry.sanitize(o)[:2]}', policy personal)"
         )
     warns += [f"required-org prefix: {v}" for v in registry.required_violations(cfg)]
+    warns += [
+        f"host manifest remote_only_hives has unknown hive prefix: {prefix}"
+        for prefix in sorted(set(declared_remote_only) - known_prefixes)
+    ]
+    warns += [
+        f"host manifest remote_only_hives repeats hive prefix: {prefix}"
+        for prefix in sorted({p for p in declared_remote_only if declared_remote_only.count(p) > 1})
+    ]
     by_prefix = {}
     for e in hives:
         by_prefix.setdefault(str(e["prefix"]), []).append(f"{e['org']}/{e['repo']}")
@@ -1646,6 +1828,8 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     ]
     for e in hives:
         path = root / e["provider"] / e["org"] / e["repo"]
+        if str(e["prefix"]) in remote_only:
+            continue
         if not config.validate_cmd_is_configured(cfg, e):
             cmd = config.validate_cmd(cfg, e)
             # bh-l44i: RESOLVE the default (follow `just <recipe>`'s own justfile deps) instead
@@ -1697,6 +1881,9 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
                     "these, so treat this local state as unconfirmed until you re-adopt this "
                     f"host or coordinate with {holder}"
                 )
+            split_brain = _split_brain_lineage_warning(e, path)
+            if split_brain:
+                warns.append(split_brain)
     # First: a missing required binary makes everything derived from it untrustworthy, so the
     # operator should read that before any finding it could have manufactured (bh-7m2h9).
     warns = _missing_required_dep_warnings() + warns
@@ -1708,6 +1895,21 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _orphaned_dolt_server_warnings()
     warns += _channel_drift_warnings(cfg, hives)
     return warns
+
+
+def warning_messages(cfg: dict | None = None) -> list[str]:
+    """Return active doctor warnings without rendering the complete report.
+
+    This is the source boundary for agent-facing alerts.  It reuses
+    ``_data_warnings`` so the two surfaces cannot grow divergent warning rules.
+    """
+    cfg = config.load() if cfg is None else cfg
+    root = Path(workspace_root())
+    hives = cfg.get("managed_repos", []) or []
+    git_repos, nonrepo, unknown_top = _scan(root, registry.effective_providers(cfg))
+    tracked = _tracked(root)
+    untracked = (git_repos - tracked) if tracked is not None else set()
+    return _data_warnings(cfg, root, hives, git_repos, nonrepo, unknown_top, untracked)
 
 
 _ADR = "docs/design/release-channel-branches-adr.md"
@@ -2260,6 +2462,9 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "hives": _timed(timings, "hives", _data_hives, cfg),
         "inventory": inventory,
         "disk_usage": _timed(timings, "disk_usage", _data_disk_usage, hives, root, records),
+        "worktree_disk_usage": _timed(
+            timings, "worktree_disk_usage", _data_worktree_disk_usage, cfg
+        ),
         "fleet_health": _timed(timings, "fleet_health", _data_fleet_health, records, git_repos),
         "worktrees": _timed(timings, "worktrees", _data_worktrees, cfg),
         "molecules": _timed(timings, "molecules", _data_molecules, cfg),
@@ -2270,6 +2475,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "dispatch": _timed(timings, "dispatch", _data_dispatch, cfg),
         "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
+        "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
         "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
         "install": _timed(timings, "install", _data_install, cfg),
         "observability": _timed(timings, "observability", _data_observability, cfg),
@@ -2295,8 +2501,10 @@ def doctor_payload(*, full_seats: bool = False) -> dict:
     """Structured `ws doctor` diagnostics — the data layer beneath the text render.
 
     Returns a JSON-able dict keyed by section (``config``, ``providers``, ``orgs``, ``hives``,
-    ``inventory``, ``disk_usage``, ``fleet_health``, ``worktrees``, ``molecules``,
-    ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``seats``,
+    ``inventory``, ``disk_usage``, ``worktree_disk_usage``, ``fleet_health``,
+    ``worktrees``, ``molecules``,
+    ``prefix_mismatches``, ``node_id``, ``beads_role``, ``group_auth``, ``mcp``, ``harness_plugin``,
+    ``seats``,
     ``install``, ``observability``, ``warnings``), plus ``timings`` (section name -> milliseconds
     from a monotonic clock, plus ``total`` — bh-8nnh7, metadata for attributing doctor's cost,
     always present regardless of ``--json``/verbosity), under the ``schema_version`` / ``command``
@@ -2377,6 +2585,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_dispatch(data["dispatch"])
     _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
+    _render_harness_plugin(data["harness_plugin"])
     _render_seats(data["seats"])
     _render_install(data["install"])
     _render_observability(data["observability"])

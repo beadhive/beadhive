@@ -23,7 +23,16 @@ import subprocess
 import pytest
 import typer
 
-from beadhive import claim_authority, config, guard, host, host_lease, work
+from beadhive import (
+    claim_authority,
+    config,
+    guard,
+    host,
+    host_lease,
+    work,
+    work_assignment,
+    work_submission,
+)
 from beadhive.claim_authority import ClaimRecord
 
 PREFIX = "tt"
@@ -220,9 +229,12 @@ def test_submits_seat_resolution_does_not_consult_the_token():
     seat one never reads epoch/host_id."""
     import inspect
 
-    src = inspect.getsource(work._resolve_submit_actor)
-    assert "epoch" not in src
-    assert "host_id" not in src
+    facade = inspect.getsource(work._resolve_submit_actor)
+    implementation = inspect.getsource(work_submission.impl__resolve_submit_actor)
+
+    assert "work_submission.impl__resolve_submit_actor" in facade
+    assert "epoch" not in implementation
+    assert "host_id" not in implementation
 
 
 # ---- the live epoch ----------------------------------------------------------------
@@ -439,13 +451,22 @@ def test_submit_verifies_the_fence_after_resolving_the_seat():
     unclaimed bead or a seat mismatch still produces exactly the error it always did."""
     import inspect
 
-    src = inspect.getsource(work.submit)
-    assert src.index("_resolve_submit_actor") < src.index("_guard_claim_fence")
+    facade = inspect.getsource(work.submit)
+    implementation = inspect.getsource(work_submission.impl_submit)
+
+    assert "work_submission.impl_submit" in facade
+    assert implementation.index("api._resolve_submit_actor") < implementation.index(
+        "api._guard_claim_fence"
+    )
 
 
 def test_both_claim_paths_stamp_the_token():
     """`claim` and `resume` are the two verbs that mint a record; neither may skip the token."""
     import inspect
 
-    for fn in (work._claim_single_bead, work.resume):
-        assert "_issue_claim(cfg, entry, bead, actor, target, hive)" in inspect.getsource(fn)
+    claim_facade = inspect.getsource(work._claim_single_bead)
+    claim_impl = inspect.getsource(work_assignment.impl__claim_single_bead)
+
+    assert "work_assignment.impl__claim_single_bead" in claim_facade
+    assert "api._issue_claim(cfg, entry, bead, actor, target, hive)" in claim_impl
+    assert "_issue_claim(cfg, entry, bead, actor, target, hive)" in inspect.getsource(work.resume)

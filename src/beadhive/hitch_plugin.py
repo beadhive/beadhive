@@ -126,14 +126,28 @@ def _repo_files(repo):
     return repo / "profiles" / "local.yaml", repo / "catalogs" / "local.yaml"
 
 
-def _hitch_argv(cfg, hitch_target: str, profile: str, *, command: str, repo) -> list[str]:
+def _hitch_argv(
+    cfg,
+    hitch_target: str,
+    profile: str,
+    *,
+    command: str,
+    repo,
+    workspace: str | None = None,
+    task: str | None = None,
+    detached: bool = False,
+    role_: str | None = None,
+    explain: bool = False,
+) -> list[str]:
     """The real ``hitch up`` invocation argv. Absolute ``--profiles-file``/``--catalog`` paths
     (derived from ``hitch.repo``) so resolution never depends on bh's own cwd; ``--root`` is
     ``hitch_config_dir_root`` — always persistent, independent of ``config.worktrees_ephemeral``
-    (ADR Amendment 5)."""
+    (ADR Amendment 5). ``workspace``/``task``/``detached``/``role_``/``explain`` are forwarded
+    unchanged when set — hitch's own CLI is the sole authority on their validity (e.g. ``-d``
+    without ``--task``, ADR 0003), never re-validated here."""
     profiles_file, catalog_file = _repo_files(repo)
     root = config.hitch_config_dir_root(cfg)
-    return [
+    argv = [
         command,
         "up",
         hitch_target,
@@ -145,15 +159,39 @@ def _hitch_argv(cfg, hitch_target: str, profile: str, *, command: str, repo) -> 
         "--root",
         str(root),
     ]
+    if workspace is not None:
+        argv += ["--workspace", workspace]
+    if task is not None:
+        argv += ["--task", task]
+    if detached:
+        argv += ["-d"]
+    if role_ is not None:
+        argv += ["--role", role_]
+    if explain:
+        argv += ["--explain"]
+    return argv
 
 
-def up(target: str, profile: str, cfg=None) -> int:
+def up(
+    target: str,
+    profile: str,
+    cfg=None,
+    *,
+    workspace: str | None = None,
+    task: str | None = None,
+    detached: bool = False,
+    role_: str | None = None,
+    explain: bool = False,
+) -> int:
     """``bh plugin hitch up <target> <profile>``'s logic: gate on ``hitch.enabled`` (disabled by
     default — refuses with a clear message, no subprocess spawned), resolve+validate prerequisites
     (known target, hitch on PATH, ``hitch.repo`` configured), then exec the real ``hitch up`` with
     **inherited stdio** (interactive hand-over, mirroring :func:`beadhive.role.launch`) and
     propagate its exit code verbatim — including a preflight failure, so "fails loudly" is
     inherited from hitch's own already-fail-closed implementation rather than re-implemented here.
+    ``workspace``/``task``/``detached``/``role_``/``explain`` pass straight through to the real
+    ``hitch up`` argv (see :func:`_hitch_argv`) — including ``-d`` without ``--task``, which hitch's
+    own CLI refuses with its own ADR-0003 message, not reimplemented here.
     Returns the process exit code (0 on success); never raises for an ordinary failure."""
     cfg = cfg if cfg is not None else config.load()
 
@@ -189,9 +227,190 @@ def up(target: str, profile: str, cfg=None) -> int:
         )
         return 1
 
-    argv = _hitch_argv(cfg, hitch_target, profile, command=command, repo=repo)
+    argv = _hitch_argv(
+        cfg,
+        hitch_target,
+        profile,
+        command=command,
+        repo=repo,
+        workspace=workspace,
+        task=task,
+        detached=detached,
+        role_=role_,
+        explain=explain,
+    )
     result = run.run(argv, check=False, capture=False)
     return result.returncode
+
+
+# ---- unified `bh role <seat>` backend selection (bh-6t49w.3) ----------------------------------
+# Collapses `bh role <seat>` and `bh plugin hitch up <target> <profile>` into one entry point:
+# hitch is picked when enabled AND a seat-aligned profile exists for the resolved harness, else
+# bh's own bundled seat defs (role.launch, unchanged) — always stating which backend ran, before
+# exec'ing, per the ADR's "fails loudly, never silently" principle. Lives here (not in role.py)
+# because role.py is the plain, hitch-unaware default path (see its module docstring + the
+# `test_role_module_never_imports_hitch_plugin` structural guard) — this module already imports
+# `role` and already owns the profile-matching machinery this reuses.
+
+
+def _resolve_backend(seat: str, harness: str, cfg) -> tuple[str, str | None, str | None]:
+    """Decide native vs hitch for one seat launch under *harness* (bh's own harness vocabulary,
+    e.g. "claude"). Returns ``("native", None, None)`` unless hitch is enabled AND *harness*
+    maps to a known hitch target AND a seat-aligned profile for *seat* exists in hitch.repo's
+    ``profiles/local.yaml`` — in which case ``("hitch", hitch_target, profile)``.
+
+    Reuses :func:`_profile_names` (the same profile-name matching `seat_reports` already
+    computes for `bh doctor`'s Seats section) as the existence check — no preflight subprocess
+    here, that's :func:`seat_reports`'s job for the (expensive, per-seat) runnability report.
+    A config-time "does a profile exist" fact is cheap enough to check on every launch."""
+    if not config.hitch_enabled(cfg):
+        return "native", None, None
+    hitch_target = _HITCH_TARGETS.get(harness)
+    if hitch_target is None:
+        return "native", None, None
+    repo = config.hitch_repo(cfg)
+    if repo is None:
+        return "native", None, None
+    profiles_file, _catalog_file = _repo_files(repo)
+    if seat not in _profile_names(profiles_file):
+        return "native", None, None
+    return "hitch", hitch_target, seat
+
+
+# ---- headless (`--task` / `-d`) suitability + backend selection (bh-6t49w.6) -----------------
+
+
+def headless_plan(seat: str, harness: str, cfg) -> tuple[str | None, str]:
+    """Would an unattended (`--task` / `-d`) launch of *seat* work on this host, and how?
+
+    The suitability SEAM: pure — config reads and PATH lookups only, no subprocess, no launch —
+    so "would this seat be refused, and why" is answerable without starting anything
+    (bh-6t49w.7 surfaces exactly this), rather than being a branch buried in the launch path.
+
+    Returns ``(backend, detail)``:
+
+    - ``("baml", detail)`` — a built ``bh-<seat>`` role binary is on PATH. PREFERRED over hitch:
+      it already carries the CANCEL ladder and the baked-permission (`--bundle`) contract the
+      local-runtime work settled (:func:`beadhive.localloop.seat_argv`), which a ``hitch up``
+      hand-over does not.
+    - ``("hitch", detail)`` — no such binary, but hitch is enabled with a seat-aligned profile
+      for *seat* under this *harness* (the same :func:`_resolve_backend` seam the attached path
+      uses — one selection rule, not two).
+    - ``(None, reason)`` — refused. Either *seat* is not headless-capable at all
+      (:func:`beadhive.localloop.headless_capable`), or neither backend exists; *reason* names
+      what is missing, so the refusal is loud rather than a silent fallback to attached.
+
+    ``localloop`` is imported lazily: it is a heavy asyncio module and nothing else in this
+    plugin's module-level path needs it.
+    """
+    from . import localloop
+
+    if not localloop.headless_capable(seat):
+        capable = ", ".join(sorted(set(localloop.ROLE_FOR_ACTION.values())))
+        return None, (
+            f"{seat!r} is not a headless-capable seat — nothing dispatches an unattended "
+            f"{seat} run, so one would never be picked up. Headless-capable seats: {capable}. "
+            f"Run it attached instead: `{config.BINARY_ALIAS} role {seat}`."
+        )
+
+    binary = f"bh-{seat}"
+    if shutil.which(binary) is not None:
+        return "baml", f"built role binary {binary} on PATH"
+
+    backend, hitch_target, profile = _resolve_backend(seat, harness, cfg)
+    if backend == "hitch":
+        return "hitch", f"hitch profile {profile!r} (target={hitch_target})"
+
+    return None, (
+        f"no headless backend for seat {seat!r}: no built {binary} binary on PATH, and no "
+        f"hitch profile named {seat!r} for harness {harness!r} (hitch enabled + `hitch.repo` "
+        "configured with a matching entry in profiles/local.yaml). Build the role binary or "
+        f"add the profile — or run it attached: `{config.BINARY_ALIAS} role {seat}`."
+    )
+
+
+def _seat_listing_lines(cfg, harness: str, *, full: bool) -> list[str]:
+    """One annotated line per known seat for the bare ``bh role`` listing (bh-6t49w.5) —
+    which backend(s) this host would actually pick, reusing existing data rather than a new
+    capability-detection mechanism:
+
+    - ``native``: always available (`role.launch`'s own path); shown as ``native: ok``.
+    - ``hitch``: only shown when :func:`_resolve_backend` would pick it for that seat (the same
+      config-time, no-subprocess seam ``bh role <seat>`` itself uses). ``full=True`` folds in
+      :func:`seat_reports`'s live per-seat preflight state (ok/reduced/blocked, with detail on
+      anything short of ``ok``) — the SAME expensive 7-seat ``hitch profile preflight`` fanout
+      `bh doctor --seats` opts into (bh-gqfrm); ``full=False`` (the default here too) shows a
+      bare ``hitch: ok`` from the cheap profile-existence check alone, so a bare `bh role` never
+      pays that cost unconditionally.
+    - ``baml``: a built ``bh-<seat>`` binary on PATH (the settled local-runtime role-binary
+      contract, :func:`beadhive.localloop.seat_argv`) — shown as ``baml: built`` when found."""
+    reports = {r["seat"]: r for r in seat_reports(cfg)} if full else {}
+    lines = []
+    for seat in role._known_seats():
+        parts = ["native: ok"]
+        backend, _hitch_target, _profile = _resolve_backend(seat, harness, cfg)
+        if backend == "hitch":
+            report = reports.get(seat)
+            if report is None:
+                parts.append("hitch: ok")
+            else:
+                detail = f" ({report['detail']})" if report["detail"] else ""
+                parts.append(f"hitch: {report['state']}{detail}")
+        if shutil.which(f"bh-{seat}") is not None:
+            parts.append("baml: built")
+        lines.append(f"{seat} — {'; '.join(parts)}")
+    return lines
+
+
+def route(
+    seat: str,
+    *,
+    harness: str | None = None,
+    no_hitch: bool = False,
+    full_seats: bool = False,
+    cfg=None,
+) -> None:
+    """``bh role <seat>``'s unified entry point. An unknown (non-empty) seat delegates straight
+    to :func:`beadhive.role.launch` unchanged — nothing to pick a backend for. The bare listing
+    (no seat) is annotated with each seat's available backend(s) — see
+    :func:`_seat_listing_lines`; ``full_seats`` opts into its expensive per-seat hitch preflight
+    breakdown. For a known seat, picks hitch when it applies (see :func:`_resolve_backend`),
+    forced off by ``--no-hitch`` regardless of what would otherwise apply, and always announces
+    which backend is about to run *before* exec'ing.
+
+    Disabled/unconfigured hitch (the default) always resolves to native — same seat, same
+    harness, same argv/env `role.launch` always built (Amendment 2's degrade-to-today bar) —
+    the only difference from calling `role.launch` directly is this function's own banner line.
+
+    Never raises for an ordinary failure/exit; propagates `role.launch`'s ``SystemExit`` or
+    wraps `up`'s non-zero return code the same way `bh plugin hitch up` itself does."""
+    if not seat:
+        cfg = cfg if cfg is not None else config.load()
+        resolved_harness = harness or config.harness_name(cfg)
+        typer.echo("Available seats:")
+        for line in _seat_listing_lines(cfg, resolved_harness, full=full_seats):
+            typer.echo(f"  {line}")
+        return
+
+    if seat not in role._known_seats():
+        role.launch(seat, harness=harness)
+        return
+
+    cfg = cfg if cfg is not None else config.load()
+    resolved_harness = harness or config.harness_name(cfg)
+    backend, hitch_target, profile = (
+        ("native", None, None) if no_hitch else _resolve_backend(seat, resolved_harness, cfg)
+    )
+
+    if backend == "hitch":
+        typer.echo(f"→ {seat}: launching via hitch (target={hitch_target}, profile={profile})")
+        code = up(resolved_harness, profile, cfg)
+        if code != 0:
+            raise typer.Exit(code)
+        return
+
+    typer.echo(f"→ {seat}: launching via native backend")
+    role.launch(seat, harness=harness)
 
 
 # ---- seat-runnability reporting (bh-og0q.4) ---------------------------------------------------
@@ -358,8 +577,35 @@ cli = typer.Typer(no_args_is_help=True, help="agent-hitch launch integration (op
 def _up_cmd(
     target: str = typer.Argument(..., help="harness to launch: claude | opencode | codex."),
     profile: str = typer.Argument(..., help="hitch profile name (e.g. dispatcher, developer)."),
+    workspace: str = typer.Option(
+        None, "--workspace", help="workspace the provider acts on (default: cwd)."
+    ),
+    task: str = typer.Option(
+        None, "--task", help="run headless with this task instead of an interactive session."
+    ),
+    detached: bool = typer.Option(
+        False,
+        "-d",
+        "--detached",
+        help="detach the run; requires --task (refused by hitch without it, see ADR 0003).",
+    ),
+    role_: str = typer.Option(None, "--role", help="the declared agent to run inside the profile."),
+    explain: bool = typer.Option(
+        False,
+        "--explain",
+        "--dry-run",
+        help="write and print the redacted launch manifest without starting the provider.",
+    ),
 ) -> None:
-    code = up(target, profile)
+    code = up(
+        target,
+        profile,
+        workspace=workspace,
+        task=task,
+        detached=detached,
+        role_=role_,
+        explain=explain,
+    )
     if code != 0:
         raise typer.Exit(code)
 

@@ -70,6 +70,20 @@ def async_test(fn):
     return wrapper
 
 
+def test_orphan_discovery_ignores_a_matching_bead_outside_its_hive_scope():
+    """The unit selection must retain the cross-hive reap fence proven end to end elsewhere."""
+    ps_output = "\n".join(
+        (
+            "101 101 seat --workspace /hives/other --bead bh-1 --session_id other",
+            "202 202 seat --workspace /hives/ours --bead bh-1 --session_id ours",
+        )
+    )
+
+    found = localloop.find_orphan_seats(["bh-1"], scope="/hives/ours", ps_output=ps_output)
+
+    assert [(pid, pgid) for pid, pgid, _argv in found] == [(202, 202)]
+
+
 # ---- helpers ---------------------------------------------------------------------------------
 
 

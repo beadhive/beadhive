@@ -355,6 +355,16 @@ Run these in order.
    claude plugin install bh@beadhive
    ```
 
+   **Optional here, not on a fleet host.** This step is the whole reason a role
+   skill exists for a seat to read at all — for a single machine you're
+   configuring by hand it's a real convenience you can decline, but
+   [`bh host provision`](ONBOARDING.md#adding-a-second-machine--the-daily-driver-stays-hq)
+   (the verb that onboards an `executor`/`transient` fleet host) treats it as
+   part of what "provisioned" means and performs it itself whenever a `claude`
+   CLI is on that host's PATH — see its own module docs (`host_provision.py`)
+   for the full reconciliation against these three steps, including the
+   headless-host case where no `claude` CLI exists to install into.
+
 4. **Finish setup** — the steps above leave you with a configured *binary*, not a
    working workspace. This is the walk from here to orgs/providers, a
    git-workspace, HQ, and your first registered hive:

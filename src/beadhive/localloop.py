@@ -1071,6 +1071,19 @@ ROLE_FOR_ACTION: dict[str, str] = {
 }
 
 
+def headless_capable(seat: str) -> bool:
+    """Is *seat* ever dispatched headlessly (`--task` / `-d`)?
+
+    Derived from :data:`ROLE_FOR_ACTION`'s own values, deliberately — that closed table is
+    already the roster of seats something downstream will pick up an unattended run for, so a
+    second hardcoded list here would be a source of truth that can silently disagree with it.
+    Seats absent from it (supervisor, director, custodian, controller) are attached-only: a
+    headless launch of one would produce a run nothing ever consumes, so callers refuse by name
+    rather than starting it (bh-6t49w.6).
+    """
+    return seat in set(ROLE_FOR_ACTION.values())
+
+
 def resolve_workspace(hive_dir: Path, bead: str) -> str:
     """The managed worktree *bead* is worked in, or the main clone when it has none yet.
 

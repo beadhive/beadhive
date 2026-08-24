@@ -24,6 +24,9 @@ bh doctor
   actually applies: effective `user.name`/`user.email`, signing key, any `insteadOf` alias, and
   whether an `includeIf gitdir:` block scopes it. Read-only — `bh` never writes git config. See
   [INTEGRATIONS.md — Per-group auth](INTEGRATIONS.md#per-group-auth).
+- **Harness** — (`executor`/`transient` hosts only) whether this host's Claude Code
+  `bh@beadhive` plugin — the AGF role skills a seat needs to exist at all — is installed.
+  Silent for a `viewer` host or one with no role registered yet, same convention as **Seats**.
 - **Warnings** — orgs missing from `config.yaml`, required-org prefix violations, prefix
   collisions, git repos git-workspace isn't tracking, folders with no git repo, unrecognized
   top-level folders, hives missing a local `.beads/`, workspace-lock.toml paths nested deeper

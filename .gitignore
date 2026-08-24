@@ -59,6 +59,8 @@ CLAUDE.md
 # repowise (codebase-memory) local caches + config, and the .vscode/ it writes alongside them.
 # Regenerable via `repowise init`; local-only, can run to tens of MB.
 .repowise/
+.repowise-workspace/
+.repowise-workspace.yaml
 .vscode/
 
 # Orca ADE scratch (drops/ receives screenshots and pasted files)

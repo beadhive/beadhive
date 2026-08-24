@@ -1,7 +1,7 @@
 """plugins.py — the tiny generic plugin seam for external-tool integrations.
 
 A **plugin** bundles a name, its own ``bh plugin <name> …`` Typer sub-app, an ``enabled``
-predicate, and three optional lifecycle hooks the onboard / retire / hive-ready flows loop
+    predicate, and optional lifecycle hooks the onboard / retire / hive-ready / worktree flows loop
 over generically (so no integration is hardcoded by name into those modules). orca is the
 first member; new integrations join by appending to ``registry()``.
 
@@ -41,6 +41,11 @@ class Plugin:
       ``git worktree remove``). ``keep_branch`` is call-site intent (``True`` when the branch is
       the durable artifact, e.g. ``remove()``; ``False`` for ``prune()``, where the branch is
       already merged and disposable) — never a config knob.
+    - ``wt_creating(cfg, entry, *, main, branch, target, start_point)`` — observe a worktree
+      create immediately before either the delegated or native create subprocess.  Unlike
+      ``wt_create``, this cannot take over creation.
+    - ``wt_created(cfg, entry, *, main, branch, target)`` — observe a successfully-created
+      worktree after either creation path.  This cannot take over creation either.
     """
 
     name: str
@@ -51,6 +56,8 @@ class Plugin:
     readiness: Callable[[Any, Any], tuple[str, str] | None] | None = None
     wt_create: Callable[..., Path | None] | None = None
     wt_remove: Callable[..., bool] | None = None
+    wt_creating: Callable[..., None] | None = None
+    wt_created: Callable[..., None] | None = None
 
 
 def registry() -> list[Plugin]:
@@ -69,9 +76,17 @@ def registry() -> list[Plugin]:
     last. New integrations join the list the same way.
     """
     from . import (
+        herdr_plugin,  # lazy: avoid the plugins <-> herdr_plugin import cycle
         hitch_plugin,  # lazy: avoid the plugins <-> hitch_plugin import cycle
         observaloop,  # lazy: avoid the plugins <-> observaloop import cycle
         orca,  # lazy: avoid the plugins <-> orca import cycle
+        repowise_plugin,  # lazy: avoid the plugins <-> repowise_plugin import cycle
     )
 
-    return [orca.PLUGIN, observaloop.PLUGIN, hitch_plugin.PLUGIN]
+    return [
+        orca.PLUGIN,
+        observaloop.PLUGIN,
+        hitch_plugin.PLUGIN,
+        herdr_plugin.PLUGIN,
+        repowise_plugin.PLUGIN,
+    ]
