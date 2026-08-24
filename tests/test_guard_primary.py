@@ -23,7 +23,19 @@ import subprocess
 import pytest
 import typer
 
-from beadhive import cli, config, gitref, guard, host, host_lease, plan, registry, work, work_logic
+from beadhive import (
+    cli,
+    config,
+    gitref,
+    guard,
+    host,
+    host_lease,
+    plan,
+    registry,
+    work,
+    work_logic,
+    work_merge,
+)
 
 PREFIX = "tt"
 THIS_HOST = "11111111-1111-4111-8111-111111111111"
@@ -444,7 +456,9 @@ def test_the_two_failures_are_different_exception_types(hq, hive, this_host, mon
         guard.guard_primary("", cfg={})
     import inspect
 
-    merge_src = inspect.getsource(work._merge_bead)
+    merge_facade = inspect.getsource(work._merge_bead)
+    merge_src = inspect.getsource(work_merge.impl__merge_bead)
+    assert "work_merge.impl__merge_bead" in merge_facade
     close_src = inspect.getsource(work_logic.close_merged)
     assert 'bd.run(["close", bead' in close_src  # the close call itself lives in close_merged
     assert "work_logic.close_merged" in merge_src  # _merge_bead delegates, doesn't inline it
@@ -477,9 +491,11 @@ def test_the_gate_sits_before_the_merge_not_around_its_close(monkeypatch):
     close, a merge that already landed would become un-cleanable."""
     import inspect
 
-    src = inspect.getsource(work.merge)
-    gate_at = src.index("guard.guard_primary")
-    slot_at = src.index("work_group.merge_group")
+    facade = inspect.getsource(work.merge)
+    src = inspect.getsource(work_merge.impl_merge)
+    assert "work_merge.impl_merge" in facade
+    gate_at = src.index("api.guard.guard_primary")
+    slot_at = src.index("api.work_group.merge_group")
     assert gate_at < slot_at
 
 
