@@ -4,13 +4,22 @@ from __future__ import annotations
 
 import io
 import json
+import os
+import signal
+import subprocess
+import sys
+import time
 from datetime import UTC, datetime
+from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from beadhive import bd as bd_mod
-from beadhive import state_stream, stream_cli
+from beadhive import run as run_mod
+from beadhive import state_stream, state_stream_polling, stream_cli
 from beadhive.cli import app
+from beadhive.state_stream_process import StreamProcessScope
 
 runner = CliRunner()
 NOW = datetime(2026, 8, 24, tzinfo=UTC).isoformat().replace("+00:00", "Z")
@@ -45,7 +54,7 @@ class FiniteProvider:
 def install_provider(monkeypatch):
     provider = FiniteProvider()
     monkeypatch.setattr(stream_cli.config, "load", lambda: {"managed_repos": []})
-    monkeypatch.setattr(stream_cli, "get_polling_provider", lambda _cfg: provider)
+    monkeypatch.setattr(stream_cli, "get_polling_provider", lambda _cfg, *, process_scope: provider)
     return provider
 
 
@@ -140,3 +149,136 @@ def test_transport_flushes_every_lf_terminated_frame():
     assert output.flushes == 2
     assert output.getvalue().endswith("\n")
     assert all(line.startswith("{") for line in output.getvalue().splitlines())
+
+
+def _fake_wedged_bd(tmp_path: Path) -> tuple[Path, Path]:
+    """A bd-shaped executable whose direct child and grandchild both wedge."""
+
+    binary_dir = tmp_path / "bin"
+    binary_dir.mkdir()
+    pid_path = tmp_path / "backend-grandchild.pid"
+    binary = binary_dir / "bd"
+    binary.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os,time\n"
+        "child=os.fork()\n"
+        "if child == 0:\n"
+        "    time.sleep(300)\n"
+        "    os._exit(0)\n"
+        "open(os.environ['BH_TEST_DESCENDANT_PID'], 'w').write(str(child))\n"
+        "time.sleep(300)\n"
+    )
+    binary.chmod(0o755)
+    return binary_dir, pid_path
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+def _wait_pid(path: Path, timeout: float = 10.0) -> int:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            value = path.read_text().strip()
+        except FileNotFoundError:
+            value = ""
+        if value:
+            return int(value)
+        time.sleep(0.02)
+    raise AssertionError(f"backend did not publish a descendant pid to {path}")
+
+
+def _wait_gone(pid: int, timeout: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _alive(pid):
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="real process-group assertion uses /proc")
+def test_cli_timeout_reaps_the_backend_grandchild(tmp_path, monkeypatch):
+    binary_dir, pid_path = _fake_wedged_bd(tmp_path)
+    monkeypatch.setenv("PATH", f"{binary_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("BH_TEST_DESCENDANT_PID", str(pid_path))
+    monkeypatch.setattr(stream_cli.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(state_stream_polling.config, "hub_dir", lambda: tmp_path / "hub")
+    monkeypatch.setattr(
+        stream_cli,
+        "StreamProcessScope",
+        lambda: StreamProcessScope(timeout=0.2, term_grace=0.1),
+    )
+
+    result = runner.invoke(app, ["stream", "--scope", "hub"])
+
+    grandchild = _wait_pid(pid_path)
+    assert result.exit_code == 1
+    assert isinstance(result.exception, run_mod.ChildTimeout)
+    assert _wait_gone(grandchild), "bh stream timeout left a backend descendant alive"
+
+
+def test_cli_broken_pipe_crosses_the_process_scope_finalizer(monkeypatch):
+    provider = install_provider(monkeypatch)
+    observed = []
+
+    class RecordingScope:
+        def __enter__(self):
+            observed.append("enter")
+            return self
+
+        def __exit__(self, exc_type, _exc, _tb):
+            observed.append(exc_type)
+
+    monkeypatch.setattr(stream_cli, "StreamProcessScope", RecordingScope)
+
+    def broken_output(_frames):
+        raise BrokenPipeError("consumer closed stdout")
+
+    monkeypatch.setattr(stream_cli, "emit_ndjson", broken_output)
+
+    result = runner.invoke(app, ["stream", "--scope", "hub"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, BrokenPipeError)
+    assert observed == ["enter", BrokenPipeError]
+    assert provider.requests == []  # output failed before pulling the lazy frame iterator
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="real process-group assertion uses /proc")
+@pytest.mark.parametrize("cancel_signal", [signal.SIGTERM, signal.SIGINT])
+def test_real_cli_signal_exit_is_native_and_reaps_backend_tree(
+    tmp_path, monkeypatch, cancel_signal
+):
+    binary_dir, pid_path = _fake_wedged_bd(tmp_path)
+    env = dict(os.environ)
+    env["PATH"] = f"{binary_dir}{os.pathsep}{env['PATH']}"
+    env["BH_TEST_DESCENDANT_PID"] = str(pid_path)
+    command = Path(sys.executable).parent / "bh"
+    proc = subprocess.Popen(
+        [str(command), "stream", "--scope", "hub"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        grandchild = _wait_pid(pid_path)
+        proc.send_signal(cancel_signal)
+        proc.wait(timeout=10)
+        expected = 130 if cancel_signal is signal.SIGINT else -signal.SIGTERM
+        assert proc.returncode == expected
+        assert _wait_gone(grandchild), (
+            f"bh stream {cancel_signal.name} left a backend descendant alive"
+        )
+    finally:
+        if proc.poll() is None:
+            proc.kill()

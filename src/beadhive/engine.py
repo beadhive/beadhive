@@ -139,6 +139,15 @@ class Engine(Protocol):
         """Export `cwd`'s issues to the interchange JSONL at `out_path` (hub hydration)."""
         ...
 
+    def stream_export_command(self, cwd, out_path) -> list[str]:
+        """The export argv a host-local stream supervisor may own as a process tree.
+
+        This is deliberately separate from :meth:`export_jsonl`: ordinary hydration keeps its
+        historical call shape, while a long-lived stream can put the backend in a dedicated
+        process group and cancel that whole group when its consumer disappears.
+        """
+        ...
+
     def import_jsonl(self, cwd, args: list[str]):
         """Run a `bd import`-shaped invocation (args carries flags + the JSONL source) in
         `cwd`."""
@@ -273,8 +282,13 @@ class BdEngine:
 
     def export_jsonl(self, cwd, out_path, *, env=None):
         # Extracted from hub.py's `sync()` (per-hive export ahead of hub `repo add`/`sync`).
-        cmd = ["bd", "-C", str(cwd), "export", "-o", str(out_path)]
+        cmd = self.stream_export_command(cwd, out_path)
         return bd_mod._run(cmd, env=env, check=False, capture=True)
+
+    def stream_export_command(self, cwd, out_path):
+        """Return the same export command for the stream's process-tree supervisor."""
+
+        return ["bd", "-C", str(cwd), "export", "-o", str(out_path)]
 
     def import_jsonl(self, cwd, args):
         # Extracted from bd.py's `import_labeled()` final write. `cwd` here is a real
