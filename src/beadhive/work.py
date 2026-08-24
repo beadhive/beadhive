@@ -18,7 +18,7 @@ import asyncio  # noqa: F401 - injected lifecycle collaborator on the stable fac
 import datetime
 import json
 import os
-import shlex
+import shlex  # noqa: F401 - injected submission collaborator on the stable facade
 import sys
 import time
 from dataclasses import dataclass, field
@@ -30,9 +30,9 @@ import typer
 from . import (
     adopt,
     bd,
-    claim_authority,
+    claim_authority,  # noqa: F401 - injected submission collaborator
     config,
-    converge,
+    converge,  # noqa: F401 - injected submission collaborator
     ghpr,
     git_linkage,
     guard,
@@ -43,9 +43,9 @@ from . import (
     otel,
     registry,  # noqa: F401 - injected lifecycle collaborator
     release_order,  # noqa: F401 - injected lifecycle collaborator
-    test_report,
-    triage_store,
-    validation_ledger,
+    test_report,  # noqa: F401 - injected submission collaborator
+    triage_store,  # noqa: F401 - injected submission collaborator
+    validation_ledger,  # noqa: F401 - injected submission collaborator
     work_assignment,
     work_dispatch,
     work_group,
@@ -56,14 +56,15 @@ from . import (
     work_next,  # noqa: F401 - injected lifecycle collaborator
     work_reads,
     work_show,
+    work_submission,
     worktree,
 )
 from . import log as dispatch_log
 from . import schedule as schedule_mod  # noqa: F401 - injected lifecycle collaborator
-from .run import missing_binary, run
+from .run import missing_binary, run  # noqa: F401 - injected submission collaborator
 from .work_logic import (
     _MARKER,
-    _guard_holds_claim,
+    _guard_holds_claim,  # noqa: F401 - injected submission collaborator
     _guard_not_other,
     _guard_open,
     _history_ok,
@@ -787,101 +788,7 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     A green run against a CLEAN tree also seeds the verdict ledger `submit` reuses from
     (bh-i0p1.4), so the ordinary check-then-submit sequence pays for validation once, not
     twice — see `_record_check_verdict`."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    entry, main, target, _branch = worktree.locate(cfg, hive, bead)
-    # Batch membership is probed BEFORE `target.exists()`, not inside it (bh-c3nf). The old order
-    # let ANY per-bead dir shadow the redirect, and `resume` used to create exactly that: a stray
-    # `wt/bead/issue/<id>` at the container tip holding none of the group's work. `check` then
-    # validated the stray tree and — via `_record_check_verdict` — seeded that FALSE GREEN into the
-    # ledger `submit` reuses, for a sha that never contained the change.
-    grp, batch_target = _batch_worktree(cfg, hive, bead, main)
-    if grp:
-        # A batch member: check is read-only, so redirect to the shared batch worktree when it
-        # exists rather than erroring; otherwise name the batch procedure (bh-n5z3.7).
-        if batch_target is None:
-            typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
-            raise typer.Exit(1)
-        target = batch_target
-    elif not target.exists():
-        typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
-        raise typer.Exit(1)
-    if not worktree.in_bead_worktree(target):
-        typer.echo(
-            f"WARNING: cwd is not the bead worktree — uncommitted edits here are invisible.\n"
-            f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
-            err=True,
-        )
-    # Telemetry-neutral env so `check` agrees with `submit`'s clean-checkout validation regardless
-    # of the hive's otel config (the worktree overlay seeds OTEL_* into os.environ otherwise).
-    cmd = config.validate_cmd(cfg, entry)
-    # Establish the environment FROM THE TREE before validating (bh-ku9n9.14), exactly as
-    # `clean_checkout` does in its verify dir. Without this, `check`'s verdict — which seeds the
-    # ledger `submit` reuses — was a property of WHEN THE SEAT WAS PROVISIONED, not of the tree:
-    # a seat whose venv predates a dependency change validates a different environment than the
-    # clean checkout would, and the two verdicts are indistinguishable in the ledger (same key,
-    # same rc). Warm `run_init` medians 0.119s here (bh-ku9n9.19) against THIS command — `check`
-    # runs the FAST subset (~140-167s), not the ~371.4s full check-all pipeline that figure
-    # belongs to elsewhere in this epic. The rules stay opaque {run, if_exists?, verify?} entries
-    # in the operator's declared order — bh learns nothing about any ecosystem — so a hive
-    # declaring none runs zero commands and is unaffected.
-    worktree.run_init(cfg, entry, target, verify_only=True)
-    v_start = time.perf_counter()
-    # BH_TEST_REPORT_DIR (bh-ku9n9.20): same fresh, empty drop zone `submit`'s clean checkout
-    # exports, so `check` and `submit` observe the run identically. bh never invokes a runner.
-    # …and the gate log is teed to the durable per-tree triage store (bh-ku9n9.6) on the same
-    # rule `submit`'s clean checkout uses, so a red `check` is readable afterwards.
-    with test_report.drop_zone() as drop, triage_store.gate_log() as log:
-        res = run(
-            shlex.split(cmd),
-            cwd=str(target),
-            check=False,
-            env=test_report.export(otel.telemetry_neutral_env(), drop),
-            tee=log,
-        )
-        rc = res.returncode
-        v_elapsed = time.perf_counter() - v_start  # the command itself, not bh's bookkeeping
-        report = test_report.ingest(drop, rc)
-        # Inside the `with`: the drop zone and the tee'd gate log are both gone the moment it
-        # closes, so anything durable has to be copied out before then.
-        _record_check_verdict(entry, target, cmd, rc, report, drop, log, cfg=cfg)
-    otel.record_validation_duration(
-        v_elapsed,
-        {"bh.work.phase": "check", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
-    )
-    otel.count_validation(rc == 0, {"bh.work.phase": "check"})
-    _mark_self_check(cfg, entry, target, rc)
-    missing = missing_binary(res)
-    if rc != 0 and not missing:
-        # THE CONVERGE LOOP (bh-ku9n9.8), and the ONLY place it is wired: a developer loop that
-        # re-runs just the failures via `work.validate_subset` to get from red to knowing-why in
-        # seconds instead of ~6 minutes. It can only ever produce a CANDIDATE — the verdict above
-        # is already recorded (and, being red, was never written), and `converge` seals the ledger
-        # shut before it spawns, so nothing downstream can turn a converged result into an
-        # attestation. A hive with no `work.validate_subset`, or a run that named no failing
-        # tests, converges nothing and gets today's behaviour. NEVER wire this into the gate.
-        # The sha is the one `_record_check_verdict` would file under — empty on a dirty tree,
-        # whose HEAD names a tree that is not what ran, so the retries are simply not stored.
-        converge.converge(entry, cfg, target, _checked_sha(target), report)
-    if missing:
-        # No `capture` here, so a missing validate binary would exit 127 having printed NOTHING
-        # — the operator sees `bh work check` fail silently and reads it as a test failure
-        # (bh-7m2h9). Name the binary, and say this is not a verdict on the code.
-        typer.echo(
-            f"✗ validation could not RUN: `{missing}` is not on PATH (validate_cmd is {cmd!r}). "
-            f"This is not a test failure — install it or fix PATH, then re-run.",
-            err=True,
-        )
-    elif rc == RETRYABLE_VALIDATION_EXIT:
-        # Same distinction `_validate_submit_checkout` makes for `submit` (bh-u9ip): a network
-        # dependency was unreachable, not a verdict on the code.
-        typer.echo(
-            f"⚠ validation could not complete (exit {rc}) — a network dependency was "
-            "unreachable. This is NOT a test failure — retry once connectivity recovers.",
-            err=True,
-        )
-    if rc != 0:
-        raise typer.Exit(rc)
+    return work_submission.impl_check(sys.modules[__name__], bead, hive)
 
 
 def _mark_self_check(cfg, entry, target, rc) -> None:
@@ -899,16 +806,7 @@ def _mark_self_check(cfg, entry, target, rc) -> None:
     worktree, the same source `_resolve_submit_actor` trusts, so no `bd` read is added either.
     A dirty tree names no tree that ran (see `_checked_sha`), so HEAD's tree rides with
     `dirty=True` rather than posing as the content key."""
-    if not otel.is_active():
-        return
-    sha = _checked_sha(target)
-    record = claim_authority.get_authority(config.claim_authority(cfg, entry)).read(target)
-    otel.set_self_check(
-        rc == 0,
-        seat=record.seat if record else "",
-        tree=validation_ledger.tree_of(entry, sha or worktree.head_full_sha(target)),
-        dirty=not sha,
-    )
+    return work_submission.impl__mark_self_check(sys.modules[__name__], cfg, entry, target, rc)
 
 
 def _record_check_verdict(
@@ -936,23 +834,16 @@ def _record_check_verdict(
     anything at all (red or retried only) and swallows its own failures. `cfg` — `check`'s own,
     already resolved — is forwarded to the ledger's TTL lookup instead of a fresh `config.load()`
     (bh-ku9n9.19, item 2)."""
-    sha = _checked_sha(target)
-    if not sha:
-        return
-    triage_store.store(entry, sha, cmd, rc, report, drop, log)
-    if rc == 0:
-        validation_ledger.record(entry, sha, cmd, rc, report=report, cfg=cfg)
-        # This IS the confirming run — a full, clean, un-retried gate over this tree, which is the
-        # only thing that may attest (bh-ku9n9.8). Say so if some of it needed a retry to get here
-        # at this exact content: green is the honest verdict, and a flake is still a flake.
-        converge.warn_flakes(entry, sha, rc)
+    return work_submission.impl__record_check_verdict(
+        sys.modules[__name__], entry, target, cmd, rc, report, drop, log, cfg
+    )
 
 
 def _checked_sha(target) -> str:
     """`target`'s HEAD when the worktree is CLEAN, else `""` — the one honest answer to "which
     tree actually ran". A dirty tree's HEAD names content the command never saw, so neither the
     ledger nor the triage store may be keyed by it."""
-    return worktree.head_full_sha(target) if worktree.is_clean(target) else ""
+    return work_submission.impl__checked_sha(sys.modules[__name__], target)
 
 
 def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:
@@ -1002,13 +893,7 @@ def _guard_fork_remote(entry, remote) -> None:
     """Defense in depth alongside `worktree.push_branch`'s own pull-only rail (bh-uxam.1): an
     external hive's push target must never resolve to `upstream`, whatever produced `remote` —
     catch a misconfiguration here, at the caller, before ever reaching the git-shelling seam."""
-    if str((entry or {}).get("kind", "")) == "external" and remote == worktree.UPSTREAM_REMOTE:
-        typer.echo(
-            "✗ refusing to push an external hive's branch to 'upstream' — it's the fork "
-            "(origin) or nothing; check work.push_remote",
-            err=True,
-        )
-        raise typer.Exit(1)
+    return work_submission.impl__guard_fork_remote(sys.modules[__name__], entry, remote)
 
 
 @app.command("submit")
@@ -1021,34 +906,7 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     With `--group <ids>`, submits a whole work-group from the shared `wt/batch/<group>` worktree:
     validate it once and open exactly ONE review gate whose reason names every member, so a single
     `approve` on any member clears it before `merge --group`."""
-    cfg = config.load()
-    guard.guard_primary(hive, cfg=cfg, verb="work submit")
-    group = work_logic.opt_str(group)
-    if group:
-        if bead:
-            typer.echo("✗ pass either <id> or --group, not both", err=True)
-            raise typer.Exit(1)
-        work_group.submit_group(cfg, hive, group, as_)
-        return
-    if not bead:
-        typer.echo("✗ pass a bead <id> (or --group <ids> for a batch)", err=True)
-        raise typer.Exit(1)
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    entry, main, target, branch = worktree.locate(cfg, hive, bead)
-    _guard_submit_worktree(bead, main, target)
-    actor = _resolve_submit_actor(cfg, entry, target, bead, main, as_)
-    _guard_claim_fence(cfg, entry, target, hive)
-    base = _guard_submit_ready(entry, target, branch, bead, cfg)
-    _warn_submit_release_hint(bead, main, entry, branch, base)
-    _validate_submit_checkout(entry, branch, cfg)
-
-    sha = worktree.head_sha(target)
-    _record_submit_commits(bead, main, entry, branch, base)
-    gate, reuse = _open_submit_gate(cfg, entry, bead, branch, main, sha)
-    _push_state(cfg, main, actor, f"submit {bead} @ {sha}")
-    otel.count_bead_transition("review_pending", {"bh.review.gate": gate})
-    verb = "reused open" if reuse else "opened"
-    typer.echo(f"✓ submitted {bead} @ {sha} — {verb} {gate} review gate (worktree left intact)")
+    return work_submission.impl_submit(sys.modules[__name__], bead, as_, hive, group)
 
 
 def _record_submit_commits(bead, main, entry, branch, base) -> None:
@@ -1058,25 +916,15 @@ def _record_submit_commits(bead, main, entry, branch, base) -> None:
     one verbatim into history. Non-fatal by construction: a metadata write must never fail (or
     strand) a submit whose code already landed on the branch — a failure is surfaced as a
     warning, never swallowed silently and never raised."""
-    try:
-        shas = worktree.commit_shas(entry, branch, base)
-        if shas:
-            git_linkage.record_commits(bead, main, shas)
-    except Exception as exc:  # best-effort: linkage must never fail a submit
-        typer.echo(f"⚠ failed to record commit linkage for {bead}: {exc}", err=True)
+    return work_submission.impl__record_submit_commits(
+        sys.modules[__name__], bead, main, entry, branch, base
+    )
 
 
 def _guard_submit_worktree(bead, main, target) -> None:
     """Refuse when there's no worktree for `bead` — routes a batch member to `submit --group`
     (bh-n5z3.7) instead of a bare 'claim it first'."""
-    if target.exists():
-        return
-    grp = work_group.batch_label(bd.show(bead, main))
-    if grp:  # a batch member submits as a UNIT via submit --group, not per-bead (bh-n5z3.7)
-        typer.echo(_batch_member_procedure_msg(bead, grp), err=True)
-    else:
-        typer.echo(f"✗ no worktree for {bead} — claim it first", err=True)
-    raise typer.Exit(1)
+    return work_submission.impl__guard_submit_worktree(sys.modules[__name__], bead, main, target)
 
 
 def _resolve_submit_actor(cfg, entry, target, bead, main, as_) -> str:
@@ -1085,20 +933,9 @@ def _resolve_submit_actor(cfg, entry, target, bead, main, as_) -> str:
     exactly what used to diverge from the held claim across separate shells/tool-calls. An
     explicit `--as` still wins outright; `_guard_holds_claim` refuses a mismatch or an unclaimed
     bead either way. Also warns (non-fatal) when cwd isn't the bead worktree."""
-    authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
-    record = authority.read(target)
-    claim_holder = record.seat if authority.verify(record, "submit", "") else ""
-    actor = identity.resolve_actor(
-        work_logic.opt_str(as_), claim_holder or config.work_identity(cfg, entry)["name"] or ""
+    return work_submission.impl__resolve_submit_actor(
+        sys.modules[__name__], cfg, entry, target, bead, main, as_
     )
-    _guard_holds_claim(bd.show(bead, main), actor, bead)
-    if not worktree.in_bead_worktree(target):
-        typer.echo(
-            f"WARNING: cwd is not the bead worktree — ensure all changes are committed.\n"
-            f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
-            err=True,
-        )
-    return actor
 
 
 def _guard_claim_fence(cfg, entry, target, hive) -> None:
@@ -1110,27 +947,15 @@ def _guard_claim_fence(cfg, entry, target, hive) -> None:
     owns seat verification and is unchanged by this bead, so an unclaimed bead or a seat
     mismatch still produces exactly the error it always did. This adds a second, orthogonal
     check on a different axis (generation, not identity) — see `guard.guard_claim_epoch`."""
-    authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
-    guard.guard_claim_epoch(authority.read(target), hive, cfg=cfg, verb="work submit")
+    return work_submission.impl__guard_claim_fence(sys.modules[__name__], cfg, entry, target, hive)
 
 
 def _guard_submit_ready(entry, target, branch, bead, cfg) -> str:
     """Guard the worktree is clean, on the expected branch, and a small clean conventional
     history — returns the resolved integration base."""
-    if not worktree.is_clean(target):
-        typer.echo("✗ working tree not clean — commit or discard changes first", err=True)
-        raise typer.Exit(1)
-    cur = worktree.current_branch(target)
-    if cur != branch:
-        typer.echo(f"✗ on branch {cur or '(detached)'}, expected {branch}", err=True)
-        raise typer.Exit(1)
-    base = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
-    count, subjects = worktree.history(entry, branch, base)
-    ok, msg = _history_ok(count, subjects, config.max_commits(cfg, entry))
-    if not ok:
-        typer.echo(f"✗ {msg}", err=True)
-        raise typer.Exit(1)
-    return base
+    return work_submission.impl__guard_submit_ready(
+        sys.modules[__name__], entry, target, branch, bead, cfg
+    )
 
 
 def _warn_submit_release_hint(bead, main, entry, branch, base) -> None:
@@ -1138,12 +963,9 @@ def _warn_submit_release_hint(bead, main, entry, branch, base) -> None:
     hint against what the branch actually landed — a `release:feature`/`fix` bead that ships a
     breaking commit gets a warning so the label (or the commit) is fixed before release-order
     scoring reads a stale hint. Advisory only; never aborts the submit."""
-    warn = work_logic.reconcile_release_hint(
-        work_logic.release_hint(bd.show(bead, main)),
-        worktree.commit_messages(entry, branch, base),
+    return work_submission.impl__warn_submit_release_hint(
+        sys.modules[__name__], bead, main, entry, branch, base
     )
-    if warn:
-        typer.echo(f"⚠ {warn}", err=True)
 
 
 def _validate_submit_checkout(entry, branch, cfg) -> None:
@@ -1153,31 +975,7 @@ def _validate_submit_checkout(entry, branch, cfg) -> None:
     true end-to-end no-op. Since bh-ku9n9.17 the landing boundaries (merge / postland / finish /
     batch land) reuse on the same key — an exact tree match, ADR Decision 4 — which is what makes
     THIS verdict the one a `--no-ff` land onto an unmoved base gets to ride."""
-    v_start = time.perf_counter()
-    rc = worktree.clean_checkout(
-        entry, branch, config.validate_cmd(cfg, entry, "submit"), reuse=True
-    )
-    otel.record_validation_duration(
-        time.perf_counter() - v_start,
-        {"bh.work.phase": "submit", "bh.validation.result": _vres(rc), "bh.hive": _hive(entry)},
-    )
-    otel.count_validation(rc == 0, {"bh.work.phase": "submit"})
-    if rc == RETRYABLE_VALIDATION_EXIT:
-        # NOT a verdict (bh-u9ip): validate_cmd itself is saying it couldn't reach a network
-        # dependency (deps.dev/osv.dev for the license gate) and never got to judge anything —
-        # neither pass nor fail. Nothing was recorded green (the ledger only ever records a
-        # green verdict as reusable), so a plain re-submit re-validates fresh rather than
-        # replaying a stale answer.
-        typer.echo(
-            f"⚠ validation could not complete (exit {rc}) — a network dependency was "
-            "unreachable; nothing submitted. This is NOT a policy verdict — retry "
-            "`bh work submit` once connectivity recovers.",
-            err=True,
-        )
-        raise typer.Exit(rc)
-    if rc != 0:
-        typer.echo(f"✗ clean-checkout validation failed (exit {rc}) — nothing submitted", err=True)
-        raise typer.Exit(1)
+    return work_submission.impl__validate_submit_checkout(sys.modules[__name__], entry, branch, cfg)
 
 
 def _open_submit_gate(cfg, entry, bead, branch, main, sha) -> tuple[str, bool]:
@@ -1186,27 +984,15 @@ def _open_submit_gate(cfg, entry, bead, branch, main, sha) -> tuple[str, bool]:
     branch we don't push, and a `kind=external` (contribution) hive always pushes to its fork
     whatever the gate (bh-uxam.6). Opens the gate FIRST, then flips state, so we never leave a
     bead review=pending with nothing blocking it. Returns (gate type, reused an open gate)."""
-    gate = config.review_gate(cfg, entry)
-    if gate.startswith("gh:") or str(entry.get("kind", "")) == "external":
-        remote = config.push_remote(cfg, entry)
-        _guard_fork_remote(entry, remote)
-        if worktree.push_branch(entry, branch, remote) != 0:
-            typer.echo("✗ failed to push branch for review — nothing submitted", err=True)
-            raise typer.Exit(1)
-    # The reuse/supersede/create logic lives in the shared `ensure_review_gate` seam (bh-c3il),
-    # so single-bead and batch submit open the gate identically.
-    reuse = work_logic.ensure_review_gate(main, bead, sha, gate)
-    sres = bd.run(["set-state", bead, "review=pending", "--reason", f"submitted {sha}"], main)
-    if sres.returncode != 0:
-        typer.echo("✗ failed to set review state — nothing submitted", err=True)
-        raise typer.Exit(1)
-    return gate, reuse
+    return work_submission.impl__open_submit_gate(
+        sys.modules[__name__], cfg, entry, bead, branch, main, sha
+    )
 
 
 def _person_of(name: str) -> str:
     """The person part of a seat identity ('dev/alice' -> 'alice'); a bare name maps to itself. Used
     to spot a cross-seat self-review — the SAME person wearing both an author and a reviewer hat."""
-    return name.split("/", 1)[1] if "/" in name else name
+    return work_submission.impl__person_of(sys.modules[__name__], name)
 
 
 def _guard_self_review(cfg, entry, data, actor, bead) -> None:
@@ -1218,34 +1004,8 @@ def _guard_self_review(cfg, entry, data, actor, bead) -> None:
     (explicit opt-out) it only WARNS and lets the approval through. Self-review is judged by
     PERSON, not seat — dev/alice authoring and rev/alice (or dev/alice) approving both count.
     No-op when the approver differs from the author, or either is unknown."""
-    author = str((data or {}).get("assignee") or "").strip()
-    if not author or not actor or _person_of(actor) != _person_of(author):
-        return
-    mode = config.dispatch_reviewer_cross_seat(cfg, entry)
-    if mode != "advise":
-        typer.echo(
-            f"✗ {bead}: self-review blocked — {actor!r} authored this bead (as {author!r}); the "
-            "reviewer cross-seat policy is `hard` (default). A different seat/person must "
-            "approve; set `work.dispatch.reviewer_cross_seat: advise` to opt back into a warning.",
-            err=True,
-        )
-        raise typer.Exit(1)
-    from . import log  # lazy: keep work free of a load-time log import
-
-    log.get_logger(__name__).warning(
-        "reviewer_cross_seat_self_review",
-        bead=bead,
-        actor=actor,
-        author=author,
-        policy=mode,
-        reason="approver authored the bead (rubber-stamp risk); advise warns, hard (default) "
-        "blocks",
-    )
-    typer.echo(
-        f"⚠ {bead}: self-review — {actor!r} authored this bead (as {author!r}). Advisory only "
-        "(reviewer cross-seat policy explicitly set to `advise`); the default `hard` policy would "
-        "block this.",
-        err=True,
+    return work_submission.impl__guard_self_review(
+        sys.modules[__name__], cfg, entry, data, actor, bead
     )
 
 
@@ -1270,32 +1030,7 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     Release (bh-k2j8): an open `release-hold:` gate is the releaser's to clear — resolved here when
     run as a releaser (`--as releaser/<name>`) and refused for any other seat, so a release:breaking
     change can't be self-released into the wrong version window."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
-    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    data = bd.show(bead, main)
-    _guard_open(data, bead)
-
-    # One shared `bd gate list --all` fetch for both the security and release-hold lookups below
-    # (was two identical spawns) — read-only, so reordering ahead of `review_gates`'s own fetch
-    # (a different query) changes nothing.
-    gates = _open_gates(main)
-    open_review, _resolved = work_logic.review_gates(bead, main)
-    if _approve_security_gate(gates, bead, main, actor, open_review):
-        return
-    if _approve_release_hold_gate(gates, bead, main, actor, open_review):
-        return
-
-    if not open_review:
-        typer.echo(f"✗ no open review gate for {bead} — nothing to approve", err=True)
-        raise typer.Exit(1)
-    _guard_human_review_gate(open_review, bead)
-    _guard_self_review(cfg, entry, data, actor, bead)  # cross-seat policy: advise (warn) | hard
-    resolved_ids = _resolve_review_gates(open_review, bead, main, actor)
-    _clear_stale_review_state(bead, data, main, actor)
-    otel.count_bead_transition("approved", {"bh.review.gate": "human"})
-    typer.echo(f"✓ approved {bead}: resolved review gate(s) {', '.join(resolved_ids)} as {actor}")
+    return work_submission.impl_approve(sys.modules[__name__], bead, as_, hive)
 
 
 def _approve_security_gate(gates, bead, main, actor, open_review) -> bool:
@@ -1303,24 +1038,9 @@ def _approve_security_gate(gates, bead, main, actor, open_review) -> bool:
     review. Resolved here when a warden is clearing it, or when it's the only open gate (so a
     non-warden targeting it hits the warden-only refusal, not a misleading "no review gate").
     Returns True iff it handled (and reported) the approve — the caller returns immediately."""
-    security = _security_gate(gates, bead)
-    if (
-        security is None
-        or str(security.get("status")) != "open"
-        or not (guard.is_warden(actor) or not open_review)
-    ):
-        return False
-    guard.guard_security_gate_resolution(security, actor)  # raises for a non-warden
-    sec_id = str(security.get("id") or "")
-    sres = bd.run(
-        ["gate", "resolve", sec_id, "--reason", f"security cleared by {actor}"], main, actor=actor
+    return work_submission.impl__approve_security_gate(
+        sys.modules[__name__], gates, bead, main, actor, open_review
     )
-    if sres.returncode != 0:
-        typer.echo(f"✗ failed to resolve security gate {sec_id} for {bead}", err=True)
-        raise typer.Exit(sres.returncode or 1)
-    otel.count_bead_transition("security_cleared", {"bh.assurance.gate": "security"})
-    typer.echo(f"✓ cleared {bead}: resolved security gate {sec_id} as {actor}")
-    return True
 
 
 def _approve_release_hold_gate(gates, bead, main, actor, open_review) -> bool:
@@ -1328,41 +1048,15 @@ def _approve_release_hold_gate(gates, bead, main, actor, open_review) -> bool:
     like any open gate. Resolved here when a releaser is clearing it, or when it's the only open
     gate (so a non-releaser targeting it hits the releaser-only refusal, not a misleading "no
     review gate"). Mirrors `_approve_security_gate`. Returns True iff it handled the approve."""
-    hold = _release_hold_gate(gates, bead)
-    if (
-        hold is None
-        or str(hold.get("status")) != "open"
-        or not (guard.is_releaser(actor) or not open_review)
-    ):
-        return False
-    guard.guard_release_hold_gate_resolution(hold, actor)  # raises for a non-releaser
-    hold_id = str(hold.get("id") or "")
-    hres = bd.run(
-        ["gate", "resolve", hold_id, "--reason", f"release-hold cleared by {actor}"],
-        main,
-        actor=actor,
+    return work_submission.impl__approve_release_hold_gate(
+        sys.modules[__name__], gates, bead, main, actor, open_review
     )
-    if hres.returncode != 0:
-        typer.echo(f"✗ failed to resolve release-hold gate {hold_id} for {bead}", err=True)
-        raise typer.Exit(hres.returncode or 1)
-    typer.echo(f"✓ cleared {bead}: resolved release-hold gate {hold_id} as {actor}")
-    return True
 
 
 def _guard_human_review_gate(open_review, bead) -> None:
     """Refuse when `bead`'s open review gate is out-of-process (`gh:*`/`timer`) — resolve those
     through their own channel (CI / PR merge), not `bh work approve`."""
-    non_human = next(
-        (g for g in open_review if str(g.get("await_type") or "human") != "human"), None
-    )
-    if non_human is not None:
-        await_type = str(non_human.get("await_type"))
-        typer.echo(
-            f"✗ {bead}'s review gate is a {await_type} gate — resolve it through its own channel "
-            f"(CI / PR merge), not `{config.BINARY_ALIAS} work approve`",
-            err=True,
-        )
-        raise typer.Exit(1)
+    return work_submission.impl__guard_human_review_gate(sys.modules[__name__], open_review, bead)
 
 
 def _resolve_review_gates(open_review, bead, main, actor) -> list[str]:
@@ -1370,17 +1064,9 @@ def _resolve_review_gates(open_review, bead, main, actor) -> list[str]:
     duplicate left by an older submit would otherwise deadlock approve against merge. `bd gate
     resolve` only ever takes ONE gate id, so this stays a per-gate spawn (not batchable). Returns
     the resolved gate ids."""
-    resolved_ids = []
-    for gate in open_review:
-        gate_id = str(gate.get("id") or "")
-        res = bd.run(
-            ["gate", "resolve", gate_id, "--reason", f"approved by {actor}"], main, actor=actor
-        )
-        if res.returncode != 0:
-            typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
-            raise typer.Exit(res.returncode or 1)
-        resolved_ids.append(gate_id)
-    return resolved_ids
+    return work_submission.impl__resolve_review_gates(
+        sys.modules[__name__], open_review, bead, main, actor
+    )
 
 
 def _clear_stale_review_state(bead, data, main, actor) -> None:
@@ -1389,20 +1075,9 @@ def _clear_stale_review_state(bead, data, main, actor) -> None:
     else `_merge_bead` refuses forever. review=approved is a new value nothing reads (merge only
     refuses changes-requested), so this is a pure unblock. Otherwise drop the stale
     review:pending label — review passed."""
-    if bd.state(bead, "review", main) == "changes-requested":
-        bd.run(
-            [
-                "set-state",
-                bead,
-                "review=approved",
-                "--reason",
-                f"approved by {actor} (clears stale changes-requested)",
-            ],
-            main,
-            actor=actor,
-        )
-    else:
-        _clear_review_label(bead, data, main, actor)
+    return work_submission.impl__clear_stale_review_state(
+        sys.modules[__name__], bead, data, main, actor
+    )
 
 
 @app.command("bounce")
@@ -1413,36 +1088,7 @@ def bounce(bead: str = _BEAD, message: str = _BOUNCE_MSG, as_: str = _AS, hive: 
     review=changes-requested. With no open gate it warns and still records the bounce. Points the
     developer at `bh work resume`. Batch behavior falls out free — the one batch gate names every
     member, so bouncing any member resolves it and blocks `merge --group` (bh-n5z3.6)."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
-    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    data = bd.show(bead, main)
-    _guard_open(data, bead)
-    reason = work_logic.opt_str(message).strip()
-    open_review, _resolved = work_logic.review_gates(bead, main)
-    if not open_review:
-        typer.echo(
-            f"⚠ {bead}: no open review gate to resolve — recording the bounce anyway", err=True
-        )
-    gate_reason = f"changes requested by {actor}" + (f": {reason}" if reason else "")
-    for gate in open_review:
-        gate_id = str(gate.get("id") or "")
-        res = bd.run(["gate", "resolve", gate_id, "--reason", gate_reason], main, actor=actor)
-        if res.returncode != 0:
-            typer.echo(f"✗ failed to resolve review gate {gate_id} for {bead}", err=True)
-            raise typer.Exit(res.returncode or 1)
-    sres = bd.run(
-        ["set-state", bead, "review=changes-requested", "--reason", gate_reason], main, actor=actor
-    )
-    if sres.returncode != 0:
-        typer.echo(f"✗ failed to set review state on {bead}", err=True)
-        raise typer.Exit(sres.returncode or 1)
-    otel.count_bead_transition("changes_requested", {"bh.review.gate": "human"})
-    typer.echo(
-        f"✓ bounced {bead} (review=changes-requested) as {actor} — "
-        f"developer picks it up with `{config.BINARY_ALIAS} work resume {bead}`"
-    )
+    return work_submission.impl_bounce(sys.modules[__name__], bead, message, as_, hive)
 
 
 def _delete_branch(main, branch) -> None:
