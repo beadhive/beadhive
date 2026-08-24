@@ -23,7 +23,7 @@ import subprocess
 import pytest
 import typer
 
-from beadhive import claim_authority, config, guard, host, host_lease, work
+from beadhive import claim_authority, config, guard, host, host_lease, work, work_assignment
 from beadhive.claim_authority import ClaimRecord
 
 PREFIX = "tt"
@@ -447,5 +447,9 @@ def test_both_claim_paths_stamp_the_token():
     """`claim` and `resume` are the two verbs that mint a record; neither may skip the token."""
     import inspect
 
-    for fn in (work._claim_single_bead, work.resume):
-        assert "_issue_claim(cfg, entry, bead, actor, target, hive)" in inspect.getsource(fn)
+    claim_facade = inspect.getsource(work._claim_single_bead)
+    claim_impl = inspect.getsource(work_assignment.impl__claim_single_bead)
+
+    assert "work_assignment.impl__claim_single_bead" in claim_facade
+    assert "api._issue_claim(cfg, entry, bead, actor, target, hive)" in claim_impl
+    assert "_issue_claim(cfg, entry, bead, actor, target, hive)" in inspect.getsource(work.resume)
