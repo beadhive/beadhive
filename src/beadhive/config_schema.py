@@ -50,6 +50,7 @@ from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from .complexity import ComplexityTier, tier_names
+from .daemon_config import HostDaemonConfig
 
 #: ISO-8601 duration parser for `WorkConfig.ledger_ttl` — pydantic's own, so `P1D` / `PT30M`
 #: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
@@ -725,6 +726,10 @@ class HostConfig(_Section):
 
     lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
     dispatch: HostDispatchConfig = Field(default_factory=HostDispatchConfig)
+    daemon: HostDaemonConfig = Field(
+        default_factory=HostDaemonConfig,
+        description="Unified host daemon listener, security, transport, and resource limits.",
+    )
 
 
 # ---- release (release-order planning, bh-k2j8) --------------------------------
