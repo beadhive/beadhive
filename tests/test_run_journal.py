@@ -98,6 +98,20 @@ def test_create_mints_private_distinct_attempts_before_spawn(tmp_path: Path) -> 
     assert stat.S_IMODE(first.path.parent.stat().st_mode) == 0o700
 
 
+def test_provider_continuation_binds_once_and_never_aliases_outer(tmp_path: Path) -> None:
+    journal = run_journal.RunJournal.create(_identity(), base=tmp_path, run_id="outer-attempt")
+
+    journal.bind_provider_continuation("provider-continuation")
+    journal.bind_provider_continuation("provider-continuation")
+
+    with pytest.raises(run_journal.ProviderContinuationConflict, match="cannot be rebound"):
+        journal.bind_provider_continuation("provider-other")
+    with pytest.raises(run_journal.ProviderContinuationConflict, match="cannot alias"):
+        run_journal.RunJournal.create(
+            _identity(), base=tmp_path, run_id="outer-other"
+        ).bind_provider_continuation("outer-other")
+
+
 def test_concurrent_appenders_leave_complete_schema_valid_lines(tmp_path: Path) -> None:
     jsonschema = pytest.importorskip("jsonschema")
     identity = _identity()
@@ -132,7 +146,8 @@ def test_spawn_cancel_and_harvest_keep_one_exact_outer_identity(tmp_path: Path) 
             bead_id="bh-cancel",
             role="developer",
             action="dispatch",
-            session_id="provider-session-cancel",
+            session_id="seat-process-cancel",
+            provider_continuation="provider-session-cancel",
             journal=cancel_journal,
         )
         cancelled = await localloop.cancel(
@@ -157,7 +172,8 @@ def test_spawn_cancel_and_harvest_keep_one_exact_outer_identity(tmp_path: Path) 
             bead_id="bh-harvest",
             role="developer",
             action="dispatch",
-            session_id="provider-session-harvest",
+            session_id="seat-process-harvest",
+            provider_continuation="provider-session-harvest",
             journal=harvest_journal,
         )
         await harvest_seat.collect()
@@ -173,7 +189,10 @@ def test_spawn_cancel_and_harvest_keep_one_exact_outer_identity(tmp_path: Path) 
     for records, bead in ((cancelled, "bh-cancel"), (harvested, "bh-harvest")):
         assert len({record["run_id"] for record in records}) == 1
         assert {record["bead"] for record in records} == {bead}
-        assert all(record["provider_continuation"] is None for record in records)
+        assert {record["provider_continuation"] for record in records[1:]} == {
+            f"provider-session-{'cancel' if bead == 'bh-cancel' else 'harvest'}"
+        }
+        assert records[0]["provider_continuation"] is None
         validator = jsonschema.Draft202012Validator(json.loads(SCHEMA.read_text()))
         for record in records:
             validator.validate(record)

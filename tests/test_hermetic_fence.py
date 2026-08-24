@@ -172,7 +172,7 @@ def _recipe(name: str) -> str:
 
 @pytest.mark.parametrize(
     "recipe",
-    ["test set=FAST", "test-integration-land", "demo-local-loop"],
+    ["test set=FAST", "test-integration-land", "demo-local-loop", "demo-live-ingress"],
 )
 def test_every_gate_phase_runs_through_the_fence(recipe):
     """EVERY phase, asserted against the justfile rather than trusted (bh-yndxi).
@@ -208,6 +208,7 @@ def test_the_demo_is_back_on_the_check_all_line():
         "`demo-local-loop` is off the check-all line again — that is the ONLY end-to-end proof "
         "that a molecule reaches its terminal state, which is the product claim (bh-ik08j)"
     )
+    assert "demo-live-ingress" in line, "the L1-L4 live-ingress proof is off check-all"
 
 
 # ---- THE incident, reproduced end to end against a live-clone-shaped checkout -----------------

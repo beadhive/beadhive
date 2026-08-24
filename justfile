@@ -119,7 +119,7 @@ check: lint lint-md license-check test
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check (test FAST) test-integration-land demo-local-loop
+check-all: require-bd lint lint-md license-check (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
 # `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
 # `bd` work, and every integration test self-skips when the binary is absent
@@ -511,6 +511,10 @@ demo:
 # drive the `local` work-runtime tier's operator demo end to end against a scratch hive (~115s)
 demo-local-loop:
     ./scripts/hermetic.sh uv run scripts/demo_local_loop.py
+
+# deterministic qualified Claude/Codex × work-loop/direct-role ingress proof + exact-HEAD install
+demo-live-ingress:
+    ./scripts/hermetic.sh uv run scripts/demo_live_ingress_matrix.py
 
 # ---- the release commands, in order of COMMITMENT (bh-0jndj) -------------------------------
 #
