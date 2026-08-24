@@ -233,3 +233,334 @@ def test_legacy_headless_no_hitch_still_refuses_hitch_only_plan(monkeypatch):
 
     assert exc_info.value.code == "backend_unavailable"
     assert "--no-hitch" in exc_info.value.detail
+
+
+def test_explain_report_discloses_complete_redacted_baml_plan(monkeypatch, tmp_path: Path):
+    binary, manifest_path, document = _artifact(tmp_path, "codex")
+    document["authority"]["config_references"] = [
+        "config-reference-secret-one",
+        "config-reference-secret-two",
+    ]
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+    artifact = role_execution.validate_qualified_artifact(
+        binary, manifest_path, seat="developer", provider="codex"
+    )
+    plan = role_execution.RoleLaunchPlan(
+        backend="baml",
+        provider="codex",
+        artifact=artifact,
+        detail="validated provider-qualified fixture",
+    )
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+
+    report = role_execution.explain_report(
+        seat="developer",
+        harness="codex",
+        cfg={},
+        entry={"provider": "github", "org": "acme", "repo": "core"},
+        hive="github/acme/core",
+        workspace="/work/core",
+        bead="bh-example.1",
+        detached=True,
+        task_provided=True,
+        explicit_harness=True,
+        baml_required=True,
+        no_hitch=False,
+    )
+
+    assert report["schema_version"] == 1
+    assert report["command"] == "role explain"
+    assert report["decision"] == "runnable"
+    assert report["refusal_reasons"] == []
+    assert report["request"]["task"] == {
+        "provided": True,
+        "content": "<redacted:instructions>",
+    }
+    assert report["request"]["bamlRequired"] is True
+    assert report["execution"] == {
+        "driver": "baml-harness",
+        "provider": "codex",
+        "entry_point": str(binary),
+        "mode": "detached",
+        "baml_driven": True,
+        "provider_qualified": True,
+        "detail": "validated provider-qualified fixture",
+    }
+    assert report["artifact"]["binary_path"] == str(binary)
+    assert report["artifact"]["manifest_path"] == str(manifest_path)
+    assert report["artifact"]["artifact_digest"] == _digest(binary.read_bytes())
+    assert report["artifact"]["manifest_digest"] == _digest(manifest_path.read_bytes())
+    assert report["authority"]["ambient_inheritance"] == {
+        "user_config": False,
+        "capability_user": False,
+    }
+    assert report["authority"]["sandbox"] == "read-only"
+    assert report["authority"]["approval"] == "untrusted"
+    assert report["authority"]["config_references"] == {"declared": True, "count": 2}
+    outer = report["correlation"]["proposed_outer_run_id"]
+    continuation = report["correlation"]["proposed_provider_session_id"]
+    assert outer.startswith("run-")
+    assert continuation.startswith("provider-")
+    assert outer != continuation
+    assert report["correlation"]["assignment"]["work_item_id"] == "bh-example.1"
+    assert report["correlation"]["state_channel"]["source"] == "bh stream --scope hive"
+    assert report["correlation"]["runtime_summary_source"] == "AgentRunSummary"
+    assert report["correlation"]["activity_channel"] == {
+        "version": "beadhive.run-journal/v1",
+        "locator_environment": "BH_RUN_JOURNAL_PATH",
+    }
+    assert report["observability"] == {
+        "pre_exit_possible": True,
+        "mechanism": "provider-json",
+        "source_mechanism": "codex-jsonl",
+        "meets_live_evidence_bar": True,
+    }
+    assert report["argv"]["environment_names"] == [
+        "BH_RUN_JOURNAL_VERSION",
+        "BH_RUN_JOURNAL_PATH",
+        "BH_RUN_ID",
+        "BH_RUN_HIVE",
+        "BH_RUN_BEAD",
+        "BH_RUN_DRIVER",
+        "BH_RUN_PROVIDER",
+        "BH_RUN_MANIFEST_DIGEST",
+    ]
+    serialized = json.dumps(report)
+    assert "Bash(git push*)" not in serialized
+    assert "config-reference-secret-one" not in serialized
+    assert "config-reference-secret-two" not in serialized
+    assert "<redacted:instructions>" in serialized
+    assert "<redacted:run-context>" in serialized
+
+
+def test_explain_refusal_reports_reason_without_proposing_identity(monkeypatch):
+    refusal = role_execution.RoleLaunchRefused("artifact_missing", "exact Codex artifact missing")
+    monkeypatch.setattr(
+        role_execution,
+        "resolve_headless_plan",
+        lambda *_a, **_kw: (_ for _ in ()).throw(refusal),
+    )
+    monkeypatch.setattr(role_execution.shutil, "which", lambda _name: None)
+
+    report = role_execution.explain_report(
+        seat="developer",
+        harness="codex",
+        cfg={},
+        entry=None,
+        hive=None,
+        workspace="/work/core",
+        bead="",
+        detached=False,
+        task_provided=False,
+        explicit_harness=True,
+        baml_required=True,
+        no_hitch=False,
+    )
+
+    assert report["decision"] == "refused"
+    assert report["refusal_reasons"] == [
+        {"code": "artifact_missing", "detail": "exact Codex artifact missing"}
+    ]
+    assert report["artifact"]["requested_name"] == "bh-developer-codex"
+    assert report["artifact"]["validated"] is False
+    assert report["correlation"]["proposed_outer_run_id"] is None
+    assert report["correlation"]["proposed_provider_session_id"] is None
+    assert report["argv"]["values"] == []
+
+
+def test_explain_digest_refusal_keeps_evidence_but_not_untrusted_values(
+    monkeypatch, tmp_path: Path
+):
+    binary, manifest_path, document = _artifact(tmp_path, "codex")
+    document["credential"] = "manifest-secret-value"
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+    binary.write_bytes(b"tampered binary")
+    monkeypatch.setattr(
+        role_execution.shutil,
+        "which",
+        lambda name: str(binary) if name == "bh-developer-codex" else None,
+    )
+
+    report = role_execution.explain_report(
+        seat="developer",
+        harness="codex",
+        cfg={},
+        entry=None,
+        hive="github/acme/core",
+        workspace="/work/core",
+        bead="bh-example.1",
+        detached=False,
+        task_provided=False,
+        explicit_harness=True,
+        baml_required=True,
+        no_hitch=False,
+    )
+
+    assert report["decision"] == "refused"
+    assert report["refusal_reasons"][0]["code"] == "digest_mismatch"
+    assert report["artifact"]["binary_path"] == str(binary)
+    assert report["artifact"]["manifest_path"] == str(manifest_path)
+    assert report["artifact"]["artifact_digest"] == _digest(b"tampered binary")
+    assert report["artifact"]["manifest_digest"] == _digest(manifest_path.read_bytes())
+    assert report["artifact"]["validated"] is False
+    assert report["authority"] is None
+    assert "manifest-secret-value" not in json.dumps(report)
+
+
+def test_explain_refusal_never_copies_unvalidated_identity_scalars(monkeypatch, tmp_path: Path):
+    binary, manifest_path, document = _artifact(tmp_path, "codex")
+    markers = {
+        "profile": "invalid-profile-secret-marker",
+        "seat": "invalid-seat-secret-marker",
+        "provider": "invalid-provider-secret-marker",
+    }
+    document.update(markers)
+    manifest_path.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(
+        role_execution.shutil,
+        "which",
+        lambda name: str(binary) if name == "bh-developer-codex" else None,
+    )
+
+    report = role_execution.explain_report(
+        seat="developer",
+        harness="codex",
+        cfg={},
+        entry=None,
+        hive="github/acme/core",
+        workspace="/work/core",
+        bead="bh-example.1",
+        detached=False,
+        task_provided=False,
+        explicit_harness=True,
+        baml_required=True,
+        no_hitch=False,
+    )
+
+    assert report["decision"] == "refused"
+    assert report["refusal_reasons"][0]["code"] == "artifact_mismatch"
+    assert report["artifact"]["requested_name"] == "bh-developer-codex"
+    assert report["artifact"]["binary_path"] == str(binary)
+    assert report["artifact"]["manifest_path"] == str(manifest_path)
+    assert report["artifact"]["manifest_digest"] == _digest(manifest_path.read_bytes())
+    assert report["artifact"]["profile"] is None
+    assert report["artifact"]["seat"] is None
+    assert report["artifact"]["provider"] is None
+    serialized = json.dumps(report)
+    for marker in markers.values():
+        assert marker not in serialized
+
+
+def test_explain_direct_hitch_is_never_labeled_baml(monkeypatch, tmp_path: Path):
+    plan = role_execution.RoleLaunchPlan(
+        backend="hitch",
+        provider="claude-code",
+        detail="direct Hitch fixture",
+        hitch_target="claude-code",
+        hitch_profile="developer",
+    )
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(
+        role_execution.shutil,
+        "which",
+        lambda name: "/usr/bin/hitch" if name == "hitch" else None,
+    )
+    cfg = {"hitch": {"repo": str(tmp_path), "command": "hitch"}}
+
+    report = role_execution.explain_report(
+        seat="developer",
+        harness="claude",
+        cfg=cfg,
+        entry=None,
+        hive="github/acme/core",
+        workspace="/work/core",
+        bead="bh-example.1",
+        detached=False,
+        task_provided=True,
+        explicit_harness=True,
+        baml_required=False,
+        no_hitch=False,
+    )
+
+    assert report["execution"]["driver"] == "hitch-direct"
+    assert report["execution"]["baml_driven"] is False
+    assert report["execution"]["provider_qualified"] is False
+    assert report["artifact"]["validated"] is False
+    assert report["observability"]["pre_exit_possible"] is False
+    argv = report["argv"]["values"]
+    assert argv[:4] == ["hitch", "up", "claude-code", "developer"]
+    assert argv[argv.index("--task") + 1] == "<redacted:instructions>"
+
+
+def test_explain_refuses_hitch_plan_when_executable_is_unavailable(monkeypatch):
+    plan = role_execution.RoleLaunchPlan(
+        backend="hitch",
+        provider="claude-code",
+        detail="configured Hitch profile",
+        hitch_target="claude-code",
+        hitch_profile="developer",
+    )
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(role_execution.shutil, "which", lambda _name: None)
+
+    report = role_execution.explain_report(
+        seat="developer",
+        harness="claude",
+        cfg={"hitch": {"command": "missing-hitch"}},
+        entry=None,
+        hive=None,
+        workspace="/work/core",
+        bead="",
+        detached=False,
+        task_provided=False,
+        explicit_harness=True,
+        baml_required=False,
+        no_hitch=False,
+    )
+
+    assert report["decision"] == "refused"
+    assert report["refusal_reasons"][0]["code"] == "hitch_unavailable"
+    assert report["execution"]["driver"] is None
+    assert report["correlation"]["proposed_outer_run_id"] is None
+
+
+def test_explain_redacts_unqualified_configured_command_arguments(monkeypatch):
+    plan = role_execution.RoleLaunchPlan(
+        backend="baml", provider=None, detail="compatibility alias fixture"
+    )
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(role_execution.shutil, "which", lambda _name: None)
+    from beadhive import config
+
+    monkeypatch.setattr(
+        config,
+        "dispatch_seat_command",
+        lambda *_a: "seat-wrapper --api-key credential-value --role {role}",
+    )
+    monkeypatch.setattr(config, "dispatch_seat_bundle", lambda *_a: "")
+
+    report = role_execution.explain_report(
+        seat="developer",
+        harness="claude",
+        cfg={},
+        entry=None,
+        hive=None,
+        workspace="/work/core",
+        bead="",
+        detached=False,
+        task_provided=False,
+        explicit_harness=False,
+        baml_required=False,
+        no_hitch=False,
+    )
+
+    serialized = json.dumps(report)
+    assert "credential-value" not in serialized
+    assert report["execution"]["entry_point"] == "seat-wrapper"
+    assert report["argv"]["values"][:5] == [
+        "seat-wrapper",
+        "<redacted:configured-argument>",
+        "<redacted:configured-argument>",
+        "<redacted:configured-argument>",
+        "<redacted:configured-argument>",
+    ]

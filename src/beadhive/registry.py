@@ -84,6 +84,17 @@ def _entry_for_path(cfg, path: Path):
     return entry or {"provider": provider, "org": org, "repo": repo, "prefix": repo}
 
 
+def entry_for_path(cfg, path: Path):
+    """Resolve a shadow-worktree path without Git or any other subprocess.
+
+    Unlike :func:`entry_for_dir`, this intentionally does not fall back to
+    :func:`identity.workspace_identity`.  It is the no-process seam used by dry-run surfaces;
+    callers that also accept a main-clone path can compare against :func:`hive_dir` themselves.
+    """
+
+    return _entry_for_path(cfg, path)
+
+
 def current_hive(cfg):
     """The managed_repos entry owning cwd (the `hive == ""` default), or None when cwd belongs to
     no managed hive. The ONE shared cwd->hive resolver (DRY) — used by `worktree._resolve_entry`

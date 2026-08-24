@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shlex
 import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +23,12 @@ from typing import Any
 MANIFEST_VERSION = 1
 BAML_DRIVER = "baml"
 BAML_MANIFEST_DRIVER = "baml-harness"
+EXPLAIN_SCHEMA_VERSION = 1
+EXPLAIN_COMMAND = "role explain"
+REDACTED_INSTRUCTIONS = "<redacted:instructions>"
+REDACTED_RUN_CONTEXT = "<redacted:run-context>"
 PROVIDER_FOR_HARNESS = {"claude": "claude-code", "codex": "codex"}
+HITCH_TARGET_FOR_HARNESS = {"claude": "claude-code", "codex": "codex", "opencode": "opencode"}
 SUPPORTED_LIVE_MECHANISMS = {
     "claude-stream-json",
     "codex-jsonl",
@@ -60,6 +67,8 @@ class RoleLaunchPlan:
     detail: str
     provider: str | None
     artifact: QualifiedArtifact | None = None
+    hitch_target: str | None = None
+    hitch_profile: str | None = None
 
     @property
     def driver(self) -> str:
@@ -376,7 +385,13 @@ def resolve_headless_plan(
             )
         backend, detail = hitch_plugin.headless_hitch_plan(seat, harness, cfg)
         if backend == "hitch":
-            return RoleLaunchPlan(backend="hitch", provider=provider, detail=detail)
+            return RoleLaunchPlan(
+                backend="hitch",
+                provider=provider,
+                detail=detail,
+                hitch_target=HITCH_TARGET_FOR_HARNESS.get(harness),
+                hitch_profile=seat,
+            )
         missing = (
             qualified_artifact_name(seat, provider)
             if provider is not None
@@ -397,7 +412,352 @@ def resolve_headless_plan(
     # does know its target from the explicit/configured harness, but its manifest/context remains
     # agent-hitch-owned and is outside this BAML artifact resolver.
     provider = PROVIDER_FOR_HARNESS.get(harness) if backend == "hitch" else None
-    return RoleLaunchPlan(backend=backend, provider=provider, detail=detail)
+    return RoleLaunchPlan(
+        backend=backend,
+        provider=provider,
+        detail=detail,
+        hitch_target=HITCH_TARGET_FOR_HARNESS.get(harness) if backend == "hitch" else None,
+        hitch_profile=seat if backend == "hitch" else None,
+    )
+
+
+def _safe_authority(artifact: QualifiedArtifact | None) -> dict[str, Any] | None:
+    """Return only launch-authority facts, never credentials or raw rule values."""
+
+    if artifact is None:
+        return None
+    authority = artifact.manifest["authority"]
+    capabilities = artifact.manifest["capabilities"]
+    permissions = authority.get("permissions") or {}
+    references = authority.get("config_references")
+    return {
+        "provider": authority["provider"],
+        "permission_mode": authority.get("permission_mode"),
+        "permission_rule_counts": {
+            name: len(permissions.get(name) or []) for name in ("allow", "ask", "deny")
+        }
+        if permissions
+        else None,
+        "sandbox": authority.get("sandbox"),
+        "approval": authority.get("approval"),
+        "mcp": {
+            "enabled": authority["mcp"]["enabled"],
+            "servers": list(authority["mcp"]["servers"]),
+        },
+        "config_references": {
+            "declared": "config_references" in authority,
+            "count": len(references) if isinstance(references, list) else 0,
+        },
+        "ambient_inheritance": {
+            "user_config": authority["inherit_user_config"],
+            "capability_user": capabilities["inherit_user"],
+        },
+    }
+
+
+def _artifact_report(
+    artifact: QualifiedArtifact | None, *, seat: str, provider: str | None
+) -> dict[str, Any]:
+    """Redacted evidence for a validated artifact or the exact expected basename."""
+
+    requested = qualified_artifact_name(seat, provider) if provider else None
+    if artifact is None:
+        return {
+            "requested_name": requested,
+            "validated": False,
+            "binary_path": None,
+            "manifest_path": None,
+            "artifact_digest": None,
+            "manifest_digest": None,
+            "manifest_version": None,
+            "baked": None,
+            "seat": None,
+            "provider": None,
+            "profile": None,
+            "profile_digest": None,
+            "packs_digest": None,
+            "compatibility_contract": None,
+        }
+    manifest = artifact.manifest
+    return {
+        "requested_name": requested,
+        "validated": True,
+        "binary_path": str(artifact.binary),
+        "manifest_path": str(artifact.manifest_path),
+        "artifact_digest": artifact.artifact_digest,
+        "manifest_digest": artifact.manifest_digest,
+        "manifest_version": manifest["version"],
+        "baked": manifest["baked"],
+        "seat": manifest["seat"],
+        "provider": manifest["provider"],
+        "profile": manifest["profile"],
+        "profile_digest": manifest["profile_digest"],
+        "packs_digest": manifest["packs_digest"],
+        "compatibility_contract": {
+            "version": manifest["contract_version"],
+            "framing": dict(manifest["framing"]),
+        },
+    }
+
+
+def _candidate_artifact_report(seat: str, provider: str | None) -> dict[str, Any]:
+    """Best-effort, hash-only evidence when validation refused a present candidate.
+
+    Failed validation means no manifest content is trusted enough to print: even nominal identity
+    fields such as profile, seat, and provider can contain credentials. Only request-derived paths
+    and content hashes survive this boundary.
+    """
+
+    report = _artifact_report(None, seat=seat, provider=provider)
+    if provider is None:
+        return report
+    name = qualified_artifact_name(seat, provider)
+    found = shutil.which(name)
+    if found is None:
+        return report
+    binary = Path(found).absolute()
+    manifest_path = binary.with_name(f"{name}.manifest.json")
+    report["binary_path"] = str(binary)
+    report["manifest_path"] = str(manifest_path)
+    try:
+        report["artifact_digest"] = _sha256_file(binary)
+    except RoleLaunchRefused:
+        pass
+    try:
+        raw = manifest_path.read_bytes()
+    except OSError:
+        return report
+    report["manifest_digest"] = _sha256_bytes(raw)
+    return report
+
+
+def _redacted_argv(
+    plan: RoleLaunchPlan | None,
+    *,
+    seat: str,
+    workspace: str,
+    bead: str,
+    detached: bool,
+    outer_run_id: str | None,
+    provider_session_id: str | None,
+    cfg,
+    entry,
+) -> list[str]:
+    if plan is None:
+        return []
+    if plan.backend == "hitch":
+        from . import config, hitch_plugin
+
+        repo = config.hitch_repo(cfg)
+        if repo is None or plan.hitch_target is None or plan.hitch_profile is None:
+            return []
+        return hitch_plugin._hitch_argv(
+            cfg,
+            plan.hitch_target,
+            plan.hitch_profile,
+            command=config.hitch_command(cfg),
+            repo=repo,
+            workspace=workspace,
+            task=REDACTED_INSTRUCTIONS,
+            detached=detached,
+            role_=seat,
+        )
+
+    from . import config, localloop
+
+    qualified = plan.artifact
+    command = str(qualified.binary) if qualified else config.dispatch_seat_command(cfg, entry)
+    bundle = "" if qualified else config.dispatch_seat_bundle(cfg, entry)
+    argv = list(
+        localloop.seat_argv(
+            command,
+            seat,
+            workspace=workspace,
+            bead=bead,
+            instructions=REDACTED_INSTRUCTIONS,
+            session_id=provider_session_id or "<proposed-provider-session>",
+            bundle=bundle,
+        )
+    )
+    if qualified is None:
+        configured_head = shlex.split(command.format(role=seat))
+        if configured_head:
+            argv[: len(configured_head)] = [
+                configured_head[0],
+                *("<redacted:configured-argument>" for _value in configured_head[1:]),
+            ]
+    if qualified is not None:
+        argv += [
+            "--outer_attempt_id",
+            outer_run_id or "<proposed-outer-run>",
+            "--journal_context",
+            REDACTED_RUN_CONTEXT,
+            "--artifact_path",
+            str(qualified.binary),
+            "--artifact_manifest",
+            str(qualified.manifest_path),
+        ]
+    return argv
+
+
+def explain_report(
+    *,
+    seat: str,
+    harness: str,
+    cfg,
+    entry,
+    hive: str | None,
+    workspace: str,
+    bead: str,
+    detached: bool,
+    task_provided: bool,
+    explicit_harness: bool,
+    baml_required: bool,
+    no_hitch: bool,
+) -> dict[str, Any]:
+    """Build the complete side-effect-free, redacted role execution plan."""
+
+    from . import config as config_mod
+    from . import run_journal
+
+    provider = PROVIDER_FOR_HARNESS.get(harness)
+    plan: RoleLaunchPlan | None = None
+    refusal: RoleLaunchRefused | None = None
+    try:
+        plan = resolve_headless_plan(
+            seat,
+            harness,
+            cfg,
+            explicit_harness=explicit_harness,
+            baml_required=baml_required,
+            no_hitch=no_hitch,
+        )
+    except RoleLaunchRefused as exc:
+        refusal = exc
+
+    if plan is not None and plan.backend == "hitch":
+        hitch_command = config_mod.hitch_command(cfg)
+        if shutil.which(hitch_command) is None:
+            refusal = RoleLaunchRefused(
+                "hitch_unavailable", f"direct Hitch executable {hitch_command!r} is unavailable"
+            )
+            plan = None
+
+    runnable = plan is not None
+    outer_run_id = f"run-{uuid.uuid4()}" if runnable else None
+    provider_session_id = f"provider-{uuid.uuid4()}" if runnable else None
+    artifact = plan.artifact if plan else None
+    artifact_report = (
+        _artifact_report(artifact, seat=seat, provider=provider)
+        if artifact is not None
+        else _candidate_artifact_report(seat, provider)
+    )
+    backend = plan.backend if plan else None
+    driver = "baml-harness" if backend == "baml" else "hitch-direct" if backend == "hitch" else None
+    live_source = artifact.manifest.get("live_event_mechanism") if artifact else None
+    live_mechanism = "provider-json" if live_source in SUPPORTED_LIVE_MECHANISMS else "none"
+    execution_provider = plan.provider if plan else provider
+    suitability_mode = (
+        "attached-required"
+        if refusal is not None and refusal.code == "seat_unsuitable"
+        else "headless-safe"
+    )
+    summary = (
+        f"mode={suitability_mode} "
+        f"backend={backend or 'none'} — {plan.detail if plan else refusal.detail}"
+    )
+    return {
+        "schema_version": EXPLAIN_SCHEMA_VERSION,
+        "command": EXPLAIN_COMMAND,
+        "decision": "runnable" if runnable else "refused",
+        "refusal_reasons": []
+        if refusal is None
+        else [{"code": refusal.code, "detail": refusal.detail}],
+        "summary": summary,
+        "request": {
+            "hive": hive,
+            "bead": bead or None,
+            "seat": seat,
+            "provider": provider,
+            "harness": harness,
+            "tier": None,
+            "model": None,
+            "workspace": workspace,
+            "bamlRequired": baml_required,
+            "task": {
+                "provided": task_provided,
+                "content": REDACTED_INSTRUCTIONS if task_provided else None,
+            },
+        },
+        "execution": {
+            "driver": driver,
+            "provider": execution_provider,
+            "entry_point": str(artifact.binary)
+            if artifact
+            else config_entry_point(plan, cfg=cfg, entry=entry, seat=seat),
+            "mode": "detached" if detached else "attached",
+            "baml_driven": backend == "baml",
+            "provider_qualified": artifact is not None,
+            "detail": plan.detail if plan else None,
+        },
+        "artifact": artifact_report,
+        "authority": _safe_authority(artifact),
+        "correlation": {
+            "proposed_outer_run_id": outer_run_id,
+            "proposed_provider_session_id": provider_session_id,
+            "source_instance_id": f"beadhive.role:{outer_run_id}" if outer_run_id else None,
+            "bead_id": bead or None,
+            "assignment": {
+                "work_item_id": bead,
+                "agent_ref": {"seat": seat, "run_id": outer_run_id},
+            }
+            if bead and outer_run_id
+            else None,
+            "state_channel": {
+                "source": "bh stream --scope hive",
+                "authority": "bead-lifecycle",
+            },
+            "runtime_summary_source": "AgentRunSummary",
+            "operator_event_subscription": "OperatorEvent HTTP/SSE",
+            "activity_channel": {
+                "version": run_journal.VERSION,
+                "locator_environment": "BH_RUN_JOURNAL_PATH",
+            },
+        },
+        "observability": {
+            "pre_exit_possible": bool(artifact and live_mechanism != "none"),
+            "mechanism": live_mechanism,
+            "source_mechanism": live_source,
+            "meets_live_evidence_bar": bool(artifact and live_mechanism != "none"),
+        },
+        "argv": {
+            "values": _redacted_argv(
+                plan,
+                seat=seat,
+                workspace=workspace,
+                bead=bead,
+                detached=detached,
+                outer_run_id=outer_run_id,
+                provider_session_id=provider_session_id,
+                cfg=cfg,
+                entry=entry,
+            ),
+            "environment_names": list(run_journal.ENV_FIELDS),
+        },
+    }
+
+
+def config_entry_point(plan: RoleLaunchPlan | None, *, cfg, entry, seat: str) -> str | None:
+    """The configured non-qualified entry point, without starting or probing it."""
+
+    if plan is None:
+        return None
+    from . import config
+
+    if plan.backend == "hitch":
+        return config.hitch_command(cfg)
+    configured = shlex.split(config.dispatch_seat_command(cfg, entry).format(role=seat))
+    return configured[0] if configured else None
 
 
 def create_role_journal(artifact: QualifiedArtifact, *, hive: str, bead: str):
