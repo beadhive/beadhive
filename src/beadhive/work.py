@@ -14,7 +14,7 @@ operation goes through `worktree` / `identity`. Tests use a real git repo and fa
 
 from __future__ import annotations
 
-import asyncio
+import asyncio  # noqa: F401 - injected lifecycle collaborator on the stable facade
 import datetime
 import json
 import os
@@ -36,28 +36,30 @@ from . import (
     ghpr,
     git_linkage,
     guard,
-    host,
+    host,  # noqa: F401 - injected lifecycle collaborator
     identity,
-    jsonout,
-    log,
-    model_routing,
+    jsonout,  # noqa: F401 - injected lifecycle collaborator
+    model_routing,  # noqa: F401 - injected lifecycle collaborator
     otel,
-    registry,
-    release_order,
+    registry,  # noqa: F401 - injected lifecycle collaborator
+    release_order,  # noqa: F401 - injected lifecycle collaborator
     test_report,
     triage_store,
     validation_ledger,
+    work_assignment,
+    work_dispatch,
     work_group,
     work_guards,
     work_intake,
     work_logic,
     work_metrics,
-    work_next,
+    work_next,  # noqa: F401 - injected lifecycle collaborator
     work_reads,
     work_show,
     worktree,
 )
-from . import schedule as schedule_mod
+from . import log as dispatch_log
+from . import schedule as schedule_mod  # noqa: F401 - injected lifecycle collaborator
 from .run import missing_binary, run
 from .work_logic import (
     _MARKER,
@@ -71,6 +73,10 @@ from .work_logic import (
     plan_from_since,
     validate_plan,
 )
+
+# Preserve the historical ``work.log`` patch/import seam without a static binding that collides
+# with the existing local ``log`` variables used by validation and merge helpers.
+globals()["log"] = dispatch_log
 
 # Re-exported for the public/test surface (used by callers, not within this module).
 auto_message = work_logic.auto_message
@@ -430,40 +436,7 @@ def assign(
     `--preview` (read-only): print the worktree provisioning + `--to` identity this call would
     stamp, without touching `bd` or git — the machine-readable pre-flight for an external
     orchestrator (`--json` for the schema)."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    cfg = config.load()
-    if preview:
-        _print_work_preview(cfg, hive, bead, to, op="assign", as_json=as_json)
-        return  # --preview is read-only: never gated ("gate writes, never reads")
-    guard.guard_primary(hive, cfg=cfg, verb="work assign")
-    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
-    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    _guard_orchestrator(actor, bead)  # assign is orchestrator-only (disp//dir/); humans exempt
-    data = bd.show(bead, main)
-    _guard_open(data, bead)
-    _guard_not_other(data, to, bead)
-    _guard_seat(data, to, bead, verb="assigned to")
-    _guard_conventions(cfg, data, bead, main, action="dispatch")
-    # EXPERIMENTAL (cit.5): the coordinator->developer dispatch seam. The coordinator agent loop
-    # hands this bead to a developer crew — emit it as a GenAI `invoke_agent` span, with the brief
-    # carried as a droppable span EVENT (gated no-op when otel is off; see ws.otel).
-    brief_text = _first(data, "description")
-    with otel.record_agent_dispatch(
-        agent=to,
-        model=config.otel_genai_model(cfg),
-        system=config.otel_genai_system(cfg, entry),
-        brief=brief_text,
-        attributes={"bh.bead": bead},
-    ):
-        res = bd.run(["assign", bead, to], main)
-        if res.returncode != 0:
-            raise typer.Exit(res.returncode)
-        _push_state(cfg, main, actor, f"assign {bead} -> {to}")
-        _maybe_open_molecule(cfg, hive, bead, main)
-        entry, target, _branch = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
-        _stamp(cfg, entry, target, to)
-    otel.count_bead_transition("assigned")  # bead id rides the span (set_bead), not the metric
-    typer.echo(f"✓ assigned {bead} → {to}; worktree {target}")
+    return work_assignment.impl_assign(sys.modules[__name__], bead, to, as_, hive, preview, as_json)
 
 
 def _claim_fence(cfg, hive) -> tuple[str, int]:
@@ -476,11 +449,7 @@ def _claim_fence(cfg, hive) -> tuple[str, int]:
     Degrades to the unfenced `("", 0)` rather than failing the claim: a host that never ran
     `bh config init`, or a factory that never adopted anything, has no token to mint and must
     keep working exactly as before."""
-    try:
-        this_host = host.host_id()
-    except FileNotFoundError:
-        this_host = ""  # identity not minted (never ran `bh config init`): unfenced
-    return this_host, guard.live_epoch(hive, cfg=cfg)
+    return work_assignment.impl__claim_fence(sys.modules[__name__], cfg, hive)
 
 
 def _issue_claim(cfg, entry, bead, actor, target, hive="") -> None:
@@ -491,9 +460,9 @@ def _issue_claim(cfg, entry, bead, actor, target, hive="") -> None:
 
     The record is also stamped with this host's fencing token (bh-ytbb.10) so `submit` can catch
     a claim that outlived the host lease it was taken under — see `_guard_claim_fence`."""
-    authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
-    this_host, epoch = _claim_fence(cfg, hive)
-    authority.issue(bead, actor, target, host_id=this_host, epoch=epoch)
+    return work_assignment.impl__issue_claim(
+        sys.modules[__name__], cfg, entry, bead, actor, target, hive
+    )
 
 
 @app.command("claim")
@@ -521,80 +490,22 @@ def claim(
     `--preview` (read-only, single bead only): print the worktree provisioning + identity this
     call would stamp, without touching `bd` or git — the machine-readable pre-flight for an
     external orchestrator (`--json` for the schema)."""
-    cfg = config.load()
-    group = work_logic.opt_str(group)
-    collapse = work_logic.opt_str(collapse)
-    if preview:
-        if collapse or group:
-            typer.echo("✗ --preview supports a single <id> only (no --group/--collapse)", err=True)
-            raise typer.Exit(1)
-        if not bead:
-            typer.echo("✗ pass a bead <id>", err=True)
-            raise typer.Exit(1)
-        entry, _main, _target, _branch = worktree.locate(cfg, hive, bead)
-        actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-        _print_work_preview(cfg, hive, bead, actor, op="claim", as_json=as_json)
-        return  # --preview is read-only: never gated ("gate writes, never reads")
-    guard.guard_primary(hive, cfg=cfg, verb="work claim")
-    if collapse:
-        if bead or group:
-            typer.echo("✗ pass either <id>, --group, or --collapse — not more than one", err=True)
-            raise typer.Exit(1)
-        work_group.claim_collapsed(cfg, hive, collapse, as_)
-        return
-    if group:
-        if bead:
-            typer.echo("✗ pass either <id> or --group, not both", err=True)
-            raise typer.Exit(1)
-        work_group.claim_group(cfg, hive, group, as_)
-        return
-    if not bead:
-        typer.echo("✗ pass a bead <id> (or --group <ids> for a batch)", err=True)
-        raise typer.Exit(1)
-    _claim_single_bead(cfg, hive, bead, as_)
+    return work_assignment.impl_claim(
+        sys.modules[__name__], bead, as_, group, collapse, hive, preview, as_json
+    )
 
 
 def _claim_single_bead(cfg, hive, bead, as_) -> None:
     """The single-bead claim: re-attach/provision the worktree with `actor`'s identity, refuse
     if it's someone else's or the wrong seat, then `bd update --claim` (→ in_progress)."""
-    otel.set_bead(bead)  # stamp ws.bead/ws.epic on this verb span
-    entry, main, _target, _branch = worktree.locate(cfg, hive, bead)
-    _pull_state(cfg, main)  # see current state first — an assignment may have landed elsewhere
-    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    data = bd.show(bead, main)
-    _guard_open(data, bead)
-    _guard_not_other(data, actor, bead)
-    _guard_seat(data, actor, bead, verb="claimed by")
-    _guard_conventions(cfg, data, bead, main, action="dispatch")
-    _maybe_open_molecule(cfg, hive, bead, main)
-    entry, target, _branch = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
-    _stamp(cfg, entry, target, actor)
-    _issue_claim(cfg, entry, bead, actor, target, hive)
-    res = bd.run(["update", bead, "--claim"], main, actor=actor)
-    if res.returncode != 0:
-        raise typer.Exit(res.returncode)
-    otel.count_bead_transition("claimed")  # bead id rides the span (set_bead), not the metric
-    typer.echo(f"✓ claimed {bead} as {actor}; worktree {target}")
-    _print_brief(cfg, entry, bead, data)
-    if not worktree.in_bead_worktree(target):
-        typer.echo(
-            f"\nWARNING: cwd is not the bead worktree — edits here target the wrong tree.\n"
-            f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
-            err=True,
-        )
+    return work_assignment.impl__claim_single_bead(sys.modules[__name__], cfg, hive, bead, as_)
 
 
 def _batch_member_procedure_msg(bead, grp) -> str:
     """The error a per-bead `submit`/`check` on a BATCH member gets instead of the misleading
     "claim it first": a batch member has no per-bead worktree — the whole batch lives in the ONE
     shared `wt/batch/<grp>` worktree and completes as a UNIT (bh-n5z3.7)."""
-    alias = config.BINARY_ALIAS
-    return (
-        f"✗ {bead} is a batch member (batch:{grp}) — it has no per-bead worktree.\n"
-        f"  Batch work happens in the ONE shared worktree wt/batch/{grp} and completes as a UNIT:\n"
-        f"      {alias} work submit --group <ids>   # one review gate for the whole batch\n"
-        f"      {alias} work merge --group <ids>    # after approval"
-    )
+    return work_assignment.impl__batch_member_procedure_msg(sys.modules[__name__], bead, grp)
 
 
 def _batch_worktree(cfg, hive, bead, main):
@@ -605,11 +516,7 @@ def _batch_worktree(cfg, hive, bead, main):
     is absent. A batch member's artifact is ALWAYS the shared worktree: any `wt/bead/<type>/<id>`
     dir is a stray from a per-bead verb and holds none of the group's work, so callers must key on
     the returned group and never on that dir's existence."""
-    grp = work_group.batch_label(bd.show(bead, main))
-    if not grp:
-        return "", None
-    target = worktree.locate(cfg, hive, branch=f"{work_group.BATCH_PREFIX}{grp}")[2]
-    return grp, (target if target.exists() else None)
+    return work_assignment.impl__batch_worktree(sys.modules[__name__], cfg, hive, bead, main)
 
 
 # ---- next: the optimistic pick → claim → re-verify loop ----------------------
@@ -656,14 +563,7 @@ def _next_seat_actor(actor: str, data) -> str | None:
     - `actor` declares a seat that MATCHES the candidate's shape: returns `actor` unchanged.
     - `actor` declares a seat that MISMATCHES: returns `None` — the caller is refused this
       candidate rather than trusted, matching `_guard_seat`'s epic/leaf split exactly."""
-    want = "dispatcher" if _is_epic(data) else "developer"
-    declared = _seat_of(actor)
-    if declared == "":
-        prefix = _DISP_PREFIX if want == "dispatcher" else _DEV_PREFIX
-        return f"{prefix}{actor}"
-    if declared == want:
-        return actor
-    return None
+    return work_dispatch.impl__next_seat_actor(sys.modules[__name__], actor, data)
 
 
 def _molecule_members(epic: str, main) -> set[str]:
@@ -683,11 +583,7 @@ def _molecule_members(epic: str, main) -> set[str]:
     A member that `bd ready` did not return is still not claimable: this filter only ever REMOVES
     rows from the ready set. `bd` stays the authority on blocking.
     """
-    rows = bd.json(["list", "--parent", epic, "--include-infra", "--all"], main) or []
-    members = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
-    members.add(epic)
-    members.discard("")
-    return members
+    return work_dispatch.impl__molecule_members(sys.modules[__name__], epic, main)
 
 
 def _next_payload(
@@ -710,21 +606,19 @@ def _next_payload(
     independent of whether the call ultimately claimed something else. `worktree`/`identity` are
     `None` on a decline or refusal (nothing was provisioned) and populated once a claim is won and
     provisioned (bh-qczj.2)."""
-    return jsonout.envelope(
-        "work next",
-        NEXT_SCHEMA,
-        {
-            "status": status,
-            "bead": claimed,
-            "actor": claim_actor if claimed else actor,
-            "seat": _seat_of(claim_actor if claimed else actor),
-            "hive": hive,
-            "worktree": worktree_path or None,
-            "identity": ident,
-            "reason": reason,
-            "tried": list(tried),
-            "refused": list(refused),
-        },
+    return work_dispatch.impl__next_payload(
+        sys.modules[__name__],
+        hive,
+        actor,
+        claimed,
+        claim_actor,
+        rows,
+        tried,
+        refused,
+        status,
+        reason,
+        worktree_path,
+        ident,
     )
 
 
@@ -735,10 +629,7 @@ def _try_claim(bead, actor, main) -> bool:
     outright, but a ZERO claim proves nothing — `bd` will happily hand the same bead to a second
     caller. `work_next.claim_won` decides from the re-read row, so the verdict is a pure function
     of what the store actually says rather than of an exit code."""
-    res = bd.run(["update", bead, "--claim"], main, actor=actor)
-    if res.returncode != 0:
-        return False
-    return work_next.claim_won(bd.show(bead, main), actor)
+    return work_assignment.impl__try_claim(sys.modules[__name__], bead, actor, main)
 
 
 def _release_claim(main, bead, actor, detail: str = "") -> None:
@@ -752,10 +643,7 @@ def _release_claim(main, bead, actor, detail: str = "") -> None:
     text-matching conflate "the reviewer bounced this" with "the disk was full" (state.py's
     module docstring, "Dispatcher failure dimensions"; bh-qczj.2's NOTES field). `detail`
     (typically the provisioning exception's message) rides as `--reason` for the operator."""
-    record_dispatch_failure(
-        bead, "provisioning_failed", detail or "provisioning_failed", main, actor=actor
-    )
-    bd.run(["update", bead, "--status", "open", "--assignee", ""], main, actor=actor)
+    return work_assignment.impl__release_claim(sys.modules[__name__], main, bead, actor, detail)
 
 
 def _provision_claim(cfg, hive, main, bead, actor):
@@ -766,23 +654,9 @@ def _provision_claim(cfg, hive, main, bead, actor):
 
     Any failure here releases the claim (`_release_claim`) before re-raising, so a caller of
     `bh work next` never observes `status: claimed` for a bead with no worktree behind it."""
-    try:
-        data = bd.show(bead, main)
-        entry, target, _br = worktree.ensure(cfg, hive, bead, kind=_kind_of(data))
-        _stamp(cfg, entry, target, actor)
-        _issue_claim(cfg, entry, bead, actor, target, hive)
-    except Exception as exc:
-        _release_claim(main, bead, actor, detail=str(exc))
-        raise
-    prof = config.work_identity(cfg, entry, actor)
-    ident = {
-        "mode": prof["mode"],
-        "name": actor or prof["name"] or "",
-        "email": prof["email"] or "",
-        "signing_key": prof["signing_key"] or "",
-        "sign": prof["sign"],
-    }
-    return str(target), ident
+    return work_assignment.impl__provision_claim(
+        sys.modules[__name__], cfg, hive, main, bead, actor
+    )
 
 
 @app.command("next")
@@ -818,85 +692,7 @@ def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False, epic: _
         mismatched every candidate it could otherwise have taken; the caller asked for something
         it is never allowed to have, not "try again later". (Not exit 2 — typer/click already
         owns that for its own usage errors.)"""
-    cfg = config.load()
-    guard.guard_primary(hive, cfg=cfg, verb="work next")
-    main = registry.hive_dir_for(cfg, hive)
-    # `or {}`: a hive dir that resolves to no registered entry still has a queue to serve — fall
-    # back to the global work defaults rather than failing a poll on a config lookup.
-    entry = registry.entry_for_dir(cfg, main) or {}
-    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    _pull_state(cfg, main)  # see the CURRENT queue: a claim may have landed on another host
-    # `--limit 0` = the WHOLE ready set. `bd ready` caps at 100 rows by default, and an
-    # unattended driver polling a truncated queue would never claim anything past position 100
-    # — silently, since a truncated read is indistinguishable from a short one. This verb is
-    # exactly the caller that cannot notice (bh-fruer, P0); `bh work ready --json` already
-    # signals truncation out of band via READY_TRUNCATED_EXIT for the callers that can.
-    rows = [r for r in (bd.json(["ready", "--limit", "0"], main) or []) if isinstance(r, dict)]
-    if epic:
-        # Hoisted deliberately: `_molecule_members` shells out to `bd`, so evaluating it inside
-        # the comprehension would spawn one subprocess PER READY BEAD.
-        members = _molecule_members(epic, main)
-        rows = [r for r in rows if str(r.get("id") or "") in members]
-    rows_by_id = {str(r.get("id") or ""): r for r in rows}
-    tried: list[str] = []
-    refused: list[str] = []
-    claimed = ""
-    worktree_path = ""
-    ident: dict | None = None
-    claim_actor = actor
-    for bead in work_next.eligible(rows, actor):
-        seat_actor = _next_seat_actor(actor, rows_by_id.get(bead, {}))
-        if seat_actor is None:
-            refused.append(bead)
-            continue
-        tried.append(bead)
-        if _try_claim(bead, seat_actor, main):
-            claimed = bead
-            claim_actor = seat_actor
-            otel.set_bead(bead)  # stamp ws.bead/ws.epic once this tick knows which bead it took
-            otel.count_bead_transition("claimed")
-            worktree_path, ident = _provision_claim(cfg, hive, main, bead, actor)
-            break
-    if claimed:
-        status, reason = "claimed", ""
-    elif refused and not tried:
-        # Every candidate that survived the ordinary filters was refused for a seat mismatch —
-        # nothing else could ever have been claimed this tick, so this is not "nothing right now".
-        status, reason = "refused", "seat_mismatch"
-    else:
-        status, reason = "declined", work_next.decline(rows, tried)
-    if as_json:
-        jsonout.emit(
-            _next_payload(
-                _hive(entry),
-                actor,
-                claimed,
-                claim_actor,
-                rows,
-                tried,
-                refused,
-                status,
-                reason,
-                worktree_path,
-                ident,
-            )
-        )
-    elif claimed:
-        typer.echo(f"✓ claimed {claimed} as {claim_actor}; worktree {worktree_path}")
-    elif status == "refused":
-        want = ", ".join(refused)
-        typer.echo(
-            f"✗ {actor} declares a seat that does not match {want} — "
-            f"an epic may only be worked by {_DISP_PREFIX}<name>, any other bead only by "
-            f"{_DEV_PREFIX}<name>",
-            err=True,
-        )
-    else:
-        typer.echo(f"— nothing to claim ({reason})", err=True)
-    if status == "refused":
-        raise typer.Exit(NEXT_REFUSE_EXIT)
-    if not claimed:
-        raise typer.Exit(NEXT_DECLINE_EXIT)
+    return work_dispatch.impl_next_(sys.modules[__name__], as_, hive, as_json, epic)
 
 
 _LoopPasses = Annotated[
@@ -974,107 +770,9 @@ def loop(
     `tests/fixtures/stub_seat.py` is the reference contract-implementing stub. Answers "does the
     full mechanical path work against MY corpus, without an agent spending tokens?".
     """
-    cfg = config.load()
-    guard.guard_primary(hive, cfg=cfg, verb="work loop")
-    main = registry.hive_dir_for(cfg, hive)
-    entry = registry.entry_for_dir(cfg, main) or {}
-    actor = identity.resolve_actor(as_, config.work_identity(cfg, entry)["name"] or "")
-    otel.set_bead(epic)
-
-    # Unattended dispatch (bh-e7r9q.5) tees this loop's structured events into the hive's ONE
-    # aggregate sink by setting this before spawning `bh work loop <epic>` as a child process —
-    # see beadhive.dispatch_log's module docstring for the concurrent-writer contract that
-    # makes several loops appending to the same file safe. A human running `bh work loop`
-    # directly never sets it, so this is a no-op outside unattended dispatch.
-    dispatch_sink = os.environ.get("BH_DISPATCH_LOG_SINK", "").strip()
-    if dispatch_sink:
-        log.add_file_sink(dispatch_sink)
-
-    from . import localloop
-
-    driver = localloop.LocalLoop(
-        hive_dir=main,
-        epic=epic,
-        actor=actor,
-        caps=localloop.Caps(
-            max_concurrency=config.dispatch_max_concurrency(cfg, entry),
-            max_run_seconds=config.dispatch_max_run_seconds(cfg, entry),
-        ),
-        seat_command=seat_binary or config.dispatch_seat_command(cfg, entry),
-        # NOT passed alongside `--seat-binary` (bh-xrg1f): that flag substitutes a different
-        # binary with a different contract — the reference stub harness takes no `--bundle` and
-        # would die on argv it has never heard of. The bundle belongs to the real `bh-<role>`
-        # seats it is a roster for.
-        seat_bundle="" if seat_binary else config.dispatch_seat_bundle(cfg, entry),
-        poll_interval=config.dispatch_poll_interval(cfg, entry),
-        envelope_grace=config.dispatch_envelope_grace(cfg, entry),
-        terminate_grace=config.dispatch_terminate_grace(cfg, entry),
-        max_action_retries=config.dispatch_max_action_retries(cfg, entry),
-        lease=localloop.lease_keeper_for(hive, cfg=cfg, hive_dir=main),
-        dry_run=dry_run,
+    return work_dispatch.impl_loop(
+        sys.modules[__name__], epic, as_, hive, passes, as_json, dry_run, seat_binary
     )
-
-    def _emit(report) -> None:
-        """Render ONE pass, the moment it ends.
-
-        `--help` promises "one JSON pass report per line", and a caller tailing this — the whole
-        reason `bh host dispatch run` spawns it with `--json` — needs it to be a stream. Emitting
-        after `run()` returned made it a batch: with `--passes 0` (the supervised default) that
-        is nothing at all until the molecule lands, hours later, while the accumulated list of
-        reports grows unboundedly in memory for the entire run."""
-        if as_json:
-            jsonout.emit(report.as_dict())
-            return
-        decision = report.decision
-        prefix = "[DRY RUN] " if report.dry_run else ""
-        typer.echo(
-            f"{prefix}pass {report.number}: {decision.row if decision else '—'} "
-            f"→ {decision.action if decision else '—'} "
-            f"(dispatched {len(report.dispatched)}, harvested {len(report.harvested)}, "
-            f"reclaimed {len(report.reclaimed)})"
-        )
-        if report.dry_run and decision and decision.action == "dispatch":
-            # Name the two sets separately (bh-sh6yt). `decision.beads` alone reads as a dispatch
-            # plan and is not one — it is the count bound, and it lists beads `bd` reports as
-            # blocked. Printing only the honest set would hide why the budget is the size it is,
-            # so print both and label which is which.
-            typer.echo(
-                f"{prefix}  would claim: "
-                f"{', '.join(report.claimable) if report.claimable else '(none — all blocked)'}"
-            )
-            typer.echo(
-                f"{prefix}  budget bound (NOT a plan; may include blocked beads): "
-                f"{', '.join(decision.beads)}"
-            )
-
-    if dry_run:
-        # LOUD in the human output too, not only on the event record — a dry run must never be
-        # mistaken for a real one. `err=True` keeps `--json` stdout a clean record stream.
-        #
-        # LOWER BOUND, NOT A FORECAST (bh-3xl60 review). `reclaim` is skipped in dry_run because
-        # it writes (see run_pass's docstring), so this decision is computed WITHOUT stale
-        # `in_progress` beads first being reverted to ready. A real pass reclaims first, so it
-        # can see (and dispatch) beads this preview never considered — a real run can therefore
-        # do MORE than shown here, never less.
-        typer.echo(
-            "⚠ DRY RUN — decide-only: nothing will be claimed, provisioned, spawned, or "
-            "written to any bead. This is a LOWER BOUND: reclaim is skipped (it writes), so a "
-            "real pass may see additional beads freed from stale claims and dispatch more than "
-            "shown here.",
-            err=True,
-        )
-        # A dry pass never changes anything it reads, so a second pass would just recompute the
-        # same decision (or spin forever under the default --passes 0). One pass is the whole
-        # answer to "what would this loop do right now".
-        run_passes = 1
-    else:
-        run_passes = passes or None
-
-    asyncio.run(driver.run(max_passes=run_passes, on_pass=_emit))
-    # A halt is not success: something is waiting on a human, and an exit 0 would let a
-    # supervisor's restart-on-failure policy treat a stalled molecule as a completed one.
-    if driver.halted:
-        raise typer.Exit(1)
 
 
 @app.command("check")
@@ -1261,15 +959,7 @@ def _merged_batch_groups(cfg, entry, main, beads) -> set[str]:
     """The `batch:<group>` names among `beads` whose group branch `wt/batch/<group>` already merged
     into integration — dead labels a re-parent/split can leave behind (bh-bfoy). Scheduling must not
     resurrect these as a batch. A group with no branch yet (never claimed) is live, not merged."""
-    integration = config.integration_branch(cfg, entry)
-    groups = {schedule_mod.batch_group(b) for b in beads}
-    groups.discard("")
-    merged: set[str] = set()
-    for g in groups:
-        branch = f"{worktree.WT_PREFIX}{worktree.BATCH_BRANCH_PREFIX}{g}"
-        if worktree._branch_exists(main, branch) and worktree.is_merged(entry, branch, integration):
-            merged.add(g)
-    return merged
+    return work_dispatch.impl__merged_batch_groups(sys.modules[__name__], cfg, entry, main, beads)
 
 
 def schedule_payload(epic: str, cfg, entry, main) -> dict:
@@ -1281,111 +971,7 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     raises ``ValueError`` when ``epic`` is not found in this hive so callers can map the
     error to the appropriate surface (``typer.Exit`` or MCP ``ResourceError``).
     """
-    children = bd.json(["list", "--parent", epic], main)
-    if not isinstance(children, list):
-        raise ValueError(f"cannot list children of {epic} — is it an epic in this hive?")
-    beads = [c for c in children if str(c.get("status", "")) != "closed"]
-    by_id = {str(b.get("id")): b for b in beads if b.get("id")}
-    # lazy: localloop is a heavy asyncio module, only its headless_capable() is needed here.
-    from . import localloop
-
-    # Honor work.dispatch.mode: fanout (default, one-per-worktree) stays the plain plan; collapsed
-    # forces a single group past the guards; auto asks the cost model whether to collapse.
-    mode = config.dispatch_mode(cfg, entry)
-    max_size = config.batch_max_size(cfg, entry)
-    collapse = mode == "collapsed" or (
-        mode == "auto"
-        and schedule_mod.auto_should_collapse(beads, budget=config.dispatch_auto_budget(cfg, entry))
-    )
-    if collapse:
-        sched = schedule_mod.plan_schedule(
-            beads,
-            max_size=max_size,
-            force_single_group=True,
-            max_beads_per_session=config.dispatch_max_beads_per_session(cfg, entry),
-        )
-    else:
-        merged_groups = _merged_batch_groups(cfg, entry, main, beads)
-        sched = schedule_mod.plan_schedule(beads, max_size=max_size, merged_groups=merged_groups)
-
-    routes = config.routing_tiers(cfg, entry)
-    policy = config.routing_policy(cfg, entry)
-    harness = config.harness_name(cfg, entry)
-    gateway = model_routing.GatewayAvailabilityAdapter()
-    defaults = model_routing.HarnessAvailabilityAdapter()
-    dev_availability = model_routing.discover_availability(
-        routes,
-        role="developer",
-        harness=harness,
-        gateway=gateway,
-        harness_defaults=defaults,
-    )
-    coord_availability = model_routing.discover_availability(
-        routes,
-        role="dispatcher",
-        harness=harness,
-        gateway=gateway,
-        harness_defaults=defaults,
-    )
-
-    def _decision(ids, *, role, availability):
-        members = [by_id[i] for i in ids if i in by_id]
-        decision = schedule_mod.resolve_launch_decision(
-            members,
-            policy=policy,
-            role=role,
-            harness=harness,
-            routes=routes,
-            availability=availability,
-        )
-        result = decision.as_dict()
-        # Compatibility window: old consumers read `model`. It now aliases the selected canonical
-        # provider/model (or null on a blocked decision); new consumers must use selected_model.
-        result["model"] = result["selected_model"]
-        # bh-6t49w.7: surface headless suitability alongside the model decision — reuses
-        # `localloop.headless_capable`'s own closed roster (ROLE_FOR_ACTION), no second
-        # predicate. `role` here is the launch seat ("developer"/"dispatcher"), the same value
-        # already threaded through `resolve_launch_decision`.
-        result["mode"] = (
-            "headless-safe" if localloop.headless_capable(role) else "attached-required"
-        )
-        return result
-
-    # Dispatch-by-type (xn3o.8): child epics dispatch to nested COORDINATORS, one seat each, at
-    # their own model tier. Live Task nesting is bounded by work.dispatch.max_depth — at depth 0 a
-    # nested coordinator can't be a Task, so a child epic runs as a SEPARATE supervised session.
-    max_depth = config.dispatch_max_depth(cfg, entry)
-    coord_dispatch = "nested-coordinator Task" if max_depth >= 1 else "separate supervised session"
-
-    groups = [
-        {
-            "kind": g.kind,
-            "ids": list(g.ids),
-            "reason": g.reason,
-            **_decision(g.ids, role="developer", availability=dev_availability),
-        }
-        for g in sched.groups
-    ]
-    coordinators = [
-        {
-            "id": c,
-            "dispatch": coord_dispatch,
-            **_decision([c], role="dispatcher", availability=coord_availability),
-        }
-        for c in sched.coordinators
-    ]
-    singletons = [
-        {"id": singleton, **_decision([singleton], role="developer", availability=dev_availability)}
-        for singleton in sched.singletons
-    ]
-    payload = {
-        "groups": groups,
-        "singletons": singletons,
-        "coordinators": coordinators,
-        "max_depth": max_depth,
-    }
-    _apply_start_gating(payload, beads, cfg, entry)
-    return payload
+    return work_dispatch.impl_schedule_payload(sys.modules[__name__], epic, cfg, entry, main)
 
 
 def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
@@ -1395,26 +981,7 @@ def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
     key. When `release.strategy` is UNSET (the default / every hive today) this is a no-op, so the
     payload stays byte-identical to the pre-release FCFS/dep-order plan. Mutates `payload` in place.
     """
-    strategy = str(config.release_value(cfg, entry, "strategy", "") or "")
-    if not strategy:
-        return  # not opted in — today's FCFS behavior, output unchanged
-    ordering = release_order.order_beads(
-        beads,
-        strategy=strategy,
-        fix_churn_budget=config.release_fix_churn_budget(cfg, entry),
-    )
-    deferrals = schedule_mod.start_gate(
-        beads, ordering.order, estimator=config.release_conflict_estimator(cfg, entry)
-    )
-    for _d in deferrals:
-        otel.record_deferred_start({"bh.release.strategy": strategy})
-    payload["release"] = {
-        "strategy": strategy,
-        "order": list(ordering.order),
-        "deferred": [
-            {"id": d.id, "likelihood": d.likelihood, "reason": d.reason} for d in deferrals
-        ],
-    }
+    return work_dispatch.impl__apply_start_gating(sys.modules[__name__], payload, beads, cfg, entry)
 
 
 @app.command("schedule")
@@ -1428,53 +995,7 @@ def schedule(
     (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
     wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
     `bh work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
-    cfg = config.load()
-    entry, main, _target, _branch = worktree.locate(cfg, hive, epic)
-    try:
-        payload = schedule_payload(epic, cfg, entry, main)
-    except ValueError as exc:
-        typer.echo(f"✗ {exc}", err=True)
-        raise typer.Exit(1) from None
-    if as_json:
-        typer.echo(json.dumps(payload, indent=2))
-        return
-    if not payload["groups"] and not payload["singletons"] and not payload["coordinators"]:
-        typer.echo("(no open children to schedule)")
-        return
-
-    def _routing_diagnostics(item):
-        for warning in item.get("warnings", []):
-            typer.echo(f"    ⚠ {warning}")
-        if item.get("blocked"):
-            typer.echo(f"    ✗ {item['selection_reason']}; {item['remediation']}")
-
-    for c in payload["coordinators"]:
-        model = c["selected_model"] or "BLOCKED"
-        typer.echo(f"◆ coordinator {c['id']}  — child epic → {c['dispatch']} (model: {model})")
-        _routing_diagnostics(c)
-    for g in payload["groups"]:
-        typer.echo(
-            f"▸ group [{g['kind']}] {', '.join(g['ids'])}  — {g['reason']} "
-            f"(model: {g['selected_model'] or 'BLOCKED'})"
-        )
-        # A scheduler-forced collapsed group carries no batch:<group> label yet — print the exact
-        # claim it implies so the operator doesn't have to self-label first (bh-n5z3.5); claim
-        # self-heals the label from the shared parent epic.
-        if g["kind"] == "collapsed":
-            typer.echo(f"    → {config.BINARY_ALIAS} work claim --group {','.join(g['ids'])}")
-        _routing_diagnostics(g)
-    deferred = {d["id"]: d for d in payload.get("release", {}).get("deferred", [])}
-    for singleton in payload["singletons"]:
-        bead_id = singleton["id"]
-        if bead_id in deferred:
-            typer.echo(
-                f"⏸ deferred {bead_id}  — {deferred[bead_id]['reason']} "
-                "(start-gate: hold behind queue)"
-            )
-        else:
-            model = singleton["selected_model"] or "BLOCKED"
-            typer.echo(f"· single {bead_id} (model: {model})")
-            _routing_diagnostics(singleton)
+    return work_dispatch.impl_schedule(sys.modules[__name__], epic, hive, as_json)
 
 
 def _guard_fork_remote(entry, remote) -> None:
