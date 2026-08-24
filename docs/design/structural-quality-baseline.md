@@ -137,48 +137,119 @@ module will fail these tests even if the original name still imports.
 
 ## Closeout at the assembled container tip
 
-Closeout source commit: `cf0aeb417f03104f69a27a8bc805a5baea78ec4a`
-(`chore(merge): bead bh-1jhk4.11`, measured 2026-08-24 UTC). This is the assembled container tip
-after children `.1` through `.11`; the two deterministic closeout tests described below are the
-only subsequent changes in `.12` before this ledger was written.
+Assembled source commit: `cf0aeb417f03104f69a27a8bc805a5baea78ec4a`
+(`chore(merge): bead bh-1jhk4.11`). Final structural evidence source:
+`712ac29580d1f1873380bdfad80c35e067c33721` (`refactor(config): remove facade service import
+cycles`), measured 2026-08-24 UTC. The latter includes the closeout correction described below
+and is the exact commit named by the final RepoWise index.
 
-The same Python, pytest, xdist, pytest-cov, coverage.py, worker count, selection, and statement
-coverage mode recorded in the baseline produced 5,944 passed, 12 skipped, and the same known
-asyncio subprocess-cleanup warning in 108.87 seconds. The machine-readable sources are
-`/tmp/bh-1jhk4-12-final-coverage.json` and `.xml`; like the baseline artifacts they are generated,
-gitignored evidence rather than repository inputs.
+Python 3.13.5, pytest 9.1.1, xdist 3.8.0 (24 workers), pytest-cov 7.1.0, and coverage.py 7.15.3
+ran the same non-integration statement-coverage selection. It produced 5,950 passed and 12
+skipped in 102.03 seconds. The machine-readable sources are
+`/tmp/bh-1jhk4-12-cyclefix-coverage.json` and `.xml`; like the baseline artifacts they are
+generated, gitignored evidence rather than repository inputs.
 
 ### Before/after structural result
 
 Physical lines count the checked-in files with `wc -l`; executable statement counts and coverage
-come from coverage.py. RepoWise 0.45.0 was explicitly refreshed to the closeout commit: its state
-records `last_sync_commit=cf0aeb41...`, 3,813 knowledge-graph nodes, four layers, and 12 tour
-steps. Its full analysis indexed 12,636 internal nodes and 36,176 edges. The health comparison is
-between the baseline table above and that exact-tip refresh.
+come from coverage.py. RepoWise 0.45.0 was explicitly refreshed to the final evidence commit: its
+state records `last_sync_commit=712ac295...`. The persisted knowledge graph contains 3,821 nodes
+and 5,708 edges, compared with 3,791 nodes and 5,581 edges at the named baseline. The health
+comparison is between the baseline table above and that exact-tip refresh.
 
 | Scope | Physical lines before -> after | Statements before -> after | Coverage before -> after | RepoWise health before -> after |
 |---|---:|---:|---:|---:|
-| all `src/beadhive` | n/a | 26,610 -> 27,482 | 23,855 / 26,610 (89.6467%) -> 24,681 / 27,482 (89.8079%) | average 7.03 / hotspot 4.58 -> average 7.34 / hotspot 5.54 |
+| all `src/beadhive` | n/a | 26,610 -> 27,511 | 23,855 / 26,610 (89.6467%) -> 24,709 / 27,511 (89.8150%) | average 7.03 / hotspot 5.21 -> average 7.29 / hotspot 5.46 |
 | `work.py` facade | 4,044 -> 1,749 (-56.8%) | 1,682 -> 469 | 82.5803% -> 95.3092% | 1.96 -> 4.81 |
-| `config.py` facade | 2,613 -> 363 (-86.1%) | 984 -> 167 | 96.5447% -> 99.4012% | 3.21 -> 5.18 |
+| `config.py` facade | 2,613 -> 395 (-84.9%) | 984 -> 183 | 96.5447% -> 99.4536% | 3.21 -> 5.18 |
 | `worktree.py` facade | 2,917 -> 1,477 (-49.4%) | 1,311 -> 672 | 84.3631% -> 89.2857% | 2.79 -> 4.07 |
 
-The program changed 38 files by 9,594 insertions and 6,628 deletions; production source accounts
-for 8,101 insertions and 6,612 deletions. That churn is intentionally concentrated in extracting
+The program changed 42 files by 9,883 insertions and 6,628 deletions; production source accounts
+for 8,158 insertions and 6,612 deletions. That churn is intentionally concentrated in extracting
 service modules and executable boundary tests. The three old import locations remain facades, so
 their broad caller fan-in and test patch points do not migrate to every service file. Work now
 delegates reads, intake, assignment/dispatch, submission, merge/refine, grouping, and shared
 logic; config delegates paths/store, editing/partition, schema/policy/validation, release, and
 typed settings; worktree delegates verification/git, inventory/cleanup, and merge mechanics.
 
+The repository-wide health cells use the same reproducible command against both exact indexes:
+`repowise status <path> --no-workspace --format json`. The earlier coverage-aware baseline
+snapshot above recorded hotspot 4.58 after coverage ingestion; an initial closeout health pass
+similarly printed 7.34 / 5.54. RepoWise does not retain those transient aggregate snapshots with
+enough provenance to replay them. The same-surface status comparison (7.03 / 5.21 to 7.29 /
+5.46) is therefore the durable aggregate comparison; per-file context scores below retain their
+exact indexed coverage.
+
+### Complexity, dependent fan-in, churn, and risk
+
+`repowise context --include metrics --include callers --include health --full` and
+`repowise risk --target ... --full` reported the following values from indexes whose metadata
+names the two commits. Fan-in is RepoWise `dependents_count`/graph `in_degree`, not a grep count;
+complexity is its maximum cyclomatic complexity and nesting, with NLOC shown so movement is not
+mistaken for an algorithmic improvement alone.
+
+| Facade | Max CCN | Max nesting | NLOC | Dependents | Hotspot score |
+|---|---:|---:|---:|---:|---:|
+| `work.py` | 22 -> 9 | 3 -> 2 | 3,256 -> 1,378 | 22 -> 26 | 99.8188% -> 100.0000% |
+| `config.py` | 18 -> 12 | 3 -> 2 | 1,909 -> 223 | 204 -> 213 | 94.7464% -> 98.9744% |
+| `worktree.py` | 14 -> 10 | 4 -> 3 | 2,365 -> 1,109 | 44 -> 53 | 96.1957% -> 99.6569% |
+
+Complexity falls for all three facades while dependent fan-in rises because the facades remain
+the supported import surface and new executable boundary tests and service modules depend on
+them. The hotspot score also rises: its history window now contains the extraction itself. The
+90-day churn factors move from +1,326/-173 to +1,620/-2,762 for work, +652/-47 to
++1,042/-2,655 for config, and +733/-126 to +922/-1,755 for worktree. These are expected
+refactor-history and compatibility-fan-in penalties, not claims that behavior became safer merely
+because files became smaller; the health and coverage improvements are the counter-evidence.
+
+The immutable change-range command
+`repowise risk c0baa210...712ac295 --baseline 0 --full` scores the program 9.9 in the `high`
+fallback band: 42 files, 9,883 additions, 6,628 deletions, three directories, three subsystems,
+and entropy 4.2749. Its fix-history density is 12.122 (97.1st percentile); facade churn/fix
+pressure is work 2,883/38.25, config 2,574/19.26, and worktree 1,814/22.02. `--baseline 0` makes
+the commit-range score reproducible but deliberately supplies no sampled `risk_percentile` or
+`review_priority`; RepoWise has no stored before/after scalar risk snapshot. Target hotspot and
+range risk are reported separately rather than inventing that missing comparison.
+
+### Cycles and architecture conformance
+
+RepoWise 0.45.0 has no `graph`/cycle command and exposes no conformance score or field that can
+substantiate the design phrase “10/10.” The closest stable evidence is its persisted exact-tip
+knowledge graph. A deterministic strongly-connected-component pass over only its
+`file:src/beadhive/*.py` nodes and `imports` edges gives:
+
+| Graph measurement | Baseline | Closeout |
+|---|---:|---:|
+| Python files / import edges | 123 / 664 | 144 / 731 |
+| Cyclic SCCs | 6 | 6 |
+| Files in cyclic SCCs | 59 | 59 |
+| Largest cyclic core | 44 | 44 |
+| SCC sizes | 44, 6, 3, 2, 2, 2 | 44, 6, 3, 2, 2, 2 |
+| Architecture layers / modules / tour steps | 4 / 8 / 12 | 4 / 8 / 12 |
+| Target facades in `Application` | 3 / 3 | 3 / 3 |
+
+The first exact assembled-tip index exposed a real regression: 66 cyclic files and a largest
+core of 51. The seven added core files were `config_edit.py`, `config_paths.py`,
+`config_policy.py`, `config_release.py`, `config_services.py`, `config_store.py`, and
+`config_work_settings.py`. Their cycle-closing edges were edit -> log; paths -> log/host;
+policy -> log; release -> config/identity; services -> config/deps/identity; store -> guard; and
+work-settings -> config/log. The final correction replaces those service-to-facade imports with
+an explicitly installed `FacadeBinding` and facade-owned helper API. This preserves the old
+facade patch seams while removing every extracted service from the core. The final exact graph
+therefore restores the baseline 6 SCCs / 59 cyclic files / core 44; it adds neither a cyclic
+component nor a cyclic-core member.
+
+RepoWise still provides no scalar “10/10” conformance value. The unchanged 4-layer, 8-module,
+12-step hierarchy, 3/3 facade placement, restored cycle/core values, and executable binding
+contracts are the reproducible conformance verdict rather than an invented score.
+
 The compatibility matrix remains the dependent-risk control. Five executable facade contracts,
 the claim-fence ownership contract, and the config/work/worktree boundary suites prove that
 historical imports and module-local patch seams still execute through their real owners. The
-RepoWise refresh retained four architectural layers and reported no new conformance category.
-The exact-tip dead-code presentation contained the same nine audited compatibility, demo,
-profiling, asset, and fixture signals classified in `repowise-signal-audit.md` (D01-D08 and D43),
-with zero unused exports. There is therefore no new production dead-code or cycle disposition to
-hide behind a threshold; intentional facade back-edges remain compatibility seams.
+RepoWise refresh retained four architectural layers; it exposes no separate conformance
+category. The final exact-tip index reports zero unreachable symbols and zero unused exports.
+The earlier presentation-only signals remain classified in `repowise-signal-audit.md`; there is
+no new production dead-code disposition or cycle regression hidden behind a threshold.
 
 ### Observed coverage floors, not global thresholds
 
@@ -206,18 +277,19 @@ not lower a repository-wide threshold or copy a rounded terminal percentage.
 
 | Config boundary | Covered / statements | Observed floor |
 |---|---:|---:|
-| `config.py` | 166 / 167 | 99.4012% |
-| `config_edit.py` | 185 / 189 | 97.8836% |
+| `config.py` | 182 / 183 | 99.4536% |
+| `config_binding.py` | 14 / 15 | 93.3333% |
+| `config_edit.py` | 183 / 187 | 97.8610% |
 | `config_partition.py` | 25 / 25 | 100.0000% |
-| `config_paths.py` | 103 / 107 | 96.2617% |
-| `config_policy.py` | 50 / 50 | 100.0000% |
-| `config_release.py` | 67 / 74 | 90.5405% |
+| `config_paths.py` | 102 / 106 | 96.2264% |
+| `config_policy.py` | 47 / 47 | 100.0000% |
+| `config_release.py` | 69 / 76 | 90.7895% |
 | `config_schema.py` | 407 / 416 | 97.8365% |
-| `config_services.py` | 260 / 268 | 97.0149% |
+| `config_services.py` | 261 / 269 | 97.0260% |
 | `config_split_migration.py` | 59 / 59 | 100.0000% |
-| `config_store.py` | 137 / 140 | 97.8571% |
+| `config_store.py` | 136 / 139 | 97.8417% |
 | `config_validate.py` | 94 / 97 | 96.9072% |
-| `config_work_settings.py` | 141 / 150 | 94.0000% |
+| `config_work_settings.py` | 143 / 152 | 94.0789% |
 
 | Worktree boundary | Covered / statements | Observed floor |
 |---|---:|---:|
