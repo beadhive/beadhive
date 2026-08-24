@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from . import config as _config
+from .config_binding import FacadeBinding
+
+_config = FacadeBinding(f"{__package__}.config")
+
+
+def bind(api) -> None:
+    _config.bind(api)
 
 
 def load():
@@ -160,13 +166,11 @@ def _marketplace_root(cfg, plugin: str) -> Path | None:
     (a genuine src checkout) — under a wheel / uv tool install parents[2] is the
     interpreter lib dir where no manifest can exist, so return None and let the caller
     fall back to the canonical remote form."""
-    from .identity import workspace_root  # function-level: avoids config↔identity cycle
-
     try:
         cfg = cfg if cfg is not None else load()
     except FileNotFoundError:
         cfg = {}
-    ws_root = Path(workspace_root())
+    ws_root = Path(_config._identity_module().workspace_root())
     for e in cfg.get("managed_repos", []) or []:
         root = ws_root / str(e.get("provider", "")) / str(e.get("org", "")) / str(e.get("repo", ""))
         if _manifest_lists_plugin(root / ".claude-plugin" / "marketplace.json", plugin):

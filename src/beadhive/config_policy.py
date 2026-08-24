@@ -34,9 +34,7 @@ def migrate_hive_keys_if_needed(api) -> None:
     if not migrated:
         return
     api.save(cfg)
-    from . import log
-
-    log.get_logger(api.__name__).warning("hive_config_keys_migrated", migrated=migrated)
+    api._warning("hive_config_keys_migrated", logger_name=api.__name__, migrated=migrated)
 
 
 def warn_stale_schema_version_if_needed(api) -> None:
@@ -49,10 +47,9 @@ def warn_stale_schema_version_if_needed(api) -> None:
     found = cfg.get("schema_version")
     if isinstance(found, int) and found >= SCHEMA_VERSION:
         return
-    from . import log
-
-    log.get_logger(api.__name__).warning(
+    api._warning(
         "config_schema_version_stale",
+        logger_name=api.__name__,
         found=found,
         current=SCHEMA_VERSION,
         hint=f"run `{api.BINARY_ALIAS} config validate` to check your config",
@@ -69,10 +66,9 @@ def hq_has_remote(api) -> bool:
 def warn_missing_fleet_config_if_needed(api) -> None:
     if not api.hq_dir().is_dir() or api.fleet_path().is_file() or not api._hq_has_remote():
         return
-    from . import log
-
-    log.get_logger(api.__name__).warning(
+    api._warning(
         "fleet_config_missing",
+        logger_name=api.__name__,
         expected=str(api.fleet_path()),
         hint="host-only config in effect until the HQ store provides a fleet.yaml",
     )

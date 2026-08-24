@@ -7,10 +7,16 @@ import re
 import sys
 from pathlib import Path
 
-from . import config as _config
-from . import deps as _deps
+from .config_binding import FacadeBinding
 
-_Env = _config._Env
+_config = FacadeBinding(f"{__package__}.config")
+KNOWN_HARNESSES: tuple[str, ...] = ()
+
+
+def bind(api) -> None:
+    global KNOWN_HARNESSES
+    _config.bind(api)
+    KNOWN_HARNESSES = tuple(d.name for d in api._seat_runners())
 
 
 def load():
@@ -208,17 +214,15 @@ def log_level(cfg=None) -> str:
 # claude/observaloop/orca above, but a bare top-level field (not a subsection) since it's a
 # single scalar, not a group of related settings.
 
+
 # Derived from `deps.seat_runners()` (bh-hsus.5), not hand-mirrored — this used to be a second
 # hand-written tuple kept in sync with `role.KNOWN_HARNESSES` only by a characterization test
 # noticing when they drifted apart. Both now read the same table.
-KNOWN_HARNESSES = tuple(d.name for d in _deps.seat_runners())
-
-
 def harness_name(cfg=None, entry=None) -> str:
     """Which agent harness execs the seat process: ``claude`` (default) or ``opencode``.
     ``BH_HARNESS`` env wins, then the per-hive ``entry['harness']`` override, then global
     config ``harness``, else ``claude``."""
-    env = _Env().harness
+    env = _config._Env().harness
     if env:
         return env
     cfg = cfg if cfg is not None else load()
@@ -392,7 +396,7 @@ def skip_setup_check() -> bool:
 def image_manifest_override() -> str | None:
     """``BH_IMAGE_MANIFEST`` — relocates the in-image component manifest that
     ``bh setup check`` reads instead of probing. Unset outside a Beadhive image."""
-    return _Env().image_manifest
+    return _config._Env().image_manifest
 
 
 # ---- observaloop (telemetry routing/profile — wired live in Phase B/C) ------
@@ -607,12 +611,10 @@ def archive_dir(cfg=None) -> Path:
 
     Reads ``archive.dir`` with a graceful fallback to ``workspace_root()/.archived`` so
     ``ws hive retire`` (which archives into this dir) works even when the section is unset."""
-    from .identity import workspace_root
-
     override = archive_cfg(cfg).get("dir")
     if override:
         return Path(str(override)).expanduser()
-    return Path(workspace_root()) / ".archived"
+    return Path(_config._identity_module().workspace_root()) / ".archived"
 
 
 def archive_window_days(cfg=None) -> int:

@@ -66,10 +66,9 @@ def env(api, field: str) -> str | None:
     if value is not None:
         aliases = api._Env.model_fields[field].validation_alias.choices
         if len(aliases) > 1 and os.environ.get(aliases[0]) is None and os.environ.get(aliases[1]):
-            from . import log
-
-            log.get_logger(api.__name__).warning(
+            api._warning(
                 "deprecated_env_var",
+                logger_name=api.__name__,
                 old=aliases[1],
                 new=aliases[0],
                 hint=f"set {aliases[0]} instead — {aliases[1]} support will be removed later",
@@ -125,8 +124,7 @@ def package_asset(package: str, *parts: str) -> Path:
 
 
 def scaffold_home(api, force: bool = False, dry_run: bool = False) -> list[tuple[Path, bool]]:
-    from . import host
-
+    host = api._host_module()
     pairs = [
         (api.template("config.example.yaml"), api.config_path()),
         (api.template("docker-compose.yml"), api.compose_file()),

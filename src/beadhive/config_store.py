@@ -152,10 +152,8 @@ def save_fleet(api, data) -> None:
 
 
 def guard_hq_registry_controller(api) -> None:
-    from . import guard
-
     actor = api._env("dev") or api._env("crew") or ""
-    guard.guard_controller_readonly(actor)
+    api._guard_module().guard_controller_readonly(actor)
 
 
 def reject_fleet_overrides(api, host) -> None:

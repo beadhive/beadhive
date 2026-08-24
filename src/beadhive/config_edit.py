@@ -131,13 +131,11 @@ def warn_literal_violations(api) -> None:
     violations = api.literal_violations(cfg)
     if not violations:
         return
-    from . import log
-
-    logger = log.get_logger(api.__name__)
     for item in violations:
         allowed = "|".join(str(choice) for choice in item["choices"])
-        logger.warning(
+        api._warning(
             "config_literal_value_invalid",
+            logger_name=api.__name__,
             key=item["key"],
             value=item["value"],
             allowed=allowed,
