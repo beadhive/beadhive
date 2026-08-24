@@ -59,12 +59,14 @@ import json
 import platform
 import time
 from collections.abc import Sequence
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
 import typer
 
 from . import (
+    agent_run_summary_reader,
     config,
     dispatch_hive_run,
     dispatch_log,
@@ -107,7 +109,7 @@ app.add_typer(lease_app, name="lease")
 # precondition is visible as a nearby command rather than an opaque error.
 dispatch_app = typer.Typer(
     no_args_is_help=True,
-    help="unattended dispatch supervision — enable/disable/status/logs per hive.",
+    help="unattended dispatch supervision — enable/disable/status/logs/runs per hive.",
 )
 app.add_typer(dispatch_app, name="dispatch")
 
@@ -1116,6 +1118,55 @@ def dispatch_logs_cmd(
         return
     for record in records:
         typer.echo(json.dumps(record, sort_keys=True))
+
+
+def dispatch_runs_payload(hive: str, cfg: dict) -> dict:
+    """Build the current host-local ``AgentRunSummary`` projection for one hive.
+
+    The scope and exact sink path are data, not prose wrapped around the human renderer: an
+    automated consumer must be unable to mistake this host's JSONL view for fleet-wide truth.
+    Resolve the sink once here and pass it directly to the reader so the advertised path is
+    necessarily the path that produced ``runs``.
+    """
+    entry, resolved_hive = _dispatch_entry(hive, cfg)
+    path = dispatch_log.sink_path(cfg, entry)
+    summaries = agent_run_summary_reader.read_from_sink(path)
+    return {
+        "scope": "host-local",
+        "hive": resolved_hive,
+        "sink_path": str(path),
+        "runs": [asdict(summary) for summary in summaries],
+    }
+
+
+@dispatch_app.command(
+    "runs",
+    help="HOST-LOCAL current AgentRunSummary records projected from one hive's dispatch sink.",
+)
+@otel.trace_verb("host.dispatch.runs")
+def dispatch_runs_cmd(
+    hive: str = _DISPATCH_HIVE,
+    as_json: bool = _AS_JSON,
+):
+    """Project dispatch JSONL into current agent-run states without implying fleet scope."""
+    payload = dispatch_runs_payload(hive, config.load())
+    if as_json:
+        jsonout.emit(payload)
+        return
+
+    typer.echo(
+        f"HOST-LOCAL AgentRunSummary view for {payload['hive']} — sink={payload['sink_path']}"
+    )
+    if not payload["runs"]:
+        typer.echo("(no agent run records yet)")
+        return
+    for run in payload["runs"]:
+        session = run["session_id"] or "—"
+        owner = run["owner_seat"] or "—"
+        typer.echo(
+            f"{run['bead']:20} {session:36} {run['state']:10} "
+            f"owner={owner} freshness={run['freshness']['state']}"
+        )
 
 
 @dispatch_app.command(

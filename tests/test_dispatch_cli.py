@@ -442,3 +442,47 @@ def test_logs_json_emits_the_tailed_records(monkeypatch, tmp_path):
     assert result.exit_code == 0
     payload = json.loads(result.stdout)
     assert payload["records"][0]["bead"] == "bh-1"
+
+
+# ---- runs: the AgentRunSummary projection names its host-local source ----------------------
+
+
+def test_runs_json_is_explicitly_host_local_and_names_the_sink(monkeypatch, tmp_path):
+    entry = {"provider": "github", "org": "acme", "repo": "widgets"}
+    monkeypatch.setattr(host_cli, "_dispatch_entry", lambda hive, cfg: (entry, "acme/widgets"))
+    monkeypatch.setattr(host_cli.dispatch_log, "sink_path", lambda cfg, entry: tmp_path / "x.jsonl")
+    (tmp_path / "x.jsonl").write_text(
+        json.dumps(
+            {
+                "event": "seat_spawned",
+                "bead": "bh-1",
+                "role": "developer",
+                "session_id": "session-1",
+            }
+        )
+        + "\n"
+    )
+
+    result = runner.invoke(app, ["host", "dispatch", "runs", "--hive", "acme/widgets", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["scope"] == "host-local"
+    assert payload["hive"] == "acme/widgets"
+    assert payload["sink_path"] == str(tmp_path / "x.jsonl")
+    assert payload["runs"][0]["session_id"] == "session-1"
+    assert payload["runs"][0]["freshness"]["state"] == "unknown"
+
+
+def test_runs_human_output_warns_host_local_even_when_sink_is_absent(monkeypatch, tmp_path):
+    entry = {"provider": "github", "org": "acme", "repo": "widgets"}
+    missing = tmp_path / "missing.jsonl"
+    monkeypatch.setattr(host_cli, "_dispatch_entry", lambda hive, cfg: (entry, "acme/widgets"))
+    monkeypatch.setattr(host_cli.dispatch_log, "sink_path", lambda cfg, entry: missing)
+
+    result = runner.invoke(app, ["host", "dispatch", "runs", "--hive", "acme/widgets"])
+
+    assert result.exit_code == 0, result.output
+    assert "HOST-LOCAL" in result.output
+    assert str(missing) in result.output
+    assert "no agent run records yet" in result.output
