@@ -106,6 +106,30 @@ bh plugin git-workspace|orca|observaloop …   external-tool integrations (INTEG
 hidden (still runnable, off all panels): bh otel … · bh dolt … · bh hub · bh statusline
 ```
 
+### Provider-qualified headless roles
+
+`bh role <seat> --task … --harness claude|codex` treats the harness as an explicit provider
+request. A BAML launch resolves only `bh-<seat>-<provider>` and its adjacent
+`*.manifest.json`; it validates the BAML-owned artifact digest, bake/provenance, runnable state,
+provider-native authority, framing, and live-event mechanism before resolving or claiming a bead
+worktree. The provider-unspecified `bh-<seat>` compatibility alias is never considered for an
+explicit provider request.
+
+`--baml-required` makes this selection mandatory. A missing/unqualified/mismatched artifact or
+unsupported provider is a refusal; direct Hitch is not a fallback. Without the flag, a missing
+qualified artifact may use a matching direct Hitch profile, which is reported as a distinct
+driver. A present but invalid qualified artifact is always refused rather than bypassed.
+
+This is intentionally stricter than the in-progress producer draft: an artifact manifest that
+still labels the provider executable as the execution driver, omits runnable/native-authority or
+profile/packs-digest evidence, or reports no live-event mechanism is not yet an integration-ready
+BAML artifact. Beadhive refuses it until the sibling baml-harness contract supplies those facts;
+it does not weaken validation or silently relabel that run.
+
+For an accepted BAML launch, `bh role` mints one outer attempt id and a separate provider
+continuation id. It propagates the run-journal context through the `BH_RUN_*` environment and the
+packed-seat correlation arguments without placing task text or credential values in either.
+
 Canonical verb vocabulary is reused everywhere (`add` / `rm` / `list` / `show` / `status` /
 `init`); "many" is a `list` verb (+ mode flags) or `--all`, never a pluralized command name.
 `--json` (bound to `as_json`) is the machine-output flag on every command that has one, and

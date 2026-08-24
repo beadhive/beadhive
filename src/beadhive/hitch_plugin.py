@@ -303,29 +303,57 @@ def headless_plan(seat: str, harness: str, cfg) -> tuple[str | None, str]:
     ``localloop`` is imported lazily: it is a heavy asyncio module and nothing else in this
     plugin's module-level path needs it.
     """
-    from . import localloop
-
-    if not localloop.headless_capable(seat):
-        capable = ", ".join(sorted(set(localloop.ROLE_FOR_ACTION.values())))
-        return None, (
-            f"{seat!r} is not a headless-capable seat — nothing dispatches an unattended "
-            f"{seat} run, so one would never be picked up. Headless-capable seats: {capable}. "
-            f"Run it attached instead: `{config.BINARY_ALIAS} role {seat}`."
-        )
+    unsuitable = headless_unsuitable(seat)
+    if unsuitable:
+        return None, unsuitable
 
     binary = f"bh-{seat}"
     if shutil.which(binary) is not None:
         return "baml", f"built role binary {binary} on PATH"
 
-    backend, hitch_target, profile = _resolve_backend(seat, harness, cfg)
-    if backend == "hitch":
-        return "hitch", f"hitch profile {profile!r} (target={hitch_target})"
+    hitch_backend, hitch_detail = headless_hitch_plan(seat, harness, cfg)
+    if hitch_backend == "hitch":
+        return hitch_backend, hitch_detail
 
     return None, (
         f"no headless backend for seat {seat!r}: no built {binary} binary on PATH, and no "
         f"hitch profile named {seat!r} for harness {harness!r} (hitch enabled + `hitch.repo` "
         "configured with a matching entry in profiles/local.yaml). Build the role binary or "
         f"add the profile — or run it attached: `{config.BINARY_ALIAS} role {seat}`."
+    )
+
+
+def headless_unsuitable(seat: str) -> str:
+    """Return the shared attached-only refusal, or ``""`` for a headless-capable seat."""
+
+    from . import localloop
+
+    if localloop.headless_capable(seat):
+        return ""
+    capable = ", ".join(sorted(set(localloop.ROLE_FOR_ACTION.values())))
+    return (
+        f"{seat!r} is not a headless-capable seat — nothing dispatches an unattended "
+        f"{seat} run, so one would never be picked up. Headless-capable seats: {capable}. "
+        f"Run it attached instead: `{config.BINARY_ALIAS} role {seat}`."
+    )
+
+
+def headless_hitch_plan(seat: str, harness: str, cfg) -> tuple[str | None, str]:
+    """Resolve only direct Hitch for an explicit provider request.
+
+    Unlike :func:`headless_plan`, this seam never consults the provider-unspecified
+    ``bh-<seat>`` compatibility alias.  An explicit Claude/Codex/OpenCode request therefore
+    cannot accidentally select whatever provider happened to be baked into that old basename.
+    """
+
+    if unsuitable := headless_unsuitable(seat):
+        return None, unsuitable
+    backend, hitch_target, profile = _resolve_backend(seat, harness, cfg)
+    if backend == "hitch":
+        return "hitch", f"hitch profile {profile!r} (target={hitch_target})"
+    return None, (
+        f"no direct Hitch backend for seat {seat!r} and harness {harness!r}: hitch must be "
+        "enabled with a matching seat-aligned profile"
     )
 
 
