@@ -255,8 +255,10 @@ def test_every_merge_path_consults_the_gate():
     gate with two documented bypasses."""
     import inspect
 
-    from beadhive import work, work_group
+    from beadhive import work, work_group, work_merge
 
-    assert "_guard_signed_history" in inspect.getsource(work._merge_bead)
-    assert "_guard_signed_history" in inspect.getsource(work._merge_molecule)
+    assert "work_merge.impl__merge_bead" in inspect.getsource(work._merge_bead)
+    assert "api._guard_signed_history" in inspect.getsource(work_merge.impl__merge_bead)
+    assert "work_merge.impl__merge_molecule" in inspect.getsource(work._merge_molecule)
+    assert "api._guard_signed_history" in inspect.getsource(work_merge.impl__merge_molecule)
     assert "_signing_ok" in inspect.getsource(work_group.merge_group)
