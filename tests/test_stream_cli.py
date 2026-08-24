@@ -53,7 +53,9 @@ class FiniteProvider:
 
 def install_provider(monkeypatch):
     provider = FiniteProvider()
-    monkeypatch.setattr(stream_cli.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(
+        stream_cli.config, "load", lambda: {"schema_version": 1, "managed_repos": []}
+    )
     monkeypatch.setattr(stream_cli, "get_polling_provider", lambda _cfg, *, process_scope: provider)
     return provider
 
@@ -247,8 +249,10 @@ def test_cli_broken_pipe_crosses_the_process_scope_finalizer(monkeypatch):
 
     result = runner.invoke(app, ["stream", "--scope", "hub"])
 
-    assert result.exit_code == 1
-    assert isinstance(result.exception, BrokenPipeError)
+    assert result.exit_code == 0
+    assert result.exception is None
+    assert result.stdout == ""
+    assert result.stderr == ""
     assert observed == ["enter", BrokenPipeError]
     assert provider.requests == []  # output failed before pulling the lazy frame iterator
 

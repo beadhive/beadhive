@@ -148,6 +148,14 @@ class Engine(Protocol):
         """
         ...
 
+    def list_gates(self, cwd):
+        """List every open and resolved gate in ``cwd`` for one stream refresh."""
+        ...
+
+    def stream_gate_list_command(self, cwd) -> list[str]:
+        """The all-states gate-list argv a host-local stream supervisor may own."""
+        ...
+
     def import_jsonl(self, cwd, args: list[str]):
         """Run a `bd import`-shaped invocation (args carries flags + the JSONL source) in
         `cwd`."""
@@ -289,6 +297,14 @@ class BdEngine:
         """Return the same export command for the stream's process-tree supervisor."""
 
         return ["bd", "-C", str(cwd), "export", "-o", str(out_path)]
+
+    def list_gates(self, cwd):
+        """Read every gate once; ``--limit 0`` avoids bd's default 50-row truncation."""
+
+        return bd_mod._run(self.stream_gate_list_command(cwd), check=False, capture=True)
+
+    def stream_gate_list_command(self, cwd):
+        return ["bd", "-C", str(cwd), "gate", "list", "--limit", "0", "--all", "--json"]
 
     def import_jsonl(self, cwd, args):
         # Extracted from bd.py's `import_labeled()` final write. `cwd` here is a real

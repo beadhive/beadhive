@@ -65,6 +65,23 @@ def _forking_script(pid_path: Path, *, parent_exits: bool = False) -> str:
     )
 
 
+def _successful_orphan_script(pid_path: Path, parent_source: str) -> str:
+    """Exit the leader successfully after an output-detached child remains in its group."""
+
+    return (
+        "import os,time\n"
+        "child=os.fork()\n"
+        "if child == 0:\n"
+        "    os.close(0)\n"
+        "    os.close(1)\n"
+        "    os.close(2)\n"
+        "    time.sleep(300)\n"
+        "    os._exit(0)\n"
+        f"open({str(pid_path)!r}, 'w').write(str(child))\n"
+        f"{parent_source}\n"
+    )
+
+
 def test_timeout_reaps_a_real_grandchild(tmp_path):
     pid_path = tmp_path / "grandchild.pid"
     with StreamProcessScope(timeout=0.2, term_grace=0.1) as processes:
@@ -92,12 +109,16 @@ def test_polling_provider_routes_explicit_backend_argv_through_scope(tmp_path, m
                 "id": "bh-1",
                 "title": "owned export",
                 "updated_at": "2026-08-24T00:00:00Z",
+                "dependencies": [],
             }
             script = (
                 "import pathlib; "
                 f"pathlib.Path({str(out_path)!r}).write_text({json.dumps(record)!r} + '\\n')"
             )
             return [sys.executable, "-c", script]
+
+        def stream_gate_list_command(self, _cwd):
+            return [sys.executable, "-c", "print('[]')"]
 
     with StreamProcessScope(timeout=5, term_grace=0.1) as processes:
         provider = state_stream_polling.PollingStateStreamProvider(
@@ -106,6 +127,59 @@ def test_polling_provider_routes_explicit_backend_argv_through_scope(tmp_path, m
         snapshot = provider.refresh(state_stream.StreamRequest("hive", hive="beadhive"))
 
     assert [issue.id for issue in snapshot.issues] == ["bh-1"]
+    assert snapshot.partial is False
+
+
+def test_successful_export_and_gate_groups_are_reaped_at_scope_exit(tmp_path, monkeypatch):
+    """Native exit must not discard groups retained by either concrete backend command path."""
+
+    hive = tmp_path / "hive"
+    hive.mkdir()
+    export_descendant = tmp_path / "export-descendant.pid"
+    gate_descendant = tmp_path / "gate-descendant.pid"
+    monkeypatch.setattr(state_stream_polling.registry, "resolve_hive", lambda _cfg, _slug: {})
+    monkeypatch.setattr(state_stream_polling.registry, "hive_dir", lambda _entry: hive)
+
+    class SuccessfulOrphanBackend:
+        name = "successful-orphan"
+
+        def stream_export_command(self, _cwd, out_path):
+            record = {
+                "id": "bh-1",
+                "title": "owned export",
+                "updated_at": "2026-08-24T00:00:00Z",
+                "dependencies": [],
+            }
+            parent_source = (
+                "import pathlib; "
+                f"pathlib.Path({str(out_path)!r}).write_text({json.dumps(record)!r} + '\\n')"
+            )
+            return [
+                sys.executable,
+                "-c",
+                _successful_orphan_script(export_descendant, parent_source),
+            ]
+
+        def stream_gate_list_command(self, _cwd):
+            return [
+                sys.executable,
+                "-c",
+                _successful_orphan_script(gate_descendant, "print('[]')"),
+            ]
+
+    with StreamProcessScope(timeout=5, term_grace=0.1) as processes:
+        provider = state_stream_polling.PollingStateStreamProvider(
+            {}, backend=SuccessfulOrphanBackend(), process_scope=processes
+        )
+        snapshot = provider.refresh(state_stream.StreamRequest("hive", hive="beadhive"))
+        export_pid = _wait_for_pid(export_descendant)
+        gate_pid = _wait_for_pid(gate_descendant)
+        assert snapshot.issues[0].id == "bh-1"
+        assert _alive(export_pid)
+        assert _alive(gate_pid)
+
+    assert _wait_gone(export_pid), "successful export left its detached descendant alive"
+    assert _wait_gone(gate_pid), "successful gate list left its detached descendant alive"
 
 
 def test_scope_fails_closed_for_an_opaque_backend(tmp_path):
