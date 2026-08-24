@@ -1,0 +1,357 @@
+"""Polling snapshot provider over dependency-capable export reads (bh-jksq.3)."""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime
+
+import pytest
+
+from beadhive import state_stream, state_stream_polling
+
+NOW = datetime(2026, 8, 24, tzinfo=UTC)
+
+
+def raw_issue(
+    issue_id="bh-1",
+    *,
+    status="open",
+    labels=None,
+    dependencies=None,
+    priority=1,
+):
+    return {
+        "_type": "issue",
+        "id": issue_id,
+        "title": f"Issue {issue_id}",
+        "issue_type": "task",
+        "status": status,
+        "priority": priority,
+        "updated_at": "2026-08-24T00:00:00Z",
+        "labels": labels or [],
+        "dependencies": dependencies or [],
+    }
+
+
+class ExportBackend:
+    """Only the Engine export operation exists; query fan-out is impossible by construction."""
+
+    def __init__(self, records_by_target):
+        self.records_by_target = {
+            str(target): list(refreshes) for target, refreshes in records_by_target.items()
+        }
+        self.calls = []
+
+    def export_jsonl(self, cwd, out_path, *, env=None):
+        self.calls.append((str(cwd), str(out_path), env))
+        refreshes = self.records_by_target[str(cwd)]
+        records = refreshes.pop(0) if len(refreshes) > 1 else refreshes[0]
+        out_path.write_text("".join(f"{json.dumps(row)}\n" for row in records))
+        return subprocess.CompletedProcess([], 0, "", "")
+
+
+@pytest.fixture
+def world(tmp_path, monkeypatch):
+    factory = tmp_path / "hq"
+    hub = tmp_path / "hub"
+    hive = tmp_path / "hive"
+    for path in (factory, hub, hive):
+        path.mkdir()
+    entry = {
+        "provider": "github",
+        "org": "beadhive",
+        "repo": "beadhive",
+        "prefix": "bh",
+    }
+    cfg = {"managed_repos": [entry]}
+    monkeypatch.setattr(state_stream_polling.config, "hq_dir", lambda: factory)
+    monkeypatch.setattr(state_stream_polling.config, "hub_dir", lambda: hub)
+    monkeypatch.setattr(state_stream_polling.registry, "hive_dir", lambda _entry: hive)
+    return cfg, entry, factory, hub, hive
+
+
+def provider(cfg, backend, **kwargs):
+    poll_interval = kwargs.pop("poll_interval", 0)
+    return state_stream_polling.PollingStateStreamProvider(
+        cfg,
+        backend=backend,
+        poll_interval=poll_interval,
+        sleeper=lambda _seconds: None,
+        now=lambda: NOW,
+        **kwargs,
+    )
+
+
+def test_factory_hub_and_hive_each_take_one_export_shaped_initial_snapshot(world):
+    cfg, _entry, factory, hub, hive = world
+    identity = ["provider:github", "org:beadhive", "repo:beadhive"]
+    backend = ExportBackend(
+        {
+            factory: [[raw_issue("bh-f", labels=identity)]],
+            hub: [[raw_issue("bh-u", labels=identity)]],
+            hive: [[raw_issue("bh-h")]],
+        }
+    )
+    adapter = provider(cfg, backend)
+    requests = [
+        state_stream.StreamRequest("factory"),
+        state_stream.StreamRequest("hub"),
+        state_stream.StreamRequest("hive", hive="beadhive"),
+    ]
+
+    snapshots = [adapter.refresh(request) for request in requests]
+
+    assert [snapshot.scope.value for snapshot in snapshots] == ["factory", "hub", "hive"]
+    assert [[issue.id for issue in snapshot.issues] for snapshot in snapshots] == [
+        ["bh-f"],
+        ["bh-u"],
+        ["bh-h"],
+    ]
+    assert [call[0] for call in backend.calls] == [str(factory), str(hub), str(hive)]
+    assert all(snapshot.as_of == "2026-08-24T00:00:00Z" for snapshot in snapshots)
+
+
+def test_export_records_are_normalized_without_backend_fields(world):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = ExportBackend(
+        {
+            hive: [
+                [
+                    {
+                        **raw_issue(
+                            priority=0,
+                            labels=["z", "a"],
+                            dependencies=[
+                                {
+                                    "issue_id": "bh-1",
+                                    "depends_on_id": "bh-parent",
+                                    "type": "parent-child",
+                                    "created_at": "backend-only",
+                                    "metadata": {"ignored": True},
+                                }
+                            ],
+                        ),
+                        "metadata": {"git.commits": "backend-only"},
+                        "lease_expires_at": "backend-only",
+                    }
+                ]
+            ]
+        }
+    )
+    adapter = provider(cfg, backend)
+
+    snapshot = adapter.refresh(state_stream.StreamRequest("hive", hive="beadhive"))
+    [item] = snapshot.issues
+
+    assert item.priority == "P0"
+    assert item.labels == ("a", "z")
+    assert item.parent_id == "bh-parent"
+    assert item.dependencies == (
+        state_stream.StreamDependency("bh-1", "bh-parent", "parent-child"),
+    )
+    payload = state_stream.frame_payload(
+        next(
+            state_stream.stream_frames(adapter, state_stream.StreamRequest("hive", hive="beadhive"))
+        )
+    )
+    assert "metadata" not in payload["issues"][0]
+    assert "lease_expires_at" not in payload["issues"][0]
+
+
+def test_polling_emits_only_changed_snapshots(world):
+    cfg, _entry, _factory, _hub, hive = world
+    unchanged = [raw_issue()]
+    changed = [raw_issue(status="closed")]
+    backend = ExportBackend({hive: [unchanged, unchanged, changed]})
+    adapter = provider(cfg, backend)
+    request = state_stream.StreamRequest("hive", hive="beadhive")
+    updates = adapter.updates(request)
+
+    first = next(updates)
+    second = next(updates)
+
+    assert first.issues[0].status == "open"
+    assert second.issues[0].status == "closed"
+    assert len(backend.calls) == 3
+
+
+def test_recognized_since_starts_from_retained_full_snapshot(world):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = ExportBackend({hive: [[raw_issue()], [raw_issue(status="closed")]]})
+    adapter = provider(cfg, backend)
+    request = state_stream.StreamRequest("hive", hive="beadhive")
+    retained = adapter.refresh(request)
+    reconnect = state_stream.StreamRequest(
+        "hive", hive="beadhive", since_revision=retained.revision
+    )
+
+    updates = adapter.updates(reconnect)
+
+    assert next(updates) == retained
+    assert next(updates).issues[0].status == "closed"
+
+
+def test_unknown_since_starts_from_current_full_snapshot(world):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = ExportBackend({hive: [[raw_issue()]]})
+    adapter = provider(cfg, backend)
+
+    [frame] = [
+        next(
+            state_stream.stream_frames(
+                adapter,
+                state_stream.StreamRequest(
+                    "hive", hive="beadhive", since_revision="another-process:missing"
+                ),
+            )
+        )
+    ]
+
+    assert isinstance(frame, state_stream.SnapshotFrame)
+    assert frame.reason is state_stream.SnapshotReason.INITIAL
+
+
+class RecoveringExportBackend(ExportBackend):
+    def __init__(self, records_by_target, *, fail_on_calls):
+        super().__init__(records_by_target)
+        self.fail_on_calls = set(fail_on_calls)
+
+    def export_jsonl(self, cwd, out_path, *, env=None):
+        if len(self.calls) + 1 in self.fail_on_calls:
+            self.calls.append((str(cwd), str(out_path), env))
+            return subprocess.CompletedProcess([], 1, "", "backend unavailable")
+        return super().export_jsonl(cwd, out_path, env=env)
+
+
+def test_midstream_export_failure_requests_resync_then_recovers(world):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = RecoveringExportBackend(
+        {hive: [[raw_issue()], [raw_issue(status="closed")]]}, fail_on_calls={2}
+    )
+    adapter = provider(cfg, backend)
+    updates = adapter.updates(state_stream.StreamRequest("hive", hive="beadhive"))
+
+    first = next(updates)
+    reset = next(updates)
+    recovered = next(updates)
+
+    assert first.issues[0].status == "open"
+    assert reset == state_stream.ProviderReset(
+        scope=state_stream.StreamScope.HIVE,
+        reason=state_stream.ResyncReason.ADAPTER_ERROR,
+        as_of="2026-08-24T00:00:00Z",
+    )
+    assert recovered.issues[0].status == "closed"
+    assert len(backend.calls) == 3
+
+
+def test_initial_export_failure_never_substitutes_reset_for_required_snapshot(world):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = RecoveringExportBackend({hive: [[raw_issue()]]}, fail_on_calls={1})
+    adapter = provider(cfg, backend)
+
+    with pytest.raises(state_stream_polling.PollingSnapshotError, match="backend unavailable"):
+        next(adapter.updates(state_stream.StreamRequest("hive", hive="beadhive")))
+
+
+class BlockingExportBackend(ExportBackend):
+    def __init__(self, records_by_target):
+        super().__init__(records_by_target)
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def export_jsonl(self, cwd, out_path, *, env=None):
+        self.started.set()
+        assert self.release.wait(2)
+        return super().export_jsonl(cwd, out_path, env=env)
+
+
+def test_concurrent_same_scope_refreshes_share_one_export(world):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = BlockingExportBackend({hive: [[raw_issue()]]})
+    adapter = provider(cfg, backend)
+    request = state_stream.StreamRequest("hive", hive="beadhive")
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(adapter.refresh, request)
+        assert backend.started.wait(2)
+        second = pool.submit(adapter.refresh, request)
+        time.sleep(0.05)
+        backend.release.set()
+        snapshots = [first.result(), second.result()]
+
+    assert len(backend.calls) == 1
+    assert snapshots[0] is snapshots[1]
+
+
+def test_sequential_consumers_share_the_scope_refresh_during_one_poll_cadence(world):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = ExportBackend({hive: [[raw_issue()]]})
+    adapter = provider(cfg, backend, poll_interval=2, monotonic=lambda: 10.0)
+    request = state_stream.StreamRequest("hive", hive="beadhive")
+
+    snapshots = [adapter.refresh(request), adapter.refresh(request)]
+
+    assert len(backend.calls) == 1
+    assert snapshots[0] is snapshots[1]
+
+
+def test_aggregate_identity_comes_from_registry_labels_not_issue_prefix(world):
+    cfg, _entry, factory, _hub, _hive = world
+    backend = ExportBackend(
+        {
+            factory: [
+                [
+                    raw_issue(
+                        "totally-unrelated-prefix-1",
+                        labels=["provider:github", "org:beadhive", "repo:beadhive"],
+                    )
+                ]
+            ]
+        }
+    )
+    adapter = provider(cfg, backend)
+
+    snapshot = adapter.refresh(state_stream.StreamRequest("factory"))
+
+    assert snapshot.issues[0].hive == "beadhive"
+
+
+def test_unresolvable_or_malformed_records_degrade_instead_of_suppressing_snapshot(world):
+    cfg, _entry, factory, _hub, _hive = world
+    backend = ExportBackend(
+        {
+            factory: [
+                [
+                    raw_issue("unknown", labels=["repo:not-registered"]),
+                    raw_issue(
+                        "known",
+                        labels=["provider:github", "org:beadhive", "repo:beadhive"],
+                    ),
+                ]
+            ]
+        }
+    )
+    adapter = provider(cfg, backend)
+
+    snapshot = adapter.refresh(state_stream.StreamRequest("factory"))
+
+    assert [item.id for item in snapshot.issues] == ["known"]
+    assert snapshot.partial is True
+    assert snapshot.partial_reason == "hive_identity_unavailable"
+
+
+def test_provider_is_substitutable_through_the_landed_port(world, monkeypatch):
+    cfg, _entry, _factory, _hub, hive = world
+    backend = ExportBackend({hive: [[raw_issue()]]})
+    adapter = provider(cfg, backend)
+    monkeypatch.setattr(state_stream_polling.engine, "get_engine", lambda _cfg: backend)
+
+    assert isinstance(adapter, state_stream.StateStreamProvider)
+    assert isinstance(
+        state_stream_polling.get_polling_provider(cfg), state_stream.StateStreamProvider
+    )
