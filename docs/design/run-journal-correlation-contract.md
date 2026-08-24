@@ -17,6 +17,12 @@ launch owner mints the id and attempts to create the journal before creating the
 is a new attempt with a new `run_id` and a new journal. Continuing a provider conversation still
 creates a new outer run; its provider-native continuation is carried separately.
 
+The LocalLoop storage/lifecycle implementation is in `beadhive.run_journal`. A launch validator
+passes `RunIdentity` into LocalLoop; LocalLoop never guesses a driver, provider, or manifest
+digest. `RunJournal.create` mints and seeds the attempt before spawn, while a nested direct
+observer attaches with `RunJournal.from_env(..., writer=...)` so `beadhive.role`, direct Hitch,
+and BAML provider records retain their own truthful writer provenance on the same outer run.
+
 Every complete line is a standalone `beadhive.run-journal/v1` record. The required correlation
 envelope is repeated on every line so a tail reader never needs an earlier header:
 
