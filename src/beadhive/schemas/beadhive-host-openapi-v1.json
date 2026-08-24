@@ -85,6 +85,147 @@
         }
       }
     },
+    "/api/v1/hives/{hive_id}/events": {
+      "get": {
+        "operationId": "operatorHiveEvents",
+        "summary": "Follow one exact canonical hive event stream",
+        "description": "Returns only operator-event SSE frames strictly after the supplied snapshot cursor. after is normative; cursor is a temporary compatibility alias. If multiple cursor sources are present, their values must be byte-identical.",
+        "parameters": [
+          {
+            "name": "hive_id",
+            "in": "path",
+            "required": true,
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$"
+            }
+          },
+          {
+            "name": "subscription",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            }
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "description": "Normative snapshot or SSE cursor producerEpoch:sequence.",
+            "schema": {
+              "$ref": "#/components/schemas/EventCursorString"
+            }
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "deprecated": true,
+            "description": "Temporary compatibility alias for after.",
+            "schema": {
+              "$ref": "#/components/schemas/EventCursorString"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EventCursorString"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Authoritative OperatorEvent stream",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Accel-Buffering": {
+                "schema": {
+                  "const": "no"
+                }
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorEvent"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "405": {
+            "$ref": "#/components/responses/ReadOnly"
+          },
+          "409": {
+            "$ref": "#/components/responses/Resnapshot"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      },
+      "options": {
+        "operationId": "operatorHiveEventsPreflight",
+        "summary": "Authorize the exact local Last-Event-ID SSE preflight",
+        "parameters": [
+          {
+            "name": "hive_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "The exact allowed Origin may issue GET with Last-Event-ID",
+            "headers": {
+              "Access-Control-Allow-Origin": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "Access-Control-Allow-Methods": {
+                "schema": {
+                  "const": "GET"
+                }
+              },
+              "Access-Control-Allow-Headers": {
+                "schema": {
+                  "const": "Last-Event-ID"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
     "/api/v1/runs/{run_id}/activity": {
       "get": {
         "operationId": "operatorRunActivity",
@@ -173,6 +314,16 @@
         "description": "Ambiguous or mismatched authoritative identity",
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
       },
+      "Resnapshot": {
+        "description": "The client must fetch a replacement hive snapshot before reconnecting",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Resnapshot"
+            }
+          }
+        }
+      },
       "Unavailable": {
         "description": "An authoritative local source could not answer",
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
@@ -193,6 +344,234 @@
               "message": {"type": "string"},
               "retryable": {"type": "boolean"}
             }
+          }
+        }
+      },
+      "Resnapshot": {
+        "type": "object",
+        "required": [
+          "error",
+          "action"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "action": {
+            "const": "resnapshot"
+          }
+        }
+      },
+      "EventCursorString": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9._~-]+:(0|[1-9][0-9]*)$"
+      },
+      "EntityRef": {
+        "type": "object",
+        "required": [
+          "hiveId",
+          "kind",
+          "id"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "hiveId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "OperatorEvent": {
+        "type": "object",
+        "required": [
+          "schemaVersion",
+          "hiveId",
+          "subscriptionId",
+          "producerEpoch",
+          "sequence",
+          "baseSequence",
+          "observedAt",
+          "generatedAt",
+          "source",
+          "revision",
+          "entity",
+          "payload"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {
+            "const": 1
+          },
+          "hiveId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "subscriptionId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "producerEpoch": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sequence": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "baseSequence": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "observedAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "generatedAt": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "source": {
+            "enum": [
+              "beads",
+              "runtime",
+              "supervisor"
+            ]
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "entity": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EntityRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "payload": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EntityUpsert"
+              },
+              {
+                "$ref": "#/components/schemas/EntityRemove"
+              },
+              {
+                "$ref": "#/components/schemas/Invalidate"
+              },
+              {
+                "$ref": "#/components/schemas/Reset"
+              },
+              {
+                "$ref": "#/components/schemas/Heartbeat"
+              }
+            ]
+          }
+        }
+      },
+      "EntityUpsert": {
+        "type": "object",
+        "required": [
+          "kind",
+          "entity"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "entity-upsert"
+          },
+          "entity": {
+            "type": "object",
+            "required": [
+              "ref"
+            ]
+          }
+        }
+      },
+      "EntityRemove": {
+        "type": "object",
+        "required": [
+          "kind",
+          "entity",
+          "revision"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "entity-remove"
+          },
+          "entity": {
+            "$ref": "#/components/schemas/EntityRef"
+          },
+          "revision": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "Invalidate": {
+        "type": "object",
+        "required": [
+          "kind",
+          "scopes",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "invalidate"
+          },
+          "scopes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "Reset": {
+        "type": "object",
+        "required": [
+          "kind",
+          "reason"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "reset"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "Heartbeat": {
+        "type": "object",
+        "required": [
+          "kind"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "heartbeat"
           }
         }
       },

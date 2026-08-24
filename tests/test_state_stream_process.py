@@ -191,6 +191,13 @@ def test_scope_fails_closed_for_an_opaque_backend(tmp_path):
             processes.export_jsonl(OpaqueBackend(), tmp_path, tmp_path / "out.jsonl")
 
 
+def test_closed_scope_refuses_to_spawn_a_late_backend_process() -> None:
+    processes = StreamProcessScope(timeout=1, term_grace=0.01)
+    processes.close()
+    with pytest.raises(RuntimeError, match="process scope is closed"):
+        processes.run([sys.executable, "-c", "raise SystemExit(0)"])
+
+
 def test_timeout_reaps_descendant_after_direct_child_already_exited(tmp_path):
     """The group id must be remembered at spawn; getpgid(leader) is already impossible here."""
 
