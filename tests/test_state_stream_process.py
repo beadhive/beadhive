@@ -92,12 +92,16 @@ def test_polling_provider_routes_explicit_backend_argv_through_scope(tmp_path, m
                 "id": "bh-1",
                 "title": "owned export",
                 "updated_at": "2026-08-24T00:00:00Z",
+                "dependencies": [],
             }
             script = (
                 "import pathlib; "
                 f"pathlib.Path({str(out_path)!r}).write_text({json.dumps(record)!r} + '\\n')"
             )
             return [sys.executable, "-c", script]
+
+        def stream_gate_list_command(self, _cwd):
+            return [sys.executable, "-c", "print('[]')"]
 
     with StreamProcessScope(timeout=5, term_grace=0.1) as processes:
         provider = state_stream_polling.PollingStateStreamProvider(
@@ -106,6 +110,7 @@ def test_polling_provider_routes_explicit_backend_argv_through_scope(tmp_path, m
         snapshot = provider.refresh(state_stream.StreamRequest("hive", hive="beadhive"))
 
     assert [issue.id for issue in snapshot.issues] == ["bh-1"]
+    assert snapshot.partial is False
 
 
 def test_scope_fails_closed_for_an_opaque_backend(tmp_path):

@@ -175,12 +175,16 @@ class _World:
                 {
                     "targets": {str(target): steps for target, steps in steps_by_target.items()},
                     "calls": {},
+                    "gate_calls": {},
                 }
             )
         )
 
     def calls(self) -> dict[str, int]:
         return json.loads(self.state_path.read_text())["calls"]
+
+    def gate_calls(self) -> dict[str, int]:
+        return json.loads(self.state_path.read_text())["gate_calls"]
 
 
 class BdPollingHarness:
@@ -274,6 +278,9 @@ class BdPollingHarness:
         assert self.world.calls() == {
             str(self.world.targets[key]): 1 for key in ("factory", "hub", "alpha", "beta")
         }
+        assert self.world.gate_calls() == {
+            str(self.world.targets[key]): 1 for key in ("factory", "hub", "alpha", "beta")
+        }
         return frames
 
 
@@ -316,9 +323,14 @@ def world(tmp_path, monkeypatch) -> _World:
 
             args = sys.argv[1:]
             target = args[args.index("-C") + 1]
-            output = pathlib.Path(args[args.index("-o") + 1])
             state_path = pathlib.Path(os.environ["BH_TEST_STREAM_STATE"])
             state = json.loads(state_path.read_text())
+            if "gate" in args and "list" in args:
+                state["gate_calls"][target] = state["gate_calls"].get(target, 0) + 1
+                state_path.write_text(json.dumps(state))
+                print("[]")
+                raise SystemExit(0)
+            output = pathlib.Path(args[args.index("-o") + 1])
             index = state["calls"].get(target, 0)
             steps = state["targets"][target]
             step = steps[min(index, len(steps) - 1)]

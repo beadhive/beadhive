@@ -95,6 +95,27 @@ def test_export_jsonl_matches_hub_sync_shape(monkeypatch):
     assert kwargs == {"env": {"X": "1"}, "check": False, "capture": True}
 
 
+def test_stream_gate_list_reads_all_states_without_default_limit(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
+
+    engine.BdEngine().list_gates("/hive")
+
+    cmd, kwargs = calls[0]
+    assert cmd == [
+        "bd",
+        "-C",
+        "/hive",
+        "gate",
+        "list",
+        "--limit",
+        "0",
+        "--all",
+        "--json",
+    ]
+    assert kwargs == {"check": False, "capture": True}
+
+
 def test_import_jsonl_matches_import_labeled_shape(monkeypatch):
     calls = []
     monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append((cmd, k)) or Completed(0, "", ""))
