@@ -19,6 +19,7 @@ import typer
 from . import config, registry
 from .state_stream import StreamFrame, StreamRequest, StreamScope, frame_payload, stream_frames
 from .state_stream_polling import get_polling_provider
+from .state_stream_process import StreamProcessScope
 
 
 class StreamFormat(StrEnum):
@@ -78,5 +79,9 @@ def command(
         selected_hive = None
 
     request = StreamRequest(scope=scope, hive=selected_hive, since_revision=since or None)
-    provider = get_polling_provider(cfg)
-    emit_ndjson(stream_frames(provider, request))
+    # The scope spans BOTH backend iteration and output.  A timeout/cancellation while polling,
+    # or BrokenPipeError while emitting, therefore has one finalizer that reaps every descendant
+    # backend process before the command returns or preserves the caller's signal exit.
+    with StreamProcessScope() as processes:
+        provider = get_polling_provider(cfg, process_scope=processes)
+        emit_ndjson(stream_frames(provider, request))

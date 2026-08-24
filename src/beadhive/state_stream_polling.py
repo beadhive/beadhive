@@ -32,6 +32,7 @@ from .state_stream import (
     StreamRequest,
     StreamScope,
 )
+from .state_stream_process import StreamProcessScope
 
 DEFAULT_POLL_INTERVAL = 2.0
 DEFAULT_HISTORY_SIZE = 8
@@ -114,6 +115,7 @@ class PollingStateStreamProvider:
         sleeper: Callable[[float], None] = time.sleep,
         now: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] = time.monotonic,
+        process_scope: StreamProcessScope | None = None,
     ) -> None:
         self._cfg = cfg if cfg is not None else config.load()
         self._backend = backend if backend is not None else engine.get_engine(self._cfg)
@@ -122,6 +124,7 @@ class PollingStateStreamProvider:
         self._sleep = sleeper
         self._now = now or (lambda: datetime.now(UTC))
         self._monotonic = monotonic
+        self._process_scope = process_scope
         self._instance = uuid.uuid4().hex
         self._states_lock = threading.Lock()
         self._states: dict[tuple[StreamScope, str], _RefreshState] = {}
@@ -220,7 +223,10 @@ class PollingStateStreamProvider:
         target = self._target(request)
         with tempfile.TemporaryDirectory(prefix="bh-state-stream-") as temp:
             exported = Path(temp) / "issues.jsonl"
-            result = self._backend.export_jsonl(target, exported)
+            if self._process_scope is None:
+                result = self._backend.export_jsonl(target, exported)
+            else:
+                result = self._process_scope.export_jsonl(self._backend, target, exported)
             if result.returncode or not exported.is_file():
                 detail = (getattr(result, "stderr", "") or "").strip().splitlines()
                 tail = detail[-1] if detail else f"exit {result.returncode}"
@@ -351,7 +357,9 @@ class PollingStateStreamProvider:
             last_revision = current.revision
 
 
-def get_polling_provider(cfg: dict | None = None) -> StateStreamProvider:
+def get_polling_provider(
+    cfg: dict | None = None, *, process_scope: StreamProcessScope | None = None
+) -> StateStreamProvider:
     """Construct today's provider behind the stable port return type."""
 
-    return PollingStateStreamProvider(cfg)
+    return PollingStateStreamProvider(cfg, process_scope=process_scope)
