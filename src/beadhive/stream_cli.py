@@ -9,6 +9,7 @@ about, importing, or spawning the current backend.
 from __future__ import annotations
 
 import json
+import os
 import sys
 from collections.abc import Iterable
 from enum import StrEnum
@@ -58,6 +59,21 @@ def _hive_slug(cfg: dict, hive: str) -> str:
     return str(entry["repo"])
 
 
+def _silence_closed_stdout() -> None:
+    """Prevent Python's shutdown flush from turning a handled broken pipe into exit 120."""
+
+    try:
+        descriptor = sys.stdout.fileno()
+        replacement = os.open(os.devnull, os.O_WRONLY)
+    except (AttributeError, OSError):
+        # In-process CLI harnesses use a file-like capture object without a real descriptor.
+        return
+    try:
+        os.dup2(replacement, descriptor)
+    finally:
+        os.close(replacement)
+
+
 def command(
     scope: StreamScope = _SCOPE_OPTION,
     format_: StreamFormat = _FORMAT_OPTION,
@@ -82,6 +98,13 @@ def command(
     # The scope spans BOTH backend iteration and output.  A timeout/cancellation while polling,
     # or BrokenPipeError while emitting, therefore has one finalizer that reaps every descendant
     # backend process before the command returns or preserves the caller's signal exit.
-    with StreamProcessScope() as processes:
-        provider = get_polling_provider(cfg, process_scope=processes)
-        emit_ndjson(stream_frames(provider, request))
+    try:
+        with StreamProcessScope() as processes:
+            provider = get_polling_provider(cfg, process_scope=processes)
+            emit_ndjson(stream_frames(provider, request))
+    except BrokenPipeError:
+        # A consumer such as ``head`` closing stdout is normal stream completion.  Catch only at
+        # the command boundary so the process scope first sees the exception and reaps every
+        # backend process group; emit no diagnostic onto either machine-readable output channel.
+        _silence_closed_stdout()
+        return
