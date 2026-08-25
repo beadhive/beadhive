@@ -122,6 +122,12 @@ def _bookkeeping(root: Path) -> set[str]:
     return {p.name for p in d.iterdir()} if d.is_dir() else set()
 
 
+def _build_root(root: Path) -> Path:
+    """The canonical common-Git-dir home, including from a linked checkout."""
+    common = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir").strip())
+    return common / "bh" / "build"
+
+
 needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="a real build needs `uv`")
 
 
@@ -139,6 +145,27 @@ def test_a_clean_checkout_is_stamped_with_its_commit(tmp_path):
     # The property that makes this correct rather than merely conventional: a local build must
     # never read as OLDER than the release it was built from.
     assert stamped > Version("1.2.3")
+
+
+def test_version_is_read_only_and_does_not_create_the_canonical_build_root(tmp_path):
+    root = _fixture_checkout(tmp_path)
+
+    assert _run(root, "version").returncode == 0
+    assert not _build_root(root).exists()
+
+
+@needs_uv
+def test_main_and_linked_checkout_share_the_canonical_build_root(tmp_path):
+    root = _fixture_checkout(tmp_path)
+    linked = tmp_path / "linked"
+    _git(root, "worktree", "add", "-qb", "linked", str(linked))
+
+    result = _run(linked, "build")
+
+    assert result.returncode == 0, result.stderr
+    assert _build_root(linked) == _build_root(root)
+    assert _build_root(root).is_dir()
+    assert not (root / ".git" / "bh-build").exists()
 
 
 @pytest.mark.parametrize(
@@ -237,7 +264,8 @@ def test_a_build_stamps_the_wheel_filename_and_leaves_the_tree_untouched(tmp_pat
     # Nothing mutated, and BOTH halves of cleanup done.
     assert _git(root, "status", "--porcelain") == before_status
     assert _bookkeeping(root) == before_books
-    assert not list((root / ".git" / "bh-build").glob("build-*"))
+    assert not list(_build_root(root).glob("build-*"))
+    assert not (root / ".git" / "bh-build").exists()
 
 
 @needs_uv
@@ -308,7 +336,8 @@ def test_a_FAILED_build_still_leaves_the_tree_and_the_bookkeeping_exactly_as_it_
 
     assert _git(root, "status", "--porcelain") == before_status
     assert _bookkeeping(root) == before_books
-    assert not list((root / ".git" / "bh-build").glob("build-*"))
+    assert not list(_build_root(root).glob("build-*"))
+    assert not (root / ".git" / "bh-build").exists()
 
 
 @needs_uv
@@ -322,7 +351,7 @@ def test_the_next_run_reaps_a_worktree_left_by_a_killed_one(tmp_path):
     # number and hoping. The orphan is registered with git, exactly as a killed run's would be.
     dead = subprocess.Popen(["true"])
     dead.wait()
-    orphan = root / ".git" / "bh-build" / f"build-{dead.pid}-99999"
+    orphan = _build_root(root) / f"build-{dead.pid}-99999"
     _git(root, "worktree", "add", "--detach", "--quiet", str(orphan), "HEAD")
     assert orphan.is_dir() and orphan.name in _bookkeeping(root)
 
@@ -342,11 +371,65 @@ def test_the_sweep_spares_a_run_that_is_still_in_flight(tmp_path):
 
     live = subprocess.Popen(["sleep", "60"])
     try:
-        inflight = root / ".git" / "bh-build" / f"build-{live.pid}-99999"
+        inflight = _build_root(root) / f"build-{live.pid}-99999"
         _git(root, "worktree", "add", "--detach", "--quiet", str(inflight), "HEAD")
 
         assert _run(root, "build").returncode == 0
         assert inflight.is_dir(), "the sweep reaped a live run's worktree"
+    finally:
+        live.kill()
+        live.wait()
+
+
+@needs_uv
+def test_migrates_a_legacy_dead_worktree_atomically_then_sweeps_it(tmp_path):
+    root = _fixture_checkout(tmp_path)
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    legacy = root / ".git" / "bh-build"
+    orphan = legacy / f"build-{dead.pid}-99999"
+    _git(root, "worktree", "add", "--detach", "--quiet", str(orphan), "HEAD")
+
+    result = _run(root, "build")
+
+    assert result.returncode == 0, result.stderr
+    assert not legacy.exists()
+    assert not (_build_root(root) / orphan.name).exists()
+    assert orphan.name not in _bookkeeping(root)
+
+
+@needs_uv
+def test_new_root_wins_but_legacy_dead_and_malformed_entries_are_still_swept(tmp_path):
+    root = _fixture_checkout(tmp_path)
+    _build_root(root).mkdir(parents=True)
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    legacy = root / ".git" / "bh-build"
+    orphan = legacy / f"build-{dead.pid}-99999"
+    _git(root, "worktree", "add", "--detach", "--quiet", str(orphan), "HEAD")
+    malformed = legacy / "build-not-a-pid-state"
+    malformed.mkdir()
+
+    result = _run(root, "build")
+
+    assert result.returncode == 0, result.stderr
+    assert not orphan.exists()
+    assert not malformed.exists()
+    assert orphan.name not in _bookkeeping(root)
+
+
+@needs_uv
+def test_new_root_sweep_leaves_a_live_legacy_owner_untouched(tmp_path):
+    root = _fixture_checkout(tmp_path)
+    live = subprocess.Popen(["sleep", "60"])
+    try:
+        legacy = root / ".git" / "bh-build"
+        inflight = legacy / f"build-{live.pid}-99999"
+        _git(root, "worktree", "add", "--detach", "--quiet", str(inflight), "HEAD")
+
+        assert _run(root, "build").returncode == 0
+        assert inflight.is_dir(), "the legacy fallback sweep reaped a live run"
+        assert _build_root(root).is_dir(), "the new build must not reuse the legacy root"
     finally:
         live.kill()
         live.wait()

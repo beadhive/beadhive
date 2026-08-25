@@ -111,8 +111,47 @@ fi
 # ---- scratch worktrees: unique per invocation, swept at entry ---------------
 
 # Under the COMMON git dir, so it is invisible to `git status` (a scratch dir inside the working
-# tree would itself dirty the tree it is measuring) and dies with the clone.
-scratch="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)/bh-build"
+# tree would itself dirty the tree it is measuring) and dies with the clone.  `bh/build` is the
+# canonical private-root layout.  Keep the old sibling only as a migration input: an interrupted
+# upgrade must keep being able to clean its old worktrees, but every new build belongs below bh.
+common="$(git -C "$root" rev-parse --path-format=absolute --git-common-dir)"
+canonical_scratch="$common/bh/build"
+legacy_scratch="$common/bh-build"
+scratch="$canonical_scratch"
+
+has_live_owner() {
+  local owner_root="$1" d pid
+  [ -d "$owner_root" ] || return 1
+  for d in "$owner_root"/build-*; do
+    [ -d "$d" ] || continue
+    pid="${d##*/build-}"
+    pid="${pid%%-*}"
+    if ps -p "$pid" >/dev/null 2>&1 &&
+      [ -z "$(find "$d" -maxdepth 0 -mmin "+${BH_BUILD_SWEEP_TTL_MIN:-1440}" 2>/dev/null)" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Prefer a new root that is already present.  Otherwise rename the complete old root into place:
+# both names are below one git-common-dir, so rename(2) is atomic.  A failed best-effort rename
+# deliberately leaves the legacy root available for its compatibility sweep.  A live owner also
+# prevents the rename: moving a concurrent build's checkout is exactly the race this scratch
+# scheme exists to avoid.  This runs only for install/build; `version` returned above without
+# creating bh.
+if [ ! -d "$canonical_scratch" ] && [ -d "$legacy_scratch" ]; then
+  if ! has_live_owner "$legacy_scratch" &&
+    mkdir -p "$(dirname "$canonical_scratch")" && mv "$legacy_scratch" "$canonical_scratch"; then
+    # git's administrative entries name the worktree's .git file, whose absolute path moved with
+    # the root.  Repair is best-effort like the migration itself; `drop` below remains defensive
+    # and will prune entries that cannot be repaired.
+    for moved in "$canonical_scratch"/build-*; do
+      [ -d "$moved" ] || continue
+      git -C "$root" worktree repair "$moved" >/dev/null 2>&1 || true
+    done
+  fi
+fi
 
 # Both halves of cleanup, in the one place that always knows both. Removing the DIRECTORY is not
 # enough: `git worktree add` writes administrative files under .git/worktrees/ that only
@@ -128,9 +167,10 @@ drop() {
 # clone nobody ever builds from again. Reports what it removes; an invisible leak is one that
 # returns.
 sweep() {
-  [ -d "$scratch" ] || return 0
+  local sweep_root="$1"
+  [ -d "$sweep_root" ] || return 0
   local d pid
-  for d in "$scratch"/build-*; do
+  for d in "$sweep_root"/build-*; do
     [ -d "$d" ] || continue
     pid="${d##*/build-}"
     pid="${pid%%-*}"
@@ -157,7 +197,12 @@ cleanup() {
 # signal is also trapped. Same set scripts/hermetic.sh traps, for the same reason.
 trap cleanup EXIT INT TERM HUP
 
-sweep
+sweep "$canonical_scratch"
+# A canonical root wins for new work, but an old root can still contain a killed pre-upgrade
+# invocation.  Sweep it too, while retaining the same live-owner classification as the new root.
+if [ "$legacy_scratch" != "$canonical_scratch" ]; then
+  sweep "$legacy_scratch"
+fi
 mkdir -p "$scratch"
 # pid is already unique among CONCURRENT runs — which is the collision this is defending against.
 # $RANDOM only has to separate a live run from an ORPHAN left by a killed one that happened to
