@@ -144,6 +144,77 @@ check-operator-release ui_repo="/home/bees/workspace/github/beadhive/beadhive-ui
     just --justfile "$ui_repo/justfile" --working-directory "$ui_repo" \
         check-operator-release "$core_repo"
 
+# ONE LOCAL PROCESS GROUP for the first read-only operator release. beadhive-app owns the whole
+# 8335-8339 block (gateway, native motor, CPU container, Metal engine, MCP), so this deliberately
+# starts at the adjacent pair 8340/8341. Both commands receive one byte-identical UI origin.
+# Exiting either command or pressing Ctrl-C terminates the peer; the bounded fallback prevents a
+# wedged child from surviving the recipe. Override both ports positionally when the pair is busy.
+# launch the loopback operator daemon + UI together (daemon 8340, UI 8341)
+operator-ui daemon_port="8340" ui_port="8341":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    host="127.0.0.1"
+    daemon_port="{{daemon_port}}"
+    ui_port="{{ui_port}}"
+    origin="http://${host}:${ui_port}"
+    daemon_url="http://${host}:${daemon_port}"
+    for executable in bh beadhive-operator-ui; do
+        command -v "$executable" >/dev/null 2>&1 || {
+            echo "operator-ui: missing installed command: $executable" >&2
+            exit 127
+        }
+    done
+    if [ "$daemon_port" = "$ui_port" ]; then
+        echo "operator-ui: daemon and UI ports must differ" >&2
+        exit 2
+    fi
+    daemon_pid=""
+    ui_pid=""
+    cleanup() {
+        trap - EXIT INT TERM
+        for pid in "$ui_pid" "$daemon_pid"; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                kill -TERM "$pid" 2>/dev/null || true
+            fi
+        done
+        deadline=$((SECONDS + 5))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+            live=0
+            for pid in "$ui_pid" "$daemon_pid"; do
+                if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then live=1; fi
+            done
+            [ "$live" -eq 0 ] && break
+            sleep 0.1
+        done
+        for pid in "$ui_pid" "$daemon_pid"; do
+            if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+                kill -KILL "$pid" 2>/dev/null || true
+            fi
+            if [ -n "$pid" ]; then wait "$pid" 2>/dev/null || true; fi
+        done
+    }
+    trap cleanup EXIT INT TERM
+    BH_OPERATOR_UI_ORIGIN="$origin" \
+        bh host daemon serve --host "$host" --port "$daemon_port" &
+    daemon_pid=$!
+    BH_OPERATOR_UI_ORIGIN="$origin" \
+        beadhive-operator-ui --host "$host" --port "$ui_port" --daemon-url "$daemon_url" &
+    ui_pid=$!
+    echo "operator UI: $origin"
+    echo "operator daemon: $daemon_url"
+    while kill -0 "$daemon_pid" 2>/dev/null && kill -0 "$ui_pid" 2>/dev/null; do
+        sleep 0.2
+    done
+    set +e
+    if ! kill -0 "$daemon_pid" 2>/dev/null; then
+        wait "$daemon_pid"
+    else
+        wait "$ui_pid"
+    fi
+    status=$?
+    set -e
+    exit "$status"
+
 # `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
 # `bd` work, and every integration test self-skips when the binary is absent
 # (`skip_if_no_bd`/`skipif(shutil.which("bd") is None)`). So on a host without `bd` the full

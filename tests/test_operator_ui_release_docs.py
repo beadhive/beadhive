@@ -8,6 +8,7 @@ they can drift in this repository.
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -27,6 +28,8 @@ UI_COMMAND = (
     "BH_OPERATOR_UI_ORIGIN=http://127.0.0.1:3000 beadhive-operator-ui "
     "--host 127.0.0.1 --port 3000 --daemon-url http://127.0.0.1:8420"
 )
+RECIPE_DAEMON_PORT = "8340"
+RECIPE_UI_PORT = "8341"
 
 
 def _recipe_header(text: str, name: str) -> str:
@@ -48,6 +51,74 @@ def test_installed_launch_commands_and_phase_one_boundary_are_pinned():
         "Node relay",
     ):
         assert boundary in text
+
+
+def test_one_command_recipe_uses_ports_adjacent_to_the_app_block():
+    justfile = JUSTFILE.read_text()
+    doc = DOC.read_text()
+
+    header = next(line for line in justfile.splitlines() if line.startswith("operator-ui "))
+    assert f'daemon_port="{RECIPE_DAEMON_PORT}"' in header
+    assert f'ui_port="{RECIPE_UI_PORT}"' in header
+    assert "8335-8339 block" in justfile
+    assert 'BH_OPERATOR_UI_ORIGIN="$origin"' in justfile
+    assert '--port "$daemon_port"' in justfile
+    assert '--port "$ui_port" --daemon-url "$daemon_url"' in justfile
+    assert "trap cleanup EXIT INT TERM" in justfile
+    assert "deadline=$((SECONDS + 5))" in justfile
+    assert 'kill -KILL "$pid"' in justfile
+    assert "just operator-ui" in doc
+    assert "http://127.0.0.1:8341" in doc
+    assert "daemon port `8340` and UI port `8341`" in doc
+
+
+@pytest.mark.skipif(shutil.which("just") is None, reason="needs just")
+def test_one_command_recipe_passes_one_origin_and_reaps_the_peer(tmp_path):
+    stub_dir = tmp_path / "bin"
+    stub_dir.mkdir()
+    daemon_log = tmp_path / "daemon.log"
+    ui_log = tmp_path / "ui.log"
+    ready = tmp_path / "daemon.ready"
+    stopped = tmp_path / "daemon.stopped"
+
+    daemon = stub_dir / "bh"
+    daemon.write_text(
+        "#!/bin/sh\n"
+        f'printf "%s\\n%s\\n" "$BH_OPERATOR_UI_ORIGIN" "$*" > {shlex.quote(str(daemon_log))}\n'
+        f"trap 'touch {shlex.quote(str(stopped))}; exit 0' TERM INT\n"
+        f"touch {shlex.quote(str(ready))}\n"
+        "while :; do sleep 1; done\n"
+    )
+    daemon.chmod(0o755)
+    ui = stub_dir / "beadhive-operator-ui"
+    ui.write_text(
+        "#!/bin/sh\n"
+        f"while [ ! -f {shlex.quote(str(ready))} ]; do sleep 0.01; done\n"
+        f'printf "%s\\n%s\\n" "$BH_OPERATOR_UI_ORIGIN" "$*" > {shlex.quote(str(ui_log))}\n'
+        "exit 23\n"
+    )
+    ui.chmod(0o755)
+
+    result = subprocess.run(
+        ["just", "-f", str(JUSTFILE), "operator-ui", "18340", "18341"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{stub_dir}:{os.environ['PATH']}"},
+        timeout=10,
+        check=False,
+    )
+
+    assert result.returncode == 23
+    assert daemon_log.read_text().splitlines() == [
+        "http://127.0.0.1:18341",
+        "host daemon serve --host 127.0.0.1 --port 18340",
+    ]
+    assert ui_log.read_text().splitlines() == [
+        "http://127.0.0.1:18341",
+        "--host 127.0.0.1 --port 18341 --daemon-url http://127.0.0.1:18340",
+    ]
+    assert stopped.exists()
 
 
 def test_adr_records_a_narrow_exception_without_erasing_phase_two_auth():
