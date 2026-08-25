@@ -123,7 +123,28 @@ def _ledger(hive) -> Path:
 
 
 def _marker(hive) -> Path:
-    return hive["repo"] / ".git" / release.BUMP_GATE_FILENAME
+    marker = release._marker_path(hive["entry"])
+    assert marker is not None
+    return marker
+
+
+def _legacy_marker(hive) -> Path:
+    marker = release._legacy_marker_path(hive["entry"])
+    assert marker is not None
+    return marker
+
+
+def _log(hive, rev: str | None = None) -> Path:
+    tree = validation_ledger.tree_of(hive["entry"], rev or hive["sha"])
+    log = release._gate_log_path(hive["entry"], tree)
+    assert log is not None
+    return log
+
+
+def _legacy_log(hive) -> Path:
+    log = release._legacy_gate_log_path(hive["entry"])
+    assert log is not None
+    return log
 
 
 def _attest(hive, rc: int = 0, rev: str | None = None, cmd: str = GATE_CMD) -> None:
@@ -133,7 +154,9 @@ def _attest(hive, rc: int = 0, rev: str | None = None, cmd: str = GATE_CMD) -> N
 def _fire(hive, rev: str | None = None, pid: int | None = None, cmd: str = GATE_CMD) -> None:
     """A bump-gate marker as `attest --background` writes one, without spawning a real gate."""
     rev = rev or hive["sha"]
-    _marker(hive).write_text(
+    marker = _marker(hive)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
         json.dumps(
             {
                 "tree": validation_ledger.tree_of(hive["entry"], rev),
@@ -141,7 +164,7 @@ def _fire(hive, rev: str | None = None, pid: int | None = None, cmd: str = GATE_
                 "sha": rev,
                 "pid": pid if pid is not None else os.getpid(),  # this process — reliably alive
                 "host": host.host_id(),
-                "log": str(_marker(hive).with_name(release.BUMP_GATE_LOG)),
+                "log": str(_log(hive, rev)),
                 "started": time.time(),
             }
         )
@@ -486,6 +509,56 @@ def test_background_attest_fires_the_gate_on_the_bump_tree_and_records_a_marker(
     assert marker["tree"] == _git("rev-parse", f"{bumped}^{{tree}}", cwd=hive["repo"])
     assert (marker["cmd"], marker["sha"]) == (GATE_CMD, bumped)
     assert isinstance(marker["pid"], int)
+    assert marker["log"] == str(_log(hive, bumped))
+    assert _log(hive, bumped).is_file()
+    assert not _legacy_marker(hive).exists()
+
+
+def test_readers_prefer_canonical_marker_but_fall_back_to_legacy(hive):
+    """Migration never changes a pending gate's answer, and canonical wins if both exist."""
+    bumped = _bump(hive)
+    _fire(hive, rev=bumped)
+    canonical = json.loads(_marker(hive).read_text())
+    legacy = {**canonical, "pid": 12345}
+    _legacy_marker(hive).write_text(json.dumps(legacy))
+
+    assert release._marker_for_tree(hive["entry"], bumped)[0] == canonical
+    _marker(hive).unlink()
+    assert release._marker_for_tree(hive["entry"], bumped)[0] == legacy
+
+
+def test_reading_legacy_marker_does_not_create_canonical_release_roots(hive):
+    """The preview/await read seam must not silently migrate state."""
+    bumped = _bump(hive)
+    canonical = _marker(hive)
+    _legacy_marker(hive).parent.mkdir(parents=True, exist_ok=True)
+    _legacy_marker(hive).write_text(
+        json.dumps(
+            {
+                "tree": validation_ledger.tree_of(hive["entry"], bumped),
+                "cmd": GATE_CMD,
+                "pid": os.getpid(),
+                "host": host.host_id(),
+            }
+        )
+    )
+
+    assert not canonical.exists()
+    assert _await(hive, "--if-pending", "--timeout", "0", rev=bumped).exit_code == 1
+    assert not canonical.exists()
+
+
+def test_diagnostic_log_resolution_is_canonical_first_then_legacy(hive):
+    bumped = _bump(hive)
+    _fire(hive, rev=bumped)
+    marker = json.loads(_marker(hive).read_text())
+    tree = validation_ledger.tree_of(hive["entry"], bumped)
+    _legacy_log(hive).write_text("legacy gate output\n")
+
+    assert release._marker_log(hive["entry"], marker, tree) == str(_legacy_log(hive))
+    _log(hive, bumped).parent.mkdir(parents=True, exist_ok=True)
+    _log(hive, bumped).write_text("canonical gate output\n")
+    assert release._marker_log(hive["entry"], marker, tree) == str(_log(hive, bumped))
 
 
 def test_the_background_child_gates_the_exact_sha_not_a_moving_ref(hive, spawned):
@@ -679,6 +752,7 @@ def test_a_marker_for_another_tree_leaves_that_push_to_the_full_pre_push_gate(hi
 def test_a_corrupt_marker_is_a_marker_that_is_not_there(hive, name, content):
     """And "not there" is never permission — bare `await` refuses, it does not assume green."""
     bumped = _bump(hive)
+    _marker(hive).parent.mkdir(parents=True, exist_ok=True)
     _marker(hive).write_text(content)
 
     assert _await(hive, rev=bumped).exit_code == 1, name
@@ -691,6 +765,7 @@ def test_a_fifo_at_the_marker_path_reads_as_not_there(hive):
     the whole test run rather than fail it."""
     if not hasattr(os, "mkfifo"):
         pytest.skip("mkfifo is POSIX-only")
+    _marker(hive).parent.mkdir(parents=True, exist_ok=True)
     os.mkfifo(_marker(hive))
 
     assert release._read_marker(hive["entry"]) == {}
@@ -772,6 +847,7 @@ def test_pending_is_false_for_a_marker_naming_a_different_tree(hive):
 )
 def test_pending_fails_open_on_a_corrupt_marker(hive, name, content):
     bumped = _bump(hive)
+    _marker(hive).parent.mkdir(parents=True, exist_ok=True)
     _marker(hive).write_text(content)
 
     assert _pending(hive, rev=bumped).exit_code == 1, name
@@ -861,6 +937,25 @@ def test_case_A_the_tag_never_left_so_the_undo_is_safe(hive):
     assert res.exit_code == 0, res.output
     assert "SAFE TO UNDO" in res.output
     assert "ls-remote" in res.output  # measured, and it says so
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_recover_identifies_pending_canonical_or_legacy_gate_without_writing(hive, legacy):
+    bumped = _bump(hive)
+    _fire(hive, rev=bumped)
+    if legacy:
+        _legacy_marker(hive).parent.mkdir(parents=True, exist_ok=True)
+        _legacy_marker(hive).write_text(_marker(hive).read_text())
+        _marker(hive).unlink()
+
+    repo_private = hive["repo"] / ".bh"
+    before = sorted(repo_private.rglob("*")) if repo_private.exists() else []
+    res = _recover(hive, bumped)
+
+    assert res.exit_code == 1
+    assert "background gate" in res.output
+    after = sorted(repo_private.rglob("*")) if repo_private.exists() else []
+    assert after == before
 
 
 def test_case_A_names_bh_67utw_rather_than_performing_the_rewrite(hive):
