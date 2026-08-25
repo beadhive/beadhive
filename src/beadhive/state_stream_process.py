@@ -42,29 +42,38 @@ def _group_exists(pgid: int) -> bool:
     return True
 
 
-def _terminate_tree(active: _ActiveProcess, grace: float) -> None:
-    """Terminate a remembered process group even when its leader already exited.
+def _terminate_trees(active_processes: tuple[_ActiveProcess, ...], grace: float) -> None:
+    """Terminate remembered process groups under one shared, count-independent deadline.
 
     Remembering ``pgid`` at spawn is essential: resolving it from ``proc.pid`` during cleanup
     fails after a short-lived direct child exits while a grandchild still holds an inherited
     output pipe open.
     """
 
-    proc, pgid = active.proc, active.pgid
-    with contextlib.suppress(ProcessLookupError):
-        os.killpg(pgid, signal.SIGTERM)
+    for active in active_processes:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(active.pgid, signal.SIGTERM)
 
     deadline = time.monotonic() + max(0.0, grace)
-    while _group_exists(pgid) and time.monotonic() < deadline:
-        with contextlib.suppress(subprocess.TimeoutExpired):
-            proc.wait(timeout=min(0.05, max(0.0, deadline - time.monotonic())))
-        time.sleep(0.01)
+    while (
+        any(_group_exists(active.pgid) for active in active_processes)
+        and time.monotonic() < deadline
+    ):
+        time.sleep(min(0.01, max(0.0, deadline - time.monotonic())))
 
-    if _group_exists(pgid):
-        with contextlib.suppress(ProcessLookupError):
-            os.killpg(pgid, signal.SIGKILL)
-    with contextlib.suppress(subprocess.TimeoutExpired):
-        proc.wait(timeout=max(1.0, grace))
+    for active in active_processes:
+        if _group_exists(active.pgid):
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(active.pgid, signal.SIGKILL)
+    reap_deadline = time.monotonic() + max(0.001, grace)
+    for active in active_processes:
+        remaining = max(0.0, reap_deadline - time.monotonic())
+        with contextlib.suppress(subprocess.TimeoutExpired):
+            active.proc.wait(timeout=remaining)
+
+
+def _terminate_tree(active: _ActiveProcess, grace: float) -> None:
+    _terminate_trees((active,), grace)
 
 
 class StreamProcessScope:
@@ -88,6 +97,7 @@ class StreamProcessScope:
         self._active: dict[int, _ActiveProcess] = {}
         self._previous_handlers: dict[signal.Signals, Any] = {}
         self._entered = False
+        self._closed = False
 
     def __enter__(self) -> StreamProcessScope:
         if self._entered:
@@ -126,37 +136,39 @@ class StreamProcessScope:
         """Reap every process tree still owned by the stream; safe to call repeatedly."""
 
         with self._lock:
+            self._closed = True
             active = tuple(self._active.values())
             self._active.clear()
-        for item in active:
-            _terminate_tree(item, self.term_grace)
+        _terminate_trees(active, self.term_grace)
 
     def run(self, cmd: list[str], *, label: str = "state stream backend"):
         """Run one captured backend command under the scope's timeout and tree ownership."""
 
         with run_mod._span(cmd):
-            try:
-                proc = subprocess.Popen(
-                    cmd,
-                    text=True,
-                    env=run_mod.child_env(),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    preexec_fn=run_mod._die_with_parent,
-                )
-            except FileNotFoundError:
-                binary = cmd[0] if cmd else "?"
-                result = subprocess.CompletedProcess(
-                    cmd,
-                    run_mod.MISSING_BINARY_EXIT,
-                    "",
-                    f"{binary}: command not found",
-                )
-                result.bh_missing_binary = binary
-                return result
-
-            active = _ActiveProcess(proc=proc, pgid=proc.pid)
             with self._lock:
+                if self._closed:
+                    raise RuntimeError("the state stream process scope is closed")
+                try:
+                    proc = subprocess.Popen(
+                        cmd,
+                        text=True,
+                        env=run_mod.child_env(),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        preexec_fn=run_mod._die_with_parent,
+                    )
+                except FileNotFoundError:
+                    binary = cmd[0] if cmd else "?"
+                    result = subprocess.CompletedProcess(
+                        cmd,
+                        run_mod.MISSING_BINARY_EXIT,
+                        "",
+                        f"{binary}: command not found",
+                    )
+                    result.bh_missing_binary = binary
+                    return result
+
+                active = _ActiveProcess(proc=proc, pgid=proc.pid)
                 self._active[proc.pid] = active
             try:
                 stdout, stderr = proc.communicate(timeout=self.timeout)

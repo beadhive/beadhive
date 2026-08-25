@@ -961,6 +961,7 @@ def test_real_bh_stream_operator_feature_demo(tmp_path):
     try:
         snapshot = _read_frame(process)
         _atomic_json(export_source, exports[1])
+        gates[1][0]["closed_at"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
         _atomic_json(gate_source, gates[1])
         delta = _read_frame(process)
         _assert_operator_payloads(snapshot, delta)
