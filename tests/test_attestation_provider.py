@@ -141,10 +141,10 @@ def test_all_passed_report_cannot_upgrade_a_nonzero_rc(tmp_path, monkeypatch, ca
 
 def test_a_stale_report_from_a_previous_run_is_unreachable(tmp_path, monkeypatch):
     """HOSTILE: run 1 (green, with a report) is followed by re-planting that very report at the
-    exact directory bh handed run 1 — then run 2 writes NOTHING. Run 2 must record an rc-only
-    verdict: the planted green report is not merely ignored, it is unreachable, because run 2's
-    drop zone is a directory that has never existed before. A stale green report readable as this
-    run's result would be a capability adding a pass a full run would not have produced."""
+    exact durable directory bh handed run 1 — then run 2 writes NOTHING. Run 2 must record an
+    rc-only verdict: the planted green report is unreachable because run 2 receives a newly
+    allocated report directory. A stale green report readable as this run's result would be a
+    capability adding a pass a full run would not have produced."""
     entry, repo = _hive(tmp_path, monkeypatch)
     src = tmp_path / "all-passed.xml"
     src.write_text(_ALL_PASSED)
@@ -152,10 +152,9 @@ def test_a_stale_report_from_a_previous_run_is_unreachable(tmp_path, monkeypatch
 
     assert worktree.clean_checkout(entry, "main", _runner(log, rc=0, writes=src)) == 0
     ((first_drop, _),) = _observed(log)
-    assert not Path(first_drop).exists(), "the drop zone outlived the run it belonged to"
+    assert Path(first_drop).is_dir(), "the completed run's durable raw artifact disappeared"
 
     # Plant the stale green report back at run 1's exact path, as hostilely as possible.
-    Path(first_drop).mkdir(parents=True)
     (Path(first_drop) / "junit.xml").write_text(_ALL_PASSED)
 
     # Run 2 writes nothing. Different cmd string ⇒ different ledger key ⇒ it really runs.

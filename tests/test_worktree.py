@@ -2073,6 +2073,49 @@ def test_clean_checkout_missing_binary_is_completed_none_not_red(tmp_path, monke
     assert len(uses) == 1
 
 
+def test_clean_checkout_keeps_complete_external_run_artifacts(tmp_path, monkeypatch):
+    """The clean verify checkout may disappear, but its configured artifact root cannot.
+
+    This exercises the real validation subprocess rather than merely inspecting
+    a manifest: reports and gate output are siblings in one fresh per-run
+    directory after the verify checkout's cleanup.
+    """
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    external = tmp_path / "mounted-validation-artifacts"
+    cfg["work"] = {"validation_artifact_root": str(external)}
+    command = "sh -c 'echo report > \"$BH_TEST_REPORT_DIR/report.xml\"; echo durable-gate'"
+
+    assert worktree.clean_checkout(entry, "main", command, cfg=cfg, bead="bh-x") == 0
+
+    manifest = json.loads(
+        next((repo / ".git/bh/validation/runs").glob("*/manifest.json")).read_text()
+    )
+    artifacts = manifest["artifacts"]
+    directory = Path(artifacts["directory"])
+    assert directory.parent == external
+    assert Path(artifacts["reports"]) == directory / "reports"
+    assert (directory / "reports" / "report.xml").read_text().strip() == "report"
+    assert (directory / "gate.log").read_text().strip() == "durable-gate"
+    assert manifest["summary"]["tree"] == manifest["tree"]
+
+
+def test_clean_checkout_refuses_relative_artifact_root_before_runner(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["work"] = {"validation_artifact_root": "relative/artifacts"}
+    ran = []
+    original = worktree.run
+
+    def observe(cmd, **kwargs):
+        if list(cmd)[:1] != ["git"]:
+            ran.append(cmd)
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(worktree, "run", observe)
+    assert worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x") == 2
+    assert ran == []
+    assert not list((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+
+
 def test_clean_checkout_checkout_failure_is_a_terminal_none_use(tmp_path, monkeypatch):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     monkeypatch.setattr(worktree, "_prepare_verify_worktree", lambda *_args: (None, 23))

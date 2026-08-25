@@ -11,11 +11,12 @@ import datetime as dt
 import json
 import os
 import secrets
+import shutil
 import signal
 from pathlib import Path
 from typing import Literal
 
-from . import host, private_paths
+from . import host, observaloop_env, private_paths
 
 Lifecycle = Literal["running", "completed", "abandoned"]
 Verdict = Literal["green", "red", "none"]
@@ -49,6 +50,45 @@ def _validation_root(hive: str | Path, *, create: bool = False) -> Path | None:
     return root / "validation" if root is not None else None
 
 
+def artifact_root(hive: str | Path, configured: object = None) -> Path | None:
+    """Absolute root for relocatable raw validation artifacts.
+
+    Environment wins over config so CI can upload a run directory from a mounted
+    volume. Relative values are rejected rather than acquiring accidental cwd
+    semantics; the caller treats that as a validation setup error.
+    """
+    raw = os.environ.get("BH_VALIDATION_ARTIFACT_ROOT") or configured or ""
+    if raw:
+        root = Path(str(raw)).expanduser()
+        if not root.is_absolute():
+            raise ValueError("validation artifact root must be absolute")
+        return root
+    root = private_paths.ensure_repo_private_root(hive)
+    return root / "validation" / "runs" if root is not None else None
+
+
+def artifact_paths(hive: str | Path, run_id: str, configured: object = None) -> dict | None:
+    """Allocate one fresh complete artifact directory for a run, or safely miss."""
+    root = artifact_root(hive, configured)
+    if root is None:
+        return None
+    directory = root / run_id
+    reports = directory / "reports"
+    try:
+        reports.mkdir(parents=True, exist_ok=False)
+    except (FileExistsError, OSError):
+        return None
+    # The default lives in the primary checkout so artifact retention survives
+    # verify-worktree removal; keep that private root out of ordinary git status.
+    if not (os.environ.get("BH_VALIDATION_ARTIFACT_ROOT") or configured):
+        observaloop_env._git_exclude(Path(hive), ".bh/")
+    return {
+        "directory": str(directory),
+        "reports": str(reports),
+        "gate_log": str(directory / "gate.log"),
+    }
+
+
 def begin_run(
     hive: str | Path,
     *,
@@ -62,6 +102,7 @@ def begin_run(
     command: str | None = None,
     owner_pid: int | None = None,
     owner_start: str | None = None,
+    artifact_root_config: object = None,
 ) -> dict | None:
     """Allocate an independent running record using mkdir as the atomic claim."""
     root = _validation_root(hive, create=True)
@@ -75,6 +116,22 @@ def begin_run(
         except FileExistsError:
             continue
         except OSError:
+            return None
+        try:
+            artifacts = artifact_paths(hive, run_id, artifact_root_config)
+        except ValueError:
+            # A relative configured root is explicitly invalid; leave no partial
+            # control directory that could be mistaken for a live run.
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+            return None
+        if artifacts is None:
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
             return None
         pid = os.getpid() if owner_pid is None else owner_pid
         manifest = {
@@ -100,6 +157,7 @@ def begin_run(
             "exit_code": None,
             "signal": None,
             "reason": None,
+            "artifacts": artifacts,
         }
         try:
             _atomic_json(directory / "manifest.json", manifest)
@@ -121,6 +179,106 @@ def read_run(hive: str | Path, run_id: str) -> dict | None:
     except (OSError, ValueError):
         return None
     return value if isinstance(value, dict) and value.get("run_id") == run_id else None
+
+
+def mark_artifacts_uploaded(hive: str | Path, run_id: str) -> dict | None:
+    """Record CI handoff, then retain only the newest raw artifact set per tree."""
+    current = read_run(hive, run_id)
+    if current is None:
+        return None
+    current["artifacts_uploaded_at"] = _now()
+    root = _validation_root(hive)
+    try:
+        _atomic_json(root / "runs" / run_id / "manifest.json", current)
+    except OSError:
+        return None
+    prune_artifacts(hive)
+    return current
+
+
+def attach_summary(hive: str | Path, run_id: str, summary: dict) -> dict | None:
+    """Attach bounded report metadata to a run without copying raw artifacts."""
+    current = read_run(hive, run_id)
+    root = _validation_root(hive)
+    if current is None or root is None:
+        return None
+    current["summary"] = summary
+    try:
+        _atomic_json(root / "runs" / run_id / "manifest.json", current)
+    except OSError:
+        return None
+    return current
+
+
+def prune_artifacts(hive: str | Path) -> int:
+    """Apply bounded raw-artifact retention without deleting control manifests.
+
+    A running run, a run still referenced by a gate-use, and the newest raw
+    directory for a tree with retry/red history are protected.  After an upload
+    handoff, superseded raw reports/logs are removable; manifests remain as the
+    small durable execution history.
+    """
+    root = _validation_root(hive)
+    runs_dir = root / "runs" if root else None
+    if runs_dir is None or not runs_dir.is_dir():
+        return 0
+    runs = [read_run(hive, p.name) for p in runs_dir.iterdir() if p.is_dir()]
+    runs = [r for r in runs if r]
+    # Uses are an audit trail, not a raw-artifact retention lease: every ordinary
+    # completed execution creates one, so treating them as permanent references
+    # makes cleanup a no-op. The bounded verdict index is the actual live decision
+    # index and (when it names a run) is the only decision reference that protects
+    # raw artifacts after CI has acknowledged upload.
+    referenced = _verdict_run_ids(root)
+    if referenced is None:
+        return 0
+    by_tree: dict[str, list[dict]] = {}
+    for run in runs:
+        by_tree.setdefault(str(run.get("tree") or ""), []).append(run)
+    keep: set[str] = set(referenced)
+    for group in by_tree.values():
+        group.sort(key=lambda r: str(r.get("finished_at") or r.get("started_at") or ""))
+        if any(r.get("lifecycle") == "running" for r in group):
+            keep.update(r["run_id"] for r in group if r.get("lifecycle") == "running")
+        # Red or repeated same-tree history earns the newest uploadable raw set.
+        if len(group) > 1 or any(r.get("verdict") == "red" for r in group):
+            keep.add(group[-1]["run_id"])
+    removed = 0
+    for run in runs:
+        artifacts = run.get("artifacts") or {}
+        directory = Path(str(artifacts.get("directory") or ""))
+        if (
+            run["run_id"] not in keep
+            and run.get("lifecycle") != "running"
+            and run.get("artifacts_uploaded_at")
+            and directory.is_dir()
+        ):
+            run["artifacts"] = {"pruned_at": _now()}
+            try:
+                _atomic_json(runs_dir / run["run_id"] / "manifest.json", run)
+            except OSError:
+                continue
+            shutil.rmtree(directory, ignore_errors=True)
+            removed += 1
+    return removed
+
+
+def _verdict_run_ids(root: Path) -> set[str] | None:
+    """Read canonical verdict pointers; malformed pointers fail retention closed."""
+    verdicts = root / "verdicts"
+    if not verdicts.is_dir():
+        return set()
+    referenced: set[str] = set()
+    for path in verdicts.rglob("*.json"):
+        try:
+            value = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+        run_id = value.get("run_id") if isinstance(value, dict) else None
+        if not isinstance(run_id, str) or not run_id:
+            return None
+        referenced.add(run_id)
+    return referenced
 
 
 def finish_run(

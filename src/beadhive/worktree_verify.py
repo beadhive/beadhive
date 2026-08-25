@@ -7,6 +7,7 @@ working while callers migrate at their own pace.
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import os
@@ -700,6 +701,12 @@ def impl_clean_checkout(
     head_out = getattr(head, "stdout", "") or ""  # tolerate faked run() results without stdout
     validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
     tree = validation_ledger.tree_of(entry, validated_sha)
+    artifact_root_config = config.work_value(cfg, entry, "validation_artifact_root", "")
+    try:
+        validation_records.artifact_root(main, artifact_root_config)
+    except ValueError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        return 2
     run_record = validation_records.begin_run(
         main,
         bead=bead,
@@ -711,6 +718,7 @@ def impl_clean_checkout(
         command_hash=validation_ledger.cmd_hash(cmd),
         command=cmd,
         owner_start=_pid_start(os.getpid()),
+        artifact_root_config=artifact_root_config,
     )
     # From this point the run manifest is authoritative.  Remove the 0.15.1 worktree-keyed
     # compatibility marker; the run-id active pointer is sufficient for liveness/reaping.
@@ -754,7 +762,20 @@ def impl_clean_checkout(
         # The gate log is teed live (bh-ku9n9.6): the output still streams, and now also
         # survives the run that produced it, so a red 6-minute gate can be read instead of
         # re-run. `triage_store` keeps it only when the write rule fires — red, or retried.
-        with test_report.drop_zone() as drop, triage_store.gate_log() as log:
+        artifacts = (run_record or {}).get("artifacts") or {}
+        if artifacts:
+            reports_dir = Path(artifacts["reports"])
+            gate_log = Path(artifacts["gate_log"])
+            if not reports_dir.is_dir() or not gate_log.parent.is_dir():
+                raise RuntimeError("validation artifact directory could not be allocated")
+            drop_context = test_report.drop_zone(reports_dir)
+            log_context = contextlib.nullcontext(gate_log)
+        else:
+            # Best-effort control-state allocation has always been allowed to miss;
+            # preserve the validation command's execution semantics in that case.
+            drop_context = test_report.drop_zone()
+            log_context = triage_store.gate_log()
+        with drop_context as drop, log_context as log:
             protocol_path = validation_records.protocol_path(
                 drop, config.work_value(cfg, entry, "validation_protocol", "none")
             )
@@ -788,9 +809,24 @@ def impl_clean_checkout(
             rc = res.returncode
             report = test_report.ingest(drop, rc)
             protocol = validation_records.read_protocol(protocol_path)
+            if run_record is not None:
+                validation_records.attach_summary(
+                    main,
+                    run_record["run_id"],
+                    {"counts": test_report.counts(report), "tree": tree},
+                )
             # Inside the `with`: the drop zone is gone the moment it closes, so the raw runner
             # output has to be copied into the durable per-tree store before then.
-            triage_store.store(entry, validated_sha, cmd, rc, report, drop, log)
+            triage_store.store(
+                entry,
+                validated_sha,
+                cmd,
+                rc,
+                report,
+                drop,
+                log,
+                run_id=run_record["run_id"] if run_record else None,
+            )
         missing = missing_binary(res)
         if run_record is not None:
             validation_records.finish_run(
