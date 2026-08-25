@@ -13,6 +13,93 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.15.0 (2026-08-25)
+
+### Feat
+
+- **release**: safely undo local-only bumps
+- **operator**: add one-command local UI launcher
+- **operator**: add authoritative SSE relay
+- **operator**: add loopback read API
+- **daemon**: add singleton host runtime
+- **runtime**: prove qualified live ingress
+- **source**: expose exact named-hive descriptors
+- **stream**: add correlated public readers
+- **stream**: verify operator entity integration
+- **stream**: project epic schedules
+- **stream**: project gate requests
+- **stream**: project core operator entities
+- **stream**: add NDJSON CLI
+- **stream**: add polling snapshot provider
+- **stream**: add backend-neutral state stream port
+- **agent-run-summary**: expose host-local dispatch runs
+- **agent-run-summary**: add snapshot reader over the per-hive dispatch sink
+- **agent-run-summary**: define AgentRunSummary projection contract over dispatch_log.py
+- **role**: expose redacted execution plans
+- **role**: validate provider-qualified BAML launches
+- **runtime**: journal LocalLoop attempts
+- **repowise**: wire lifecycle refresh seed and overlay
+- **repowise**: seed fresh worktree intelligence
+- **repowise**: detect required fork capabilities
+- **repowise**: seed indexes during onboarding
+- **repowise**: register optional index plugin
+- **plugins**: add worktree create observers
+- **worktree**: add scheduled prune cadence
+- **alerts**: add configurable disk pressure rules
+- **worktree**: classify fleet status concurrently
+- **doctor**: measure managed worktree disk use
+- **alerts**: add normalized steering surface
+- **herdr**: verify dispatched prompts reached pane
+- **herdr**: add safe attach and reap commands
+- **herdr**: list live agents
+- **herdr**: add bounded agent watch
+- **herdr**: add explicit integration install
+- **herdr**: add warm pane spawn
+- **herdr**: add status plugin scaffold
+- **doctor**: detect and name split-brain Dolt lineage (bh-s9cdk)
+- **image**: guard image-vs-release version drift
+- **role,work**: surface headless-suitability decision before launch
+- **role**: headless dispatch backend selection + suitability refusal
+- **role**: --bead/--hive resolve the launch workspace
+- **role**: annotate bare bh role listing with backend runnability
+- **hitch**: forward --workspace/--task/-d/--role/--explain to hitch up
+- **role**: unify bh role <seat> to auto-select native vs. hitch backend
+
+### Fix
+
+- **tests**: isolate pinned bd process detection
+- **stream**: reap backend process trees
+- **repowise**: backfill editor suppression
+- **config**: isolate worktree runtime override
+- **plugin**: decode Herdr protocol responses
+- **host**: model remote-only hive placement
+- **work**: prune safe worktrees after PR land
+- **herdr**: correlate dispatch read-back to new turn
+- **herdr**: retain wrapper pane claims
+- **herdr**: count unnamed pane ownership claims
+- **herdr**: fence reap to owned live panes
+- **herdr**: fence agent identity parsing
+- **herdr**: clean up failed pane spawns
+- **worktree**: honor managed Codex grants
+- **host**: install the harness plugin during host provision (bh-tx2hp)
+- **release**: make await ask the same green question as preview
+- **work_next**: stop counting pre-submit failures and never escalate a bead awaiting review
+- **demo**: skip ~/.beadhive/wt in the isolation tripwire, not just the retired worktrees/
+- **sync**: report actual Dolt engine mode
+
+### Refactor
+
+- **config**: remove facade service import cycles
+- **work**: extract merge and refine orchestration
+- **work**: extract submission lifecycle boundary
+- **work**: extract assignment and dispatch orchestration
+- **worktree**: extract inventory and cleanup coordination
+- **worktree**: extract verification and git operations
+- **config**: group typed domain accessors
+- **config**: isolate dotted editing boundary
+- **config**: extract path and storage boundaries
+- **work**: extract reads metrics guards and intake
+
 ## v0.14.0 (2026-08-21)
 
 ### Feat
