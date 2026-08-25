@@ -22,7 +22,8 @@ import typer
 from . import config, converge, host, otel, registry, test_report, triage_store, validation_ledger
 
 VERIFY_LEAF_PREFIX = "verify-"
-VERIFY_MARKER = ".bh-verify.json"
+VERIFY_MARKER = ".bh-verify.json"  # legacy in-checkout marker; read-only since bh-odqgy
+VERIFY_ACTIVE_PATH = Path("bh") / "validation" / "active"
 _VERIFY_RAND_BYTES = 3
 _VERIFY_CREATE_ATTEMPTS = 8
 _VERIFY_GRACE_SECONDS = 5 * 60
@@ -68,12 +69,24 @@ def _pid_starts(*args, **kwargs):
     return _call_facade("_pid_starts", *args, **kwargs)
 
 
+def _verify_marker_root(*args, **kwargs):
+    return _call_facade("_verify_marker_root", *args, **kwargs)
+
+
+def _verify_marker_path(*args, **kwargs):
+    return _call_facade("_verify_marker_path", *args, **kwargs)
+
+
 def _write_verify_marker(*args, **kwargs):
     return _call_facade("_write_verify_marker", *args, **kwargs)
 
 
 def _read_verify_marker(*args, **kwargs):
     return _call_facade("_read_verify_marker", *args, **kwargs)
+
+
+def _remove_verify_marker(*args, **kwargs):
+    return _call_facade("_remove_verify_marker", *args, **kwargs)
 
 
 def _verify_dir_is_orphan(*args, **kwargs):
@@ -253,11 +266,44 @@ def impl__pid_starts(pids) -> dict:
     return out
 
 
-def impl__write_verify_marker(tmp: Path, branch: str, cmd: str) -> None:
-    """Write the liveness marker into a fresh verify- dir (the merge-slot HolderToken analog):
-    host+pid+pid-start identify the creator so the sweep can tell a live run from an orphan.
-    Best-effort — an unwritable marker just means the grace/TTL rules apply instead. `host` is
-    the stable `host_id()` UUID (bh-ytbb.4), not `socket.gethostname()` — see `_slot_holder`."""
+def impl__verify_marker_root(main: Path) -> Path | None:
+    """The canonical git-private directory for active validation markers.
+
+    ``--git-common-dir`` is required here rather than ``main / ".git"``: all linked worktrees
+    of a hive must share one liveness store. Resolution is best-effort so a Git/probe failure
+    degrades to the existing markerless grace/TTL behavior instead of blocking validation.
+    """
+    res = _run_git(
+        ["git", "-C", str(main), "rev-parse", "--git-common-dir"],
+        check=False,
+        capture=True,
+    )
+    out = (getattr(res, "stdout", "") or "").strip()
+    if res.returncode != 0 or not out:
+        return None
+    common = Path(out)
+    if not common.is_absolute():
+        common = Path(main) / common
+    return common / VERIFY_ACTIVE_PATH
+
+
+def impl__verify_marker_path(marker_root: Path, d: Path) -> Path:
+    """Marker path keyed by the verify worktree's unique leaf identity."""
+    return Path(marker_root) / f"{d.name}.json"
+
+
+def impl__write_verify_marker(
+    tmp: Path, branch: str, cmd: str, marker_root: Path | None = None
+) -> Path | None:
+    """Atomically write a verify worktree's liveness marker outside the checkout.
+
+    Host+pid+pid-start identify the creator so the sweep can tell a live run from an orphan.
+    The unique worktree leaf keys the file under ``<git-common-dir>/bh/validation/active``;
+    path+identity in the document prevent a stale or misplaced file from being trusted for a
+    different checkout. Best-effort — an unwritable store keeps the existing grace/TTL fallback.
+    """
+    if marker_root is None:
+        return None
     pid = os.getpid()
     marker = {
         "host": host.host_id(),
@@ -266,16 +312,40 @@ def impl__write_verify_marker(tmp: Path, branch: str, cmd: str) -> None:
         "created_at": int(time.time()),
         "branch": branch,
         "command": cmd,
+        "worktree": str(tmp.absolute()),
+        "identity": tmp.name,
     }
+    target = impl__verify_marker_path(marker_root, tmp)
+    pending = target.with_name(f".{target.name}.tmp-{pid}-{secrets.token_hex(_VERIFY_RAND_BYTES)}")
     try:
-        (tmp / VERIFY_MARKER).write_text(json.dumps(marker, indent=2) + "\n")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        pending.write_text(json.dumps(marker, indent=2) + "\n")
+        os.replace(pending, target)
     except OSError:
-        pass
+        try:
+            pending.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return None
+    return target
 
 
-def impl__read_verify_marker(d: Path):
-    """A verify- dir's liveness marker as parsed JSON, or None when it is absent or unreadable —
-    the one reader both classifiers below share, so neither can drift from the other.
+def _read_marker_file(path: Path):
+    """Parsed JSON from a regular marker file, or ``None`` without blocking on special files."""
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+
+
+def impl__read_verify_marker(d: Path, marker_root: Path | None = None):
+    """A verify dir's external marker, with legacy in-checkout fallback.
+
+    New markers live under ``marker_root``. During the compatibility window, a pre-upgrade
+    orphan may carry only ``.bh-verify.json`` inside its checkout, so that old location remains
+    read-only fallback. ``None`` means absent/unreadable and preserves grace/TTL classification.
 
     The `is_file()` guard is the point of factoring it out (bh-0tmvk, same class as bh-0jgdz's
     `release._read_marker`): a FIFO at this path makes `read_text()` block FOREVER rather than
@@ -284,17 +354,34 @@ def impl__read_verify_marker(d: Path):
     submit` and the pre-push hook exactly like the ledger case does, silently and with no exit
     code. None (never `{}`) marks the unreadable case so callers keep distinguishing "no marker"
     from a marker that parsed to something falsy."""
-    p = d / VERIFY_MARKER
-    if not p.is_file():
-        return None
+    if marker_root is not None:
+        marker = _read_marker_file(impl__verify_marker_path(marker_root, d))
+        if marker is not None:
+            expected_path = str(d.absolute())
+            if marker.get("worktree") == expected_path and marker.get("identity") == d.name:
+                return marker
+            # A marker keyed to this leaf but naming another checkout is stale/misplaced. Do not
+            # let it claim this directory; a genuine legacy marker may still identify the owner.
+    return _read_marker_file(d / VERIFY_MARKER)
+
+
+def impl__remove_verify_marker(d: Path, marker_root: Path | None = None) -> None:
+    """Best-effort removal of exactly ``d``'s external active marker."""
+    if marker_root is None:
+        return
     try:
-        return json.loads(p.read_text())
-    except (OSError, ValueError):
-        return None
+        impl__verify_marker_path(marker_root, d).unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def impl__verify_dir_is_orphan(
-    d: Path, now: float, grace: int, ttl: int, pid_starts: dict | None = None
+    d: Path,
+    now: float,
+    grace: int,
+    ttl: int,
+    pid_starts: dict | None = None,
+    marker_root: Path | None = None,
 ) -> bool:
     """Whether a sibling verify- dir is a demonstrably-dead leftover safe to reap. Conservative by
     construction: a live same-host pid (with matching start-time) is NEVER reaped; a cross-host or
@@ -310,7 +397,7 @@ def impl__verify_dir_is_orphan(
         return False  # vanished mid-sweep (its owner cleaned up) — nothing to do
     if age > ttl:
         return True  # hard backstop: reboots, shared FS, anything the pid probe can't see
-    marker = _read_verify_marker(d)
+    marker = _read_verify_marker(d, marker_root=marker_root)
     if marker is None:
         return age > grace  # marker missing/unreadable: reap only past the grace window
     marker_host, pid = marker.get("host"), marker.get("pid")
@@ -333,14 +420,14 @@ def impl__verify_dir_candidates(parent: Path) -> list:
     ]
 
 
-def impl__live_marker_pids(dirs) -> set:
+def impl__live_marker_pids(dirs, marker_root: Path | None = None) -> set:
     """Same-host, live, int pids drawn from `dirs`' markers — exactly the set
     `_verify_dir_is_orphan` would otherwise call `_pid_start` for, one at a time. Feeds
     `sweep_verify_dirs`' single batched `_pid_starts` call."""
     pids: set = set()
     this_host = host.host_id()
     for d in dirs:
-        marker = _read_verify_marker(d)
+        marker = _read_verify_marker(d, marker_root=marker_root)
         if marker is None:
             continue
         pid = marker.get("pid")
@@ -359,19 +446,21 @@ def impl_sweep_verify_dirs(entry, grace=_VERIFY_GRACE_SECONDS, ttl=_VERIFY_TTL_S
     than one per dir (bh-3oq2.2 subprocess-in-loop fix) — this runs on `clean_checkout`'s hot,
     request-reachable path, so an unbounded per-dir spawn count matters."""
     main = registry.hive_dir(entry)
+    marker_root = _verify_marker_root(main)
     parent = wt_dir(entry, VERIFY_LEAF_PREFIX).parent
     if not parent.is_dir():
         return 0
     dirs = _verify_dir_candidates(parent)
-    pid_starts = _pid_starts(_live_marker_pids(dirs))
+    pid_starts = _pid_starts(_live_marker_pids(dirs, marker_root=marker_root))
     reaped = 0
     now = time.time()
     for d in dirs:
-        if not _verify_dir_is_orphan(d, now, grace, ttl, pid_starts):
+        if not _verify_dir_is_orphan(d, now, grace, ttl, pid_starts, marker_root=marker_root):
             continue
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(d)], check=False)
         if d.exists():  # not (or no longer) a registered worktree — plain filesystem leftover
             shutil.rmtree(d, ignore_errors=True)
+        _remove_verify_marker(d, marker_root=marker_root)
         reaped += 1
     return reaped
 
@@ -438,6 +527,7 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     `branch`. Returns `(path, 0)` on success, or `(None, exit_code)` — after echoing the failure —
     when the dir or the `git worktree add` can't be created."""
     sweep_verify_dirs(entry)
+    marker_root = _verify_marker_root(main)
     leaf_base = registry.sanitize(f"{VERIFY_LEAF_PREFIX}{branch.rsplit('/', 1)[-1]}")
     tmp = _create_verify_dir(entry, leaf_base)
     if tmp is None:
@@ -449,7 +539,7 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     if add_res.returncode != 0:
         shutil.rmtree(tmp, ignore_errors=True)  # our own claim; never adopted by git
         return None, add_res.returncode
-    _write_verify_marker(tmp, branch, cmd)
+    _write_verify_marker(tmp, branch, cmd, marker_root=marker_root)
     return tmp, 0
 
 
@@ -562,3 +652,4 @@ def impl_clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         return rc
     finally:
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
+        _remove_verify_marker(tmp, marker_root=_verify_marker_root(main))

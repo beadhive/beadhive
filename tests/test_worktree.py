@@ -11,6 +11,7 @@ import sys
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1432,18 +1433,23 @@ class _Done:
 def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypatch):
     """Two clean_checkouts of the SAME branch use DISTINCT verify-<leaf>-<rand6> dirs — no shared
     deterministic path, so concurrent validations can't collide. The verify- prefix is preserved
-    (ephemeral classification keeps working), a liveness marker is present during validation, and
-    the finally-cleanup removes only this invocation's own dir."""
+    (ephemeral classification keeps working), a git-private liveness marker is present during
+    validation, and finally-cleanup removes only this invocation's own dir and marker."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    marker_root = repo / ".git" / worktree.VERIFY_ACTIVE_PATH
+    monkeypatch.setattr(worktree, "_verify_marker_root", lambda _main: marker_root)
 
     calls = []
     seen_markers = []
+    checkout_markers = []
 
     def _fake_run(cmd, **kw):
         calls.append(list(cmd))
         if list(cmd)[:1] != ["git"]:  # the validation spawn: marker must already be in place
-            marker = Path(kw["cwd"]) / worktree.VERIFY_MARKER
+            checkout = Path(kw["cwd"])
+            marker = worktree._verify_marker_path(marker_root, checkout)
             seen_markers.append(json.loads(marker.read_text()) if marker.exists() else None)
+            checkout_markers.append((checkout / worktree.VERIFY_MARKER).exists())
         return _Done()
 
     monkeypatch.setattr(worktree, "run", _fake_run)
@@ -1463,14 +1469,64 @@ def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypa
     # teardown removed exactly this invocation's own dirs — nothing else
     assert [c[-1] for c in removes] == add_paths
 
-    # the liveness marker (HolderToken analog) was live during each validation run
+    # The liveness marker (HolderToken analog) was live outside each checkout during validation.
     assert len(seen_markers) == 2
+    assert checkout_markers == [False, False]
     for m in seen_markers:
         assert m is not None
         assert m["pid"] == os.getpid()
         assert m["branch"] == "main"
         assert m["command"] == "just check"
-        assert set(m) >= {"host", "pid", "pid_start", "created_at", "branch", "command"}
+        assert set(m) >= {
+            "host",
+            "pid",
+            "pid_start",
+            "created_at",
+            "branch",
+            "command",
+            "worktree",
+            "identity",
+        }
+    assert not list(marker_root.glob("*.json"))
+
+
+def test_concurrent_clean_checkouts_keep_distinct_external_markers(tmp_path, monkeypatch):
+    """Two same-branch validators see clean, isolated checkouts and both live markers."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    marker_root = repo / ".git" / worktree.VERIFY_ACTIVE_PATH
+    arrived = threading.Barrier(2)
+    inspected = threading.Barrier(2)
+    seen = []
+
+    def _run_with_barriers(cmd, **kw):
+        if list(cmd)[:1] == ["git"]:
+            return run(cmd, **kw)
+        checkout = Path(kw["cwd"])
+        arrived.wait(timeout=10)
+        status = run(["git", "status", "--porcelain"], cwd=str(checkout), check=False, capture=True)
+        seen.append(
+            {
+                "checkout": checkout,
+                "status": status.stdout,
+                "checkout_marker": (checkout / worktree.VERIFY_MARKER).exists(),
+                "active_markers": sorted(marker_root.glob("*.json")),
+            }
+        )
+        inspected.wait(timeout=10)
+        return _Done()
+
+    monkeypatch.setattr(worktree, "run", _run_with_barriers)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(
+            pool.map(lambda _n: worktree.clean_checkout(entry, "main", "true"), range(2))
+        )
+
+    assert results == [0, 0]
+    assert len({row["checkout"] for row in seen}) == 2
+    assert all(row["status"] == "" for row in seen)
+    assert all(row["checkout_marker"] is False for row in seen)
+    assert all(len(row["active_markers"]) == 2 for row in seen)
+    assert not list(marker_root.glob("*.json"))
 
 
 def test_clean_checkout_spares_a_live_sibling(tmp_path, monkeypatch):
@@ -1480,7 +1536,11 @@ def test_clean_checkout_spares_a_live_sibling(tmp_path, monkeypatch):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     sibling = worktree.wt_dir(entry, "verify-main-live01")
     sibling.mkdir(parents=True)
-    worktree._write_verify_marker(sibling, "main", "just check")  # our own live pid
+    marker_root = repo / ".git" / worktree.VERIFY_ACTIVE_PATH
+    worktree._write_verify_marker(
+        sibling, "main", "just check", marker_root=marker_root
+    )  # our own live pid
+    monkeypatch.setattr(worktree, "_verify_marker_root", lambda _main: marker_root)
 
     calls = []
 
@@ -1492,6 +1552,7 @@ def test_clean_checkout_spares_a_live_sibling(tmp_path, monkeypatch):
 
     assert worktree.clean_checkout(entry, "main", "just check") == 0
     assert sibling.exists()  # never pre-cleaned, never swept
+    assert worktree._verify_marker_path(marker_root, sibling).exists()
     removes = [c for c in calls if c[3:5] == ["worktree", "remove"]]
     assert all(c[-1] != str(sibling) for c in removes)
 
@@ -1502,13 +1563,14 @@ def test_sweep_verify_dirs_reaps_orphans_and_spares_live(tmp_path, monkeypatch):
     siblings."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     monkeypatch.setattr(worktree, "_pid_alive", lambda pid: pid == os.getpid())
+    marker_root = repo / ".git" / worktree.VERIFY_ACTIVE_PATH
 
     def _mk(leaf, pid=None, pid_start=None, age=0):
         d = worktree.wt_dir(entry, leaf)
         d.mkdir(parents=True)
         if pid is not None:
-            worktree._write_verify_marker(d, "b1", "just check")
-            marker = d / worktree.VERIFY_MARKER
+            worktree._write_verify_marker(d, "b1", "just check", marker_root=marker_root)
+            marker = worktree._verify_marker_path(marker_root, d)
             m = json.loads(marker.read_text())
             m["pid"] = pid
             if pid_start is not None:
@@ -1534,6 +1596,22 @@ def test_sweep_verify_dirs_reaps_orphans_and_spares_live(tmp_path, monkeypatch):
     assert not recycled.exists()
     assert not unmarked_old.exists()
     assert not expired.exists()
+    assert worktree._verify_marker_path(marker_root, live).exists()
+    for reaped in (dead, recycled, expired):
+        assert not worktree._verify_marker_path(marker_root, reaped).exists()
+
+
+def test_verify_marker_root_is_shared_by_linked_worktrees(tmp_path, monkeypatch):
+    """Every linked checkout resolves to the main clone's one git-private active store."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    _, linked, _branch = worktree.ensure(cfg, "mr", "root-1")
+
+    main_root = worktree._verify_marker_root(repo)
+    linked_root = worktree._verify_marker_root(linked)
+    assert main_root is not None
+    assert linked_root is not None
+    assert main_root.resolve() == linked_root.resolve()
+    assert main_root.resolve() == (repo / ".git" / worktree.VERIFY_ACTIVE_PATH).resolve()
 
 
 # ---- bh-ytbb.4: verify-dir marker host_id migration regressions --------------
@@ -1554,10 +1632,18 @@ def test_verify_marker_writer_reader_agreement_pid_fast_path_is_reached(tmp_path
     would return False immediately instead of reaching the pid verdict below."""
     d = tmp_path / "verify-b1-agree"
     d.mkdir()
-    worktree._write_verify_marker(d, "b1", "just check")  # WRITER: host=host.host_id()
+    marker_root = tmp_path / "active"
+    worktree._write_verify_marker(
+        d, "b1", "just check", marker_root=marker_root
+    )  # WRITER: host=host.host_id()
     monkeypatch.setattr(worktree, "_pid_alive", lambda pid: False)  # only matters if REACHED
     # grace/ttl set far beyond `age` (~0) so ONLY the pid branch can produce True here.
-    assert worktree._verify_dir_is_orphan(d, time.time(), grace=999999, ttl=999999) is True
+    assert (
+        worktree._verify_dir_is_orphan(
+            d, time.time(), grace=999999, ttl=999999, marker_root=marker_root
+        )
+        is True
+    )
 
 
 def test_live_marker_pids_writer_reader_agreement(tmp_path):
@@ -1568,8 +1654,9 @@ def test_live_marker_pids_writer_reader_agreement(tmp_path):
     against."""
     d = tmp_path / "verify-b1-live-pids"
     d.mkdir()
-    worktree._write_verify_marker(d, "b1", "just check")
-    assert worktree._live_marker_pids([d]) == {os.getpid()}
+    marker_root = tmp_path / "active"
+    worktree._write_verify_marker(d, "b1", "just check", marker_root=marker_root)
+    assert worktree._live_marker_pids([d], marker_root=marker_root) == {os.getpid()}
 
 
 def test_verify_dir_pid_liveness_fast_path_is_reached_not_merely_correct(tmp_path, monkeypatch):
@@ -1579,7 +1666,8 @@ def test_verify_dir_pid_liveness_fast_path_is_reached_not_merely_correct(tmp_pat
     without ever calling `_pid_alive`."""
     d = tmp_path / "verify-b1-reached"
     d.mkdir()
-    worktree._write_verify_marker(d, "b1", "just check")
+    marker_root = tmp_path / "active"
+    worktree._write_verify_marker(d, "b1", "just check", marker_root=marker_root)
 
     calls = []
     real_pid_alive = worktree._pid_alive
@@ -1589,7 +1677,9 @@ def test_verify_dir_pid_liveness_fast_path_is_reached_not_merely_correct(tmp_pat
         return real_pid_alive(pid)
 
     monkeypatch.setattr(worktree, "_pid_alive", _spy)
-    worktree._verify_dir_is_orphan(d, time.time(), grace=999999, ttl=999999)
+    worktree._verify_dir_is_orphan(
+        d, time.time(), grace=999999, ttl=999999, marker_root=marker_root
+    )
     assert calls == [os.getpid()]  # the same-host pid-liveness branch actually ran
 
 
@@ -1601,10 +1691,18 @@ def test_verify_dir_liveness_survives_a_machine_rename(tmp_path, monkeypatch):
     cross-host and same-host liveness silently degraded to grace/TTL."""
     d = tmp_path / "verify-b1-renamed"
     d.mkdir()
-    worktree._write_verify_marker(d, "b1", "just check")  # written under the "old" name
+    marker_root = tmp_path / "active"
+    worktree._write_verify_marker(
+        d, "b1", "just check", marker_root=marker_root
+    )  # written under the "old" name
     monkeypatch.setattr(socket, "gethostname", lambda: "a-totally-renamed-machine")
     monkeypatch.setattr(worktree, "_pid_alive", lambda pid: False)  # dead → distinguishing True
-    assert worktree._verify_dir_is_orphan(d, time.time(), grace=999999, ttl=999999) is True
+    assert (
+        worktree._verify_dir_is_orphan(
+            d, time.time(), grace=999999, ttl=999999, marker_root=marker_root
+        )
+        is True
+    )
 
 
 def test_verify_dir_reused_hostname_on_different_host_id_is_cross_host(tmp_path, monkeypatch):
@@ -1623,15 +1721,44 @@ def test_verify_dir_reused_hostname_on_different_host_id_is_cross_host(tmp_path,
         "created_at": int(time.time()),
         "branch": "b1",
         "command": "just check",
+        "worktree": str(d.absolute()),
+        "identity": d.name,
     }
-    (d / worktree.VERIFY_MARKER).write_text(json.dumps(marker))
+    marker_root = tmp_path / "active"
+    marker_root.mkdir()
+    worktree._verify_marker_path(marker_root, d).write_text(json.dumps(marker))
 
     def _boom(pid):
         raise AssertionError("pid liveness must never be probed for a different host_id")
 
     monkeypatch.setattr(worktree, "_pid_alive", _boom)
     # cross-host + fresh dir (age well under grace/ttl) => never probed, not (yet) an orphan.
-    assert worktree._verify_dir_is_orphan(d, time.time(), grace=999999, ttl=999999) is False
+    assert (
+        worktree._verify_dir_is_orphan(
+            d, time.time(), grace=999999, ttl=999999, marker_root=marker_root
+        )
+        is False
+    )
+
+
+def test_sweep_verify_dirs_reaps_a_legacy_in_checkout_marker(tmp_path, monkeypatch):
+    """Pre-upgrade orphan directories remain reclaimable during the compatibility window."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    legacy = worktree.wt_dir(entry, "verify-main-legacy")
+    legacy.mkdir(parents=True)
+    marker = {
+        "host": host.host_id(),
+        "pid": 424242,
+        "pid_start": "old",
+        "created_at": int(time.time()),
+        "branch": "main",
+        "command": "just check",
+    }
+    (legacy / worktree.VERIFY_MARKER).write_text(json.dumps(marker))
+    monkeypatch.setattr(worktree, "_pid_alive", lambda _pid: False)
+
+    assert worktree.sweep_verify_dirs(entry) == 1
+    assert not legacy.exists()
 
 
 # ---- clean_checkout: verify-flagged init rules + bare-checkout hint (bh-7k1p) ----
@@ -1681,6 +1808,27 @@ def test_clean_checkout_real_git_leaves_no_verify_dirs(tmp_path, monkeypatch):
     assert rc == 0
     parent = worktree.wt_dir(entry, "x").parent
     assert not list(parent.glob(f"{worktree.VERIFY_LEAF_PREFIX}*"))
+    marker_root = worktree._verify_marker_root(repo)
+    assert marker_root is not None
+    assert not list(marker_root.glob("*.json"))
+
+
+def test_clean_checkout_real_git_is_clean_when_validation_starts(tmp_path, monkeypatch):
+    """Issue #20: bh lifecycle metadata must not dirty the checkout seen by a selector."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cmd = "sh -c 'test -z \"$(git status --porcelain)\" && test ! -e .bh-verify.json'"
+
+    assert worktree.clean_checkout(entry, "main", cmd) == 0
+
+
+def test_clean_checkout_marker_store_failure_is_non_fatal(tmp_path, monkeypatch):
+    """An unavailable external store retains markerless grace/TTL behavior and still validates."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    blocker = tmp_path / "not-a-directory"
+    blocker.write_text("blocked")
+    monkeypatch.setattr(worktree, "_verify_marker_root", lambda _main: blocker / "active")
+
+    assert worktree.clean_checkout(entry, "main", "true") == 0
 
 
 # ---- clean_checkout: validation verdict ledger (bh-dfx0) ---------------------

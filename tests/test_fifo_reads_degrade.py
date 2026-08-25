@@ -137,14 +137,21 @@ def test_a_fifo_ledger_does_not_hang_a_real_verdict_lookup(tmp_path, monkeypatch
 def test_a_fifo_verify_marker_reads_as_no_marker(tmp_path):
     d = tmp_path / f"{worktree.VERIFY_LEAF_PREFIX}b1"
     d.mkdir()
-    os.mkfifo(d / worktree.VERIFY_MARKER)
+    marker_root = tmp_path / "active"
+    marker_root.mkdir()
+    os.mkfifo(worktree._verify_marker_path(marker_root, d))
 
     with _deadline():
-        assert worktree._read_verify_marker(d) is None
+        assert worktree._read_verify_marker(d, marker_root=marker_root) is None
         # ...and both classifiers that share the reader stay unblocked and conservative:
         # a fresh dir with no usable marker is not yet an orphan, and contributes no live pid.
-        assert worktree._verify_dir_is_orphan(d, time.time(), grace=999999, ttl=999999) is False
-        assert worktree._live_marker_pids([d]) == set()
+        assert (
+            worktree._verify_dir_is_orphan(
+                d, time.time(), grace=999999, ttl=999999, marker_root=marker_root
+            )
+            is False
+        )
+        assert worktree._live_marker_pids([d], marker_root=marker_root) == set()
 
 
 def test_a_real_verify_marker_is_still_read(tmp_path):
@@ -152,13 +159,16 @@ def test_a_real_verify_marker_is_still_read(tmp_path):
     symlinked marker file."""
     d = tmp_path / f"{worktree.VERIFY_LEAF_PREFIX}b2"
     d.mkdir()
-    worktree._write_verify_marker(d, "b2", "just check")
-    assert worktree._read_verify_marker(d)["pid"] == os.getpid()
+    marker_root = tmp_path / "active"
+    worktree._write_verify_marker(d, "b2", "just check", marker_root=marker_root)
+    assert worktree._read_verify_marker(d, marker_root=marker_root)["pid"] == os.getpid()
 
     linked = tmp_path / f"{worktree.VERIFY_LEAF_PREFIX}b3"
     linked.mkdir()
+    legacy = {"pid": os.getpid(), "host": host.host_id(), "branch": "b3"}
+    (d / worktree.VERIFY_MARKER).write_text(json.dumps(legacy))
     (linked / worktree.VERIFY_MARKER).symlink_to(d / worktree.VERIFY_MARKER)
-    assert worktree._read_verify_marker(linked)["pid"] == os.getpid()
+    assert worktree._read_verify_marker(linked) == legacy
 
 
 def test_a_fifo_verify_marker_past_the_grace_window_is_still_reaped(tmp_path):
@@ -166,7 +176,14 @@ def test_a_fifo_verify_marker_past_the_grace_window_is_still_reaped(tmp_path):
     must not pin the dir forever either."""
     d = tmp_path / f"{worktree.VERIFY_LEAF_PREFIX}b4"
     d.mkdir()
-    os.mkfifo(d / worktree.VERIFY_MARKER)
+    marker_root = tmp_path / "active"
+    marker_root.mkdir()
+    os.mkfifo(worktree._verify_marker_path(marker_root, d))
 
     with _deadline():
-        assert worktree._verify_dir_is_orphan(d, time.time(), grace=0, ttl=999999) is True
+        assert (
+            worktree._verify_dir_is_orphan(
+                d, time.time(), grace=0, ttl=999999, marker_root=marker_root
+            )
+            is True
+        )
