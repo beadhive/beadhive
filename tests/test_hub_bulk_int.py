@@ -67,6 +67,9 @@ def isolated_shared_server(tmp_path, monkeypatch):
     (the same fix `test_dolt_health_real_server_int.py`'s own fixture applies)."""
     server_dir = tmp_path / "shared-server"
     port = free_port()
+    # Pinned bd 50763fc uses non-wide `ps`; xdist's COLUMNS=80 truncates
+    # `dolt sql-server`, falsely treating the live server as dead during port reclaim.
+    monkeypatch.delenv("COLUMNS", raising=False)
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server_dir))
     monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(port))
     yield port
