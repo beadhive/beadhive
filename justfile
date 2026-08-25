@@ -121,6 +121,29 @@ check: lint lint-md license-check test
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: require-bd lint lint-md license-check (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
+# MANUAL ONLY — the release browser matrix belongs to beadhive-ui because that repository owns
+# Chromium, the product bundle, and the browser adapters. Core delegates instead of copying the
+# test or acquiring a Node/Playwright dependency. The sibling must be clean so its source inputs
+# are pinned; the UI recipe owns regenerating every ignored build output from those inputs.
+# Deliberately NOT a dependency of `check`, `check-all`, or CI: it is a cross-repo release proof.
+# manual: run beadhive-ui's authoritative loopback read-only browser release proof
+check-operator-release ui_repo="/home/bees/workspace/github/beadhive/beadhive-ui":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ui_repo="{{ui_repo}}"
+    core_repo="$(git rev-parse --show-toplevel)"
+    if [ ! -f "$ui_repo/justfile" ]; then
+        echo "check-operator-release: no beadhive-ui justfile at $ui_repo/justfile" >&2
+        exit 2
+    fi
+    if [ -n "$(git -C "$ui_repo" status --porcelain --untracked-files=normal)" ]; then
+        echo "check-operator-release: beadhive-ui checkout must be clean: $ui_repo" >&2
+        git -C "$ui_repo" status --short >&2
+        exit 2
+    fi
+    just --justfile "$ui_repo/justfile" --working-directory "$ui_repo" \
+        check-operator-release "$core_repo"
+
 # `check-all`'s prerequisite, and the reason it is one (bh-dfz2): the integration half is REAL
 # `bd` work, and every integration test self-skips when the binary is absent
 # (`skip_if_no_bd`/`skipif(shutil.which("bd") is None)`). So on a host without `bd` the full

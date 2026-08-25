@@ -415,6 +415,28 @@ following:
 Until those gates pass, HTTP MCP and remote operator exposure remain opt-in. Direct CLI and
 stdio remain the rollback paths.
 
+## Amendment — 2026-08-25: phase-one local read-only UI exception
+
+The first operator UI may ship before the full authenticated daemon contract only under one
+strict exception: a foreground daemon bound to literal `127.0.0.1`, serving the read-only
+operator `GET`/SSE surface to one exact configured literal-loopback browser origin. The browser
+omits ambient cookies and sends no bearer token. The UI must label the profile local,
+unauthenticated, and read-only.
+
+This exception does not weaken the ratified target above. In particular, it does not authorize
+MCP over HTTP, activity `POST`, terminal attach or WebSocket routes, command/control UI, a
+non-loopback bind, a proxy, remote access, or multi-user operation. Those routes remain absent,
+and the daemon must reject hostile `Host` and `Origin` values. The Node relay remains a
+development/test oracle and rollback path, not a second product server.
+
+Authentication and authorization remain mandatory phase-two prerequisites before any remote,
+multi-user, or privileged-control release. That implementation is preserved in kickoff-pending
+epic `bh-xw03t`; the exception must not be used to close, bypass, or imply completion of that
+work. Phase-one launch instructions and troubleshooting live in
+[`docs/OPERATOR-UI.md`](../OPERATOR-UI.md), and the exact cross-repository browser evidence is
+recorded in
+[`docs/proof/operator-loopback-ui-release-2026-08-25.md`](../proof/operator-loopback-ui-release-2026-08-25.md).
+
 ## Consequences
 
 The accepted design has one coherent owner for network sessions and their cleanup, while
