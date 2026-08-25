@@ -13,6 +13,12 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.15.1 (2026-08-25)
+
+### Fix
+
+- **validation**: keep liveness markers outside checkout
+
 ## v0.15.0 (2026-08-25)
 
 ### Feat
