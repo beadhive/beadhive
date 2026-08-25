@@ -6,8 +6,19 @@ It is not a remote-access, multi-user, or privileged-control release.
 
 ## Start the installed commands
 
-Install `bh` and the `beadhive-operator-ui` package, configure the hives the normal `bh` CLI
-will read, then start these foreground processes in separate terminals:
+Install `bh` and the `beadhive-operator-ui` package, then configure the hives the normal `bh`
+CLI will read. The repository recipe starts both foreground services as one supervised pair:
+
+```sh
+just operator-ui
+```
+
+Open <http://127.0.0.1:8341>. The recipe uses daemon port `8340` and UI port `8341`, immediately
+above the `8335`-`8339` block owned by `beadhive-app`. Press `Ctrl-C` to stop both processes. If
+that adjacent pair is occupied, override both positional parameters, for example
+`just operator-ui 9340 9341`.
+
+The equivalent installed commands, shown with their original standalone defaults, are:
 
 ```sh
 # Terminal 1: Beadhive core daemon
