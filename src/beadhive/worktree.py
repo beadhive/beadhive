@@ -85,10 +85,12 @@ WT_PREFIX = "wt/"  # every managed-worktree branch starts here, whatever the mod
 VERIFY_LEAF_PREFIX = "verify-"  # ephemeral clean-checkout worktrees (clean_checkout); not a seat
 # Per-invocation verify- dirs (bh-nikb): each clean_checkout gets its own
 # verify-<branch-leaf>-<rand6> dir, so two processes validating the same branch never share (and
-# never destroy) one deterministic path. A liveness marker inside each dir (the merge-slot
+# never destroy) one deterministic path. A git-private liveness marker (the merge-slot
 # HolderToken analog, work_group._slot_holder) lets a global sweep reap orphans left by a killed
-# run without ever touching a live sibling.
-VERIFY_MARKER = ".bh-verify.json"  # liveness marker written inside each verify- dir
+# run without ever touching a live sibling. VERIFY_MARKER names only the legacy in-checkout file
+# retained for pre-upgrade orphan compatibility; new markers live below .git/bh/validation/active.
+VERIFY_MARKER = ".bh-verify.json"
+VERIFY_ACTIVE_PATH = Path("bh") / "validation" / "active"
 _VERIFY_RAND_BYTES = 3  # 6 hex chars — per-invocation isolation suffix
 _VERIFY_CREATE_ATTEMPTS = 8  # mkdtemp-style retry budget on suffix collision
 _VERIFY_GRACE_SECONDS = 5 * 60  # marker missing/unreadable: reap only past this window
@@ -991,21 +993,43 @@ def _pid_starts(pids) -> dict:
     return _worktree_verify.impl__pid_starts(pids)
 
 
-def _write_verify_marker(tmp: Path, branch: str, cmd: str) -> None:
+def _verify_marker_root(main: Path) -> Path | None:
+    """Compatibility facade for ``worktree_verify.impl__verify_marker_root``."""
+    return _worktree_verify.impl__verify_marker_root(main)
+
+
+def _verify_marker_path(marker_root: Path, d: Path) -> Path:
+    """Compatibility facade for ``worktree_verify.impl__verify_marker_path``."""
+    return _worktree_verify.impl__verify_marker_path(marker_root, d)
+
+
+def _write_verify_marker(
+    tmp: Path, branch: str, cmd: str, marker_root: Path | None = None
+) -> Path | None:
     """Compatibility facade for ``worktree_verify.impl__write_verify_marker``."""
-    return _worktree_verify.impl__write_verify_marker(tmp, branch, cmd)
+    return _worktree_verify.impl__write_verify_marker(tmp, branch, cmd, marker_root)
 
 
-def _read_verify_marker(d: Path):
+def _read_verify_marker(d: Path, marker_root: Path | None = None):
     """Compatibility facade for ``worktree_verify.impl__read_verify_marker``."""
-    return _worktree_verify.impl__read_verify_marker(d)
+    return _worktree_verify.impl__read_verify_marker(d, marker_root)
+
+
+def _remove_verify_marker(d: Path, marker_root: Path | None = None) -> None:
+    """Compatibility facade for ``worktree_verify.impl__remove_verify_marker``."""
+    return _worktree_verify.impl__remove_verify_marker(d, marker_root)
 
 
 def _verify_dir_is_orphan(
-    d: Path, now: float, grace: int, ttl: int, pid_starts: dict | None = None
+    d: Path,
+    now: float,
+    grace: int,
+    ttl: int,
+    pid_starts: dict | None = None,
+    marker_root: Path | None = None,
 ) -> bool:
     """Compatibility facade for ``worktree_verify.impl__verify_dir_is_orphan``."""
-    return _worktree_verify.impl__verify_dir_is_orphan(d, now, grace, ttl, pid_starts)
+    return _worktree_verify.impl__verify_dir_is_orphan(d, now, grace, ttl, pid_starts, marker_root)
 
 
 def _verify_dir_candidates(parent: Path) -> list:
@@ -1013,9 +1037,9 @@ def _verify_dir_candidates(parent: Path) -> list:
     return _worktree_verify.impl__verify_dir_candidates(parent)
 
 
-def _live_marker_pids(dirs) -> set:
+def _live_marker_pids(dirs, marker_root: Path | None = None) -> set:
     """Compatibility facade for ``worktree_verify.impl__live_marker_pids``."""
-    return _worktree_verify.impl__live_marker_pids(dirs)
+    return _worktree_verify.impl__live_marker_pids(dirs, marker_root)
 
 
 def sweep_verify_dirs(entry, grace=_VERIFY_GRACE_SECONDS, ttl=_VERIFY_TTL_SECONDS) -> int:
