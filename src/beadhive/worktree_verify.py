@@ -19,7 +19,17 @@ from pathlib import Path
 
 import typer
 
-from . import config, converge, host, otel, registry, test_report, triage_store, validation_ledger
+from . import (
+    config,
+    converge,
+    host,
+    otel,
+    registry,
+    test_report,
+    triage_store,
+    validation_ledger,
+    validation_records,
+)
 
 VERIFY_LEAF_PREFIX = "verify-"
 VERIFY_MARKER = ".bh-verify.json"  # legacy in-checkout marker; read-only since bh-odqgy
@@ -362,6 +372,37 @@ def impl__read_verify_marker(d: Path, marker_root: Path | None = None):
                 return marker
             # A marker keyed to this leaf but naming another checkout is stale/misplaced. Do not
             # let it claim this directory; a genuine legacy marker may still identify the owner.
+        # Current pointers are keyed by run id and carry no duplicated lifecycle/ownership.
+        # Reconstruct the old reader shape from the authoritative running manifest so the
+        # existing orphan classifier remains compatible during this migration.
+        try:
+            pointers = list(Path(marker_root).glob("run-*.json"))
+        except OSError:
+            pointers = []
+        for pointer in pointers:
+            active = _read_marker_file(pointer)
+            run_id = active.get("run_id") if isinstance(active, dict) else None
+            if not isinstance(run_id, str):
+                continue
+            manifest = _read_marker_file(
+                Path(marker_root).parent / "runs" / run_id / "manifest.json"
+            )
+            if not isinstance(manifest, dict) or manifest.get("lifecycle") != "running":
+                continue
+            if manifest.get("worktree") != str(d.resolve()):
+                continue
+            owner = manifest.get("owner") or {}
+            return {
+                "host": owner.get("host"),
+                "pid": owner.get("pid"),
+                "pid_start": owner.get("start_token"),
+                "created_at": manifest.get("started_at"),
+                "branch": manifest.get("branch"),
+                "command": manifest.get("command"),
+                "worktree": manifest.get("worktree"),
+                "identity": d.name,
+                "run_id": run_id,
+            }
     return _read_marker_file(d / VERIFY_MARKER)
 
 
@@ -455,12 +496,16 @@ def impl_sweep_verify_dirs(entry, grace=_VERIFY_GRACE_SECONDS, ttl=_VERIFY_TTL_S
     reaped = 0
     now = time.time()
     for d in dirs:
+        marker = _read_verify_marker(d, marker_root=marker_root)
         if not _verify_dir_is_orphan(d, now, grace, ttl, pid_starts, marker_root=marker_root):
             continue
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(d)], check=False)
         if d.exists():  # not (or no longer) a registered worktree — plain filesystem leftover
             shutil.rmtree(d, ignore_errors=True)
         _remove_verify_marker(d, marker_root=marker_root)
+        run_id = marker.get("run_id") if isinstance(marker, dict) else None
+        if isinstance(run_id, str):
+            validation_records.abandon_run(main, run_id, reason="owner_dead")
         reaped += 1
     return reaped
 
@@ -497,7 +542,9 @@ def impl__color_neutral_env(base: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def impl__reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None) -> bool:
+def impl__reuse_verdict_hit(
+    entry, sha: str, cmd: str, cfg=None, *, bead=None, phase="reuse", branch=None, worktree=None
+) -> bool:
     """True (after echoing the reused-verdict notice and counting telemetry) iff a fresh GREEN
     ledger verdict exists for (entry, TREE of `sha`, cmd) — `clean_checkout`'s `reuse=True`
     short-circuit. `sha` is a rev the ledger resolves to its tree, which is the real key
@@ -513,6 +560,32 @@ def impl__reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None) -> bool:
     hit = validation_ledger.green_verdict(entry, sha, cmd, cfg=cfg)
     if hit is None:
         return False
+    # A hit is a new decision, never an execution. Preserve the long-standing green_verdict
+    # monkeypatch seam above, then attach provenance here at the clean-checkout boundary.
+    main = registry.hive_dir(entry)
+    tree = validation_ledger.tree_of(entry, sha)
+    original = validation_records.completed_run(
+        main, tree=tree, command_hash=validation_ledger.cmd_hash(cmd)
+    )
+    if original is not None:
+        # The flat 0.15.1 index may still say green after a later `work check` observed red/none:
+        # check intentionally never wrote red cache rows.  Authoritative run history wins.  A
+        # non-green newest execution therefore refuses reuse instead of returning success without
+        # a use record (the second-review green→red/none→reuse gap).
+        if original.get("verdict") != "green":
+            return False
+        validation_records.record_use(
+            main,
+            run_id=original["run_id"],
+            bead=bead,
+            phase=phase,
+            branch=branch,
+            worktree=worktree,
+            sha=sha,
+            tree=tree,
+            command_hash=validation_ledger.cmd_hash(cmd),
+            reused=True,
+        )
     when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
     typer.echo(
         f"✓ validation verdict reused (sha {sha[:7]}, tree {str(hit.get('tree', ''))[:7]}, "
@@ -543,7 +616,9 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     return tmp, 0
 
 
-def impl_clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
+def impl_clean_checkout(
+    entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
+) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
     dirty local state. Each invocation gets its OWN verify-<leaf>-<rand6> dir (bh-nikb): two
     processes validating the same branch can no longer destroy each other's in-flight checkout —
@@ -582,18 +657,65 @@ def impl_clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         except FileNotFoundError:
             cfg = {}
     sha = _branch_sha(entry, branch)
-    if reuse and _reuse_verdict_hit(entry, sha, cmd, cfg=cfg):
+    if reuse and _reuse_verdict_hit(
+        entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch
+    ):
         return 0
     tmp, rc = _prepare_verify_worktree(main, entry, branch, cmd)
     if tmp is None:
+        tree = validation_ledger.tree_of(entry, sha)
+        failed = validation_records.begin_run(
+            main,
+            bead=bead,
+            phase=phase,
+            branch=branch,
+            worktree=None,
+            sha=sha,
+            tree=tree,
+            command_hash=validation_ledger.cmd_hash(cmd),
+            command=cmd,
+            owner_start=_pid_start(os.getpid()),
+        )
+        if failed is not None:
+            validation_records.finish_run(
+                main, failed["run_id"], exit_code=rc, reason="checkout_failure"
+            )
+            validation_records.record_use(
+                main,
+                run_id=failed["run_id"],
+                bead=bead,
+                phase=phase,
+                branch=branch,
+                worktree=None,
+                sha=sha,
+                tree=tree,
+                command_hash=validation_ledger.cmd_hash(cmd),
+                reused=False,
+            )
         return rc
-    run_init(cfg, entry, tmp, verify_only=True)
     # Record against the tree that ACTUALLY validated: the verify checkout's own HEAD. The
     # branch can move between the ledger lookup above and the worktree add (TOCTOU), and a
     # verdict recorded under the stale pre-resolved sha would vouch for content it never saw.
     head = _run_git(["git", "-C", str(tmp), "rev-parse", "HEAD"], check=False, capture=True)
     head_out = getattr(head, "stdout", "") or ""  # tolerate faked run() results without stdout
     validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
+    tree = validation_ledger.tree_of(entry, validated_sha)
+    run_record = validation_records.begin_run(
+        main,
+        bead=bead,
+        phase=phase,
+        branch=branch,
+        worktree=tmp,
+        sha=validated_sha,
+        tree=tree,
+        command_hash=validation_ledger.cmd_hash(cmd),
+        command=cmd,
+        owner_start=_pid_start(os.getpid()),
+    )
+    # From this point the run manifest is authoritative.  Remove the 0.15.1 worktree-keyed
+    # compatibility marker; the run-id active pointer is sufficient for liveness/reaping.
+    if run_record is not None:
+        _remove_verify_marker(tmp, marker_root=_verify_marker_root(main))
     # Synchronous-contract heartbeat (bh-i0p1.4): only printed once we're actually about to pay
     # the real cost (the reuse short-circuit above already returned for a cheap hit), so this
     # never fires on the fast path. `just check`-shaped commands can run 5-15 minutes on a large
@@ -607,6 +729,24 @@ def impl_clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         "backgrounding or polling"
     )
     try:
+        try:
+            run_init(cfg, entry, tmp, verify_only=True)
+        except BaseException:
+            if run_record is not None:
+                validation_records.finish_run(main, run_record["run_id"], reason="setup_failure")
+                validation_records.record_use(
+                    main,
+                    run_id=run_record["run_id"],
+                    bead=bead,
+                    phase=phase,
+                    branch=branch,
+                    worktree=tmp,
+                    sha=validated_sha,
+                    tree=tree,
+                    command_hash=validation_ledger.cmd_hash(cmd),
+                    reused=False,
+                )
+            raise
         # BH_TEST_REPORT_DIR (bh-ku9n9.20): a fresh, empty drop zone exported into every
         # validation subprocess, with no opt-in and no bh config. bh never invokes a runner — it
         # names a directory and reads what appears. `rc` below stays the sole verdict; an
@@ -615,27 +755,73 @@ def impl_clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
         # survives the run that produced it, so a red 6-minute gate can be read instead of
         # re-run. `triage_store` keeps it only when the write rule fires — red, or retried.
         with test_report.drop_zone() as drop, triage_store.gate_log() as log:
-            res = run(
-                shlex.split(cmd),
-                cwd=str(tmp),
-                check=False,
-                env=test_report.export(_color_neutral_env(otel.telemetry_neutral_env()), drop),
-                tee=log,
+            protocol_path = validation_records.protocol_path(
+                drop, config.work_value(cfg, entry, "validation_protocol", "none")
             )
+            child_env = test_report.export(_color_neutral_env(otel.telemetry_neutral_env()), drop)
+            if protocol_path is not None:
+                child_env[validation_records.PROTOCOL_RESULT_ENV] = str(protocol_path)
+            try:
+                res = run(
+                    shlex.split(cmd),
+                    cwd=str(tmp),
+                    check=False,
+                    env=child_env,
+                    tee=log,
+                )
+            except BaseException:
+                if run_record is not None:
+                    validation_records.finish_run(main, run_record["run_id"], reason="interrupted")
+                    validation_records.record_use(
+                        main,
+                        run_id=run_record["run_id"],
+                        bead=bead,
+                        phase=phase,
+                        branch=branch,
+                        worktree=tmp,
+                        sha=validated_sha,
+                        tree=tree,
+                        command_hash=validation_ledger.cmd_hash(cmd),
+                        reused=False,
+                    )
+                raise
             rc = res.returncode
             report = test_report.ingest(drop, rc)
+            protocol = validation_records.read_protocol(protocol_path)
             # Inside the `with`: the drop zone is gone the moment it closes, so the raw runner
             # output has to be copied into the durable per-tree store before then.
             triage_store.store(entry, validated_sha, cmd, rc, report, drop, log)
-        validation_ledger.record(  # best-effort
-            entry, validated_sha, cmd, rc, report=report, cfg=cfg
+        missing = missing_binary(res)
+        if run_record is not None:
+            validation_records.finish_run(
+                main,
+                run_record["run_id"],
+                exit_code=rc,
+                signal_number=-rc if rc < 0 else None,
+                reason=(
+                    "missing_binary" if missing else "interrupted" if rc < 0 else "command_exit"
+                ),
+                protocol=protocol,
+            )
+        validation_ledger.record(  # best-effort compatibility index + execution use
+            entry,
+            validated_sha,
+            cmd,
+            rc,
+            report=report,
+            cfg=cfg,
+            run_id=run_record["run_id"] if run_record else None,
+            phase=phase,
+            bead=bead,
+            branch=branch,
+            worktree=tmp,
         )
         # A clean checkout running the phase WHOLE is the confirming run — the only kind of run
         # that may attest (bh-ku9n9.8). It never converges and never consults
         # `work.validate_subset`; all it does here is read the tree's retry history back and say
         # so when part of this green took a retry to get there, rather than absorbing the flake.
         converge.warn_flakes(entry, validated_sha, rc)
-        if missing := missing_binary(res):
+        if missing:
             # This seam runs WITHOUT capture, so a missing binary would otherwise exit 127 having
             # printed NOTHING — no stdout, no stderr — and _BARE_CHECKOUT_HINT would then point
             # the operator at the checkout, which is not the problem. Silence plus a misdirection
@@ -651,5 +837,9 @@ def impl_clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
             typer.echo(_BARE_CHECKOUT_HINT, err=True)
         return rc
     finally:
+        if run_record is not None:
+            current = validation_records.read_run(main, run_record["run_id"])
+            if current is not None and current.get("lifecycle") == "running":
+                validation_records.abandon_run(main, run_record["run_id"], reason="interrupted")
         _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
         _remove_verify_marker(tmp, marker_root=_verify_marker_root(main))

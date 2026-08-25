@@ -91,7 +91,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, host, otel, registry, test_report
+from . import config, host, otel, registry, test_report, validation_records
 from .run import missing_binary, run
 
 LEDGER_FILENAME = "bh-validation-ledger.json"
@@ -320,6 +320,11 @@ def record(
     ttl: int | None = None,
     report: dict | None = None,
     cfg=None,
+    run_id: str | None = None,
+    phase: str = "validation",
+    bead: str | None = None,
+    branch: str | None = None,
+    worktree: str | Path | None = None,
 ) -> None:
     """Record a validation verdict for (tree of `rev`, cmd). Best-effort: never raises, never
     fails the validation it records. Prunes expired entries and replaces a same-key entry,
@@ -340,6 +345,44 @@ def record(
         return
     now = time.time()
     tree, key = tree_of(entry, rev), cmd_hash(cmd)
+    # The run history is authoritative.  Keep writing the 0.15.1 flat file below as a
+    # compatibility lookup during the rolling migration; new decisions never derive identity
+    # from that mutable row.
+    hive = registry.hive_dir(entry)
+    run_record = validation_records.read_run(hive, run_id) if run_id else None
+    if run_id is None:
+        run_record = validation_records.begin_run(
+            hive,
+            bead=bead or os.environ.get("BH_BEAD_ID"),
+            phase=phase or os.environ.get("BH_VALIDATION_PHASE", "validation"),
+            branch=branch or os.environ.get("BH_VALIDATION_BRANCH"),
+            worktree=worktree or os.environ.get("BH_VALIDATION_WORKTREE"),
+            sha=rev,
+            tree=tree,
+            command_hash=key,
+            command=cmd,
+            owner_start=os.environ.get("BH_OWNER_START_TOKEN"),
+        )
+    if run_record is not None and run_record.get("lifecycle") == "running":
+        run_record = validation_records.finish_run(
+            hive,
+            run_record["run_id"],
+            exit_code=int(rc),
+            reason="command_exit",
+        )
+    if run_record is not None and run_record.get("lifecycle") == "completed":
+        validation_records.record_use(
+            hive,
+            run_id=run_record["run_id"],
+            bead=bead or run_record.get("bead"),
+            phase=phase or run_record["phase"],
+            branch=branch or run_record.get("branch"),
+            worktree=worktree or run_record.get("worktree"),
+            sha=rev,
+            tree=tree,
+            command_hash=key,
+            reused=False,
+        )
     existing = _load(path)
     same = [e for e in existing if e.get("tree") == tree and e.get("cmd_hash") == key]
     # Resolved ONCE, not once per pruned entry (bh-ku9n9.19, item 1): `_ttl` can call the
@@ -421,4 +464,6 @@ def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -
     # dict) is not the integer 0 and so is NOT green — a corrupt record must never read as a pass.
     if hit is None or hit.get("rc") != 0:
         return None
-    return hit if _always_run_ok(entry, cfg) else None
+    if not _always_run_ok(entry, cfg):
+        return None
+    return hit

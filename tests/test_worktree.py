@@ -18,7 +18,17 @@ from types import SimpleNamespace
 import pytest
 import typer
 
-from beadhive import config, ghpr, host, orca, plugins, validation_ledger, worktree, wt_status
+from beadhive import (
+    config,
+    ghpr,
+    host,
+    orca,
+    plugins,
+    validation_ledger,
+    validation_records,
+    worktree,
+    wt_status,
+)
 from beadhive.run import run
 
 UTC = datetime.UTC
@@ -1448,7 +1458,8 @@ def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypa
         if list(cmd)[:1] != ["git"]:  # the validation spawn: marker must already be in place
             checkout = Path(kw["cwd"])
             marker = worktree._verify_marker_path(marker_root, checkout)
-            seen_markers.append(json.loads(marker.read_text()) if marker.exists() else None)
+            assert not marker.exists()  # 0.15.1 worktree-keyed marker is no longer authoritative
+            seen_markers.append(worktree._read_verify_marker(checkout, marker_root))
             checkout_markers.append((checkout / worktree.VERIFY_MARKER).exists())
         return _Done()
 
@@ -1469,7 +1480,7 @@ def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypa
     # teardown removed exactly this invocation's own dirs — nothing else
     assert [c[-1] for c in removes] == add_paths
 
-    # The liveness marker (HolderToken analog) was live outside each checkout during validation.
+    # Liveness reconstructs from run-id pointer + authoritative manifest during validation.
     assert len(seen_markers) == 2
     assert checkout_markers == [False, False]
     for m in seen_markers:
@@ -1486,6 +1497,7 @@ def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypa
             "command",
             "worktree",
             "identity",
+            "run_id",
         }
     assert not list(marker_root.glob("*.json"))
 
@@ -2003,6 +2015,181 @@ def test_clean_checkout_reuse_hit_stays_silent_on_the_heartbeat(tmp_path, monkey
     capsys.readouterr()  # drain the first (real) run's own heartbeat
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
     assert "validating main" not in capsys.readouterr().out
+
+
+def test_clean_checkout_execution_and_reuse_persist_end_to_end_records(tmp_path, monkeypatch):
+    """The real execution boundary creates one run/use; reuse adds a use and no execution."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    assert worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x", phase="submit") == 0
+
+    root = repo / ".git/bh/validation"
+    run_paths = list((root / "runs").glob("*/manifest.json"))
+    use_paths = list((root / "uses").glob("*.json"))
+    assert len(run_paths) == len(use_paths) == 1
+    run = json.loads(run_paths[0].read_text())
+    use = json.loads(use_paths[0].read_text())
+    assert (run["bead"], run["phase"], run["branch"]) == ("bh-x", "submit", "main")
+    assert (run["lifecycle"], run["verdict"], run["exit_code"]) == (
+        "completed",
+        "green",
+        0,
+    )
+    assert use["run_id"] == run["run_id"] and use["reused"] is False
+    assert not list((root / "active").glob("*.json"))
+
+    assert (
+        worktree.clean_checkout(
+            entry, "main", "true", cfg=cfg, reuse=True, bead="bh-x", phase="submit"
+        )
+        == 0
+    )
+    assert len(list((root / "runs").glob("*/manifest.json"))) == 1
+    uses = [json.loads(path.read_text()) for path in (root / "uses").glob("*.json")]
+    assert len(uses) == 2
+    assert {item["run_id"] for item in uses} == {run["run_id"]}
+    assert {item["reused"] for item in uses} == {False, True}
+
+
+def test_clean_checkout_missing_binary_is_completed_none_not_red(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    rc = worktree.clean_checkout(
+        entry,
+        "main",
+        "definitely-not-a-beadhive-test-binary",
+        cfg=cfg,
+        bead="bh-x",
+        phase="review",
+    )
+    assert rc != 0
+    manifests = list((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    assert len(manifests) == 1
+    run = json.loads(manifests[0].read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "none",
+        "missing_binary",
+    )
+    uses = list((repo / ".git/bh/validation/uses").glob("*.json"))
+    assert len(uses) == 1
+
+
+def test_clean_checkout_checkout_failure_is_a_terminal_none_use(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    monkeypatch.setattr(worktree, "_prepare_verify_worktree", lambda *_args: (None, 23))
+    assert (
+        worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x", phase="submit") == 23
+    )
+    path = next((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    run = json.loads(path.read_text())
+    assert (run["verdict"], run["reason"], run["exit_code"]) == (
+        "none",
+        "checkout_failure",
+        23,
+    )
+    assert len(list((repo / ".git/bh/validation/uses").glob("*.json"))) == 1
+
+
+def test_clean_checkout_setup_exception_finishes_and_clears_liveness(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+
+    def fail_setup(*_args, **_kwargs):
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(worktree, "run_init", fail_setup)
+    with pytest.raises(RuntimeError, match="setup failed"):
+        worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x", phase="review")
+    path = next((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    run = json.loads(path.read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "none",
+        "setup_failure",
+    )
+    assert len(list((repo / ".git/bh/validation/uses").glob("*.json"))) == 1
+    assert not list((repo / ".git/bh/validation/active").glob("*.json"))
+
+
+def test_clean_checkout_honors_only_explicit_valid_v1_runner_protocol(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["work"] = {"validation_protocol": "beadhive-validation-result/v1"}
+    runner = tmp_path / "typed-runner"
+    runner.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "verdict = sys.argv[1]\n"
+        "payload = {'protocol': 'beadhive-validation-result', 'version': 1, "
+        "'verdict': verdict, 'reason': 'runner refusal'}\n"
+        "with open(os.environ['BH_VALIDATION_RESULT_PATH'], 'w') as out:\n"
+        "    json.dump(payload, out)\n"
+        "raise SystemExit(42)\n"
+    )
+    runner.chmod(0o755)
+
+    assert worktree.clean_checkout(entry, "main", f"{runner} none", cfg=cfg) == 42
+    first = sorted((repo / ".git/bh/validation/runs").glob("*/manifest.json"))[0]
+    assert json.loads(first.read_text())["verdict"] == "none"
+
+    # Contradictory green+nonzero output is untrusted and cannot downgrade ordinary red.
+    assert worktree.clean_checkout(entry, "main", f"{runner} green", cfg=cfg) == 42
+    manifests = [
+        json.loads(path.read_text())
+        for path in (repo / ".git/bh/validation/runs").glob("*/manifest.json")
+    ]
+    assert sorted(item["verdict"] for item in manifests) == ["none", "red"]
+
+
+def test_clean_checkout_observed_interruption_finishes_none(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    real_run = worktree.run
+
+    def interrupt_validation(cmd, **kwargs):
+        if list(cmd)[:1] != ["git"]:
+            raise KeyboardInterrupt
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(worktree, "run", interrupt_validation)
+    with pytest.raises(KeyboardInterrupt):
+        worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x", phase="review")
+    path = next((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    run = json.loads(path.read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "none",
+        "interrupted",
+    )
+    assert len(list((repo / ".git/bh/validation/uses").glob("*.json"))) == 1
+    assert not list((repo / ".git/bh/validation/active").glob("*.json"))
+
+
+def test_sweep_classifies_dead_run_abandoned_and_reaps_its_checkout(tmp_path, monkeypatch):
+    _cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    checkout = worktree.wt_dir(entry, "verify-main-dead01")
+    checkout.mkdir(parents=True)
+    run = validation_records.begin_run(
+        repo,
+        bead="bh-x",
+        phase="submit",
+        branch="main",
+        worktree=checkout,
+        sha="sha",
+        tree="tree",
+        command_hash="hash",
+        command="true",
+        owner_pid=999_999_999,
+        owner_start="dead-token",
+    )
+    assert run is not None
+    monkeypatch.setattr(worktree, "_pid_alive", lambda _pid: False)
+
+    assert worktree.sweep_verify_dirs(entry, grace=0, ttl=3600) == 1
+    assert not checkout.exists()
+    manifest = validation_records.read_run(repo, run["run_id"])
+    assert (manifest["lifecycle"], manifest["verdict"], manifest["reason"]) == (
+        "abandoned",
+        "none",
+        "owner_dead",
+    )
+    assert not list((repo / ".git/bh/validation/active").glob("*.json"))
 
 
 def test_validation_ledger_roundtrip_and_corruption(tmp_path, monkeypatch):

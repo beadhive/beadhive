@@ -1086,9 +1086,9 @@ _BARE_CHECKOUT_HINT = (
 )
 
 
-def _reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None) -> bool:
+def _reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None, **kwargs) -> bool:
     """Compatibility facade for ``worktree_verify.impl__reuse_verdict_hit``."""
-    return _worktree_verify.impl__reuse_verdict_hit(entry, sha, cmd, cfg)
+    return _worktree_verify.impl__reuse_verdict_hit(entry, sha, cmd, cfg, **kwargs)
 
 
 def _prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
@@ -1096,9 +1096,13 @@ def _prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     return _worktree_verify.impl__prepare_verify_worktree(main, entry, branch, cmd)
 
 
-def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
+def clean_checkout(
+    entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
+) -> int:
     """Compatibility facade for ``worktree_verify.impl_clean_checkout``."""
-    return _worktree_verify.impl_clean_checkout(entry, branch, cmd, cfg, reuse)
+    return _worktree_verify.impl_clean_checkout(
+        entry, branch, cmd, cfg, reuse, bead=bead, phase=phase
+    )
 
 
 #: External hives are pull-only (bh-uxam.1): `upstream` is a read rail, never a write target.

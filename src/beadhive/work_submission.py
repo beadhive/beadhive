@@ -27,20 +27,112 @@ def impl_check(api, bead, hive):
             err=True,
         )
     cmd = api.config.validate_cmd(cfg, entry)
-    api.worktree.run_init(cfg, entry, target, verify_only=True)
+    sha = api.worktree.head_full_sha(target)
+    clean_sha = api._checked_sha(target)
+    tree = api.validation_ledger.tree_of(entry, clean_sha) if clean_sha else ""
+    run_record = api.validation_records.begin_run(
+        main,
+        bead=bead,
+        phase="check",
+        branch=_branch,
+        worktree=target,
+        sha=sha,
+        tree=tree,
+        command_hash=api.validation_ledger.cmd_hash(cmd),
+        command=cmd,
+        owner_start=api.worktree._pid_start(api.os.getpid()),
+    )
+    try:
+        api.worktree.run_init(cfg, entry, target, verify_only=True)
+    except BaseException:
+        if run_record is not None:
+            api.validation_records.finish_run(main, run_record["run_id"], reason="setup_failure")
+            api.validation_records.record_use(
+                main,
+                run_id=run_record["run_id"],
+                bead=bead,
+                phase="check",
+                branch=_branch,
+                worktree=target,
+                sha=sha,
+                tree=tree,
+                command_hash=api.validation_ledger.cmd_hash(cmd),
+                reused=False,
+            )
+        raise
     v_start = api.time.perf_counter()
     with api.test_report.drop_zone() as drop, api.triage_store.gate_log() as log:
-        res = api.run(
-            api.shlex.split(cmd),
-            cwd=str(target),
-            check=False,
-            env=api.test_report.export(api.otel.telemetry_neutral_env(), drop),
-            tee=log,
+        protocol_path = api.validation_records.protocol_path(
+            drop, api.config.work_value(cfg, entry, "validation_protocol", "none")
         )
+        child_env = api.test_report.export(api.otel.telemetry_neutral_env(), drop)
+        if protocol_path is not None:
+            child_env[api.validation_records.PROTOCOL_RESULT_ENV] = str(protocol_path)
+        try:
+            res = api.run(
+                api.shlex.split(cmd),
+                cwd=str(target),
+                check=False,
+                env=child_env,
+                tee=log,
+            )
+        except BaseException:
+            if run_record is not None:
+                api.validation_records.finish_run(main, run_record["run_id"], reason="interrupted")
+                api.validation_records.record_use(
+                    main,
+                    run_id=run_record["run_id"],
+                    bead=bead,
+                    phase="check",
+                    branch=_branch,
+                    worktree=target,
+                    sha=sha,
+                    tree=tree,
+                    command_hash=api.validation_ledger.cmd_hash(cmd),
+                    reused=False,
+                )
+            raise
         rc = res.returncode
         v_elapsed = api.time.perf_counter() - v_start
         report = api.test_report.ingest(drop, rc)
-        api._record_check_verdict(entry, target, cmd, rc, report, drop, log, cfg=cfg)
+        missing = api.missing_binary(res)
+        if run_record is not None:
+            api.validation_records.finish_run(
+                main,
+                run_record["run_id"],
+                exit_code=rc,
+                signal_number=-rc if rc < 0 else None,
+                reason=(
+                    "missing_binary" if missing else "interrupted" if rc < 0 else "command_exit"
+                ),
+                protocol=api.validation_records.read_protocol(protocol_path),
+            )
+            if rc != 0 or not clean_sha:
+                api.validation_records.record_use(
+                    main,
+                    run_id=run_record["run_id"],
+                    bead=bead,
+                    phase="check",
+                    branch=_branch,
+                    worktree=target,
+                    sha=sha,
+                    tree=tree,
+                    command_hash=api.validation_ledger.cmd_hash(cmd),
+                    reused=False,
+                )
+        api._record_check_verdict(
+            entry,
+            target,
+            cmd,
+            rc,
+            report,
+            drop,
+            log,
+            cfg=cfg,
+            run_id=run_record["run_id"] if run_record else None,
+            bead=bead,
+            branch=_branch,
+        )
     api.otel.record_validation_duration(
         v_elapsed,
         {
@@ -51,7 +143,6 @@ def impl_check(api, bead, hive):
     )
     api.otel.count_validation(rc == 0, {"bh.work.phase": "check"})
     api._mark_self_check(cfg, entry, target, rc)
-    missing = api.missing_binary(res)
     if rc != 0 and (not missing):
         api.converge.converge(entry, cfg, target, api._checked_sha(target), report)
     if missing:
@@ -84,13 +175,27 @@ def impl__mark_self_check(api, cfg, entry, target, rc):
     )
 
 
-def impl__record_check_verdict(api, entry, target, cmd, rc, report, drop, log, cfg):
+def impl__record_check_verdict(
+    api, entry, target, cmd, rc, report, drop, log, cfg, run_id=None, bead=None, branch=None
+):
     sha = api._checked_sha(target)
     if not sha:
         return
     api.triage_store.store(entry, sha, cmd, rc, report, drop, log)
     if rc == 0:
-        api.validation_ledger.record(entry, sha, cmd, rc, report=report, cfg=cfg)
+        api.validation_ledger.record(
+            entry,
+            sha,
+            cmd,
+            rc,
+            report=report,
+            cfg=cfg,
+            run_id=run_id,
+            phase="check",
+            bead=bead,
+            branch=branch,
+            worktree=target,
+        )
         api.converge.warn_flakes(entry, sha, rc)
 
 
@@ -128,7 +233,7 @@ def impl_submit(api, bead, as_, hive, group):
     api._guard_claim_fence(cfg, entry, target, hive)
     base = api._guard_submit_ready(entry, target, branch, bead, cfg)
     api._warn_submit_release_hint(bead, main, entry, branch, base)
-    api._validate_submit_checkout(entry, branch, cfg)
+    api._validate_submit_checkout(entry, branch, cfg, bead=bead)
     sha = api.worktree.head_sha(target)
     api._record_submit_commits(bead, main, entry, branch, base)
     gate, reuse = api._open_submit_gate(cfg, entry, bead, branch, main, sha)
@@ -207,10 +312,15 @@ def impl__warn_submit_release_hint(api, bead, main, entry, branch, base):
         api.typer.echo(f"⚠ {warn}", err=True)
 
 
-def impl__validate_submit_checkout(api, entry, branch, cfg):
+def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
     v_start = api.time.perf_counter()
     rc = api.worktree.clean_checkout(
-        entry, branch, api.config.validate_cmd(cfg, entry, "submit"), reuse=True
+        entry,
+        branch,
+        api.config.validate_cmd(cfg, entry, "submit"),
+        reuse=True,
+        bead=bead,
+        phase="submit",
     )
     api.otel.record_validation_duration(
         api.time.perf_counter() - v_start,
