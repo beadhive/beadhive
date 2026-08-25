@@ -675,9 +675,21 @@ def test_claim_supervised_leaves_identity(hive, fakebd, monkeypatch):
     )
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="", hive="myrepo")
-    # no stamp → worktree inherits the human's identity; we never enable per-worktree config
-    assert _cfg_get(_wt(hive, "mr-1"), "user.name") == "human"
-    assert _cfg_get(_wt(hive, "mr-1"), "extensions.worktreeConfig") == ""
+    # No identity stamp → this checkout inherits the human's identity. Claim authority does use
+    # Git's per-worktree config for its non-identity incarnation token, so assert the actual
+    # isolation boundary rather than forbidding that Git-native marker outright.
+    wt = _wt(hive, "mr-1")
+    assert _cfg_get(wt, "user.name") == "human"
+    local_name = real_run(
+        ["git", "config", "--worktree", "--get", "user.name"],
+        cwd=str(wt),
+        check=False,
+        capture=True,
+        env=_CLEAN_ENV,
+    )
+    assert local_name.returncode != 0
+    assert _cfg_get(wt, "extensions.worktreeConfig") == "true"
+    assert _cfg_get(wt, "beadhive.claimIncarnation")
 
 
 def test_concurrent_claims_keep_separate_identities(hive, fakebd):
