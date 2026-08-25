@@ -15,10 +15,12 @@ are under test here and every test below is one of them:
     that tree the moment it exists and `await` blocks on the verdict — instead of the ~371s gate
     running inside a push holding an idle socket GitHub will close (bh-53o8f).
 
-3.  **THE MEASURED BRANCH.** `recover` decides between bh-67utw's two cases on whether the TAG
-    REACHED THE REMOTE, read with `ls-remote` against the actual remote. Never assumed, never
+3.  **THE MEASURED BRANCH.** `recover` decides between bh-67utw's two cases from the TAG and every
+    advertised remote ref, read with `ls-remote` against the actual remote. Never assumed, never
     from a local tracking ref, and "I could not look" is its own exit code rather than being
-    folded into "it is not there".
+    folded into "it is not there". Its separately explicit apply path then proves exact clean
+    local state, creates a backup, preserves merge shape, re-measures, and deletes only the local
+    tag; every ambiguity is a mutation-free refusal.
 
 THE SAFETY BAR IS bh-ku9n9.5's, unchanged: there is NO path where a missing, stale, red, corrupt,
 or ambiguous attestation lets a bump or a push proceed as though green were proven. Every miss
@@ -989,6 +991,275 @@ def test_recover_refuses_to_guess_which_tag_it_is_about(hive):
 
 def test_recover_cannot_resolve_an_unknown_rev(hive):
     assert _recover(hive, "deadbeef" * 5).exit_code == 3
+
+
+def _recovery_backups(hive) -> list[str]:
+    out = _git("for-each-ref", "--format=%(refname) %(objectname)", cwd=hive["repo"])
+    return [line for line in out.splitlines() if line.startswith("refs/bh/release-recovery/")]
+
+
+def _staged_recoveries(hive) -> list[str]:
+    out = _git("for-each-ref", "--format=%(refname) %(objectname)", cwd=hive["repo"])
+    return [
+        line for line in out.splitlines() if line.startswith("refs/bh/release-recovery-staged/")
+    ]
+
+
+def test_recover_dry_run_proves_the_exact_plan_without_changing_any_ref(hive):
+    bumped = _bump(hive)
+    refs_before = _git("show-ref", cwd=hive["repo"])
+
+    res = _recover(hive, bumped, "--dry-run")
+
+    assert res.exit_code == 0, res.output
+    assert "DRY RUN ONLY" in res.output
+    assert "rebase --rebase-merges" in res.output
+    assert _git("show-ref", cwd=hive["repo"]) == refs_before
+    assert _git("rev-parse", "HEAD", cwd=hive["repo"]) == bumped
+    assert _git("tag", "--list", cwd=hive["repo"]) == "v0.1.1"
+    assert not _recovery_backups(hive)
+
+
+def test_recover_apply_removes_a_tip_bump_and_keeps_an_exact_backup(hive):
+    bumped = _bump(hive)
+    pre_bump = _git("rev-parse", f"{bumped}^", cwd=hive["repo"])
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 0, res.output
+    assert "RECOVERED v0.1.1" in res.output
+    assert _git("rev-parse", "HEAD", cwd=hive["repo"]) == pre_bump
+    assert _git("tag", "--list", cwd=hive["repo"]) == ""
+    assert _git("status", "--porcelain", cwd=hive["repo"]) == ""
+    assert "branch=" in res.output
+    assert "backup/staged refs exact, tag absent, no rebase" in res.output
+    backups = _recovery_backups(hive)
+    assert len(backups) == 1
+    assert backups[0].endswith(f" {bumped}")
+    assert len(_staged_recoveries(hive)) == 1
+    assert _staged_recoveries(hive)[0].endswith(f" {pre_bump}")
+    assert not (hive["repo"] / "pyproject.toml").exists()
+    assert not (hive["repo"] / "CHANGELOG.md").exists()
+    assert "bh-release-recovery-" not in _git("worktree", "list", "--porcelain", cwd=hive["repo"])
+
+
+def test_recover_apply_preserves_a_merge_buried_above_the_bump(hive):
+    repo = hive["repo"]
+    bumped = _bump(hive)
+    pre_bump = _git("rev-parse", f"{bumped}^", cwd=repo)
+    _git("checkout", "-qb", "feature", cwd=repo)
+    (repo / "feature.txt").write_text("feature\n")
+    _git("add", "feature.txt", cwd=repo)
+    _git("commit", "-qm", "feat: after bump", cwd=repo)
+    _git("checkout", "-q", "main", cwd=repo)
+    (repo / "main.txt").write_text("main\n")
+    _git("add", "main.txt", cwd=repo)
+    _git("commit", "-qm", "fix: after bump", cwd=repo)
+    _git("merge", "-q", "--no-ff", "feature", "-m", "chore: merge feature", cwd=repo)
+    _git("branch", "-d", "feature", cwd=repo)
+    old_head = _git("rev-parse", "HEAD", cwd=repo)
+    old_merges = _git("rev-list", "--count", "--merges", f"{pre_bump}..HEAD", cwd=repo)
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 0, res.output
+    assert _git("rev-list", "--count", "--merges", f"{pre_bump}..HEAD", cwd=repo) == old_merges
+    assert (repo / "feature.txt").read_text() == "feature\n"
+    assert (repo / "main.txt").read_text() == "main\n"
+    assert not (repo / "pyproject.toml").exists()
+    assert not (repo / "CHANGELOG.md").exists()
+    assert _recovery_backups(hive)[0].endswith(f" {old_head}")
+
+
+def test_recover_apply_refuses_dirty_main_without_mutating_refs(hive):
+    bumped = _bump(hive)
+    (hive["repo"] / "f.txt").write_text("dirty\n")
+    refs_before = _git("show-ref", cwd=hive["repo"])
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 1
+    assert "worktree is dirty" in res.output
+    assert _git("show-ref", cwd=hive["repo"]) == refs_before
+    assert not _recovery_backups(hive)
+
+
+def test_recover_apply_refuses_a_non_release_file_in_the_bump(hive):
+    repo = hive["repo"]
+    (repo / "pyproject.toml").write_text('[project]\nversion = "0.1.1"\n')
+    (repo / "CHANGELOG.md").write_text("## 0.1.1\n")
+    (repo / "payload.txt").write_text("not release metadata\n")
+    _git("add", "-A", cwd=repo)
+    _git("commit", "-qm", "bump: version 0.1.1", cwd=repo)
+    _git("tag", "v0.1.1", cwd=repo)
+    bumped = _git("rev-parse", "HEAD", cwd=repo)
+    refs_before = _git("show-ref", cwd=repo)
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 1
+    assert "non-release file(s): payload.txt" in res.output
+    assert _git("show-ref", cwd=repo) == refs_before
+    assert not _recovery_backups(hive)
+
+
+def test_recover_apply_refuses_when_any_remote_ref_contains_the_bump(hive):
+    bumped = _bump(hive)
+    _git("push", "-q", "origin", f"{bumped}:refs/heads/recovery-trap", cwd=hive["repo"])
+    refs_before = _git("show-ref", cwd=hive["repo"])
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 1
+    assert "refs/heads/recovery-trap" in res.output
+    assert "IS CONTAINED" in res.output
+    assert _git("show-ref", cwd=hive["repo"]) == refs_before
+    assert not _recovery_backups(hive)
+
+
+def test_recover_apply_refuses_an_unknown_remote_ref_as_unmeasurable(hive, tmp_path):
+    bumped = _bump(hive)
+    foreign = tmp_path / "foreign"
+    foreign.mkdir()
+    _git("init", "-q", "-b", "other", cwd=foreign)
+    _git("config", "user.email", "foreign@example.com", cwd=foreign)
+    _git("config", "user.name", "foreign", cwd=foreign)
+    _git("config", "commit.gpgsign", "false", cwd=foreign)
+    _git("remote", "add", "origin", str(hive["remote"]), cwd=foreign)
+    (foreign / "foreign.txt").write_text("unknown here\n")
+    _git("add", "foreign.txt", cwd=foreign)
+    _git("commit", "-qm", "feat: foreign", cwd=foreign)
+    _git("push", "-q", "origin", "other:refs/heads/other", cwd=foreign)
+    refs_before = _git("show-ref", cwd=hive["repo"])
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 3
+    assert "object this clone does not hold" in res.output
+    assert _git("show-ref", cwd=hive["repo"]) == refs_before
+    assert not _recovery_backups(hive)
+
+
+def test_recover_apply_leaves_main_untouched_when_the_staged_rewrite_conflicts(hive):
+    repo = hive["repo"]
+    bumped = _bump(hive)
+    (repo / "CHANGELOG.md").write_text("rewritten after bump\n")
+    _git("add", "CHANGELOG.md", cwd=repo)
+    _git("commit", "-qm", "docs: rewrite changelog", cwd=repo)
+    old_head = _git("rev-parse", "HEAD", cwd=repo)
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 1
+    assert "staged rewrite failed" in res.output
+    assert "main and v0.1.1 were never changed" in res.output
+    assert _git("rev-parse", "HEAD", cwd=repo) == old_head
+    assert _git("tag", "--list", cwd=repo) == "v0.1.1"
+    assert _git("status", "--porcelain", cwd=repo) == ""
+    backups = _recovery_backups(hive)
+    assert len(backups) == 1
+    assert backups[0].endswith(f" {old_head}")
+    assert "bh-release-recovery-" not in _git("worktree", "list", "--porcelain", cwd=repo)
+
+
+def test_rollback_never_deletes_concurrent_untracked_content(hive, monkeypatch):
+    """The reproduced review failure: rollback must not hard-reset over a concurrent file."""
+    repo = hive["repo"]
+    bumped = _bump(hive)
+
+    def fail_final_with_untracked(*args, **kwargs):
+        (repo / "pyproject.toml").write_text("concurrent and untracked\n")
+        return release.REFUSED, "simulated final-proof failure"
+
+    monkeypatch.setattr(release, "_final_recovery_proof", fail_final_with_untracked)
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 1
+    assert "ROLLBACK FAILED/incomplete" in res.output
+    assert "untracked content blocks safe branch restore: pyproject.toml" in res.output
+    assert (repo / "pyproject.toml").read_text() == "concurrent and untracked\n"
+    assert _git("tag", "--list", cwd=repo) == ""
+    backups = _recovery_backups(hive)
+    assert len(backups) == 1
+    assert backups[0].endswith(f" {bumped}")
+    staged = _staged_recoveries(hive)
+    assert len(staged) == 1
+    assert staged[0].endswith(f" {_git('rev-parse', f'{bumped}^', cwd=repo)}")
+
+
+def test_a_concurrent_clean_branch_move_cannot_be_reported_as_success(hive, monkeypatch):
+    """Move main after the tag CAS, keep it clean, and point it back through the bump."""
+    repo = hive["repo"]
+    bumped = _bump(hive)
+    (repo / "after.txt").write_text("after bump\n")
+    _git("add", "after.txt", cwd=repo)
+    _git("commit", "-qm", "fix: after bump", cwd=repo)
+    old_head = _git("rev-parse", "HEAD", cwd=repo)
+    real_install = release._install_recovery_transaction
+
+    def move_branch_after_cas(main, branch, tag, new_head, backup, staged_ref, plan):
+        result = real_install(main, branch, tag, new_head, backup, staged_ref, plan)
+        assert result.returncode == 0
+        _git("reset", "--hard", bumped, cwd=repo)  # concurrent actor; leaves a clean worktree
+        return result
+
+    monkeypatch.setattr(release, "_install_recovery_transaction", move_branch_after_cas)
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 1
+    assert "final clean-slate proof failed" in res.output
+    assert "main no longer equals rewritten head" in res.output
+    assert "ROLLBACK FAILED/incomplete" in res.output
+    assert "RECOVERED" not in res.output
+    assert _git("rev-parse", "HEAD", cwd=repo) == bumped
+    assert _git("merge-base", "--is-ancestor", bumped, "main", cwd=repo) == ""
+    assert _git("status", "--porcelain", cwd=repo) == ""
+    assert _git("tag", "--list", cwd=repo) == ""
+    backups = _recovery_backups(hive)
+    assert len(backups) == 1
+    assert backups[0].endswith(f" {old_head}")
+    assert len(_staged_recoveries(hive)) == 1
+
+
+def test_concurrent_pre_rewrite_main_advance_survives_install_refusal(hive, monkeypatch):
+    """Stage from plan.old_head, then refuse CAS without touching a clean concurrent advance."""
+    repo = hive["repo"]
+    bumped = _bump(hive)
+    planned_head = _git("rev-parse", "HEAD", cwd=repo)
+    real_stage = release._stage_recovery
+    concurrent_head = ""
+
+    def advance_then_stage(main, bump_sha, backup, plan):
+        nonlocal concurrent_head
+        (repo / "concurrent.txt").write_text("must survive\n")
+        _git("add", "concurrent.txt", cwd=repo)
+        _git("commit", "-qm", "fix: concurrent main advance", cwd=repo)
+        concurrent_head = _git("rev-parse", "HEAD", cwd=repo)
+        return real_stage(main, bump_sha, backup, plan)
+
+    monkeypatch.setattr(release, "_stage_recovery", advance_then_stage)
+
+    res = _recover(hive, bumped, "--apply")
+
+    assert res.exit_code == 1
+    assert "advanced from planned head" in res.output
+    assert "concurrent main state was left intact" in res.output
+    assert "RECOVERED" not in res.output
+    assert "restored" not in res.output.lower()
+    assert _git("rev-parse", "HEAD", cwd=repo) == concurrent_head
+    assert _git("show", f"{concurrent_head}:concurrent.txt", cwd=repo) == "must survive"
+    assert (repo / "concurrent.txt").read_text() == "must survive\n"
+    assert _git("status", "--porcelain", cwd=repo) == ""
+    assert _git("tag", "--list", cwd=repo) == "v0.1.1"
+    backups = _recovery_backups(hive)
+    staged = _staged_recoveries(hive)
+    assert len(backups) == len(staged) == 1
+    assert backups[0].endswith(f" {planned_head}")
+    staged_head = staged[0].split()[-1]
+    assert _git("merge-base", bumped, staged_head, cwd=repo) != bumped
+    assert "bh-release-recovery-" not in _git("worktree", "list", "--porcelain", cwd=repo)
 
 
 # ─── the atomic push: "main without its tag" is not a reachable state ────────────────────────

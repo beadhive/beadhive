@@ -46,11 +46,16 @@ green lookup and a PyPI check. It REPORTS all three and refuses none of them, be
 already owns refusing and a second refuser reachable by a different name is the confusion these
 verbs exist to remove. Neither establishes anything the flow did not already establish.
 
-**WHAT THIS MODULE DOES NOT OWN.** The undo *rewrite* itself (`git rebase --rebase-merges
---onto`, the backup ref, the only-version-files diff) is bh-67utw; `recover` measures and
-decides, then names it. The general-purpose `just push` tag handling and its "unfinished
-release" report is bh-zfvbp; this module hands `scripts/push-main.sh` the tag and that script
-pushes both atomically.
+**THE UNDO IS EXPLICIT.** ``recover`` remains read-only by default. Its ``--dry-run`` and
+``--apply`` paths are bh-67utw's one guarded implementation of the local-only undo: every remote
+ref is measured, the managed main worktree and exact bump/tag ancestry are proved, an allowlisted
+release-file diff and backup ref fence the merge-preserving rewrite, and the remote is measured
+again before the local tag is deleted. The rewrite is built in a detached temporary worktree
+rooted at the exact planned head and retained under a recovery ref; one ref transaction then
+CAS-installs it only if main, tag, backup, and staged ref are all still exact. Main is never
+rebased in place, and rollback never overwrites a branch move this operation did not install.
+The general-purpose `just push` tag handling and its "unfinished release" report is bh-zfvbp;
+this module hands `scripts/push-main.sh` the tag and that script pushes both atomically.
 
 **THE SAFETY PROPERTY, unchanged from bh-ku9n9.5.** There is no path here where a missing,
 stale, red, corrupt, or ambiguous attestation lets a bump or a push proceed as though green were
@@ -66,7 +71,9 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import time
+import uuid
 from pathlib import Path
 
 import typer
@@ -553,14 +560,68 @@ def _ls_remote(main: Path, remote: str, pattern: str) -> tuple[int, list[str]]:
     return res.returncode, [ln for ln in (res.stdout or "").splitlines() if ln.strip()]
 
 
+def _remote_refs_containing(main: Path, remote: str, bump_sha: str) -> tuple[int, list[str], str]:
+    """Measure whether *any* advertised ref on REMOTE contains ``bump_sha``.
+
+    ``ls-remote`` is the authority for which refs exist; local remote-tracking refs are never
+    evidence.  Each advertised commit must also be an object this clone holds so ancestry can be
+    proved with ``merge-base --is-ancestor``.  An unknown object is not read as "does not
+    contain": it makes the whole answer unmeasurable.  Peeled annotated-tag rows are preferred
+    over their tag-object rows so an ordinary annotated tag remains measurable.
+    """
+    rc, lines = _ls_remote(main, remote, "refs/*")
+    if rc != 0:
+        return UNMEASURABLE, [], f"git ls-remote exited {rc}"
+
+    advertised: dict[str, str] = {}
+    peeled: set[str] = set()
+    for line in lines:
+        fields = line.split()
+        if len(fields) < 2:
+            return UNMEASURABLE, [], f"malformed ls-remote row: {line!r}"
+        sha, ref = fields[0], fields[1]
+        if ref.endswith("^{}"):
+            base = ref[:-3]
+            advertised[base] = sha
+            peeled.add(base)
+        elif ref not in peeled:
+            advertised[ref] = sha
+
+    containing: list[str] = []
+    for ref, sha in sorted(advertised.items()):
+        exists = subprocess.run(
+            ["git", "-C", str(main), "rev-parse", "--verify", "-q", f"{sha}^{{commit}}"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if exists.returncode != 0:
+            return (
+                UNMEASURABLE,
+                [],
+                f"{ref} points at {sha[:12]}, an object this clone does not hold",
+            )
+        anc = subprocess.run(
+            ["git", "-C", str(main), "merge-base", "--is-ancestor", bump_sha, sha],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if anc.returncode not in (0, 1):
+            return UNMEASURABLE, [], f"could not compare {bump_sha[:12]} with {ref} ({sha[:12]})"
+        if anc.returncode == 0:
+            containing.append(ref)
+    return 0, containing, ""
+
+
 def recovery_decision(main: Path, tag: str, bump_sha: str, remote: str = "origin", branch="main"):
     """`(exit_code, detail)` for "a bump failed to push — which of bh-67utw's two cases is this?"
 
-    **THE BRANCH TURNS ON ONE MEASURED FACT: did the tag reach the remote.** Measured with
-    `ls-remote` against the actual remote, never assumed, never read from a local tracking ref.
-    That is the entire load-bearing decision, because the tag is the point of no return: before
-    it the bump is a local edit, after it `.github/workflows/release.yml` may already have fired
-    and anything downstream may already have consumed the version.
+    **THE BRANCH TURNS ON MEASURED REMOTE STATE.** The tag and every advertised remote ref are
+    read with `ls-remote` against the actual remote, never assumed and never inferred from local
+    remote-tracking refs. The tag is the point of no return because its arrival may fire
+    `.github/workflows/release.yml`; containment by any other remote ref also closes the automatic
+    rewrite path because the bump is no longer demonstrably local-only.
 
     Four answers, and the fourth is why this returns a code rather than a bool:
 
@@ -575,9 +636,8 @@ def recovery_decision(main: Path, tag: str, bump_sha: str, remote: str = "origin
       is what stops this being reachable in the first place; it is measured for anyway, because
       a state that "cannot happen" is exactly the one nobody checks for.
     * **0, tag absent AND the bump sha is nowhere on the remote — bh-67utw case A.** Nothing
-      left; the undo is safe. This function does NOT perform it: the rewrite (backup ref,
-      `git rebase --rebase-merges --onto`, and the after-diff proving only version files moved)
-      is bh-67utw's, and duplicating it here would give the repo two recipes to disagree."""
+      left; the undo is safe. The default command only reports this decision; the separately
+      explicit apply path owns the one guarded rewrite implementation."""
     rc, lines = _ls_remote(main, remote, f"refs/tags/{tag}")
     if rc != 0:
         return UNMEASURABLE, (
@@ -633,14 +693,530 @@ def recovery_decision(main: Path, tag: str, bump_sha: str, remote: str = "origin
             f"  `git push --atomic` (both or neither). If you are reading this, something pushed\n"
             f"  {branch} on its own."
         )
+    all_rc, containing, why = _remote_refs_containing(main, remote, bump_sha)
+    if all_rc != 0:
+        return UNMEASURABLE, (
+            f"✗ {tag} is not on {remote} and {remote}/{branch} does not carry the bump, but\n"
+            f"  COULD NOT MEASURE every other advertised ref ({why}). This is NOT proof that\n"
+            f"  {bump_sha[:12]} never left. Fetch or otherwise make the remote objects\n"
+            f"  measurable, then retry; undo nothing until every ref is accounted for."
+        )
+    if containing:
+        refs = ", ".join(containing)
+        return REFUSED, (
+            f"✗ {tag} is not on {remote}, but {bump_sha[:12]} IS CONTAINED by remote ref(s):\n"
+            f"      {refs}\n"
+            f"  The bump left this machine. Do not rewrite it or delete its local tag; inspect\n"
+            f"  the remote publication and roll forward or remove only the unpublished branch\n"
+            f"  through an independently reviewed operation."
+        )
     return 0, (
         f"✓ SAFE TO UNDO: {tag} is not on {remote} and {bump_sha[:12]} is on no {remote} ref —\n"
         f"  measured with ls-remote against the actual remote, not a local tracking ref.\n"
         f"  bh-67utw case A: nothing left this machine, so the bump can be rewritten away\n"
-        f"  completely. THIS VERB DOES NOT DO IT — the rewrite (backup ref first, then\n"
+        f"  completely. By default this verb does not do it — inspect the guarded plan with\n"
+        f"  `bh release recover {bump_sha[:12]} --dry-run`, or execute it explicitly with\n"
+        f"  `bh release recover {bump_sha[:12]} --apply`. The operation creates a backup ref,\n"
+        f"  then runs\n"
         f"  `git rebase --rebase-merges --onto <pre-bump> <bump> {branch}` for a buried bump or\n"
-        f"  commitizen's tag-delete/reset recipe for a tip one, then diff against the backup to\n"
-        f"  prove only the version files moved) is bh-67utw's, and one recipe is better than two."
+        f"  the equivalent tip rewrite, then diffs against the backup to prove only the\n"
+        f"  allowlisted release files moved before deleting the local tag (bh-67utw)."
+    )
+
+
+_RECOVERY_PATHS = frozenset({"CHANGELOG.md", "pyproject.toml", "uv.lock"})
+
+
+def _git(main: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(main), *args], capture_output=True, text=True, check=False
+    )
+
+
+def _local_recovery_plan(
+    main: Path, branch: str, tag: str, bump_sha: str
+) -> tuple[dict[str, object] | None, str]:
+    """Return the exact local rewrite plan, or a refusal that authorises no mutation."""
+    status = _git(main, "status", "--porcelain=v1", "--untracked-files=normal")
+    if status.returncode != 0:
+        return None, f"could not read worktree status (git exited {status.returncode})"
+    if status.stdout:
+        return None, "the managed main worktree is dirty"
+
+    current = _git(main, "symbolic-ref", "--quiet", "--short", "HEAD")
+    if current.returncode != 0 or current.stdout.strip() != branch:
+        got = current.stdout.strip() or "detached HEAD"
+        return None, f"the managed worktree is on {got!r}, not {branch!r}"
+
+    head = _git(main, "rev-parse", "--verify", f"refs/heads/{branch}^{{commit}}")
+    if head.returncode != 0 or not head.stdout.strip():
+        return None, f"cannot resolve local branch {branch!r}"
+    old_head = head.stdout.strip()
+
+    tags = _git(main, "tag", "--points-at", bump_sha)
+    local_tags = sorted(t for t in tags.stdout.splitlines() if t.strip())
+    if tags.returncode != 0 or local_tags != [tag]:
+        shown = ", ".join(local_tags) if local_tags else "none"
+        return None, f"the bump must have exactly one local tag, {tag!r}; found {shown}"
+    tag_ref = _git(main, "rev-parse", "--verify", f"refs/tags/{tag}")
+    tag_commit = _git(main, "rev-parse", "--verify", f"refs/tags/{tag}^{{commit}}")
+    if (
+        tag_ref.returncode != 0
+        or tag_commit.returncode != 0
+        or tag_commit.stdout.strip() != bump_sha
+    ):
+        return None, f"local tag {tag!r} does not resolve exactly to bump {bump_sha[:12]}"
+
+    ancestry = _git(main, "merge-base", "--is-ancestor", bump_sha, old_head)
+    if ancestry.returncode != 0:
+        return None, f"bump {bump_sha[:12]} is not an ancestor of local {branch}"
+    first_parent = _git(main, "rev-list", "--first-parent", old_head)
+    if first_parent.returncode != 0 or bump_sha not in first_parent.stdout.splitlines():
+        return None, f"bump {bump_sha[:12]} is not on {branch}'s first-parent line"
+
+    parents = _git(main, "rev-list", "--parents", "-n", "1", bump_sha)
+    fields = parents.stdout.split()
+    if parents.returncode != 0 or len(fields) != 2:
+        return None, "the bump is a root or merge commit; there is no exact single pre-bump parent"
+    pre_bump = fields[1]
+
+    changed = _git(main, "diff-tree", "--no-commit-id", "--name-only", "-r", pre_bump, bump_sha)
+    paths = frozenset(p for p in changed.stdout.splitlines() if p.strip())
+    if changed.returncode != 0 or not paths:
+        return None, "the bump has no measurable file diff"
+    unexpected = sorted(paths - _RECOVERY_PATHS)
+    if unexpected:
+        return None, (
+            "the bump changes non-release file(s): "
+            + ", ".join(unexpected)
+            + "; allowlist is "
+            + ", ".join(sorted(_RECOVERY_PATHS))
+        )
+
+    return {
+        "old_head": old_head,
+        "pre_bump": pre_bump,
+        "tag_ref": tag_ref.stdout.strip(),
+        "paths": paths,
+    }, ""
+
+
+def _recovery_backup_ref(bump_sha: str) -> str:
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"refs/bh/release-recovery/{stamp}-{bump_sha[:12]}-{uuid.uuid4().hex[:8]}"
+
+
+def _ref_sha(main: Path, ref: str) -> str:
+    res = _git(main, "rev-parse", "--verify", "-q", ref)
+    return res.stdout.strip() if res.returncode == 0 else ""
+
+
+def _rebase_in_progress(main: Path) -> bool:
+    for name in ("rebase-merge", "rebase-apply"):
+        resolved = _git(main, "rev-parse", "--git-path", name)
+        if resolved.returncode != 0:
+            return True  # cannot prove absence, so every boundary must refuse
+        path = Path(resolved.stdout.strip())
+        if not path.is_absolute():
+            path = main / path
+        if path.exists():
+            return True
+    return False
+
+
+def _untracked_paths_blocking(main: Path, target: str) -> list[str]:
+    """Untracked/ignored paths a reset to TARGET could overwrite; never remove them."""
+    tracked = _git(main, "ls-tree", "-r", "--name-only", "-z", target)
+    if tracked.returncode != 0:
+        return ["<could not enumerate target paths>"]
+    target_paths = [p for p in tracked.stdout.split("\0") if p]
+    other_paths: set[str] = set()
+    for args in (
+        ("ls-files", "--others", "--exclude-standard", "--directory", "-z"),
+        ("ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"),
+    ):
+        others = _git(main, *args)
+        if others.returncode != 0:
+            return ["<could not enumerate untracked paths>"]
+        other_paths.update(p.rstrip("/") for p in others.stdout.split("\0") if p)
+    return sorted(
+        other
+        for other in other_paths
+        if any(tracked == other or tracked.startswith(other + "/") for tracked in target_paths)
+    )
+
+
+def _rollback_proof(
+    main: Path,
+    branch: str,
+    tag: str,
+    bump_sha: str,
+    remote: str,
+    plan: dict[str, object],
+    backup: str,
+    staged_ref: str,
+    staged_head: str,
+) -> tuple[bool, str]:
+    errors: list[str] = []
+    old_head = str(plan["old_head"])
+    tag_ref = str(plan["tag_ref"])
+    if _ref_sha(main, f"refs/heads/{branch}") != old_head:
+        errors.append(f"{branch} is not exactly the saved head {old_head[:12]}")
+    if _ref_sha(main, f"refs/tags/{tag}") != tag_ref:
+        errors.append(f"{tag} is not exactly the saved tag object {tag_ref[:12]}")
+    if _ref_sha(main, backup) != old_head:
+        errors.append(f"backup {backup} is not exactly the saved head")
+    if _ref_sha(main, staged_ref) != staged_head:
+        errors.append(f"recovery ref {staged_ref} is not exactly the staged rewrite")
+    if _rebase_in_progress(main):
+        errors.append("rebase state remains")
+    status = _git(main, "status", "--porcelain=v1", "--untracked-files=normal")
+    if status.returncode != 0 or status.stdout:
+        errors.append("worktree/index are not clean")
+    remote_code, _remote_detail = recovery_decision(
+        main, tag, bump_sha, remote=remote, branch=branch
+    )
+    if remote_code != 0:
+        errors.append(f"remote state is no longer case A (exit {remote_code})")
+    return (not errors), "; ".join(errors)
+
+
+def _rollback_recovery(
+    main: Path,
+    branch: str,
+    tag: str,
+    bump_sha: str,
+    remote: str,
+    plan: dict[str, object],
+    backup: str,
+    staged_ref: str,
+    staged_head: str,
+) -> tuple[bool, str]:
+    """CAS-restore only the branch installed by us; never overwrite another actor's move."""
+    errors: list[str] = []
+    old_head = str(plan["old_head"])
+    collisions = _untracked_paths_blocking(main, old_head)
+    if _rebase_in_progress(main):
+        errors.append("unexpected rebase state in main; not touched")
+
+    current = _ref_sha(main, f"refs/heads/{branch}")
+    if current != staged_head:
+        errors.append(
+            f"{branch} moved concurrently to {current[:12] or '<missing>'}; not overwritten"
+        )
+    if collisions:
+        errors.append("untracked content blocks safe branch restore: " + ", ".join(collisions))
+    tag_now = _ref_sha(main, f"refs/tags/{tag}")
+    if tag_now and tag_now != str(plan["tag_ref"]):
+        errors.append("the local tag moved concurrently and was not overwritten")
+
+    if not errors:
+        tag_command = (
+            f"verify refs/tags/{tag} {plan['tag_ref']}"
+            if tag_now
+            else f"create refs/tags/{tag} {plan['tag_ref']}"
+        )
+        commands = "\n".join(
+            (
+                "start",
+                f"verify {backup} {old_head}",
+                f"verify {staged_ref} {staged_head}",
+                tag_command,
+                f"update refs/heads/{branch} {old_head} {staged_head}",
+                "prepare",
+                "commit",
+                "",
+            )
+        )
+        restored_refs = subprocess.run(
+            ["git", "-C", str(main), "update-ref", "--stdin"],
+            input=commands,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if restored_refs.returncode != 0:
+            errors.append("atomic rollback ref CAS failed; no concurrent ref was overwritten")
+        elif _git(main, "reset", "--merge", "HEAD").returncode != 0:
+            errors.append("could not synchronize the worktree without a destructive reset")
+
+    proved, proof_detail = _rollback_proof(
+        main, branch, tag, bump_sha, remote, plan, backup, staged_ref, staged_head
+    )
+    if proof_detail:
+        errors.append(proof_detail)
+    return proved and not errors, "; ".join(dict.fromkeys(errors))
+
+
+def _rollback_suffix(ok: bool, detail: str, backup: str, staged_ref: str) -> str:
+    refs = f"backup {backup} and staged recovery ref {staged_ref} retained"
+    if ok:
+        return f" Original state restored and proved; {refs}."
+    return f" ROLLBACK FAILED/incomplete: {detail}. {refs}."
+
+
+def _staged_recovery_ref(bump_sha: str) -> str:
+    stamp = datetime.datetime.now(datetime.UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"refs/bh/release-recovery-staged/{stamp}-{bump_sha[:12]}-{uuid.uuid4().hex[:8]}"
+
+
+def _stage_recovery(
+    main: Path,
+    bump_sha: str,
+    backup: str,
+    plan: dict[str, object],
+) -> tuple[str, str, frozenset[str], str]:
+    """Build the rewrite in a detached worktree rooted at the exact planned old head."""
+    stage_ref = _staged_recovery_ref(bump_sha)
+    with tempfile.TemporaryDirectory(prefix="bh-release-recovery-") as raw_stage:
+        stage = Path(raw_stage)
+        added = _git(main, "worktree", "add", "--detach", str(stage), str(plan["old_head"]))
+        if added.returncode != 0:
+            return "", stage_ref, frozenset(), "could not create detached staging worktree"
+        staged_head = ""
+        paths: frozenset[str] = frozenset()
+        refusal = ""
+        try:
+            rebased = _git(
+                stage,
+                "rebase",
+                "--rebase-merges",
+                "--onto",
+                str(plan["pre_bump"]),
+                bump_sha,
+                str(plan["old_head"]),
+            )
+            if rebased.returncode != 0:
+                _git(stage, "rebase", "--abort")
+                refusal = "merge-preserving staged rewrite failed"
+            else:
+                staged_head = _ref_sha(stage, "HEAD")
+                excluded = _git(stage, "merge-base", "--is-ancestor", bump_sha, staged_head)
+                status = _git(stage, "status", "--porcelain=v1", "--untracked-files=normal")
+                after_diff = _git(stage, "diff", "--name-only", staged_head, backup)
+                paths = frozenset(p for p in after_diff.stdout.splitlines() if p.strip())
+                if (
+                    not staged_head
+                    or excluded.returncode != 1
+                    or status.returncode != 0
+                    or status.stdout
+                    or _rebase_in_progress(stage)
+                    or after_diff.returncode != 0
+                    or bool(paths - _RECOVERY_PATHS)
+                ):
+                    refusal = "detached staged rewrite proof failed"
+                elif _git(main, "update-ref", stage_ref, staged_head, "0" * 40).returncode != 0:
+                    refusal = "could not retain the staged recovery ref"
+        finally:
+            removed = _git(main, "worktree", "remove", "--force", str(stage))
+        if removed.returncode != 0:
+            return "", stage_ref, paths, "could not remove detached staging worktree"
+        if refusal:
+            return "", stage_ref, paths, refusal
+    return staged_head, stage_ref, paths, ""
+
+
+def _install_recovery_transaction(
+    main: Path,
+    branch: str,
+    tag: str,
+    staged_head: str,
+    backup: str,
+    staged_ref: str,
+    plan: dict[str, object],
+) -> subprocess.CompletedProcess[str]:
+    """CAS-install the staged rewrite only while every planned ref is still exact."""
+    commands = "\n".join(
+        (
+            "start",
+            f"verify {backup} {plan['old_head']}",
+            f"verify {staged_ref} {staged_head}",
+            f"delete refs/tags/{tag} {plan['tag_ref']}",
+            f"update refs/heads/{branch} {staged_head} {plan['old_head']}",
+            "prepare",
+            "commit",
+            "",
+        )
+    )
+    return subprocess.run(
+        ["git", "-C", str(main), "update-ref", "--stdin"],
+        input=commands,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _verify_final_refs_transaction(
+    main: Path,
+    branch: str,
+    tag: str,
+    new_head: str,
+    backup: str,
+    staged_ref: str,
+    old_head: str,
+) -> subprocess.CompletedProcess[str]:
+    """Final no-op CAS fence: exact branch/backup values and exact tag absence, atomically."""
+    commands = "\n".join(
+        (
+            "start",
+            f"verify refs/heads/{branch} {new_head}",
+            f"verify {backup} {old_head}",
+            f"verify {staged_ref} {new_head}",
+            f"verify refs/tags/{tag} {'0' * 40}",
+            "prepare",
+            "commit",
+            "",
+        )
+    )
+    return subprocess.run(
+        ["git", "-C", str(main), "update-ref", "--stdin"],
+        input=commands,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _final_recovery_proof(
+    main: Path,
+    branch: str,
+    tag: str,
+    bump_sha: str,
+    remote: str,
+    plan: dict[str, object],
+    backup: str,
+    staged_ref: str,
+    new_head: str,
+) -> tuple[int, str]:
+    """Re-prove every success invariant after the tag transaction."""
+    errors: list[str] = []
+    branch_now = _ref_sha(main, f"refs/heads/{branch}")
+    if branch_now != new_head:
+        errors.append(f"{branch} no longer equals rewritten head {new_head[:12]}")
+    excluded = _git(main, "merge-base", "--is-ancestor", bump_sha, branch_now or new_head)
+    if excluded.returncode != 1:
+        errors.append("the rewritten branch does not prove bump exclusion")
+    if _ref_sha(main, backup) != str(plan["old_head"]):
+        errors.append("the backup no longer equals the saved old head")
+    if _ref_sha(main, staged_ref) != new_head:
+        errors.append("the staged recovery ref no longer equals the rewritten head")
+    if _ref_sha(main, f"refs/tags/{tag}"):
+        errors.append(f"local tag {tag} still exists")
+    if _rebase_in_progress(main):
+        errors.append("rebase state remains")
+    status = _git(main, "status", "--porcelain=v1", "--untracked-files=normal")
+    if status.returncode != 0 or status.stdout:
+        errors.append("worktree/index are not clean")
+    remote_code, _remote_detail = recovery_decision(
+        main, tag, bump_sha, remote=remote, branch=branch
+    )
+    if remote_code != 0:
+        errors.append(f"remote state is no longer case A (exit {remote_code})")
+    fenced = _verify_final_refs_transaction(
+        main, branch, tag, new_head, backup, staged_ref, str(plan["old_head"])
+    )
+    if fenced.returncode != 0:
+        errors.append("final atomic branch/backup/tag CAS fence failed")
+    return (0 if not errors else remote_code or REFUSED), "; ".join(errors)
+
+
+def _apply_recovery(
+    main: Path,
+    branch: str,
+    tag: str,
+    bump_sha: str,
+    remote: str,
+    plan: dict[str, object],
+) -> tuple[int, str]:
+    """Stage away from main, then CAS-install case A; rollback only our installed ref."""
+    backup = _recovery_backup_ref(bump_sha)
+    made = _git(main, "update-ref", backup, str(plan["old_head"]), "0" * 40)
+    if made.returncode != 0:
+        return REFUSED, f"✗ could not create backup ref {backup}; nothing was rewritten"
+
+    new_head, staged_ref, after_paths, stage_refusal = _stage_recovery(main, bump_sha, backup, plan)
+    if stage_refusal:
+        retained_stage = _ref_sha(main, staged_ref)
+        return REFUSED, (
+            f"✗ {stage_refusal}; main and {tag} were never changed. Backup retained at {backup}"
+            + (f"; staged recovery ref retained at {staged_ref}" if retained_stage else "")
+            + "."
+        )
+
+    # Re-measure after the potentially long detached rewrite, while main is still untouched.
+    remote_code, remote_detail = recovery_decision(
+        main, tag, bump_sha, remote=remote, branch=branch
+    )
+    if remote_code != 0:
+        return remote_code, (
+            f"{remote_detail}\n✗ remote state changed while staging; main and {tag} were never "
+            f"changed. Backup {backup} and recovery ref {staged_ref} are retained."
+        )
+
+    preinstall_errors: list[str] = []
+    if _ref_sha(main, f"refs/heads/{branch}") != str(plan["old_head"]):
+        preinstall_errors.append(
+            f"{branch} advanced from planned head {str(plan['old_head'])[:12]}"
+        )
+    if _ref_sha(main, f"refs/tags/{tag}") != str(plan["tag_ref"]):
+        preinstall_errors.append(f"local tag {tag} changed")
+    if _ref_sha(main, backup) != str(plan["old_head"]):
+        preinstall_errors.append("backup changed")
+    if _ref_sha(main, staged_ref) != new_head:
+        preinstall_errors.append("staged recovery ref changed")
+    if _rebase_in_progress(main):
+        preinstall_errors.append("unexpected rebase state appeared in main")
+    status = _git(main, "status", "--porcelain=v1", "--untracked-files=normal")
+    if status.returncode != 0 or status.stdout:
+        preinstall_errors.append("main worktree/index are no longer clean")
+    if preinstall_errors:
+        return REFUSED, (
+            f"✗ recovery install refused: {'; '.join(preinstall_errors)}. No planned ref was "
+            f"changed; concurrent main state was left intact. Backup {backup} and staged "
+            f"recovery ref {staged_ref} are retained."
+        )
+
+    installed = _install_recovery_transaction(main, branch, tag, new_head, backup, staged_ref, plan)
+    if installed.returncode != 0:
+        why = (installed.stderr or installed.stdout or "git update-ref refused").strip()
+        return REFUSED, (
+            f"✗ recovery install CAS failed; main/tag were not changed and concurrent state was "
+            f"not overwritten ({why}). Backup {backup} and staged recovery ref {staged_ref} "
+            f"are retained."
+        )
+
+    # Synchronize to whichever HEAD is current at execution time. `reset --merge new_head` would
+    # move a concurrently advanced branch back to our staged commit; `HEAD` never changes the ref
+    # and therefore cannot overwrite a post-install branch move. The exact-new-head proof below
+    # still refuses that race.
+    synced = _git(main, "reset", "--merge", "HEAD")
+    if synced.returncode != 0:
+        restored, rollback = _rollback_recovery(
+            main, branch, tag, bump_sha, remote, plan, backup, staged_ref, new_head
+        )
+        suffix = _rollback_suffix(restored, rollback, backup, staged_ref)
+        return REFUSED, f"✗ installed refs but could not safely synchronize main.{suffix}"
+
+    final_code, final_detail = _final_recovery_proof(
+        main, branch, tag, bump_sha, remote, plan, backup, staged_ref, new_head
+    )
+    if final_code != 0:
+        restored, rollback = _rollback_recovery(
+            main, branch, tag, bump_sha, remote, plan, backup, staged_ref, new_head
+        )
+        suffix = _rollback_suffix(restored, rollback, backup, staged_ref)
+        return final_code, f"✗ final clean-slate proof failed: {final_detail}.{suffix}"
+
+    paths = ", ".join(sorted(after_paths)) or "(no surviving tree difference)"
+    return 0, (
+        f"✓ RECOVERED {tag}: deleted the local tag and removed bump {bump_sha[:12]} from "
+        f"{branch}.\n"
+        f"  backup: {backup} -> {str(plan['old_head'])[:12]}\n"
+        f"  staged: {staged_ref} -> {new_head[:12]}\n"
+        f"  proof: detached rewrite from planned head; CAS-installed branch={new_head[:12]};\n"
+        f"  bump absent, backup/staged refs exact, tag absent, no rebase state, clean worktree,\n"
+        f"  every remote ref measured three times, and only allowlisted differences: {paths}"
     )
 
 
@@ -651,16 +1227,29 @@ def recover(
     remote: str = typer.Option("origin", "--remote"),
     branch: str = typer.Option("main", "--branch"),
     hive: str = _HIVE,
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="execute the guarded local case-A undo; all other measured states refuse unchanged",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="validate the complete local/remote undo plan and print it without changing refs",
+    ),
 ):
     """A bump failed to push — MEASURE the remote and say which of bh-67utw's two cases this is.
 
-    Read-only: it looks, it decides, it names the next command. It never rewrites history and
-    never touches a ref, because the two cases need opposite treatment and picking between them
-    on an assumption is what turned the 0.11.5 recovery into an improvisation.
+    Read-only by default: it looks, decides, and names the next command. ``--dry-run`` additionally
+    validates the exact local undo plan without changing refs. Only the explicit ``--apply`` path
+    may mutate, and only after both the local plan and every advertised remote ref prove case A.
 
     Exit 0 = the tag never left, the undo is safe (case A). 1 = the tag is published, roll
     forward instead (case B). 2 = main landed without its tag, finish the release. 3 = the
     remote could not be read, so NOTHING is concluded."""
+    if apply and dry_run:
+        typer.echo("✗ choose --apply or --dry-run, not both; nothing was changed", err=True)
+        raise typer.Exit(REFUSED)
     try:
         main = registry.hive_dir_for(config.load(), hive)
     except Exception as exc:  # noqa: BLE001 — cannot locate the clone ⇒ cannot MEASURE anything
@@ -701,9 +1290,35 @@ def recover(
             raise typer.Exit(UNMEASURABLE)
         tag = tags[0]
 
+    if apply or dry_run:
+        plan, refusal = _local_recovery_plan(main, branch, tag, bump_sha)
+        if plan is None:
+            typer.echo(f"✗ RECOVERY REFUSED: {refusal}. Nothing was changed.", err=True)
+            raise typer.Exit(REFUSED)
+
     code, detail = recovery_decision(main, tag, bump_sha, remote=remote, branch=branch)
-    typer.echo(detail, err=code != 0)
-    raise typer.Exit(code)
+    if code != 0 or not (apply or dry_run):
+        typer.echo(detail, err=code != 0)
+        raise typer.Exit(code)
+
+    assert plan is not None  # established above; keeps the mutation path structurally explicit
+    if dry_run:
+        backup_shape = f"refs/bh/release-recovery/<timestamp>-{bump_sha[:12]}-<nonce>"
+        paths = ", ".join(sorted(str(p) for p in plan["paths"]))
+        typer.echo(
+            f"{detail}\n"
+            f"✓ DRY RUN ONLY — the guarded undo plan is valid; no ref or file was changed.\n"
+            f"  create backup {backup_shape} at {str(plan['old_head'])[:12]}\n"
+            f"  rewrite {branch} with `git rebase --rebase-merges --onto "
+            f"{str(plan['pre_bump'])[:12]} {bump_sha[:12]} {branch}`\n"
+            f"  re-measure every remote ref, prove only [{paths}] disappeared, then delete "
+            f"local tag {tag}"
+        )
+        return
+
+    apply_code, apply_detail = _apply_recovery(main, branch, tag, bump_sha, remote, plan)
+    typer.echo(apply_detail, err=apply_code != 0)
+    raise typer.Exit(apply_code)
 
 
 def _project_pin(main: Path) -> tuple[str, str]:
