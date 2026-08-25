@@ -30,6 +30,7 @@ from pathlib import Path
 import pytest
 
 from beadhive import config, host, prepush, registry, validation_ledger, worktree
+from harness.validation_state import pointer as verdict_pointer
 
 GATE_CMD = "just check-all"  # what `push-main` would run on a miss
 
@@ -92,8 +93,8 @@ def _declare(hive, cmd: str) -> None:
     hive["entry"]["work"]["always_run"] = cmd
 
 
-def _ledger(hive) -> Path:
-    return hive["repo"] / ".git" / validation_ledger.LEDGER_FILENAME
+def _ledger(hive, cmd: str = GATE_CMD) -> Path:
+    return verdict_pointer(hive["entry"], hive["sha"], cmd)
 
 
 # ---------------------------------------------------------------------------
@@ -134,12 +135,14 @@ def test_a_failing_always_run_set_stops_a_full_run_from_recording_a_verdict(
     full, full_cmd = _logging_cmd(tmp_path, "full", rc=0)
     _declare(hive, always_cmd)
     validation_ledger.record(hive["entry"], hive["sha"], full_cmd, 0)
-    entries_before = json.loads(_ledger(hive).read_text())
+    entries_before = json.loads(_ledger(hive, full_cmd).read_text())
 
     assert worktree.clean_checkout(hive["entry"], "main", full_cmd, reuse=True) == 0
 
     assert _runs(always) == 1 and _runs(full) == 1, "the hit was honoured, or the set never ran"
-    assert json.loads(_ledger(hive).read_text()) == entries_before, "the green run attested"
+    assert json.loads(_ledger(hive, full_cmd).read_text()) == entries_before, (
+        "the green run attested"
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -40,8 +40,12 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from beadhive import config, host, prepush, release, validation_ledger
+from beadhive import config, host, prepush, release, validation_ledger, validation_records
 from beadhive.cli import app
+from harness.validation_state import age as age_verdict
+from harness.validation_state import latest as latest_verdict
+from harness.validation_state import pointer as verdict_pointer
+from harness.validation_state import rewrite as rewrite_verdict
 
 runner = CliRunner()
 
@@ -118,8 +122,8 @@ def _await(hive, *extra: str, rev: str | None = None):
     return _run(hive, "await", rev or hive["sha"], "--gate", GATE_CMD, "--poll", "0.01", *extra)
 
 
-def _ledger(hive) -> Path:
-    return hive["repo"] / ".git" / validation_ledger.LEDGER_FILENAME
+def _ledger(hive, rev: str | None = None, cmd: str = GATE_CMD) -> Path:
+    return verdict_pointer(hive["entry"], rev or hive["sha"], cmd)
 
 
 def _marker(hive) -> Path:
@@ -149,6 +153,35 @@ def _legacy_log(hive) -> Path:
 
 def _attest(hive, rc: int = 0, rev: str | None = None, cmd: str = GATE_CMD) -> None:
     validation_ledger.record(hive["entry"], rev or hive["sha"], cmd, rc)
+
+
+def _typed_attest(hive, verdict: str, rev: str | None = None) -> None:
+    rev = rev or hive["sha"]
+    tree = validation_ledger.tree_of(hive["entry"], rev)
+    run = validation_records.begin_run(
+        hive["repo"],
+        bead=None,
+        phase="release",
+        branch="main",
+        worktree=hive["repo"],
+        sha=rev,
+        tree=tree,
+        command_hash=validation_ledger.cmd_hash(GATE_CMD),
+        command=GATE_CMD,
+    )
+    assert run is not None
+    validation_records.finish_run(
+        hive["repo"],
+        run["run_id"],
+        exit_code=0,
+        protocol={
+            "protocol": validation_records.PROTOCOL_NAME,
+            "version": 1,
+            "verdict": verdict,
+            "reason": "runner refused",
+        },
+    )
+    validation_ledger.record(hive["entry"], rev, GATE_CMD, 0, run_id=run["run_id"])
 
 
 def _fire(hive, rev: str | None = None, pid: int | None = None, cmd: str = GATE_CMD) -> None:
@@ -247,10 +280,13 @@ def test_a_stale_verdict_refuses_the_bump(hive):
     """Past `work.ledger_ttl` a verdict is not evidence (ADR Decision 3). A release must not ride
     a green from a day ago; the tree may be identical but the world it was proved in is not."""
     _attest(hive)
-    entries = json.loads(_ledger(hive).read_text())
-    for e in entries:
-        e["at"] = time.time() - validation_ledger.LEDGER_TTL_SECONDS - 60
-    _ledger(hive).write_text(json.dumps(entries))
+    age_verdict(
+        hive["repo"],
+        hive["entry"],
+        hive["sha"],
+        GATE_CMD,
+        validation_ledger.LEDGER_TTL_SECONDS + 60,
+    )
 
     assert _preflight(hive).exit_code == 1
 
@@ -298,7 +334,7 @@ def test_a_corrupt_ledger_refuses_the_bump(hive, name, content):
         ("rc is null", lambda e: e.update(rc=None)),
         ("no tree", lambda e: e.pop("tree")),
         ("tree is null", lambda e: e.update(tree=None)),
-        ("no cmd_hash", lambda e: e.pop("cmd_hash")),
+        ("no command_hash", lambda e: e.pop("command_hash")),
     ],
 )
 def test_a_malformed_entry_refuses_the_bump(hive, name, mutate):
@@ -307,9 +343,9 @@ def test_a_malformed_entry_refuses_the_bump(hive, name, mutate):
     (a future stamp never expires) and would then explode in the timestamp formatting, so this
     proves the verb neither passes NOR raises."""
     _attest(hive)
-    entries = json.loads(_ledger(hive).read_text())
-    mutate(entries[0])
-    _ledger(hive).write_text(json.dumps(entries))
+    entry = json.loads(_ledger(hive).read_text())
+    mutate(entry)
+    _ledger(hive).write_text(json.dumps(entry))
 
     assert _preflight(hive).exit_code == 1, name
 
@@ -683,6 +719,41 @@ def test_await_still_refuses_a_red_verdict_earned_with_no_marker(hive):
     assert "DO NOT PUSH" in res.output
 
 
+@pytest.mark.parametrize("typed_verdict", ["red", "none"])
+def test_await_refuses_typed_non_green_even_when_exit_code_is_zero(hive, typed_verdict):
+    bumped = _bump(hive)
+    _typed_attest(hive, typed_verdict, rev=bumped)
+    raw = validation_ledger.verdict(hive["entry"], bumped, GATE_CMD)
+    assert raw is not None and raw["rc"] == 0 and raw["verdict"] == typed_verdict
+
+    res = _await(hive, rev=bumped)
+
+    assert res.exit_code == 1
+    assert "DO NOT PUSH" in res.output
+
+
+@pytest.mark.parametrize(
+    "contradiction",
+    (
+        {"signal": 15},
+        {"schema": True},
+        {"exit_code": False},
+        {"reason": "setup_failure"},
+    ),
+)
+def test_await_refuses_a_contradictory_green_manifest(hive, contradiction):
+    bumped = _bump(hive)
+    _attest(hive, rev=bumped)
+    run = latest_verdict(hive["repo"], hive["entry"], bumped, GATE_CMD)
+    run.update(contradiction)
+    rewrite_verdict(hive["repo"], run)
+
+    res = _await(hive, rev=bumped)
+
+    assert res.exit_code == 1
+    assert "safe to push" not in res.output
+
+
 def test_await_refuses_a_stale_verdict_even_with_the_marker_present(hive):
     """The marker says a run happened; the ledger says its verdict has expired. The ledger wins —
     the marker is never evidence about greenness."""
@@ -691,10 +762,13 @@ def test_await_refuses_a_stale_verdict_even_with_the_marker_present(hive):
     dead.wait()
     _fire(hive, rev=bumped, pid=dead.pid)
     _attest(hive, rev=bumped)
-    entries = json.loads(_ledger(hive).read_text())
-    for e in entries:
-        e["at"] = time.time() - validation_ledger.LEDGER_TTL_SECONDS - 60
-    _ledger(hive).write_text(json.dumps(entries))
+    age_verdict(
+        hive["repo"],
+        hive["entry"],
+        bumped,
+        GATE_CMD,
+        validation_ledger.LEDGER_TTL_SECONDS + 60,
+    )
 
     assert _await(hive, rev=bumped).exit_code == 1
 
@@ -1431,23 +1505,25 @@ def test_verdict_surfaces_a_red_entry_that_green_verdict_hides(hive):
 
 def test_verdict_hides_a_stale_entry_from_both_reads(hive):
     _attest(hive, rc=1)
-    entries = json.loads(_ledger(hive).read_text())
-    for e in entries:
-        e["at"] = time.time() - validation_ledger.LEDGER_TTL_SECONDS - 60
-    _ledger(hive).write_text(json.dumps(entries))
+    age_verdict(
+        hive["repo"],
+        hive["entry"],
+        hive["sha"],
+        GATE_CMD,
+        validation_ledger.LEDGER_TTL_SECONDS + 60,
+    )
 
     assert validation_ledger.verdict(hive["entry"], hive["sha"], GATE_CMD) is None
 
 
-def test_a_string_rc_is_not_green(hive):
-    """`!= 0` rather than truthiness, so a corrupt record cannot read as a pass — asserted at the
-    function rather than only through the CLI, since both callers depend on it."""
+def test_a_string_rc_makes_the_derived_pointer_a_miss(hive):
+    """A corrupt pointer is not run authority; both reads fail closed."""
     _attest(hive)
-    entries = json.loads(_ledger(hive).read_text())
-    entries[0]["rc"] = "0"
-    _ledger(hive).write_text(json.dumps(entries))
+    entry = json.loads(_ledger(hive).read_text())
+    entry["rc"] = "0"
+    _ledger(hive).write_text(json.dumps(entry))
 
-    assert validation_ledger.verdict(hive["entry"], hive["sha"], GATE_CMD) is not None
+    assert validation_ledger.verdict(hive["entry"], hive["sha"], GATE_CMD) is None
     assert validation_ledger.green_verdict(hive["entry"], hive["sha"], GATE_CMD) is None
 
 

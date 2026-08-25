@@ -164,14 +164,17 @@ Upstream-native alternatives, if you'd rather not flag rules:
   hook-based provisioning. Caveats: it fires on every checkout, and a failing hook fails the
   checkout itself.
 
-### The validation verdict ledger
+### Validation runs and verdict reuse
 
-Every clean-checkout validation records its verdict — keyed by **(tree hash, validate-cmd
-hash)**, with a timestamp — in `<hive>/.git/bh-validation-ledger.json` (repo-local, untracked,
-dies with the clone). `bh work submit` reuses a fresh **green** verdict for the exact key and
-skips the redundant checkout (`✓ validation verdict reused …`), so re-submitting unchanged
-content is a true no-op; `bh work review --run` reuses only with an explicit `--no-fresh`. A
-red, stale, command-changed, or different-tree verdict always revalidates. The landing boundaries
+Every validation execution has an authoritative manifest below
+`<git-common-dir>/bh/validation/runs/<run-id>/manifest.json`; repeated gate decisions have
+independent records below `validation/uses/`. A completed-green run produces a reconstructable
+pointer keyed by **(tree hash, validate-cmd hash)** below
+`validation/verdicts/<tree>/<command-hash>.json`. `bh work submit` reuses a fresh **green**
+verdict for the exact key and skips the redundant checkout (`✓ validation verdict reused …`),
+so re-submitting unchanged content is a true no-op; `bh work review --run` reuses only with an
+explicit `--no-fresh`. A red, none, stale, command-changed, or different-tree verdict always
+revalidates. The landing boundaries
 (merge, post-land, finish, batch land) consult it too, on **exact tree match only** — the ADR's
 Decision 4, wired in bh-ku9n9.17. Because the key is `(tree, cmd_hash)`, a hit *is* that exact
 match: a `--no-ff` land onto an unmoved base rides the tip's verdict, while a moved base, a
@@ -206,7 +209,7 @@ morning is stronger evidence about an identical tree than one from last week, an
 cheap insurance against environmental rot — a green recorded before a toolchain upgrade says
 nothing about after it.
 
-`bh work check` feeds the same ledger (bh-i0p1.4): a green run against a **clean** worktree is
+`bh work check` feeds the same run store (bh-i0p1.4): a green run against a **clean** worktree is
 recorded exactly like a clean checkout's, keyed on that worktree's own HEAD — a dirty tree is
 never recorded, since the uncommitted delta means HEAD no longer represents what actually ran.
 This makes the ordinary `check` → `submit` sequence (unchanged sha in between, the `work` skill's

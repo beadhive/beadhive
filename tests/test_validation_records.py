@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import json
 from pathlib import Path
 
@@ -153,13 +154,49 @@ def test_verdict_pointer_protects_but_audit_use_does_not_pin_raw_artifacts(tmp_p
     run = validation_records.finish_run(repo, run["run_id"], exit_code=0)
     verdict = repo / ".git/bh/validation/verdicts/tree/hash.json"
     verdict.parent.mkdir(parents=True)
-    verdict.write_text(json.dumps({"run_id": run["run_id"]}))
+    verdict.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "run_id": run["run_id"],
+                "tree": "tree",
+                "command_hash": "hash",
+                "rc": 0,
+                "at": 1.0,
+                "sha": "sha",
+                "shas": ["sha", "same-tree-merge-sha"],
+                "host": "host",
+            }
+        )
+    )
+    assert validation_records._verdict_run_ids(repo / ".git/bh/validation") == {run["run_id"]}
     validation_records.mark_artifacts_uploaded(repo, run["run_id"])
 
     assert Path(run["artifacts"]["directory"]).is_dir()
     verdict.unlink()
     assert validation_records.prune_artifacts(repo) == 1
     assert not Path(run["artifacts"]["directory"]).exists()
+
+
+def test_legacy_manifest_without_artifacts_never_resolves_to_the_current_directory(
+    tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+    run = _begin(repo)
+    run = validation_records.finish_run(repo, run["run_id"], exit_code=0)
+    run.pop("artifacts")
+    run["artifacts_uploaded_at"] = validation_records._now()
+    validation_records._atomic_json(
+        repo / ".git/bh/validation/runs" / run["run_id"] / "manifest.json", run
+    )
+    removals = []
+    monkeypatch.setattr(
+        validation_records.shutil, "rmtree", lambda path, **_kwargs: removals.append(path)
+    )
+
+    assert validation_records.prune_artifacts(repo) == 0
+    assert removals == []
 
 
 def test_retained_manifest_and_running_artifacts_cannot_be_pruned(tmp_path, monkeypatch):
@@ -215,6 +252,38 @@ def test_protocol_requires_exact_version_schema_and_consistency():
     assert validation_records.parse_protocol({**valid, "version": 2}, exit_code=2) is None
     assert validation_records.parse_protocol({**valid, "extra": True}, exit_code=2) is None
     assert validation_records.parse_protocol({**valid, "verdict": "green"}, exit_code=2) is None
+
+
+def test_qualifying_green_requires_an_exact_authentic_completed_manifest():
+    valid = {
+        "schema": 1,
+        "run_id": "run-1",
+        "lifecycle": "completed",
+        "verdict": "green",
+        "exit_code": 0,
+        "signal": None,
+        "reason": "command_exit",
+    }
+    assert validation_records.is_qualifying_green(valid)
+
+    contradictions = (
+        {"schema": True},
+        {"exit_code": False},
+        {"lifecycle": "running"},
+        {"verdict": "red"},
+        {"verdict": "none"},
+        {"exit_code": 1},
+        {"signal": 15},
+        {"reason": "missing_binary"},
+        {"reason": "checkout_failure"},
+        {"reason": "setup_failure"},
+        {"reason": "interrupted"},
+        {"reason": "owner_dead"},
+    )
+    for contradiction in contradictions:
+        candidate = copy.deepcopy(valid)
+        candidate.update(contradiction)
+        assert not validation_records.is_qualifying_green(candidate)
 
 
 def test_abandon_removes_active_without_touching_checkout(tmp_path, monkeypatch):

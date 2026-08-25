@@ -65,8 +65,8 @@ ENV_VAR = "BH_TEST_REPORT_DIR"
 _STATUS = {"failure": "failed", "error": "error", "skipped": "skipped"}
 
 #: Count keys on an ingested report, in the order they are reported. `cases` is deliberately NOT
-#: among them: per-test records in the 200-entry ledger would cost ~96 MiB per hive (bh-ku9n9.4,
-#: Evidence 9), so callers persisting a verdict keep the counts and drop the list.
+#: among them: per-test records in validation control manifests would cost tens of MiB per hive
+#: (bh-ku9n9.4, Evidence 9), so callers persisting a run keep the counts and drop the list.
 COUNT_KEYS = ("tests", "passed", "failures", "errors", "skipped")
 
 #: The passing status, named once — the value `triage_store` filters on to keep its per-tree
@@ -162,5 +162,5 @@ def ingest(drop: Path, rc: int) -> dict | None:
 
 
 def counts(report: dict | None) -> dict | None:
-    """`report` without its per-test `cases` list — the digest-sized part a verdict may carry."""
+    """`report` without per-test `cases` — the bounded part a run summary may carry."""
     return None if report is None else {k: report[k] for k in COUNT_KEYS}

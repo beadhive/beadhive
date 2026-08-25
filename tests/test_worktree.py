@@ -1845,8 +1845,8 @@ def test_clean_checkout_marker_store_failure_is_non_fatal(tmp_path, monkeypatch)
 
 # ---- clean_checkout: validation verdict ledger (bh-dfx0) ---------------------
 #
-# Verdicts are keyed by (commit sha, cmd hash) in <hive>/.git/bh-validation-ledger.json —
-# repo-local untracked state. Only reuse=True callers (submit; review --no-fresh) consult it;
+# Verdict pointers are keyed by (tree, cmd hash) below .git/bh/validation/verdicts/, and point
+# at authoritative run manifests. Only reuse=True callers (submit; review --no-fresh) consult it;
 # only a fresh GREEN verdict short-circuits. The logging command makes "did the validation
 # actually run" directly observable.
 
@@ -1875,8 +1875,11 @@ def test_clean_checkout_reuses_green_verdict(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "validation verdict reused" in out
     assert worktree._branch_sha(entry, "main")[:7] in out
-    # the ledger is repo-local untracked state inside the hive's .git dir
-    assert (repo / ".git" / validation_ledger.LEDGER_FILENAME).is_file()
+    # The derived pointer is git-private; the completed run it names remains authoritative.
+    pointer = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "main"), validation_ledger.cmd_hash(cmd)
+    )
+    assert pointer is not None and pointer.is_file()
 
 
 def test_clean_checkout_reuse_hit_counts_telemetry(tmp_path, monkeypatch):
@@ -1905,7 +1908,11 @@ def test_clean_checkout_records_validated_head_not_stale_sha(tmp_path, monkeypat
     monkeypatch.setattr(worktree, "_branch_sha", lambda entry, branch: stale)
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
-    entries = json.loads((repo / ".git" / validation_ledger.LEDGER_FILENAME).read_text())
+    pointer = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "main"), validation_ledger.cmd_hash(cmd)
+    )
+    assert pointer is not None
+    entries = [json.loads(pointer.read_text())]
     real_head = run(
         ["git", "-C", str(repo), "rev-parse", "main"], check=False, capture=True
     ).stdout.strip()
@@ -1944,11 +1951,13 @@ def test_clean_checkout_stale_verdict_revalidates(tmp_path, monkeypatch):
     log, cmd = _log_cmd(tmp_path)
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
 
-    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
-    entries = json.loads(ledger.read_text())
-    for e in entries:
-        e["at"] = time.time() - validation_ledger.LEDGER_TTL_SECONDS - 60
-    ledger.write_text(json.dumps(entries))
+    ledger = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "main"), validation_ledger.cmd_hash(cmd)
+    )
+    assert ledger is not None
+    payload = json.loads(ledger.read_text())
+    payload["at"] = time.time() - validation_ledger.LEDGER_TTL_SECONDS - 60
+    ledger.write_text(json.dumps(payload))
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
     assert _run_count(log) == 2  # expired → fresh run
@@ -1966,11 +1975,13 @@ def test_clean_checkout_future_at_never_grants_trust(tmp_path, monkeypatch):
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
     assert _run_count(log) == 1
 
-    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
-    entries = json.loads(ledger.read_text())
-    for e in entries:
-        e["at"] = time.time() + 10 * 365 * 24 * 60 * 60  # ten years ahead
-    ledger.write_text(json.dumps(entries))
+    ledger = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "main"), validation_ledger.cmd_hash(cmd)
+    )
+    assert ledger is not None
+    payload = json.loads(ledger.read_text())
+    payload["at"] = time.time() + 10 * 365 * 24 * 60 * 60  # ten years ahead
+    ledger.write_text(json.dumps(payload))
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
     assert _run_count(log) == 2  # a future `at` is a miss, not an indefinitely-extended trust
@@ -2236,9 +2247,8 @@ def test_sweep_classifies_dead_run_abandoned_and_reaps_its_checkout(tmp_path, mo
 
 
 def test_validation_ledger_roundtrip_and_corruption(tmp_path, monkeypatch):
-    """Ledger unit contract: exact-key green hit; miss on other sha / other cmd; a red verdict
-    replaces a green one for the same key; a corrupt file reads as empty and heals on the next
-    record (best-effort — the ledger can never fail a validation)."""
+    """Verdict-index contract: exact-key green hit; misses are fail-closed; a red run revokes a
+    green pointer; and a corrupt pointer heals when a later green run rebuilds it."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
 
     validation_ledger.record(entry, "abc123", "just check", 0)
@@ -2247,14 +2257,17 @@ def test_validation_ledger_roundtrip_and_corruption(tmp_path, monkeypatch):
     assert validation_ledger.green_verdict(entry, "abc123", "other cmd") is None
     assert validation_ledger.green_verdict(entry, "zzz999", "just check") is None
 
-    validation_ledger.record(entry, "abc123", "just check", 1)  # red replaces the green entry
-    assert validation_ledger.green_verdict(entry, "abc123", "just check") is None
-
-    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
+    ledger = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "abc123"), validation_ledger.cmd_hash("just check")
+    )
+    assert ledger is not None
     ledger.write_text("not json {")
     assert validation_ledger.green_verdict(entry, "abc123", "just check") is None  # no raise
     validation_ledger.record(entry, "def456", "just check", 0)  # heals the corrupt file
     assert validation_ledger.green_verdict(entry, "def456", "just check") is not None
+
+    validation_ledger.record(entry, "abc123", "just check", 1)  # red revokes green
+    assert validation_ledger.green_verdict(entry, "abc123", "just check") is None
 
 
 # ---- the key is the TREE, not the commit (bh-ku9n9.3) -----------------------
@@ -2396,9 +2409,11 @@ def test_observed_commit_shas_are_metadata_not_identity(tmp_path, monkeypatch):
     validation_ledger.record(entry, tip, cmd, 0)
     validation_ledger.record(entry, merge_sha, cmd, 0)
 
-    entries = json.loads((repo / ".git" / validation_ledger.LEDGER_FILENAME).read_text())
-    assert len(entries) == 1  # one tree, one verdict — the second commit added no key
-    (e,) = entries
+    pointer = validation_ledger._verdict_path(
+        entry, _tree_of(repo, tip), validation_ledger.cmd_hash(cmd)
+    )
+    assert pointer is not None
+    e = json.loads(pointer.read_text())
     assert e["tree"] == _tree_of(repo, tip)
     assert set(e["shas"]) == {tip, merge_sha}  # both observed commits, as metadata
     assert e["sha"] == merge_sha  # the most recent observation
@@ -2419,11 +2434,17 @@ def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch)
     entry["work"] = {"ledger_ttl": "PT30M"}  # …per-hive wins
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
-    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
-    entries = json.loads(ledger.read_text())
-    for e in entries:
-        e["at"] = time.time() - 31 * 60  # 31 min: fresh under P1D, stale under PT30M
-    ledger.write_text(json.dumps(entries))
+    run = validation_records.latest_run(
+        repo,
+        tree=validation_ledger.tree_of(entry, "main"),
+        command_hash=validation_ledger.cmd_hash(cmd),
+    )
+    assert run is not None
+    run["finished_at"] = datetime.datetime.fromtimestamp(time.time() - 31 * 60, UTC).isoformat()
+    validation_records._atomic_json(
+        repo / ".git/bh/validation/runs" / run["run_id"] / "manifest.json", run
+    )
+    validation_ledger.rebuild_verdict_index(entry)
 
     assert validation_ledger.green_verdict(entry, "main", cmd, cfg=cfg) is None
     entry["work"] = {"ledger_ttl": "PT4H"}  # widen it and the same entry is fresh again
