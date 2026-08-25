@@ -433,6 +433,13 @@ class WorkConfig(_Section):
     validate_cmd: str = Field(
         "just check", description="Default validation command for any boundary without an override."
     )
+    validation_protocol: Literal["none", "beadhive-validation-result/v1"] = Field(
+        "none",
+        description=(
+            "Explicit opt-in typed runner result protocol. v1 exports "
+            "BH_VALIDATION_RESULT_PATH; absent/invalid output remains ordinary process semantics."
+        ),
+    )
     validate_subset: str = Field(
         "",
         description=(

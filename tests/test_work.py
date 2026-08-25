@@ -1614,11 +1614,95 @@ def test_check_then_submit_same_sha_runs_validation_once(hive, fakebd, monkeypat
 
     work.check(bead="mr-180", hive="myrepo")
     assert _run_count(log) == 1
+    records = hive.main / ".git/bh/validation"
+    assert len(list((records / "runs").glob("*/manifest.json"))) == 1
+    assert len(list((records / "uses").glob("*.json"))) == 1
 
     work.submit(bead="mr-180", hive="myrepo")
     assert _run_count(log) == 1  # submit reused check's verdict — no second run
+    assert len(list((records / "runs").glob("*/manifest.json"))) == 1
+    assert len(list((records / "uses").glob("*.json"))) == 2
     assert "validation verdict reused" in capsys.readouterr().out
     assert fakebd.states["mr-180"]["review"] == "pending"
+
+
+@pytest.mark.parametrize("later_verdict", ["red", "none"])
+def test_later_nongreen_check_blocks_stale_green_reuse_and_records_fresh_use(
+    hive, fakebd, monkeypatch, later_verdict
+):
+    """A stale 0.15.1 green row cannot override a newer authoritative red/none run."""
+    fakebd.seed("mr-180b", title="t")
+    work.claim(bead="mr-180b", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-180b"), "feat: the change")
+    calls = 0
+
+    original_work_value = config.work_value
+
+    def configured_protocol(cfg, entry, key, default=None):
+        if key == "validation_protocol" and later_verdict == "none":
+            return "beadhive-validation-result/v1"
+        return original_work_value(cfg, entry, key, default)
+
+    monkeypatch.setattr(config, "work_value", configured_protocol)
+
+    def check_result(_cmd, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _CP(0, "", "")
+        if later_verdict == "none":
+            path = Path(kwargs["env"]["BH_VALIDATION_RESULT_PATH"])
+            path.write_text(
+                json.dumps(
+                    {
+                        "protocol": "beadhive-validation-result",
+                        "version": 1,
+                        "verdict": "none",
+                        "reason": "runner refused",
+                    }
+                )
+            )
+        return _CP(1, "", "")
+
+    monkeypatch.setattr(work, "run", check_result)
+    monkeypatch.setattr(work.converge, "converge", lambda *_args, **_kwargs: None)
+    work.check(bead="mr-180b", hive="myrepo")
+    with pytest.raises(typer.Exit):
+        work.check(bead="mr-180b", hive="myrepo")
+
+    cfg = config.load()
+    entry, _main, target, branch = worktree.locate(cfg, "myrepo", "mr-180b")
+    executed = []
+    original_run = worktree.run
+
+    def observe_fresh(cmd, **kwargs):
+        if list(cmd)[:1] != ["git"]:
+            executed.append(list(cmd))
+        return original_run(cmd, **kwargs)
+
+    monkeypatch.setattr(worktree, "run", observe_fresh)
+    assert (
+        worktree.clean_checkout(
+            entry,
+            branch,
+            config.validate_cmd(cfg, entry),
+            cfg=cfg,
+            reuse=True,
+            bead="mr-180b",
+            phase="submit",
+        )
+        == 0
+    )
+    assert executed == [["true"]]  # stale green was refused; this was not a reuse short-cut
+
+    root = hive.main / ".git/bh/validation"
+    manifests = [json.loads(path.read_text()) for path in (root / "runs").glob("*/manifest.json")]
+    assert sorted(item["verdict"] for item in manifests) == ["green", "green", later_verdict]
+    uses = [json.loads(path.read_text()) for path in (root / "uses").glob("*.json")]
+    assert len(uses) == 3
+    assert all(item["reused"] is False for item in uses)
+    assert all(item["run_id"] for item in uses)
+    assert target.exists()  # provenance target remains the bead worktree for both checks
 
 
 def test_check_on_dirty_tree_does_not_seed_ledger(hive, fakebd, monkeypatch):

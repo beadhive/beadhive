@@ -189,6 +189,14 @@ def test_ledger_ttl_accepts_a_valid_iso8601_duration():
     assert cfg.work.ledger_ttl == "PT4H"
 
 
+def test_validation_protocol_is_explicit_and_versioned():
+    assert BeadhiveConfig().work.validation_protocol == "none"
+    cfg = BeadhiveConfig(work={"validation_protocol": "beadhive-validation-result/v1"})
+    assert cfg.work.validation_protocol == "beadhive-validation-result/v1"
+    with pytest.raises(ValidationError):
+        BeadhiveConfig(work={"validation_protocol": "beadhive-validation-result/v2"})
+
+
 def test_ledger_ttl_rejects_a_non_duration_string():
     with pytest.raises(ValidationError, match="not an ISO-8601 duration"):
         BeadhiveConfig(work={"ledger_ttl": "30 minutes"})
