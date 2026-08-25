@@ -54,19 +54,27 @@ where the other write refusals live, so neither check can mask the other.
 from __future__ import annotations
 
 import json
+import os
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from . import private_paths
 from .run import run
 
 # The default named authority the registry resolves — mirrors config's `work.identity.authority`
 # default. Only this Tier 0 floor ships today.
 DEFAULT_AUTHORITY = "local"
 
-# Filename `LocalTrustAuthority` reads/writes inside a worktree's OWN git-dir.
-_RECORD_FILENAME = "bh-claim.json"
+# The central record is deliberately below git-common-dir, not the linked worktree's
+# administrative directory.  Git prunes that directory when a worktree is removed;
+# bh owns this lifecycle and can therefore remove exactly the matching record.
+_RECORD_FILENAME = "claim.json"
+_LEGACY_RECORD_FILENAME = "bh-claim.json"
+_MAIN_WORKTREE_ID = "main"
+_INCARNATION_CONFIG_KEY = "beadhive.claimIncarnation"
 
 
 @dataclass(frozen=True)
@@ -149,17 +157,182 @@ def _as_epoch(value) -> int:
         return 0
 
 
-def _record_path(worktree) -> Path | None:
-    """The `bh-claim.json` path inside `worktree`'s OWN git-dir, or None when `worktree` isn't
-    (yet) a git working tree — issue()/read() then no-op rather than raise, so a claim-authority
-    hiccup never blocks the lifecycle verb driving it."""
+def _git_dirs(worktree) -> tuple[Path, Path] | None:
+    """Return ``(common-dir, worktree-admin-dir)`` without creating anything."""
     res = run(
-        ["git", "-C", str(worktree), "rev-parse", "--absolute-git-dir"], check=False, capture=True
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "rev-parse",
+            "--git-common-dir",
+            "--absolute-git-dir",
+        ],
+        check=False,
+        capture=True,
     )
-    if res.returncode != 0:
+    lines = (res.stdout or "").splitlines()
+    if res.returncode != 0 or len(lines) != 2:
         return None
-    git_dir = (res.stdout or "").strip()
-    return Path(git_dir) / _RECORD_FILENAME if git_dir else None
+    common, admin = (Path(line.strip()) for line in lines)
+    if not common.is_absolute():
+        common = Path(worktree) / common
+    try:
+        return common.resolve(), admin.resolve()
+    except OSError:
+        return None
+
+
+def _linked_worktree_leaf(worktree) -> str | None:
+    """Git's linked-worktree administrative leaf, never a claim identity by itself."""
+    dirs = _git_dirs(worktree)
+    if dirs is None:
+        return None
+    common, admin = dirs
+    if admin == common:
+        return _MAIN_WORKTREE_ID
+    try:
+        rel = admin.relative_to(common / "worktrees")
+    except ValueError:
+        return None
+    return rel.name if len(rel.parts) == 1 and rel.name not in {"", ".", ".."} else None
+
+
+def _incarnation_token(worktree, *, create: bool) -> str | None:
+    """Read (or explicitly mint) a Git-lifecycle-scoped linked-worktree token.
+
+    The marker is deliberately Git config rather than another claim file: Git
+    owns its per-worktree config's create/remove/move lifecycle, while the
+    authority record itself remains exclusively under the git-private root.
+    """
+    token = run(
+        ["git", "-C", str(worktree), "config", "--worktree", "--get", _INCARNATION_CONFIG_KEY],
+        check=False,
+        capture=True,
+    )
+    value = (token.stdout or "").strip()
+    if token.returncode == 0 and value:
+        return value
+    if not create:
+        return None
+    # Git rejects --worktree until the shared extension is on. The mutation is
+    # intentional here: this is the claim writer's explicit creation seam.
+    enabled = run(
+        ["git", "-C", str(worktree), "config", "extensions.worktreeConfig", "true"],
+        check=False,
+        capture=True,
+    )
+    if enabled.returncode != 0:
+        return None
+    value = uuid.uuid4().hex
+    written = run(
+        ["git", "-C", str(worktree), "config", "--worktree", _INCARNATION_CONFIG_KEY, value],
+        check=False,
+        capture=True,
+    )
+    return value if written.returncode == 0 else None
+
+
+def worktree_id(worktree, *, create: bool = False) -> str | None:
+    """Git-admin-derived per-incarnation key for ``worktree``.
+
+    Linked worktrees use Git's private administrative leaf (rather than their
+    branch or movable checkout path) plus a random token stored in Git's
+    *per-worktree* config. Git removes that config with a raw ``git worktree
+    remove`` but preserves it across ``git worktree move`` and branch rename;
+    this makes the identity per-incarnation without depending on reusable POSIX
+    inode numbers. The primary checkout has one explicit identity because its
+    common git-dir is the authority root.
+    """
+    leaf = _linked_worktree_leaf(worktree)
+    if leaf is None:
+        return None
+    if leaf == _MAIN_WORKTREE_ID:
+        return _MAIN_WORKTREE_ID
+    token = _incarnation_token(worktree, create=create)
+    return f"{leaf}-{token}" if token else None
+
+
+def _record_path(worktree, *, create: bool = False) -> Path | None:
+    """Central record path for ``worktree``.  Resolution is read-only unless ``create``.
+
+    ``private_paths`` keeps all bh-owned state under ``<git-common-dir>/bh``;
+    using its resolver here gives the main checkout and every linked checkout
+    precisely the same root.
+    """
+    key = worktree_id(worktree, create=create)
+    if key is None:
+        return None
+    root = (
+        private_paths.ensure_git_private_root(worktree)
+        if create
+        else private_paths.git_private_root(worktree)
+    )
+    return root / "worktrees" / key / _RECORD_FILENAME if root is not None else None
+
+
+def record_path(worktree) -> Path | None:
+    """Read-only public resolver used by removal before Git drops admin metadata."""
+    return _record_path(worktree)
+
+
+def _legacy_record_path(worktree) -> Path | None:
+    dirs = _git_dirs(worktree)
+    return dirs[1] / _LEGACY_RECORD_FILENAME if dirs is not None else None
+
+
+def _decode_record(raw: str, worktree) -> ClaimRecord | None:
+    try:
+        data = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict) or not data.get("bead") or not data.get("seat"):
+        return None
+    return ClaimRecord(
+        bead=str(data["bead"]),
+        seat=str(data["seat"]),
+        worktree=str(data.get("worktree") or worktree),
+        issued_at=str(data.get("issued_at") or ""),
+        expires_at=str(data.get("expires_at") or ""),
+        attestation=str(data.get("attestation") or "none"),
+        host_id=str(data.get("host_id") or ""),
+        epoch=_as_epoch(data.get("epoch")),
+    )
+
+
+def _atomic_write(path: Path, raw: str) -> bool:
+    """Replace a record atomically, so concurrent readers see old JSON or new JSON."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
+        with open(tmp, "x", encoding="utf-8") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except (OSError, UnboundLocalError):
+            pass
+        return False
+
+
+def remove_record(worktree) -> None:
+    """Best-effort deletion for one managed worktree; never touches sibling keys."""
+    path = _record_path(worktree)
+    remove_record_path(path)
+
+
+def remove_record_path(path: Path | None) -> None:
+    """Delete a previously resolved central path after Git removed its worktree."""
+    try:
+        if path is not None:
+            path.unlink(missing_ok=True)
+            path.parent.rmdir()
+    except OSError:
+        pass
 
 
 class LocalTrustAuthority:
@@ -179,31 +352,53 @@ class LocalTrustAuthority:
             host_id=host_id,
             epoch=epoch,
         )
-        path = _record_path(worktree)
+        path = _record_path(worktree, create=True)
         if path is not None:
-            path.write_text(json.dumps(asdict(record)))
+            _atomic_write(path, json.dumps(asdict(record)))
         return record
 
     def read(self, worktree) -> ClaimRecord | None:
         path = _record_path(worktree)
-        if path is None or not path.is_file():
+        if path is not None and path.is_file():
+            try:
+                return _decode_record(path.read_text(), worktree)
+            except OSError:
+                return None
+
+        # Only an absent central record consults the old location. A malformed
+        # central record is authoritative corruption, never a reason to revive a
+        # stale legacy claim. link+unlink is an atomic move within git-common-dir.
+        legacy = _legacy_record_path(worktree)
+        if legacy is None or not legacy.is_file():
             return None
         try:
-            data = json.loads(path.read_text())
-        except (OSError, json.JSONDecodeError):
+            raw = legacy.read_text()
+        except OSError:
             return None
-        if not isinstance(data, dict) or not data.get("bead") or not data.get("seat"):
+        record = _decode_record(raw, worktree)
+        if record is None:
             return None
-        return ClaimRecord(
-            bead=str(data["bead"]),
-            seat=str(data["seat"]),
-            worktree=str(data.get("worktree") or worktree),
-            issued_at=str(data.get("issued_at") or ""),
-            expires_at=str(data.get("expires_at") or ""),
-            attestation=str(data.get("attestation") or "none"),
-            host_id=str(data.get("host_id") or ""),
-            epoch=_as_epoch(data.get("epoch")),
-        )
+        # A compatibility migration is a writer: mint the current worktree's
+        # config-scoped incarnation only after proving there is valid legacy
+        # state to migrate. Ordinary read misses stay entirely non-mutating.
+        path = path or _record_path(worktree, create=True)
+        if path is None:
+            return None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            os.link(legacy, path)
+        except FileExistsError:
+            try:
+                return _decode_record(path.read_text(), worktree)
+            except OSError:
+                return None
+        except OSError:
+            return None  # leave legacy untouched for a retry
+        try:
+            legacy.unlink()
+        except OSError:
+            pass
+        return record
 
     def verify(self, record: ClaimRecord | None, action: str, seat: str) -> bool:
         """True iff `record` backs `seat` acting on this claim. An empty `seat` (no explicit
