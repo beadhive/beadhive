@@ -53,6 +53,45 @@ shadow-root reverse-map → synthesized triplet). Pass `--hive` only when cwd is
 workspace or you're targeting a **different** hive; otherwise the single failure mode is
 "cwd belongs to no hive".
 
+## Stream bead state as NDJSON
+
+`bh stream` is the snapshot-first process boundary for consumers that need bead state and
+changes without calling `bd` directly. Select exactly one scope for the lifetime of the command:
+
+```sh
+bh stream --scope hive                              # current hive
+bh stream --scope hive --hive github/acme/widget   # explicit registered hive
+bh stream --scope hub                               # derived cross-hive aggregate
+bh stream --scope factory                           # registered factory view
+```
+
+The command is long-running. Its first stdout line is always a complete `snapshot`; later lines
+are `delta` frames, with a `resync` control frame followed by a replacement snapshot when
+continuity is lost. Every stdout line is one flushed JSON object, while diagnostics go only to
+stderr, so ordinary pipelines are safe:
+
+```sh
+bh stream --scope hive --format ndjson | jq -c '{frame, revision, partial}'
+```
+
+Treat each frame's `revision` as an opaque, scope-local token. A reconnect may pass it back
+verbatim, but must not parse, compare, or reuse it for another scope:
+
+```sh
+bh stream --scope hive --since "$revision"
+```
+
+`--since` never weakens snapshot-first startup. An unknown or expired token simply starts from
+the current full snapshot. Snapshots and deltas also carry the operator collections for work
+dependencies, gates, epic schedules, and assignments; unavailable inputs are reported with
+`partial: true` instead of being presented as authoritative empty state. Stop the stream with
+`Ctrl-C` or by closing the pipe. Both reap the backend process tree; a closed consumer pipe exits
+zero, while `Ctrl-C` preserves the native interrupt status.
+
+The complete frame and extension contracts are
+[`design/beadhive-stream-v1-contract.md`](design/beadhive-stream-v1-contract.md) and
+[`design/beadhive-stream-operator-entities-v1-contract.md`](design/beadhive-stream-operator-entities-v1-contract.md).
+
 ## Passthrough command pattern
 
 `bd`, `git`, and the `hub bd` / `hub intake` / `hq bd` / `hq intake` commands are
