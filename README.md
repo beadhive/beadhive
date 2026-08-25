@@ -123,6 +123,8 @@ One line each, and who it's for:
   configured AGF workspace with registered hives.
 - [`docs/UPGRADING.md`](docs/UPGRADING.md) — **moving between versions, or between routes.**
 - [`docs/HQ.md`](docs/HQ.md) — **Factory HQ.** What it is and what it stores.
+- [`docs/OPERATOR-UI.md`](docs/OPERATOR-UI.md) — **first local operator UI.** Start and
+  troubleshoot the loopback-only, unauthenticated, read-only profile.
 - [`docs/COMPLEXITY-ROUTING.md`](docs/COMPLEXITY-ROUTING.md) — **capability-first dispatch.**
   Complexity labels, late-bound model selection, availability, and migration recovery.
 - [`docs/HIVES.md`](docs/HIVES.md) and the
