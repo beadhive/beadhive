@@ -3,7 +3,8 @@
 Covers:
 - WRITER write_worktree_env: KEY=VALUE lines (endpoint + profile, optional resource attrs),
   and `.bh/` gitignored in a real worktree via the git exclude file.
-- LOADER load_worktree_env: a present `.bh/otel.env` is overlaid into os.environ before
+- LOADER load_worktree_env: a present `.bh/observability/otel.env` is overlaid into os.environ
+  before
   otel.init, so config.otel_endpoint + the observaloop.profile Resource attr reflect it.
 - no-overwrite: an already-set env var always wins the overlay.
 - import-free common path: the cache-present (and observaloop-off) paths never import
@@ -69,7 +70,7 @@ def _worktree(tmp_path, monkeypatch, leaf="ag-epic-3", *, chdir=True):
 def test_write_worktree_env_writes_endpoint_and_profile(tmp_path):
     env_file = observaloop_env.write_worktree_env(tmp_path, "mr", "http://localhost:4318")
 
-    assert env_file == tmp_path / ".bh" / "otel.env"
+    assert env_file == tmp_path / ".bh" / "observability" / "otel.env"
     lines = env_file.read_text().splitlines()
     assert "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318" in lines
     assert "BH_OBSERVALOOP_PROFILE=mr" in lines
@@ -230,8 +231,8 @@ def test_scheme_less_overlay_is_regenerated_not_honoured(tmp_path, monkeypatch):
     scheme-less value never reached os.environ, because that value is what silently disables the
     exporter."""
     wt = _worktree(tmp_path, monkeypatch)
-    (wt / ".bh").mkdir(parents=True, exist_ok=True)
-    (wt / ".bh" / "otel.env").write_text(
+    (wt / ".bh" / "observability").mkdir(parents=True, exist_ok=True)
+    (wt / ".bh" / "observability" / "otel.env").write_text(
         "OTEL_EXPORTER_OTLP_ENDPOINT=localhost:4321\nBH_OBSERVALOOP_PROFILE=mr\n"
     )
     cfg = {
@@ -250,7 +251,7 @@ def test_scheme_less_overlay_is_regenerated_not_honoured(tmp_path, monkeypatch):
     observaloop_env.load_worktree_env(cfg)
 
     assert (
-        (wt / ".bh" / "otel.env")
+        (wt / ".bh" / "observability" / "otel.env")
         .read_text()
         .startswith("OTEL_EXPORTER_OTLP_ENDPOINT=http://healed:4318")
     )
@@ -264,8 +265,8 @@ def test_scheme_qualified_overlay_takes_the_fast_path(tmp_path, monkeypatch):
     repair would be paid for on every CLI invocation in every worktree forever. Proven by deleting
     beadhive.observaloop from sys.modules and asserting it stays absent."""
     wt = _worktree(tmp_path, monkeypatch)
-    (wt / ".bh").mkdir(parents=True, exist_ok=True)
-    (wt / ".bh" / "otel.env").write_text(
+    (wt / ".bh" / "observability").mkdir(parents=True, exist_ok=True)
+    (wt / ".bh" / "observability" / "otel.env").write_text(
         "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4321\nBH_OBSERVALOOP_PROFILE=mr\n"
     )
     sys.modules.pop("beadhive.observaloop", None)
@@ -302,7 +303,7 @@ def test_self_heal_writes_no_overlay_when_collector_cannot_start(tmp_path, monke
 
     observaloop_env.load_worktree_env(cfg)
 
-    assert not (wt / ".bh" / "otel.env").exists()
+    assert not (wt / ".bh" / "observability" / "otel.env").exists()
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
     assert up_calls == ["mr"]  # tried exactly once, never a retry loop
 
@@ -329,7 +330,7 @@ def test_self_heal_starts_a_stopped_collector_then_writes(tmp_path, monkeypatch)
     observaloop_env.load_worktree_env(cfg)
 
     assert up_calls == ["mr"]
-    assert (wt / ".bh" / "otel.env").is_file()
+    assert (wt / ".bh" / "observability" / "otel.env").is_file()
     assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://live:4318"
 
 
@@ -375,7 +376,7 @@ def test_self_heal_regenerates_missing_cache_when_enabled_and_available(tmp_path
     observaloop_env.load_worktree_env(cfg)
 
     # cache (re)written AND loaded into the environment
-    assert (wt / ".bh" / "otel.env").is_file()
+    assert (wt / ".bh" / "observability" / "otel.env").is_file()
     assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://healed:4318"
     assert os.environ["BH_OBSERVALOOP_PROFILE"] == "mr"
 
@@ -393,7 +394,7 @@ def test_self_heal_skipped_when_observaloop_unavailable(tmp_path, monkeypatch):
 
     observaloop_env.load_worktree_env(cfg)
 
-    assert not (wt / ".bh" / "otel.env").exists()  # nothing written when unavailable
+    assert not (wt / ".bh" / "observability" / "otel.env").exists()
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
 
 
@@ -419,6 +420,34 @@ def test_outside_any_worktree_is_a_noop(tmp_path, monkeypatch):
     observaloop_env.load_worktree_env({})  # no raise
 
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in os.environ
+
+
+def test_legacy_overlay_is_a_read_only_fallback(tmp_path, monkeypatch):
+    wt = _worktree(tmp_path, monkeypatch)
+    legacy = wt / ".bh" / "otel.env"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text(
+        "OTEL_EXPORTER_OTLP_ENDPOINT=http://legacy:4318\nBH_OBSERVALOOP_PROFILE=legacy\n"
+    )
+
+    observaloop_env.load_worktree_env({})
+
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://legacy:4318"
+    assert legacy.is_file()
+    assert not (wt / ".bh/observability/otel.env").exists()
+
+
+def test_canonical_overlay_wins_when_legacy_also_exists(tmp_path, monkeypatch):
+    wt = _worktree(tmp_path, monkeypatch)
+    legacy = wt / ".bh" / "otel.env"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("OTEL_EXPORTER_OTLP_ENDPOINT=http://legacy:4318\n")
+    observaloop_env.write_worktree_env(wt, "canonical", "http://canonical:4318")
+
+    observaloop_env.load_worktree_env({})
+
+    assert os.environ["OTEL_EXPORTER_OTLP_ENDPOINT"] == "http://canonical:4318"
+    assert os.environ["BH_OBSERVALOOP_PROFILE"] == "canonical"
 
 
 def test_loader_never_raises_on_unreadable_cache(tmp_path, monkeypatch):

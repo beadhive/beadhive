@@ -265,7 +265,8 @@ def provision_observaloop(cfg, entry, target: Path) -> None:
     ``config.observaloop_enabled`` check and imports **no** observaloop module. Only when enabled do
     we lazily import the observaloop seams, derive the per-hive profile name, idempotently
     ``ensure_profile`` + ``up`` (a profile is per-hive, shared across its worktrees), resolve the
-    OTLP endpoint, and write ``<worktree>/.ws/otel.env`` so a ``ws`` invocation there exports to the
+    OTLP endpoint, and write ``<worktree>/.bh/observability/otel.env`` so a ``bh`` invocation
+    there exports to the
     hive profile (Phase B loader). Mirrors ``run_init``'s warn-and-continue contract: observaloop
     unavailable / docker down / any exception warns and returns — it NEVER raises and NEVER blocks
     worktree creation."""
@@ -290,7 +291,9 @@ def provision_observaloop(cfg, entry, target: Path) -> None:
             )
             return
         observaloop_env.write_worktree_env(target, name, endpoint)
-        typer.echo(f"  → observaloop profile '{name}' ready; wrote .bh/otel.env → {endpoint}")
+        typer.echo(
+            f"  → observaloop profile '{name}' ready; wrote .bh/observability/otel.env → {endpoint}"
+        )
     except Exception as exc:  # best-effort: never block worktree creation (mirror run_init)
         typer.echo(f"  ⚠ observaloop: provisioning failed ({exc}) — continuing", err=True)
 

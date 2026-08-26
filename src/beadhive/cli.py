@@ -357,7 +357,8 @@ def _init_telemetry_best_effort() -> None:
     this body, so it stays untouched."""
     try:
         _cfg = config.load()
-        # Per-worktree endpoint overlay: if cwd is a managed worktree with a `.bh/otel.env` cache,
+        # Per-worktree endpoint overlay: prefer `.bh/observability/otel.env`; a flat
+        # `.bh/otel.env` remains a bounded read-only compatibility input.
         # load it into os.environ BEFORE init so config.otel_endpoint / config.observaloop_profile
         # pick up the hive profile's endpoint + name. The common path is a single file read with no
         # beadhive.observaloop import (only the self-heal branch touches observaloop);

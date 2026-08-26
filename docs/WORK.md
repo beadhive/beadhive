@@ -336,7 +336,7 @@ until they pass is exactly how a flaky suite is laundered into green, so
 |---|---|
 | converge loop (`work check`) | narrows to what still fails, up to 3 rounds, stopping the moment a round makes no progress → a **CANDIDATE**. `check` still exits red. |
 | confirming run (any full, clean phase) | the only run that may write an attestation. Never consults `work.validate_subset` — the gate (`submit` / `merge` / `finish`) does not converge at all. |
-| flake report | anything that failed and then passed at the **identical tree** is recorded in `.bh/testreport/<tree>/results.json` and named on the next green run: flaky, not fixed. |
+| flake report | anything that failed and then passed at the **identical tree** is recorded in `.bh/validation/runs/.summary/<tree>/results.json` and named on the next green run: flaky, not fixed. |
 
 So tier 2 saves the gate exactly nothing. It buys a developer seconds instead of minutes, and it
 produces the retry history that makes flakes visible for the first time.

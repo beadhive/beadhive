@@ -969,7 +969,7 @@ def test_cwd_identity_none_outside_any_hive(tmp_path, monkeypatch):
 
 def test_cwd_worktree_dir_from_nested_cwd(tmp_path, monkeypatch):
     """From anywhere inside (or below) a managed worktree, returns the worktree ROOT dir — the
-    overlay's `.bh/otel.env` lives there, not in a nested subdir."""
+    overlay's `.bh/observability/otel.env` lives there, not in a nested subdir."""
     cfg, _, _ = _ensure_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
     nested = target / "src" / "pkg"
@@ -1291,8 +1291,8 @@ def test_try_merge_rebase_empty_union_globs_unchanged(tmp_path, monkeypatch):
 
 # ---- provision_observaloop (worktree-create hook) ---------------------------
 #
-# The per-hive profile provisioning + .bh/otel.env overlay that _do_add runs AFTER run_init on a
-# true worktree create. Observaloop is faked throughout. Covers: enabled (ensure+up+overlay),
+# The per-hive profile provisioning + canonical observability overlay that _do_add runs AFTER
+# run_init on a true worktree create. Observaloop is faked throughout. Covers: enabled,
 # disabled-and-import-free (default path touches no observaloop module), failure-still-succeeds
 # (any exception warns, never raises), and verify- skip (ephemeral clean-checkout worktrees).
 
@@ -1305,8 +1305,7 @@ _OBS_ENABLED_CFG = {
 
 
 def test_provision_observaloop_enabled_ensures_profile_and_writes_overlay(tmp_path, monkeypatch):
-    """Enabled → ensure_profile + up (idempotent) then write <worktree>/.bh/otel.env at the
-    resolved endpoint, so a ws invocation there exports to the hive profile."""
+    """Enabled → ensure/up and write the canonical worktree observability overlay."""
     from beadhive import observaloop
 
     calls = {"ensure": [], "up": []}
@@ -1323,7 +1322,7 @@ def test_provision_observaloop_enabled_ensures_profile_and_writes_overlay(tmp_pa
     worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_HIVE, target)
 
     assert calls["ensure"] == ["mr"] and calls["up"] == ["mr"]  # profile ensured + up
-    env_file = target / ".bh" / "otel.env"
+    env_file = target / ".bh" / "observability" / "otel.env"
     assert env_file.is_file()
     body = env_file.read_text()
     assert "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318" in body

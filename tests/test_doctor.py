@@ -2332,3 +2332,41 @@ def test_doctor_is_silent_when_every_required_dep_resolves(monkeypatch):
     monkeypatch.setattr(_shutil, "which", lambda b, *a, **k: f"/usr/bin/{b}")
 
     assert doctor._missing_required_dep_warnings() == []
+
+
+def test_doctor_private_state_inventory_reports_candidates_without_mutation(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    legacy = repo / ".git/bh-validation-ledger.json"
+    legacy.write_text("[]\n")
+    run = repo / ".git/bh/validation/runs/run-old"
+    run.mkdir(parents=True)
+    manifest = run / "manifest.json"
+    manifest.write_text(json.dumps({"run_id": "run-old", "lifecycle": "abandoned"}) + "\n")
+    before = {path: path.stat().st_mtime_ns for path in (legacy, manifest)}
+
+    warnings = doctor._legacy_validation_warnings({"prefix": "bh"}, repo)
+
+    assert any("legacy Beadhive private state" in warning for warning in warnings)
+    assert any("abandoned validation runs" in warning for warning in warnings)
+    assert {path: path.stat().st_mtime_ns for path in before} == before
+
+
+def test_doctor_distinguishes_protected_state_from_cleanup_candidate(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git("init", "-q", cwd=repo)
+    marker = repo / ".git/bh/release/bump-gate.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("corrupt\n")
+    log = repo / ".bh/release/bump-gates/tree/gate.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("live-or-unknown\n")
+
+    warnings = doctor._legacy_validation_warnings({"prefix": "bh"}, repo)
+
+    protected = [warning for warning in warnings if "PROTECTED" in warning]
+    assert len(protected) == 1
+    assert "not a deletion candidate" in protected[0]
+    assert not any("release logs without live control owners" in warning for warning in warnings)

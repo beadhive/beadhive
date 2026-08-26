@@ -449,7 +449,8 @@ regular bh verb spans.
   under Claude Code — ordinary OS process-env inheritance, not a harness-specific mechanism — so
   `config.otel_role` stamps the right `bh.role` on every span regardless of which harness spawned
   the seat.
-- **`.bh/otel.env`** — the per-worktree OTLP endpoint overlay (`observaloop_env.load_worktree_env`,
+- **`.bh/observability/otel.env`** — the per-worktree OTLP endpoint overlay
+  (`observaloop_env.load_worktree_env`,
   invoked by `cli._root` before every `bh` command) is keyed purely on **cwd**
   (`worktree.cwd_worktree_dir`), not on which process or harness launched `bh`. A `bh` command run
   from an OpenCode seat's shell picks up the same hive-scoped endpoint overlay as one run from a
@@ -463,7 +464,9 @@ regular bh verb spans.
 Claude Code's TUI stdin JSON contract (`agent.name`, `workspace.repo.{owner,name}`) to render
 `⬡ <hive> · <role>`. OpenCode has no equivalent stdin status-line contract, so there is no
 OpenCode-side status line — this does not affect telemetry attribution, which flows entirely
-through `BH_ROLE` + `.bh/otel.env` + `harness_name()` above.
+through `BH_ROLE` + `.bh/observability/otel.env` + `harness_name()` above. During the bounded
+0.16.x/0.17.x migration window the loader reads legacy `.bh/otel.env` only when the canonical file
+is absent; all provisioning and self-healing write the canonical path.
 
 ## `bh doctor` observability status
 
