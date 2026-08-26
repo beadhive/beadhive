@@ -540,9 +540,22 @@ def latest_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | None
     )
 
 
-def _run_order_key(item: dict) -> tuple[str, str]:
-    """Stable execution ordering, including deterministic ties."""
+def _run_order_key(item: dict) -> tuple[int, str, str]:
+    """Stable authority-aware execution ordering, including deterministic ties.
+
+    Imported compatibility history is retained and orders normally against other imported
+    history, but it can never outrank an actual canonical execution for the same identity.  This
+    second fence complements import-time clock normalization and also repairs stores migrated by
+    an older build that retained a future source timestamp.
+    """
+    provenance = item.get("provenance")
+    legacy = (
+        isinstance(provenance, dict)
+        and provenance.get("kind") == "legacy_import"
+        or item.get("phase") in {"legacy-ledger-import", "legacy-triage-import"}
+    )
     return (
+        0 if legacy else 1,
         str(item.get("finished_at") or item.get("started_at") or ""),
         str(item.get("run_id") or ""),
     )

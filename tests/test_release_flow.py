@@ -1544,6 +1544,31 @@ def test_the_bump_and_the_push_resolve_the_gate_through_the_same_function(hive):
     assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] is False
 
 
+def test_future_legacy_none_cannot_shadow_canonical_release_or_prepush(hive):
+    """A real canonical green repairs both outer boundaries after a future legacy anomaly."""
+    repo = hive["repo"]
+    tree = _git("rev-parse", f"{hive['sha']}^{{tree}}", cwd=repo)
+    legacy = repo / ".git" / validation_ledger.LEGACY_LEDGER_FILENAME
+    legacy.write_text(
+        json.dumps(
+            [
+                {
+                    "tree": tree,
+                    "cmd_hash": validation_ledger.cmd_hash(GATE_CMD),
+                    "rc": 0,
+                    "at": time.time() + 10 * 365 * 24 * 60 * 60,
+                }
+            ]
+        )
+    )
+    assert validation_ledger.verdict(hive["entry"], hive["sha"], GATE_CMD) is None
+
+    validation_ledger.record(hive["entry"], hive["sha"], GATE_CMD, 0)
+    assert validation_ledger.rebuild_verdict_index(hive["entry"]) == 1
+    assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] is True
+    assert _await(hive).exit_code == 0
+
+
 # ─── attest --if-needed: the one flag that makes attest idempotent (bh-0jndj) ────────────────
 
 

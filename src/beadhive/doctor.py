@@ -44,6 +44,7 @@ from . import (
     jsonout,
     metadata,
     otel,
+    private_paths,
     registry,
     safety,
     store_locator,
@@ -1872,6 +1873,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
                     f"`{config.BINARY_ALIAS} hive onboard --furnish`, or untrack .beads/"
                 )
         if path.exists():
+            warns += _legacy_validation_warnings(e, path)
             n_commits, holder = _local_commits_while_not_primary(cfg, e, path)
             if n_commits:
                 warns.append(
@@ -1895,6 +1897,27 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _orphaned_dolt_server_warnings()
     warns += _channel_drift_warnings(cfg, hives)
     return warns
+
+
+def _legacy_validation_warnings(entry: dict, path: Path) -> list[str]:
+    """Name retired validation state while its two-minor read window is still open."""
+    prefix = str(entry.get("prefix", "")) or f"{entry.get('org')}/{entry.get('repo')}"
+    legacy = []
+    ledger = path / ".git" / "bh-validation-ledger.json"
+    triage = path / ".bh" / "testreport"
+    if ledger.exists():
+        legacy.append(str(ledger))
+    if triage.is_dir():
+        legacy.append(str(triage))
+    if not legacy:
+        return []
+    return [
+        f"hive '{prefix}' retains legacy validation state ({', '.join(legacy)}). "
+        "Bh reads it only as a bounded compatibility input in 0.16.x and 0.17.x; canonical "
+        f"state is below {private_paths.GIT_PRIVATE_DIRNAME}/validation and "
+        f"{private_paths.REPO_PRIVATE_DIRNAME}/validation. Verify the migration, then follow "
+        "docs/UPGRADING.md before removing the legacy copies; fallback is removed in 0.18.0."
+    ]
 
 
 def warning_messages(cfg: dict | None = None) -> list[str]:

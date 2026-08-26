@@ -25,6 +25,18 @@ summaries live at `.bh/validation/runs/.summary/<tree>/results.json` (20 runs pe
 where `latest_raw_run` points at the actual raw run directory; raw XML and logs are never copied
 into a second per-tree store.
 
+## 0.15.x compatibility imports
+
+Through 0.17.x, readers prefer these canonical records and fall back on a miss to the retired
+`.git/bh-validation-ledger.json` and exact `.bh/testreport/<tree>/results.json` inputs. Imported
+runs carry structured `provenance` plus `verdict_confidence`. Only a fresh integer-zero ledger
+row satisfying the retired exact tree/command rule receives `legacy_exact_green`; triage greens
+are non-attesting, ordinary nonzero results retain exit-code-only confidence, and shell `rc=143`
+becomes `verdict=none`, signal 15, `reason=interrupted`. Future source timestamps remain in
+provenance but their effective run time is clamped to import time; canonical executions always
+outrank imported history for verdict reconstruction, including manifests written by an earlier
+migrator without that clamp. See [UPGRADING.md](UPGRADING.md) for the 0.18.0 removal procedure.
+
 After an external uploader has accepted the *complete* run directory, acknowledge it explicitly:
 
 ```sh

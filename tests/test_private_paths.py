@@ -118,7 +118,10 @@ def test_legacy_inventory_maps_all_current_beadhive_private_locations():
         ".git/worktrees/<worktree>/bh-claim.json": (
             target("git", Path("worktrees/<worktree-id>/claim.json")),
         ),
-        ".bh/testreport/<tree>": (target("repo", Path("validation/runs/<run-id>/reports")),),
+        ".bh/testreport/<tree>": (
+            target("repo", Path("validation/runs/<run-id>/reports")),
+            target("repo", Path("validation/runs/.summary/<tree>/results.json")),
+        ),
         ".bh/otel.env": (target("worktree", Path("observability/otel.env")),),
         ".bh-verify.json": (target("git", Path("validation/active/<run-id>.json")),),
     }
