@@ -13,6 +13,8 @@ from pathlib import Path
 import platformdirs
 import typer
 
+from . import otel
+
 
 @dataclass(frozen=True)
 class Permit:
@@ -43,12 +45,29 @@ def configured_slots(cfg: dict, entry=None) -> int:
     return value
 
 
+def _attributes(entry, phase: str) -> dict[str, str]:
+    """The deliberately bounded admission metric dimensions."""
+    return {
+        "bh.hive": str((entry or {}).get("prefix") or ""),
+        "bh.work.phase": phase,
+    }
+
+
 @contextlib.contextmanager
-def host_slot(cfg: dict, entry=None, *, root: Path | None = None):
-    """Block until one counting-semaphore permit is held; zero disables admission."""
+def host_slot(cfg: dict, entry=None, *, phase: str = "validation", root: Path | None = None):
+    """Block until one counting-semaphore permit is held; zero disables admission.
+
+    The lock files are stable kernel-lock rendezvous points, not ownership records.  Queue and
+    admission facts are emitted through the existing telemetry surface and the authoritative
+    execution/use records; no parallel scheduler state is introduced here.
+    """
     slots = configured_slots(cfg, entry)
     if slots == 0:
-        yield Permit(-1, 0.0)
+        permit = Permit(-1, 0.0)
+        otel.record_validation_queue_wait(0.0, _attributes(entry, phase))
+        otel.count_validation_admitted(_attributes(entry, phase))
+        typer.echo("  → validation admission disabled; executing without a host slot")
+        yield permit
         return
     root = slot_root() if root is None else Path(root)
     root.mkdir(parents=True, exist_ok=True)
@@ -63,13 +82,21 @@ def host_slot(cfg: dict, entry=None, *, root: Path | None = None):
                 handle.close()
                 continue
             try:
-                yield Permit(index, time.monotonic() - started)
+                permit = Permit(index, time.monotonic() - started)
+                attrs = _attributes(entry, phase)
+                otel.record_validation_queue_wait(permit.queue_seconds, attrs)
+                otel.count_validation_admitted(attrs)
+                typer.echo(
+                    f"  → validation admitted to host slot {index + 1}/{slots} "
+                    f"after {permit.queue_seconds:.3f}s; executing"
+                )
+                yield permit
                 return
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 handle.close()
         if not announced:
-            typer.echo("  → queued for validation slot")
+            typer.echo(f"  → queued for validation slot (host capacity {slots})")
             announced = True
         time.sleep(0.05)
 

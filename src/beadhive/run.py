@@ -216,9 +216,9 @@ def _tee(cmd, *, env, cwd, tee):
     interleaves into stdout. Both are accepted for the only caller, the validation gate: its
     environment is already colour-neutral in the clean-checkout path, and one merged chronological
     log is what triage actually wants. Upgrade path is `pty.openpty()` if colour is ever missed."""
-    with (
-        open(tee, "w") as fh,
-        subprocess.Popen(
+    watchdog = None
+    with open(tee, "w") as fh:
+        proc = subprocess.Popen(
             cmd,
             env=env,
             cwd=cwd,
@@ -226,20 +226,67 @@ def _tee(cmd, *, env, cwd, tee):
             bufsize=1,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-        ) as proc,
-    ):
-        for line in proc.stdout:
-            # Flushed PER LINE, not once at exit. On a tty stdout is line-buffered and the
-            # difference is invisible, but bh's dominant seat is a PIPE — an agent running
-            # `bh work check` through a tool, `bh work submit > log`, `| tee` — where stdout is
-            # BLOCK-buffered, so a flush-at-exit makes a ~6-minute gate silent for its entire
-            # duration and only dumps at the end. That is the "a quiet stretch reads as a hang"
-            # failure this epic already fought, arriving immediately after clean_checkout has
-            # told the operator to wait synchronously rather than background it.
-            sys.stdout.write(line)
-            sys.stdout.flush()
-            fh.write(line)
+            # Validation is the only tee caller.  It is heavyweight enough that a killed bh
+            # parent must not strand the suite: own process group + Linux PDEATHSIG, using the
+            # same proven containment primitive as ``bounded`` below.
+            preexec_fn=_die_with_parent,
+        )
+        try:
+            # PDEATHSIG reaches the direct child. The detached watcher covers its descendants:
+            # if bh itself is killed, it survives just long enough to terminate the validation
+            # process group, then exits. No command/path data is passed to it.
+            with contextlib.suppress(OSError, subprocess.SubprocessError):
+                if os.getpgid(proc.pid) == proc.pid:
+                    watchdog = subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-m",
+                            "beadhive.process_watchdog",
+                            str(os.getpid()),
+                            _proc_start_token(os.getpid()),
+                            str(proc.pid),
+                        ],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True,
+                        env=env,
+                    )
+            for line in proc.stdout:
+                # Flushed PER LINE, not once at exit. On a tty stdout is line-buffered and the
+                # difference is invisible, but bh's dominant seat is a PIPE — an agent running
+                # `bh work check` through a tool, `bh work submit > log`, `| tee` — where stdout
+                # is BLOCK-buffered, so a flush-at-exit makes a ~6-minute gate silent for its
+                # entire duration and only dumps at the end.
+                sys.stdout.write(line)
+                sys.stdout.flush()
+                fh.write(line)
+            proc.wait()
+        except BaseException:
+            # A live parent can do the cleanup itself. The detached watcher exists for SIGKILL,
+            # where no Python finally block gets a turn.
+            _reap_group(proc)
+            raise
+        finally:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if watchdog is not None:
+                watchdog.terminate()
+                try:
+                    watchdog.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    watchdog.kill()
+                    watchdog.wait(timeout=2)
     return subprocess.CompletedProcess(cmd, proc.returncode, None, None)
+
+
+def _proc_start_token(pid: int) -> str:
+    """Linux start token used only to stop the owner-death watcher trusting a recycled PID."""
+    try:
+        with open(f"/proc/{pid}/stat") as stream:
+            return stream.read().rsplit(")", 1)[-1].split()[19]
+    except (OSError, IndexError):
+        return ""
 
 
 def run(

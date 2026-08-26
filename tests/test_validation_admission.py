@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import multiprocessing as mp
+import os
 import time
 
 import pytest
@@ -59,6 +60,33 @@ def test_host_capacity_ignores_per_hive_overrides(monkeypatch):
     hive_b = {"work": {"validation_slots": 9}}
     assert validation_admission.configured_slots(cfg, hive_a) == 3
     assert validation_admission.configured_slots(cfg, hive_b) == 3
+
+
+def test_admission_emits_bounded_telemetry_and_visible_execution(tmp_path, monkeypatch, capsys):
+    waits = []
+    admitted = []
+    monkeypatch.setattr(
+        validation_admission.otel,
+        "record_validation_queue_wait",
+        lambda seconds, attrs: waits.append((seconds, attrs)),
+    )
+    monkeypatch.setattr(
+        validation_admission.otel,
+        "count_validation_admitted",
+        lambda attrs: admitted.append(attrs),
+    )
+    monkeypatch.setenv("BH_VALIDATION_SLOTS", "1")
+    entry = {"prefix": "mr", "path": "/sensitive/hive"}
+
+    with validation_admission.host_slot({}, entry, phase="submit", root=tmp_path):
+        pass
+
+    assert waits[0][0] >= 0
+    assert waits[0][1] == {"bh.hive": "mr", "bh.work.phase": "submit"}
+    assert admitted == [{"bh.hive": "mr", "bh.work.phase": "submit"}]
+    output = capsys.readouterr().out
+    assert "admitted" in output and "executing" in output
+    assert "/sensitive/hive" not in output
 
 
 def test_clean_checkout_reuse_hit_bypasses_admission(monkeypatch):
@@ -188,7 +216,15 @@ def test_exact_callers_start_one_child_and_share_terminal_result(
 def test_abandoned_identity_allows_one_replacement_execution(tmp_path, monkeypatch):
     """An abandoned owner is not a terminal cohort result; one waiter becomes the new leader."""
     state = tmp_path / "run.json"
-    state.write_text(json.dumps({"run_id": "dead", "lifecycle": "abandoned", "verdict": "none"}))
+
+    def write_state(value):
+        # Mirror validation_records' atomic manifest replacement: a concurrent reader must never
+        # observe the empty truncate/write window that plain Path.write_text creates.
+        staged = state.with_name(f"run-{os.getpid()}.tmp")
+        staged.write_text(json.dumps(value))
+        os.replace(staged, state)
+
+    write_state({"run_id": "dead", "lifecycle": "abandoned", "verdict": "none"})
     starts = mp.Value("i", 0)
     monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(tmp_path / "locks"))
     monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
@@ -209,15 +245,13 @@ def test_abandoned_identity_allows_one_replacement_execution(tmp_path, monkeypat
     def execute(*args, **kwargs):
         with starts.get_lock():
             starts.value += 1
-        state.write_text(
-            json.dumps(
-                {
-                    "run_id": "replacement",
-                    "lifecycle": "completed",
-                    "verdict": "green",
-                    "exit_code": 0,
-                }
-            )
+        write_state(
+            {
+                "run_id": "replacement",
+                "lifecycle": "completed",
+                "verdict": "green",
+                "exit_code": 0,
+            }
         )
         return 0
 
@@ -236,3 +270,20 @@ def test_abandoned_identity_allows_one_replacement_execution(tmp_path, monkeypat
         process.join(5)
         assert process.exitcode == 0
     assert starts.value == 1
+
+
+@pytest.mark.parametrize("verdict,rc", [("green", 0), ("red", 3), ("none", 75)])
+def test_coalesced_cli_names_blocker_owner_and_typed_outcome(capsys, verdict, rc):
+    worktree_verify._echo_coalesced_outcome(
+        {
+            "run_id": "run-blocker",
+            "verdict": verdict,
+            "owner": {"host": "host-a", "pid": 42, "start_token": "token-a"},
+        },
+        rc,
+    )
+    captured = capsys.readouterr()
+    output = captured.out + captured.err
+    assert "coalesced with blocker run run-blocker" in output
+    assert "host host-a, pid 42, start token-a" in output
+    assert verdict in output

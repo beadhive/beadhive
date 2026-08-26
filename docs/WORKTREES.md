@@ -166,11 +166,52 @@ Upstream-native alternatives, if you'd rather not flag rules:
 
 ### Validation runs and verdict reuse
 
+#### Host-wide admission and duplicate coalescing
+
+Heavy validation is admitted through one uniform counting semaphore shared by every Beadhive
+worktree and hive on the host. The default is deliberately conservative: **one heavyweight gate
+at a time**. This is host policy, not a per-hive scheduling hint, so a hive-local
+`managed_repos[*].work.validation_slots` value is ignored. Configure the host-owned value instead:
+
+```yaml
+work:
+  validation_slots: 1
+```
+
+`BH_VALIDATION_SLOTS` has highest precedence, then host-level `work.validation_slots`, then the
+default `1`. A non-negative integer is required; `0` disables admission and should be reserved
+for a separately-contained CI host. The safe first tuning step on a host with measured memory and
+I/O headroom is `BH_VALIDATION_SLOTS=2 bh work check <bead>` (or set the host config to `2`), then
+observe peak memory, load and queue time before making that persistent. Slots are uniform in this
+initial implementation: a gate consumes one slot regardless of its estimated CPU or memory cost.
+
+The queue is visible (`queued for validation slot`, followed by `admitted ... executing`). Exact
+concurrent `(hive, tree, command-hash)` requests serialize ahead of host admission, so followers
+do not occupy a compute slot. They consume the leader's terminal green, red, or none result and
+name its run ID and owner as a **coalesced** decision. A dead owner is marked `abandoned`; kernel
+locks and the validation child are released, its verify checkout is reaped, and one follower may
+become the replacement execution. Lock files are stable rendezvous points, not live-owner state.
+
+This repository also caps each `pytest -n auto` invocation at **six xdist workers** via
+`PYTEST_XDIST_AUTO_NUM_WORKERS=6` in the justfile. An operator may lower or raise that positive
+integer explicitly; it controls fan-out *inside one admitted gate*, while `validation_slots`
+controls how many gates can run. The test harness's `BH_DOLT_SLOTS` semaphore is narrower still:
+it bounds real Dolt-server fixtures inside a pytest run and does not provide host-wide validation
+admission.
+
+Use `bh work check`, not raw `just check`, when the result should seed submission. A clean
+`bh work check` writes the run and exact-tree verdict records, so the following `bh work submit`
+can reuse them. `just check` launches the same project command outside the Beadhive lifecycle; it
+cannot write a reusable verdict, participate in exact-key coalescing, or identify an owning
+validation run.
+
 Every validation execution has an authoritative manifest below
 `<git-common-dir>/bh/validation/runs/<run-id>/manifest.json`; repeated gate decisions have
 independent records below `validation/uses/`. A completed-green run produces a reconstructable
 pointer keyed by **(tree hash, validate-cmd hash)** below
-`validation/verdicts/<tree>/<command-hash>.json`. `bh work submit` reuses a fresh **green**
+`validation/verdicts/<tree>/<command-hash>.json`. Each run records its host-slot index and queue
+duration, and each use says whether it was coalesced with an in-flight leader. `bh work submit`
+reuses a fresh **green**
 verdict for the exact key and skips the redundant checkout (`✓ validation verdict reused …`),
 so re-submitting unchanged content is a true no-op; `bh work review --run` reuses only with an
 explicit `--no-fresh`. A red, none, stale, command-changed, or different-tree verdict always

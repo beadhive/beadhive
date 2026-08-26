@@ -197,11 +197,12 @@ worktrees:
 #                                  #   verdict for it. Unset (or naming anything else) = the gate
 #                                  #   always runs, i.e. today's behaviour — never a free pass.
 #   ledger_ttl: "P1D"              # how long a recorded verdict stays reusable, ISO-8601 duration
-#   validation_slots: 1             # host-wide concurrent gates; 0 disables; env overrides
 #                                  # (PT30M | PT4H | P1D). Default P1D is exactly the 24h already
 #                                  # shipped, so leaving this unset is not a behaviour change.
 #                                  # Realistic reuse window is minutes-to-hours — tune this DOWN,
 #                                  # not up.
+#   validation_slots: 1            # host-wide uniform concurrent gates; 0 disables admission.
+#                                  # BH_VALIDATION_SLOTS wins; per-hive overlays are ignored.
 #   validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
 #                                  # OPTIONAL template that re-runs only NAMED failing tests, one
 #                                  # required {tests} placeholder — a value missing it is rejected

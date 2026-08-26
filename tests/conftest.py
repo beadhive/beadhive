@@ -212,6 +212,20 @@ def _sandbox_workspace_root(tmp_path_factory, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sandbox_worktree_root_override(monkeypatch):
+    """Do not let the operator's worktree transport override enter a test.
+
+    A gate launched from a non-default persistent root legitimately carries ``BH_WORKTREES`` so
+    ``bh work check`` can locate its target.  That parent-only locator used to flow into pytest,
+    outrank every test's legacy ``WS_WORKTREES`` sandbox, and route hundreds of fake lifecycle
+    operations back to the operator's real root.  Individual tests remain free to set either
+    spelling after this autouse baseline.
+    """
+    monkeypatch.delenv("BH_WORKTREES", raising=False)
+    monkeypatch.delenv("WS_WORKTREES", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_bd_version_memo():
     """`dolt_health._local_bd_version_string` is memoized for the process (bh-i6e5g: `bh doctor`
     spawned `bd --version` 12 times per run, 1.30 s of pure repetition). A process-lifetime memo

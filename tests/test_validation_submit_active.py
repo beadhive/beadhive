@@ -13,6 +13,7 @@ class Exit(Exception):
 
 
 def _api(active):
+    messages = []
     return SimpleNamespace(
         registry=SimpleNamespace(hive_dir=lambda entry: "/hive"),
         worktree=SimpleNamespace(
@@ -24,8 +25,11 @@ def _api(active):
         ),
         config=SimpleNamespace(validate_cmd=lambda *a: "new"),
         host=SimpleNamespace(host_id=lambda: "host"),
-        typer=SimpleNamespace(echo=lambda *a, **k: None, Exit=Exit),
+        typer=SimpleNamespace(
+            echo=lambda message, *a, **k: messages.append(str(message)), Exit=Exit
+        ),
         RETRYABLE_VALIDATION_EXIT=75,
+        messages=messages,
     )
 
 
@@ -40,9 +44,12 @@ def test_submit_refuses_live_conflicting_command_without_checkout():
             "owner": {"host": "host", "pid": 7, "start_token": "s"},
         }
     ]
+    api = _api(active)
     with pytest.raises(Exit) as caught:
-        work_submission.impl__validate_submit_checkout(_api(active), {}, "branch", {}, bead="bh-x")
+        work_submission.impl__validate_submit_checkout(api, {}, "branch", {}, bead="bh-x")
     assert caught.value.exit_code == 75
+    assert any("run run-1 owned by pid 7" in message for message in api.messages)
+    assert any("conflicts with active" in message for message in api.messages)
 
 
 def test_submit_reaps_dead_owner_before_replacement(monkeypatch):
@@ -69,3 +76,4 @@ def test_submit_reaps_dead_owner_before_replacement(monkeypatch):
     api._hive = lambda entry: "hive"
     work_submission.impl__validate_submit_checkout(api, {}, "branch", {}, bead="bh-x")
     assert abandoned and abandoned[0][0][-1] == "run-dead"
+    assert any("run-dead" in message and "abandoned" in message for message in api.messages)
