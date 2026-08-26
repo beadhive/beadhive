@@ -5,6 +5,55 @@ surface — what you must run, what's safe to delete, and what must never be cop
 machines. For the mechanical per-commit list, see [CHANGELOG.md](../CHANGELOG.md); this file
 exists for the releases where "read the changelog" isn't enough to act on.
 
+## 0.15.x → 0.16.0 — private state moves under the canonical roots
+
+0.16.0 stops writing `.git/bh-validation-ledger.json` and `.bh/testreport/<tree>/` immediately.
+Execution manifests and reusable green pointers now live below
+`<git-common-dir>/bh/validation/`; raw artifacts and bounded per-tree summaries live below
+`<hive>/.bh/validation/`. The legacy paths are read-only compatibility inputs in 0.16.x and
+0.17.x. `bh doctor` names hives that still retain them. The fallback and warning may be removed
+in **0.18.0**, but not before.
+
+Per-worktree observability provisioning also moves from `.bh/otel.env` to
+`.bh/observability/otel.env`. The loader checks the canonical file first and consults the legacy
+file only when canonical state is absent; provisioning and self-healing never write the legacy
+path. No manual copy is required. Re-provision the worktree (or let self-healing run with a live
+collector), verify the canonical overlay works, then archive/remove `.bh/otel.env` during the
+same bounded cleanup window. Both paths are covered by the local `.bh/` exclude, so a successful
+upgrade leaves `git status --short` empty.
+
+Migration is automatic, atomic, and best-effort. Readers ask the canonical path first and consult
+only the exact bounded legacy input on a miss. A canonical write also promotes relevant old state.
+The source stays untouched for rollback; deterministic imported run IDs and atomic summary/index
+writes make retries idempotent. No Git ref, tracked file, validation subject, or published history
+is rewritten.
+
+| Legacy input | Canonical result | Authority after import |
+|---|---|---|
+| fresh exact `(tree, command hash)`, integer `rc=0` ledger row | completed run + green verdict pointer | reusable green under the old exact-match and TTL rule |
+| stale zero or malformed row | retained as non-attesting history, or skipped if structurally unreadable | never green |
+| ordinary nonzero ledger/triage row | completed red legacy run | exit-code evidence with explicit legacy provenance/confidence |
+| `rc=143` | completed `none`, signal 15, reason `interrupted` | interruption, never code red or green |
+| counts-only row or missing reports | manifest/summary with available counts | detail only; missing detail is not invented |
+| multiple observed shas for one tree | capped `shas` metadata on the imported ledger run/pointer | metadata only; tree remains identity |
+| per-tree fail→pass retries | canonical `.summary/<tree>/results.json` history | preserves identical-tree flake detection; imported green triage detail cannot attest |
+| malformed file or unavailable canonical root | bounded miss / read-only fallback | fresh validation remains the safe path |
+
+### Removal procedure (0.18.0 or later only)
+
+1. Upgrade through a 0.16.x or 0.17.x release and exercise each retained tree (or let normal
+   validation reads/writes promote it).
+2. Run `bh doctor`; inspect any legacy-validation warning and confirm corresponding canonical
+   manifests/summaries exist. A malformed legacy file may intentionally have no promoted record.
+3. Archive the legacy paths outside the checkout if rollback evidence is required, then remove
+   `.git/bh-validation-ledger.json`, `.bh/testreport/`, and any legacy worktree
+   `.bh/otel.env`. Do not copy them into the canonical roots by hand.
+4. Run one normal validation. It should use/write only canonical paths and leave `git status`
+   unchanged. Keep the archive until the next successful release/merge boundary.
+
+The source-code removal gate is tested: canonical writers may not recreate either retired path,
+and fallback constants/warnings/documentation remain pinned through the two-minor window.
+
 ## The hub / HQ split — the aggregate leaves HQ (bh-89wxf)
 
 **Who this is for:** anyone who has run `bh hq init`. HQ's Dolt database has been carrying two

@@ -4,7 +4,7 @@ neither `except OSError` nor `except ValueError` catches — the read never retu
 command has no error, no exit code and no log line, just a prompt that never comes back.
 
 Two sites, both reached from `bh work submit` and the pre-push hook:
-  * `validation_ledger._load` — every verdict lookup reads the ledger through it.
+  * `validation_ledger._read_index` and the legacy importer — verdict lookup readers.
   * `worktree._read_verify_marker` — `sweep_verify_dirs` runs at the top of every
     `clean_checkout`, so the "orphan reaper" is on that same request path.
 
@@ -87,37 +87,38 @@ def test_the_deadline_helper_actually_catches_a_blocking_read(tmp_path):
 # ---- tier 1: the ledger, on every verdict lookup ----
 
 
-def test_a_fifo_at_the_ledger_path_reads_as_an_empty_ledger(tmp_path):
-    fifo = tmp_path / validation_ledger.LEDGER_FILENAME
+def test_a_fifo_at_the_verdict_pointer_reads_as_a_miss(tmp_path):
+    fifo = tmp_path / "verdict.json"
     os.mkfifo(fifo)
 
     with _deadline():
-        assert validation_ledger._load(fifo) == []
+        assert validation_ledger._read_index(fifo) is None
 
 
 @pytest.mark.parametrize("name", ["a directory", "a dangling symlink"])
-def test_other_unreadable_ledger_paths_also_degrade(tmp_path, name):
-    path = tmp_path / "ledger.json"
+def test_other_unreadable_verdict_paths_also_degrade(tmp_path, name):
+    path = tmp_path / "verdict.json"
     if name == "a directory":
         path.mkdir()
     else:
         path.symlink_to(tmp_path / "gone.json")
 
-    assert validation_ledger._load(path) == [], name
+    assert validation_ledger._read_index(path) is None, name
 
 
-def test_a_symlink_to_a_real_ledger_is_still_read(tmp_path):
+def test_a_symlink_to_a_real_verdict_pointer_is_still_read(tmp_path):
     """The guard is worthless if it breaks a legitimate case. `is_file()` follows symlinks —
     proven here by behaviour rather than by citing the docs, per bh-0jgdz's reviewer."""
-    real = tmp_path / "real-ledger.json"
-    real.write_text(json.dumps([{"tree": "t1", "cmd_hash": "h1", "rc": 0}]))
+    real = tmp_path / "real-verdict.json"
+    payload = {"tree": "t1", "command_hash": "h1", "rc": 0}
+    real.write_text(json.dumps(payload))
     link = tmp_path / "link.json"
     link.symlink_to(real)
 
-    assert validation_ledger._load(link) == [{"tree": "t1", "cmd_hash": "h1", "rc": 0}]
+    assert validation_ledger._read_index(link) == payload
 
 
-def test_a_fifo_ledger_does_not_hang_a_real_verdict_lookup(tmp_path, monkeypatch):
+def test_a_fifo_legacy_ledger_does_not_hang_a_real_verdict_lookup(tmp_path, monkeypatch):
     """End to end through the public seam, not just the private reader: `green_verdict` is what
     `bh work submit` and the pre-push hook call, and a FIFO ledger must make it MISS (revalidate)
     rather than wedge the command."""
@@ -125,7 +126,7 @@ def test_a_fifo_ledger_does_not_hang_a_real_verdict_lookup(tmp_path, monkeypatch
     (repo / ".git").mkdir(parents=True)
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "ws"))
     entry = {"provider": "github", "org": "myorg", "repo": "myrepo"}
-    os.mkfifo(repo / ".git" / validation_ledger.LEDGER_FILENAME)
+    os.mkfifo(repo / ".git" / validation_ledger.LEGACY_LEDGER_FILENAME)
 
     with _deadline():
         assert validation_ledger.green_verdict(entry, "abc123", "just check") is None

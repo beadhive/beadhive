@@ -34,6 +34,7 @@ from pathlib import Path
 
 import beadhive
 from beadhive import host, test_report, triage_store, validation_ledger, worktree
+from harness.validation_state import runs as validation_runs
 
 #: The child's pause between its two lines in the streaming test. Long enough that a
 #: flush-at-exit regression collapses the gap to ~0 and fails, short enough to stay cheap.
@@ -109,7 +110,13 @@ def _results(repo: Path) -> dict:
 
 
 def _ledger(repo: Path) -> list[dict]:
-    return json.loads((repo / ".git" / validation_ledger.LEDGER_FILENAME).read_text())
+    return validation_runs(repo)
+
+
+def _raw_artifacts(repo: Path) -> Path:
+    """The one raw run directory produced by an end-to-end clean checkout."""
+    manifest = next((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    return Path(json.loads(manifest.read_text())["artifacts"]["directory"])
 
 
 def _xml(tmp_path: Path, name: str, body: str) -> Path:
@@ -151,8 +158,10 @@ def test_a_red_run_writes_the_full_triage_set(tmp_path, monkeypatch):
         check=True,
     ).stdout.strip()
     assert d.name == tree, "the store is keyed by the TREE, the same key the ledger row carries"
-    assert (d / "junit.xml").read_text() == _RED, "the raw runner output was not kept verbatim"
-    assert "gate output line" in (d / "gate.log").read_text()
+    raw = _raw_artifacts(repo)
+    assert (raw / "reports" / "junit.xml").read_text() == _RED
+    assert "gate output line" in (raw / "gate.log").read_text()
+    assert not list(d.glob("*.xml")) and not (d / "gate.log").exists()
     assert _results(repo)["runs"][-1]["rc"] == 1
 
 
@@ -184,19 +193,24 @@ def test_a_green_run_after_a_red_one_at_the_same_tree_is_recorded(tmp_path, monk
 # ---------------------------------------------------------------------------
 
 
-def test_the_ledger_row_is_unchanged_by_the_triage_store(tmp_path, monkeypatch):
-    """The split, enforced: after a red run that produced a full triage directory, the ledger
-    entry carries exactly the keys bh-ku9n9.20 left it with — no path, no pointer, no marker.
-    `tree` is already the join key into the store, so the growth this bead adds is ZERO bytes."""
+def test_the_run_manifest_keeps_only_report_summary(tmp_path, monkeypatch):
+    """The split, enforced: the run manifest keeps compact summary detail, never per-test cases
+    or artifact paths. `tree` remains the join key into the triage store."""
     entry, repo = _hive(tmp_path, monkeypatch)
     src = _xml(tmp_path, "red.xml", _RED)
 
     assert worktree.clean_checkout(entry, "main", _runner(1, writes=src)) == 1
 
     (row,) = _ledger(repo)
-    assert set(row) == {"tree", "cmd_hash", "rc", "at", "host", "sha", "shas", "report"}
-    assert row["report"] == {"tests": 2, "passed": 1, "failures": 1, "errors": 0, "skipped": 0}
-    assert "cases" not in row["report"], "per-test records leaked into the 200-entry ledger"
+    assert row["verdict"] == "red" and row["exit_code"] == 1
+    assert row["summary"]["counts"] == {
+        "tests": 2,
+        "passed": 1,
+        "failures": 1,
+        "errors": 0,
+        "skipped": 0,
+    }
+    assert "cases" not in row["summary"], "per-test records leaked into the run manifest"
     assert (
         _store(
             repo,
@@ -219,12 +233,14 @@ def test_a_hive_with_no_machine_readable_results_still_gets_its_gate_log(tmp_pat
 
     assert worktree.clean_checkout(entry, "main", _runner(1, says="boom-and-no-report")) == 1
 
-    (d,) = _dirs(repo)
-    assert "boom-and-no-report" in (d / "gate.log").read_text()
-    assert not list(d.glob("*.xml"))
+    raw = _raw_artifacts(repo)
+    assert "boom-and-no-report" in (raw / "gate.log").read_text()
+    assert not list(_dirs(repo)[0].glob("*.xml"))
     run = _results(repo)["runs"][-1]
     assert run["counts"] is None and run["cases"] == []
-    assert "report" not in _ledger(repo)[0], "an absent report added a ledger key"
+    manifest = _ledger(repo)[0]
+    assert "report" not in manifest
+    assert manifest["summary"]["counts"] is None
 
 
 def test_the_teed_gate_streams_line_by_line_when_bhs_own_stdout_is_a_pipe(tmp_path):

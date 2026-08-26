@@ -189,6 +189,11 @@ def impl_remove(hive, ref, force=False, as_json=False):
     entry = _resolve_entry(cfg, hive)
     main = registry.hive_dir(entry)
     target = wt_dir(entry, _leaf(ref))
+    from . import claim_authority
+
+    # Git removes linked-worktree admin metadata as part of its operation, so
+    # resolve this private record before removal and delete it only on success.
+    claim_path = claim_authority.record_path(target)
     hive_key = registry.hive_key(entry)
     hive = str(entry.get("prefix", ""))
     _refuse_unknown_removal(cfg, entry, target, force=force)
@@ -207,6 +212,7 @@ def impl_remove(hive, ref, force=False, as_json=False):
             _record_wt_op_duration("remove", elapsed, "error", hive=hive, leaf=target.name)
             raise typer.Exit(res.returncode)
     elapsed = time.monotonic() - started
+    claim_authority.remove_record_path(claim_path)
     _rmdir_empty_parents(target, cfg)
     _record_wt_op_duration("remove", elapsed, "ok", hive=hive, leaf=target.name)
     _record_wt_event("remove", hive=hive, leaf=target.name)
@@ -304,6 +310,9 @@ def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool
     succeeded (outcome == "ok")."""
     prefix = st.hive
     entry = entries_by_prefix.get(prefix)
+    from . import claim_authority
+
+    claim_path = claim_authority.record_path(st.path)
     started = time.monotonic()
     # SAFE (closed + merged + clean) → the branch is disposable, so keep_branch=False: a
     # delegating plugin owns branch cleanup for its own removals (mirrors the native
@@ -334,6 +343,7 @@ def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool
     _record_wt_op_duration("prune", elapsed, outcome, hive=prefix, leaf=st.leaf)
     if outcome != "ok":
         return False
+    claim_authority.remove_record_path(claim_path)
     _rmdir_empty_parents(st.path, cfg)
     if not delegated:
         # Native/delegated parity (design delta): a SAFE tree is already merged, so once its

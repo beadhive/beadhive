@@ -1,13 +1,13 @@
 """Validation verdict ledger (bh-dfx0): skip redundant clean-checkout validations.
 
-Records the outcome of a validation run keyed by **(tree hash, validate-cmd hash)** in a small
-untracked JSON file inside the hive's git dir (``<hive>/.git/bh-validation-ledger.json`` —
-repo-local state, never a tracked file, dies with the clone). Written by every clean-checkout
-validation, and — since bh-i0p1.4 — by ``work check`` too when it ran against a CLEAN worktree
-(a dirty tree's HEAD wouldn't represent what actually ran, so that case is never recorded).
-Opt-in callers (``work submit``) reuse a recorded GREEN verdict for the exact key and skip the
-throwaway checkout entirely, whichever of the two wrote it; a red verdict is recorded but never
-reused, so a failure is always re-validated.
+Each execution is authoritative in ``<git-common-dir>/bh/validation/runs/<run-id>/manifest.json``.
+A reconstructable pointer for the newest completed-green run is keyed by **(tree hash,
+validate-cmd hash)** below ``validation/verdicts/``. Written by every clean-checkout validation,
+and — since bh-i0p1.4 — by ``work check`` too when it ran against a CLEAN worktree (a dirty
+tree's HEAD wouldn't represent what actually ran, so that case is never recorded). Opt-in
+callers (``work submit``) reuse a fresh GREEN verdict for the exact key and skip the throwaway
+checkout entirely, whichever of the two wrote it; a red verdict remains a run fact but never a
+reusable pointer, so a failure is always re-validated.
 
 **The key is the TREE, not the commit** (bh-ku9n9.3, ``docs/design/attested-green-adr.md``).
 A ``--no-ff`` merge onto an *unmoved* main produces a merge commit whose tree is byte-identical
@@ -25,9 +25,9 @@ resolve it to its tree — so nothing but identical content can collide. A rev g
 is used verbatim, which can only ever match itself: both directions of a resolve/no-resolve
 mismatch simply miss and revalidate.
 
-The commit sha(s) observed at a tree are recorded as **metadata** on the entry (``sha`` — the
-most recent — and ``shas`` — every distinct one seen), never as identity. They are what a later
-historical upload joins back to beads; they are read by nothing here.
+The commit sha(s) observed at a tree are recorded as **metadata** on manifests and derived
+pointers (``sha`` — the most recent — and ``shas`` — every distinct green observation), never
+as identity. They are what a later historical upload joins back to beads.
 
 The git-metadata asterisk: same-tree/different-commit means identical file *content* and
 *different git history*, so a verdict cannot vouch for anything that reads git METADATA rather
@@ -49,8 +49,9 @@ the tree is precisely what makes hits frequent and long-lived. bh interprets no 
 opaque ``{run, if_exists?, verify?}`` entries spawned in the operator's declared order — so a
 hive declaring none simply gets no environment establishment, in either writer.
 
-Trust: the ledger is a **local optimization for trusted-local seats** — anything that can write
-the file can fake a green. Under bh-dfx0's sha key that ruled landing boundaries out entirely.
+Trust: this validation store is a **local optimization for trusted-local seats** — anything that
+can write the git-private state can fake a green. Under bh-dfx0's sha key that ruled landing
+boundaries out entirely.
 Tree keying replaces that blanket refusal with the ADR's Decision 4 condition — *landing
 boundaries may reuse, on exact tree match only* — and since bh-ku9n9.17 merge / postland /
 finish / batch land do (``clean_checkout(..., reuse=True)``). No landing caller compares trees
@@ -60,7 +61,7 @@ local seat no bypass it did not already have. Reviewer-facing runs (``work revie
 stay fresh by default and reuse only via an explicit ``--no-fresh``; ``reuse`` remains opt-in,
 so any caller that does not ask for it validates for real.
 
-Staleness: entries carry a timestamp and expire after ``work.ledger_ttl`` — an ISO-8601
+Staleness: completed runs carry a timestamp and expire after ``work.ledger_ttl`` — an ISO-8601
 duration (``PT30M`` / ``PT4H`` / ``P1D``), per-hive over global, default :data:`DEFAULT_TTL`
 = ``P1D``, which is exactly the 24h bh-dfx0 shipped. The realistic reuse window is
 minutes-to-hours; operators are expected to tune it **DOWN**, not up. The cmd hash in the key
@@ -71,34 +72,41 @@ timestamped in the future — planted, or produced by a forward clock jump an NT
 later fixes — never extends the trust window indefinitely; it reads as stale like anything
 else outside ``[now - ttl, now]``.
 
-In-flight marker: deliberately NOT implemented. Per-invocation verify dirs (bh-nikb)
-already make concurrent duplicate validations *safe* — the ledger only removes
-duplicate *cost* — and a wait/skip protocol would add cross-process locking for a
-marginal saving. Revisit if `bh.work.validation` telemetry shows overlap matters.
+In-flight lifecycle is explicit: each execution starts with a ``running`` manifest and a
+reconstructable ``validation/active/<run-id>.json`` pointer, then becomes ``completed`` or
+``abandoned``. Concurrent duplicate validations remain safe and independently recorded; active
+state is lifecycle evidence and cleanup input, not a wait/skip lock.
 
-All writes are best-effort (atomic tmp+rename, exceptions swallowed): a broken ledger
+All writes are best-effort (atomic tmp+rename, exceptions swallowed): a broken validation store
 must never fail or skew the validation it records — callers just fall back to fresh runs.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import json
+import math
 import os
+import secrets
 import shlex
 import time
 from pathlib import Path
 
 import typer
 
-from . import config, host, otel, registry, test_report
+from . import config, otel, private_paths, registry, test_report, validation_records
 from .run import missing_binary, run
 
-LEDGER_FILENAME = "bh-validation-ledger.json"
+# Read-only compatibility input from 0.15.1. New writes never touch it: rows are imported once
+# into manifests and the green pointer is rebuilt from those manifests.
+LEGACY_LEDGER_FILENAME = "bh-validation-ledger.json"
 DEFAULT_TTL = config.DEFAULT_LEDGER_TTL  # "P1D" — the 24h bh-dfx0 shipped, as a duration
 LEDGER_TTL_SECONDS = config.duration_seconds(DEFAULT_TTL)  # the default, in seconds
-_MAX_ENTRIES = 200  # hard cap so the ledger never grows unbounded
 _MAX_SHAS = 20  # per entry: observed-commit metadata, capped like everything else here
+
+# Public consumer seam: every outer boundary asks the same typed predicate.
+is_qualifying_green = validation_records.is_qualifying_green
 
 
 #: Latched by :func:`seal_subset_run` the first time this process runs a `work.validate_subset`
@@ -232,7 +240,7 @@ def cmd_hash(cmd: str) -> str:
 
 
 def tree_of(entry, rev: str) -> str:
-    """The TREE hash `rev` names, resolved in the hive's main clone — the ledger's identity half.
+    """The TREE hash `rev` names, resolved in the hive's main clone — verdict identity's half.
 
     `rev` may be a commit sha, a branch, or a tree hash (which resolves to itself, so the
     functions below are idempotent under re-keying). A rev git cannot resolve — no clone, a
@@ -264,35 +272,348 @@ def _ttl(entry, ttl: int | None, cfg=None) -> int:
         return LEDGER_TTL_SECONDS
 
 
-def _ledger_path(entry) -> Path | None:
-    """The hive-local ledger file, or None when there is no plain `.git` dir to keep it in
-    (linked worktree / missing clone) — callers then simply fall back to fresh runs."""
-    git_dir = registry.hive_dir(entry) / ".git"
-    return git_dir / LEDGER_FILENAME if git_dir.is_dir() else None
+def _verdict_path(entry, tree: str, command_hash: str, *, create: bool = False) -> Path | None:
+    """The derived pointer for one exact identity, without creating state on a read.
+
+    Trees and command hashes are opaque identifiers, but never paths.  A malformed value is a
+    miss rather than an opportunity to escape the private root.
+    """
+    if (
+        not tree
+        or not command_hash
+        or any(
+            value in {".", ".."} or "/" in value or "\\" in value for value in (tree, command_hash)
+        )
+    ):
+        return None
+    hive = registry.hive_dir(entry)
+    root = (
+        private_paths.ensure_git_private_root(hive)
+        if create
+        else private_paths.git_private_root(hive)
+    )
+    return root / "validation" / "verdicts" / tree / f"{command_hash}.json" if root else None
 
 
-def _load(path: Path) -> list[dict]:
-    """The ledger's entry list; [] on any read/shape problem (corrupt file == empty ledger).
-
-    The `is_file()` guard is what makes "any read problem" true in BOUNDED TIME: a FIFO at this
-    path makes `Path.read_text()` block forever rather than raise, so neither clause below is
-    ever reached (bh-0tmvk — same class as bh-0jgdz's `release._read_marker`, same `.git`-dir
-    siting via `_ledger_path`, same "unreadable == absent" intent). It sits in the shared reader
-    rather than at a call site, so every lookup path is covered by construction: `record`,
-    `verdict`, and through it `green_verdict`, `bh work submit` and the pre-push hook. A wedged
-    push is the worst failure to diagnose — no error, no exit code, no log line — and its
-    operator remedy is `--no-verify`, which is how a gate dies (bh-njdxk).
-
-    `is_file()` FOLLOWS symlinks, so a symlink to a real ledger still reads normally; only a
-    dangling symlink, a directory or a non-regular file degrades to absent. It adds no new raise
-    path of its own — `Path.is_file()` swallows `OSError`/`ValueError` internally."""
-    if not path.is_file():
-        return []
+def _read_index(path: Path | None) -> dict | None:
+    if path is None or not path.is_file():
+        return None
     try:
-        data = json.loads(path.read_text())
+        value = json.loads(path.read_text())
     except (OSError, ValueError):
-        return []
-    return [e for e in data if isinstance(e, dict)] if isinstance(data, list) else []
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _write_index(path: Path, value: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
+    tmp.write_text(json.dumps(value, sort_keys=True) + "\n")
+    os.replace(tmp, path)
+
+
+def _run_timestamp(run_record: dict) -> float | None:
+    """Return the manifest's authoritative completion time as epoch seconds."""
+    value = run_record.get("finished_at")
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.UTC)
+        timestamp = parsed.timestamp()
+    except (ValueError, OverflowError, OSError):
+        return None
+    return timestamp if math.isfinite(timestamp) else None
+
+
+def _run_entry(run_record: dict) -> dict | None:
+    """Compatibility-shaped read result derived from one authoritative manifest."""
+    at = _run_timestamp(run_record)
+    tree = run_record.get("tree")
+    key = run_record.get("command_hash")
+    if at is None or not isinstance(tree, str) or not isinstance(key, str):
+        return None
+    verdict = run_record.get("verdict")
+    rc = 0 if verdict == "green" else run_record.get("exit_code")
+    return {
+        "schema": 1,
+        "run_id": run_record.get("run_id"),
+        "lifecycle": run_record.get("lifecycle"),
+        "verdict": verdict,
+        "exit_code": run_record.get("exit_code"),
+        "signal": run_record.get("signal"),
+        "reason": run_record.get("reason"),
+        "tree": tree,
+        "command_hash": key,
+        "cmd_hash": key,
+        "rc": rc,
+        "at": at,
+        "sha": run_record.get("sha"),
+        "shas": [run_record["sha"]] if isinstance(run_record.get("sha"), str) else [],
+        "host": (run_record.get("owner") or {}).get("host"),
+        "provenance": run_record.get("provenance"),
+        "verdict_confidence": run_record.get("verdict_confidence"),
+    }
+
+
+def _legacy_ledger_path(entry) -> Path | None:
+    git_dir = registry.hive_dir(entry) / ".git"
+    return git_dir / LEGACY_LEDGER_FILENAME if git_dir.is_dir() else None
+
+
+def _legacy_time(value: object) -> str | None:
+    try:
+        timestamp = float(value)
+        if not math.isfinite(timestamp):
+            return None
+        return dt.datetime.fromtimestamp(timestamp, dt.UTC).isoformat()
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _legacy_effective_time(value: object, ceiling: float) -> tuple[str, str, bool] | None:
+    """Return source/effective ISO times, clamping untrusted future ordering to import time.
+
+    The source timestamp remains provenance.  The effective timestamp participates in canonical
+    run ordering, where a legacy clock must not project authority beyond the migration itself.
+    """
+    source = _legacy_time(value)
+    if source is None:
+        return None
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    normalized = timestamp > ceiling
+    effective = _legacy_time(min(timestamp, ceiling))
+    return (source, effective, normalized) if effective is not None else None
+
+
+def _legacy_verdict(row: dict, *, now: float, ttl: int) -> tuple[str, int | None, str, str]:
+    """Translate one old integer outcome without claiming more than the old row proved.
+
+    A legacy green was reusable only when its exact tree/command identity was fresh and its
+    process result was the integer zero.  Preserve that rule at the migration boundary: an old
+    zero outside the compatibility window is still useful history, but it is not typed green.
+    Exit 143 is the one unambiguous interruption encoding the old shell runner produced; treating
+    it as red would turn lifecycle failure into a code verdict during the upgrade.
+    """
+    rc = row["rc"]
+    if rc == 143:
+        return "none", 15, "interrupted", "legacy_shell_signal"
+    if rc == 0:
+        if _is_fresh(row, now, ttl):
+            return "green", None, "legacy_ledger_import", "legacy_exact_green"
+        return (
+            "none",
+            None,
+            "legacy_green_outside_reuse_window",
+            "legacy_non_attesting",
+        )
+    return "red", None, "legacy_ledger_import", "legacy_exit_code"
+
+
+def _migrate_legacy_ledger(entry) -> int:
+    """Import the retired flat ledger once, without ever consulting it as live authority.
+
+    The source remains in place for rollback. A git-private completion marker prevents later
+    edits to that mutable compatibility file from manufacturing new executions. Corrupt and
+    special-file inputs remain a bounded-time miss and are not marked complete, so a repaired
+    regular file can still migrate on a later invocation.
+    """
+    source = _legacy_ledger_path(entry)
+    if source is None or not source.is_file():
+        return 0
+    hive = registry.hive_dir(entry)
+    root = private_paths.ensure_git_private_root(hive)
+    if root is None:
+        return 0
+    marker = root / "validation" / "migrations" / "flat-ledger-v1.json"
+    if marker.is_file():
+        return 0
+    try:
+        value = json.loads(source.read_text())
+    except (OSError, ValueError):
+        return 0
+    if not isinstance(value, list):
+        return 0
+
+    imported = 0
+    failed = False
+    keys: set[tuple[str, str]] = set()
+    now = time.time()
+    ttl = _ttl(entry, None)
+    for ordinal, row in enumerate(value):
+        if not isinstance(row, dict):
+            continue
+        tree, key, rc = row.get("tree"), row.get("cmd_hash"), row.get("rc")
+        timing = _legacy_effective_time(row.get("at"), now)
+        if (
+            not isinstance(tree, str)
+            or not tree
+            or not isinstance(key, str)
+            or not key
+            or type(rc) is not int
+            or timing is None
+        ):
+            continue
+        source_time, iso_time, timestamp_normalized = timing
+        verdict, signal_number, reason, confidence = _legacy_verdict(row, now=now, ttl=ttl)
+        digest = hashlib.sha256(
+            json.dumps([ordinal, row], sort_keys=True, default=str).encode()
+        ).hexdigest()[:32]
+        run_id = f"run-legacy-{ordinal:06d}-{digest[:24]}"
+        observed = (
+            [
+                candidate
+                for candidate in row.get("shas", [])
+                if isinstance(candidate, str) and candidate
+            ]
+            if isinstance(row.get("shas"), list)
+            else []
+        )
+        sha = row.get("sha") if isinstance(row.get("sha"), str) and row.get("sha") else None
+        if sha is not None and sha not in observed:
+            observed.append(sha)
+        directory = root / "validation" / "runs" / run_id
+        manifest = {
+            "schema": 1,
+            "run_id": run_id,
+            "bead": None,
+            "phase": "legacy-ledger-import",
+            "branch": None,
+            "worktree": None,
+            "sha": sha,
+            "shas": observed[-_MAX_SHAS:],
+            "tree": tree,
+            "command_hash": key,
+            "command": None,
+            "owner": {"host": row.get("host"), "pid": None, "start_token": None},
+            "started_at": iso_time,
+            "finished_at": iso_time,
+            "lifecycle": "completed",
+            "verdict": verdict,
+            "exit_code": rc,
+            "signal": signal_number,
+            "reason": reason,
+            "provenance": {
+                "kind": "legacy_import",
+                "source": f".git/{LEGACY_LEDGER_FILENAME}",
+                "source_schema": "flat-ledger-v1",
+                "ordinal": ordinal,
+                "source_finished_at": source_time,
+                "imported_at": _legacy_time(now),
+                "timestamp_normalized": timestamp_normalized,
+            },
+            "verdict_confidence": confidence,
+        }
+        if isinstance(row.get("report"), dict):
+            manifest["summary"] = {"counts": row["report"], "tree": tree}
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            path = directory / "manifest.json"
+            if not path.exists():
+                validation_records._atomic_json(path, manifest)
+                imported += 1
+            keys.add((tree, key))
+        except OSError:
+            failed = True
+            continue
+    if failed:
+        # Deterministic run ids make the partial work idempotent.  Withhold the completion marker
+        # so a later best-effort pass can fill the rows whose atomic writes failed.
+        return imported
+    if not all(_sync_index(entry, tree, key) for tree, key in keys):
+        return imported
+    try:
+        _write_index(
+            marker,
+            {
+                "schema": 1,
+                "source": LEGACY_LEDGER_FILENAME,
+                "rows": imported,
+                "compatibility": "0.16.x-0.17.x",
+            },
+        )
+    except OSError:
+        return imported
+    return imported
+
+
+def _sync_index(entry, tree: str, key: str) -> bool:
+    """Make one pointer exactly reflect the newest retained execution fact.
+
+    The manifest is truth.  A pointer exists only for its newest completed-green manifest; every
+    other lifecycle/verdict removes it.  Atomic replace means concurrent readers see an old whole
+    pointer, a new whole pointer, or a miss — never torn JSON.
+    """
+    hive = registry.hive_dir(entry)
+    latest = validation_records.latest_run(hive, tree=tree, command_hash=key)
+    path = _verdict_path(entry, tree, key, create=latest is not None)
+    if path is None:
+        return False
+    try:
+        if latest is None or not validation_records.is_qualifying_green(latest):
+            path.unlink(missing_ok=True)
+            return True
+        at = _run_timestamp(latest)
+        if at is None:
+            path.unlink(missing_ok=True)
+            return True
+        runs = sorted(
+            validation_records.matching_runs(hive, tree=tree, command_hash=key),
+            key=validation_records._run_order_key,
+        )
+        shas = []
+        for run_record in runs:
+            if not validation_records.is_qualifying_green(run_record):
+                continue
+            observed = run_record.get("shas", [])
+            candidates = observed if isinstance(observed, list) else []
+            candidates = [*candidates, run_record.get("sha")]
+            for candidate in candidates:
+                if isinstance(candidate, str) and candidate and candidate not in shas:
+                    shas.append(candidate)
+        _write_index(
+            path,
+            {
+                "schema": 1,
+                "run_id": latest["run_id"],
+                "tree": tree,
+                "command_hash": key,
+                "rc": 0,
+                "at": at,
+                "sha": latest.get("sha"),
+                "shas": shas[-_MAX_SHAS:],
+                "host": (latest.get("owner") or {}).get("host"),
+            },
+        )
+        return True
+    except (OSError, KeyError, TypeError):
+        return False
+
+
+def rebuild_verdict_index(entry) -> int:
+    """Reconstruct all lookup pointers from retained run manifests; return green pointers made."""
+    hive = registry.hive_dir(entry)
+    root = private_paths.git_private_root(hive)
+    runs = root / "validation" / "runs" if root else None
+    if runs is None or not runs.is_dir():
+        return 0
+    keys = {
+        (run.get("tree"), run.get("command_hash"))
+        for child in runs.iterdir()
+        if (run := validation_records.read_run(hive, child.name)) is not None
+        and isinstance(run.get("tree"), str)
+        and isinstance(run.get("command_hash"), str)
+    }
+    rebuilt = 0
+    for tree, key in keys:
+        _sync_index(entry, tree, key)
+        path = _verdict_path(entry, tree, key)
+        rebuilt += bool(path is not None and path.is_file())
+    return rebuilt
 
 
 def _is_fresh(e: dict, now: float, ttl: int) -> bool:
@@ -320,57 +641,82 @@ def record(
     ttl: int | None = None,
     report: dict | None = None,
     cfg=None,
+    run_id: str | None = None,
+    phase: str = "validation",
+    bead: str | None = None,
+    branch: str | None = None,
+    worktree: str | Path | None = None,
 ) -> None:
-    """Record a validation verdict for (tree of `rev`, cmd). Best-effort: never raises, never
-    fails the validation it records. Prunes expired entries and replaces a same-key entry,
-    carrying that entry's observed-commit metadata forward.
+    """Record a validation execution for (tree of `rev`, cmd). Best-effort: never raises or
+    fails the validation it records. The run manifest is authority; a green pointer is rebuilt
+    from the newest execution fact and carries observed-commit metadata forward.
 
     `report` is an optional ingested test report (`test_report.ingest`) — **detail, never the
-    verdict**. `rc` remains the sole verdict (bh-ku9n9.20, binding constraint 1): a report
-    claiming everything passed alongside a non-zero `rc` still records `rc` and so still misses
-    :func:`green_verdict`. Only the counts are kept — per-test records in a 200-entry ledger
-    would cost ~96 MiB per hive (bh-ku9n9.4, Evidence 9), and the durable per-tree triage store
-    is bh-ku9n9.6's. `None` (the normal case for a hive that opts into nothing) adds no key at
-    all, so an rc-only entry is byte-for-byte what it has always been.
+    verdict**. `rc` remains authoritative (bh-ku9n9.20, binding constraint 1): a report claiming
+    everything passed alongside a non-zero `rc` still records red and so still misses
+    :func:`green_verdict`. Only the counts are attached under the manifest's canonical bounded
+    `summary`; per-test records remain in the artifact store. `None` (the normal case for a hive
+    that opts into nothing) adds no counts.
 
     `cfg`, when given, is used for the TTL lookup instead of a fresh `config.load()` (bh-ku9n9.19,
     item 2) — see :func:`_ttl`."""
-    path = _ledger_path(entry)
-    if path is None or not rev or _SEALED:  # sealed: a converged result is never an attestation
+    if not rev or _SEALED:  # sealed: a converged result is never an attestation
         return
-    now = time.time()
+    # A canonical write is also the last safe moment to carry forward unrelated legacy rows.
+    # The source is read-only and bounded by the retired ledger's 200-row cap.
+    _migrate_legacy_ledger(entry)
     tree, key = tree_of(entry, rev), cmd_hash(cmd)
-    existing = _load(path)
-    same = [e for e in existing if e.get("tree") == tree and e.get("cmd_hash") == key]
-    # Resolved ONCE, not once per pruned entry (bh-ku9n9.19, item 1): `_ttl` can call the
-    # uncached `config.load()`, and this list comprehension can run up to `_MAX_ENTRIES` (200)
-    # times per write.
-    ttl_seconds = _ttl(entry, ttl, cfg)
-    kept = [e for e in existing if _is_fresh(e, now, ttl_seconds) and e not in same]
-    # Commit shas are METADATA, never identity (bh-ku9n9.3): `sha` is the one observed by this
-    # run, `shas` every distinct one seen at this tree — the join key a later historical upload
-    # needs, and exactly what the --no-ff-onto-unmoved-main case produces two of. Nothing here
-    # reads them back. `host` is diagnostic-only too (bh-ytbb.4): the stable `host_id()` UUID,
-    # not `socket.gethostname()`, for consistency with the other two markers.
-    seen = [s for e in same for s in e.get("shas", []) if s != rev]
-    new = {
-        "tree": tree,
-        "cmd_hash": key,
-        "rc": int(rc),
-        "at": now,
-        "host": host.host_id(),
-        "sha": rev,
-        "shas": (seen + [rev])[-_MAX_SHAS:],
-    }
-    if (summary := test_report.counts(report)) is not None:
-        new["report"] = summary
-    entries = (kept + [new])[-_MAX_ENTRIES:]
-    try:
-        tmp = path.with_name(f"{path.name}.tmp{os.getpid()}")
-        tmp.write_text(json.dumps(entries) + "\n")
-        os.replace(tmp, path)  # atomic: a concurrent reader never sees a torn file
-    except OSError:
-        pass
+    # The run history is authoritative. The retired 0.15.1 flat file is a one-time read-only
+    # migration input; new decisions never derive identity from a mutable row.
+    hive = registry.hive_dir(entry)
+    run_record = validation_records.read_run(hive, run_id) if run_id else None
+    if run_id is None:
+        run_record = validation_records.begin_run(
+            hive,
+            bead=bead or os.environ.get("BH_BEAD_ID"),
+            phase=phase or os.environ.get("BH_VALIDATION_PHASE", "validation"),
+            branch=branch or os.environ.get("BH_VALIDATION_BRANCH"),
+            worktree=worktree or os.environ.get("BH_VALIDATION_WORKTREE"),
+            sha=rev,
+            tree=tree,
+            command_hash=key,
+            command=cmd,
+            owner_start=os.environ.get("BH_OWNER_START_TOKEN"),
+        )
+    if run_record is not None and run_record.get("lifecycle") == "running":
+        run_record = validation_records.finish_run(
+            hive,
+            run_record["run_id"],
+            exit_code=int(rc),
+            reason="command_exit",
+        )
+    if (
+        run_record is not None
+        and run_record.get("lifecycle") == "completed"
+        and (summary := test_report.counts(report)) is not None
+    ):
+        run_record = (
+            validation_records.attach_summary(
+                hive, run_record["run_id"], {"counts": summary, "tree": tree}
+            )
+            or run_record
+        )
+    if run_record is not None and run_record.get("lifecycle") == "completed":
+        validation_records.record_use(
+            hive,
+            run_id=run_record["run_id"],
+            bead=bead or run_record.get("bead"),
+            phase=phase or run_record["phase"],
+            branch=branch or run_record.get("branch"),
+            worktree=worktree or run_record.get("worktree"),
+            sha=rev,
+            tree=tree,
+            command_hash=key,
+            reused=False,
+        )
+    # The pointer is derived solely from retained manifests. Report counts remain attached to the
+    # durable run summary; they are not verdict authority and are deliberately absent here.
+    _sync_index(entry, tree, key)
 
 
 def verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -> dict | None:
@@ -387,16 +733,40 @@ def verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -> dict
 
     `cfg`, when given, is used for the TTL lookup instead of a fresh `config.load()` — see
     :func:`_ttl` (bh-ku9n9.19, item 2)."""
-    path = _ledger_path(entry)
-    if path is None or not rev:
+    if not rev:
         return None
     now = time.time()
     tree, key = tree_of(entry, rev), cmd_hash(cmd)
-    hit = next(
-        (e for e in reversed(_load(path)) if e.get("tree") == tree and e.get("cmd_hash") == key),
-        None,
-    )
-    return hit if hit is not None and _is_fresh(hit, now, _ttl(entry, ttl, cfg)) else None
+    hive = registry.hive_dir(entry)
+    source = validation_records.latest_run(hive, tree=tree, command_hash=key)
+    if source is None:
+        # New path first.  The retired flat file is consulted only on a canonical miss and at
+        # most once after its atomic completion marker lands.
+        _migrate_legacy_ledger(entry)
+        source = validation_records.latest_run(hive, tree=tree, command_hash=key)
+    if (
+        source is None
+        or not validation_records.is_completed_verdict(source)
+        or (entry_value := _run_entry(source)) is None
+        or not _is_fresh(entry_value, now, _ttl(entry, ttl, cfg))
+    ):
+        return None
+    if source.get("verdict") == "green" and not validation_records.is_qualifying_green(source):
+        return None
+    if source.get("verdict") != "green":
+        return entry_value
+    hit = _read_index(_verdict_path(entry, tree, key))
+    if (
+        hit is None
+        or hit.get("schema") != 1
+        or hit.get("run_id") != source.get("run_id")
+        or hit.get("tree") != tree
+        or hit.get("command_hash") != key
+        or hit.get("rc") != 0
+        or hit.get("at") != entry_value["at"]
+    ):
+        return None
+    return {**entry_value, **hit}
 
 
 def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -> dict | None:
@@ -419,6 +789,8 @@ def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -
     hit = verdict(entry, rev, cmd, ttl, cfg)
     # `!= 0` rather than a truthiness test on purpose: a malformed rc (the string "0", None, a
     # dict) is not the integer 0 and so is NOT green — a corrupt record must never read as a pass.
-    if hit is None or hit.get("rc") != 0:
+    if hit is None or not validation_records.is_qualifying_green(hit):
         return None
-    return hit if _always_run_ok(entry, cfg) else None
+    if not _always_run_ok(entry, cfg):
+        return None
+    return hit

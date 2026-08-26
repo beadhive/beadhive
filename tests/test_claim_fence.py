@@ -158,7 +158,8 @@ def test_a_record_written_before_this_bead_reads_back_unfenced(worktree):
     not start refusing submits for a token it was never issued."""
     # Arrange: a pre-bh-ytbb.10 record, written by hand in the old shape.
     authority = claim_authority.get_authority("local")
-    path = claim_authority._record_path(worktree)
+    path = claim_authority._record_path(worktree, create=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
@@ -184,7 +185,8 @@ def test_a_record_written_before_this_bead_reads_back_unfenced(worktree):
 def test_a_corrupt_epoch_degrades_to_unfenced_not_to_current(worktree):
     """Fail-safe direction: garbage reads as "no token", never as a spuriously live one."""
     authority = claim_authority.get_authority("local")
-    path = claim_authority._record_path(worktree)
+    path = claim_authority._record_path(worktree, create=True)
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps({"bead": BEAD, "seat": SEAT, "worktree": str(worktree), "epoch": "nonsense"})
     )

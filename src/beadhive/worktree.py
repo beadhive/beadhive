@@ -265,7 +265,8 @@ def provision_observaloop(cfg, entry, target: Path) -> None:
     ``config.observaloop_enabled`` check and imports **no** observaloop module. Only when enabled do
     we lazily import the observaloop seams, derive the per-hive profile name, idempotently
     ``ensure_profile`` + ``up`` (a profile is per-hive, shared across its worktrees), resolve the
-    OTLP endpoint, and write ``<worktree>/.ws/otel.env`` so a ``ws`` invocation there exports to the
+    OTLP endpoint, and write ``<worktree>/.bh/observability/otel.env`` so a ``bh`` invocation
+    there exports to the
     hive profile (Phase B loader). Mirrors ``run_init``'s warn-and-continue contract: observaloop
     unavailable / docker down / any exception warns and returns — it NEVER raises and NEVER blocks
     worktree creation."""
@@ -290,7 +291,9 @@ def provision_observaloop(cfg, entry, target: Path) -> None:
             )
             return
         observaloop_env.write_worktree_env(target, name, endpoint)
-        typer.echo(f"  → observaloop profile '{name}' ready; wrote .bh/otel.env → {endpoint}")
+        typer.echo(
+            f"  → observaloop profile '{name}' ready; wrote .bh/observability/otel.env → {endpoint}"
+        )
     except Exception as exc:  # best-effort: never block worktree creation (mirror run_init)
         typer.echo(f"  ⚠ observaloop: provisioning failed ({exc}) — continuing", err=True)
 
@@ -1086,9 +1089,9 @@ _BARE_CHECKOUT_HINT = (
 )
 
 
-def _reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None) -> bool:
+def _reuse_verdict_hit(entry, sha: str, cmd: str, cfg=None, **kwargs) -> bool:
     """Compatibility facade for ``worktree_verify.impl__reuse_verdict_hit``."""
-    return _worktree_verify.impl__reuse_verdict_hit(entry, sha, cmd, cfg)
+    return _worktree_verify.impl__reuse_verdict_hit(entry, sha, cmd, cfg, **kwargs)
 
 
 def _prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
@@ -1096,9 +1099,13 @@ def _prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     return _worktree_verify.impl__prepare_verify_worktree(main, entry, branch, cmd)
 
 
-def clean_checkout(entry, branch, cmd, cfg=None, reuse=False) -> int:
+def clean_checkout(
+    entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
+) -> int:
     """Compatibility facade for ``worktree_verify.impl_clean_checkout``."""
-    return _worktree_verify.impl_clean_checkout(entry, branch, cmd, cfg, reuse)
+    return _worktree_verify.impl_clean_checkout(
+        entry, branch, cmd, cfg, reuse, bead=bead, phase=phase
+    )
 
 
 #: External hives are pull-only (bh-uxam.1): `upstream` is a read rail, never a write target.

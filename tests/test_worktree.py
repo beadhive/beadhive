@@ -18,7 +18,17 @@ from types import SimpleNamespace
 import pytest
 import typer
 
-from beadhive import config, ghpr, host, orca, plugins, validation_ledger, worktree, wt_status
+from beadhive import (
+    config,
+    ghpr,
+    host,
+    orca,
+    plugins,
+    validation_ledger,
+    validation_records,
+    worktree,
+    wt_status,
+)
 from beadhive.run import run
 
 UTC = datetime.UTC
@@ -959,7 +969,7 @@ def test_cwd_identity_none_outside_any_hive(tmp_path, monkeypatch):
 
 def test_cwd_worktree_dir_from_nested_cwd(tmp_path, monkeypatch):
     """From anywhere inside (or below) a managed worktree, returns the worktree ROOT dir — the
-    overlay's `.bh/otel.env` lives there, not in a nested subdir."""
+    overlay's `.bh/observability/otel.env` lives there, not in a nested subdir."""
     cfg, _, _ = _ensure_hive(tmp_path, monkeypatch)
     _, target, _ = worktree.ensure(cfg, "mr", "ag-epic.3")
     nested = target / "src" / "pkg"
@@ -1281,8 +1291,8 @@ def test_try_merge_rebase_empty_union_globs_unchanged(tmp_path, monkeypatch):
 
 # ---- provision_observaloop (worktree-create hook) ---------------------------
 #
-# The per-hive profile provisioning + .bh/otel.env overlay that _do_add runs AFTER run_init on a
-# true worktree create. Observaloop is faked throughout. Covers: enabled (ensure+up+overlay),
+# The per-hive profile provisioning + canonical observability overlay that _do_add runs AFTER
+# run_init on a true worktree create. Observaloop is faked throughout. Covers: enabled,
 # disabled-and-import-free (default path touches no observaloop module), failure-still-succeeds
 # (any exception warns, never raises), and verify- skip (ephemeral clean-checkout worktrees).
 
@@ -1295,8 +1305,7 @@ _OBS_ENABLED_CFG = {
 
 
 def test_provision_observaloop_enabled_ensures_profile_and_writes_overlay(tmp_path, monkeypatch):
-    """Enabled → ensure_profile + up (idempotent) then write <worktree>/.bh/otel.env at the
-    resolved endpoint, so a ws invocation there exports to the hive profile."""
+    """Enabled → ensure/up and write the canonical worktree observability overlay."""
     from beadhive import observaloop
 
     calls = {"ensure": [], "up": []}
@@ -1313,7 +1322,7 @@ def test_provision_observaloop_enabled_ensures_profile_and_writes_overlay(tmp_pa
     worktree.provision_observaloop(_OBS_ENABLED_CFG, _OBS_HIVE, target)
 
     assert calls["ensure"] == ["mr"] and calls["up"] == ["mr"]  # profile ensured + up
-    env_file = target / ".bh" / "otel.env"
+    env_file = target / ".bh" / "observability" / "otel.env"
     assert env_file.is_file()
     body = env_file.read_text()
     assert "OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318" in body
@@ -1448,7 +1457,8 @@ def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypa
         if list(cmd)[:1] != ["git"]:  # the validation spawn: marker must already be in place
             checkout = Path(kw["cwd"])
             marker = worktree._verify_marker_path(marker_root, checkout)
-            seen_markers.append(json.loads(marker.read_text()) if marker.exists() else None)
+            assert not marker.exists()  # 0.15.1 worktree-keyed marker is no longer authoritative
+            seen_markers.append(worktree._read_verify_marker(checkout, marker_root))
             checkout_markers.append((checkout / worktree.VERIFY_MARKER).exists())
         return _Done()
 
@@ -1469,7 +1479,7 @@ def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypa
     # teardown removed exactly this invocation's own dirs — nothing else
     assert [c[-1] for c in removes] == add_paths
 
-    # The liveness marker (HolderToken analog) was live outside each checkout during validation.
+    # Liveness reconstructs from run-id pointer + authoritative manifest during validation.
     assert len(seen_markers) == 2
     assert checkout_markers == [False, False]
     for m in seen_markers:
@@ -1486,6 +1496,7 @@ def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypa
             "command",
             "worktree",
             "identity",
+            "run_id",
         }
     assert not list(marker_root.glob("*.json"))
 
@@ -1833,8 +1844,8 @@ def test_clean_checkout_marker_store_failure_is_non_fatal(tmp_path, monkeypatch)
 
 # ---- clean_checkout: validation verdict ledger (bh-dfx0) ---------------------
 #
-# Verdicts are keyed by (commit sha, cmd hash) in <hive>/.git/bh-validation-ledger.json —
-# repo-local untracked state. Only reuse=True callers (submit; review --no-fresh) consult it;
+# Verdict pointers are keyed by (tree, cmd hash) below .git/bh/validation/verdicts/, and point
+# at authoritative run manifests. Only reuse=True callers (submit; review --no-fresh) consult it;
 # only a fresh GREEN verdict short-circuits. The logging command makes "did the validation
 # actually run" directly observable.
 
@@ -1863,8 +1874,11 @@ def test_clean_checkout_reuses_green_verdict(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "validation verdict reused" in out
     assert worktree._branch_sha(entry, "main")[:7] in out
-    # the ledger is repo-local untracked state inside the hive's .git dir
-    assert (repo / ".git" / validation_ledger.LEDGER_FILENAME).is_file()
+    # The derived pointer is git-private; the completed run it names remains authoritative.
+    pointer = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "main"), validation_ledger.cmd_hash(cmd)
+    )
+    assert pointer is not None and pointer.is_file()
 
 
 def test_clean_checkout_reuse_hit_counts_telemetry(tmp_path, monkeypatch):
@@ -1893,7 +1907,11 @@ def test_clean_checkout_records_validated_head_not_stale_sha(tmp_path, monkeypat
     monkeypatch.setattr(worktree, "_branch_sha", lambda entry, branch: stale)
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
-    entries = json.loads((repo / ".git" / validation_ledger.LEDGER_FILENAME).read_text())
+    pointer = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "main"), validation_ledger.cmd_hash(cmd)
+    )
+    assert pointer is not None
+    entries = [json.loads(pointer.read_text())]
     real_head = run(
         ["git", "-C", str(repo), "rev-parse", "main"], check=False, capture=True
     ).stdout.strip()
@@ -1932,11 +1950,13 @@ def test_clean_checkout_stale_verdict_revalidates(tmp_path, monkeypatch):
     log, cmd = _log_cmd(tmp_path)
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
 
-    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
-    entries = json.loads(ledger.read_text())
-    for e in entries:
-        e["at"] = time.time() - validation_ledger.LEDGER_TTL_SECONDS - 60
-    ledger.write_text(json.dumps(entries))
+    ledger = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "main"), validation_ledger.cmd_hash(cmd)
+    )
+    assert ledger is not None
+    payload = json.loads(ledger.read_text())
+    payload["at"] = time.time() - validation_ledger.LEDGER_TTL_SECONDS - 60
+    ledger.write_text(json.dumps(payload))
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
     assert _run_count(log) == 2  # expired → fresh run
@@ -1954,11 +1974,13 @@ def test_clean_checkout_future_at_never_grants_trust(tmp_path, monkeypatch):
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
     assert _run_count(log) == 1
 
-    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
-    entries = json.loads(ledger.read_text())
-    for e in entries:
-        e["at"] = time.time() + 10 * 365 * 24 * 60 * 60  # ten years ahead
-    ledger.write_text(json.dumps(entries))
+    ledger = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "main"), validation_ledger.cmd_hash(cmd)
+    )
+    assert ledger is not None
+    payload = json.loads(ledger.read_text())
+    payload["at"] = time.time() + 10 * 365 * 24 * 60 * 60  # ten years ahead
+    ledger.write_text(json.dumps(payload))
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
     assert _run_count(log) == 2  # a future `at` is a miss, not an indefinitely-extended trust
@@ -2005,10 +2027,312 @@ def test_clean_checkout_reuse_hit_stays_silent_on_the_heartbeat(tmp_path, monkey
     assert "validating main" not in capsys.readouterr().out
 
 
+def test_clean_checkout_execution_and_reuse_persist_end_to_end_records(tmp_path, monkeypatch):
+    """The real execution boundary creates one run/use; reuse adds a use and no execution."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    assert worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x", phase="submit") == 0
+
+    root = repo / ".git/bh/validation"
+    run_paths = list((root / "runs").glob("*/manifest.json"))
+    use_paths = list((root / "uses").glob("*.json"))
+    assert len(run_paths) == len(use_paths) == 1
+    run = json.loads(run_paths[0].read_text())
+    use = json.loads(use_paths[0].read_text())
+    assert (run["bead"], run["phase"], run["branch"]) == ("bh-x", "submit", "main")
+    assert (run["lifecycle"], run["verdict"], run["exit_code"]) == (
+        "completed",
+        "green",
+        0,
+    )
+    assert use["run_id"] == run["run_id"] and use["reused"] is False
+    assert not list((root / "active").glob("*.json"))
+
+    assert (
+        worktree.clean_checkout(
+            entry, "main", "true", cfg=cfg, reuse=True, bead="bh-x", phase="submit"
+        )
+        == 0
+    )
+    assert len(list((root / "runs").glob("*/manifest.json"))) == 1
+    uses = [json.loads(path.read_text()) for path in (root / "uses").glob("*.json")]
+    assert len(uses) == 2
+    assert {item["run_id"] for item in uses} == {run["run_id"]}
+    assert {item["reused"] for item in uses} == {False, True}
+
+
+def test_clean_checkout_missing_binary_is_completed_none_not_red(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    rc = worktree.clean_checkout(
+        entry,
+        "main",
+        "definitely-not-a-beadhive-test-binary",
+        cfg=cfg,
+        bead="bh-x",
+        phase="review",
+    )
+    assert rc != 0
+    manifests = list((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    assert len(manifests) == 1
+    run = json.loads(manifests[0].read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "none",
+        "missing_binary",
+    )
+    uses = list((repo / ".git/bh/validation/uses").glob("*.json"))
+    assert len(uses) == 1
+
+
+def test_clean_checkout_keeps_complete_external_run_artifacts(tmp_path, monkeypatch):
+    """The clean verify checkout may disappear, but its configured artifact root cannot.
+
+    This exercises the real validation subprocess rather than merely inspecting
+    a manifest: reports and gate output are siblings in one fresh per-run
+    directory after the verify checkout's cleanup.
+    """
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    external = tmp_path / "mounted-validation-artifacts"
+    cfg["work"] = {"validation_artifact_root": str(external)}
+    command = "sh -c 'echo report > \"$BH_TEST_REPORT_DIR/report.xml\"; echo durable-gate'"
+
+    assert worktree.clean_checkout(entry, "main", command, cfg=cfg, bead="bh-x") == 0
+
+    manifest = json.loads(
+        next((repo / ".git/bh/validation/runs").glob("*/manifest.json")).read_text()
+    )
+    artifacts = manifest["artifacts"]
+    directory = Path(artifacts["directory"])
+    assert directory.parent == external
+    assert Path(artifacts["reports"]) == directory / "reports"
+    assert (directory / "reports" / "report.xml").read_text().strip() == "report"
+    assert (directory / "gate.log").read_text().strip() == "durable-gate"
+    assert manifest["summary"]["tree"] == manifest["tree"]
+
+
+@pytest.mark.parametrize(
+    ("configured", "environment"),
+    [("relative/artifacts", None), ("", "relative/artifacts")],
+)
+def test_clean_checkout_refuses_relative_artifact_root_before_runner(
+    tmp_path, monkeypatch, configured, environment
+):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["work"] = {"validation_artifact_root": configured}
+    if environment is not None:
+        monkeypatch.setenv("BH_VALIDATION_ARTIFACT_ROOT", environment)
+    before_worktrees = run(
+        ["git", "worktree", "list", "--porcelain"], cwd=str(repo), check=True, capture=True
+    ).stdout
+    verify_parent = worktree.wt_dir(entry, "verify-main").parent
+    before_verify_dirs = sorted(verify_parent.iterdir()) if verify_parent.exists() else []
+    marker_root = worktree._verify_marker_root(repo)
+    before_markers = sorted(marker_root.iterdir()) if marker_root and marker_root.exists() else []
+    ran = []
+    original = worktree.run
+
+    def observe(cmd, **kwargs):
+        if list(cmd)[:1] != ["git"]:
+            ran.append(cmd)
+        return original(cmd, **kwargs)
+
+    monkeypatch.setattr(worktree, "run", observe)
+    assert worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x") == 2
+    assert ran == []
+    assert (
+        run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=str(repo),
+            check=True,
+            capture=True,
+        ).stdout
+        == before_worktrees
+    )
+    assert (sorted(verify_parent.iterdir()) if verify_parent.exists() else []) == before_verify_dirs
+    assert (
+        sorted(marker_root.iterdir()) if marker_root and marker_root.exists() else []
+    ) == before_markers
+    assert not list((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+
+
+@pytest.mark.parametrize("seam", ["head", "tree", "begin_run"])
+def test_clean_checkout_cleans_verify_checkout_when_pre_run_metadata_raises(
+    tmp_path, monkeypatch, seam
+):
+    """Every exception after `worktree add` must release its registration and marker."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    before_worktrees = run(
+        ["git", "worktree", "list", "--porcelain"], cwd=str(repo), check=True, capture=True
+    ).stdout
+    verify_parent = worktree.wt_dir(entry, "verify-main").parent
+    before_verify_dirs = sorted(verify_parent.iterdir()) if verify_parent.exists() else []
+    marker_root = worktree._verify_marker_root(repo)
+    before_markers = sorted(marker_root.iterdir()) if marker_root and marker_root.exists() else []
+
+    if seam == "head":
+        original = worktree._run_git
+
+        def fail_head(argv, **kwargs):
+            if list(argv)[-2:] == ["rev-parse", "HEAD"]:
+                raise RuntimeError("head lookup failed")
+            return original(argv, **kwargs)
+
+        monkeypatch.setattr(worktree, "_run_git", fail_head)
+        error = "head lookup failed"
+    elif seam == "tree":
+        monkeypatch.setattr(
+            validation_ledger,
+            "tree_of",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("tree lookup failed")),
+        )
+        error = "tree lookup failed"
+    else:
+        monkeypatch.setattr(
+            validation_records,
+            "begin_run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("run allocation failed")),
+        )
+        error = "run allocation failed"
+
+    with pytest.raises(RuntimeError, match=error):
+        worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x")
+
+    assert (
+        run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=str(repo),
+            check=True,
+            capture=True,
+        ).stdout
+        == before_worktrees
+    )
+    assert (sorted(verify_parent.iterdir()) if verify_parent.exists() else []) == before_verify_dirs
+    assert (
+        sorted(marker_root.iterdir()) if marker_root and marker_root.exists() else []
+    ) == before_markers
+
+
+def test_clean_checkout_checkout_failure_is_a_terminal_none_use(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    monkeypatch.setattr(worktree, "_prepare_verify_worktree", lambda *_args: (None, 23))
+    assert (
+        worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x", phase="submit") == 23
+    )
+    path = next((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    run = json.loads(path.read_text())
+    assert (run["verdict"], run["reason"], run["exit_code"]) == (
+        "none",
+        "checkout_failure",
+        23,
+    )
+    assert len(list((repo / ".git/bh/validation/uses").glob("*.json"))) == 1
+
+
+def test_clean_checkout_setup_exception_finishes_and_clears_liveness(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+
+    def fail_setup(*_args, **_kwargs):
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(worktree, "run_init", fail_setup)
+    with pytest.raises(RuntimeError, match="setup failed"):
+        worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x", phase="review")
+    path = next((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    run = json.loads(path.read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "none",
+        "setup_failure",
+    )
+    assert len(list((repo / ".git/bh/validation/uses").glob("*.json"))) == 1
+    assert not list((repo / ".git/bh/validation/active").glob("*.json"))
+
+
+def test_clean_checkout_honors_only_explicit_valid_v1_runner_protocol(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["work"] = {"validation_protocol": "beadhive-validation-result/v1"}
+    runner = tmp_path / "typed-runner"
+    runner.write_text(
+        "#!/usr/bin/env python3\n"
+        "import json, os, sys\n"
+        "verdict = sys.argv[1]\n"
+        "payload = {'protocol': 'beadhive-validation-result', 'version': 1, "
+        "'verdict': verdict, 'reason': 'runner refusal'}\n"
+        "with open(os.environ['BH_VALIDATION_RESULT_PATH'], 'w') as out:\n"
+        "    json.dump(payload, out)\n"
+        "raise SystemExit(42)\n"
+    )
+    runner.chmod(0o755)
+
+    assert worktree.clean_checkout(entry, "main", f"{runner} none", cfg=cfg) == 42
+    first = sorted((repo / ".git/bh/validation/runs").glob("*/manifest.json"))[0]
+    assert json.loads(first.read_text())["verdict"] == "none"
+
+    # Contradictory green+nonzero output is untrusted and cannot downgrade ordinary red.
+    assert worktree.clean_checkout(entry, "main", f"{runner} green", cfg=cfg) == 42
+    manifests = [
+        json.loads(path.read_text())
+        for path in (repo / ".git/bh/validation/runs").glob("*/manifest.json")
+    ]
+    assert sorted(item["verdict"] for item in manifests) == ["none", "red"]
+
+
+def test_clean_checkout_observed_interruption_finishes_none(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    real_run = worktree.run
+
+    def interrupt_validation(cmd, **kwargs):
+        if list(cmd)[:1] != ["git"]:
+            raise KeyboardInterrupt
+        return real_run(cmd, **kwargs)
+
+    monkeypatch.setattr(worktree, "run", interrupt_validation)
+    with pytest.raises(KeyboardInterrupt):
+        worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x", phase="review")
+    path = next((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+    run = json.loads(path.read_text())
+    assert (run["lifecycle"], run["verdict"], run["reason"]) == (
+        "completed",
+        "none",
+        "interrupted",
+    )
+    assert len(list((repo / ".git/bh/validation/uses").glob("*.json"))) == 1
+    assert not list((repo / ".git/bh/validation/active").glob("*.json"))
+
+
+def test_sweep_classifies_dead_run_abandoned_and_reaps_its_checkout(tmp_path, monkeypatch):
+    _cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    checkout = worktree.wt_dir(entry, "verify-main-dead01")
+    checkout.mkdir(parents=True)
+    run = validation_records.begin_run(
+        repo,
+        bead="bh-x",
+        phase="submit",
+        branch="main",
+        worktree=checkout,
+        sha="sha",
+        tree="tree",
+        command_hash="hash",
+        command="true",
+        owner_pid=999_999_999,
+        owner_start="dead-token",
+    )
+    assert run is not None
+    monkeypatch.setattr(worktree, "_pid_alive", lambda _pid: False)
+
+    assert worktree.sweep_verify_dirs(entry, grace=0, ttl=3600) == 1
+    assert not checkout.exists()
+    manifest = validation_records.read_run(repo, run["run_id"])
+    assert (manifest["lifecycle"], manifest["verdict"], manifest["reason"]) == (
+        "abandoned",
+        "none",
+        "owner_dead",
+    )
+    assert not list((repo / ".git/bh/validation/active").glob("*.json"))
+
+
 def test_validation_ledger_roundtrip_and_corruption(tmp_path, monkeypatch):
-    """Ledger unit contract: exact-key green hit; miss on other sha / other cmd; a red verdict
-    replaces a green one for the same key; a corrupt file reads as empty and heals on the next
-    record (best-effort — the ledger can never fail a validation)."""
+    """Verdict-index contract: exact-key green hit; misses are fail-closed; a red run revokes a
+    green pointer; and a corrupt pointer heals when a later green run rebuilds it."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
 
     validation_ledger.record(entry, "abc123", "just check", 0)
@@ -2017,14 +2341,17 @@ def test_validation_ledger_roundtrip_and_corruption(tmp_path, monkeypatch):
     assert validation_ledger.green_verdict(entry, "abc123", "other cmd") is None
     assert validation_ledger.green_verdict(entry, "zzz999", "just check") is None
 
-    validation_ledger.record(entry, "abc123", "just check", 1)  # red replaces the green entry
-    assert validation_ledger.green_verdict(entry, "abc123", "just check") is None
-
-    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
+    ledger = validation_ledger._verdict_path(
+        entry, validation_ledger.tree_of(entry, "abc123"), validation_ledger.cmd_hash("just check")
+    )
+    assert ledger is not None
     ledger.write_text("not json {")
     assert validation_ledger.green_verdict(entry, "abc123", "just check") is None  # no raise
     validation_ledger.record(entry, "def456", "just check", 0)  # heals the corrupt file
     assert validation_ledger.green_verdict(entry, "def456", "just check") is not None
+
+    validation_ledger.record(entry, "abc123", "just check", 1)  # red revokes green
+    assert validation_ledger.green_verdict(entry, "abc123", "just check") is None
 
 
 # ---- the key is the TREE, not the commit (bh-ku9n9.3) -----------------------
@@ -2166,9 +2493,11 @@ def test_observed_commit_shas_are_metadata_not_identity(tmp_path, monkeypatch):
     validation_ledger.record(entry, tip, cmd, 0)
     validation_ledger.record(entry, merge_sha, cmd, 0)
 
-    entries = json.loads((repo / ".git" / validation_ledger.LEDGER_FILENAME).read_text())
-    assert len(entries) == 1  # one tree, one verdict — the second commit added no key
-    (e,) = entries
+    pointer = validation_ledger._verdict_path(
+        entry, _tree_of(repo, tip), validation_ledger.cmd_hash(cmd)
+    )
+    assert pointer is not None
+    e = json.loads(pointer.read_text())
     assert e["tree"] == _tree_of(repo, tip)
     assert set(e["shas"]) == {tip, merge_sha}  # both observed commits, as metadata
     assert e["sha"] == merge_sha  # the most recent observation
@@ -2189,11 +2518,17 @@ def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch)
     entry["work"] = {"ledger_ttl": "PT30M"}  # …per-hive wins
 
     assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
-    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
-    entries = json.loads(ledger.read_text())
-    for e in entries:
-        e["at"] = time.time() - 31 * 60  # 31 min: fresh under P1D, stale under PT30M
-    ledger.write_text(json.dumps(entries))
+    run = validation_records.latest_run(
+        repo,
+        tree=validation_ledger.tree_of(entry, "main"),
+        command_hash=validation_ledger.cmd_hash(cmd),
+    )
+    assert run is not None
+    run["finished_at"] = datetime.datetime.fromtimestamp(time.time() - 31 * 60, UTC).isoformat()
+    validation_records._atomic_json(
+        repo / ".git/bh/validation/runs" / run["run_id"] / "manifest.json", run
+    )
+    validation_ledger.rebuild_verdict_index(entry)
 
     assert validation_ledger.green_verdict(entry, "main", cmd, cfg=cfg) is None
     entry["work"] = {"ledger_ttl": "PT4H"}  # widen it and the same entry is fresh again

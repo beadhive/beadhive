@@ -334,9 +334,9 @@ def check_push_main(
         if refusal:
             return False, f"{refusal} ({on_miss})"
         hit = validation_ledger.green_verdict(entry, rev, cmd, cfg=cfg)
-        # `green_verdict` already refuses a red / stale / missing / malformed entry; the rc is
-        # re-asserted because this is the OUTERMOST gate and the second check costs one compare.
-        if not hit or hit.get("rc") != 0:
+        # Re-assert the centralized typed predicate at this outermost boundary. This deliberately
+        # checks more than legacy `rc == 0`: typed red/none and contradictory manifests refuse.
+        if not hit or not validation_ledger.is_qualifying_green(hit):
             return False, f"• no fresh green {PUSH_MAIN_PHASE} verdict for {rev[:12]} — {on_miss}"
         # Formatting stays INSIDE the try anyway (bh-ku9n9.19): `_is_fresh` now rejects a future
         # `at` outright, so nothing that reaches here should be unformattable — but this whole

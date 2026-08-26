@@ -12,7 +12,7 @@ import datetime
 import json
 import os
 import re
-import time
+import shutil
 from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,13 +30,16 @@ from beadhive import (
     identity,
     otel,
     plan,
+    private_paths,
     registry,
     validation_ledger,
+    validation_records,
     work,
     work_logic,
     worktree,
 )
 from beadhive.run import run as real_run
+from harness.validation_state import age as age_verdict
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 _CP = namedtuple("CP", "returncode stdout stderr")
@@ -675,9 +678,21 @@ def test_claim_supervised_leaves_identity(hive, fakebd, monkeypatch):
     )
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="", hive="myrepo")
-    # no stamp → worktree inherits the human's identity; we never enable per-worktree config
-    assert _cfg_get(_wt(hive, "mr-1"), "user.name") == "human"
-    assert _cfg_get(_wt(hive, "mr-1"), "extensions.worktreeConfig") == ""
+    # No identity stamp → this checkout inherits the human's identity. Claim authority does use
+    # Git's per-worktree config for its non-identity incarnation token, so assert the actual
+    # isolation boundary rather than forbidding that Git-native marker outright.
+    wt = _wt(hive, "mr-1")
+    assert _cfg_get(wt, "user.name") == "human"
+    local_name = real_run(
+        ["git", "config", "--worktree", "--get", "user.name"],
+        cwd=str(wt),
+        check=False,
+        capture=True,
+        env=_CLEAN_ENV,
+    )
+    assert local_name.returncode != 0
+    assert _cfg_get(wt, "extensions.worktreeConfig") == "true"
+    assert _cfg_get(wt, "beadhive.claimIncarnation")
 
 
 def test_concurrent_claims_keep_separate_identities(hive, fakebd):
@@ -1365,29 +1380,15 @@ def test_merge_reuses_the_recorded_green_on_an_exact_tree_match(hive, fakebd, mo
 # quiet pass.
 
 
-def _ledger_path(hive):
-    return hive.main / ".git" / validation_ledger.LEDGER_FILENAME
-
-
 def _put_verdict(hive, tree, cmd, rc=0, age=0.0):
-    """Replace the hive's ledger with ONE entry for `tree`, so a landing lookup can only hit via
-    that entry. The direct write is the point: it plants states the real writers never produce
-    (a subtree, an expired or red verdict) exactly as a hostile/corrupt ledger would."""
-    _ledger_path(hive).write_text(
-        json.dumps(
-            [
-                {
-                    "tree": tree,
-                    "cmd_hash": validation_ledger.cmd_hash(cmd),
-                    "rc": rc,
-                    "at": time.time() - age,
-                    "sha": tree,
-                    "shas": [tree],
-                }
-            ]
-        )
-        + "\n"
-    )
+    """Plant an authoritative execution fact for an adversarial landing lookup."""
+    entry = {"provider": "github", "org": "myorg", "repo": "myrepo"}
+    root = private_paths.git_private_root(hive.main)
+    assert root is not None
+    shutil.rmtree(root / "validation", ignore_errors=True)
+    validation_ledger.record(entry, tree, cmd, rc)
+    if age:
+        age_verdict(hive.main, entry, tree, cmd, age)
 
 
 def _submitted_bead(hive, fakebd, bead, fname="change.txt", body="feat: the change"):
@@ -1602,11 +1603,95 @@ def test_check_then_submit_same_sha_runs_validation_once(hive, fakebd, monkeypat
 
     work.check(bead="mr-180", hive="myrepo")
     assert _run_count(log) == 1
+    records = hive.main / ".git/bh/validation"
+    assert len(list((records / "runs").glob("*/manifest.json"))) == 1
+    assert len(list((records / "uses").glob("*.json"))) == 1
 
     work.submit(bead="mr-180", hive="myrepo")
     assert _run_count(log) == 1  # submit reused check's verdict — no second run
+    assert len(list((records / "runs").glob("*/manifest.json"))) == 1
+    assert len(list((records / "uses").glob("*.json"))) == 2
     assert "validation verdict reused" in capsys.readouterr().out
     assert fakebd.states["mr-180"]["review"] == "pending"
+
+
+@pytest.mark.parametrize("later_verdict", ["red", "none"])
+def test_later_nongreen_check_blocks_stale_green_reuse_and_records_fresh_use(
+    hive, fakebd, monkeypatch, later_verdict
+):
+    """A stale 0.15.1 green row cannot override a newer authoritative red/none run."""
+    fakebd.seed("mr-180b", title="t")
+    work.claim(bead="mr-180b", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-180b"), "feat: the change")
+    calls = 0
+
+    original_work_value = config.work_value
+
+    def configured_protocol(cfg, entry, key, default=None):
+        if key == "validation_protocol" and later_verdict == "none":
+            return "beadhive-validation-result/v1"
+        return original_work_value(cfg, entry, key, default)
+
+    monkeypatch.setattr(config, "work_value", configured_protocol)
+
+    def check_result(_cmd, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return _CP(0, "", "")
+        if later_verdict == "none":
+            path = Path(kwargs["env"]["BH_VALIDATION_RESULT_PATH"])
+            path.write_text(
+                json.dumps(
+                    {
+                        "protocol": "beadhive-validation-result",
+                        "version": 1,
+                        "verdict": "none",
+                        "reason": "runner refused",
+                    }
+                )
+            )
+        return _CP(1, "", "")
+
+    monkeypatch.setattr(work, "run", check_result)
+    monkeypatch.setattr(work.converge, "converge", lambda *_args, **_kwargs: None)
+    work.check(bead="mr-180b", hive="myrepo")
+    with pytest.raises(typer.Exit):
+        work.check(bead="mr-180b", hive="myrepo")
+
+    cfg = config.load()
+    entry, _main, target, branch = worktree.locate(cfg, "myrepo", "mr-180b")
+    executed = []
+    original_run = worktree.run
+
+    def observe_fresh(cmd, **kwargs):
+        if list(cmd)[:1] != ["git"]:
+            executed.append(list(cmd))
+        return original_run(cmd, **kwargs)
+
+    monkeypatch.setattr(worktree, "run", observe_fresh)
+    assert (
+        worktree.clean_checkout(
+            entry,
+            branch,
+            config.validate_cmd(cfg, entry),
+            cfg=cfg,
+            reuse=True,
+            bead="mr-180b",
+            phase="submit",
+        )
+        == 0
+    )
+    assert executed == [["true"]]  # stale green was refused; this was not a reuse short-cut
+
+    root = hive.main / ".git/bh/validation"
+    manifests = [json.loads(path.read_text()) for path in (root / "runs").glob("*/manifest.json")]
+    assert sorted(item["verdict"] for item in manifests) == ["green", "green", later_verdict]
+    uses = [json.loads(path.read_text()) for path in (root / "uses").glob("*.json")]
+    assert len(uses) == 3
+    assert all(item["reused"] is False for item in uses)
+    assert all(item["run_id"] for item in uses)
+    assert target.exists()  # provenance target remains the bead worktree for both checks
 
 
 def test_check_on_dirty_tree_does_not_seed_ledger(hive, fakebd, monkeypatch):
@@ -1711,7 +1796,49 @@ def test_check_exports_a_fresh_empty_test_report_dir(hive, fakebd, monkeypatch):
     drop1, count1, drop2, count2 = log.read_text().split()
     assert drop1 and drop2 and drop1 != drop2, "two checks shared one drop zone"
     assert count1 == count2 == "0", "the exported drop zone was not empty at exec"
-    assert not Path(drop1).exists() and not Path(drop2).exists()
+    for drop in (Path(drop1), Path(drop2)):
+        # A check's fresh report directory is now a durable raw artifact rather
+        # than a temporary directory. It remains empty here because the probe
+        # intentionally writes no report, and its sibling gate log is retained.
+        assert drop.is_dir() and not list(drop.iterdir())
+        assert (drop.parent / "gate.log").is_file()
+
+
+def test_check_refuses_relative_artifact_root_before_validation(hive, fakebd, monkeypatch):
+    """A hand-edited invalid root must not quietly return to temporary output."""
+    fakebd.seed("mr-182-relative", title="t")
+    work.claim(bead="mr-182-relative", as_="", hive="myrepo")
+    original = config.work_value
+
+    def relative_root(cfg, entry, key, default=None):
+        if key == "validation_artifact_root":
+            return "relative/artifacts"
+        return original(cfg, entry, key, default)
+
+    monkeypatch.setattr(config, "work_value", relative_root)
+    with pytest.raises(typer.Exit) as exc:
+        work.check(bead="mr-182-relative", hive="myrepo")
+    assert exc.value.exit_code == 2
+    assert not list((hive.main / ".git/bh/validation/runs").glob("*/manifest.json"))
+
+
+def test_artifacts_uploaded_command_acknowledges_ci_handoff(hive):
+    run = validation_records.begin_run(
+        hive.main,
+        bead="mr-artifacts",
+        phase="check",
+        branch="wt/bead/issue/mr-artifacts",
+        worktree=hive.main,
+        sha="sha",
+        tree="tree",
+        command_hash="hash",
+    )
+    validation_records.finish_run(hive.main, run["run_id"], exit_code=1)
+
+    work.artifacts_uploaded(run_id=run["run_id"], hive="myrepo")
+
+    acknowledged = validation_records.read_run(hive.main, run["run_id"])
+    assert acknowledged["artifacts_uploaded_at"]
 
 
 # ---- approve (first-class review-gate resolve; replaces `ws bd gate resolve`) ----

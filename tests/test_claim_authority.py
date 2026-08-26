@@ -5,6 +5,8 @@ pure verify()/registry assertions. AAA structure.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from beadhive import claim_authority
@@ -54,6 +56,114 @@ def test_issue_then_read_round_trips_the_seat(repo):
     assert issued.seat == "dev/alice"
     assert issued.attestation == "none"
     assert back == issued
+
+
+def test_issue_uses_the_shared_git_private_root_not_worktree_admin(repo):
+    authority = claim_authority.get_authority("local")
+
+    authority.issue("bh-ejlq", "dev/alice", repo)
+
+    path = claim_authority.record_path(repo)
+    assert path is not None
+    assert path.name == "claim.json"
+    assert path.parent.name == "main"
+    assert path.is_file()
+    assert not (repo / ".git" / "bh-claim.json").exists()
+
+
+def test_linked_worktree_keeps_claim_when_git_moves_its_path(repo, tmp_path):
+    from beadhive.run import run
+
+    run(["git", "-C", str(repo), "config", "user.email", "t@example.invalid"], check=True)
+    run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "seed").write_text("x")
+    run(["git", "-C", str(repo), "add", "seed"], check=True)
+    run(["git", "-C", str(repo), "commit", "-qm", "seed"], check=True)
+    old, new = tmp_path / "old", tmp_path / "new"
+    run(["git", "-C", str(repo), "worktree", "add", "-qb", "topic", str(old)], check=True)
+    authority = claim_authority.get_authority("local")
+    authority.issue("bh-ejlq", "dev/alice", old)
+    before = claim_authority.record_path(old)
+
+    run(["git", "-C", str(repo), "worktree", "move", str(old), str(new)], check=True)
+
+    assert claim_authority.record_path(new) == before
+    assert authority.read(new).seat == "dev/alice"
+
+
+def test_raw_git_remove_and_recreate_at_same_path_has_new_claim_incarnation(repo, tmp_path):
+    """Git may reuse its admin leaf, so the leaf alone cannot authorize a new checkout."""
+    from beadhive.run import run
+
+    run(["git", "-C", str(repo), "config", "user.email", "t@example.invalid"], check=True)
+    run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "seed").write_text("x")
+    run(["git", "-C", str(repo), "add", "seed"], check=True)
+    run(["git", "-C", str(repo), "commit", "-qm", "seed"], check=True)
+    checkout = tmp_path / "same-path"
+    run(["git", "-C", str(repo), "worktree", "add", "-qb", "first", str(checkout)], check=True)
+    authority = claim_authority.get_authority("local")
+    authority.issue("bh-first", "dev/alice", checkout)
+    old_id, old_path = claim_authority.worktree_id(checkout), claim_authority.record_path(checkout)
+
+    # Deliberately bypass bh cleanup: this is the hostile-but-supported raw Git path.
+    run(["git", "-C", str(repo), "worktree", "remove", "--force", str(checkout)], check=True)
+    run(["git", "-C", str(repo), "worktree", "add", "-qb", "second", str(checkout)], check=True)
+
+    assert old_path.is_file(), "raw Git removal intentionally leaves central stale state behind"
+    assert claim_authority.worktree_id(checkout) is None
+    assert claim_authority.record_path(checkout) is None
+    assert authority.read(checkout) is None
+    authority.issue("bh-second", "dev/bob", checkout)
+    assert claim_authority.worktree_id(checkout) != old_id
+    assert claim_authority.record_path(checkout) != old_path
+    assert authority.read(checkout).seat == "dev/bob"
+
+
+def test_absent_central_record_atomically_migrates_legacy_claim(repo):
+    authority = claim_authority.get_authority("local")
+    legacy = claim_authority._legacy_record_path(repo)
+    legacy.write_text(json.dumps({"bead": "bh-old", "seat": "dev/alice"}))
+
+    record = authority.read(repo)
+
+    central = claim_authority.record_path(repo)
+    assert record is not None and record.seat == "dev/alice"
+    assert central.is_file() and not legacy.exists()
+
+
+def test_malformed_central_record_does_not_revive_legacy_claim(repo):
+    authority = claim_authority.get_authority("local")
+    central = claim_authority._record_path(repo, create=True)
+    central.parent.mkdir(parents=True, exist_ok=True)
+    central.write_text("not json")
+    legacy = claim_authority._legacy_record_path(repo)
+    legacy.write_text(json.dumps({"bead": "bh-old", "seat": "dev/alice"}))
+
+    assert authority.read(repo) is None
+    assert legacy.exists(), "malformed new state must not delete legacy state"
+
+
+def test_remove_record_only_removes_its_own_worktree_key(repo, tmp_path):
+    from beadhive.run import run
+
+    run(["git", "-C", str(repo), "config", "user.email", "t@example.invalid"], check=True)
+    run(["git", "-C", str(repo), "config", "user.name", "t"], check=True)
+    (repo / "seed").write_text("x")
+    run(["git", "-C", str(repo), "add", "seed"], check=True)
+    run(["git", "-C", str(repo), "commit", "-qm", "seed"], check=True)
+    one, two = tmp_path / "one", tmp_path / "two"
+    run(["git", "-C", str(repo), "worktree", "add", "-qb", "one", str(one)], check=True)
+    run(["git", "-C", str(repo), "worktree", "add", "-qb", "two", str(two)], check=True)
+    authority = claim_authority.get_authority("local")
+    authority.issue("bh-one", "dev/one", one)
+    authority.issue("bh-two", "dev/two", two)
+    one_path, two_path = claim_authority.record_path(one), claim_authority.record_path(two)
+
+    claim_authority.remove_record(one)
+
+    assert not one_path.exists()
+    assert two_path.is_file() and authority.read(two).seat == "dev/two"
 
 
 def test_issue_overwrites_a_prior_record_for_the_same_worktree(repo):

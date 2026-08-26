@@ -44,6 +44,7 @@ from . import (
     jsonout,
     metadata,
     otel,
+    private_paths,
     registry,
     safety,
     store_locator,
@@ -1872,6 +1873,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
                     f"`{config.BINARY_ALIAS} hive onboard --furnish`, or untrack .beads/"
                 )
         if path.exists():
+            warns += _legacy_validation_warnings(e, path)
             n_commits, holder = _local_commits_while_not_primary(cfg, e, path)
             if n_commits:
                 warns.append(
@@ -1895,6 +1897,50 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _orphaned_dolt_server_warnings()
     warns += _channel_drift_warnings(cfg, hives)
     return warns
+
+
+def _legacy_validation_warnings(entry: dict, path: Path) -> list[str]:
+    """Report the read-only two-root inventory, including safe cleanup candidates."""
+    prefix = str(entry.get("prefix", "")) or f"{entry.get('org')}/{entry.get('repo')}"
+    findings = private_paths.inventory_private_state(path)
+    by_kind: dict[str, list[str]] = {}
+    for finding in findings:
+        by_kind.setdefault(finding.kind, []).append(str(finding.path))
+    warnings = []
+    if legacy := by_kind.pop("legacy_path", []):
+        warnings.append(
+            f"hive '{prefix}' retains legacy Beadhive private state ({', '.join(legacy)}). "
+            "Bh reads compatibility inputs only in the bounded 0.16.x and 0.17.x window; "
+            "canonical "
+            f"state is below .git/{private_paths.GIT_PRIVATE_DIRNAME}/ and "
+            f"{private_paths.REPO_PRIVATE_DIRNAME}/. Verify the migration, then follow "
+            "docs/UPGRADING.md before removing legacy copies; fallback is removed in 0.18.0."
+        )
+    labels = {
+        "abandoned_validation_run": "abandoned validation runs",
+        "abandoned_validation_artifact": "artifacts from abandoned validation runs",
+        "orphaned_validation_artifact": "validation artifacts without manifests",
+        "stale_claim": "claims without registered Git worktrees",
+        "build_leftover": "build scratch owned by dead processes",
+        "release_leftover": "release control records owned by dead processes",
+        "release_artifact_leftover": "release logs without live control owners",
+    }
+    for kind, paths in sorted(by_kind.items()):
+        if kind.startswith("protected_"):
+            warnings.append(
+                f"hive '{prefix}' has PROTECTED private state with unmeasurable ownership "
+                f"({kind.removeprefix('protected_').replace('_', ' ')}): {', '.join(paths)}. "
+                "This is not a deletion candidate; repair or establish ownership before any "
+                "cleanup (docs/design/private-path-inventory.md)."
+            )
+        else:
+            warnings.append(
+                f"hive '{prefix}' has cleanup candidates — "
+                f"{labels.get(kind, kind.replace('_', ' '))}: {', '.join(paths)}. "
+                "This doctor inventory is read-only; re-check ownership and follow "
+                "docs/design/private-path-inventory.md before cleanup."
+            )
+    return warnings
 
 
 def warning_messages(cfg: dict | None = None) -> list[str]:

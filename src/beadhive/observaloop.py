@@ -333,8 +333,9 @@ def endpoint_for(name: str, protocol: str, cfg=None) -> str | None:
     observaloop's own display form. The OTel Python OTLP/gRPC exporter infers ``insecure=True``
     ONLY from an ``http://`` scheme; handed a bare ``host:port`` it opens a SECURE channel and
     attempts a TLS handshake against a plaintext collector, then drops every span, metric and log
-    with nothing surfaced to the CLI. Because this value is baked into ``<worktree>/.bh/otel.env``
-    by ``observaloop_env.write_worktree_env``, the scheme-less form silently disabled telemetry for
+    with nothing surfaced to the CLI. Because this value is baked into
+    ``<worktree>/.bh/observability/otel.env`` by ``observaloop_env.write_worktree_env``, the
+    scheme-less form silently disabled telemetry for
     EVERY managed worktree — 24 overlays on beadhive-factory, zero spans ever tagged with their
     profile — while runs from the main clone (whose ``otel.endpoint`` carries the scheme) worked
     fine, which is what kept it hidden (bh-jdopc)."""

@@ -62,7 +62,8 @@ def test_check_runs_verify_flagged_rules_before_validating(checkable):
         ],
     )
     work.check(bead="mr-1", hive="myrepo")
-    assert checkable["calls"] == [["trust-the-tree"], ["sync-the-deps"], ["validate-me"]]
+    commands = [call for call in checkable["calls"] if call[:1] != ["git"]]
+    assert commands == [["trust-the-tree"], ["sync-the-deps"], ["validate-me"]]
 
 
 def test_check_with_no_verify_flagged_rules_is_unchanged(checkable):
@@ -70,7 +71,8 @@ def test_check_with_no_verify_flagged_rules_is_unchanged(checkable):
     exactly today's behaviour, one validation command and no environment establishment."""
     _set_rules(checkable["monkeypatch"], [{"run": "heavy-seat-setup"}])
     work.check(bead="mr-1", hive="myrepo")
-    assert checkable["calls"] == [["validate-me"]]
+    commands = [call for call in checkable["calls"] if call[:1] != ["git"]]
+    assert commands == [["validate-me"]]
 
 
 def test_check_verify_rules_honour_if_exists_in_the_worktree(checkable):
@@ -85,4 +87,5 @@ def test_check_verify_rules_honour_if_exists_in_the_worktree(checkable):
         ],
     )
     work.check(bead="mr-1", hive="myrepo")
-    assert checkable["calls"] == [["for-present"], ["validate-me"]]
+    commands = [call for call in checkable["calls"] if call[:1] != ["git"]]
+    assert commands == [["for-present"], ["validate-me"]]

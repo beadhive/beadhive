@@ -78,7 +78,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, registry, validation_ledger, worktree
+from . import bd, config, private_paths, registry, validation_ledger, worktree
 from . import release_order as ro
 
 # `prepush` is imported per-call, not here: it pulls `guard` + `host_fence` (~14ms measured) and
@@ -103,6 +103,8 @@ _GATE = typer.Option(
 #: The background bump-gate marker, beside the ledger in the hive's git dir. Untracked, local,
 #: dies with the clone — it holds no verdict, only enough to tell "still running" from "died
 #: without recording one". The VERDICT always comes from the ledger.
+# Kept as compatibility inputs only.  New control state belongs below the common
+# git directory and diagnostic output below the shared primary checkout.
 BUMP_GATE_FILENAME = "bh-release-bump-gate.json"
 BUMP_GATE_LOG = "bh-release-bump-gate.log"
 
@@ -180,10 +182,68 @@ def _resolve(hive_id: str, gate_cmd: str):
 
 
 def _marker_path(entry) -> Path | None:
-    """The bump-gate marker file, or None when there's no plain `.git` dir to keep it in — the
-    same siting rule (and the same "then callers just fall back") as the ledger's own file."""
+    """Canonical bump-gate control path, without creating anything.
+
+    The common git directory makes this one record visible to linked worktrees.
+    ``_read_marker`` is deliberately read-only, including in recovery previews.
+    """
+    return private_paths.git_private_path(registry.hive_dir(entry), "release", "bump-gate.json")
+
+
+def _legacy_marker_path(entry) -> Path | None:
+    """The pre-migration marker location, retained only as a read fallback."""
     git_dir = registry.hive_dir(entry) / ".git"
     return git_dir / BUMP_GATE_FILENAME if git_dir.is_dir() else None
+
+
+def _marker_paths(entry) -> tuple[Path, ...]:
+    """Canonical-first marker candidates; omit unavailable or duplicate paths."""
+    paths = tuple(path for path in (_marker_path(entry), _legacy_marker_path(entry)) if path)
+    return tuple(dict.fromkeys(paths))
+
+
+def _gate_log_path(entry, tree: str) -> Path | None:
+    """Canonical diagnostic artifact path, without creating its root."""
+    return private_paths.repo_private_path(
+        registry.hive_dir(entry), "release", "bump-gates", tree, "gate.log"
+    )
+
+
+def _legacy_gate_log_path(entry) -> Path | None:
+    """Pre-migration diagnostic artifact, read-only compatibility input."""
+    git_dir = registry.hive_dir(entry) / ".git"
+    return git_dir / BUMP_GATE_LOG if git_dir.is_dir() else None
+
+
+def _marker_log(entry, marker: dict, tree: str) -> str:
+    """Best diagnostic log path, canonical-first; absence never affects a verdict."""
+    for path in (_gate_log_path(entry, tree), _legacy_gate_log_path(entry)):
+        if path is not None and path.is_file():
+            return str(path)
+    recorded = marker.get("log")
+    return str(recorded) if recorded else "(no log recorded)"
+
+
+def _write_atomic(path: Path, payload: str) -> bool:
+    """Install a small control record atomically, returning false on any safe failure."""
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                fh.write(payload)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(temporary, path)
+        except Exception:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        return False
+    return True
 
 
 def _read_marker(entry) -> dict:
@@ -196,14 +256,16 @@ def _read_marker(entry) -> dict:
     `_marker_for_tree`. Nothing creates a FIFO here today, but "unreadable in bounded time" is
     exactly the "not there" case this function already exists to collapse everything else into,
     and a `just push` that never returns is the worst kind of failure to debug."""
-    path = _marker_path(entry)
-    if path is None or not path.is_file():
-        return {}
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    for path in _marker_paths(entry):
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            return data
+    return {}
 
 
 def _marker_for_tree(entry, rev: str) -> tuple[dict | None, str]:
@@ -364,16 +426,30 @@ def attest(
         raise typer.Exit(0 if rc == 0 else REFUSED)
 
     marker = _marker_path(entry)
-    if marker is None:
+    tree = validation_ledger.tree_of(entry, sha)
+    log = _gate_log_path(entry, tree)
+    # This is the write seam.  Resolvers above remain read-only for preview and
+    # recovery; only firing a background gate creates the two private roots.
+    if (
+        marker is None
+        or log is None
+        or private_paths.ensure_git_private_root(main) is None
+        or private_paths.ensure_repo_private_root(main) is None
+    ):
         typer.echo(
-            f"✗ {main} has no plain .git dir — nowhere to track a background gate. Run "
+            f"✗ {main} has no usable private release roots — nowhere to track a background gate.\n"
+            "  Run "
             f"`{config.BINARY_ALIAS} release attest` in the foreground instead.",
             err=True,
         )
         raise typer.Exit(REFUSED)
     from . import host
 
-    log = marker.with_name(BUMP_GATE_LOG)
+    try:
+        log.parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        typer.echo(f"✗ cannot create background gate log at {log}", err=True)
+        raise typer.Exit(REFUSED) from exc
     # `sys.argv[0]` rather than a hardcoded name: the child must be the SAME bh the operator just
     # invoked. In this repo that is often `uv run bh` from source, where the installed binary lags
     # the tree — spawning `bh` by name there would gate with different code than it was asked to.
@@ -383,10 +459,11 @@ def attest(
         proc = subprocess.Popen(
             cmdline, cwd=str(main), stdin=devnull, stdout=fh, stderr=fh, start_new_session=True
         )
-    marker.write_text(
+    if not _write_atomic(
+        marker,
         json.dumps(
             {
-                "tree": validation_ledger.tree_of(entry, sha),
+                "tree": tree,
                 "cmd": cmd,
                 "sha": sha,
                 "pid": proc.pid,
@@ -395,8 +472,17 @@ def attest(
                 "started": time.time(),
             }
         )
-        + "\n"
-    )
+        + "\n",
+    ):
+        # A process without the ownership marker is unsafe: await/recover could
+        # not discover it.  Best-effort terminate it and refuse rather than make
+        # an untracked gate look like no gate was ever fired.
+        try:
+            proc.terminate()
+        except OSError:
+            pass
+        typer.echo(f"✗ cannot atomically record background gate ownership at {marker}", err=True)
+        raise typer.Exit(REFUSED)
     typer.echo(
         f"→ gating {sha[:12]} in the background under {cmd!r} (pid {proc.pid})\n"
         f"  log: {log}\n"
@@ -474,7 +560,7 @@ def await_cmd(
         # ledger read right after it is what decides green/red, unconditionally on the marker.
         marker, tree = _marker_for_tree(entry, rev)
         hit = validation_ledger.verdict(entry, rev, cmd)
-        if hit is not None and hit.get("rc") == 0:
+        if hit is not None and validation_ledger.is_qualifying_green(hit):
             when = datetime.datetime.fromtimestamp(float(hit["at"])).astimezone()
             typer.echo(
                 f"✓ attested green: tree {tree[:12]} passed {cmd!r} at "
@@ -482,11 +568,13 @@ def await_cmd(
             )
             return
         if hit is not None:
+            outcome = str(hit.get("verdict", "non-green")).upper()
             typer.echo(
-                f"✗ the bump tree is RED (exit {hit.get('rc')!r} from {cmd!r}) — DO NOT PUSH.\n"
+                f"✗ the bump tree is {outcome} (exit {hit.get('rc')!r} from {cmd!r}) "
+                "— DO NOT PUSH.\n"
                 f"  Nothing has left this machine, so the bump is still fully reversible:\n"
                 f"      {config.BINARY_ALIAS} release recover\n"
-                f"  gate output: {(marker or {}).get('log', '(no log recorded)')}",
+                f"  gate output: {_marker_log(entry, marker or {}, tree)}",
                 err=True,
             )
             raise typer.Exit(REFUSED)
@@ -507,7 +595,7 @@ def await_cmd(
             typer.echo(
                 f"✗ the background gate (pid {marker.get('pid')}) exited WITHOUT recording a "
                 f"verdict for {tree[:12]} — it crashed, was killed, or never started.\n"
-                f"  That is not a pass. Read {marker.get('log', '(no log recorded)')} and re-run:\n"
+                f"  That is not a pass. Read {_marker_log(entry, marker, tree)} and re-run:\n"
                 f"      {config.BINARY_ALIAS} release attest {rev}",
                 err=True,
             )
@@ -516,7 +604,7 @@ def await_cmd(
             typer.echo(
                 f"✗ timed out after {timeout}s waiting for a {cmd!r} verdict on {tree[:12]}.\n"
                 f"  A timeout is NOT a pass — the gate may still be running "
-                f"({marker.get('log', 'no log')}). Wait longer with --timeout, or re-run it.",
+                f"({_marker_log(entry, marker, tree)}). Wait longer with --timeout, or re-run it.",
                 err=True,
             )
             raise typer.Exit(REFUSED)
@@ -1251,7 +1339,8 @@ def recover(
         typer.echo("✗ choose --apply or --dry-run, not both; nothing was changed", err=True)
         raise typer.Exit(REFUSED)
     try:
-        main = registry.hive_dir_for(config.load(), hive)
+        cfg = config.load()
+        main = registry.hive_dir_for(cfg, hive)
     except Exception as exc:  # noqa: BLE001 — cannot locate the clone ⇒ cannot MEASURE anything
         typer.echo(
             f"✗ COULD NOT MEASURE: no clone to read the remote from "
@@ -1272,6 +1361,22 @@ def recover(
     if res.returncode != 0 or not bump_sha:
         typer.echo(f"✗ cannot resolve {rev!r} in {main}", err=True)
         raise typer.Exit(UNMEASURABLE)
+
+    # A live background attestation is ownership/lifecycle state, not a
+    # verdict.  Do not race it by removing the bump it is validating.  This
+    # read intentionally uses the canonical-first legacy fallback and creates
+    # nothing; `recover` is otherwise read-only unless --apply is explicit.
+    entry = registry.entry_for_dir(cfg, main)
+    marker, _tree = _marker_for_tree(entry, bump_sha) if entry else (None, "")
+    if marker is not None:
+        typer.echo(
+            f"✗ RECOVERY REFUSED: background gate for {bump_sha[:12]} is still pending "
+            f"(pid {marker.get('pid')!r}). Nothing was changed.\n"
+            f"  Wait with `{config.BINARY_ALIAS} release await {bump_sha[:12]}` or inspect "
+            f"{_marker_log(entry, marker, validation_ledger.tree_of(entry, bump_sha))}.",
+            err=True,
+        )
+        raise typer.Exit(REFUSED)
     if not tag:
         at = subprocess.run(
             ["git", "-C", str(main), "tag", "--points-at", bump_sha],

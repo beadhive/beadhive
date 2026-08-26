@@ -65,8 +65,8 @@ ENV_VAR = "BH_TEST_REPORT_DIR"
 _STATUS = {"failure": "failed", "error": "error", "skipped": "skipped"}
 
 #: Count keys on an ingested report, in the order they are reported. `cases` is deliberately NOT
-#: among them: per-test records in the 200-entry ledger would cost ~96 MiB per hive (bh-ku9n9.4,
-#: Evidence 9), so callers persisting a verdict keep the counts and drop the list.
+#: among them: per-test records in validation control manifests would cost tens of MiB per hive
+#: (bh-ku9n9.4, Evidence 9), so callers persisting a run keep the counts and drop the list.
 COUNT_KEYS = ("tests", "passed", "failures", "errors", "skipped")
 
 #: The passing status, named once — the value `triage_store` filters on to keep its per-tree
@@ -85,13 +85,21 @@ def _seconds(raw) -> float | None:
 
 
 @contextlib.contextmanager
-def drop_zone() -> Iterator[Path]:
+def drop_zone(directory: Path | None = None) -> Iterator[Path]:
     """A fresh, empty, unique directory for the duration of one validation run (constraint 2).
 
     Freshness is structural: `mkdtemp` creates a directory that has never existed, so a report
     left by a previous run — or by a concurrent one — is not merely cleared, it is unreachable
     by construction. Removed on exit; clean-up failures are ignored because a drop zone that
     won't delete must never fail the validation it observed."""
+    if directory is not None:
+        # The durable allocator created this empty directory with mkdir(exist_ok=False)
+        # immediately after minting the run id. Do not clean it here: raw reports are a
+        # complete CI-uploadable artifact of that run.
+        if not directory.is_dir() or any(directory.iterdir()):
+            raise ValueError("validation report directory must be fresh and empty")
+        yield directory
+        return
     with tempfile.TemporaryDirectory(prefix="bh-testreport-", ignore_cleanup_errors=True) as d:
         yield Path(d)
 
@@ -154,5 +162,5 @@ def ingest(drop: Path, rc: int) -> dict | None:
 
 
 def counts(report: dict | None) -> dict | None:
-    """`report` without its per-test `cases` list — the digest-sized part a verdict may carry."""
+    """`report` without per-test `cases` — the bounded part a run summary may carry."""
     return None if report is None else {k: report[k] for k in COUNT_KEYS}

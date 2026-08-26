@@ -52,6 +52,7 @@ from . import (
     test_report,  # noqa: F401 - injected submission collaborator
     triage_store,  # noqa: F401 - injected submission collaborator
     validation_ledger,  # noqa: F401 - injected submission collaborator
+    validation_records,  # noqa: F401 - injected submission collaborator
     work_assignment,
     work_dispatch,
     work_group,  # noqa: F401 - injected merge collaborator
@@ -827,6 +828,27 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     return work_submission.impl_check(sys.modules[__name__], bead, hive)
 
 
+@app.command("artifacts-uploaded")
+@otel.trace_verb("work.artifacts-uploaded")
+def artifacts_uploaded(
+    run_id: str = typer.Argument(..., metavar="<run-id>", help="uploaded validation run id"),
+    hive: str = _HIVE,
+):
+    """Acknowledge an external CI upload, then apply safe raw-artifact retention.
+
+    Invoke this only after the complete run directory (``reports/`` plus
+    ``gate.log``) has been uploaded. It is deliberately separate from `check`:
+    bh cannot infer whether an external artifact service accepted the upload.
+    """
+    cfg = config.load()
+    entry = worktree._resolve_entry(cfg, hive)
+    main = registry.hive_dir(entry)
+    if validation_records.mark_artifacts_uploaded(main, run_id) is None:
+        typer.echo(f"✗ validation run not found: {run_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"✓ acknowledged upload for {run_id}; applied artifact retention")
+
+
 def _mark_self_check(cfg, entry, target, rc) -> None:
     """Stamp this SELF-CHECK attempt onto the `work.check` verb span (bh-trgcd.2) — seat, tree
     content key, and green/red — so "how many self-checks did this bead take before one came back
@@ -846,7 +868,17 @@ def _mark_self_check(cfg, entry, target, rc) -> None:
 
 
 def _record_check_verdict(
-    entry, target, cmd, rc, report=None, drop=None, log=None, cfg=None
+    entry,
+    target,
+    cmd,
+    rc,
+    report=None,
+    drop=None,
+    log=None,
+    cfg=None,
+    run_id=None,
+    bead=None,
+    branch=None,
 ) -> None:
     """Feed a green `check` into the same verdict ledger `submit` reuses from (bh-i0p1.4): a
     clean-checkout validation and a `check` against a CLEAN worktree prove the exact same thing
@@ -871,7 +903,18 @@ def _record_check_verdict(
     already resolved — is forwarded to the ledger's TTL lookup instead of a fresh `config.load()`
     (bh-ku9n9.19, item 2)."""
     return work_submission.impl__record_check_verdict(
-        sys.modules[__name__], entry, target, cmd, rc, report, drop, log, cfg
+        sys.modules[__name__],
+        entry,
+        target,
+        cmd,
+        rc,
+        report,
+        drop,
+        log,
+        cfg,
+        run_id,
+        bead,
+        branch,
     )
 
 
@@ -1004,14 +1047,16 @@ def _warn_submit_release_hint(bead, main, entry, branch, base) -> None:
     )
 
 
-def _validate_submit_checkout(entry, branch, cfg) -> None:
+def _validate_submit_checkout(entry, branch, cfg, bead=None) -> None:
     """Clean-checkout validation — the result must not depend on dirty local state. Submit is
     the trusted-local opt-in to the verdict ledger (bh-dfx0): a fresh green verdict for this
     exact (TREE, cmd) skips the redundant checkout, so a re-submit of an unchanged sha is a
     true end-to-end no-op. Since bh-ku9n9.17 the landing boundaries (merge / postland / finish /
     batch land) reuse on the same key — an exact tree match, ADR Decision 4 — which is what makes
     THIS verdict the one a `--no-ff` land onto an unmoved base gets to ride."""
-    return work_submission.impl__validate_submit_checkout(sys.modules[__name__], entry, branch, cfg)
+    return work_submission.impl__validate_submit_checkout(
+        sys.modules[__name__], entry, branch, cfg, bead
+    )
 
 
 def _open_submit_gate(cfg, entry, bead, branch, main, sha) -> tuple[str, bool]:
