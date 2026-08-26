@@ -93,6 +93,7 @@ auto_message = work_logic.auto_message
 flag_rows = work_logic.flag_rows
 ensure_review_gate = work_logic.ensure_review_gate  # shared gate seam (single-bead + batch submit)
 ensure_container = work_logic.ensure_container  # shared epic-container provisioning
+ClaimResult = work_assignment.ClaimResult  # structured single-bead claim envelope
 
 app = typer.Typer(no_args_is_help=True, help="Drive a bead assigned→merged (integration plane).")
 
@@ -505,7 +506,7 @@ def claim(
     )
 
 
-def _claim_single_bead(cfg, hive, bead, as_) -> None:
+def _claim_single_bead(cfg, hive, bead, as_) -> ClaimResult:
     """The single-bead claim: re-attach/provision the worktree with `actor`'s identity, refuse
     if it's someone else's or the wrong seat, then `bd update --claim` (→ in_progress)."""
     return work_assignment.impl__claim_single_bead(sys.modules[__name__], cfg, hive, bead, as_)

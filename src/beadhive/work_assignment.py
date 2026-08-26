@@ -6,6 +6,27 @@ each call.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass(frozen=True)
+class ClaimResult:
+    """Structured result of the single-bead claim lifecycle.
+
+    The CLI deliberately renders this result separately so composite callers can consume the
+    complete provisioning record without scraping human progress output.
+    """
+
+    entry: dict
+    main: Path
+    bead: dict
+    actor: str
+    disposition: str
+    worktree: Path
+    identity: dict
+    branch: str = ""
+
 
 def impl_assign(api, bead, to, as_, hive, preview, as_json):
     api.otel.set_bead(bead)
@@ -90,10 +111,19 @@ def impl_claim(api, bead, as_, group, collapse, hive, preview, as_json):
     if not bead:
         api.typer.echo("✗ pass a bead <id> (or --group <ids> for a batch)", err=True)
         raise api.typer.Exit(1)
-    api._claim_single_bead(cfg, hive, bead, as_)
+    result = api._claim_single_bead(cfg, hive, bead, as_)
+    api.typer.echo(f"✓ claimed {bead} as {result.actor}; worktree {result.worktree}")
+    api._print_brief(cfg, result.entry, bead, result.bead)
+    if not api.worktree.in_bead_worktree(result.worktree):
+        api.typer.echo(
+            "\nWARNING: cwd is not the bead worktree — edits here target the wrong tree.\n"
+            f'  → cd "{result.worktree}"  # work happens in the worktree, NOT the main clone',
+            err=True,
+        )
 
 
 def impl__claim_single_bead(api, cfg, hive, bead, as_):
+    """Claim one bead and return its structured provisioning envelope (no success output)."""
     api.otel.set_bead(bead)
     entry, main, _target, _branch = api.worktree.locate(cfg, hive, bead)
     api._pull_state(cfg, main)
@@ -104,21 +134,41 @@ def impl__claim_single_bead(api, cfg, hive, bead, as_):
     api._guard_seat(data, actor, bead, verb="claimed by")
     api._guard_conventions(cfg, data, bead, main, action="dispatch")
     api._maybe_open_molecule(cfg, hive, bead, main)
-    entry, target, _branch = api.worktree.ensure(cfg, hive, bead, kind=api._kind_of(data))
+    already_held = api.work_next.claim_won(data, actor)
+    # Persist the authority record against the managed checkout before the bd claim, just as the
+    # historical CLI path did.  Provisioning itself is idempotent and may reattach an existing
+    # checkout for a same-actor retry.
+    entry, target, branch = api.worktree.ensure(cfg, hive, bead, kind=api._kind_of(data))
     api._stamp(cfg, entry, target, actor)
     api._issue_claim(cfg, entry, bead, actor, target, hive)
-    res = api.bd.run(["update", bead, "--claim"], main, actor=actor)
-    if res.returncode != 0:
-        raise api.typer.Exit(res.returncode)
+    if not already_held:
+        res = api.bd.run(["update", bead, "--claim"], main, actor=actor)
+        if res.returncode != 0:
+            raise api.typer.Exit(res.returncode)
+        # bd's claim write is not a compare-and-swap.  Only report success when the reread still
+        # proves that this actor owns the bead; a competing writer must never look like a win.
+        data = api.bd.show(bead, main)
+        if not api.work_next.claim_won(data, actor):
+            raise api.typer.Exit(1)
     api.otel.count_bead_transition("claimed")
-    api.typer.echo(f"✓ claimed {bead} as {actor}; worktree {target}")
-    api._print_brief(cfg, entry, bead, data)
-    if not api.worktree.in_bead_worktree(target):
-        api.typer.echo(
-            "\nWARNING: cwd is not the bead worktree — edits here target the wrong tree.\n"
-            f'  → cd "{target}"  # work happens in the worktree, NOT the main clone',
-            err=True,
-        )
+    prof = api.config.work_identity(cfg, entry, actor)
+    ident = {
+        "mode": prof["mode"],
+        "name": actor or prof["name"] or "",
+        "email": prof["email"] or "",
+        "signing_key": prof["signing_key"] or "",
+        "sign": prof["sign"],
+    }
+    return ClaimResult(
+        entry=entry,
+        main=Path(main),
+        bead=data,
+        actor=actor,
+        disposition="reattached" if already_held else "claimed",
+        worktree=Path(target),
+        identity=ident,
+        branch=str(branch),
+    )
 
 
 def impl__batch_member_procedure_msg(api, bead, grp):
