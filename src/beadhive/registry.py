@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -31,6 +32,29 @@ HQ_KIND = "hq"
 HQ_PREFIX = "hq"
 HQ_PROVIDER, HQ_ORG, HQ_REPO = "local", "factory", "hq"
 HQ_TRIPLET = (HQ_PROVIDER, HQ_ORG, HQ_REPO)
+
+
+@dataclass(frozen=True)
+class BeadHiveResolution:
+    """The read-only answer to ``bead id -> registered hive`` discovery.
+
+    ``entry`` is set only for a unique exact match.  A missing result has no
+    candidates; an ambiguous one names every registered hive that contains the
+    exact bead.  Keeping this typed lets launchers choose their own rendering
+    without turning discovery failures into Typer control flow.
+    """
+
+    bead: str
+    entry: dict | None
+    candidates: tuple[dict, ...] = ()
+
+    @property
+    def found(self) -> bool:
+        return self.entry is not None
+
+    @property
+    def ambiguous(self) -> bool:
+        return len(self.candidates) > 1
 
 
 # ---- registry helpers -------------------------------------------------------
@@ -149,6 +173,57 @@ def hives(cfg):
     axis with the hive-vs-singleton axis (bh-pjwn step 2, not done here) — this only gives the
     exclusion one shared home."""
     return [e for e in cfg.get("managed_repos", []) or [] if str(e.get("kind", "")) != HQ_KIND]
+
+
+def _bead_exists(entry, bead: str) -> bool:
+    """Whether *entry*'s store can read this exact bead.
+
+    Discovery must remain a read-only best-effort operation.  ``bd.show``
+    deliberately returns ``None`` for both an absent bead and a store it cannot
+    read; either is simply not a positive match here.  Catching an unexpected
+    adapter failure preserves that property for an unavailable registered hive.
+    """
+    try:
+        from . import bd
+
+        return bd.show(bead, hive_dir(entry)) is not None
+    except (OSError, RuntimeError):
+        return False
+
+
+def resolve_bead_hive(cfg, bead: str, hive: str = "", *, verify: bool = True) -> BeadHiveResolution:
+    """Resolve an exact bead id to one registered hive without changing state.
+
+    An explicit hive is authoritative but still must prove it contains the
+    exact bead.  Without one, registered prefixes provide a cheap, reliable
+    first pass (including multi-hyphen prefixes); any non-unique or unsuccessful
+    prefix result falls back to an exact read across every registered hive.
+    """
+    if hive:
+        entry = resolve_hive(cfg, hive)
+        return BeadHiveResolution(bead, entry if not verify or _bead_exists(entry, bead) else None)
+
+    entries = tuple(hives(cfg))
+    prefix_matches = tuple(
+        entry for entry in entries if bead.startswith(f"{str(entry.get('prefix', ''))}-")
+    )
+    if not verify:
+        return BeadHiveResolution(
+            bead,
+            prefix_matches[0] if len(prefix_matches) == 1 else None,
+            prefix_matches,
+        )
+
+    prefix_found = tuple(entry for entry in prefix_matches if _bead_exists(entry, bead))
+    if len(prefix_found) == 1:
+        return BeadHiveResolution(bead, prefix_found[0], prefix_found)
+
+    # Do not infer a hive from the spelling of an id.  A prefix can be stale,
+    # overlap another prefix, or name a store that is unavailable; only an exact
+    # store read is evidence.  Re-reading prefix candidates is intentional: it
+    # gives this fallback one uniform all-hive lookup and no mutable side effect.
+    found = tuple(entry for entry in entries if _bead_exists(entry, bead))
+    return BeadHiveResolution(bead, found[0] if len(found) == 1 else None, found)
 
 
 def all_hive_targets(cfg):

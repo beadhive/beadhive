@@ -699,11 +699,10 @@ def test_cli_role_seats_flag_threaded_through(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_bead_hive_prefix_extracts_leading_token():
+def test_role_workspace_no_longer_exposes_a_first_hyphen_bead_parser():
     from beadhive import cli
 
-    assert cli._role_bead_hive_prefix("bh-6t49w.4") == "bh"
-    assert cli._role_bead_hive_prefix("noprefix") == "noprefix"
+    assert not hasattr(cli, "_role_bead_hive_prefix")
 
 
 def test_apply_role_workspace_noop_when_neither_given(monkeypatch):
@@ -731,16 +730,15 @@ def test_apply_role_workspace_hive_only_chdirs_to_hive_root(monkeypatch, tmp_pat
     assert os.getcwd() == str(hive_root.resolve())
 
 
-def test_apply_role_workspace_bead_only_resolves_hive_from_prefix_and_claims(monkeypatch, tmp_path):
+def test_apply_role_workspace_bead_only_resolves_exact_bead_hive_and_claims(monkeypatch, tmp_path):
     from beadhive import cli
 
     entry = {"provider": "github", "org": "acme", "repo": "core", "prefix": "bh"}
-    resolve_calls = []
     monkeypatch.setattr(cli.config, "load", lambda: {})
     monkeypatch.setattr(
         cli.registry,
-        "resolve_hive",
-        lambda cfg, hive_id: resolve_calls.append(hive_id) or entry,
+        "resolve_bead_hive",
+        lambda cfg, bead, hive="", **_kw: cli.registry.BeadHiveResolution(bead, entry, (entry,)),
     )
     monkeypatch.setattr(cli.registry, "hive_key", lambda e: f"{e['org']}/{e['repo']}")
 
@@ -759,25 +757,27 @@ def test_apply_role_workspace_bead_only_resolves_hive_from_prefix_and_claims(mon
 
     cli._apply_role_workspace("bh-6t49w.4", "")
 
-    assert resolve_calls == ["bh"]  # hive resolved from the bead's own leading prefix
     assert claim_calls == [
-        {"bead": "bh-6t49w.4", "as_": "", "group": "", "collapse": "", "hive": "bh"}
+        {
+            "bead": "bh-6t49w.4",
+            "as_": "",
+            "group": "",
+            "collapse": "",
+            "hive": "acme/core",
+        }
     ]
     assert os.getcwd() == str(workspace.resolve())
 
 
-def test_apply_role_workspace_bead_and_hive_disagree_refuses_loudly(monkeypatch):
+def test_apply_role_workspace_bead_and_hive_missing_refuses_loudly(monkeypatch):
     from beadhive import cli
 
-    bead_entry = {"provider": "github", "org": "acme", "repo": "core", "prefix": "bh"}
-    hive_entry = {"provider": "github", "org": "other", "repo": "y", "prefix": "y"}
-
-    def _resolve(cfg, hive_id):
-        return hive_entry if hive_id == "other/y" else bead_entry
-
     monkeypatch.setattr(cli.config, "load", lambda: {})
-    monkeypatch.setattr(cli.registry, "resolve_hive", _resolve)
-    monkeypatch.setattr(cli.registry, "hive_key", lambda e: f"{e['org']}/{e['repo']}")
+    monkeypatch.setattr(
+        cli.registry,
+        "resolve_bead_hive",
+        lambda cfg, bead, hive="", **_kw: cli.registry.BeadHiveResolution(bead, None),
+    )
 
     import typer as typer_mod
 

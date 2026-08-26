@@ -453,11 +453,21 @@ def _root(
 # ---- workspace --------------------------------------------------------------
 
 
-def _role_bead_hive_prefix(bead: str) -> str:
-    """The leading ``<prefix>-`` token of a bead id (e.g. ``"bh"`` from ``"bh-6t49w.4"``) — not
-    a new hive-id format, just the bit of an id that ``registry._hive_matches``' ``by_prefix``
-    already accepts as a bare hive_id (flexible/prefix mode)."""
-    return bead.split("-", 1)[0] if "-" in bead else bead
+def _resolve_role_bead_hive(cfg, bead: str, hive: str = "", *, verify: bool = True) -> dict:
+    """Resolve a role launch bead and render typed discovery failures for the CLI."""
+    resolution = registry.resolve_bead_hive(cfg, bead, hive, verify=verify)
+    if resolution.found:
+        return resolution.entry
+    if resolution.ambiguous:
+        candidates = ", ".join(registry.hive_key(entry) for entry in resolution.candidates)
+        typer.echo(
+            f"✗ bead {bead!r} is present in multiple hives: {candidates} — pass --hive",
+            err=True,
+        )
+    else:
+        suffix = f" in hive {hive!r}" if hive else ""
+        typer.echo(f"✗ bead not found: {bead!r}{suffix}", err=True)
+    raise typer.Exit(1)
 
 
 def _apply_role_workspace(bead: str, hive: str) -> None:
@@ -482,31 +492,21 @@ def _apply_role_workspace(bead: str, hive: str) -> None:
 
     - neither given -> no-op (unchanged default: launch from cwd).
     - ``--hive`` only -> chdir to that hive's root, no bead.
-    - ``--bead`` only -> the hive is resolved from the bead id's own leading ``<prefix>-`` token,
-      through the SAME resolver.
-    - both given and they name the same hive -> claim/attach the bead's worktree, chdir there.
-    - both given and they disagree -> refuse loudly, naming both (``registry.resolve_hive``'s
-      own not-found/ambiguous errors are inherited unchanged for either alone)."""
+    - ``--bead`` only -> resolve the exact bead through registered prefixes, then exact
+      read-only store lookup when necessary.
+    - both given -> verify that exact bead exists in the explicit hive, then claim/attach its
+      worktree."""
     if not bead and not hive:
         return
 
     cfg = config.load()
-    hive_entry = registry.resolve_hive(cfg, hive) if hive else None
     if not bead:
+        hive_entry = registry.resolve_hive(cfg, hive)
         os.chdir(registry.hive_dir(hive_entry))
         return
 
-    bead_hive_id = _role_bead_hive_prefix(bead)
-    bead_entry = registry.resolve_hive(cfg, bead_hive_id)
-    if hive_entry is not None and registry.hive_key(bead_entry) != registry.hive_key(hive_entry):
-        typer.echo(
-            f"✗ --bead {bead!r} belongs to hive '{registry.hive_key(bead_entry)}', which "
-            f"disagrees with --hive {hive!r} ('{registry.hive_key(hive_entry)}')",
-            err=True,
-        )
-        raise typer.Exit(1)
-
-    hive_id = hive or bead_hive_id
+    bead_entry = _resolve_role_bead_hive(cfg, bead, hive)
+    hive_id = registry.hive_key(bead_entry)
     from . import worktree
 
     work.claim(bead=bead, as_="", group="", collapse="", hive=hive_id)
@@ -734,15 +734,7 @@ def _role_explain(
             entry = candidate
             break
     if bead:
-        bead_entry = registry.resolve_hive(cfg, _role_bead_hive_prefix(bead))
-        if hive:
-            hive_entry = registry.resolve_hive(cfg, hive)
-            if registry.hive_key(bead_entry) != registry.hive_key(hive_entry):
-                typer.echo(
-                    f"✗ --bead {bead!r} and --hive {hive!r} resolve to different hives",
-                    err=True,
-                )
-                raise typer.Exit(1)
+        bead_entry = _resolve_role_bead_hive(cfg, bead, hive, verify=False)
         entry = bead_entry
         workspace = worktree.wt_dir(bead_entry, bead)
     elif hive:
