@@ -560,7 +560,7 @@ def await_cmd(
         # ledger read right after it is what decides green/red, unconditionally on the marker.
         marker, tree = _marker_for_tree(entry, rev)
         hit = validation_ledger.verdict(entry, rev, cmd)
-        if hit is not None and hit.get("rc") == 0:
+        if hit is not None and validation_ledger.is_qualifying_green(hit):
             when = datetime.datetime.fromtimestamp(float(hit["at"])).astimezone()
             typer.echo(
                 f"✓ attested green: tree {tree[:12]} passed {cmd!r} at "
@@ -568,8 +568,10 @@ def await_cmd(
             )
             return
         if hit is not None:
+            outcome = str(hit.get("verdict", "non-green")).upper()
             typer.echo(
-                f"✗ the bump tree is RED (exit {hit.get('rc')!r} from {cmd!r}) — DO NOT PUSH.\n"
+                f"✗ the bump tree is {outcome} (exit {hit.get('rc')!r} from {cmd!r}) "
+                "— DO NOT PUSH.\n"
                 f"  Nothing has left this machine, so the bump is still fully reversible:\n"
                 f"      {config.BINARY_ALIAS} release recover\n"
                 f"  gate output: {_marker_log(entry, marker or {}, tree)}",

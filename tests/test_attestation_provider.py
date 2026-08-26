@@ -18,11 +18,11 @@ directory and reads what the hive's own command left there.
 
 from __future__ import annotations
 
-import json
 import subprocess
 from pathlib import Path
 
 from beadhive import config_schema, host, test_report, validation_ledger, worktree
+from harness.validation_state import runs as validation_runs
 
 # A pytest-shaped JUnit report claiming a clean sweep. Deliberately all-green: it is the payload
 # that would launder a pass if `rc` were ever anything but authoritative.
@@ -94,7 +94,7 @@ def _observed(log: Path) -> list[tuple[str, int]]:
 
 
 def _entries(repo: Path) -> list[dict]:
-    return json.loads((repo / ".git" / validation_ledger.LEDGER_FILENAME).read_text())
+    return validation_runs(repo)
 
 
 # ---------------------------------------------------------------------------
@@ -117,14 +117,14 @@ def test_all_passed_report_cannot_upgrade_a_nonzero_rc(tmp_path, monkeypatch, ca
 
     assert rc == 1, "a green report upgraded a failing run — the verdict must be the exit code"
     (recorded,) = _entries(repo)
-    assert recorded["rc"] == 1
-    assert recorded["report"] == {
+    assert recorded["exit_code"] == 1 and recorded["verdict"] == "red"
+    assert recorded["summary"]["counts"] == {
         "tests": 3,
         "passed": 3,
         "failures": 0,
         "errors": 0,
         "skipped": 0,
-    }, "the report is kept as detail — it is what makes the discrepancy visible, not a verdict"
+    }, "bounded report counts are detail — they make the discrepancy visible, not a verdict"
     assert validation_ledger.green_verdict(entry, "main", cmd) is None, (
         "a red entry carrying an all-passed report became reusable as green"
     )
@@ -165,6 +165,7 @@ def test_a_stale_report_from_a_previous_run_is_unreachable(tmp_path, monkeypatch
     assert preexisting == 0, "the drop zone bh exported was not empty at exec"
     second = _entries(repo)[-1]
     assert "report" not in second, f"run 2 ingested a report it never wrote: {second.get('report')}"
+    assert second["summary"]["counts"] is None
 
 
 def test_drop_zones_are_unique_per_run(tmp_path):
@@ -182,19 +183,19 @@ def test_drop_zones_are_unique_per_run(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_a_run_that_writes_no_report_still_passes_and_records_rc_only(tmp_path, monkeypatch):
+def test_a_run_that_writes_no_report_still_passes_without_report_detail(tmp_path, monkeypatch):
     """HOSTILE the other way: the hive opts into nothing, so nothing is ever written to the drop
-    zone. The run must pass, the verdict must be reusable, and the ledger entry must carry the
-    exact key set it carried before this bead — no `report`, nothing new. This is the
-    byte-for-byte-today's-behaviour case, which is every hive that has not opted in."""
+    zone. The run must pass, the verdict must be reusable, and its manifest must carry no
+    `report` detail. This is every hive that has not opted in."""
     entry, repo = _hive(tmp_path, monkeypatch)
     cmd = _runner(tmp_path / "runs.log", rc=0)
 
     assert worktree.clean_checkout(entry, "main", cmd) == 0
 
     (recorded,) = _entries(repo)
-    assert set(recorded) == {"tree", "cmd_hash", "rc", "at", "host", "sha", "shas"}
-    assert recorded["rc"] == 0
+    assert "report" not in recorded
+    assert recorded["summary"]["counts"] is None
+    assert recorded["exit_code"] == 0 and recorded["verdict"] == "green"
     assert validation_ledger.green_verdict(entry, "main", cmd) is not None
 
 

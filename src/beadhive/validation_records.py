@@ -24,6 +24,9 @@ PROTOCOL_NAME = "beadhive-validation-result"
 PROTOCOL_VERSION = 1
 PROTOCOL_CONFIG_V1 = f"{PROTOCOL_NAME}/v1"
 PROTOCOL_RESULT_ENV = "BH_VALIDATION_RESULT_PATH"
+INFRASTRUCTURE_REASONS = frozenset(
+    {"missing_binary", "checkout_failure", "setup_failure", "interrupted", "owner_dead"}
+)
 
 
 def _now() -> str:
@@ -42,11 +45,14 @@ def _new_id(prefix: str) -> str:
 
 
 def _validation_root(hive: str | Path, *, create: bool = False) -> Path | None:
+    hive = Path(hive)
     root = (
         private_paths.ensure_git_private_root(hive)
         if create
         else private_paths.git_private_root(hive)
     )
+    if root is None and (git_dir := hive / ".git").is_dir():
+        root = git_dir / "bh"
     return root / "validation" if root is not None else None
 
 
@@ -237,7 +243,7 @@ def prune_artifacts(hive: str | Path) -> int:
         by_tree.setdefault(str(run.get("tree") or ""), []).append(run)
     keep: set[str] = set(referenced)
     for group in by_tree.values():
-        group.sort(key=lambda r: str(r.get("finished_at") or r.get("started_at") or ""))
+        group.sort(key=_run_order_key)
         if any(r.get("lifecycle") == "running" for r in group):
             keep.update(r["run_id"] for r in group if r.get("lifecycle") == "running")
         # Red or repeated same-tree history earns the newest uploadable raw set.
@@ -246,11 +252,15 @@ def prune_artifacts(hive: str | Path) -> int:
     removed = 0
     for run in runs:
         artifacts = run.get("artifacts") or {}
-        directory = Path(str(artifacts.get("directory") or ""))
+        raw_directory = artifacts.get("directory")
+        directory = (
+            Path(raw_directory) if isinstance(raw_directory, str) and raw_directory else None
+        )
         if (
             run["run_id"] not in keep
             and run.get("lifecycle") != "running"
             and run.get("artifacts_uploaded_at")
+            and directory is not None
             and directory.is_dir()
         ):
             run["artifacts"] = {"pruned_at": _now()}
@@ -445,6 +455,44 @@ def signal_name(number: int) -> str:
         return str(number)
 
 
+def is_completed_verdict(value: object) -> bool:
+    """Whether ``value`` is a structurally authentic completed execution verdict.
+
+    JSON booleans are integers in Python, so exact ``type(...) is int`` checks are deliberate:
+    ``schema: true`` and ``exit_code: false`` are malformed records, never v1/exit-zero facts.
+    """
+    if not isinstance(value, dict):
+        return False
+    exit_code = value.get("exit_code")
+    signal_number = value.get("signal")
+    reason = value.get("reason")
+    return (
+        type(value.get("schema")) is int
+        and value.get("schema") == 1
+        and isinstance(value.get("run_id"), str)
+        and bool(value.get("run_id"))
+        and value.get("lifecycle") == "completed"
+        and value.get("verdict") in {"green", "red", "none"}
+        and (exit_code is None or type(exit_code) is int)
+        and (signal_number is None or type(signal_number) is int)
+        and (reason is None or isinstance(reason, str))
+    )
+
+
+def is_qualifying_green(value: object) -> bool:
+    """The one exact predicate that may authorize validation reuse."""
+    if not is_completed_verdict(value):
+        return False
+    assert isinstance(value, dict)  # narrowed by is_completed_verdict
+    return (
+        value.get("verdict") == "green"
+        and type(value.get("exit_code")) is int
+        and value.get("exit_code") == 0
+        and value.get("signal") is None
+        and value.get("reason") not in INFRASTRUCTURE_REASONS
+    )
+
+
 def completed_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | None:
     """Newest completed run for an exact tree/command identity, or ``None``."""
     root = _validation_root(hive)
@@ -461,7 +509,43 @@ def completed_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | N
             and value.get("command_hash") == command_hash
         ):
             matches.append(value)
-    return max(matches, key=lambda item: str(item.get("finished_at") or ""), default=None)
+    return max(matches, key=_run_order_key, default=None)
+
+
+def matching_runs(hive: str | Path, *, tree: str, command_hash: str) -> list[dict]:
+    """Every readable manifest for one exact verdict identity.
+
+    The verdict index is derived state, so reconstruction must see red, none, and abandoned
+    executions too: a later non-green execution revokes an earlier green pointer.
+    """
+    root = _validation_root(hive)
+    directory = root / "runs" if root else None
+    if directory is None or not directory.is_dir():
+        return []
+    return [
+        value
+        for child in sorted(directory.iterdir(), key=lambda path: path.name)
+        if (value := read_run(hive, child.name)) is not None
+        and value.get("tree") == tree
+        and value.get("command_hash") == command_hash
+    ]
+
+
+def latest_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | None:
+    """Newest execution fact for an exact identity, regardless of lifecycle/verdict."""
+    return max(
+        matching_runs(hive, tree=tree, command_hash=command_hash),
+        key=_run_order_key,
+        default=None,
+    )
+
+
+def _run_order_key(item: dict) -> tuple[str, str]:
+    """Stable execution ordering, including deterministic ties."""
+    return (
+        str(item.get("finished_at") or item.get("started_at") or ""),
+        str(item.get("run_id") or ""),
+    )
 
 
 def migrate_legacy_active(hive: str | Path) -> int:

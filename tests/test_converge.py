@@ -34,6 +34,7 @@ import pytest
 import typer
 
 from beadhive import config, converge, host, triage_store, validation_ledger, work, worktree
+from harness.validation_state import pointer as verdict_pointer
 
 _FULL_CMD = "the-full-gate"  # a stand-in validate_cmd; never actually spawned where it appears
 
@@ -154,8 +155,9 @@ def test_no_attestation_can_be_written_after_a_subset_run(tmp_path, monkeypatch)
     validation_ledger.record(entry, sha, _FULL_CMD, 0)  # the laundering attempt, made explicit
 
     assert validation_ledger.green_verdict(entry, sha, _FULL_CMD) is None
-    ledger = repo / ".git" / validation_ledger.LEDGER_FILENAME
-    assert not ledger.exists(), "a verdict was written after a subset run"
+    assert not verdict_pointer(entry, sha, _FULL_CMD).exists(), (
+        "a reusable verdict was written after a subset run"
+    )
 
 
 def test_check_converges_to_a_candidate_and_leaves_no_verdict_behind(tmp_path, monkeypatch):
@@ -177,7 +179,9 @@ def test_check_converges_to_a_candidate_and_leaves_no_verdict_behind(tmp_path, m
     assert {c["test.case.name"]: c["test.case.result.status"] for c in runs[-1]["cases"]} == {
         _name("test_flaky"): "passed"
     }, "red→green at identical content was not recorded explicitly"
-    assert not (repo / ".git" / validation_ledger.LEDGER_FILENAME).exists()
+    assert not verdict_pointer(
+        entry, worktree.head_full_sha(repo), cfg["work"]["validate_cmd"]
+    ).exists()
 
 
 def test_the_gate_never_consults_validate_subset(tmp_path, monkeypatch, capsys):

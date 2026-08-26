@@ -12,7 +12,7 @@ import datetime
 import json
 import os
 import re
-import time
+import shutil
 from collections import namedtuple
 from pathlib import Path
 from types import SimpleNamespace
@@ -30,6 +30,7 @@ from beadhive import (
     identity,
     otel,
     plan,
+    private_paths,
     registry,
     validation_ledger,
     validation_records,
@@ -38,6 +39,7 @@ from beadhive import (
     worktree,
 )
 from beadhive.run import run as real_run
+from harness.validation_state import age as age_verdict
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
 _CP = namedtuple("CP", "returncode stdout stderr")
@@ -1378,29 +1380,15 @@ def test_merge_reuses_the_recorded_green_on_an_exact_tree_match(hive, fakebd, mo
 # quiet pass.
 
 
-def _ledger_path(hive):
-    return hive.main / ".git" / validation_ledger.LEDGER_FILENAME
-
-
 def _put_verdict(hive, tree, cmd, rc=0, age=0.0):
-    """Replace the hive's ledger with ONE entry for `tree`, so a landing lookup can only hit via
-    that entry. The direct write is the point: it plants states the real writers never produce
-    (a subtree, an expired or red verdict) exactly as a hostile/corrupt ledger would."""
-    _ledger_path(hive).write_text(
-        json.dumps(
-            [
-                {
-                    "tree": tree,
-                    "cmd_hash": validation_ledger.cmd_hash(cmd),
-                    "rc": rc,
-                    "at": time.time() - age,
-                    "sha": tree,
-                    "shas": [tree],
-                }
-            ]
-        )
-        + "\n"
-    )
+    """Plant an authoritative execution fact for an adversarial landing lookup."""
+    entry = {"provider": "github", "org": "myorg", "repo": "myrepo"}
+    root = private_paths.git_private_root(hive.main)
+    assert root is not None
+    shutil.rmtree(root / "validation", ignore_errors=True)
+    validation_ledger.record(entry, tree, cmd, rc)
+    if age:
+        age_verdict(hive.main, entry, tree, cmd, age)
 
 
 def _submitted_bead(hive, fakebd, bead, fname="change.txt", body="feat: the change"):

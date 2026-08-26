@@ -13,13 +13,12 @@ the conflict, because **bh-ku9n9.8's flake signal IS retry history across runs a
 tree**: a store wiped per run destroys precisely the record that makes a flake visible. One
 directory cannot be both cleared and retained, so there are two.
 
-**Verdict rows and triage detail are split, on measured grounds.** A digest-only green
-attestation is ~242 bytes; a full per-test JUnit XML for this suite is ~577 KB — ~2,000×. Per-test
-records in the existing 200-entry ledger would make it worth ~96 MiB per hive (bh-ku9n9.4,
-Evidence 9). So the ledger row keeps exactly what it already keeps — rc, tree, cmd hash, commit
-metadata, and `test_report.counts` — and **this module adds nothing to it**. The tree hash is
-already on every ledger entry, so it is already the join key into this store: no new field, no
-pointer, zero measured ledger growth.
+**Run manifests and triage detail are split, on measured grounds.** A compact execution manifest
+is hundreds of bytes; a full per-test JUnit XML for this suite is ~577 KB. Per-test records in
+git-private control metadata would cost tens of MiB per hive. So a manifest keeps rc/verdict,
+tree, command hash, commit metadata, and `test_report.counts`; this module owns the larger detail.
+The tree hash is already on every run, so it is the join key into this store without another
+control-plane pointer.
 
 **THE WRITE RULE — red and retried runs only, never every green.** :func:`_should_write` is the
 single enforcement point, and it is one line:
@@ -109,7 +108,7 @@ def gate_log() -> Iterator[Path]:
 
 
 def tree_dir(entry, tree: str) -> Path | None:
-    """`<hive>/.bh/testreport/<tree>` — where bh-ku9n9.8 reads, given a ledger entry's `tree`."""
+    """`<hive>/.bh/testreport/<tree>` — where bh-ku9n9.8 reads by validation tree."""
     main = registry.hive_dir(entry)
     return Path(main) / STORE_REL / tree if main and tree else None
 
@@ -162,8 +161,8 @@ def store(entry, rev, cmd, rc, report, drop, log, *, run_id: str | None = None) 
 
     Returns the directory written, or `None` when nothing was (the ordinary green case, a rev
     that names no tree, or any I/O problem). `rc` is passed through untouched and is never
-    consulted for anything but the write rule — the verdict is the ledger's, and this store
-    holds detail only."""
+    consulted for anything but the write rule — the run manifest owns the verdict, and this
+    store holds detail only."""
     try:
         return _store(entry, rev, cmd, rc, report, drop, log, run_id=run_id)
     except (OSError, ValueError, TypeError):
@@ -191,7 +190,7 @@ def _store(entry, rev, cmd, rc, report, drop, log, *, run_id: str | None = None)
     }
     summary = {
         "at": time.time(),
-        "sha": rev,  # metadata, exactly as on the ledger row — the later-upload join key
+        "sha": rev,  # metadata, exactly as on the run manifest — later-upload join key
         "cmd_hash": validation_ledger.cmd_hash(cmd),
         "rc": int(rc),
         "counts": test_report.counts(report),  # None when the hive opts into no tier 1
@@ -200,7 +199,7 @@ def _store(entry, rev, cmd, rc, report, drop, log, *, run_id: str | None = None)
     if run_id:
         summary["run_id"] = run_id
     runs.append(summary)
-    # tmp + os.replace, exactly as validation_ledger writes its own file. Two runs can be at one
+    # tmp + os.replace, as validation control records do. Two runs can be at one
     # tree at once (a seat's `check` and a `submit`'s clean checkout), and a torn results.json
     # reads back as `[]` from _runs — which does not just lose a row, it silently replaces the
     # whole cross-run history with a single run, i.e. exactly the retry record bh-ku9n9.8 is

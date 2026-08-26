@@ -12,6 +12,8 @@ conflict with either at merge time.
 
 from __future__ import annotations
 
+import subprocess
+
 import pytest
 
 from beadhive import host, validation_ledger
@@ -27,11 +29,14 @@ def _minted_host_identity():
 
 
 def _hive(tmp_path, monkeypatch):
-    """Minimal hive entry. A bare `.git` directory is enough: `tree_of` degrades to the rev
-    verbatim when git can't resolve a real tree there, and neither test below asserts on tree
-    identity — only on whether `config.load()` gets reached."""
+    """Minimal real hive entry; the test asserts only whether ``config.load`` is reached.
+
+    Validation runs also allocate canonical repo-private artifacts, whose shared-root resolver
+    intentionally requires real git metadata rather than a directory merely named ``.git``.
+    """
     repo = tmp_path / "ws" / "github" / "myorg" / "myrepo"
-    (repo / ".git").mkdir(parents=True)
+    repo.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
     monkeypatch.setenv("GIT_WORKSPACE", str(tmp_path / "ws"))
     return {"provider": "github", "org": "myorg", "repo": "myrepo"}
 
