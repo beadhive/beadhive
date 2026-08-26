@@ -6,6 +6,8 @@ import importlib
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+import typer
 from typer.testing import CliRunner
 
 from beadhive import herdr_plugin, plugins
@@ -234,12 +236,48 @@ def _spawn_worktree(tmp_path, monkeypatch):
     target.mkdir()
     (target / ".git").write_text("gitdir: /tmp/nowhere\n")
     monkeypatch.setattr(herdr_plugin.config, "load", lambda: {})
+    monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["claude", "codex"])
     monkeypatch.setattr(
         herdr_plugin.worktree,
         "locate",
         lambda *_args: ({}, tmp_path, target, "wt/bead/issue/bh-1"),
     )
     return target
+
+
+def test_resolve_kind_precedence_is_explicit_then_hive_then_global(monkeypatch):
+    monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["claude", "codex"])
+    entry = {"herdr": {"kind": "codex"}}
+
+    assert herdr_plugin._resolve_kind(None, {"herdr": {"kind": "claude"}}, entry) == "codex"
+    assert herdr_plugin._resolve_kind("claude", {"herdr": {"kind": "codex"}}, entry) == "claude"
+
+
+def test_resolve_kind_uses_harness_then_claude_without_host_order(monkeypatch):
+    monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["codex", "claude", "future"])
+
+    assert herdr_plugin._resolve_kind(None, {"harness": "codex"}, {}) == "codex"
+    assert herdr_plugin._resolve_kind(None, {"harness": "opencode"}, {}) == "claude"
+
+
+def test_resolve_kind_rejects_unsupported_config_with_remedy(monkeypatch, capsys):
+    monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["claude", "future"])
+
+    with pytest.raises(typer.Exit) as exc_info:
+        herdr_plugin._resolve_kind(None, {"herdr": {"kind": "codex"}}, {})
+
+    assert exc_info.value.exit_code == 2
+    error = capsys.readouterr().err
+    assert "supported kinds: claude, future" in error
+    assert "change herdr.kind or pass --kind" in error
+
+
+def test_resolve_kind_accepts_externally_supported_future_value(monkeypatch):
+    monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["claude", "future-agent"])
+
+    assert (
+        herdr_plugin._resolve_kind(None, {"herdr": {"kind": "future-agent"}}, {}) == "future-agent"
+    )
 
 
 def test_spawn_uses_bh_worktree_names_pane_and_verifies_warmup(tmp_path, monkeypatch):

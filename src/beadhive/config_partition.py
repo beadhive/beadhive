@@ -65,6 +65,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "orca",  # local orca state path + local tool presence
         "repowise",  # local index + user-provided binary
         "hitch",  # local agent-hitch checkout path + local tool presence
+        "herdr",  # local Herdr integration and preferred installed agent kind
     }
 )
 
