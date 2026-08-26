@@ -354,6 +354,7 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
     tree = api.validation_ledger.tree_of(entry, sha)
     command = api.config.validate_cmd(cfg, entry, "submit")
     command_hash = api.validation_ledger.cmd_hash(command)
+    observed_active_run_id = None
     for active in api.validation_records.running_runs(main, bead=bead, tree=tree):
         owner = active.get("owner") or {}
         pid = owner.get("pid")
@@ -384,6 +385,11 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
                 err=True,
             )
             raise api.typer.Exit(api.RETRYABLE_VALIDATION_EXIT)
+        # Preserve the exact blocker across the orchestration boundary. The leader may complete
+        # after this observation but before clean_checkout takes its own prior snapshot; without
+        # this identity that ordering degrades into ordinary historical reuse and loses the
+        # coalesced outcome the submit actually waited for.
+        observed_active_run_id = active["run_id"]
     v_start = api.time.perf_counter()
     rc = api.worktree.clean_checkout(
         entry,
@@ -392,6 +398,7 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
         reuse=True,
         bead=bead,
         phase="submit",
+        observed_active_run_id=observed_active_run_id,
     )
     api.otel.record_validation_duration(
         api.time.perf_counter() - v_start,
