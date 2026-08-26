@@ -87,8 +87,14 @@ LEGACY_PRIVATE_PATHS: dict[str, LegacyPathMigration] = {
         semantics="centralized per-worktree claim record",
     ),
     ".bh/testreport/<tree>": LegacyPathMigration(
-        targets=(PrivatePathTarget("repo", Path("validation/runs/<run-id>/reports")),),
-        semantics="legacy per-tree reports become artifacts of a fresh validation run",
+        targets=(
+            PrivatePathTarget("repo", Path("validation/runs/<run-id>/reports")),
+            PrivatePathTarget("repo", Path("validation/runs/.summary/<tree>/results.json")),
+        ),
+        semantics=(
+            "latest legacy raw reports become artifacts of a deterministic imported run; "
+            "bounded per-tree retry history becomes the canonical derived summary"
+        ),
     ),
     ".bh/otel.env": LegacyPathMigration(
         targets=(PrivatePathTarget("worktree", Path("observability/otel.env")),),

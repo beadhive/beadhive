@@ -357,6 +357,8 @@ def _run_entry(run_record: dict) -> dict | None:
         "sha": run_record.get("sha"),
         "shas": [run_record["sha"]] if isinstance(run_record.get("sha"), str) else [],
         "host": (run_record.get("owner") or {}).get("host"),
+        "provenance": run_record.get("provenance"),
+        "verdict_confidence": run_record.get("verdict_confidence"),
     }
 
 
@@ -373,6 +375,48 @@ def _legacy_time(value: object) -> str | None:
         return dt.datetime.fromtimestamp(timestamp, dt.UTC).isoformat()
     except (TypeError, ValueError, OverflowError, OSError):
         return None
+
+
+def _legacy_effective_time(value: object, ceiling: float) -> tuple[str, str, bool] | None:
+    """Return source/effective ISO times, clamping untrusted future ordering to import time.
+
+    The source timestamp remains provenance.  The effective timestamp participates in canonical
+    run ordering, where a legacy clock must not project authority beyond the migration itself.
+    """
+    source = _legacy_time(value)
+    if source is None:
+        return None
+    try:
+        timestamp = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    normalized = timestamp > ceiling
+    effective = _legacy_time(min(timestamp, ceiling))
+    return (source, effective, normalized) if effective is not None else None
+
+
+def _legacy_verdict(row: dict, *, now: float, ttl: int) -> tuple[str, int | None, str, str]:
+    """Translate one old integer outcome without claiming more than the old row proved.
+
+    A legacy green was reusable only when its exact tree/command identity was fresh and its
+    process result was the integer zero.  Preserve that rule at the migration boundary: an old
+    zero outside the compatibility window is still useful history, but it is not typed green.
+    Exit 143 is the one unambiguous interruption encoding the old shell runner produced; treating
+    it as red would turn lifecycle failure into a code verdict during the upgrade.
+    """
+    rc = row["rc"]
+    if rc == 143:
+        return "none", 15, "interrupted", "legacy_shell_signal"
+    if rc == 0:
+        if _is_fresh(row, now, ttl):
+            return "green", None, "legacy_ledger_import", "legacy_exact_green"
+        return (
+            "none",
+            None,
+            "legacy_green_outside_reuse_window",
+            "legacy_non_attesting",
+        )
+    return "red", None, "legacy_ledger_import", "legacy_exit_code"
 
 
 def _migrate_legacy_ledger(entry) -> int:
@@ -401,22 +445,26 @@ def _migrate_legacy_ledger(entry) -> int:
         return 0
 
     imported = 0
+    failed = False
     keys: set[tuple[str, str]] = set()
+    now = time.time()
+    ttl = _ttl(entry, None)
     for ordinal, row in enumerate(value):
         if not isinstance(row, dict):
             continue
         tree, key, rc = row.get("tree"), row.get("cmd_hash"), row.get("rc")
-        stamp = _legacy_time(row.get("at"))
+        timing = _legacy_effective_time(row.get("at"), now)
         if (
             not isinstance(tree, str)
             or not tree
             or not isinstance(key, str)
             or not key
             or type(rc) is not int
-            or stamp is None
+            or timing is None
         ):
             continue
-        iso_time = stamp
+        source_time, iso_time, timestamp_normalized = timing
+        verdict, signal_number, reason, confidence = _legacy_verdict(row, now=now, ttl=ttl)
         digest = hashlib.sha256(
             json.dumps([ordinal, row], sort_keys=True, default=str).encode()
         ).hexdigest()[:32]
@@ -430,8 +478,8 @@ def _migrate_legacy_ledger(entry) -> int:
             if isinstance(row.get("shas"), list)
             else []
         )
-        sha = row.get("sha") if isinstance(row.get("sha"), str) else tree
-        if sha not in observed:
+        sha = row.get("sha") if isinstance(row.get("sha"), str) and row.get("sha") else None
+        if sha is not None and sha not in observed:
             observed.append(sha)
         directory = root / "validation" / "runs" / run_id
         manifest = {
@@ -450,13 +498,23 @@ def _migrate_legacy_ledger(entry) -> int:
             "started_at": iso_time,
             "finished_at": iso_time,
             "lifecycle": "completed",
-            "verdict": "green" if rc == 0 else "red",
+            "verdict": verdict,
             "exit_code": rc,
-            "signal": None,
-            "reason": "legacy_ledger_import",
+            "signal": signal_number,
+            "reason": reason,
+            "provenance": {
+                "kind": "legacy_import",
+                "source": f".git/{LEGACY_LEDGER_FILENAME}",
+                "source_schema": "flat-ledger-v1",
+                "ordinal": ordinal,
+                "source_finished_at": source_time,
+                "imported_at": _legacy_time(now),
+                "timestamp_normalized": timestamp_normalized,
+            },
+            "verdict_confidence": confidence,
         }
         if isinstance(row.get("report"), dict):
-            manifest["report"] = row["report"]
+            manifest["summary"] = {"counts": row["report"], "tree": tree}
         try:
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / "manifest.json"
@@ -465,17 +523,30 @@ def _migrate_legacy_ledger(entry) -> int:
                 imported += 1
             keys.add((tree, key))
         except OSError:
+            failed = True
             continue
+    if failed:
+        # Deterministic run ids make the partial work idempotent.  Withhold the completion marker
+        # so a later best-effort pass can fill the rows whose atomic writes failed.
+        return imported
+    if not all(_sync_index(entry, tree, key) for tree, key in keys):
+        return imported
     try:
-        _write_index(marker, {"schema": 1, "source": LEGACY_LEDGER_FILENAME, "rows": imported})
+        _write_index(
+            marker,
+            {
+                "schema": 1,
+                "source": LEGACY_LEDGER_FILENAME,
+                "rows": imported,
+                "compatibility": "0.16.x-0.17.x",
+            },
+        )
     except OSError:
         return imported
-    for tree, key in keys:
-        _sync_index(entry, tree, key)
     return imported
 
 
-def _sync_index(entry, tree: str, key: str) -> None:
+def _sync_index(entry, tree: str, key: str) -> bool:
     """Make one pointer exactly reflect the newest retained execution fact.
 
     The manifest is truth.  A pointer exists only for its newest completed-green manifest; every
@@ -486,15 +557,15 @@ def _sync_index(entry, tree: str, key: str) -> None:
     latest = validation_records.latest_run(hive, tree=tree, command_hash=key)
     path = _verdict_path(entry, tree, key, create=latest is not None)
     if path is None:
-        return
+        return False
     try:
         if latest is None or not validation_records.is_qualifying_green(latest):
             path.unlink(missing_ok=True)
-            return
+            return True
         at = _run_timestamp(latest)
         if at is None:
             path.unlink(missing_ok=True)
-            return
+            return True
         runs = sorted(
             validation_records.matching_runs(hive, tree=tree, command_hash=key),
             key=validation_records._run_order_key,
@@ -523,8 +594,9 @@ def _sync_index(entry, tree: str, key: str) -> None:
                 "host": (latest.get("owner") or {}).get("host"),
             },
         )
+        return True
     except (OSError, KeyError, TypeError):
-        pass
+        return False
 
 
 def rebuild_verdict_index(entry) -> int:
@@ -595,6 +667,9 @@ def record(
     item 2) — see :func:`_ttl`."""
     if not rev or _SEALED:  # sealed: a converged result is never an attestation
         return
+    # A canonical write is also the last safe moment to carry forward unrelated legacy rows.
+    # The source is read-only and bounded by the retired ledger's 200-row cap.
+    _migrate_legacy_ledger(entry)
     tree, key = tree_of(entry, rev), cmd_hash(cmd)
     # The run history is authoritative. The retired 0.15.1 flat file is a one-time read-only
     # migration input; new decisions never derive identity from a mutable row.
@@ -665,10 +740,15 @@ def verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -> dict
     :func:`_ttl` (bh-ku9n9.19, item 2)."""
     if not rev:
         return None
-    _migrate_legacy_ledger(entry)
     now = time.time()
     tree, key = tree_of(entry, rev), cmd_hash(cmd)
-    source = validation_records.latest_run(registry.hive_dir(entry), tree=tree, command_hash=key)
+    hive = registry.hive_dir(entry)
+    source = validation_records.latest_run(hive, tree=tree, command_hash=key)
+    if source is None:
+        # New path first.  The retired flat file is consulted only on a canonical miss and at
+        # most once after its atomic completion marker lands.
+        _migrate_legacy_ledger(entry)
+        source = validation_records.latest_run(hive, tree=tree, command_hash=key)
     if (
         source is None
         or not validation_records.is_completed_verdict(source)
