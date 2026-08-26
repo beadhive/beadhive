@@ -60,3 +60,30 @@ def test_clean_checkout_reuse_hit_bypasses_admission(monkeypatch):
         lambda *a, **k: pytest.fail("a ledger hit must not enter admission"),
     )
     assert worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=True) == 0
+
+
+def test_reusable_gate_takes_identity_before_host(monkeypatch, tmp_path):
+    order = []
+
+    @validation_admission.contextlib.contextmanager
+    def identity(*args, **kwargs):
+        order.append("identity-enter")
+        yield
+        order.append("identity-exit")
+
+    @validation_admission.contextlib.contextmanager
+    def host(*args, **kwargs):
+        order.append("host-enter")
+        yield
+        order.append("host-exit")
+
+    monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
+    monkeypatch.setattr(worktree_verify, "_reuse_verdict_hit", lambda *a, **k: False)
+    monkeypatch.setattr(worktree_verify.registry, "hive_dir", lambda *_: tmp_path)
+    monkeypatch.setattr(worktree_verify.validation_ledger, "tree_of", lambda *a: "tree")
+    monkeypatch.setattr(worktree_verify.validation_records, "latest_run", lambda *a, **k: None)
+    monkeypatch.setattr(validation_admission, "identity_lock", identity)
+    monkeypatch.setattr(validation_admission, "host_slot", host)
+    monkeypatch.setattr(worktree_verify, "_impl_clean_checkout_unadmitted", lambda *a, **k: 0)
+    assert worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=True) == 0
+    assert order == ["identity-enter", "host-enter", "host-exit", "identity-exit"]

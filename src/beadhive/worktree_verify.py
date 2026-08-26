@@ -910,13 +910,48 @@ def impl_clean_checkout(
             cfg = config.load()
         except FileNotFoundError:
             cfg = {}
-    if reuse:
-        sha = _branch_sha(entry, branch)
+    if not reuse:
+        with validation_admission.host_slot(cfg, entry):
+            return _impl_clean_checkout_unadmitted(
+                entry, branch, cmd, cfg=cfg, reuse=False, bead=bead, phase=phase
+            )
+
+    sha = _branch_sha(entry, branch)
+    if _reuse_verdict_hit(entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch):
+        return 0
+    main = registry.hive_dir(entry)
+    tree = validation_ledger.tree_of(entry, sha)
+    command_hash = validation_ledger.cmd_hash(cmd)
+    prior = validation_records.latest_run(main, tree=tree, command_hash=command_hash)
+    prior_id = prior.get("run_id") if prior else None
+    # Lock ordering is intentionally identity -> host. Same-key followers wait without taking
+    # scarce compute capacity, then re-read authoritative state after the leader finishes.
+    with validation_admission.identity_lock(main, tree, command_hash):
         if _reuse_verdict_hit(
             entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch
         ):
             return 0
-    with validation_admission.host_slot(cfg, entry):
-        return _impl_clean_checkout_unadmitted(
-            entry, branch, cmd, cfg=cfg, reuse=False, bead=bead, phase=phase
-        )
+        latest = validation_records.latest_run(main, tree=tree, command_hash=command_hash)
+        if (
+            latest is not None
+            and latest.get("run_id") != prior_id
+            and latest.get("lifecycle") == "completed"
+            and latest.get("verdict") == "red"
+        ):
+            validation_records.record_use(
+                main,
+                run_id=latest["run_id"],
+                bead=bead,
+                phase=phase,
+                branch=branch,
+                worktree=None,
+                sha=sha,
+                tree=tree,
+                command_hash=command_hash,
+                reused=True,
+            )
+            return int(latest.get("exit_code") or 1)
+        with validation_admission.host_slot(cfg, entry):
+            return _impl_clean_checkout_unadmitted(
+                entry, branch, cmd, cfg=cfg, reuse=False, bead=bead, phase=phase
+            )
