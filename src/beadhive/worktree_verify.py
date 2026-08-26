@@ -925,9 +925,7 @@ def impl_clean_checkout(
     # Lock ordering is intentionally identity -> host. Same-key followers wait without taking
     # scarce compute capacity, then re-read authoritative state after the leader finishes.
     with validation_admission.identity_lock(main, tree, command_hash):
-        if _reuse_verdict_hit(
-            entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch
-        ):
+        if _reuse_verdict_hit(entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch):
             return 0
         latest = validation_records.latest_run(main, tree=tree, command_hash=command_hash)
         if (

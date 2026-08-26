@@ -30,20 +30,32 @@ def _api(active):
 
 
 def test_submit_refuses_live_conflicting_command_without_checkout():
-    active = [{
-        "run_id": "run-1", "bead": "bh-x", "tree": "tree", "phase": "submit",
-        "command_hash": "old", "owner": {"host": "host", "pid": 7, "start_token": "s"},
-    }]
+    active = [
+        {
+            "run_id": "run-1",
+            "bead": "bh-x",
+            "tree": "tree",
+            "phase": "submit",
+            "command_hash": "old",
+            "owner": {"host": "host", "pid": 7, "start_token": "s"},
+        }
+    ]
     with pytest.raises(Exit) as caught:
         work_submission.impl__validate_submit_checkout(_api(active), {}, "branch", {}, bead="bh-x")
     assert caught.value.exit_code == 75
 
 
 def test_submit_reaps_dead_owner_before_replacement(monkeypatch):
-    active = [{
-        "run_id": "run-dead", "bead": "bh-x", "tree": "tree", "phase": "submit",
-        "command_hash": "new", "owner": {"host": "host", "pid": 7, "start_token": "s"},
-    }]
+    active = [
+        {
+            "run_id": "run-dead",
+            "bead": "bh-x",
+            "tree": "tree",
+            "phase": "submit",
+            "command_hash": "new",
+            "owner": {"host": "host", "pid": 7, "start_token": "s"},
+        }
+    ]
     api = _api(active)
     api.worktree._pid_alive = lambda pid: False
     abandoned = []
