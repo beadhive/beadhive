@@ -203,14 +203,14 @@ def _workspace(hive: str, cwd: Path) -> tuple[str, str]:
     return workspace_id, pane_id
 
 
-def _managed_worktree(hive: str, bead: str) -> Path:
-    """Resolve, but never provision, the native bh worktree for ``bead``."""
-    cfg = config.load()
-    _entry, _main, target, _branch = worktree.locate(cfg, hive, bead)
+def _managed_worktree(hive: str, bead: str, cfg=None) -> tuple[dict, Path]:
+    """Resolve, but never provision, a claimed native bh worktree for ``bead``."""
+    cfg = cfg if cfg is not None else config.load()
+    entry, _main, target, _branch = worktree.locate(cfg, hive, bead)
     if not target.is_dir() or not (target / ".git").exists():
         typer.echo(f"✗ no managed bh worktree for {bead} in {hive} — claim it first", err=True)
         raise typer.Exit(1)
-    return target
+    return entry, target
 
 
 def _close_pane(pane: str) -> None:
@@ -243,6 +243,49 @@ def supported_kinds() -> list[str]:
 
     ignored = {"and", "or"}
     return list(dict.fromkeys(value for value in values if value.lower() not in ignored))
+
+
+def _resolve_kind(explicit: str | None, cfg, entry) -> str:
+    """Resolve a Herdr kind without allowing host-dependent guesswork.
+
+    Configuration is intentionally open-ended because Herdr releases kinds
+    independently.  Its discovered list is checked here, at the launch
+    boundary, rather than during config validation or integration install.
+    """
+    kinds = supported_kinds()
+    if not kinds:
+        typer.echo(
+            "herdr: could not determine supported agent kinds from 'herdr agent start --help'",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    configured = config.herdr_kind(cfg, entry)
+    if explicit is not None:
+        candidate, remedy = explicit, "choose a supported --kind value"
+    elif configured is not None:
+        candidate, remedy = configured, "change herdr.kind or pass --kind"
+    else:
+        harness = config.harness_name(cfg, entry)
+        if harness in kinds:
+            return harness
+        if "claude" in kinds:
+            return "claude"
+        typer.echo(
+            "herdr: no deterministic default kind; supported kinds: "
+            f"{', '.join(kinds)}; pass --kind KIND or configure herdr.kind",
+            err=True,
+        )
+        raise typer.Exit(2)
+
+    if candidate not in kinds:
+        typer.echo(
+            f"herdr: unsupported agent kind {candidate!r}; supported kinds: {', '.join(kinds)}; "
+            f"{remedy}",
+            err=True,
+        )
+        raise typer.Exit(2)
+    return candidate
 
 
 # ``spawn`` reserves ``bh-<bead-id>``. Since bead ids themselves begin with
@@ -554,13 +597,17 @@ def _reap_cmd(target: str = typer.Argument(..., metavar="TARGET")) -> None:
 def _spawn_cmd(
     hive: str = typer.Option(..., "--hive", help="managed hive identifier"),
     bead: str = typer.Option(..., "--bead", help="already-claimed bead identifier"),
-    kind: str = typer.Option(..., "--kind", help="herdr agent kind, e.g. claude or codex"),
+    kind: str | None = typer.Option(
+        None, "--kind", help="Herdr agent kind; overrides per-hive and global herdr.kind"
+    ),
 ) -> None:
     """Create an isolated pane and prove its first conversational turn is promptable."""
     if not server_up():
         typer.echo("✗ herdr: server=down (start herdr and install its agent integration)", err=True)
         raise typer.Exit(1)
-    cwd = _managed_worktree(hive, bead)
+    cfg = config.load()
+    entry, cwd = _managed_worktree(hive, bead, cfg)
+    kind = _resolve_kind(kind, cfg, entry)
     workspace, root_pane = _workspace(hive, cwd)
     pane = ""
     try:

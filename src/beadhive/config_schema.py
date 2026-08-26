@@ -1088,6 +1088,30 @@ class HitchConfig(_Section):
     )
 
 
+class HerdrConfig(_Section):
+    """Optional Herdr agent-pane defaults.
+
+    Herdr, rather than Beadhive, owns the installed agent-kind vocabulary.  This
+    schema consequently validates only that an operator supplied a non-empty
+    string; the Herdr launch boundary checks it against the live supported list.
+    """
+
+    kind: str | None = Field(
+        None,
+        description=(
+            "Preferred Herdr agent kind (for example claude or codex). The installed Herdr "
+            "CLI validates supported values when a pane is launched."
+        ),
+    )
+
+    @field_validator("kind")
+    @classmethod
+    def _kind_is_nonempty(cls, value):
+        if value is not None and (not value.strip() or value != value.strip()):
+            raise ValueError("herdr.kind must be a non-empty, trimmed agent kind")
+        return value
+
+
 # ---- managed_repos -------------------------------------------------------------
 
 
@@ -1150,6 +1174,7 @@ class ManagedRepoEntry(_Section):
         None, description="Per-hive `repowise` section override."
     )
     hitch: HitchConfig | None = Field(None, description="Per-hive `hitch` section override.")
+    herdr: HerdrConfig | None = Field(None, description="Per-hive `herdr` section override.")
 
 
 # ---- top level ------------------------------------------------------------------
@@ -1208,6 +1233,7 @@ class BeadhiveConfig(BaseSettings):
     orca: OrcaConfig = Field(default_factory=OrcaConfig)
     repowise: RepowiseConfig = Field(default_factory=RepowiseConfig)
     hitch: HitchConfig = Field(default_factory=HitchConfig)
+    herdr: HerdrConfig = Field(default_factory=HerdrConfig)
     managed_repos: list[ManagedRepoEntry] = Field(
         default_factory=list, description="Managed hives — maintained by `bh hive init`."
     )

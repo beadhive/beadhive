@@ -115,6 +115,13 @@ dolt:
 # repowise:
 #   enabled: true
 
+# Herdr is an optional interactive agent-pane server.  `bh plugin herdr spawn` uses this
+# preference when --kind is omitted; a hive's managed_repos entry may override it with the
+# same `herdr: {kind: ...}` mapping.  Herdr itself validates its installed kind vocabulary
+# at launch, so newly added external kinds do not require a Beadhive release.
+# herdr:
+#   kind: codex
+
 # Managed worktrees — a shadow tree OUTSIDE $GIT_WORKSPACE mirroring <group>/<org>/<repo>,
 # so bh-made worktrees never collide with git-workspace repo roots and bulk cleanup is one
 # subtree (`bh worktree prune`). See worktrees.ephemeral / worktrees.path below.
@@ -334,5 +341,5 @@ worktrees:
 #   worktree_init: optional EXTRA init rules (same shape) appended after the global ones.
 #   provider: the repo-group PATH (not necessarily the provider type); the stored key
 #             name is unchanged for backward compatibility — see git_workspace above.
-# Example: {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api", "kind": "org-native", "worktree_init": [{"run": "just bootstrap"}]}
+# Example: {"provider": "github", "org": "acme", "repo": "api", "prefix": "ac-api", "kind": "org-native", "herdr": {"kind": "codex"}, "worktree_init": [{"run": "just bootstrap"}]}
 managed_repos: []
