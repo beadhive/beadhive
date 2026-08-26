@@ -107,6 +107,7 @@ def begin_run(
     owner_pid: int | None = None,
     owner_start: str | None = None,
     artifact_root_config: object = None,
+    admission: dict | None = None,
 ) -> dict | None:
     """Allocate an independent running record using mkdir as the atomic claim."""
     root = _validation_root(hive, create=True)
@@ -161,6 +162,12 @@ def begin_run(
             "exit_code": None,
             "signal": None,
             "reason": None,
+            "admission": {
+                "slot": admission.get("slot"),
+                "queue_seconds": admission.get("queue_seconds"),
+            }
+            if isinstance(admission, dict)
+            else None,
             "artifacts": artifacts,
         }
         try:
@@ -408,6 +415,7 @@ def record_use(
     tree: str,
     command_hash: str,
     reused: bool,
+    coalesced: bool = False,
 ) -> dict | None:
     """Record one gate decision; reuse points at the original run without creating a run."""
     root = _validation_root(hive, create=True)
@@ -423,6 +431,7 @@ def record_use(
             "use_id": use_id,
             "run_id": run_id,
             "reused": bool(reused),
+            "coalesced": bool(coalesced),
             "bead": bead,
             "phase": phase,
             "branch": branch,

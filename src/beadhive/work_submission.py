@@ -14,11 +14,11 @@ def impl_check(api, bead, hive):
     """Resolve the target, then hold admission across its entire validation lifecycle."""
     cfg = api.config.load()
     entry, _main, _target, _branch = api.worktree.locate(cfg, hive, bead)
-    with api.validation_admission.host_slot(cfg, entry):
-        return _impl_check_unadmitted(api, bead, hive)
+    with api.validation_admission.host_slot(cfg, entry, phase="check") as permit:
+        return _impl_check_unadmitted(api, bead, hive, permit=permit)
 
 
-def _impl_check_unadmitted(api, bead, hive):
+def _impl_check_unadmitted(api, bead, hive, *, permit=None):
     api.otel.set_bead(bead)
     cfg = api.config.load()
     entry, main, target, _branch = api.worktree.locate(cfg, hive, bead)
@@ -59,6 +59,11 @@ def _impl_check_unadmitted(api, bead, hive):
         command=cmd,
         owner_start=api.worktree._pid_start(api.os.getpid()),
         artifact_root_config=artifact_root_config,
+        admission=(
+            {"slot": permit.slot, "queue_seconds": permit.queue_seconds}
+            if permit is not None
+            else None
+        ),
     )
     try:
         api.worktree.run_init(cfg, entry, target, verify_only=True)
@@ -361,6 +366,10 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
                 owner_dead = bool(current_token and current_token != token)
         if owner_dead:
             api.validation_records.abandon_run(main, active["run_id"], reason="owner_dead")
+            api.typer.echo(
+                f"⚠ validation run {active['run_id']} owned by pid {pid} "
+                f"(start {token or 'unprobeable'}) was abandoned after owner death; retrying"
+            )
             continue
         details = (
             f"run {active['run_id']} owned by pid {pid} (start {token or 'unprobeable'}), "

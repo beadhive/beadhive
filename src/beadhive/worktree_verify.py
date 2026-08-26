@@ -507,7 +507,12 @@ def impl_sweep_verify_dirs(entry, grace=_VERIFY_GRACE_SECONDS, ttl=_VERIFY_TTL_S
         _remove_verify_marker(d, marker_root=marker_root)
         run_id = marker.get("run_id") if isinstance(marker, dict) else None
         if isinstance(run_id, str):
-            validation_records.abandon_run(main, run_id, reason="owner_dead")
+            abandoned = validation_records.abandon_run(main, run_id, reason="owner_dead")
+            if abandoned is not None:
+                typer.echo(
+                    f"⚠ validation run {run_id} ({_owner_text(abandoned)}) was abandoned "
+                    "after owner death; its verify checkout was reaped"
+                )
         reaped += 1
     return reaped
 
@@ -545,7 +550,16 @@ def impl__color_neutral_env(base: dict[str, str]) -> dict[str, str]:
 
 
 def impl__reuse_verdict_hit(
-    entry, sha: str, cmd: str, cfg=None, *, bead=None, phase="reuse", branch=None, worktree=None
+    entry,
+    sha: str,
+    cmd: str,
+    cfg=None,
+    *,
+    bead=None,
+    phase="reuse",
+    branch=None,
+    worktree=None,
+    record_decision=True,
 ) -> bool:
     """True (after echoing the reused-verdict notice and counting telemetry) iff a fresh GREEN
     ledger verdict exists for (entry, TREE of `sha`, cmd) — `clean_checkout`'s `reuse=True`
@@ -558,7 +572,9 @@ def impl__reuse_verdict_hit(
     That decision lives there — the one seam every reuse boundary reads — not here.
 
     `cfg` — `clean_checkout`'s own, already resolved — is forwarded to the ledger's TTL lookup
-    rather than re-read from disk (bh-ku9n9.19, item 2)."""
+    rather than re-read from disk (bh-ku9n9.19, item 2). ``record_decision=False`` performs the
+    same policy check for a coalesced follower; the caller then writes its more specific use and
+    telemetry exactly once."""
     hit = validation_ledger.green_verdict(entry, sha, cmd, cfg=cfg)
     if hit is None:
         return False
@@ -576,24 +592,26 @@ def impl__reuse_verdict_hit(
         # a use record (the second-review green→red/none→reuse gap).
         if original.get("verdict") != "green":
             return False
-        validation_records.record_use(
-            main,
-            run_id=original["run_id"],
-            bead=bead,
-            phase=phase,
-            branch=branch,
-            worktree=worktree,
-            sha=sha,
-            tree=tree,
-            command_hash=validation_ledger.cmd_hash(cmd),
-            reused=True,
+        if record_decision:
+            validation_records.record_use(
+                main,
+                run_id=original["run_id"],
+                bead=bead,
+                phase=phase,
+                branch=branch,
+                worktree=worktree,
+                sha=sha,
+                tree=tree,
+                command_hash=validation_ledger.cmd_hash(cmd),
+                reused=True,
+            )
+    if record_decision:
+        when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
+        typer.echo(
+            f"✓ validation verdict reused (sha {sha[:7]}, tree {str(hit.get('tree', ''))[:7]}, "
+            f"recorded {when})"
         )
-    when = datetime.datetime.fromtimestamp(hit["at"]).astimezone().isoformat(timespec="seconds")
-    typer.echo(
-        f"✓ validation verdict reused (sha {sha[:7]}, tree {str(hit.get('tree', ''))[:7]}, "
-        f"recorded {when})"
-    )
-    otel.count_validation_reuse({"bh.hive": str(entry.get("prefix", ""))})
+        otel.count_validation_reuse({"bh.hive": str(entry.get("prefix", ""))})
     return True
 
 
@@ -619,7 +637,15 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
 
 
 def _impl_clean_checkout_unadmitted(
-    entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
+    entry,
+    branch,
+    cmd,
+    cfg=None,
+    reuse=False,
+    *,
+    bead=None,
+    phase="validation",
+    permit=None,
 ) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
     dirty local state. Each invocation gets its OWN verify-<leaf>-<rand6> dir (bh-nikb): two
@@ -688,6 +714,7 @@ def _impl_clean_checkout_unadmitted(
             command_hash=validation_ledger.cmd_hash(cmd),
             command=cmd,
             owner_start=_pid_start(os.getpid()),
+            admission=_permit_record(permit),
         )
         if failed is not None:
             validation_records.finish_run(
@@ -736,6 +763,7 @@ def _impl_clean_checkout_unadmitted(
             command=cmd,
             owner_start=_pid_start(os.getpid()),
             artifact_root_config=artifact_root_config,
+            admission=_permit_record(permit),
         )
         # From this point the run manifest is authoritative.  Remove the 0.15.1 worktree-keyed
         # compatibility marker; the run-id active pointer is sufficient for liveness/reaping.
@@ -850,7 +878,7 @@ def _impl_clean_checkout_unadmitted(
             )
         missing = missing_binary(res)
         if run_record is not None:
-            validation_records.finish_run(
+            finished = validation_records.finish_run(
                 main,
                 run_record["run_id"],
                 exit_code=rc,
@@ -860,6 +888,8 @@ def _impl_clean_checkout_unadmitted(
                 ),
                 protocol=protocol,
             )
+            if finished is not None:
+                _echo_execution_outcome(finished)
         validation_ledger.record(  # best-effort compatibility index + execution use
             entry,
             validated_sha,
@@ -911,9 +941,16 @@ def impl_clean_checkout(
         except FileNotFoundError:
             cfg = {}
     if not reuse:
-        with validation_admission.host_slot(cfg, entry):
+        with validation_admission.host_slot(cfg, entry, phase=phase) as permit:
             return _impl_clean_checkout_unadmitted(
-                entry, branch, cmd, cfg=cfg, reuse=False, bead=bead, phase=phase
+                entry,
+                branch,
+                cmd,
+                cfg=cfg,
+                reuse=False,
+                bead=bead,
+                phase=phase,
+                permit=permit,
             )
 
     sha = _branch_sha(entry, branch)
@@ -926,8 +963,6 @@ def impl_clean_checkout(
     # Lock ordering is intentionally identity -> host. Same-key followers wait without taking
     # scarce compute capacity, then re-read authoritative state after the leader finishes.
     with validation_admission.identity_lock(main, tree, command_hash):
-        if _reuse_verdict_hit(entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch):
-            return 0
         latest = validation_records.latest_run(main, tree=tree, command_hash=command_hash)
         joined_terminal = bool(
             latest
@@ -938,6 +973,26 @@ def impl_clean_checkout(
                 and latest.get("run_id") == prior_id
             )
         )
+        # A green cohort result is still a reuse decision. Preserve the always-run contract:
+        # metadata-sensitive checks execute before *every* green reuse, including a follower
+        # that waited for this leader. If that check withholds the hit, this caller becomes a
+        # fresh execution instead of inheriting green.
+        if (
+            joined_terminal
+            and latest is not None
+            and latest.get("verdict") == "green"
+            and not _reuse_verdict_hit(
+                entry,
+                sha,
+                cmd,
+                cfg=cfg,
+                bead=bead,
+                phase=phase,
+                branch=branch,
+                record_decision=False,
+            )
+        ):
+            joined_terminal = False
         if joined_terminal:
             assert latest is not None
             validation_records.record_use(
@@ -951,12 +1006,66 @@ def impl_clean_checkout(
                 tree=tree,
                 command_hash=command_hash,
                 reused=True,
+                coalesced=True,
             )
-            if latest.get("verdict") == "green":
-                return 0
+            otel.count_validation_coalesced(
+                {"bh.hive": str(entry.get("prefix") or ""), "bh.work.phase": phase}
+            )
+            otel.count_validation_reuse({"bh.hive": str(entry.get("prefix") or "")})
             exit_code = latest.get("exit_code")
-            return exit_code if type(exit_code) is int and exit_code != 0 else 75
-        with validation_admission.host_slot(cfg, entry):
-            return _impl_clean_checkout_unadmitted(
-                entry, branch, cmd, cfg=cfg, reuse=False, bead=bead, phase=phase
+            rc = (
+                0
+                if latest.get("verdict") == "green"
+                else exit_code
+                if type(exit_code) is int and exit_code != 0
+                else 75
             )
+            _echo_coalesced_outcome(latest, rc)
+            return rc
+        if _reuse_verdict_hit(entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch):
+            return 0
+        with validation_admission.host_slot(cfg, entry, phase=phase) as permit:
+            return _impl_clean_checkout_unadmitted(
+                entry,
+                branch,
+                cmd,
+                cfg=cfg,
+                reuse=False,
+                bead=bead,
+                phase=phase,
+                permit=permit,
+            )
+
+
+def _permit_record(permit) -> dict | None:
+    if permit is None:
+        return None
+    return {"slot": permit.slot, "queue_seconds": permit.queue_seconds}
+
+
+def _owner_text(run: dict) -> str:
+    owner = run.get("owner") or {}
+    return (
+        f"host {owner.get('host') or 'unknown'}, pid {owner.get('pid') or 'unknown'}, "
+        f"start {owner.get('start_token') or 'unprobeable'}"
+    )
+
+
+def _echo_execution_outcome(run: dict) -> None:
+    verdict = str(run.get("verdict") or "none")
+    symbol = "✓" if verdict == "green" else "✗" if verdict == "red" else "⚠"
+    typer.echo(
+        f"{symbol} validation run {run.get('run_id')} completed {verdict} "
+        f"(exit {run.get('exit_code')}, {_owner_text(run)})",
+        err=verdict != "green",
+    )
+
+
+def _echo_coalesced_outcome(run: dict, rc: int) -> None:
+    verdict = str(run.get("verdict") or "none")
+    symbol = "✓" if verdict == "green" else "✗" if verdict == "red" else "⚠"
+    typer.echo(
+        f"{symbol} validation coalesced with blocker run {run.get('run_id')} "
+        f"({_owner_text(run)}): {verdict} (exit {rc})",
+        err=verdict != "green",
+    )
