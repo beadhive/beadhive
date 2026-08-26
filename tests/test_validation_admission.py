@@ -54,6 +54,14 @@ def test_invalid_environment_capacity_is_rejected(monkeypatch, value):
 def test_clean_checkout_reuse_hit_bypasses_admission(monkeypatch):
     monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
     monkeypatch.setattr(worktree_verify, "_reuse_verdict_hit", lambda *a, **k: True)
+    monkeypatch.setattr(worktree_verify.registry, "hive_dir", lambda *_: "/hive")
+    monkeypatch.setattr(worktree_verify.validation_ledger, "tree_of", lambda *a: "tree")
+    monkeypatch.setattr(worktree_verify.validation_records, "latest_run", lambda *a, **k: None)
+    monkeypatch.setattr(
+        validation_admission,
+        "identity_lock",
+        lambda *a, **k: validation_admission.contextlib.nullcontext(),
+    )
     monkeypatch.setattr(
         validation_admission,
         "host_slot",

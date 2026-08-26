@@ -344,11 +344,42 @@ def impl__warn_submit_release_hint(api, bead, main, entry, branch, base):
 
 
 def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
+    main = api.registry.hive_dir(entry)
+    sha = api.worktree._branch_sha(entry, branch)
+    tree = api.validation_ledger.tree_of(entry, sha)
+    command = api.config.validate_cmd(cfg, entry, "submit")
+    command_hash = api.validation_ledger.cmd_hash(command)
+    for active in api.validation_records.running_runs(main, bead=bead, tree=tree):
+        owner = active.get("owner") or {}
+        pid = owner.get("pid")
+        token = owner.get("start_token")
+        owner_dead = False
+        if owner.get("host") == api.host.host_id() and isinstance(pid, int):
+            owner_dead = not api.worktree._pid_alive(pid)
+            if not owner_dead and token:
+                current_token = api.worktree._pid_start(pid)
+                owner_dead = bool(current_token and current_token != token)
+        if owner_dead:
+            api.validation_records.abandon_run(main, active["run_id"], reason="owner_dead")
+            continue
+        details = (
+            f"run {active['run_id']} owned by pid {pid} (start {token or 'unprobeable'}), "
+            f"phase {active.get('phase') or 'validation'}"
+        )
+        api.typer.echo(f"  → validation already active: {details}; waiting for that run")
+        if active.get("command_hash") != command_hash:
+            api.typer.echo(
+                f"⚠ submit command conflicts with active {details}; wait for it or confirm its "
+                "owner is dead before retrying. Use `bh work check`, not raw `just check`, when "
+                "you intend to seed a reusable pre-submit verdict.",
+                err=True,
+            )
+            raise api.typer.Exit(api.RETRYABLE_VALIDATION_EXIT)
     v_start = api.time.perf_counter()
     rc = api.worktree.clean_checkout(
         entry,
         branch,
-        api.config.validate_cmd(cfg, entry, "submit"),
+        command,
         reuse=True,
         bead=bead,
         phase="submit",

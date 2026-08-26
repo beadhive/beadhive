@@ -917,8 +917,6 @@ def impl_clean_checkout(
             )
 
     sha = _branch_sha(entry, branch)
-    if _reuse_verdict_hit(entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch):
-        return 0
     main = registry.hive_dir(entry)
     tree = validation_ledger.tree_of(entry, sha)
     command_hash = validation_ledger.cmd_hash(cmd)
