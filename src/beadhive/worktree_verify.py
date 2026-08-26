@@ -657,6 +657,17 @@ def impl_clean_checkout(
             cfg = config.load()
         except FileNotFoundError:
             cfg = {}
+    # Validate artifact placement before _prepare_verify_worktree mutates either
+    # Git's worktree registry or the compatibility liveness marker.  Apart from
+    # avoiding a needless checkout on a setup error, this makes the refusal
+    # genuinely side-effect free.
+    artifact_root_config = config.work_value(cfg, entry, "validation_artifact_root", "")
+    if os.environ.get("BH_VALIDATION_ARTIFACT_ROOT") or artifact_root_config:
+        try:
+            validation_records.artifact_root(main, artifact_root_config)
+        except ValueError as exc:
+            typer.echo(f"✗ {exc}", err=True)
+            return 2
     sha = _branch_sha(entry, branch)
     if reuse and _reuse_verdict_hit(
         entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch
@@ -694,48 +705,57 @@ def impl_clean_checkout(
                 reused=False,
             )
         return rc
-    # Record against the tree that ACTUALLY validated: the verify checkout's own HEAD. The
-    # branch can move between the ledger lookup above and the worktree add (TOCTOU), and a
-    # verdict recorded under the stale pre-resolved sha would vouch for content it never saw.
-    head = _run_git(["git", "-C", str(tmp), "rev-parse", "HEAD"], check=False, capture=True)
-    head_out = getattr(head, "stdout", "") or ""  # tolerate faked run() results without stdout
-    validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
-    tree = validation_ledger.tree_of(entry, validated_sha)
-    artifact_root_config = config.work_value(cfg, entry, "validation_artifact_root", "")
-    try:
-        validation_records.artifact_root(main, artifact_root_config)
-    except ValueError as exc:
-        typer.echo(f"✗ {exc}", err=True)
-        return 2
-    run_record = validation_records.begin_run(
-        main,
-        bead=bead,
-        phase=phase,
-        branch=branch,
-        worktree=tmp,
-        sha=validated_sha,
-        tree=tree,
-        command_hash=validation_ledger.cmd_hash(cmd),
-        command=cmd,
-        owner_start=_pid_start(os.getpid()),
-        artifact_root_config=artifact_root_config,
-    )
-    # From this point the run manifest is authoritative.  Remove the 0.15.1 worktree-keyed
-    # compatibility marker; the run-id active pointer is sufficient for liveness/reaping.
-    if run_record is not None:
+
+    # A successful `git worktree add` has registered `tmp` and may have written a
+    # compatibility marker.  Start the cleanup guard immediately: even metadata
+    # inspection and manifest allocation are fallible, and none may strand that
+    # checkout if they raise before the validation body starts.
+    def cleanup_verify_checkout() -> None:
+        _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
         _remove_verify_marker(tmp, marker_root=_verify_marker_root(main))
-    # Synchronous-contract heartbeat (bh-i0p1.4): only printed once we're actually about to pay
-    # the real cost (the reuse short-circuit above already returned for a cheap hit), so this
-    # never fires on the fast path. `just check`-shaped commands can run 5-15 minutes on a large
-    # suite — long enough that a caller watching for output, not wall-clock, can mistake a quiet
-    # stretch for a hang and reach for backgrounding/polling instead of just waiting on the call.
-    # This line is the inline, always-seen counterpart to the guidance in docs/WORKTREES.md: stay
-    # synchronous and wait for THIS call to return rather than parking a watcher on it.
-    typer.echo(
-        f"  → validating {branch} @ {validated_sha[:7]} from a clean checkout — this can take "
-        "several minutes; invoke synchronously and wait for it to return rather than "
-        "backgrounding or polling"
-    )
+
+    run_record = None
+    try:
+        # Record against the tree that ACTUALLY validated: the verify checkout's own HEAD. The
+        # branch can move between the ledger lookup above and the worktree add (TOCTOU), and a
+        # verdict recorded under the stale pre-resolved sha would vouch for content it never saw.
+        head = _run_git(["git", "-C", str(tmp), "rev-parse", "HEAD"], check=False, capture=True)
+        head_out = getattr(head, "stdout", "") or ""  # tolerate faked run() results without stdout
+        validated_sha = head_out.strip() if head.returncode == 0 and head_out.strip() else sha
+        tree = validation_ledger.tree_of(entry, validated_sha)
+        run_record = validation_records.begin_run(
+            main,
+            bead=bead,
+            phase=phase,
+            branch=branch,
+            worktree=tmp,
+            sha=validated_sha,
+            tree=tree,
+            command_hash=validation_ledger.cmd_hash(cmd),
+            command=cmd,
+            owner_start=_pid_start(os.getpid()),
+            artifact_root_config=artifact_root_config,
+        )
+        # From this point the run manifest is authoritative.  Remove the 0.15.1 worktree-keyed
+        # compatibility marker; the run-id active pointer is sufficient for liveness/reaping.
+        if run_record is not None:
+            _remove_verify_marker(tmp, marker_root=_verify_marker_root(main))
+        # Synchronous-contract heartbeat (bh-i0p1.4): only printed once we're actually about to pay
+        # the real cost (the reuse short-circuit above already returned for a cheap hit), so this
+        # never fires on the fast path. `just check`-shaped commands can run 5-15 minutes on a large
+        # suite — long enough that a caller watching for output, not wall-clock, can mistake a quiet
+        # stretch for a hang and reach for backgrounding/polling instead of just waiting on the
+        # call. This line is the inline, always-seen counterpart to the guidance in
+        # docs/WORKTREES.md: stay
+        # synchronous and wait for THIS call to return rather than parking a watcher on it.
+        typer.echo(
+            f"  → validating {branch} @ {validated_sha[:7]} from a clean checkout — this can take "
+            "several minutes; invoke synchronously and wait for it to return rather than "
+            "backgrounding or polling"
+        )
+    except BaseException:
+        cleanup_verify_checkout()
+        raise
     try:
         try:
             run_init(cfg, entry, tmp, verify_only=True)
@@ -877,5 +897,4 @@ def impl_clean_checkout(
             current = validation_records.read_run(main, run_record["run_id"])
             if current is not None and current.get("lifecycle") == "running":
                 validation_records.abandon_run(main, run_record["run_id"], reason="interrupted")
-        _run_git(["git", "-C", str(main), "worktree", "remove", "--force", str(tmp)], check=False)
-        _remove_verify_marker(tmp, marker_root=_verify_marker_root(main))
+        cleanup_verify_checkout()

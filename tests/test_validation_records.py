@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import host, validation_records
+from beadhive import host, private_paths, validation_records
 
 
 def _repo(tmp_path):
@@ -32,6 +32,19 @@ def _begin(repo, n=0):
         command="check",
         owner_start="token",
     )
+
+
+def test_validation_root_fails_closed_when_canonical_git_resolution_misses(tmp_path, monkeypatch):
+    """A plain .git directory is not authority to create validation control state."""
+    hive = tmp_path / "malformed-hive"
+    (hive / ".git").mkdir(parents=True)
+    monkeypatch.setattr(private_paths, "git_private_root", lambda _hive: None)
+    monkeypatch.setattr(private_paths, "ensure_git_private_root", lambda _hive: None)
+
+    assert validation_records._validation_root(hive) is None
+    assert validation_records._validation_root(hive, create=True) is None
+    assert not (hive / ".git" / "bh").exists()
+    assert not (hive / ".bh").exists()
 
 
 def test_concurrent_runs_and_repeated_uses_have_independent_identity(tmp_path, monkeypatch):
