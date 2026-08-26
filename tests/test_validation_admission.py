@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import time
 
@@ -51,6 +52,15 @@ def test_invalid_environment_capacity_is_rejected(monkeypatch, value):
         validation_admission.configured_slots({})
 
 
+def test_host_capacity_ignores_per_hive_overrides(monkeypatch):
+    monkeypatch.delenv("BH_VALIDATION_SLOTS", raising=False)
+    cfg = {"work": {"validation_slots": 3}}
+    hive_a = {"work": {"validation_slots": 1}}
+    hive_b = {"work": {"validation_slots": 9}}
+    assert validation_admission.configured_slots(cfg, hive_a) == 3
+    assert validation_admission.configured_slots(cfg, hive_b) == 3
+
+
 def test_clean_checkout_reuse_hit_bypasses_admission(monkeypatch):
     monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
     monkeypatch.setattr(worktree_verify, "_reuse_verdict_hit", lambda *a, **k: True)
@@ -95,3 +105,134 @@ def test_reusable_gate_takes_identity_before_host(monkeypatch, tmp_path):
     monkeypatch.setattr(worktree_verify, "_impl_clean_checkout_unadmitted", lambda *a, **k: 0)
     assert worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=True) == 0
     assert order == ["identity-enter", "host-enter", "host-exit", "identity-exit"]
+
+
+@pytest.mark.parametrize(
+    ("verdict", "exit_code", "expected"),
+    [("green", 0, 0), ("red", 3, 3), ("none", 75, 75)],
+)
+def test_exact_callers_start_one_child_and_share_terminal_result(
+    tmp_path, monkeypatch, verdict, exit_code, expected
+):
+    """Real processes contend on the production flocks; only the leader enters the child seam."""
+    ctx = mp.get_context("fork")
+    state = tmp_path / "run.json"
+    starts = ctx.Value("i", 0)
+    uses = ctx.Value("i", 0)
+    running = ctx.Event()
+    release = ctx.Event()
+    results = ctx.Queue()
+    monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(tmp_path / "locks"))
+    monkeypatch.setenv("BH_VALIDATION_SLOTS", "2")
+    monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
+    monkeypatch.setattr(worktree_verify.registry, "hive_dir", lambda *_: tmp_path)
+    monkeypatch.setattr(worktree_verify.validation_ledger, "tree_of", lambda *a: "tree")
+    monkeypatch.setattr(worktree_verify.validation_ledger, "cmd_hash", lambda *a: "command")
+
+    def latest(*args, **kwargs):
+        return json.loads(state.read_text()) if state.exists() else None
+
+    def reuse(*args, **kwargs):
+        value = latest()
+        return bool(
+            value and value.get("lifecycle") == "completed" and value.get("verdict") == "green"
+        )
+
+    def execute(*args, **kwargs):
+        with starts.get_lock():
+            starts.value += 1
+        state.write_text(json.dumps({"run_id": "leader", "lifecycle": "running"}))
+        running.set()
+        release.wait(5)
+        state.write_text(
+            json.dumps(
+                {
+                    "run_id": "leader",
+                    "lifecycle": "completed",
+                    "verdict": verdict,
+                    "exit_code": exit_code,
+                }
+            )
+        )
+        return exit_code
+
+    def record_use(*args, **kwargs):
+        with uses.get_lock():
+            uses.value += 1
+
+    monkeypatch.setattr(worktree_verify.validation_records, "latest_run", latest)
+    monkeypatch.setattr(worktree_verify.validation_records, "record_use", record_use)
+    monkeypatch.setattr(worktree_verify, "_reuse_verdict_hit", reuse)
+    monkeypatch.setattr(worktree_verify, "_impl_clean_checkout_unadmitted", execute)
+
+    def call():
+        results.put(worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=True))
+
+    leader = ctx.Process(target=call)
+    leader.start()
+    assert running.wait(3)
+    followers = [ctx.Process(target=call) for _ in range(4)]
+    for follower in followers:
+        follower.start()
+    time.sleep(0.1)
+    release.set()
+    for process in [leader, *followers]:
+        process.join(5)
+        assert process.exitcode == 0
+    assert starts.value == 1
+    assert sorted(results.get(timeout=1) for _ in range(5)) == [expected] * 5
+    if verdict != "green":
+        assert uses.value == 4
+
+
+def test_abandoned_identity_allows_one_replacement_execution(tmp_path, monkeypatch):
+    """An abandoned owner is not a terminal cohort result; one waiter becomes the new leader."""
+    state = tmp_path / "run.json"
+    state.write_text(json.dumps({"run_id": "dead", "lifecycle": "abandoned", "verdict": "none"}))
+    starts = mp.Value("i", 0)
+    monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(tmp_path / "locks"))
+    monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
+    monkeypatch.setattr(worktree_verify.registry, "hive_dir", lambda *_: tmp_path)
+    monkeypatch.setattr(worktree_verify.validation_ledger, "tree_of", lambda *a: "tree")
+    monkeypatch.setattr(worktree_verify.validation_ledger, "cmd_hash", lambda *a: "command")
+    monkeypatch.setattr(
+        worktree_verify.validation_records,
+        "latest_run",
+        lambda *a, **k: json.loads(state.read_text()),
+    )
+    monkeypatch.setattr(
+        worktree_verify,
+        "_reuse_verdict_hit",
+        lambda *a, **k: json.loads(state.read_text()).get("verdict") == "green",
+    )
+
+    def execute(*args, **kwargs):
+        with starts.get_lock():
+            starts.value += 1
+        state.write_text(
+            json.dumps(
+                {
+                    "run_id": "replacement",
+                    "lifecycle": "completed",
+                    "verdict": "green",
+                    "exit_code": 0,
+                }
+            )
+        )
+        return 0
+
+    monkeypatch.setattr(worktree_verify, "_impl_clean_checkout_unadmitted", execute)
+    processes = [
+        mp.get_context("fork").Process(
+            target=lambda: worktree_verify.impl_clean_checkout(
+                {}, "main", "true", cfg={}, reuse=True
+            )
+        )
+        for _ in range(4)
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(5)
+        assert process.exitcode == 0
+    assert starts.value == 1

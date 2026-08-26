@@ -29,12 +29,11 @@ def slot_root() -> Path:
 
 
 def configured_slots(cfg: dict, entry=None) -> int:
-    """Resolve the host capacity; the process environment is the temporary override."""
+    """Resolve one host capacity; hive-local entry overlays are intentionally ignored."""
     raw = os.environ.get("BH_VALIDATION_SLOTS")
     if raw is None:
-        from . import config
-
-        raw = config.work_value(cfg, entry, "validation_slots", 1)
+        work = cfg.get("work") if isinstance(cfg, dict) else None
+        raw = work.get("validation_slots", 1) if isinstance(work, dict) else 1
     try:
         value = int(raw)
     except (TypeError, ValueError) as exc:
