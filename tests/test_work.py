@@ -1385,10 +1385,13 @@ while not (root / 'release').exists():
         assert _wait_validation_state(state_root, lambda state: "peak" in state).get("peak") == 1
     (state_root / "release").touch()
 
+    # Drain the queue before joining. Each child includes its captured CLI transcript; under the
+    # full xdist gate that can exceed a multiprocessing pipe buffer, whose feeder then keeps the
+    # otherwise-finished process alive until the parent consumes it.
+    outcomes = [results.get(timeout=30) for _ in range(3)]
     for process in (leader, other, duplicate):
-        process.join(15)
+        process.join(30)
         assert process.exitcode == 0
-    outcomes = [results.get(timeout=1) for _ in range(3)]
     assert sorted((bead, rc) for bead, rc, _output in outcomes) == [
         ("mr-submit-a", 0),
         ("mr-submit-a", 0),
