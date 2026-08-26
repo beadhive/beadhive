@@ -71,6 +71,7 @@ KNOWN_SECTIONS = frozenset(
         "claude",
         "harness",
         "hitch",
+        "herdr",
     }
 )
 

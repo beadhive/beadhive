@@ -231,6 +231,21 @@ def harness_name(cfg=None, entry=None) -> str:
     return str((cfg or {}).get("harness", "") or "") or "claude"
 
 
+# ---- herdr (agent-pane integration) ------------------------------------------
+
+
+def herdr_kind(cfg=None, entry=None) -> str | None:
+    """Configured Herdr kind with per-hive precedence.
+
+    This is deliberately a pure layered getter: querying Herdr's installed
+    vocabulary belongs only to its launch boundary, where an actionable error
+    can name the available kinds.  In particular, reading config must never
+    install an integration or make a subprocess call.
+    """
+    value = _config.layered(cfg, entry, "herdr", "kind", None)
+    return str(value) if value is not None else None
+
+
 # ---- OpenTelemetry (ws.otel — gated SDK init) -------------------------------
 
 
@@ -789,6 +804,7 @@ __all__ = [
     "log_level",
     "KNOWN_HARNESSES",
     "harness_name",
+    "herdr_kind",
     "otel_cfg",
     "otel_enabled",
     "otel_endpoint",

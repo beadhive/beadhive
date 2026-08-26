@@ -116,7 +116,8 @@ sets the ownership line so this remains an optional interactive surface, not a p
 |---|---|---|
 | `bh plugin herdr status` | `herdr status`, `integration status` | One-shot health: server running? which agent kinds have hooks installed? |
 | `bh plugin herdr integrate <kind>` | `herdr integration install <kind>` | Explicit opt-in per agent kind — do not auto-install every kind on onboard |
-| `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | The core primitive: stand up a pane for one bead in one hive, cwd'd to that hive's worktree |
+| `bh plugin herdr launch <bead-id>` | exact hive lookup → native `bh work claim` → live reuse or warm agent creation | High-level get-or-create path: the bead ID is the only required input; returns the target and retained native worktree |
+| `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | existing worktree → `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | Low-level escape hatch when the caller intentionally prepared the claim and worktree itself; its three required options are unchanged |
 | `bh plugin herdr dispatch <target> "<prompt>"` | visible-pane read before and after `agent prompt --wait --timeout` | Wraps the finding above — never trust `--wait` alone; the post-read must add a new occurrence of the exact prompt, so an older identical turn cannot falsely verify delivery |
 | `bh plugin herdr watch <target>` | `agent wait --until blocked` | For a dispatcher polling loop: block until an agent needs input or finishes |
 | `bh plugin herdr ps` | `agent list` / `api snapshot` | Fleet view: every live herdr-managed agent, its hive/bead if tagged, and its lifecycle state — the natural `bh hive status`-style dashboard row |
@@ -136,13 +137,60 @@ sets the ownership line so this remains an optional interactive surface, not a p
   worktree management would otherwise double-book the same directories. Native `git worktree`
   remains authoritative, so these hooks stay `None`, as they do for `hitch` and `observaloop`.
 
+### Launch one bead
+
+The normal high-level invocation is:
+
+```bash
+bh plugin herdr launch nvhack-lvxi
+```
+
+`launch` discovers the exact registered hive, resolves the configured agent kind, verifies that
+the kind's Herdr integration is installed, and uses or creates the isolated `bh-supervisor`
+session without attaching to or focusing the operator's terminal. Only after those preflights
+does it enforce the host lease and call the native structured `bh work claim` lifecycle. An open
+bead is claimed and provisioned; the current actor's existing claim/worktree is reattached. A
+foreign claim, closed or missing bead, unsupported kind, missing integration, unavailable
+session, or ambiguous hive is refused with a staged remedy.
+
+The optional overrides are `--hive`, `--kind`, `--as`, `--adopt-expired`, `--direction
+right|down`, `--focus/--no-focus`, and `--json`. Direction defaults to `right`; no-focus is the
+safe default. `--adopt-expired` uses the normal non-forced host-adoption core only for a released
+or expired lease. It never seizes an active foreign lease; forced takeover remains the separate,
+dangerous `bh host lease adopt <hive> --force` operation.
+
+The launch is idempotent. A proven live target is reused only when its agent name, visible pane
+name, `bh:<hive>` workspace, live state, pane, and exact worktree cwd all match. Otherwise a
+conflict is refused. Herdr's unique agent-name boundary fences concurrent launches: a loser
+closes only the pane it created and returns the proven winner. Later startup or warm-up failure
+also closes only that new pane; the successful native claim and worktree are retained and the
+error prints status, attach, and retry guidance. No path invokes `herdr worktree create`, `open`,
+or `remove`.
+
+For an agent, consume the returned target rather than predicting its encoded name:
+
+```bash
+launch_json="$(bh plugin herdr launch nvhack-lvxi --json)"
+target="$(printf '%s' "$launch_json" | jq -r '.target')"
+bh plugin herdr dispatch "$target" "Implement the claimed bead and submit it for review."
+bh plugin herdr watch "$target"
+bh plugin herdr attach "$target"  # prints the human attach command; never attaches itself
+bh plugin herdr reap "$target"    # closes only the proven owned pane, never the worktree
+```
+
+JSON stdout is one version-1 document: `schema_version`, `command`, `status`, `disposition`,
+`hive`, `bead`, `kind`, `worktree`, `workspace`, `pane`, and `target`. Read `.target`; do not
+derive it from the bead ID because dotted or long IDs use a deterministic collision-resistant
+Herdr-safe encoding.
+
 ### Choosing Task/Agent or herdr
 
 Use the in-process **Task/Agent** route for ordinary fire-and-forget subagent work that the
 operator does not need to inspect while it runs. It remains the default dispatcher path.
 
-Use **herdr** only through an explicit `bh plugin herdr spawn` followed by `dispatch` when the
-operator wants a separately billed, persistent terminal agent they can inspect, attach to, or
-steer live. Herdr complements Task/Agent; it does not reroute normal fanout, own worktree
-lifecycle, or advance bead state. The complete ownership decisions are recorded in
+Use **herdr** only through an explicit `bh plugin herdr launch <bead-id>` when the operator wants
+a separately billed, persistent terminal agent they can inspect, attach to, or steer live. Use
+the lower-level `spawn --hive --bead --kind` only when claim/worktree preparation is deliberately
+external. Herdr complements Task/Agent; it does not reroute normal fanout, own Beads or Git
+worktree lifecycle, or advance bead state. The complete ownership decisions are recorded in
 [the herdr integration ADR](design/herdr-integration-adr.md).
