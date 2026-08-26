@@ -1100,11 +1100,26 @@ def _prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
 
 
 def clean_checkout(
-    entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
+    entry,
+    branch,
+    cmd,
+    cfg=None,
+    reuse=False,
+    *,
+    bead=None,
+    phase="validation",
+    observed_active_run_id=None,
 ) -> int:
     """Compatibility facade for ``worktree_verify.impl_clean_checkout``."""
     return _worktree_verify.impl_clean_checkout(
-        entry, branch, cmd, cfg, reuse, bead=bead, phase=phase
+        entry,
+        branch,
+        cmd,
+        cfg,
+        reuse,
+        bead=bead,
+        phase=phase,
+        observed_active_run_id=observed_active_run_id,
     )
 
 

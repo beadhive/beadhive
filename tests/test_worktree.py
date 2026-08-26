@@ -1503,6 +1503,7 @@ def test_clean_checkout_unique_per_invocation_dirs_and_marker(tmp_path, monkeypa
 
 def test_concurrent_clean_checkouts_keep_distinct_external_markers(tmp_path, monkeypatch):
     """Two same-branch validators see clean, isolated checkouts and both live markers."""
+    monkeypatch.setenv("BH_VALIDATION_SLOTS", "2")
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     marker_root = repo / ".git" / worktree.VERIFY_ACTIVE_PATH
     arrived = threading.Barrier(2)

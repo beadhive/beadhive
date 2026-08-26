@@ -99,6 +99,7 @@ annotated_tag = true
 pre_bump_hooks = ["uv version --no-sync $CZ_PRE_NEW_VERSION"]
 
 [tool.pytest.ini_options]
+addopts = "--durations=25 --durations-min=1.0"
 markers = [
     "integration: real-bd AGF topology harness (slower; needs the bd binary)",
     # Not documentation: conftest's `_bound_concurrent_dolt_servers` makes a marked test hold one

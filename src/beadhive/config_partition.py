@@ -49,6 +49,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "worktrees.path",  # persistent worktree root: a path on THIS disk
         "otel",  # points at THIS host's collector
         "work.identity",  # git identity + signing stamped per machine/seat
+        "work.validation_slots",  # heavyweight validation capacity on THIS host
         "work.dispatch.max_beads_per_session",  # dispatch budget: THIS host's compute
         "work.dispatch.auto_budget",  # dispatch budget: THIS host's compute
         "hq.remote",  # derives from the identity resolved on THIS host

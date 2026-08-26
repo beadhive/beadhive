@@ -434,6 +434,14 @@ class WorkConfig(_Section):
     validate_cmd: str = Field(
         "just check", description="Default validation command for any boundary without an override."
     )
+    validation_slots: int = Field(
+        1,
+        ge=0,
+        description=(
+            "Host-wide concurrent validation capacity. One is the safe default; zero disables "
+            "admission. BH_VALIDATION_SLOTS temporarily overrides this host-local value."
+        ),
+    )
     validation_protocol: Literal["none", "beadhive-validation-result/v1"] = Field(
         "none",
         description=(

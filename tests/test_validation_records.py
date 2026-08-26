@@ -77,6 +77,39 @@ def test_concurrent_runs_and_repeated_uses_have_independent_identity(tmp_path, m
     assert all(Path(run["artifacts"]["reports"]).is_dir() for run in runs)
 
 
+def test_run_admission_and_coalesced_use_stay_in_existing_records(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+    run = validation_records.begin_run(
+        repo,
+        bead="bh-x",
+        phase="submit",
+        branch="branch",
+        worktree=repo,
+        sha="sha",
+        tree="tree",
+        command_hash="hash",
+        admission={"slot": 1, "queue_seconds": 2.5, "ignored": "not persisted"},
+    )
+    assert run["admission"] == {"slot": 1, "queue_seconds": 2.5}
+    validation_records.finish_run(repo, run["run_id"], exit_code=0)
+    use = validation_records.record_use(
+        repo,
+        run_id=run["run_id"],
+        bead="bh-x",
+        phase="submit",
+        branch="branch",
+        worktree=None,
+        sha="sha",
+        tree="tree",
+        command_hash="hash",
+        reused=True,
+        coalesced=True,
+    )
+    assert use["reused"] is True
+    assert use["coalesced"] is True
+
+
 def test_artifact_root_precedence_and_relative_rejection(tmp_path, monkeypatch):
     repo = _repo(tmp_path)
     monkeypatch.setattr(host, "host_id", lambda: "host")

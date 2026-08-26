@@ -475,10 +475,16 @@ fmt:
 FAST := "not integration"
 FULL := ""
 
+# Resource-safety ceiling for every pytest-xdist `-n auto` invocation. xdist reads this
+# supported environment variable when choosing its auto worker count. Override it for a
+# larger or smaller host (for example, `PYTEST_XDIST_AUTO_NUM_WORKERS=3 just test`); xdist
+# rejects non-integer values instead of falling back to unbounded CPU discovery.
+export PYTEST_XDIST_AUTO_NUM_WORKERS := shell("workers=${PYTEST_XDIST_AUTO_NUM_WORKERS:-6}; case $workers in 0|*[!0-9]*) echo 'PYTEST_XDIST_AUTO_NUM_WORKERS must be a positive integer' >&2; exit 2;; *) printf %s $workers;; esac")
+
 # run the suite for a marker selection (default: the fast unit-only set)
 #   just test               → unit only (fast)    just test integration → real-bd harness only
 #   just test ""            → the complete suite (unit + integration; integration self-skips w/o bd)
-# ALWAYS parallel (pytest-xdist `-n auto`, one worker per CPU). This comment used to assert the
+# ALWAYS parallel (pytest-xdist `-n auto`, capped at six workers by default). This comment used to assert the
 # real-bd integration harness was NOT parallel-safe because "its cases share state" — and that
 # stopped being true without anyone re-checking. Three fixes each removed a piece of that state:
 # bh-dfz2 + conftest (ephemeral ports, no literal-port collisions between workers), bh-areg.7's

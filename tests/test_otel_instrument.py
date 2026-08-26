@@ -193,6 +193,27 @@ def test_validation_counter_tags_pass_and_fail_when_on(monkeypatch):
     assert meter.create_counter.call_count == 1
 
 
+def test_validation_admission_metrics_have_bounded_dimensions(monkeypatch):
+    _tracer, meter = _mock_provider(monkeypatch)
+    attrs = {"bh.hive": "mr", "bh.work.phase": "submit"}
+
+    otel.record_validation_queue_wait(1.25, attrs)
+    otel.count_validation_admitted(attrs)
+    otel.count_validation_coalesced(attrs)
+
+    histogram = meter.create_histogram.call_args_list[0]
+    assert histogram.args[0] == "bh.work.validation.admission.queue"
+    meter.create_histogram.return_value.record.assert_called_once_with(1.25, attrs)
+    names = [call.args[0] for call in meter.create_counter.call_args_list]
+    assert names == [
+        "bh.work.validation.admission.executions",
+        "bh.work.validation.admission.coalesced",
+    ]
+    for call in meter.create_counter.return_value.add.call_args_list:
+        assert call.args == (1, attrs)
+        assert set(call.args[1]) == {"bh.hive", "bh.work.phase"}
+
+
 def test_instruments_cached_per_name(monkeypatch):
     _tracer, meter = _mock_provider(monkeypatch)
     otel.record_merge_duration(1.0)

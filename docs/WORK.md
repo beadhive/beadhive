@@ -272,6 +272,7 @@ than early — the safe direction. `bh-gj0v9.2` owns classifying that as defect 
 ```yaml
 work:
   validate_cmd: "just check"     # default validation for any boundary without an override
+  validation_slots: 1             # host-wide uniform gate capacity; 0 disables admission
   validation: relaxed            # merge re-test depth: relaxed | conservative | loose (see below)
   validate:                      # optional per-boundary overrides (fall back to validate_cmd).
                                  # a `<phase>-main` key wins when the op targets the integration branch.
@@ -303,6 +304,11 @@ work:
     signing_key: "~/.config/bh/keys/claude.pub"
     sign: true
 ```
+
+`work.validation_slots` is host-owned and shared by all hives/worktrees; per-hive overlays do not
+change it. `BH_VALIDATION_SLOTS` overrides the configured value for one invocation. See
+[WORKTREES.md](WORKTREES.md#host-wide-admission-and-duplicate-coalescing) for safe tuning,
+coalescing, xdist fan-out, and the separate Dolt fixture semaphore.
 
 `submit` only **pushes** the branch when `review_gate` is `gh:run`/`gh:pr` (CI must
 see it); a purely local reviewer sharing the object store needs no push.

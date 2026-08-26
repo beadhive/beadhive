@@ -51,6 +51,7 @@ from . import (
     release_order,  # noqa: F401 - injected lifecycle collaborator
     test_report,  # noqa: F401 - injected submission collaborator
     triage_store,  # noqa: F401 - injected submission collaborator
+    validation_admission,  # noqa: F401 - injected submission collaborator
     validation_ledger,  # noqa: F401 - injected submission collaborator
     validation_records,  # noqa: F401 - injected submission collaborator
     work_assignment,
