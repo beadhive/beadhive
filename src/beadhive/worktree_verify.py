@@ -28,6 +28,7 @@ from . import (
     registry,
     test_report,
     triage_store,
+    validation_admission,
     validation_ledger,
     validation_records,
 )
@@ -617,7 +618,7 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     return tmp, 0
 
 
-def impl_clean_checkout(
+def _impl_clean_checkout_unadmitted(
     entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
 ) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
@@ -898,3 +899,64 @@ def impl_clean_checkout(
             if current is not None and current.get("lifecycle") == "running":
                 validation_records.abandon_run(main, run_record["run_id"], reason="interrupted")
         cleanup_verify_checkout()
+
+
+def impl_clean_checkout(
+    entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
+) -> int:
+    """Canonical clean-checkout gate, bounded by host-wide validation admission."""
+    if cfg is None:
+        try:
+            cfg = config.load()
+        except FileNotFoundError:
+            cfg = {}
+    if not reuse:
+        with validation_admission.host_slot(cfg, entry):
+            return _impl_clean_checkout_unadmitted(
+                entry, branch, cmd, cfg=cfg, reuse=False, bead=bead, phase=phase
+            )
+
+    sha = _branch_sha(entry, branch)
+    main = registry.hive_dir(entry)
+    tree = validation_ledger.tree_of(entry, sha)
+    command_hash = validation_ledger.cmd_hash(cmd)
+    prior = validation_records.latest_run(main, tree=tree, command_hash=command_hash)
+    prior_id = prior.get("run_id") if prior else None
+    prior_was_running = bool(prior and prior.get("lifecycle") == "running")
+    # Lock ordering is intentionally identity -> host. Same-key followers wait without taking
+    # scarce compute capacity, then re-read authoritative state after the leader finishes.
+    with validation_admission.identity_lock(main, tree, command_hash):
+        if _reuse_verdict_hit(entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch):
+            return 0
+        latest = validation_records.latest_run(main, tree=tree, command_hash=command_hash)
+        joined_terminal = bool(
+            latest
+            and latest.get("lifecycle") == "completed"
+            and (
+                latest.get("run_id") != prior_id
+                or prior_was_running
+                and latest.get("run_id") == prior_id
+            )
+        )
+        if joined_terminal:
+            assert latest is not None
+            validation_records.record_use(
+                main,
+                run_id=latest["run_id"],
+                bead=bead,
+                phase=phase,
+                branch=branch,
+                worktree=None,
+                sha=sha,
+                tree=tree,
+                command_hash=command_hash,
+                reused=True,
+            )
+            if latest.get("verdict") == "green":
+                return 0
+            exit_code = latest.get("exit_code")
+            return exit_code if type(exit_code) is int and exit_code != 0 else 75
+        with validation_admission.host_slot(cfg, entry):
+            return _impl_clean_checkout_unadmitted(
+                entry, branch, cmd, cfg=cfg, reuse=False, bead=bead, phase=phase
+            )

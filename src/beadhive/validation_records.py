@@ -538,6 +538,27 @@ def latest_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | None
     )
 
 
+def running_runs(
+    hive: str | Path, *, bead: str | None = None, tree: str | None = None
+) -> list[dict]:
+    """Readable active executions, optionally narrowed to one submit subject."""
+    root = _validation_root(hive)
+    directory = root / "runs" if root else None
+    if directory is None or not directory.is_dir():
+        return []
+    result = []
+    for child in directory.iterdir():
+        value = read_run(hive, child.name)
+        if value is None or value.get("lifecycle") != "running":
+            continue
+        if bead is not None and value.get("bead") != bead:
+            continue
+        if tree is not None and value.get("tree") != tree:
+            continue
+        result.append(value)
+    return sorted(result, key=_run_order_key)
+
+
 def _run_order_key(item: dict) -> tuple[int, str, str]:
     """Stable authority-aware execution ordering, including deterministic ties.
 
