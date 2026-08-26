@@ -1900,24 +1900,47 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
 
 
 def _legacy_validation_warnings(entry: dict, path: Path) -> list[str]:
-    """Name retired validation state while its two-minor read window is still open."""
+    """Report the read-only two-root inventory, including safe cleanup candidates."""
     prefix = str(entry.get("prefix", "")) or f"{entry.get('org')}/{entry.get('repo')}"
-    legacy = []
-    ledger = path / ".git" / "bh-validation-ledger.json"
-    triage = path / ".bh" / "testreport"
-    if ledger.exists():
-        legacy.append(str(ledger))
-    if triage.is_dir():
-        legacy.append(str(triage))
-    if not legacy:
-        return []
-    return [
-        f"hive '{prefix}' retains legacy validation state ({', '.join(legacy)}). "
-        "Bh reads it only as a bounded compatibility input in 0.16.x and 0.17.x; canonical "
-        f"state is below {private_paths.GIT_PRIVATE_DIRNAME}/validation and "
-        f"{private_paths.REPO_PRIVATE_DIRNAME}/validation. Verify the migration, then follow "
-        "docs/UPGRADING.md before removing the legacy copies; fallback is removed in 0.18.0."
-    ]
+    findings = private_paths.inventory_private_state(path)
+    by_kind: dict[str, list[str]] = {}
+    for finding in findings:
+        by_kind.setdefault(finding.kind, []).append(str(finding.path))
+    warnings = []
+    if legacy := by_kind.pop("legacy_path", []):
+        warnings.append(
+            f"hive '{prefix}' retains legacy Beadhive private state ({', '.join(legacy)}). "
+            "Bh reads compatibility inputs only in the bounded 0.16.x and 0.17.x window; "
+            "canonical "
+            f"state is below .git/{private_paths.GIT_PRIVATE_DIRNAME}/ and "
+            f"{private_paths.REPO_PRIVATE_DIRNAME}/. Verify the migration, then follow "
+            "docs/UPGRADING.md before removing legacy copies; fallback is removed in 0.18.0."
+        )
+    labels = {
+        "abandoned_validation_run": "abandoned validation runs",
+        "abandoned_validation_artifact": "artifacts from abandoned validation runs",
+        "orphaned_validation_artifact": "validation artifacts without manifests",
+        "stale_claim": "claims without registered Git worktrees",
+        "build_leftover": "build scratch owned by dead processes",
+        "release_leftover": "release control records owned by dead processes",
+        "release_artifact_leftover": "release logs without live control owners",
+    }
+    for kind, paths in sorted(by_kind.items()):
+        if kind.startswith("protected_"):
+            warnings.append(
+                f"hive '{prefix}' has PROTECTED private state with unmeasurable ownership "
+                f"({kind.removeprefix('protected_').replace('_', ' ')}): {', '.join(paths)}. "
+                "This is not a deletion candidate; repair or establish ownership before any "
+                "cleanup (docs/design/private-path-inventory.md)."
+            )
+        else:
+            warnings.append(
+                f"hive '{prefix}' has cleanup candidates — "
+                f"{labels.get(kind, kind.replace('_', ' '))}: {', '.join(paths)}. "
+                "This doctor inventory is read-only; re-check ownership and follow "
+                "docs/design/private-path-inventory.md before cleanup."
+            )
+    return warnings
 
 
 def warning_messages(cfg: dict | None = None) -> list[str]:
