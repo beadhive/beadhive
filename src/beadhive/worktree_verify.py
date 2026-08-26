@@ -28,6 +28,7 @@ from . import (
     registry,
     test_report,
     triage_store,
+    validation_admission,
     validation_ledger,
     validation_records,
 )
@@ -617,7 +618,7 @@ def impl__prepare_verify_worktree(main: Path, entry, branch: str, cmd: str):
     return tmp, 0
 
 
-def impl_clean_checkout(
+def _impl_clean_checkout_unadmitted(
     entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
 ) -> int:
     """Validate `branch` from a throwaway detached worktree, so the result never depends on
@@ -898,3 +899,24 @@ def impl_clean_checkout(
             if current is not None and current.get("lifecycle") == "running":
                 validation_records.abandon_run(main, run_record["run_id"], reason="interrupted")
         cleanup_verify_checkout()
+
+
+def impl_clean_checkout(
+    entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
+) -> int:
+    """Canonical clean-checkout gate, bounded by host-wide validation admission."""
+    if cfg is None:
+        try:
+            cfg = config.load()
+        except FileNotFoundError:
+            cfg = {}
+    if reuse:
+        sha = _branch_sha(entry, branch)
+        if _reuse_verdict_hit(
+            entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch
+        ):
+            return 0
+    with validation_admission.host_slot(cfg, entry):
+        return _impl_clean_checkout_unadmitted(
+            entry, branch, cmd, cfg=cfg, reuse=False, bead=bead, phase=phase
+        )

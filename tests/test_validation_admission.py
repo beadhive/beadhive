@@ -5,7 +5,7 @@ import time
 
 import pytest
 
-from beadhive import validation_admission
+from beadhive import validation_admission, worktree_verify
 
 
 def _hold(root, entered, release):
@@ -49,3 +49,14 @@ def test_invalid_environment_capacity_is_rejected(monkeypatch, value):
     monkeypatch.setenv("BH_VALIDATION_SLOTS", value)
     with pytest.raises(ValueError, match="non-negative integer"):
         validation_admission.configured_slots({})
+
+
+def test_clean_checkout_reuse_hit_bypasses_admission(monkeypatch):
+    monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
+    monkeypatch.setattr(worktree_verify, "_reuse_verdict_hit", lambda *a, **k: True)
+    monkeypatch.setattr(
+        validation_admission,
+        "host_slot",
+        lambda *a, **k: pytest.fail("a ledger hit must not enter admission"),
+    )
+    assert worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=True) == 0

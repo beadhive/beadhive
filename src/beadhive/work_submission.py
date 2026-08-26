@@ -11,6 +11,14 @@ from pathlib import Path
 
 
 def impl_check(api, bead, hive):
+    """Resolve the target, then hold admission across its entire validation lifecycle."""
+    cfg = api.config.load()
+    entry, _main, _target, _branch = api.worktree.locate(cfg, hive, bead)
+    with api.validation_admission.host_slot(cfg, entry):
+        return _impl_check_unadmitted(api, bead, hive)
+
+
+def _impl_check_unadmitted(api, bead, hive):
     api.otel.set_bead(bead)
     cfg = api.config.load()
     entry, main, target, _branch = api.worktree.locate(cfg, hive, bead)
