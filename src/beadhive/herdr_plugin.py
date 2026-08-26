@@ -11,6 +11,7 @@ the generic plugin registry) fail.
 from __future__ import annotations
 
 import hashlib
+import importlib
 import json
 import re
 import shlex
@@ -237,7 +238,7 @@ def _launch_target(bead: str) -> str:
     legacy = f"bh-{bead}"
     if _HERDR_NAME_RE.fullmatch(legacy):
         return legacy
-    digest = hashlib.sha256(bead.encode()).hexdigest()[:12]
+    digest = hashlib.sha256(bead.encode()).hexdigest()[:16]
     stem = re.sub(r"[^a-z0-9_-]+", "-", bead.lower()).strip("-_") or "bead"
     room = 32 - len("bh--") - len(digest)
     return f"bh-{stem[:room]}-{digest}"
@@ -291,9 +292,8 @@ def _snapshot_agent_records(snapshot: dict) -> list[dict]:
             record.update(item["agent"])
         pane_id = _record_pane_id(record)
         pane = panes.get(pane_id or "", {})
-        workspace_id = (
-            record.get("workspace_id")
-            or (pane.get("workspace_id") if isinstance(pane, dict) else None)
+        workspace_id = record.get("workspace_id") or (
+            pane.get("workspace_id") if isinstance(pane, dict) else None
         )
         workspace = workspaces.get(str(workspace_id or ""), {})
         if pane:
@@ -311,9 +311,7 @@ def _snapshot_value(record: dict, *keys: str):
         record.get("pane") if isinstance(record.get("pane"), dict) else {},
         record.get("pane_record") if isinstance(record.get("pane_record"), dict) else {},
         record.get("workspace") if isinstance(record.get("workspace"), dict) else {},
-        record.get("workspace_record")
-        if isinstance(record.get("workspace_record"), dict)
-        else {},
+        record.get("workspace_record") if isinstance(record.get("workspace_record"), dict) else {},
     ):
         for key in keys:
             value = source.get(key)
@@ -419,9 +417,7 @@ def _launch_fail(stage: str, detail: str, *, claim=None, target: str = "") -> No
         typer.echo(f"  status: bh work issue {claim.bead.get('id', '')} --json", err=True)
         if target:
             typer.echo(f"  attach: bh plugin herdr attach {target}", err=True)
-        typer.echo(
-            f"  retry: bh plugin herdr launch {claim.bead.get('id', '')}", err=True
-        )
+        typer.echo(f"  retry: bh plugin herdr launch {claim.bead.get('id', '')}", err=True)
     raise typer.Exit(1)
 
 
@@ -503,7 +499,7 @@ def _launch_kind(explicit: str | None, cfg, entry) -> str:
 
 def _launch_lease(cfg, entry: dict, hive: str, adopt_expired: bool) -> None:
     """Apply launch's explicit, never-forced host-lease policy before claiming."""
-    from . import guard, host_cli
+    from . import guard
 
     state = guard.primary_state(hive, cfg=cfg, entry=entry)
     if state is None:
@@ -524,14 +520,51 @@ def _launch_lease(cfg, entry: dict, hive: str, adopt_expired: bool) -> None:
             "non-forced adoption path",
         )
     try:
-        host_cli.adopt_one(hive, force=False)
+        _adopt_expired_lease(cfg, entry)
     except Exception as exc:  # noqa: BLE001 - primitive has several typed refusal classes
         _launch_fail("lease", f"non-forced adoption failed: {exc}")
 
 
+def _adopt_expired_lease(cfg, entry: dict):
+    """Invoke the normal fence-then-lease adoption core without a force escape hatch."""
+    from . import host, host_adopt, host_lease, hosts, registry
+
+    hq_dir = config.hq_dir()
+    git_probe = run.run(
+        ["git", "-C", str(hq_dir), "rev-parse", "--git-dir"], check=False, capture=True
+    )
+    if git_probe.returncode != 0:
+        raise RuntimeError(
+            f"no Factory HQ clone at {hq_dir}; run `bh hq init` or `bh hq clone` first"
+        )
+    host_id = host.host_id()
+    manifest = hosts.load(hq_dir, host_id)
+    ttl = host_lease.ttl_for_role(manifest.role, config.host_lease_ttl(cfg))
+    return host_adopt.adopt(
+        prefix=str(entry["prefix"]),
+        hive_remote="origin",
+        hq_remote="origin",
+        hive_cwd=registry.hive_dir(entry),
+        hq_cwd=hq_dir,
+        host_id=host_id,
+        label=manifest.label,
+        ttl=ttl,
+        force=False,
+    )
+
+
 @cli.command(
     "launch",
-    help="claim one bead and start or reuse its warm Herdr coding agent.",
+    help=(
+        "bh plugin herdr launch nvhack-lvxi --json\n\n"
+        "Claim one exact bead and start or reuse its warm Herdr coding agent. The one-argument "
+        "path discovers the hive and kind. All options are overrides: --hive disambiguates, "
+        "--kind selects an installed integration, --as selects the developer identity, "
+        "--adopt-expired uses only non-forced host adoption, --direction defaults right, "
+        "--no-focus is the safe focus default, and --json is the agent contract. Herdr never "
+        "creates or removes a worktree, never installs an integration, and never seizes an "
+        "active foreign host lease."
+    ),
 )
 def _launch_cmd(
     bead: str = typer.Argument(..., metavar="BEAD_ID", help="exact Beads issue ID"),
@@ -569,7 +602,13 @@ def _launch_cmd(
     foreign host lease is never seized. ``spawn`` remains the low-level command for callers
     that intentionally prepared the claim and worktree themselves.
     """
-    from . import jsonout, registry, work
+    from . import jsonout, registry
+
+    # Import the lifecycle facade only when launch is actually invoked. The optional plugin is
+    # statically reachable from public publish/export code through the plugin registry; making
+    # the broad work facade a module dependency would falsely widen that read-only boundary to
+    # work's aggregate intake modules even though publishing can never execute this command.
+    work = importlib.import_module(".work", __package__)
 
     if direction not in {"right", "down"}:
         _launch_fail("input", "--direction must be `right` or `down`")
@@ -1105,9 +1144,7 @@ def _reap_cmd(target: str = typer.Argument(..., metavar="TARGET")) -> None:
 def _spawn_cmd(
     hive: str = typer.Option(..., "--hive", help="managed hive identifier"),
     bead: str = typer.Option(..., "--bead", help="already-claimed bead identifier"),
-    kind: str | None = typer.Option(
-        None, "--kind", help="Herdr agent kind; overrides per-hive and global herdr.kind"
-    ),
+    kind: str = typer.Option(..., "--kind", help="Herdr agent kind, e.g. claude or codex"),
 ) -> None:
     """Create an isolated pane and prove its first conversational turn is promptable."""
     if not server_up():

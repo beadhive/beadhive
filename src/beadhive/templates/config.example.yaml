@@ -115,9 +115,10 @@ dolt:
 # repowise:
 #   enabled: true
 
-# Herdr is an optional interactive agent-pane server.  `bh plugin herdr spawn` uses this
-# preference when --kind is omitted; a hive's managed_repos entry may override it with the
-# same `herdr: {kind: ...}` mapping.  Herdr itself validates its installed kind vocabulary
+# Herdr is an optional interactive agent-pane server. `bh plugin herdr launch <bead-id>` uses
+# this preference after any explicit --kind; a hive's managed_repos entry may override it with
+# the same `herdr: {kind: ...}` mapping. Low-level `spawn` keeps its required --kind. Herdr
+# itself validates its installed kind vocabulary
 # at launch, so newly added external kinds do not require a Beadhive release.
 # herdr:
 #   kind: codex

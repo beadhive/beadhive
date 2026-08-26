@@ -71,10 +71,11 @@ also make the association useful to an operator outside `bh`.
 ### 4. herdr complements, never replaces, Task/Agent fanout
 
 The existing in-process Task/Agent route remains the default for ordinary fire-and-forget
-subagent work. Herdr is selected only by an explicit `bh plugin herdr spawn` / `dispatch` action
-when an operator wants a separately billed, persistent, attachable, and steerable terminal agent.
-It does not change `work.runtime`, intercept Task calls, or automatically route ready beads into
-panes.
+subagent work. Herdr is selected only by an explicit high-level `bh plugin herdr launch
+<bead-id>` action, or by the low-level `spawn` / `dispatch` primitives when preparation is
+deliberately external. `launch` may resolve and claim one exact bead through native `bh` lifecycle
+ownership, but Herdr does not change `work.runtime`, intercept Task calls, or automatically route
+ready beads into panes.
 
 `dispatch` treats herdr's settled/`done` lifecycle signal as insufficient by itself for a newly
 started agent. It applies the warm-up and pane-content verification described in `HERDR.md` before
@@ -95,6 +96,12 @@ server a dependency of routine dispatch.
   selection fails.
 - The initial worktree hooks remain `None`. This is an intentional boundary, not deferred
   plumbing.
+- `launch` is a native-lifecycle composition, not a second lifecycle: hive lookup and claim /
+  worktree provisioning stay in `bh`; session, workspace, pane, process, and live state stay in
+  Herdr. A Herdr failure never rolls back a successful native claim or deletes its worktree.
+- `spawn --hive --bead --kind` retains its required low-level surface unchanged. It remains useful
+  for callers that already hold the claim/worktree; `launch <bead-id>` is the human- and
+  agent-facing default.
 - The implementation must test both the deterministic naming/parser contract and the invariant
   that spawn/reap do not invoke herdr worktree commands.
 
