@@ -2109,9 +2109,24 @@ def test_clean_checkout_keeps_complete_external_run_artifacts(tmp_path, monkeypa
     assert manifest["summary"]["tree"] == manifest["tree"]
 
 
-def test_clean_checkout_refuses_relative_artifact_root_before_runner(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("configured", "environment"),
+    [("relative/artifacts", None), ("", "relative/artifacts")],
+)
+def test_clean_checkout_refuses_relative_artifact_root_before_runner(
+    tmp_path, monkeypatch, configured, environment
+):
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
-    cfg["work"] = {"validation_artifact_root": "relative/artifacts"}
+    cfg["work"] = {"validation_artifact_root": configured}
+    if environment is not None:
+        monkeypatch.setenv("BH_VALIDATION_ARTIFACT_ROOT", environment)
+    before_worktrees = run(
+        ["git", "worktree", "list", "--porcelain"], cwd=str(repo), check=True, capture=True
+    ).stdout
+    verify_parent = worktree.wt_dir(entry, "verify-main").parent
+    before_verify_dirs = sorted(verify_parent.iterdir()) if verify_parent.exists() else []
+    marker_root = worktree._verify_marker_root(repo)
+    before_markers = sorted(marker_root.iterdir()) if marker_root and marker_root.exists() else []
     ran = []
     original = worktree.run
 
@@ -2123,7 +2138,77 @@ def test_clean_checkout_refuses_relative_artifact_root_before_runner(tmp_path, m
     monkeypatch.setattr(worktree, "run", observe)
     assert worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x") == 2
     assert ran == []
+    assert (
+        run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=str(repo),
+            check=True,
+            capture=True,
+        ).stdout
+        == before_worktrees
+    )
+    assert (sorted(verify_parent.iterdir()) if verify_parent.exists() else []) == before_verify_dirs
+    assert (
+        sorted(marker_root.iterdir()) if marker_root and marker_root.exists() else []
+    ) == before_markers
     assert not list((repo / ".git/bh/validation/runs").glob("*/manifest.json"))
+
+
+@pytest.mark.parametrize("seam", ["head", "tree", "begin_run"])
+def test_clean_checkout_cleans_verify_checkout_when_pre_run_metadata_raises(
+    tmp_path, monkeypatch, seam
+):
+    """Every exception after `worktree add` must release its registration and marker."""
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    before_worktrees = run(
+        ["git", "worktree", "list", "--porcelain"], cwd=str(repo), check=True, capture=True
+    ).stdout
+    verify_parent = worktree.wt_dir(entry, "verify-main").parent
+    before_verify_dirs = sorted(verify_parent.iterdir()) if verify_parent.exists() else []
+    marker_root = worktree._verify_marker_root(repo)
+    before_markers = sorted(marker_root.iterdir()) if marker_root and marker_root.exists() else []
+
+    if seam == "head":
+        original = worktree._run_git
+
+        def fail_head(argv, **kwargs):
+            if list(argv)[-2:] == ["rev-parse", "HEAD"]:
+                raise RuntimeError("head lookup failed")
+            return original(argv, **kwargs)
+
+        monkeypatch.setattr(worktree, "_run_git", fail_head)
+        error = "head lookup failed"
+    elif seam == "tree":
+        monkeypatch.setattr(
+            validation_ledger,
+            "tree_of",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("tree lookup failed")),
+        )
+        error = "tree lookup failed"
+    else:
+        monkeypatch.setattr(
+            validation_records,
+            "begin_run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("run allocation failed")),
+        )
+        error = "run allocation failed"
+
+    with pytest.raises(RuntimeError, match=error):
+        worktree.clean_checkout(entry, "main", "true", cfg=cfg, bead="bh-x")
+
+    assert (
+        run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=str(repo),
+            check=True,
+            capture=True,
+        ).stdout
+        == before_worktrees
+    )
+    assert (sorted(verify_parent.iterdir()) if verify_parent.exists() else []) == before_verify_dirs
+    assert (
+        sorted(marker_root.iterdir()) if marker_root and marker_root.exists() else []
+    ) == before_markers
 
 
 def test_clean_checkout_checkout_failure_is_a_terminal_none_use(tmp_path, monkeypatch):

@@ -51,8 +51,6 @@ def _validation_root(hive: str | Path, *, create: bool = False) -> Path | None:
         if create
         else private_paths.git_private_root(hive)
     )
-    if root is None and (git_dir := hive / ".git").is_dir():
-        root = git_dir / "bh"
     return root / "validation" if root is not None else None
 
 

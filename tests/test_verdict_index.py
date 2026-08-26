@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from beadhive import host, validation_ledger, validation_records
+from beadhive import host, private_paths, validation_ledger, validation_records
 
 
 def _entry(tmp_path, monkeypatch):
@@ -21,6 +21,18 @@ def _entry(tmp_path, monkeypatch):
 
 def _path(entry, rev="tree"):
     return validation_ledger._verdict_path(entry, rev, validation_ledger.cmd_hash("just check"))
+
+
+def test_verdict_path_fails_closed_when_canonical_git_resolution_misses(tmp_path, monkeypatch):
+    """Even a real checkout must not bypass a failed canonical metadata probe."""
+    entry, repo = _entry(tmp_path, monkeypatch)
+    monkeypatch.setattr(private_paths, "git_private_root", lambda _hive: None)
+    monkeypatch.setattr(private_paths, "ensure_git_private_root", lambda _hive: None)
+
+    assert validation_ledger._verdict_path(entry, "tree", "hash") is None
+    assert validation_ledger._verdict_path(entry, "tree", "hash", create=True) is None
+    assert not (repo / ".git" / "bh").exists()
+    assert not (repo / ".bh").exists()
 
 
 def test_index_rebuild_is_manifest_authoritative_and_revokes_non_green(tmp_path, monkeypatch):

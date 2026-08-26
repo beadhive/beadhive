@@ -292,11 +292,6 @@ def _verdict_path(entry, tree: str, command_hash: str, *, create: bool = False) 
         if create
         else private_paths.git_private_root(hive)
     )
-    # Unit seams and degraded legacy callers can name a plain `.git` directory without a
-    # functioning repository.  Preserve the former best-effort behaviour there; linked
-    # worktrees have a `.git` *file* and therefore never take this unsafe-looking fallback.
-    if root is None and (git_dir := hive / ".git").is_dir():
-        root = git_dir / "bh"
     return root / "validation" / "verdicts" / tree / f"{command_hash}.json" if root else None
 
 
