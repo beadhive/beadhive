@@ -201,6 +201,8 @@ worktrees:
 #                                  # shipped, so leaving this unset is not a behaviour change.
 #                                  # Realistic reuse window is minutes-to-hours — tune this DOWN,
 #                                  # not up.
+#   validation_slots: 1            # host-wide uniform concurrent gates; 0 disables admission.
+#                                  # BH_VALIDATION_SLOTS wins; per-hive overlays are ignored.
 #   validate_subset: "./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}"
 #                                  # OPTIONAL template that re-runs only NAMED failing tests, one
 #                                  # required {tests} placeholder — a value missing it is rejected

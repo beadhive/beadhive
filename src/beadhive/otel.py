@@ -717,6 +717,41 @@ def count_validation_reuse(attributes: dict[str, Any] | None = None) -> None:
     ).add(1, attributes or {})
 
 
+def record_validation_queue_wait(seconds: float, attributes: dict[str, Any] | None = None) -> None:
+    """Histogram of host-wide validation-admission queue time.
+
+    Callers supply only the bounded ``bh.hive`` and ``bh.work.phase`` dimensions.  In
+    particular, raw commands, worktree paths, and validation identity hashes never become
+    metric labels.
+    """
+    _instrument(
+        "histogram",
+        "bh.work.validation.admission.queue",
+        unit="s",
+        description="validation host-slot queue wait",
+    ).record(seconds, attributes or {})
+
+
+def count_validation_admitted(attributes: dict[str, Any] | None = None) -> None:
+    """Count heavyweight validation executions admitted to a host slot."""
+    _instrument(
+        "counter",
+        "bh.work.validation.admission.executions",
+        unit="1",
+        description="validation executions admitted to host capacity",
+    ).add(1, attributes or {})
+
+
+def count_validation_coalesced(attributes: dict[str, Any] | None = None) -> None:
+    """Count exact-identity followers that consumed their leader's terminal result."""
+    _instrument(
+        "counter",
+        "bh.work.validation.admission.coalesced",
+        unit="1",
+        description="validation followers coalesced with an in-flight execution",
+    ).add(1, attributes or {})
+
+
 def record_cli_invocation(command: str, outcome: str, seconds: float) -> None:
     """Invocation counter + latency histogram for the CLI command-entry seam.
 

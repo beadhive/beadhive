@@ -9,11 +9,16 @@ Beads while every git/worktree op runs for real. Non-`bd` calls (the validation 
 from __future__ import annotations
 
 import datetime
+import io
 import json
+import multiprocessing as mp
 import os
 import re
 import shutil
+import sys
+import time
 from collections import namedtuple
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -1269,6 +1274,141 @@ def _logging_validate(hive, monkeypatch, name="validate-runs.log"):
 
 def _run_count(log):
     return len(log.read_text().splitlines()) if log.exists() else 0
+
+
+def _wait_validation_state(root, predicate, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        path = root / "state.json"
+        try:
+            state = json.loads(path.read_text()) if path.exists() else {}
+        except (OSError, ValueError):
+            state = {}
+        if predicate(state):
+            return state
+        time.sleep(0.02)
+    raise AssertionError("validation sentinel did not reach the expected state")
+
+
+def _submit_in_process(bead, results):
+    output = io.StringIO()
+    rc = 0
+    try:
+        with redirect_stdout(output), redirect_stderr(output):
+            work.submit(bead=bead, as_="", hive="myrepo")
+    except typer.Exit as exc:
+        rc = int(exc.exit_code or 0)
+    results.put((bead, rc, output.getvalue()))
+
+
+@pytest.mark.parametrize("slots", [1, 2])
+def test_concurrent_submit_processes_share_host_capacity_and_coalesce_retry(
+    hive, fakebd, monkeypatch, slots
+):
+    """The incident shape through the public submit command callback, not just its lock helper:
+    two different bead submits plus an exact retry run as OS processes. This covers active-submit
+    discovery/diagnostics, phase routing, clean-checkout admission, and terminal coalescing in one
+    proof while the existing FakeBd keeps the lifecycle backend deterministic and lightweight.
+    """
+    state_root = hive.cfg_path.parent / f"submit-sentinel-{slots}"
+    sentinel = hive.cfg_path.parent / "submit_sentinel.py"
+    sentinel.write_text(
+        """\
+import atexit, fcntl, json, os, signal, sys, time
+from pathlib import Path
+
+root = Path(sys.argv[1])
+root.mkdir(parents=True, exist_ok=True)
+identity = Path('identity.txt').read_text().strip()
+lock_path = root / 'state.lock'
+state_path = root / 'state.json'
+left = False
+
+def change(delta):
+    with lock_path.open('a+') as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            state = json.loads(state_path.read_text()) if state_path.exists() else {
+                'active': 0, 'peak': 0, 'children': {}}
+            state['active'] += delta
+            if delta > 0:
+                state['peak'] = max(state['peak'], state['active'])
+                state['children'][identity] = state['children'].get(identity, 0) + 1
+            state_path.write_text(json.dumps(state, sort_keys=True))
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+def leave(*_args):
+    global left
+    if not left:
+        left = True
+        change(-1)
+    if _args:
+        raise SystemExit(128 + signal.SIGTERM)
+
+change(1)
+atexit.register(leave)
+signal.signal(signal.SIGTERM, leave)
+while not (root / 'release').exists():
+    time.sleep(0.02)
+"""
+    )
+    command = f"{sys.executable} {sentinel} {state_root}"
+    hive.cfg_path.write_text(
+        CONFIG_YAML.replace(
+            'validate_cmd: "true"',
+            f'validate_cmd: "{command}"\n  validation_slots: {slots}',
+        )
+    )
+    monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(hive.cfg_path.parent / "host-slots"))
+    for bead, identity_value in (("mr-submit-a", "A"), ("mr-submit-b", "B")):
+        fakebd.seed(bead, title="t")
+        work.claim(bead=bead, as_="", hive="myrepo")
+        target = _wt(hive, bead)
+        (target / "identity.txt").write_text(f"{identity_value}\n")
+        _git("add", "identity.txt", cwd=target)
+        _git("commit", "-qm", f"feat: submit identity {identity_value}", cwd=target)
+
+    ctx = mp.get_context("fork")
+    results = ctx.Queue()
+    leader = ctx.Process(target=_submit_in_process, args=("mr-submit-a", results))
+    leader.start()
+    _wait_validation_state(state_root, lambda state: state.get("children", {}).get("A") == 1)
+    other = ctx.Process(target=_submit_in_process, args=("mr-submit-b", results))
+    duplicate = ctx.Process(target=_submit_in_process, args=("mr-submit-a", results))
+    other.start()
+    duplicate.start()
+    if slots == 2:
+        _wait_validation_state(state_root, lambda state: state.get("peak") == 2)
+    else:
+        time.sleep(0.2)
+        assert _wait_validation_state(state_root, lambda state: "peak" in state).get("peak") == 1
+    (state_root / "release").touch()
+
+    # Drain the queue before joining. Each child includes its captured CLI transcript; under the
+    # full xdist gate that can exceed a multiprocessing pipe buffer, whose feeder then keeps the
+    # otherwise-finished process alive until the parent consumes it.
+    outcomes = [results.get(timeout=30) for _ in range(3)]
+    for process in (leader, other, duplicate):
+        process.join(30)
+        assert process.exitcode == 0
+    assert sorted((bead, rc) for bead, rc, _output in outcomes) == [
+        ("mr-submit-a", 0),
+        ("mr-submit-a", 0),
+        ("mr-submit-b", 0),
+    ]
+    state = _wait_validation_state(state_root, lambda value: value.get("active") == 0)
+    assert state["peak"] == slots
+    assert state["children"] == {"A": 1, "B": 1}
+    duplicate_output = "\n".join(output for bead, _rc, output in outcomes if bead == "mr-submit-a")
+    assert "validation already active" in duplicate_output
+    assert "coalesced with blocker run" in duplicate_output
+
+    root = hive.main / ".git" / "bh" / "validation"
+    uses = [json.loads(path.read_text()) for path in (root / "uses").glob("*.json")]
+    assert sum(use.get("coalesced") is True for use in uses) == 1
+    assert not list((root / "active").glob("*.json"))
+    assert not list((_wt(hive, "verify-placeholder").parent).glob("verify-*"))
 
 
 def test_resubmit_same_sha_reuses_validation_verdict(hive, fakebd, monkeypatch, capsys):
@@ -2659,7 +2799,11 @@ def test_check_emits_validation_duration(hive, fakebd, monkeypatch):
     meter = _otel_meter_on(monkeypatch)
     work.check(bead="mr-60", hive="myrepo")
     records = meter.create_histogram.return_value.record.call_args_list
-    vd = [c.args[1] for c in records if c.args[1].get("bh.work.phase") == "check"]
+    vd = [
+        c.args[1]
+        for c in records
+        if c.args[1].get("bh.work.phase") == "check" and "bh.validation.result" in c.args[1]
+    ]
     assert vd and vd[0]["bh.validation.result"] == "pass" and vd[0]["bh.hive"] == "mr"
     assert "bh.bead" not in vd[0]
     hist_names = {c.args[0] for c in meter.create_histogram.call_args_list}
@@ -2674,7 +2818,11 @@ def test_submit_emits_validation_duration(hive, fakebd, monkeypatch):
     meter = _otel_meter_on(monkeypatch)
     work.submit(bead="mr-61", hive="myrepo")
     records = meter.create_histogram.return_value.record.call_args_list
-    vd = [c.args[1] for c in records if c.args[1].get("bh.work.phase") == "submit"]
+    vd = [
+        c.args[1]
+        for c in records
+        if c.args[1].get("bh.work.phase") == "submit" and "bh.validation.result" in c.args[1]
+    ]
     assert vd and vd[0]["bh.validation.result"] == "pass" and vd[0]["bh.hive"] == "mr"
     otel._instruments.clear()
 

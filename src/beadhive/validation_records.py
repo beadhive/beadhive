@@ -107,6 +107,7 @@ def begin_run(
     owner_pid: int | None = None,
     owner_start: str | None = None,
     artifact_root_config: object = None,
+    admission: dict | None = None,
 ) -> dict | None:
     """Allocate an independent running record using mkdir as the atomic claim."""
     root = _validation_root(hive, create=True)
@@ -161,6 +162,12 @@ def begin_run(
             "exit_code": None,
             "signal": None,
             "reason": None,
+            "admission": {
+                "slot": admission.get("slot"),
+                "queue_seconds": admission.get("queue_seconds"),
+            }
+            if isinstance(admission, dict)
+            else None,
             "artifacts": artifacts,
         }
         try:
@@ -408,6 +415,7 @@ def record_use(
     tree: str,
     command_hash: str,
     reused: bool,
+    coalesced: bool = False,
 ) -> dict | None:
     """Record one gate decision; reuse points at the original run without creating a run."""
     root = _validation_root(hive, create=True)
@@ -423,6 +431,7 @@ def record_use(
             "use_id": use_id,
             "run_id": run_id,
             "reused": bool(reused),
+            "coalesced": bool(coalesced),
             "bead": bead,
             "phase": phase,
             "branch": branch,
@@ -536,6 +545,27 @@ def latest_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | None
         key=_run_order_key,
         default=None,
     )
+
+
+def running_runs(
+    hive: str | Path, *, bead: str | None = None, tree: str | None = None
+) -> list[dict]:
+    """Readable active executions, optionally narrowed to one submit subject."""
+    root = _validation_root(hive)
+    directory = root / "runs" if root else None
+    if directory is None or not directory.is_dir():
+        return []
+    result = []
+    for child in directory.iterdir():
+        value = read_run(hive, child.name)
+        if value is None or value.get("lifecycle") != "running":
+            continue
+        if bead is not None and value.get("bead") != bead:
+            continue
+        if tree is not None and value.get("tree") != tree:
+            continue
+        result.append(value)
+    return sorted(result, key=_run_order_key)
 
 
 def _run_order_key(item: dict) -> tuple[int, str, str]:

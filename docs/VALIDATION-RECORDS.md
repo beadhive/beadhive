@@ -13,6 +13,22 @@ directory contains reconstructable `{run_id}` pointers only. Ownership and termi
 authoritative in the manifest, so migration refuses a legacy marker whose host, PID, or process
 start token disagrees with its referenced running manifest.
 
+Host admission and exact-identity coalescing extend these same records rather than creating a
+second scheduler store. A run's `admission` object contains only its zero-based `slot` and
+`queue_seconds`. A follower writes an ordinary use with `reused: true` and `coalesced: true`,
+pointing at the blocker run whose manifest already carries host/PID/start-token ownership and its
+green, red, none, or abandoned outcome. CLI messages use that run ID and owner when a submit joins
+an in-flight execution.
+
+The matching low-cardinality telemetry is:
+
+- `bh.work.validation.admission.queue` — queue-wait histogram;
+- `bh.work.validation.admission.executions` — admitted-execution counter;
+- `bh.work.validation.admission.coalesced` — coalesced-follower counter.
+
+All three are dimensioned only by `bh.hive` and `bh.work.phase`. Raw commands, tree/command hashes,
+bead IDs, and sensitive filesystem paths are intentionally excluded from metric labels.
+
 ## Durable artifacts and CI handoff
 
 Each execution allocates its own `<artifact-root>/<run-id>/` directory containing `reports/` and
