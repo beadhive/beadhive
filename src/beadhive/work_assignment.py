@@ -151,14 +151,19 @@ def impl__claim_single_bead(api, cfg, hive, bead, as_):
         api._issue_claim(cfg, entry, bead, actor, target, hive)
     except Exception as exc:
         if not already_held:
-            api._release_claim(main, bead, actor, detail=str(exc))
+            # A provisioning error may race with a reassignment.  Reopen only when an
+            # authoritative reread still proves that we own the claim; never clobber a winner.
+            try:
+                current = api.bd.show(bead, main)
+            except Exception:
+                current = None
+            if api.work_next.claim_won(current, actor):
+                api._release_claim(main, bead, actor, detail=str(exc))
         raise
     # Provisioning can race with a reassignment too. Re-read after BOTH fresh and idempotent paths
     # so the returned envelope contains authoritative bead ownership.
     data = api.bd.show(bead, main)
     if not api.work_next.claim_won(data, actor):
-        if not already_held:
-            api._release_claim(main, bead, actor, detail="claim lost during provisioning")
         raise api.typer.Exit(1)
     api.otel.count_bead_transition("claimed")
     prof = api.config.work_identity(cfg, entry, actor)

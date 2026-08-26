@@ -649,8 +649,37 @@ def test_structured_claim_rejects_a_lost_claim_after_provisioning(hive, fakebd, 
     monkeypatch.setattr(work.bd, "show", lose_after_provision)
     with pytest.raises(typer.Exit):
         work._claim_single_bead(config.load(), "myrepo", "mr-1", "")
+    assert fakebd.beads["mr-1"]["status"] == "in_progress"
+    assert fakebd.beads["mr-1"]["assignee"] == "dev/other"
+
+
+def test_structured_claim_releases_owned_claim_on_provisioning_failure(hive, fakebd, monkeypatch):
+    fakebd.seed("mr-1", title="t")
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(work.worktree, "ensure", fail)
+    with pytest.raises(OSError):
+        work._claim_single_bead(config.load(), "myrepo", "mr-1", "")
     assert fakebd.beads["mr-1"]["status"] == "open"
     assert fakebd.beads["mr-1"]["assignee"] == ""
+
+
+def test_structured_claim_preserves_concurrent_winner_on_provisioning_failure(
+    hive, fakebd, monkeypatch
+):
+    fakebd.seed("mr-1", title="t")
+
+    def fail_after_reassign(*args, **kwargs):
+        fakebd.beads["mr-1"]["assignee"] = "dev/other"
+        raise OSError("disk full")
+
+    monkeypatch.setattr(work.worktree, "ensure", fail_after_reassign)
+    with pytest.raises(OSError):
+        work._claim_single_bead(config.load(), "myrepo", "mr-1", "")
+    assert fakebd.beads["mr-1"]["status"] == "in_progress"
+    assert fakebd.beads["mr-1"]["assignee"] == "dev/other"
 
 
 def test_claim_refuses_other_actor(hive, fakebd):
