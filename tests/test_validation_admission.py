@@ -237,6 +237,21 @@ def test_abandoned_identity_allows_one_replacement_execution(tmp_path, monkeypat
         lambda *a, **k: json.loads(state.read_text()),
     )
     monkeypatch.setattr(
+        worktree_verify.validation_records,
+        "read_run",
+        lambda _main, run_id: (
+            {
+                "run_id": "dead",
+                "tree": "tree",
+                "command_hash": "command",
+                "lifecycle": "abandoned",
+                "verdict": "none",
+            }
+            if run_id == "dead"
+            else None
+        ),
+    )
+    monkeypatch.setattr(
         worktree_verify,
         "_reuse_verdict_hit",
         lambda *a, **k: json.loads(state.read_text()).get("verdict") == "green",
@@ -259,7 +274,12 @@ def test_abandoned_identity_allows_one_replacement_execution(tmp_path, monkeypat
     processes = [
         mp.get_context("fork").Process(
             target=lambda: worktree_verify.impl_clean_checkout(
-                {}, "main", "true", cfg={}, reuse=True
+                {},
+                "main",
+                "true",
+                cfg={},
+                reuse=True,
+                observed_active_run_id="dead",
             )
         )
         for _ in range(4)

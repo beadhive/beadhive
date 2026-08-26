@@ -932,9 +932,22 @@ def _impl_clean_checkout_unadmitted(
 
 
 def impl_clean_checkout(
-    entry, branch, cmd, cfg=None, reuse=False, *, bead=None, phase="validation"
+    entry,
+    branch,
+    cmd,
+    cfg=None,
+    reuse=False,
+    *,
+    bead=None,
+    phase="validation",
+    observed_active_run_id=None,
 ) -> int:
-    """Canonical clean-checkout gate, bounded by host-wide validation admission."""
+    """Canonical clean-checkout gate, bounded by host-wide validation admission.
+
+    ``observed_active_run_id`` carries an exact blocker noticed by the submit lifecycle. It is
+    deliberately an identity rather than a copied outcome: after acquiring the identity lock we
+    re-read the authoritative run and accept it only if its tree and command still match.
+    """
     if cfg is None:
         try:
             cfg = config.load()
@@ -964,6 +977,18 @@ def impl_clean_checkout(
     # scarce compute capacity, then re-read authoritative state after the leader finishes.
     with validation_admission.identity_lock(main, tree, command_hash):
         latest = validation_records.latest_run(main, tree=tree, command_hash=command_hash)
+        observed = (
+            validation_records.read_run(main, observed_active_run_id)
+            if observed_active_run_id
+            else None
+        )
+        observed_terminal = bool(
+            observed
+            and observed.get("run_id") == observed_active_run_id
+            and observed.get("tree") == tree
+            and observed.get("command_hash") == command_hash
+            and observed.get("lifecycle") == "completed"
+        )
         joined_terminal = bool(
             latest
             and latest.get("lifecycle") == "completed"
@@ -973,14 +998,16 @@ def impl_clean_checkout(
                 and latest.get("run_id") == prior_id
             )
         )
+        cohort = observed if observed_terminal else latest
+        joined_terminal = observed_terminal or joined_terminal
         # A green cohort result is still a reuse decision. Preserve the always-run contract:
         # metadata-sensitive checks execute before *every* green reuse, including a follower
         # that waited for this leader. If that check withholds the hit, this caller becomes a
         # fresh execution instead of inheriting green.
         if (
             joined_terminal
-            and latest is not None
-            and latest.get("verdict") == "green"
+            and cohort is not None
+            and cohort.get("verdict") == "green"
             and not _reuse_verdict_hit(
                 entry,
                 sha,
@@ -994,10 +1021,10 @@ def impl_clean_checkout(
         ):
             joined_terminal = False
         if joined_terminal:
-            assert latest is not None
+            assert cohort is not None
             validation_records.record_use(
                 main,
-                run_id=latest["run_id"],
+                run_id=cohort["run_id"],
                 bead=bead,
                 phase=phase,
                 branch=branch,
@@ -1012,15 +1039,15 @@ def impl_clean_checkout(
                 {"bh.hive": str(entry.get("prefix") or ""), "bh.work.phase": phase}
             )
             otel.count_validation_reuse({"bh.hive": str(entry.get("prefix") or "")})
-            exit_code = latest.get("exit_code")
+            exit_code = cohort.get("exit_code")
             rc = (
                 0
-                if latest.get("verdict") == "green"
+                if cohort.get("verdict") == "green"
                 else exit_code
                 if type(exit_code) is int and exit_code != 0
                 else 75
             )
-            _echo_coalesced_outcome(latest, rc)
+            _echo_coalesced_outcome(cohort, rc)
             return rc
         if _reuse_verdict_hit(entry, sha, cmd, cfg=cfg, bead=bead, phase=phase, branch=branch):
             return 0
