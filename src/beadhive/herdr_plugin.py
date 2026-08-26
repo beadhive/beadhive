@@ -10,11 +10,14 @@ the generic plugin registry) fail.
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 import json
 import re
 import shlex
 import shutil
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -23,6 +26,8 @@ from . import config, plugins, run, worktree
 
 _SESSION = "bh-supervisor"
 _WARMUP_TOKEN = "BH_HERDR_WARMUP_OK"
+_LAUNCH_SCHEMA = 1
+_HERDR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
 
 def _has_cli() -> bool:
@@ -216,6 +221,551 @@ def _managed_worktree(hive: str, bead: str, cfg=None) -> tuple[dict, Path]:
 def _close_pane(pane: str) -> None:
     """Best-effort cleanup for a failed spawn; never mask the original failure."""
     _invoke(["herdr", "--session", _SESSION, "pane", "close", pane, "--no-focus"])
+
+
+def _hive_id(entry: dict) -> str:
+    """The stable registry identity used in launch output and Herdr workspace labels."""
+    return "/".join(str(entry[key]) for key in ("provider", "org", "repo"))
+
+
+def _launch_target(bead: str) -> str:
+    """Return one deterministic, Herdr-valid name for every Beads ID.
+
+    Keep the established ``bh-<bead>`` spelling whenever Herdr accepts it. Dotted child IDs
+    and long IDs need encoding; their readable stem is paired with a digest of the *original*
+    value so normalization and truncation cannot collide.
+    """
+    legacy = f"bh-{bead}"
+    if _HERDR_NAME_RE.fullmatch(legacy):
+        return legacy
+    digest = hashlib.sha256(bead.encode()).hexdigest()[:16]
+    stem = re.sub(r"[^a-z0-9_-]+", "-", bead.lower()).strip("-_") or "bead"
+    room = 32 - len("bh--") - len(digest)
+    return f"bh-{stem[:room]}-{digest}"
+
+
+def _integration_ready(kind: str) -> tuple[bool, str]:
+    """Read Herdr's integration status without installing or changing anything."""
+    result = _invoke(["herdr", "integration", "status"])
+    if result is None or result.returncode != 0:
+        return False, _output(result) if result is not None else "status unavailable"
+    for line in _output(result).splitlines():
+        name, separator, state = line.partition(":")
+        if separator and name.strip() == kind:
+            status = state.strip().lower()
+            return ("not installed" not in status), state.strip()
+    return False, f"{kind} was not reported"
+
+
+def _session_snapshot():
+    """Use or create the dedicated session noninteractively and return its snapshot."""
+    result = _command("api", "snapshot")
+    if result is None or result.returncode != 0:
+        return None
+    data = _result_payload(_decoded(result))
+    if isinstance(data, dict) and isinstance(data.get("snapshot"), dict):
+        data = data["snapshot"]
+    return data if isinstance(data, dict) else None
+
+
+def _snapshot_agent_records(snapshot: dict) -> list[dict]:
+    """Join snapshot agent, pane, and workspace facts for strict reuse proof."""
+    panes = {
+        str(item.get("pane_id") or item.get("id")): item
+        for item in snapshot.get("panes", [])
+        if isinstance(item, dict) and (item.get("pane_id") or item.get("id"))
+    }
+    workspaces = {
+        str(item.get("workspace_id") or item.get("id")): item
+        for item in snapshot.get("workspaces", [])
+        if isinstance(item, dict) and (item.get("workspace_id") or item.get("id"))
+    }
+    raw = snapshot.get("agents")
+    if not isinstance(raw, list):
+        raw = _agent_records(snapshot, unique_by_name=False)
+    records: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        record = dict(item)
+        if isinstance(item.get("agent"), dict):
+            record.update(item["agent"])
+        pane_id = _record_pane_id(record)
+        pane = panes.get(pane_id or "", {})
+        workspace_id = record.get("workspace_id") or (
+            pane.get("workspace_id") if isinstance(pane, dict) else None
+        )
+        workspace = workspaces.get(str(workspace_id or ""), {})
+        if pane:
+            record["pane_record"] = pane
+        if workspace:
+            record["workspace_record"] = workspace
+        records.append(record)
+    return records
+
+
+def _snapshot_value(record: dict, *keys: str):
+    """Read a field from an agent, its joined pane, or its joined workspace."""
+    for source in (
+        record,
+        record.get("pane") if isinstance(record.get("pane"), dict) else {},
+        record.get("pane_record") if isinstance(record.get("pane_record"), dict) else {},
+        record.get("workspace") if isinstance(record.get("workspace"), dict) else {},
+        record.get("workspace_record") if isinstance(record.get("workspace_record"), dict) else {},
+    ):
+        for key in keys:
+            value = source.get(key)
+            if isinstance(value, str) and value.strip():
+                return value
+    return None
+
+
+def _strict_live_target(target: str, hive: str, cwd: Path) -> tuple[str, str] | None:
+    """Prove exact live target ownership, refusing ambiguous or conflicting records."""
+    snapshot = _session_snapshot()
+    if snapshot is None:
+        raise RuntimeError("the bh-supervisor session became unavailable")
+    matches = [
+        record
+        for record in _snapshot_agent_records(snapshot)
+        if _agent_identity(record)[0] == target
+    ]
+    if not matches:
+        return None
+    if len(matches) != 1:
+        raise RuntimeError(f"target {target!r} is ambiguous ({len(matches)} live records)")
+    record = matches[0]
+    state = _agent_identity(record)[3].lower()
+    pane_id = _record_pane_id(record)
+    pane_record = record.get("pane_record")
+    pane_value = record.get("pane")
+    pane_name = None
+    if isinstance(pane_value, dict):
+        pane_name = _string_field(pane_value, "name", "label", "title", "pane_name")
+    if pane_name is None and isinstance(pane_record, dict):
+        pane_name = _string_field(pane_record, "name", "label", "title", "pane_name")
+    if pane_name is None:
+        pane_name = _string_field(record, "pane_name", "pane_label", "pane_title")
+    workspace_id = _snapshot_value(record, "workspace_id")
+    workspace_label = _snapshot_value(record, "workspace_label")
+    if workspace_label is None:
+        workspace = record.get("workspace_record")
+        if isinstance(workspace, dict):
+            workspace_label = _string_field(workspace, "label", "name")
+    working_dir = _snapshot_value(record, "cwd", "working_directory", "current_dir")
+    same_cwd = False
+    if working_dir:
+        try:
+            same_cwd = Path(working_dir).resolve() == cwd.resolve()
+        except OSError:
+            same_cwd = working_dir == str(cwd)
+    if (
+        state not in _LIVE_AGENT_STATES
+        or not pane_id
+        or pane_name != target
+        or workspace_label != f"bh:{hive}"
+        or not workspace_id
+        or not same_cwd
+    ):
+        raise RuntimeError(
+            f"target {target!r} exists but does not prove the requested live pane, "
+            "workspace, and worktree ownership"
+        )
+    return workspace_id, pane_id
+
+
+@dataclass(frozen=True)
+class _LaunchResult:
+    disposition: str
+    hive: str
+    bead: str
+    kind: str
+    worktree: Path
+    workspace: str
+    pane: str
+    target: str
+
+    def payload(self) -> dict:
+        from . import jsonout
+
+        return jsonout.envelope(
+            "plugin herdr launch",
+            _LAUNCH_SCHEMA,
+            {
+                "status": "ready",
+                "disposition": self.disposition,
+                "hive": self.hive,
+                "bead": self.bead,
+                "kind": self.kind,
+                "worktree": str(self.worktree),
+                "workspace": self.workspace,
+                "pane": self.pane,
+                "target": self.target,
+            },
+        )
+
+
+def _launch_fail(stage: str, detail: str, *, claim=None, target: str = "") -> None:
+    """Render one actionable failure, retaining native claim/worktree resources."""
+    typer.echo(f"✗ herdr launch failed stage={stage}: {detail}", err=True)
+    if claim is not None:
+        typer.echo(
+            f"  retained: bead={claim.bead.get('id', '')} claim={claim.disposition} "
+            f"worktree={claim.worktree}",
+            err=True,
+        )
+        typer.echo(f"  status: bh work issue {claim.bead.get('id', '')} --json", err=True)
+        if target:
+            typer.echo(f"  attach: bh plugin herdr attach {target}", err=True)
+        typer.echo(f"  retry: bh plugin herdr launch {claim.bead.get('id', '')}", err=True)
+    raise typer.Exit(1)
+
+
+def _launch_warm(target: str) -> tuple[bool, str]:
+    """Warm one newly-created target using spawn's established read-back proof."""
+    prompt = _command(
+        "agent",
+        "prompt",
+        target,
+        f"Reply with exactly {_WARMUP_TOKEN}.",
+        "--wait",
+        "--timeout",
+        "60000",
+    )
+    if prompt is None or prompt.returncode != 0:
+        return False, f"agent warm-up: {_output(prompt) or 'server unavailable'}"
+    read = _command("agent", "read", target, "--source", "visible", "--lines", "80")
+    if read is None or read.returncode != 0:
+        return False, f"agent read: {_output(read) or 'server unavailable'}"
+    visible = _output(read)
+    if _WARMUP_TOKEN in visible:
+        return True, ""
+    dismiss = _command("agent", "send-keys", target, "esc")
+    if dismiss is None or dismiss.returncode != 0:
+        return False, f"agent warm-up dismiss: {_output(dismiss) or 'server unavailable'}"
+    retry = _command(
+        "agent",
+        "prompt",
+        target,
+        f"Reply with exactly {_WARMUP_TOKEN}.",
+        "--wait",
+        "--timeout",
+        "60000",
+    )
+    if retry is None or retry.returncode != 0:
+        return False, f"agent warm-up retry: {_output(retry) or 'server unavailable'}"
+    read = _command("agent", "read", target, "--source", "visible", "--lines", "80")
+    if read is None or read.returncode != 0:
+        return False, f"agent read: {_output(read) or 'server unavailable'}"
+    if _WARMUP_TOKEN not in _output(read):
+        return False, "warm-up did not reach an idle agent prompt"
+    return True, ""
+
+
+cli = typer.Typer(no_args_is_help=True, help="herdr terminal/agent-pane integration.")
+
+
+def _launch_kind(explicit: str | None, cfg, entry) -> str:
+    """Resolve launch kind with stage-labelled failures and no external mutation."""
+    kinds = supported_kinds()
+    if not kinds:
+        _launch_fail(
+            "kind",
+            "could not discover supported kinds; run `herdr agent start --help`",
+        )
+    configured = config.herdr_kind(cfg, entry)
+    if explicit is not None:
+        candidate, remedy = explicit, "pass a supported --kind value"
+    elif configured is not None:
+        candidate, remedy = configured, "change herdr.kind or pass --kind"
+    else:
+        harness = config.harness_name(cfg, entry)
+        if harness in kinds:
+            return harness
+        if "claude" in kinds:
+            return "claude"
+        _launch_fail(
+            "kind",
+            f"no deterministic default; supported kinds: {', '.join(kinds)}; "
+            "pass --kind KIND or configure herdr.kind",
+        )
+    if candidate not in kinds:
+        _launch_fail(
+            "kind",
+            f"unsupported kind {candidate!r}; supported kinds: {', '.join(kinds)}; {remedy}",
+        )
+    return candidate
+
+
+def _launch_lease(cfg, entry: dict, hive: str, adopt_expired: bool) -> None:
+    """Apply launch's explicit, never-forced host-lease policy before claiming."""
+    from . import guard
+
+    state = guard.primary_state(hive, cfg=cfg, entry=entry)
+    if state is None:
+        return
+    _prefix, this_host, lease = state
+    if lease.held_by(this_host):
+        return
+    if not lease.is_expired():
+        _launch_fail(
+            "lease",
+            f"active foreign host lease: {lease.describe()}; ask its holder to release it or "
+            f"use the separate dangerous `bh host lease adopt {hive} --force` operation",
+        )
+    if not adopt_expired:
+        _launch_fail(
+            "lease",
+            f"host lease is {lease.describe()}; retry with --adopt-expired to use the normal "
+            "non-forced adoption path",
+        )
+    try:
+        _adopt_expired_lease(cfg, entry)
+    except Exception as exc:  # noqa: BLE001 - primitive has several typed refusal classes
+        _launch_fail("lease", f"non-forced adoption failed: {exc}")
+
+
+def _adopt_expired_lease(cfg, entry: dict):
+    """Invoke the normal fence-then-lease adoption core without a force escape hatch."""
+    from . import host, host_adopt, host_lease, hosts, registry
+
+    hq_dir = config.hq_dir()
+    git_probe = run.run(
+        ["git", "-C", str(hq_dir), "rev-parse", "--git-dir"], check=False, capture=True
+    )
+    if git_probe.returncode != 0:
+        raise RuntimeError(
+            f"no Factory HQ clone at {hq_dir}; run `bh hq init` or `bh hq clone` first"
+        )
+    host_id = host.host_id()
+    manifest = hosts.load(hq_dir, host_id)
+    ttl = host_lease.ttl_for_role(manifest.role, config.host_lease_ttl(cfg))
+    return host_adopt.adopt(
+        prefix=str(entry["prefix"]),
+        hive_remote="origin",
+        hq_remote="origin",
+        hive_cwd=registry.hive_dir(entry),
+        hq_cwd=hq_dir,
+        host_id=host_id,
+        label=manifest.label,
+        ttl=ttl,
+        force=False,
+    )
+
+
+@cli.command(
+    "launch",
+    help=(
+        "bh plugin herdr launch nvhack-lvxi --json\n\n"
+        "Claim one exact bead and start or reuse its warm Herdr coding agent. The one-argument "
+        "path discovers the hive and kind. All options are overrides: --hive disambiguates, "
+        "--kind selects an installed integration, --as selects the developer identity, "
+        "--adopt-expired uses only non-forced host adoption, --direction defaults right, "
+        "--no-focus is the safe focus default, and --json is the agent contract. Herdr never "
+        "creates or removes a worktree, never installs an integration, and never seizes an "
+        "active foreign host lease."
+    ),
+)
+def _launch_cmd(
+    bead: str = typer.Argument(..., metavar="BEAD_ID", help="exact Beads issue ID"),
+    hive: str = typer.Option(
+        "", "--hive", help="explicit registered hive when exact bead lookup is ambiguous"
+    ),
+    kind: str | None = typer.Option(
+        None, "--kind", help="Herdr kind; overrides per-hive/global herdr.kind defaults"
+    ),
+    as_: str = typer.Option(
+        "", "--as", help="developer identity; otherwise use normal bh work claim precedence"
+    ),
+    adopt_expired: bool = typer.Option(
+        False,
+        "--adopt-expired",
+        help="non-forcibly adopt only an expired or released host lease before claiming",
+    ),
+    direction: str = typer.Option(
+        "right", "--direction", help="new pane direction: right (default) or down"
+    ),
+    focus: bool = typer.Option(
+        False, "--focus/--no-focus", help="focus the new pane (safe default: --no-focus)"
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="emit only the versioned launch result on stdout"
+    ),
+) -> None:
+    """Launch the one-argument happy path.
+
+    Example: ``bh plugin herdr launch nvhack-lvxi --json``
+
+    The command performs read-only Herdr preflight first, then uses native ``bh work claim``
+    ownership to provision the managed worktree. Herdr never creates or removes a worktree.
+    Integration installation is explicit (``bh plugin herdr integrate KIND``), and an active
+    foreign host lease is never seized. ``spawn`` remains the low-level command for callers
+    that intentionally prepared the claim and worktree themselves.
+    """
+    from . import jsonout, registry
+
+    # Import the lifecycle facade only when launch is actually invoked. The optional plugin is
+    # statically reachable from public publish/export code through the plugin registry; making
+    # the broad work facade a module dependency would falsely widen that read-only boundary to
+    # work's aggregate intake modules even though publishing can never execute this command.
+    work = importlib.import_module(".work", __package__)
+
+    if direction not in {"right", "down"}:
+        _launch_fail("input", "--direction must be `right` or `down`")
+    if not _has_cli():
+        _launch_fail("cli", "herdr CLI is not on PATH; install Herdr and retry")
+
+    cfg = config.load()
+    resolution = registry.resolve_bead_hive(cfg, bead, hive=hive)
+    if resolution.ambiguous:
+        candidates = ", ".join(_hive_id(entry) for entry in resolution.candidates)
+        _launch_fail(
+            "bead",
+            f"bead {bead!r} is ambiguous across {candidates}; retry with --hive HIVE",
+        )
+    if not resolution.found or resolution.entry is None:
+        suffix = f" in hive {hive!r}" if hive else ""
+        _launch_fail(
+            "bead", f"bead {bead!r} not found{suffix}; run `bh hive list` and verify the ID"
+        )
+    entry = resolution.entry
+    resolved_hive = _hive_id(entry)
+    resolved_kind = _launch_kind(kind, cfg, entry)
+    integrated, integration_detail = _integration_ready(resolved_kind)
+    if not integrated:
+        _launch_fail(
+            "integration",
+            f"Herdr integration for {resolved_kind!r} is missing ({integration_detail}); "
+            f"run `bh plugin herdr integrate {resolved_kind}`",
+        )
+    if _session_snapshot() is None:
+        _launch_fail(
+            "session",
+            f"could not use or create the noninteractive {_SESSION!r} session; "
+            "run `bh plugin herdr status`, then retry",
+        )
+
+    _launch_lease(cfg, entry, resolved_hive, adopt_expired)
+    try:
+        claim = work._claim_single_bead(cfg, resolved_hive, bead, as_)
+    except Exception as exc:  # noqa: BLE001 - lifecycle core maps typed refusals to Typer exits
+        detail = "native bh work claim refused the bead"
+        if not isinstance(exc, typer.Exit) and str(exc):
+            detail = str(exc)
+        _launch_fail("claim", f"{detail}; inspect with `bh work issue {bead} --json`")
+
+    target = _launch_target(bead)
+    try:
+        existing = _strict_live_target(target, resolved_hive, claim.worktree)
+    except RuntimeError as exc:
+        _launch_fail("reuse", str(exc), claim=claim, target=target)
+    if existing is not None:
+        result = _LaunchResult(
+            "reused",
+            resolved_hive,
+            bead,
+            resolved_kind,
+            claim.worktree,
+            existing[0],
+            existing[1],
+            target,
+        )
+    else:
+        try:
+            workspace, root_pane = _workspace(resolved_hive, claim.worktree)
+        except Exception as exc:  # noqa: BLE001 - normalize optional-server failures by stage
+            _launch_fail("workspace", str(exc) or "workspace unavailable", claim=claim)
+        pane = ""
+        split = _command(
+            "pane",
+            "split",
+            "--pane",
+            root_pane,
+            "--direction",
+            direction,
+            "--cwd",
+            str(claim.worktree),
+            "--focus" if focus else "--no-focus",
+        )
+        if split is None or split.returncode != 0:
+            _launch_fail(
+                "pane", _output(split) or "pane split unavailable", claim=claim, target=target
+            )
+        try:
+            pane = _required_id(split, "pane split", "pane", "pane_id", "id")
+        except typer.Exit:
+            _launch_fail("pane", "response missing pane_id", claim=claim, target=target)
+
+        start = _command("agent", "start", target, "--kind", resolved_kind, "--pane", pane)
+        if start is None or start.returncode != 0:
+            detail = _output(start) or "agent start unavailable"
+            duplicate = any(word in detail.lower() for word in ("duplicate", "already", "unique"))
+            winner = None
+            if duplicate:
+                try:
+                    winner = _strict_live_target(target, resolved_hive, claim.worktree)
+                except RuntimeError:
+                    winner = None
+            if winner is not None and winner[1] != pane:
+                _close_pane(pane)
+                result = _LaunchResult(
+                    "reused",
+                    resolved_hive,
+                    bead,
+                    resolved_kind,
+                    claim.worktree,
+                    winner[0],
+                    winner[1],
+                    target,
+                )
+            else:
+                _close_pane(pane)
+                _launch_fail("startup", detail, claim=claim, target=target)
+        else:
+            rename = _command("pane", "rename", pane, target)
+            if rename is None or rename.returncode != 0:
+                _close_pane(pane)
+                _launch_fail(
+                    "startup",
+                    f"pane rename: {_output(rename) or 'server unavailable'}",
+                    claim=claim,
+                    target=target,
+                )
+            warm, detail = _launch_warm(target)
+            if not warm:
+                _close_pane(pane)
+                _launch_fail("warmup", detail, claim=claim, target=target)
+            result = _LaunchResult(
+                "created",
+                resolved_hive,
+                bead,
+                resolved_kind,
+                claim.worktree,
+                workspace,
+                pane,
+                target,
+            )
+
+    payload = result.payload()
+    if as_json:
+        jsonout.emit(payload)
+        return
+    typer.echo(
+        "herdr ready "
+        + " ".join(
+            f"{key}={payload[key]}"
+            for key in (
+                "disposition",
+                "hive",
+                "bead",
+                "kind",
+                "worktree",
+                "workspace",
+                "pane",
+                "target",
+            )
+        )
+    )
 
 
 def supported_kinds() -> list[str]:
@@ -485,9 +1035,6 @@ def _owned_live_pane(target: str) -> str | None:
     return pane_id
 
 
-cli = typer.Typer(no_args_is_help=True, help="herdr terminal/agent-pane integration.")
-
-
 @cli.command("status", help="show herdr server health and installed agent integrations.")
 def _status_cmd() -> None:
     """A safe one-shot health report for herdr and its per-kind hook integrations."""
@@ -597,9 +1144,7 @@ def _reap_cmd(target: str = typer.Argument(..., metavar="TARGET")) -> None:
 def _spawn_cmd(
     hive: str = typer.Option(..., "--hive", help="managed hive identifier"),
     bead: str = typer.Option(..., "--bead", help="already-claimed bead identifier"),
-    kind: str | None = typer.Option(
-        None, "--kind", help="Herdr agent kind; overrides per-hive and global herdr.kind"
-    ),
+    kind: str = typer.Option(..., "--kind", help="Herdr agent kind, e.g. claude or codex"),
 ) -> None:
     """Create an isolated pane and prove its first conversational turn is promptable."""
     if not server_up():
