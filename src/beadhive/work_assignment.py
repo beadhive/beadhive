@@ -135,21 +135,31 @@ def impl__claim_single_bead(api, cfg, hive, bead, as_):
     api._guard_conventions(cfg, data, bead, main, action="dispatch")
     api._maybe_open_molecule(cfg, hive, bead, main)
     already_held = api.work_next.claim_won(data, actor)
-    # Persist the authority record against the managed checkout before the bd claim, just as the
-    # historical CLI path did.  Provisioning itself is idempotent and may reattach an existing
-    # checkout for a same-actor retry.
-    entry, target, branch = api.worktree.ensure(cfg, hive, bead, kind=api._kind_of(data))
-    api._stamp(cfg, entry, target, actor)
-    api._issue_claim(cfg, entry, bead, actor, target, hive)
     if not already_held:
         res = api.bd.run(["update", bead, "--claim"], main, actor=actor)
         if res.returncode != 0:
             raise api.typer.Exit(res.returncode)
-        # bd's claim write is not a compare-and-swap.  Only report success when the reread still
-        # proves that this actor owns the bead; a competing writer must never look like a win.
+        # bd's claim write is not a compare-and-swap.  Only proceed when the reread still proves
+        # that this actor owns the bead; a competing writer must never look like a win.
         data = api.bd.show(bead, main)
         if not api.work_next.claim_won(data, actor):
             raise api.typer.Exit(1)
+    try:
+        # Provisioning is idempotent and may reattach an existing checkout for a same-actor retry.
+        entry, target, branch = api.worktree.ensure(cfg, hive, bead, kind=api._kind_of(data))
+        api._stamp(cfg, entry, target, actor)
+        api._issue_claim(cfg, entry, bead, actor, target, hive)
+    except Exception as exc:
+        if not already_held:
+            api._release_claim(main, bead, actor, detail=str(exc))
+        raise
+    # Provisioning can race with a reassignment too. Re-read after BOTH fresh and idempotent paths
+    # so the returned envelope contains authoritative bead ownership.
+    data = api.bd.show(bead, main)
+    if not api.work_next.claim_won(data, actor):
+        if not already_held:
+            api._release_claim(main, bead, actor, detail="claim lost during provisioning")
+        raise api.typer.Exit(1)
     api.otel.count_bead_transition("claimed")
     prof = api.config.work_identity(cfg, entry, actor)
     ident = {
