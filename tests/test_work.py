@@ -32,6 +32,7 @@ from beadhive import (
     plan,
     registry,
     validation_ledger,
+    validation_records,
     work,
     work_logic,
     worktree,
@@ -1807,7 +1808,49 @@ def test_check_exports_a_fresh_empty_test_report_dir(hive, fakebd, monkeypatch):
     drop1, count1, drop2, count2 = log.read_text().split()
     assert drop1 and drop2 and drop1 != drop2, "two checks shared one drop zone"
     assert count1 == count2 == "0", "the exported drop zone was not empty at exec"
-    assert not Path(drop1).exists() and not Path(drop2).exists()
+    for drop in (Path(drop1), Path(drop2)):
+        # A check's fresh report directory is now a durable raw artifact rather
+        # than a temporary directory. It remains empty here because the probe
+        # intentionally writes no report, and its sibling gate log is retained.
+        assert drop.is_dir() and not list(drop.iterdir())
+        assert (drop.parent / "gate.log").is_file()
+
+
+def test_check_refuses_relative_artifact_root_before_validation(hive, fakebd, monkeypatch):
+    """A hand-edited invalid root must not quietly return to temporary output."""
+    fakebd.seed("mr-182-relative", title="t")
+    work.claim(bead="mr-182-relative", as_="", hive="myrepo")
+    original = config.work_value
+
+    def relative_root(cfg, entry, key, default=None):
+        if key == "validation_artifact_root":
+            return "relative/artifacts"
+        return original(cfg, entry, key, default)
+
+    monkeypatch.setattr(config, "work_value", relative_root)
+    with pytest.raises(typer.Exit) as exc:
+        work.check(bead="mr-182-relative", hive="myrepo")
+    assert exc.value.exit_code == 2
+    assert not list((hive.main / ".git/bh/validation/runs").glob("*/manifest.json"))
+
+
+def test_artifacts_uploaded_command_acknowledges_ci_handoff(hive):
+    run = validation_records.begin_run(
+        hive.main,
+        bead="mr-artifacts",
+        phase="check",
+        branch="wt/bead/issue/mr-artifacts",
+        worktree=hive.main,
+        sha="sha",
+        tree="tree",
+        command_hash="hash",
+    )
+    validation_records.finish_run(hive.main, run["run_id"], exit_code=1)
+
+    work.artifacts_uploaded(run_id=run["run_id"], hive="myrepo")
+
+    acknowledged = validation_records.read_run(hive.main, run["run_id"])
+    assert acknowledged["artifacts_uploaded_at"]
 
 
 # ---- approve (first-class review-gate resolve; replaces `ws bd gate resolve`) ----

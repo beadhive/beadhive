@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import concurrent.futures
 import json
+from pathlib import Path
+
+import pytest
 
 from beadhive import host, validation_records
 
@@ -56,6 +59,123 @@ def test_concurrent_runs_and_repeated_uses_have_independent_identity(tmp_path, m
     ]
     assert len({use["use_id"] for use in uses}) == 5
     assert len(list((repo / ".git/bh/validation/runs").iterdir())) == 20
+    assert len({run["artifacts"]["directory"] for run in runs}) == 20
+    assert all(Path(run["artifacts"]["reports"]).is_dir() for run in runs)
+
+
+def test_artifact_root_precedence_and_relative_rejection(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+    configured = tmp_path / "configured"
+    override = tmp_path / "override"
+
+    assert validation_records.artifact_root(repo, configured) == configured
+    monkeypatch.setenv("BH_VALIDATION_ARTIFACT_ROOT", str(override))
+    assert validation_records.artifact_root(repo, configured) == override
+    monkeypatch.delenv("BH_VALIDATION_ARTIFACT_ROOT")
+    with pytest.raises(ValueError, match="absolute"):
+        validation_records.artifact_root(repo, "relative/artifacts")
+
+    run = validation_records.begin_run(
+        repo,
+        bead="b",
+        phase="check",
+        branch="b",
+        worktree=repo,
+        sha="s",
+        tree="t",
+        command_hash="h",
+        artifact_root_config=configured,
+    )
+    assert Path(run["artifacts"]["directory"]).parent == configured
+    assert Path(run["artifacts"]["reports"]).parent == Path(run["artifacts"]["directory"])
+    assert Path(run["artifacts"]["gate_log"]).parent == Path(run["artifacts"]["directory"])
+
+    # The environment-root form is the CI upload staging path, but its run layout
+    # is deliberately byte-for-byte the configured external-root layout.
+    monkeypatch.setenv("BH_VALIDATION_ARTIFACT_ROOT", str(override))
+    overridden = _begin(repo, 1)
+    assert Path(overridden["artifacts"]["directory"]).parent == override
+    assert Path(overridden["artifacts"]["reports"]).parent == Path(
+        overridden["artifacts"]["directory"]
+    )
+
+
+def test_run_manifest_references_complete_default_artifact_directory(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+
+    run = _begin(repo)
+
+    artifacts = run["artifacts"]
+    assert Path(artifacts["directory"]).is_absolute()
+    assert Path(artifacts["reports"]).is_dir()
+    assert Path(artifacts["reports"]).parent == Path(artifacts["directory"])
+    assert Path(artifacts["gate_log"]).parent == Path(artifacts["directory"])
+    assert ".git" not in Path(artifacts["directory"]).parts
+
+
+def test_upload_handoff_prunes_superseded_raw_but_protects_retry_history(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+    first, second = _begin(repo), _begin(repo, 1)
+    for run, rc in ((first, 1), (second, 0)):
+        Path(run["artifacts"]["gate_log"]).write_text("gate")
+        validation_records.finish_run(repo, run["run_id"], exit_code=rc)
+        validation_records.mark_artifacts_uploaded(repo, run["run_id"])
+
+    assert not Path(first["artifacts"]["directory"]).exists()
+    assert Path(second["artifacts"]["directory"]).is_dir()
+    assert Path(second["artifacts"]["gate_log"]).is_file()
+    retired = validation_records.read_run(repo, first["run_id"])["artifacts"]
+    # The control manifest remains for history, but cannot point at a removed raw
+    # directory. Thus every retained manifest which *does* reference artifacts
+    # protects a real directory.
+    assert set(retired) == {"pruned_at"}
+
+
+def test_verdict_pointer_protects_but_audit_use_does_not_pin_raw_artifacts(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+    run = _begin(repo)
+    validation_records.record_use(
+        repo,
+        run_id=run["run_id"],
+        bead="bh-x",
+        phase="submit",
+        branch="b",
+        worktree=repo,
+        sha="sha",
+        tree="tree",
+        command_hash="hash",
+        reused=False,
+    )
+    run = validation_records.finish_run(repo, run["run_id"], exit_code=0)
+    verdict = repo / ".git/bh/validation/verdicts/tree/hash.json"
+    verdict.parent.mkdir(parents=True)
+    verdict.write_text(json.dumps({"run_id": run["run_id"]}))
+    validation_records.mark_artifacts_uploaded(repo, run["run_id"])
+
+    assert Path(run["artifacts"]["directory"]).is_dir()
+    verdict.unlink()
+    assert validation_records.prune_artifacts(repo) == 1
+    assert not Path(run["artifacts"]["directory"]).exists()
+
+
+def test_retained_manifest_and_running_artifacts_cannot_be_pruned(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+
+    retained = _begin(repo)
+    validation_records.finish_run(repo, retained["run_id"], exit_code=0)
+    # Handoff is the explicit permission to prune raw output. Until it occurs,
+    # the retained run manifest remains an artifact reference and is protected.
+    assert validation_records.prune_artifacts(repo) == 0
+    assert Path(retained["artifacts"]["directory"]).is_dir()
+
+    running = _begin(repo, 1)
+    validation_records.mark_artifacts_uploaded(repo, running["run_id"])
+    assert Path(running["artifacts"]["directory"]).is_dir()
 
 
 def test_typed_outcomes_fail_closed(tmp_path, monkeypatch):

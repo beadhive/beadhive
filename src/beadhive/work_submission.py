@@ -6,6 +6,9 @@ each call, keeping ledger and gate state transitions in one boundary without imp
 
 from __future__ import annotations
 
+import contextlib
+from pathlib import Path
+
 
 def impl_check(api, bead, hive):
     api.otel.set_bead(bead)
@@ -30,6 +33,12 @@ def impl_check(api, bead, hive):
     sha = api.worktree.head_full_sha(target)
     clean_sha = api._checked_sha(target)
     tree = api.validation_ledger.tree_of(entry, clean_sha) if clean_sha else ""
+    artifact_root_config = api.config.work_value(cfg, entry, "validation_artifact_root", "")
+    try:
+        api.validation_records.artifact_root(main, artifact_root_config)
+    except ValueError as exc:
+        api.typer.echo(f"✗ {exc}", err=True)
+        raise api.typer.Exit(2) from None
     run_record = api.validation_records.begin_run(
         main,
         bead=bead,
@@ -41,6 +50,7 @@ def impl_check(api, bead, hive):
         command_hash=api.validation_ledger.cmd_hash(cmd),
         command=cmd,
         owner_start=api.worktree._pid_start(api.os.getpid()),
+        artifact_root_config=artifact_root_config,
     )
     try:
         api.worktree.run_init(cfg, entry, target, verify_only=True)
@@ -61,7 +71,14 @@ def impl_check(api, bead, hive):
             )
         raise
     v_start = api.time.perf_counter()
-    with api.test_report.drop_zone() as drop, api.triage_store.gate_log() as log:
+    artifacts = (run_record or {}).get("artifacts") or {}
+    if artifacts:
+        drop_context = api.test_report.drop_zone(Path(artifacts["reports"]))
+        log_context = contextlib.nullcontext(Path(artifacts["gate_log"]))
+    else:
+        drop_context = api.test_report.drop_zone()
+        log_context = api.triage_store.gate_log()
+    with drop_context as drop, log_context as log:
         protocol_path = api.validation_records.protocol_path(
             drop, api.config.work_value(cfg, entry, "validation_protocol", "none")
         )
@@ -95,6 +112,12 @@ def impl_check(api, bead, hive):
         rc = res.returncode
         v_elapsed = api.time.perf_counter() - v_start
         report = api.test_report.ingest(drop, rc)
+        if run_record is not None:
+            api.validation_records.attach_summary(
+                main,
+                run_record["run_id"],
+                {"counts": api.test_report.counts(report), "tree": tree},
+            )
         missing = api.missing_binary(res)
         if run_record is not None:
             api.validation_records.finish_run(
@@ -181,7 +204,7 @@ def impl__record_check_verdict(
     sha = api._checked_sha(target)
     if not sha:
         return
-    api.triage_store.store(entry, sha, cmd, rc, report, drop, log)
+    api.triage_store.store(entry, sha, cmd, rc, report, drop, log, run_id=run_id)
     if rc == 0:
         api.validation_ledger.record(
             entry,

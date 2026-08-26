@@ -31,6 +31,7 @@ import types
 import typing
 from copy import copy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
@@ -440,6 +441,13 @@ class WorkConfig(_Section):
             "BH_VALIDATION_RESULT_PATH; absent/invalid output remains ordinary process semantics."
         ),
     )
+    validation_artifact_root: str = Field(
+        "",
+        description=(
+            "Optional absolute root for durable per-run validation artifacts. "
+            "BH_VALIDATION_ARTIFACT_ROOT takes precedence for CI upload staging."
+        ),
+    )
     validate_subset: str = Field(
         "",
         description=(
@@ -559,6 +567,13 @@ class WorkConfig(_Section):
                 f"work.validate_subset must contain the {SUBSET_PLACEHOLDER} placeholder "
                 f"(where the failing test names go): {v!r}"
             )
+        return v
+
+    @field_validator("validation_artifact_root")
+    @classmethod
+    def _artifact_root_is_absolute(cls, v):
+        if v and not Path(v).expanduser().is_absolute():
+            raise ValueError("validation_artifact_root must be an absolute path")
         return v
 
     @field_validator("ledger_ttl")

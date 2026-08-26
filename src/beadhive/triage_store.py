@@ -1,4 +1,4 @@
-""".bh/testreport/<tree>/ — the durable per-tree triage store (bh-ku9n9.6).
+""".bh/validation/runs/.summary/<tree>/ — bounded validation summaries.
 
 `test_report` (bh-ku9n9.20) is the READ/TRUST side: it exports a drop zone, parses what the
 hive's own runner leaves there, and hands back a report. This module is the WRITE/STORE side:
@@ -77,8 +77,10 @@ from pathlib import Path
 
 from . import observaloop_env, registry, test_report, validation_ledger
 
-#: Under the hive's main clone. `.bh/` is the existing private area, hidden via git exclude.
-STORE_REL = ".bh/testreport"
+#: Under the same canonical root as raw per-run artifacts. `.summary` cannot
+#: collide with random ``run-*`` directory names, and legacy `.bh/testreport`
+#: is deliberately no longer written.
+STORE_REL = ".bh/validation/runs/.summary"
 _EXCLUDE_ENTRY = ".bh/"
 
 #: Retained runs per tree. Capped like everything else here — a flake is visible in a handful of
@@ -155,7 +157,7 @@ def _cases(report: dict | None, watch: set[str]) -> list[dict]:
     ]
 
 
-def store(entry, rev, cmd, rc, report, drop, log) -> Path | None:
+def store(entry, rev, cmd, rc, report, drop, log, *, run_id: str | None = None) -> Path | None:
     """Persist triage detail for the tree `rev` names, iff the write rule fires. Never raises.
 
     Returns the directory written, or `None` when nothing was (the ordinary green case, a rev
@@ -163,12 +165,12 @@ def store(entry, rev, cmd, rc, report, drop, log) -> Path | None:
     consulted for anything but the write rule — the verdict is the ledger's, and this store
     holds detail only."""
     try:
-        return _store(entry, rev, cmd, rc, report, drop, log)
+        return _store(entry, rev, cmd, rc, report, drop, log, run_id=run_id)
     except (OSError, ValueError, TypeError):
         return None
 
 
-def _store(entry, rev, cmd, rc, report, drop, log) -> Path | None:
+def _store(entry, rev, cmd, rc, report, drop, log, *, run_id: str | None = None) -> Path | None:
     if not rev:
         return None
     dest = tree_dir(entry, validation_ledger.tree_of(entry, rev))
@@ -187,16 +189,17 @@ def _store(entry, rev, cmd, rc, report, drop, log) -> Path | None:
         for c in r.get("cases", [])
         if c.get("test.case.result.status") != test_report.PASSED
     }
-    runs.append(
-        {
-            "at": time.time(),
-            "sha": rev,  # metadata, exactly as on the ledger row — the later-upload join key
-            "cmd_hash": validation_ledger.cmd_hash(cmd),
-            "rc": int(rc),
-            "counts": test_report.counts(report),  # None when the hive opts into no tier 1
-            "cases": _cases(report, watch),
-        }
-    )
+    summary = {
+        "at": time.time(),
+        "sha": rev,  # metadata, exactly as on the ledger row — the later-upload join key
+        "cmd_hash": validation_ledger.cmd_hash(cmd),
+        "rc": int(rc),
+        "counts": test_report.counts(report),  # None when the hive opts into no tier 1
+        "cases": _cases(report, watch),
+    }
+    if run_id:
+        summary["run_id"] = run_id
+    runs.append(summary)
     # tmp + os.replace, exactly as validation_ledger writes its own file. Two runs can be at one
     # tree at once (a seat's `check` and a `submit`'s clean checkout), and a torn results.json
     # reads back as `[]` from _runs — which does not just lose a row, it silently replaces the
@@ -204,18 +207,14 @@ def _store(entry, rev, cmd, rc, report, drop, log) -> Path | None:
     # built on. It also makes _prune's mtime rule true: a rename into `dest` bumps `dest`'s
     # mtime on EVERY run, where the in-place write it replaces bumped nothing (see _prune).
     tmp = results.with_name(f"{_RESULTS}.tmp{os.getpid()}")
-    tmp.write_text(json.dumps({"tree": dest.name, "runs": runs[-_MAX_RUNS:]}) + "\n")
+    payload = {"tree": dest.name, "runs": runs[-_MAX_RUNS:]}
+    if run_id:
+        payload["latest_raw_run"] = run_id
+    tmp.write_text(json.dumps(payload) + "\n")
     os.replace(tmp, results)
 
-    # Raw runner output and the gate log are latest-run-wins: the accumulating record is
-    # results.json, and keeping N copies of a ~577 KB XML would re-import the size problem the
-    # verdict/detail split exists to solve.
-    for stale in dest.glob("*.xml"):
-        stale.unlink()
-    for xml in sorted(Path(drop).glob("*.xml")) if drop else []:
-        shutil.copy2(xml, dest / xml.name)
-    if log and Path(log).exists():
-        shutil.copy2(log, dest / _GATE_LOG)
+    # Raw XML and gate logs already live exactly once in the run directory. The
+    # bounded summary index retains its latest raw run id, never another copy.
     _prune(dest.parent)
     return dest
 

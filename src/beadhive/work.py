@@ -828,6 +828,27 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     return work_submission.impl_check(sys.modules[__name__], bead, hive)
 
 
+@app.command("artifacts-uploaded")
+@otel.trace_verb("work.artifacts-uploaded")
+def artifacts_uploaded(
+    run_id: str = typer.Argument(..., metavar="<run-id>", help="uploaded validation run id"),
+    hive: str = _HIVE,
+):
+    """Acknowledge an external CI upload, then apply safe raw-artifact retention.
+
+    Invoke this only after the complete run directory (``reports/`` plus
+    ``gate.log``) has been uploaded. It is deliberately separate from `check`:
+    bh cannot infer whether an external artifact service accepted the upload.
+    """
+    cfg = config.load()
+    entry = worktree._resolve_entry(cfg, hive)
+    main = registry.hive_dir(entry)
+    if validation_records.mark_artifacts_uploaded(main, run_id) is None:
+        typer.echo(f"✗ validation run not found: {run_id}", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"✓ acknowledged upload for {run_id}; applied artifact retention")
+
+
 def _mark_self_check(cfg, entry, target, rc) -> None:
     """Stamp this SELF-CHECK attempt onto the `work.check` verb span (bh-trgcd.2) — seat, tree
     content key, and green/red — so "how many self-checks did this bead take before one came back
