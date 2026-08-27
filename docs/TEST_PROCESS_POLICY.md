@@ -8,10 +8,11 @@ Linux is not exempt from that failure mode even though its interpreter default r
 ## Adding a process test
 
 Import `process_context` from `harness.processes`, keep the process target at module scope, and
-pass only serializable inputs and synchronization objects created from that context. Do not call
-`multiprocessing.Process`, `get_context("fork")`, `set_start_method("fork")`, or `os.fork`
-directly in test code. `tests/test_process_harness_policy.py` scans Python syntax and fails if a
-new direct call bypasses the policy.
+pass only serializable inputs and synchronization objects created from that context. Test modules
+must not import `multiprocessing` directly: that also excludes ambient-context spawners such as
+`Manager`, `Pool`, and `Process`. Do not use `concurrent.futures.ProcessPoolExecutor` or `os.fork`.
+`tests/test_process_harness_policy.py` follows simple aliases and fails if a process-capable import
+or call bypasses the reviewed helper; thread executors remain allowed.
 
 The test must continue to assert the real cross-process behavior. Replacing a process with a
 thread does not prove flock, append, admission, owner-death, or ledger behavior.
@@ -31,7 +32,8 @@ The parallel `just test` and `just test-integration-land` recipes run under
 1. prints the descendant PID, parent PID, state, elapsed time, and executable without dumping
    potentially secret command arguments;
 2. asks descendant Python processes for all-thread stacks through `SIGUSR1`;
-3. terminates the complete process group, escalating to a kill after the grace period; and
+3. terminates the complete process group, checking group liveness independently of the command
+   leader and escalating surviving descendants to a kill after the grace period; and
 4. exits 124, never zero.
 
 Pytest controllers and xdist workers register `SIGUSR1` with `faulthandler`, so the stack request

@@ -20,6 +20,7 @@ def _exact_caller_worker(
     state_path,
     hive_root,
     arrivals,
+    cohort_ready,
     starts,
     uses,
     running,
@@ -28,8 +29,18 @@ def _exact_caller_worker(
     verdict,
     exit_code,
 ):
+    prior_observed = False
+
     def latest(*_args, **_kwargs):
-        return json.loads(state_path.read_text()) if state_path.exists() else None
+        nonlocal prior_observed
+        value = json.loads(state_path.read_text()) if state_path.exists() else None
+        if not prior_observed:
+            prior_observed = True
+            with arrivals.get_lock():
+                arrivals.value += 1
+                if arrivals.value == 5:
+                    cohort_ready.set()
+        return value
 
     def reuse(*_args, **_kwargs):
         value = latest()
@@ -40,20 +51,23 @@ def _exact_caller_worker(
     def execute(*_args, **_kwargs):
         with starts.get_lock():
             starts.value += 1
-        state_path.write_text(json.dumps({"run_id": "leader", "lifecycle": "running"}))
+        write_state({"run_id": "leader", "lifecycle": "running"})
         running.set()
         release.wait(5)
-        state_path.write_text(
-            json.dumps(
-                {
-                    "run_id": "leader",
-                    "lifecycle": "completed",
-                    "verdict": verdict,
-                    "exit_code": exit_code,
-                }
-            )
+        write_state(
+            {
+                "run_id": "leader",
+                "lifecycle": "completed",
+                "verdict": verdict,
+                "exit_code": exit_code,
+            }
         )
         return exit_code
+
+    def write_state(value):
+        staged = state_path.with_name(f"{state_path.name}.{os.getpid()}.tmp")
+        staged.write_text(json.dumps(value))
+        os.replace(staged, state_path)
 
     def record_use(*_args, **_kwargs):
         with uses.get_lock():
@@ -67,8 +81,6 @@ def _exact_caller_worker(
     worktree_verify.validation_records.record_use = record_use
     worktree_verify._reuse_verdict_hit = reuse
     worktree_verify._impl_clean_checkout_unadmitted = execute
-    with arrivals.get_lock():
-        arrivals.value += 1
     results.put(worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=True))
 
 
@@ -256,6 +268,7 @@ def test_exact_callers_start_one_child_and_share_terminal_result(
     ctx = process_context()
     state = tmp_path / "run.json"
     arrivals = ctx.Value("i", 0)
+    cohort_ready = ctx.Event()
     starts = ctx.Value("i", 0)
     uses = ctx.Value("i", 0)
     running = ctx.Event()
@@ -267,6 +280,7 @@ def test_exact_callers_start_one_child_and_share_terminal_result(
         state,
         tmp_path,
         arrivals,
+        cohort_ready,
         starts,
         uses,
         running,
@@ -275,19 +289,15 @@ def test_exact_callers_start_one_child_and_share_terminal_result(
         verdict,
         exit_code,
     )
-    leader = ctx.Process(target=_exact_caller_worker, args=worker_args)
-    leader.start()
+    callers = [ctx.Process(target=_exact_caller_worker, args=worker_args) for _ in range(5)]
+    with validation_admission.identity_lock(tmp_path, "tree", "command"):
+        for caller in callers:
+            caller.start()
+        assert cohort_ready.wait(5)
+        assert arrivals.value == 5
     assert running.wait(3)
-    followers = [ctx.Process(target=_exact_caller_worker, args=worker_args) for _ in range(4)]
-    for follower in followers:
-        follower.start()
-    deadline = time.monotonic() + 3
-    while arrivals.value != 5 and time.monotonic() < deadline:
-        time.sleep(0.01)
-    assert arrivals.value == 5
-    time.sleep(0.1)
     release.set()
-    for process in [leader, *followers]:
+    for process in callers:
         process.join(5)
         assert process.exitcode == 0
     assert starts.value == 1

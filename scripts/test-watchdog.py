@@ -90,46 +90,72 @@ def _diagnose(process: subprocess.Popen[bytes]) -> None:
                 pass
 
 
-def _stop(process: subprocess.Popen[bytes], grace: float) -> None:
+def _process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _wait_for_process_group(
+    process: subprocess.Popen[bytes], process_group: int, timeout: float
+) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        process.poll()  # Reap an exited leader; descendants keep the process group alive.
+        if not _process_group_exists(process_group):
+            return True
+        time.sleep(0.02)
+    process.poll()
+    return not _process_group_exists(process_group)
+
+
+def _signal_process_group(process_group: int, sig: signal.Signals) -> None:
+    try:
+        os.killpg(process_group, sig)
+    except OSError:
+        pass
+
+
+def _stop(process: subprocess.Popen[bytes], grace: float, *, process_group: int | None) -> None:
+    if process_group is not None:
+        _signal_process_group(process_group, signal.SIGTERM)
+        if not _wait_for_process_group(process, process_group, grace):
+            _signal_process_group(process_group, signal.SIGKILL)
+            _wait_for_process_group(process, process_group, max(grace, 1.0))
+        if process.poll() is None:
+            process.wait(timeout=max(grace, 1.0))
+        return
+
     if process.poll() is not None:
         return
-    if os.name == "posix":
-        try:
-            os.killpg(process.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-    else:
-        process.terminate()
+    process.terminate()
     try:
         process.wait(timeout=grace)
-        return
     except subprocess.TimeoutExpired:
-        pass
-    if os.name == "posix":
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            return
-    else:
         process.kill()
-    process.wait(timeout=max(grace, 1.0))
+        process.wait(timeout=max(grace, 1.0))
 
 
 def run(command: list[str], *, timeout: float, grace: float) -> int:
     if not command:
         raise ValueError("a command is required after --")
     process = subprocess.Popen(command, start_new_session=os.name == "posix")
+    process_group = process.pid if os.name == "posix" else None
     try:
         return process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         _diagnose(process)
         time.sleep(grace)
-        _stop(process, grace)
+        _stop(process, grace, process_group=process_group)
         print(f"test watchdog exiting nonzero ({TIMEOUT_EXIT}) after timeout", file=sys.stderr)
         return TIMEOUT_EXIT
     except KeyboardInterrupt:
         print("test watchdog interrupted; terminating child process tree", file=sys.stderr)
-        _stop(process, grace)
+        _stop(process, grace, process_group=process_group)
         return 130
 
 
