@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 import math
+import re
 import time
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -80,6 +82,10 @@ class RuntimeCallTimedOut(Exception):
     """A runtime source exceeded its isolated call budget."""
 
 
+class StaleCommandScope(Exception):
+    """The runtime atomically refused a command against an old revision."""
+
+
 @dataclass(frozen=True)
 class ClerkTokenVerifier:
     config: DevelopmentGatewayConfig
@@ -122,11 +128,14 @@ class RemoteInstance:
     authorized_subjects: frozenset[str]
     snapshot: Callable[[], Awaitable[Mapping[str, object]]]
     online: Callable[[], Awaitable[bool]]
+    refresh: Callable[[str, str], Awaitable[Mapping[str, object]]] | None = None
 
     def __post_init__(self) -> None:
         for operation, label in ((self.snapshot, "snapshot"), (self.online, "online")):
             if not inspect.iscoroutinefunction(operation):
                 raise TypeError(f"remote {label} operation must be async and cancellation-aware")
+        if self.refresh is not None and not inspect.iscoroutinefunction(self.refresh):
+            raise TypeError("remote refresh operation must be async and cancellation-aware")
 
 
 @dataclass(frozen=True)
@@ -136,6 +145,7 @@ class RuntimeCallPolicy:
     deadline_seconds: float = 5.0
     snapshot_concurrency: int = 4
     availability_concurrency: int = 2
+    command_concurrency: int = 2
 
     def __post_init__(self) -> None:
         if (
@@ -148,6 +158,7 @@ class RuntimeCallPolicy:
         for value, label in (
             (self.snapshot_concurrency, "snapshot concurrency"),
             (self.availability_concurrency, "availability concurrency"),
+            (self.command_concurrency, "command concurrency"),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 32:
                 raise ValueError(f"{label} must be between 1 and 32")
@@ -212,6 +223,11 @@ _ERROR_DETAIL_KEYS = frozenset({"code", "message", "retryable"})
 _INSTANCE_PAGE_KEYS = frozenset({"schemaVersion", "items", "nextCursor"})
 _INSTANCE_KEYS = frozenset({"id", "displayName", "availability", "capabilities"})
 _ENVELOPE_KEYS = frozenset({"schemaVersion", "contractVersion", "instanceId", "snapshot"})
+_COMMAND_INPUT_KEYS = frozenset({"schemaVersion", "correlationId", "expectedRevision"})
+_COMMAND_ENVELOPE_KEYS = frozenset(
+    {"schemaVersion", "contractVersion", "instanceId", "command", "correlationId", "result"}
+)
+_COMMAND_RESULT_KEYS = frozenset({"status", "revision"})
 _SNAPSHOT_KEYS = frozenset({"schemaVersion", "revision", "generatedAt", "workItems", "agents"})
 _WORK_ITEM_KEYS = frozenset(
     {"id", "title", "status", "issueType", "priority", "labels", "assignee", "updatedAt"}
@@ -221,6 +237,11 @@ _MAX_WORK_ITEMS = 1_000
 _MAX_AGENTS = 256
 _MAX_LABELS = 64
 _MAX_JSON_SAFE_INTEGER = 2**53 - 1
+_MAX_COMMAND_BODY = 2_048
+_CORRELATION_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
+)
+_REVISION = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 def _exact_keys(value: object, expected: frozenset[str]) -> bool:
@@ -299,7 +320,7 @@ def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
                 and item["id"] == DEVELOPMENT_INSTANCE_ID
                 and _string(item["displayName"], maximum=256)
                 and item["availability"] in ("online", "offline")
-                and item["capabilities"] == ["snapshot"]
+                and item["capabilities"] in (["snapshot"], ["snapshot", "refresh"])
                 for item in items
             )
         )
@@ -324,6 +345,22 @@ def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
             and isinstance(agents, list)
             and len(agents) <= _MAX_AGENTS
             and all(_agent_is_allowlisted(item) for item in agents)
+        )
+    if kind == "commandResult":
+        if not _exact_keys(payload, _COMMAND_ENVELOPE_KEYS):
+            return False
+        result = payload["result"]
+        return (
+            _schema_version(payload["schemaVersion"])
+            and payload["contractVersion"] == CONTRACT_VERSION
+            and payload["instanceId"] == DEVELOPMENT_INSTANCE_ID
+            and payload["command"] == "refresh"
+            and isinstance(payload["correlationId"], str)
+            and _CORRELATION_ID.fullmatch(payload["correlationId"]) is not None
+            and _exact_keys(result, _COMMAND_RESULT_KEYS)
+            and result["status"] == "completed"
+            and isinstance(result["revision"], str)
+            and _REVISION.fullmatch(result["revision"]) is not None
         )
     return False
 
@@ -413,6 +450,53 @@ async def _read_public_snapshot(instance: RemoteInstance) -> dict[str, object]:
     return _public_snapshot(await instance.snapshot())
 
 
+async def _read_command_input(request: Request) -> dict[str, object]:
+    content_types = request.headers.getlist("content-type")
+    if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip() != "application/json":
+        raise ValueError
+    body = bytearray()
+    async for chunk in request.stream():
+        body.extend(chunk)
+        if len(body) > _MAX_COMMAND_BODY:
+            raise ValueError
+    try:
+        value = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError from exc
+    if not _exact_keys(value, _COMMAND_INPUT_KEYS):
+        raise ValueError
+    correlation_id = value["correlationId"]
+    expected_revision = value["expectedRevision"]
+    if (
+        not _schema_version(value["schemaVersion"])
+        or not isinstance(correlation_id, str)
+        or _CORRELATION_ID.fullmatch(correlation_id) is None
+        or not isinstance(expected_revision, str)
+        or _REVISION.fullmatch(expected_revision) is None
+    ):
+        raise ValueError
+    return value
+
+
+async def _invoke_refresh(
+    instance: RemoteInstance, expected_revision: str, correlation_id: str
+) -> dict[str, object]:
+    if instance.refresh is None:
+        raise LookupError
+    raw = await instance.refresh(expected_revision, correlation_id)
+    try:
+        public = {"status": raw["status"], "revision": raw["revision"]}
+    except (KeyError, TypeError) as exc:
+        raise RemoteProjectionFailed("runtime command result is incompatible") from exc
+    if (
+        public["status"] != "completed"
+        or not isinstance(public["revision"], str)
+        or _REVISION.fullmatch(public["revision"]) is None
+    ):
+        raise RemoteProjectionFailed("runtime command result is incompatible")
+    return public
+
+
 def build_development_gateway_application(
     *,
     config: DevelopmentGatewayConfig,
@@ -437,6 +521,11 @@ def build_development_gateway_application(
         concurrency=runtime_calls.snapshot_concurrency,
         deadline_seconds=runtime_calls.deadline_seconds,
         name="beadhive-gateway-snapshot",
+    )
+    command_calls = _BoundedRuntimeCalls(
+        concurrency=runtime_calls.command_concurrency,
+        deadline_seconds=runtime_calls.deadline_seconds,
+        name="beadhive-gateway-command",
     )
 
     def authorize(request: Request) -> str:
@@ -465,7 +554,7 @@ def build_development_gateway_application(
             "id": instance_id,
             "displayName": instance.display_name,
             "availability": "online" if availability else "offline",
-            "capabilities": ["snapshot"],
+            "capabilities": ["snapshot"] + (["refresh"] if instance.refresh is not None else []),
         }
 
     async def instances(request: Request) -> JSONResponse:
@@ -519,6 +608,45 @@ def build_development_gateway_application(
         except Exception:
             return _error("runtime_unavailable", "The runtime is unavailable.", 503, retryable=True)
 
+    async def refresh(request: Request) -> JSONResponse:
+        try:
+            subject = authorize(request)
+            instance_id = f"{request.path_params['stage']}/{request.path_params['slug']}"
+            instance = registry.authorized(subject).get(instance_id)
+            if instance is None or instance.refresh is None:
+                return _error("resource_not_found", "The resource was not found.", 404)
+            command_input = await _read_command_input(request)
+            expected_revision = command_input["expectedRevision"]
+            correlation_id = command_input["correlationId"]
+            assert isinstance(expected_revision, str)
+            assert isinstance(correlation_id, str)
+            result = await command_calls.call(
+                lambda: _invoke_refresh(instance, expected_revision, correlation_id)
+            )
+            return _response(
+                "commandResult",
+                {
+                    "schemaVersion": SCHEMA_VERSION,
+                    "contractVersion": CONTRACT_VERSION,
+                    "instanceId": instance_id,
+                    "command": "refresh",
+                    "correlationId": correlation_id,
+                    "result": result,
+                },
+            )
+        except PermissionError:
+            return _error("request_denied", "The request is not allowed.", 403)
+        except AuthenticationFailed:
+            return _error("authentication_failed", "Authentication failed.", 401)
+        except ValueError:
+            return _error("invalid_request", "The request is not valid.", 400)
+        except StaleCommandScope:
+            return _error("scope_conflict", "The command scope is stale.", 409)
+        except (RemoteProjectionFailed, RuntimeCallTimedOut):
+            return _error("runtime_unavailable", "The runtime is unavailable.", 503, retryable=True)
+        except Exception:
+            return _error("runtime_unavailable", "The runtime is unavailable.", 503, retryable=True)
+
     async def preflight(request: Request) -> Response:
         origins = request.headers.getlist("origin")
         methods = request.headers.getlist("access-control-request-method")
@@ -549,6 +677,35 @@ def build_development_gateway_application(
             },
         )
 
+    async def command_preflight(request: Request) -> Response:
+        origins = request.headers.getlist("origin")
+        methods = request.headers.getlist("access-control-request-method")
+        requested_headers = request.headers.getlist("access-control-request-headers")
+        normalized = {
+            item.strip().lower()
+            for value in requested_headers
+            for item in value.split(",")
+            if item.strip()
+        }
+        if (
+            request.headers.getlist("host") != [gateway_host]
+            or origins != [config.app_origin]
+            or methods != ["POST"]
+            or normalized != {"authorization", "content-type"}
+        ):
+            return _error("request_denied", "The request is not allowed.", 403)
+        return Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": config.app_origin,
+                "Access-Control-Allow-Methods": "POST",
+                "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                "Vary": "Origin",
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
     async def absent(request: Request) -> JSONResponse:
         try:
             authorize(request)
@@ -568,6 +725,7 @@ def build_development_gateway_application(
         finally:
             await asyncio.gather(
                 snapshot_calls.close(),
+                command_calls.close(),
                 snapshot_availability_calls.close(),
                 discovery_availability_calls.close(),
             )
@@ -576,8 +734,15 @@ def build_development_gateway_application(
         routes=[
             Route("/v1/instances", instances, methods=["GET"]),
             Route("/v1/instances/{stage}/{slug}/snapshot", snapshot, methods=["GET"]),
+            Route("/v1/instances/{stage}/{slug}/commands/refresh", refresh, methods=["POST"]),
+            Route("/v1/instances/{stage}/{slug}/commands/{command}", absent, methods=["POST"]),
             Route("/v1/instances", preflight, methods=["OPTIONS"]),
             Route("/v1/instances/{stage}/{slug}/snapshot", preflight, methods=["OPTIONS"]),
+            Route(
+                "/v1/instances/{stage}/{slug}/commands/refresh",
+                command_preflight,
+                methods=["OPTIONS"],
+            ),
             Route("/{path:path}", absent, methods=["GET"]),
             Route("/{path:path}", absent_preflight, methods=["OPTIONS"]),
         ],
@@ -585,7 +750,12 @@ def build_development_gateway_application(
     )
 
     async def cors_and_read_only(request: Request, call_next):
-        if request.method not in {"GET", "OPTIONS"}:
+        is_command = (
+            request.url.path.startswith("/v1/instances/") and "/commands/" in request.url.path
+        )
+        if request.method not in {"GET", "OPTIONS"} and not (
+            request.method == "POST" and is_command
+        ):
             response = _error("read_only_profile", "The gateway is read-only.", 405)
         else:
             response = await call_next(request)

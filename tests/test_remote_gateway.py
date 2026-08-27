@@ -22,6 +22,7 @@ APP_ORIGIN = "https://app.dev.beadhive.cloud"
 GATEWAY_ORIGIN = "https://gateway.dev.beadhive.cloud"
 INSTANCE_ID = "dev/demo"
 SUBJECT = "user_dev_demo"
+CORRELATION_ID = "123e4567-e89b-42d3-a456-426614174000"
 
 
 def _keys() -> tuple[RSAKey, RSAKey]:
@@ -91,6 +92,15 @@ def _snapshot_reader(value: dict[str, object]):
         return value
 
     return read
+
+
+def _refresh_reader(value: dict[str, object]):
+    async def refresh(expected_revision: str, correlation_id: str) -> dict[str, object]:
+        assert expected_revision == "sha256:" + "a" * 64
+        assert correlation_id == CORRELATION_ID
+        return value
+
+    return refresh
 
 
 def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
@@ -196,6 +206,214 @@ def test_authorized_subject_discovers_only_dev_demo_and_reads_redacted_snapshot(
     }
     assert discovery.headers["access-control-allow-origin"] == APP_ORIGIN
     assert snapshot.headers["cache-control"] == "no-store"
+
+
+def test_authorized_subject_invokes_advertised_refresh_and_receives_correlated_result() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    verifier = remote_gateway.ClerkTokenVerifier(config=config, key=public_key)
+    instance = remote_gateway.RemoteInstance(
+        display_name="Development demo",
+        authorized_subjects=frozenset({SUBJECT}),
+        snapshot=_read_snapshot,
+        online=_online,
+        refresh=_refresh_reader(
+            {
+                "status": "completed",
+                "revision": "sha256:" + "b" * 64,
+                "privatePath": "/Users/private/repository",
+                "transcript": "must not cross the remote boundary",
+            }
+        ),
+    )
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=verifier,
+        registry=remote_gateway.DevelopmentInstanceRegistry(instances={INSTANCE_ID: instance}),
+    )
+
+    async def action(client):
+        discovery = await client.get(
+            "/v1/instances", params={"limit": "50"}, headers=_headers(_token(private_key))
+        )
+        result = await client.post(
+            "/v1/instances/dev/demo/commands/refresh",
+            headers=_headers(_token(private_key)),
+            json={
+                "schemaVersion": 1,
+                "correlationId": CORRELATION_ID,
+                "expectedRevision": "sha256:" + "a" * 64,
+            },
+        )
+        return discovery, result
+
+    discovery, result = _exercise(app, action)
+    assert discovery.json()["items"][0]["capabilities"] == ["snapshot", "refresh"]
+    assert result.status_code == 200
+    assert result.json() == {
+        "schemaVersion": 1,
+        "contractVersion": "gateway.v1",
+        "instanceId": "dev/demo",
+        "command": "refresh",
+        "correlationId": CORRELATION_ID,
+        "result": {"status": "completed", "revision": "sha256:" + "b" * 64},
+    }
+    assert remote_gateway.remote_payload_is_allowlisted("commandResult", result.json())
+    assert "/Users/" not in str(result.json())
+    assert "transcript" not in str(result.json())
+    assert "prod" not in str(result.json()).lower()
+
+
+def test_refresh_reauthorizes_scope_and_fails_closed_for_hidden_stale_and_revoked_access() -> None:
+    private_key, public_key = _keys()
+    calls = 0
+
+    async def stale_refresh(_expected_revision: str, _correlation_id: str):
+        nonlocal calls
+        calls += 1
+        raise remote_gateway.StaleCommandScope
+
+    def app_for(*, subjects=frozenset({SUBJECT}), revoked=frozenset(), refresh=stale_refresh):
+        config = remote_gateway.DevelopmentGatewayConfig(
+            issuer=ISSUER,
+            audience=AUDIENCE,
+            app_origin=APP_ORIGIN,
+            gateway_origin=GATEWAY_ORIGIN,
+        )
+        return remote_gateway.build_development_gateway_application(
+            config=config,
+            verifier=remote_gateway.ClerkTokenVerifier(
+                config=config, key=public_key, revoked_subjects=revoked
+            ),
+            registry=remote_gateway.DevelopmentInstanceRegistry(
+                instances={
+                    INSTANCE_ID: remote_gateway.RemoteInstance(
+                        display_name="Development demo",
+                        authorized_subjects=subjects,
+                        snapshot=_read_snapshot,
+                        online=_online,
+                        refresh=refresh,
+                    )
+                }
+            ),
+        )
+
+    body = {
+        "schemaVersion": 1,
+        "correlationId": CORRELATION_ID,
+        "expectedRevision": "sha256:" + "a" * 64,
+    }
+
+    async def post(client, *, path="/v1/instances/dev/demo/commands/refresh"):
+        return await client.post(path, headers=_headers(_token(private_key)), json=body)
+
+    stale = _exercise(app_for(), post)
+    hidden = _exercise(app_for(refresh=None), post)
+    missing = _exercise(
+        app_for(),
+        lambda client: post(client, path="/v1/instances/dev/demo/commands/missing"),
+    )
+    unauthorized = _exercise(app_for(subjects=frozenset()), post)
+    revoked = _exercise(app_for(revoked=frozenset({SUBJECT})), post)
+
+    assert stale.status_code == 409
+    assert stale.json() == {
+        "error": {
+            "code": "scope_conflict",
+            "message": "The command scope is stale.",
+            "retryable": False,
+        }
+    }
+    assert hidden.status_code == missing.status_code == unauthorized.status_code == 404
+    assert hidden.json() == missing.json() == unauthorized.json()
+    assert revoked.status_code == 401
+    assert calls == 1
+
+
+def test_refresh_rechecks_changed_instance_policy_after_discovery() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    instances = {
+        INSTANCE_ID: remote_gateway.RemoteInstance(
+            display_name="Development demo",
+            authorized_subjects=frozenset({SUBJECT}),
+            snapshot=_read_snapshot,
+            online=_online,
+            refresh=_refresh_reader({"status": "completed", "revision": "sha256:" + "b" * 64}),
+        )
+    }
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(instances=instances),
+    )
+
+    async def action(client):
+        token = _token(private_key)
+        discovery = await client.get(
+            "/v1/instances", params={"limit": "50"}, headers=_headers(token)
+        )
+        instances[INSTANCE_ID] = remote_gateway.RemoteInstance(
+            display_name="Development demo",
+            authorized_subjects=frozenset(),
+            snapshot=_read_snapshot,
+            online=_online,
+            refresh=None,
+        )
+        command = await client.post(
+            "/v1/instances/dev/demo/commands/refresh",
+            headers=_headers(token),
+            json={
+                "schemaVersion": 1,
+                "correlationId": CORRELATION_ID,
+                "expectedRevision": "sha256:" + "a" * 64,
+            },
+        )
+        return discovery, command
+
+    discovery, command = _exercise(app, action)
+    assert discovery.json()["items"][0]["capabilities"] == ["snapshot", "refresh"]
+    assert command.status_code == 404
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"schemaVersion": 1, "correlationId": "bad/id", "expectedRevision": "sha256:" + "a" * 64},
+        {"schemaVersion": 1, "correlationId": CORRELATION_ID, "expectedRevision": "main"},
+        {
+            "schemaVersion": 1,
+            "correlationId": CORRELATION_ID,
+            "expectedRevision": "sha256:" + "a" * 64,
+            "secret": "forbidden",
+        },
+    ],
+)
+def test_refresh_input_is_an_exact_non_disclosing_wire_shape(body) -> None:
+    private_key, public_key = _keys()
+    app = _app(public_key)
+
+    async def action(client):
+        return await client.post(
+            "/v1/instances/dev/demo/commands/refresh",
+            headers=_headers(_token(private_key)),
+            json=body,
+        )
+
+    response = _exercise(app, action)
+    assert response.status_code in {400, 404}
+    assert set(response.json()) == {"error"}
 
 
 @pytest.mark.parametrize(
@@ -339,6 +557,36 @@ def test_exact_cors_preflight_and_response_allowlists_are_closed() -> None:
     assert "/Users/" not in leaked
     assert "must-not-leak" not in leaked
     assert "private-runtime" not in leaked
+
+
+def test_refresh_cors_preflight_allows_only_post_authorization_and_json() -> None:
+    _, public_key = _keys()
+    app = _app(public_key)
+
+    async def action(client):
+        allowed = await client.options(
+            "/v1/instances/dev/demo/commands/refresh",
+            headers={
+                "Origin": APP_ORIGIN,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type, Authorization",
+            },
+        )
+        widened = await client.options(
+            "/v1/instances/dev/demo/commands/refresh",
+            headers={
+                "Origin": APP_ORIGIN,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "Content-Type, Authorization, X-Private",
+            },
+        )
+        return allowed, widened
+
+    allowed, widened = _exercise(app, action)
+    assert allowed.status_code == 204
+    assert allowed.headers["access-control-allow-methods"] == "POST"
+    assert allowed.headers["access-control-allow-headers"] == "Authorization, Content-Type"
+    assert widened.status_code == 403
 
 
 def test_development_profile_refuses_a_different_clerk_development_issuer() -> None:
