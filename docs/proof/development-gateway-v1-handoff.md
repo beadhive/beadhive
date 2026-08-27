@@ -8,17 +8,17 @@ reference below is immutable; no branch name is a deployment input.
 
 | Field | Exact value |
 | --- | --- |
-| Git commit | `a495833aeb07c1c69c56f6813aefae6a88d8175d` |
-| Git tree | `c5238f4775d7a764d840a213b087a22ed4486b42` |
+| Git commit | `3a43e045bbfa07d9fe1e98e50d1e89ed6f1c2fba` |
+| Git tree | `39433e8572d5d3f7a07dea400731d5333424a7e7` |
 | Wheel | `beadhive-0.15.1-py3-none-any.whl` |
-| Wheel SHA-256 | `b022bd6fea0ab21a430ddef0cbacff349e26f24dd2e8563a03706073e76ca195` |
-| Wheel bytes | `1372257` |
+| Wheel SHA-256 | `f1f069560dda55ae859752fb7e5f758c4e0acfdc26ce02e54e0c184ee0567509` |
+| Wheel bytes | `1372265` |
 | Contract | `gateway.v1`; conformance schema 1 |
 | Logical instance | `dev/demo` only |
 
 The wheel was built twice from the candidate commit with
-`SOURCE_DATE_EPOCH=1787812143 uv build --wheel`. Both byte streams produced the recorded digest.
-The source tree passed `just check`: 6,557 passed, 41 skipped, zero failed. The focused gateway and
+`SOURCE_DATE_EPOCH=1787813110 uv build --wheel`. Both byte streams produced the recorded digest.
+The source tree passed `just check`: 6,560 passed, 41 skipped, zero failed. The focused gateway and
 real loopback runtime profile contributed 56 passing tests.
 
 ## Conformance map

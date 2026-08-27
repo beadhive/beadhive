@@ -21,7 +21,7 @@ def test_gateway_handoff_is_immutable_exact_and_infra_targeted() -> None:
     assert re.fullmatch(r"[0-9a-f]{40}", candidate["tree"])
     assert re.fullmatch(r"[0-9a-f]{64}", candidate["sha256"])
     assert candidate["artifact"] == "beadhive-0.15.1-py3-none-any.whl"
-    assert candidate["bytes"] == 1_372_257
+    assert candidate["bytes"] == 1_372_265
     assert record["conformance"]["failed"] == 0
     assert record["scans"] == {
         "encryptedDevelopmentValuesChecked": 3,
