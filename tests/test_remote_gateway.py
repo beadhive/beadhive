@@ -1,0 +1,392 @@
+"""Conformance coverage for the authenticated Development gateway profile."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+
+import httpx
+import pytest
+from cryptography.hazmat.primitives.asymmetric import rsa
+from joserfc import jwt
+from joserfc.jwk import RSAKey
+
+from beadhive import remote_gateway
+
+ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
+AUDIENCE = "beadhive-gateway-dev"
+APP_ORIGIN = "https://app.dev.beadhive.cloud"
+GATEWAY_ORIGIN = "https://gateway.dev.beadhive.cloud"
+INSTANCE_ID = "dev/demo"
+SUBJECT = "user_dev_demo"
+
+
+def _keys() -> tuple[RSAKey, RSAKey]:
+    private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    return RSAKey.import_key(private), RSAKey.import_key(private.public_key())
+
+
+def _token(private_key: RSAKey, **overrides: object) -> str:
+    claims: dict[str, object] = {
+        "iss": ISSUER,
+        "aud": AUDIENCE,
+        "sub": SUBJECT,
+        "exp": int(time.time()) + 300,
+    }
+    claims.update(overrides)
+    return jwt.encode({"alg": "RS256", "kid": "development-test"}, claims, private_key)
+
+
+def _snapshot() -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "revision": "sha256:" + "a" * 64,
+        "generatedAt": 1724716800000,
+        "workItems": [
+            {
+                "ref": {"hiveId": "github/beadhive/beadhive", "kind": "work-item", "id": "bh-1"},
+                "record": {
+                    "id": "bh-1",
+                    "title": "Development demo",
+                    "status": "open",
+                    "issueType": "task",
+                    "priority": 1,
+                    "labels": ["component:gateway"],
+                    "assignee": "dev/codex",
+                    "description": "must not cross the remote boundary",
+                },
+                "updatedAt": 1724716800000,
+                "revision": "private-revision",
+            }
+        ],
+        "agents": [
+            {
+                "ref": {"hiveId": "github/beadhive/beadhive", "kind": "agent-run", "id": "run-1"},
+                "state": "running",
+                "ownerSeat": "dev",
+                "startedAt": 1724716700000,
+                "updatedAt": 1724716800000,
+                "endedAt": None,
+                "runtime": "private-runtime",
+            }
+        ],
+        "workspaceRoot": "/Users/private/repository",
+        "secret": "must-not-leak",
+    }
+
+
+def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    verifier = remote_gateway.ClerkTokenVerifier(
+        config=config,
+        key=public_key,
+        revoked_subjects=revoked,
+    )
+    registry = remote_gateway.DevelopmentInstanceRegistry(
+        instances={
+            INSTANCE_ID: remote_gateway.RemoteInstance(
+                display_name="Development demo",
+                authorized_subjects=frozenset({SUBJECT}),
+                snapshot=_snapshot,
+            )
+        }
+    )
+    return remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=verifier,
+        registry=registry,
+    )
+
+
+def _exercise(app, action):
+    async def run():
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5000))
+        async with httpx.AsyncClient(transport=transport, base_url=GATEWAY_ORIGIN) as client:
+            return await action(client)
+
+    return asyncio.run(run())
+
+
+def _headers(token: str, *, origin: str = APP_ORIGIN) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}", "Origin": origin}
+
+
+def test_authorized_subject_discovers_only_dev_demo_and_reads_redacted_snapshot() -> None:
+    private_key, public_key = _keys()
+    app = _app(public_key)
+
+    async def action(client):
+        discovery = await client.get(
+            "/v1/instances", params={"limit": "50"}, headers=_headers(_token(private_key))
+        )
+        snapshot = await client.get(
+            "/v1/instances/dev/demo/snapshot", headers=_headers(_token(private_key))
+        )
+        return discovery, snapshot
+
+    discovery, snapshot = _exercise(app, action)
+    assert discovery.status_code == snapshot.status_code == 200
+    assert discovery.json() == {
+        "schemaVersion": 1,
+        "items": [
+            {
+                "id": "dev/demo",
+                "displayName": "Development demo",
+                "availability": "online",
+                "capabilities": ["snapshot"],
+            }
+        ],
+        "nextCursor": None,
+    }
+    assert snapshot.json() == {
+        "schemaVersion": 1,
+        "contractVersion": "gateway.v1",
+        "instanceId": "dev/demo",
+        "snapshot": {
+            "schemaVersion": 1,
+            "revision": "sha256:" + "a" * 64,
+            "generatedAt": 1724716800000,
+            "workItems": [
+                {
+                    "id": "bh-1",
+                    "title": "Development demo",
+                    "status": "open",
+                    "issueType": "task",
+                    "priority": 1,
+                    "labels": ["component:gateway"],
+                    "assignee": "dev/codex",
+                    "updatedAt": 1724716800000,
+                }
+            ],
+            "agents": [
+                {
+                    "id": "run-1",
+                    "state": "running",
+                    "ownerSeat": "dev",
+                    "startedAt": 1724716700000,
+                    "updatedAt": 1724716800000,
+                    "endedAt": None,
+                }
+            ],
+        },
+    }
+    assert discovery.headers["access-control-allow-origin"] == APP_ORIGIN
+    assert snapshot.headers["cache-control"] == "no-store"
+
+
+@pytest.mark.parametrize(
+    ("token_factory", "revoked"),
+    [
+        (lambda key: "", frozenset()),
+        (lambda key: _token(key, iss="https://attacker.clerk.accounts.dev"), frozenset()),
+        (lambda key: _token(key, aud="another-gateway"), frozenset()),
+        (lambda key: _token(key, exp=int(time.time()) - 1), frozenset()),
+        (lambda key: _token(key, sub=""), frozenset()),
+        (lambda key: _token(key), frozenset({SUBJECT})),
+    ],
+    ids=["signed-out", "wrong-issuer", "wrong-audience", "expired", "empty-subject", "revoked"],
+)
+def test_invalid_identities_share_one_non_disclosing_failure(token_factory, revoked) -> None:
+    private_key, public_key = _keys()
+    app = _app(public_key, revoked=revoked)
+    token = token_factory(private_key)
+
+    async def action(client):
+        headers = {"Origin": APP_ORIGIN}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return await client.get("/v1/instances", params={"limit": "50"}, headers=headers)
+
+    response = _exercise(app, action)
+    assert response.status_code == 401
+    assert response.json() == {
+        "error": {
+            "code": "authentication_failed",
+            "message": "Authentication failed.",
+            "retryable": False,
+        }
+    }
+    assert remote_gateway.remote_payload_is_allowlisted("error", response.json())
+
+
+def test_wrong_signature_origin_and_instance_fail_before_runtime_access() -> None:
+    private_key, public_key = _keys()
+    attacker_key, _ = _keys()
+    calls = 0
+
+    def guarded_snapshot():
+        nonlocal calls
+        calls += 1
+        return _snapshot()
+
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=guarded_snapshot,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        wrong_signature = await client.get(
+            "/v1/instances/dev/demo/snapshot", headers=_headers(_token(attacker_key))
+        )
+        wrong_origin = await client.get(
+            "/v1/instances/dev/demo/snapshot",
+            headers=_headers(_token(private_key), origin="https://attacker.example"),
+        )
+        wrong_instance = await client.get(
+            "/v1/instances/dev/private/snapshot", headers=_headers(_token(private_key))
+        )
+        other_stage_instance = await client.get(
+            "/v1/instances/other/demo/snapshot", headers=_headers(_token(private_key))
+        )
+        return wrong_signature, wrong_origin, wrong_instance, other_stage_instance
+
+    wrong_signature, wrong_origin, wrong_instance, other_stage_instance = _exercise(app, action)
+    assert (wrong_signature.status_code, wrong_signature.json()["error"]["code"]) == (
+        401,
+        "authentication_failed",
+    )
+    assert (wrong_origin.status_code, wrong_origin.json()["error"]["code"]) == (
+        403,
+        "request_denied",
+    )
+    for response in (wrong_instance, other_stage_instance):
+        assert response.status_code == 404
+        assert response.json()["error"] == {
+            "code": "resource_not_found",
+            "message": "The resource was not found.",
+            "retryable": False,
+        }
+    assert calls == 0
+
+
+def test_exact_cors_preflight_and_response_allowlists_are_closed() -> None:
+    private_key, public_key = _keys()
+    app = _app(public_key)
+
+    async def action(client):
+        allowed = await client.options(
+            "/v1/instances",
+            headers={
+                "Origin": APP_ORIGIN,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization",
+            },
+        )
+        widened = await client.options(
+            "/v1/instances",
+            headers={
+                "Origin": APP_ORIGIN,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "Authorization, X-Private",
+            },
+        )
+        discovery = await client.get(
+            "/v1/instances", params={"limit": "50"}, headers=_headers(_token(private_key))
+        )
+        snapshot = await client.get(
+            "/v1/instances/dev/demo/snapshot", headers=_headers(_token(private_key))
+        )
+        return allowed, widened, discovery, snapshot
+
+    allowed, widened, discovery, snapshot = _exercise(app, action)
+    assert allowed.status_code == 204
+    assert allowed.headers["access-control-allow-origin"] == APP_ORIGIN
+    assert allowed.headers["access-control-allow-headers"] == "Authorization"
+    assert (widened.status_code, widened.json()["error"]["code"]) == (403, "request_denied")
+    assert remote_gateway.remote_payload_is_allowlisted("instances", discovery.json())
+    assert remote_gateway.remote_payload_is_allowlisted("snapshot", snapshot.json())
+    leaked = str(snapshot.json())
+    assert "/Users/" not in leaked
+    assert "must-not-leak" not in leaked
+    assert "private-runtime" not in leaked
+
+
+def test_development_profile_refuses_a_different_clerk_development_issuer() -> None:
+    with pytest.raises(ValueError, match="exact Clerk Development issuer"):
+        remote_gateway.DevelopmentGatewayConfig(
+            issuer="https://attacker.clerk.accounts.dev",
+            audience=AUDIENCE,
+            app_origin=APP_ORIGIN,
+            gateway_origin=GATEWAY_ORIGIN,
+        )
+
+
+def test_unadvertised_capability_uses_the_stable_allowlisted_not_found_shape() -> None:
+    private_key, public_key = _keys()
+    app = _app(public_key)
+
+    async def action(client):
+        return await client.get(
+            "/v1/instances/dev/demo/commands",
+            headers=_headers(_token(private_key)),
+        )
+
+    response = _exercise(app, action)
+    assert response.status_code == 404
+    assert response.json() == {
+        "error": {
+            "code": "resource_not_found",
+            "message": "The resource was not found.",
+            "retryable": False,
+        }
+    }
+    assert remote_gateway.remote_payload_is_allowlisted("error", response.json())
+
+
+def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    incompatible = _snapshot()
+    incompatible["schemaVersion"] = 2
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=lambda: incompatible,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        return await client.get(
+            "/v1/instances/dev/demo/snapshot", headers=_headers(_token(private_key))
+        )
+
+    response = _exercise(app, action)
+    assert response.status_code == 503
+    assert response.json()["error"] == {
+        "code": "runtime_unavailable",
+        "message": "The runtime is unavailable.",
+        "retryable": True,
+    }
+    assert "must-not-leak" not in response.text
