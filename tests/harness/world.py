@@ -257,13 +257,41 @@ def progress(msg: str):
         print(msg, file=sys.stderr, flush=True)
 
 
-# Keep the harness's own git calls isolated: drop only the dir-pointing GIT_* vars (which would
-# override `-C`), but KEEP GIT_CONFIG_GLOBAL/GIT_CONFIG_SYSTEM so no real user config leaks.
-_DROP = {"GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"}
+# Keep the harness's own git calls isolated from every documented environment variable that can
+# redirect repository discovery, the index, refs, or object storage. This is deliberately narrower
+# than dropping all ``GIT_*``: the suite's isolated ``GIT_CONFIG_GLOBAL``/``GIT_CONFIG_SYSTEM``
+# must survive so tests can exercise excludes and identity without consulting operator config.
+_GIT_REPOSITORY_ENV = {
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_QUARANTINE_PATH",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+}
+
+
+def _is_git_repository_env(key: str) -> bool:
+    # Git's command-scope config transport can inject ``core.worktree``/``core.bare`` and thereby
+    # redirect an otherwise explicit fixture command. Preserve file-based isolated config above,
+    # but never inherit the caller's arbitrary ``-c`` payload into a fixture repository.
+    return (
+        key in _GIT_REPOSITORY_ENV
+        or key in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
+        or key.startswith("GIT_CONFIG_KEY_")
+        or key.startswith("GIT_CONFIG_VALUE_")
+    )
 
 
 def git_env() -> dict:
-    return {k: v for k, v in os.environ.items() if k not in _DROP}
+    return {key: value for key, value in os.environ.items() if not _is_git_repository_env(key)}
 
 
 def git(*args, cwd=None, check=True):

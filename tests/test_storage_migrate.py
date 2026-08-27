@@ -21,11 +21,7 @@ import typer
 
 from beadhive import registry, storage_migrate
 from beadhive.run import run as real_run
-
-# Real `git` calls below (bh-xsv3's gitignore fix) must not inherit repository-routing GIT_*
-# variables — this suite itself runs inside a real git worktree, and a stray
-# `GIT_DIR`/`GIT_WORK_TREE` would point a fixture call at THIS repo instead of its tmp_path one.
-_GIT_REPOSITORY_ENV = {"GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"}
+from harness.world import git_env
 
 # ---- fixtures -----------------------------------------------------------------
 
@@ -1119,13 +1115,8 @@ def test_hive_with_beads_but_no_store_is_not_would_migrate(tmp_path, monkeypatch
 # `_git` helper uses for exactly this reason.
 
 
-def _git_env():
-    """Keep isolated/config Git state; remove only variables that redirect the fixture repo."""
-    return {key: value for key, value in os.environ.items() if key not in _GIT_REPOSITORY_ENV}
-
-
 def _git(*args, cwd):
-    return real_run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_git_env())
+    return real_run(["git", *args], cwd=str(cwd), check=True, capture=True, env=git_env())
 
 
 def _init_tracked_gitignore(base, lines=None):
@@ -1161,20 +1152,58 @@ def test_tracked_gitignore_fixture_is_hermetic_under_global_excludes(tmp_path, m
     before = (global_config.read_bytes(), excludes.read_bytes())
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
     monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
-    monkeypatch.setenv("GIT_DIR", str(tmp_path / "operator-repo.git"))
+    operator_repo = tmp_path / "operator-repo"
+    operator_repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=operator_repo)
+    (operator_repo / "operator-only").write_text("must remain untouched\n")
+    _git("add", "--", "operator-only", cwd=operator_repo)
+    _git("commit", "-q", "-m", "operator baseline", cwd=operator_repo)
+    operator_git = operator_repo / ".git"
+    quarantine = operator_git / "objects" / "incoming-test"
+    quarantine.mkdir()
+    routing = {
+        "GIT_DIR": operator_git,
+        "GIT_WORK_TREE": operator_repo,
+        "GIT_INDEX_FILE": operator_git / "index",
+        "GIT_COMMON_DIR": operator_git,
+        "GIT_OBJECT_DIRECTORY": operator_git / "objects",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": operator_git / "objects",
+        "GIT_NAMESPACE": "operator-test",
+        "GIT_SHALLOW_FILE": operator_git / "shallow",
+        "GIT_QUARANTINE_PATH": quarantine,
+        "GIT_CEILING_DIRECTORIES": tmp_path,
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1",
+        "GIT_REPLACE_REF_BASE": "refs/operator-replace/",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.worktree",
+        "GIT_CONFIG_VALUE_0": operator_repo,
+        "GIT_CONFIG_PARAMETERS": f"'core.worktree'='{operator_repo}'",
+    }
+    before_operator = {
+        path.relative_to(operator_repo): path.read_bytes()
+        for path in operator_repo.rglob("*")
+        if path.is_file()
+    }
+    with monkeypatch.context() as hostile:
+        for key, value in routing.items():
+            hostile.setenv(key, str(value))
 
-    env = _git_env()
-    assert env["GIT_CONFIG_GLOBAL"] == str(global_config)
-    assert env["GIT_CONFIG_SYSTEM"] == os.devnull
-    assert "GIT_DIR" not in env
-    monkeypatch.delenv("GIT_DIR")
+        repo = tmp_path / "fixture-repo"
+        gi = _init_tracked_gitignore(repo)
+        assert _git("ls-files", "--error-unmatch", ".beads/.gitignore", cwd=repo).stdout.strip()
 
-    repo = tmp_path / "fixture-repo"
-    gi = _init_tracked_gitignore(repo)
-    assert _git("ls-files", "--error-unmatch", ".beads/.gitignore", cwd=repo).stdout.strip()
+    # The production helper still sees the poisoned global excludes, but not the intentionally
+    # fixture-only routing attack above. Its real Git-config behavior remains part of the verdict.
     assert storage_migrate._ensure_pre_migrate_gitignore(repo) is True
     assert "embeddeddolt.pre-migrate-*/" in gi.read_text()
     assert (global_config.read_bytes(), excludes.read_bytes()) == before
+    after_operator = {
+        path.relative_to(operator_repo): path.read_bytes()
+        for path in operator_repo.rglob("*")
+        if path.is_file()
+    }
+    assert after_operator == before_operator
 
 
 def test_ensure_pre_migrate_gitignore_is_a_noop_with_no_gitignore_file(tmp_path):
