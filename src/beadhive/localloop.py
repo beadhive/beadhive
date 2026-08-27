@@ -82,6 +82,7 @@ WHAT IS NOT HERE
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import os
@@ -2413,20 +2414,38 @@ class LocalRuntime:
 
     async def _shutdown_runs(self) -> None:
         """Reap every process before the private loop that owns its pipes is stopped."""
+        failures: list[str] = []
         for seat in tuple(self._runs.values()):
-            if seat.finished:
-                await _collect_with_timeout(seat, self.envelope_grace)
-                await reap_group(seat, grace=self.terminate_grace)
-                continue
-            await cancel(
-                seat,
-                rungs=(RUNG_SIGNAL,),
-                cooperative_grace=0.0,
-                hard_grace=0.0,
-                envelope_grace=self.envelope_grace,
-                terminate_grace=self.terminate_grace,
-            )
+            reap = None
+            try:
+                if seat.finished:
+                    await _collect_with_timeout(seat, self.envelope_grace)
+                    reap = await reap_group(seat, grace=self.terminate_grace)
+                else:
+                    result = await cancel(
+                        seat,
+                        rungs=(RUNG_SIGNAL,),
+                        cooperative_grace=0.0,
+                        hard_grace=0.0,
+                        envelope_grace=self.envelope_grace,
+                        terminate_grace=self.terminate_grace,
+                    )
+                    reap = result.reap
+            except Exception as exc:
+                failures.append(f"{seat.bead_id}: cleanup failed: {exc}")
+                try:
+                    reap = await reap_group(seat, grace=self.terminate_grace)
+                except Exception as reap_exc:
+                    failures.append(f"{seat.bead_id}: fallback reap failed: {reap_exc}")
+            if reap is not None and not reap.group_gone:
+                failures.append(f"{seat.bead_id}: process group {seat.pgid} survived cleanup")
         self._runs.clear()
+        if failures:
+            raise RuntimeError("; ".join(failures))
+
+    def _shutdown_timeout(self) -> float:
+        per_seat = 3 * max(self.envelope_grace, 0.0) + max(self.terminate_grace, 0.0) + 1.0
+        return max(per_seat * max(len(self._runs), 1), 1.0)
 
     def close(self) -> None:
         """Stop owned processes and join the private event-loop thread.
@@ -2439,17 +2458,35 @@ class LocalRuntime:
         loop, thread = self._loop, self._thread
         if loop is None:
             return
+        failure: BaseException | None = None
         try:
-            self._submit(self._shutdown_runs())
+            future = asyncio.run_coroutine_threadsafe(self._shutdown_runs(), loop)
+            try:
+                future.result(timeout=self._shutdown_timeout())
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                failure = RuntimeError("local runtime process cleanup timed out")
+                try:
+                    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(timeout=1.0)
+                except (concurrent.futures.TimeoutError, RuntimeError):
+                    pass
+            except BaseException as exc:
+                failure = exc
         finally:
             loop.call_soon_threadsafe(loop.stop)
             if thread is not None:
                 thread.join(timeout=max(self.terminate_grace + self.envelope_grace, 1.0))
             if thread is not None and thread.is_alive():
-                raise RuntimeError("local runtime event loop did not stop")
-            loop.close()
-            self._loop = None
-            self._thread = None
+                failure = RuntimeError("local runtime event loop did not stop")
+            else:
+                try:
+                    loop.close()
+                except BaseException as exc:
+                    failure = failure or exc
+                self._loop = None
+                self._thread = None
+        if failure is not None:
+            raise RuntimeError(f"local runtime close failed: {failure}") from failure
 
     def __enter__(self):
         return self

@@ -26,12 +26,12 @@ pytest_plugins = ("harness.watchdog_diagnostics",)
 @pytest.fixture(autouse=True)
 def _reject_local_runtime_thread_leaks():
     """Name the owning test when a LocalRuntime forgets to close its private loop."""
-    before = {thread.ident for thread in threading.enumerate() if thread.is_alive()}
+    before = {thread for thread in threading.enumerate() if thread.is_alive()}
     yield
     leaked = [
         thread
         for thread in threading.enumerate()
-        if thread.is_alive() and thread.ident not in before and thread.name == "bh-local-runtime"
+        if thread.is_alive() and thread not in before and thread.name == "bh-local-runtime"
     ]
     assert not leaked, "LocalRuntime leaked private event-loop thread(s); call close()"
 

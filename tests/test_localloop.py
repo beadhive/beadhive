@@ -26,6 +26,7 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1178,6 +1179,50 @@ def test_local_runtime_close_is_idempotent_and_joins_its_loop(tmp_path):
     assert not localloop.group_alive(seat.pgid)
     assert rt._loop is None
     assert rt._thread is None
+
+
+def test_local_runtime_close_is_bounded_when_shutdown_stalls(monkeypatch):
+    rt = localloop.LocalRuntime(terminate_grace=0.0, envelope_grace=0.0)
+    rt._ensure_loop()
+    thread = rt._thread
+
+    async def never_finishes():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(rt, "_shutdown_runs", never_finishes)
+    started = time.monotonic()
+
+    with pytest.raises(RuntimeError, match="cleanup timed out"):
+        rt.close()
+
+    assert time.monotonic() - started < 2.5
+    assert thread is not None and not thread.is_alive()
+
+
+def test_local_runtime_shutdown_attempts_every_seat_and_rejects_a_surviving_group(monkeypatch):
+    rt = localloop.LocalRuntime()
+    first = SimpleNamespace(finished=True, bead_id="first", pgid=101)
+    second = SimpleNamespace(finished=True, bead_id="second", pgid=202)
+    rt._runs = {"first": first, "second": second}
+    attempted = []
+
+    async def collect(_seat, _grace):
+        return ""
+
+    async def reap(seat, *, grace):
+        attempted.append(seat.bead_id)
+        if seat is first:
+            raise PermissionError("first cleanup denied")
+        return localloop.ReapResult(group_gone=False)
+
+    monkeypatch.setattr(localloop, "_collect_with_timeout", collect)
+    monkeypatch.setattr(localloop, "reap_group", reap)
+
+    with pytest.raises(RuntimeError, match=r"first.*cleanup failed.*second.*survived cleanup"):
+        asyncio.run(rt._shutdown_runs())
+
+    assert attempted == ["first", "first", "second"]
+    assert rt._runs == {}
 
 
 def test_local_runtime_strict_block_prevents_launch_with_full_remediation(tmp_path):
