@@ -481,9 +481,7 @@ def test_clerk_token_category_header_is_supported_and_strictly_validated() -> No
                 await client.get(
                     "/v1/instances",
                     params={"limit": "50"},
-                    headers=_headers(
-                        _token(private_key, header_overrides={"cat": category})
-                    ),
+                    headers=_headers(_token(private_key, header_overrides={"cat": category})),
                 )
             )
         return valid, invalid
