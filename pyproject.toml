@@ -23,6 +23,9 @@ dependencies = [
     # product APIs now rather than implementation details reached transitively through FastMCP.
     "starlette>=0.47,<2",
     "uvicorn>=0.34,<1",
+    # Remote gateway bearer validation is a direct security boundary. Restricting accepted JWS
+    # algorithms and validating Clerk claims must not depend on FastMCP's transitive graph.
+    "joserfc>=1.7,<2",
     # Env var config (config._Env): declares the BH_* prefix once (env_prefix) instead of
     # repeating it per var, with AliasChoices carrying the deprecated WS_* fallback names
     #. Already resolved transitively via fastmcp/pydantic; pinned direct
