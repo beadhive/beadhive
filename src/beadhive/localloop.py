@@ -2444,8 +2444,26 @@ class LocalRuntime:
             raise RuntimeError("; ".join(failures))
 
     def _shutdown_timeout(self) -> float:
-        per_seat = 3 * max(self.envelope_grace, 0.0) + max(self.terminate_grace, 0.0) + 1.0
+        # cancel may consume three envelope windows and reap_group has separate SIGTERM and
+        # SIGKILL grace windows. If ordinary cleanup raises late, its fallback reap can consume
+        # both termination windows again.
+        per_seat = 3 * max(self.envelope_grace, 0.0) + 4 * max(self.terminate_grace, 0.0) + 1.0
         return max(per_seat * max(len(self._runs), 1), 1.0)
+
+    async def _fallback_reap_runs(self) -> list[str]:
+        failures: list[str] = []
+        for seat in tuple(self._runs.values()):
+            try:
+                reap = await reap_group(seat, grace=self.terminate_grace)
+            except BaseException as exc:
+                failures.append(f"{seat.bead_id}: last-resort reap failed: {exc}")
+                continue
+            if not reap.group_gone:
+                failures.append(
+                    f"{seat.bead_id}: process group {seat.pgid} survived last-resort reap"
+                )
+        self._runs.clear()
+        return failures
 
     def close(self) -> None:
         """Stop owned processes and join the private event-loop thread.
@@ -2465,11 +2483,22 @@ class LocalRuntime:
                 future.result(timeout=self._shutdown_timeout())
             except concurrent.futures.TimeoutError:
                 future.cancel()
-                failure = RuntimeError("local runtime process cleanup timed out")
                 try:
                     asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(timeout=1.0)
                 except (concurrent.futures.TimeoutError, RuntimeError):
                     pass
+                fallback = asyncio.run_coroutine_threadsafe(self._fallback_reap_runs(), loop)
+                fallback_timeout = max(
+                    (2 * max(self.terminate_grace, 0.0) + 1.0) * max(len(self._runs), 1),
+                    1.0,
+                )
+                try:
+                    fallback_failures = fallback.result(timeout=fallback_timeout)
+                except concurrent.futures.TimeoutError:
+                    fallback.cancel()
+                    fallback_failures = ["last-resort process-group reap timed out"]
+                detail = f"; {'; '.join(fallback_failures)}" if fallback_failures else ""
+                failure = RuntimeError(f"local runtime process cleanup timed out{detail}")
             except BaseException as exc:
                 failure = exc
         finally:

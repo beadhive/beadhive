@@ -1181,10 +1181,14 @@ def test_local_runtime_close_is_idempotent_and_joins_its_loop(tmp_path):
     assert rt._thread is None
 
 
-def test_local_runtime_close_is_bounded_when_shutdown_stalls(monkeypatch):
-    rt = localloop.LocalRuntime(terminate_grace=0.0, envelope_grace=0.0)
-    rt._ensure_loop()
+def test_local_runtime_close_is_bounded_and_reaps_when_shutdown_stalls(tmp_path, monkeypatch):
+    inst = _instructions(tmp_path, "stalled-close", "STUB_HANG=true")
+    rt = localloop.LocalRuntime(
+        seat_command=f"{sys.executable} {STUB_SEAT}", terminate_grace=0.1, envelope_grace=0.0
+    )
+    rt.schedule("b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s")
     thread = rt._thread
+    seat = rt._runs["b1"]
 
     async def never_finishes():
         await asyncio.Event().wait()
@@ -1197,6 +1201,7 @@ def test_local_runtime_close_is_bounded_when_shutdown_stalls(monkeypatch):
 
     assert time.monotonic() - started < 2.5
     assert thread is not None and not thread.is_alive()
+    assert not localloop.group_alive(seat.pgid)
 
 
 def test_local_runtime_shutdown_attempts_every_seat_and_rejects_a_surviving_group(monkeypatch):
