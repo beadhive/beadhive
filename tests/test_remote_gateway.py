@@ -18,8 +18,8 @@ from beadhive import remote_gateway
 
 ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 AUDIENCE = "beadhive-gateway-dev"
-APP_ORIGIN = "https://app.dev.beadhive.cloud"
-GATEWAY_ORIGIN = "https://gateway.dev.beadhive.cloud"
+APP_ORIGIN = "https://app-dev.beadhive.cloud"
+GATEWAY_ORIGIN = "https://gateway-dev.beadhive.cloud"
 INSTANCE_ID = "dev/demo"
 SUBJECT = "user_dev_demo"
 CORRELATION_ID = "123e4567-e89b-42d3-a456-426614174000"

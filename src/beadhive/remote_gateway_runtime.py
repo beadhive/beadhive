@@ -25,8 +25,8 @@ from .remote_gateway import (
     build_development_gateway_application,
 )
 
-APP_ORIGIN = "https://app.dev.beadhive.cloud"
-GATEWAY_ORIGIN = "https://gateway.dev.beadhive.cloud"
+APP_ORIGIN = "https://app-dev.beadhive.cloud"
+GATEWAY_ORIGIN = "https://gateway-dev.beadhive.cloud"
 AUDIENCE = "beadhive-gateway-dev"
 LOOPBACK_ORIGIN = "http://127.0.0.1:8420"
 HIVE_ID = "github/beadhive/beadhive"

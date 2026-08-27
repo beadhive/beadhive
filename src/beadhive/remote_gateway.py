@@ -46,9 +46,9 @@ class DevelopmentGatewayConfig:
         _require_exact_https_origin(self.issuer, "issuer")
         _require_exact_https_origin(self.app_origin, "application origin")
         _require_exact_https_origin(self.gateway_origin, "gateway origin")
-        if self.app_origin != "https://app.dev.beadhive.cloud":
+        if self.app_origin != "https://app-dev.beadhive.cloud":
             raise ValueError("Development gateway requires the canonical Development app origin")
-        if self.gateway_origin != "https://gateway.dev.beadhive.cloud":
+        if self.gateway_origin != "https://gateway-dev.beadhive.cloud":
             raise ValueError("Development gateway requires the canonical Development host")
         if self.issuer != DEVELOPMENT_ISSUER:
             raise ValueError("Development gateway requires the exact Clerk Development issuer")

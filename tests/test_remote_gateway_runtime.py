@@ -139,7 +139,7 @@ def test_public_health_is_exact_host_only_and_origin_free() -> None:
         ) as client:
             healthy = await client.get("/healthz")
             browser = await client.get(
-                "/healthz", headers={"Origin": "https://app.dev.beadhive.cloud"}
+                "/healthz", headers={"Origin": "https://app-dev.beadhive.cloud"}
             )
             return healthy, browser
 

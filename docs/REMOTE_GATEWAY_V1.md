@@ -7,8 +7,8 @@ runtime. It is a separate application profile from the unchanged loopback Operat
 
 - issuer: `https://rapid-snail-6758.clerk.accounts.dev`
 - audience: `beadhive-gateway-dev`
-- browser origin: `https://app.dev.beadhive.cloud`
-- gateway origin: `https://gateway.dev.beadhive.cloud`
+- browser origin: `https://app-dev.beadhive.cloud`
+- gateway origin: `https://gateway-dev.beadhive.cloud`
 - logical instance: `dev/demo`
 - JWS algorithm: RS256
 
@@ -99,7 +99,7 @@ The local health probe is:
 
 ```sh
 curl --fail --silent --show-error \
-  --header 'Host: gateway.dev.beadhive.cloud' \
+  --header 'Host: gateway-dev.beadhive.cloud' \
   http://127.0.0.1:8787/healthz
 ```
 
