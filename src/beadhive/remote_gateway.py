@@ -8,8 +8,11 @@ small, explicitly allowlisted remote representation.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import Callable, Mapping
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit
@@ -73,6 +76,10 @@ class RemoteProjectionFailed(Exception):
     """An internal payload did not satisfy the remote disclosure contract."""
 
 
+class RuntimeCallTimedOut(Exception):
+    """A runtime source exceeded its isolated call budget."""
+
+
 @dataclass(frozen=True)
 class ClerkTokenVerifier:
     config: DevelopmentGatewayConfig
@@ -118,6 +125,68 @@ class RemoteInstance:
 
 
 @dataclass(frozen=True)
+class RuntimeCallPolicy:
+    """Concurrency bulkheads and per-call deadline for blocking runtime sources."""
+
+    deadline_seconds: float = 5.0
+    snapshot_concurrency: int = 4
+    availability_concurrency: int = 2
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.deadline_seconds, bool)
+            or not isinstance(self.deadline_seconds, int | float)
+            or not math.isfinite(self.deadline_seconds)
+            or not 0.01 <= self.deadline_seconds <= 60.0
+        ):
+            raise ValueError("runtime deadline must be between 0.01 and 60 seconds")
+        for value, label in (
+            (self.snapshot_concurrency, "snapshot concurrency"),
+            (self.availability_concurrency, "availability concurrency"),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 32:
+                raise ValueError(f"{label} must be between 1 and 32")
+
+
+class _BoundedRuntimeCallPool:
+    """Run blocking callbacks without sharing capacity or building an unbounded work queue."""
+
+    def __init__(self, *, concurrency: int, deadline_seconds: float, name: str) -> None:
+        self._deadline_seconds = deadline_seconds
+        self._slots = asyncio.Semaphore(concurrency)
+        self._executor = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix=name)
+
+    async def call(self, callback: Callable[[], Any]) -> Any:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._deadline_seconds
+        try:
+            async with asyncio.timeout_at(deadline):
+                await self._slots.acquire()
+        except TimeoutError as exc:
+            raise RuntimeCallTimedOut from exc
+
+        try:
+            future = loop.run_in_executor(self._executor, callback)
+        except Exception:
+            self._slots.release()
+            raise
+
+        # Shielding retains the slot until the underlying thread really exits. A timed-out
+        # request therefore cannot enqueue replacement work behind an indefinitely stuck call.
+        future.add_done_callback(lambda _future: self._slots.release())
+        try:
+            async with asyncio.timeout_at(deadline):
+                return await asyncio.shield(future)
+        except TimeoutError as exc:
+            raise RuntimeCallTimedOut from exc
+
+    def close(self) -> None:
+        # ASGI shutdown must not wait forever for a defective runtime callback. No work can be
+        # queued beyond the worker count because acquisition precedes submission.
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+@dataclass(frozen=True)
 class DevelopmentInstanceRegistry:
     instances: Mapping[str, RemoteInstance]
 
@@ -146,6 +215,7 @@ _AGENT_KEYS = frozenset({"id", "state", "ownerSeat", "startedAt", "updatedAt", "
 _MAX_WORK_ITEMS = 1_000
 _MAX_AGENTS = 256
 _MAX_LABELS = 64
+_MAX_JSON_SAFE_INTEGER = 2**53 - 1
 
 
 def _exact_keys(value: object, expected: frozenset[str]) -> bool:
@@ -158,7 +228,9 @@ def _string(value: object, *, maximum: int, optional: bool = False) -> bool:
 
 def _timestamp(value: object, *, optional: bool = False) -> bool:
     return (optional and value is None) or (
-        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= _MAX_JSON_SAFE_INTEGER
     )
 
 
@@ -337,9 +409,21 @@ def build_development_gateway_application(
     config: DevelopmentGatewayConfig,
     verifier: ClerkTokenVerifier,
     registry: DevelopmentInstanceRegistry,
+    runtime_calls: RuntimeCallPolicy | None = None,
 ) -> Starlette:
     """Build the remote Development read profile without mutating the loopback application."""
+    runtime_calls = runtime_calls or RuntimeCallPolicy()
     gateway_host = urlsplit(config.gateway_origin).netloc
+    availability_pool = _BoundedRuntimeCallPool(
+        concurrency=runtime_calls.availability_concurrency,
+        deadline_seconds=runtime_calls.deadline_seconds,
+        name="beadhive-gateway-availability",
+    )
+    snapshot_pool = _BoundedRuntimeCallPool(
+        concurrency=runtime_calls.snapshot_concurrency,
+        deadline_seconds=runtime_calls.deadline_seconds,
+        name="beadhive-gateway-snapshot",
+    )
 
     def authorize(request: Request) -> str:
         if request.headers.getlist("host") != [gateway_host]:
@@ -369,7 +453,7 @@ def build_development_gateway_application(
                     "id": instance_id,
                     "displayName": instance.display_name,
                     "availability": "online"
-                    if await asyncio.to_thread(instance.online)
+                    if await availability_pool.call(instance.online)
                     else "offline",
                     "capabilities": ["snapshot"],
                 }
@@ -390,11 +474,11 @@ def build_development_gateway_application(
             instance = registry.authorized(subject).get(instance_id)
             if instance is None:
                 return _error("resource_not_found", "The resource was not found.", 404)
-            if not await asyncio.to_thread(instance.online):
+            if not await availability_pool.call(instance.online):
                 return _error(
                     "runtime_unavailable", "The runtime is unavailable.", 503, retryable=True
                 )
-            projected = await asyncio.to_thread(_read_public_snapshot, instance)
+            projected = await snapshot_pool.call(lambda: _read_public_snapshot(instance))
             return _response(
                 "snapshot",
                 {
@@ -455,6 +539,14 @@ def build_development_gateway_application(
     async def absent_preflight(_request: Request) -> JSONResponse:
         return _error("request_denied", "The request is not allowed.", 403)
 
+    @asynccontextmanager
+    async def lifespan(_app: Starlette):
+        try:
+            yield
+        finally:
+            snapshot_pool.close()
+            availability_pool.close()
+
     app = Starlette(
         routes=[
             Route("/v1/instances", instances, methods=["GET"]),
@@ -463,7 +555,8 @@ def build_development_gateway_application(
             Route("/v1/instances/{stage}/{slug}/snapshot", preflight, methods=["OPTIONS"]),
             Route("/{path:path}", absent, methods=["GET"]),
             Route("/{path:path}", absent_preflight, methods=["OPTIONS"]),
-        ]
+        ],
+        lifespan=lifespan,
     )
 
     async def cors_and_read_only(request: Request, call_next):

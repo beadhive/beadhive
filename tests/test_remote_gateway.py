@@ -512,6 +512,40 @@ def test_snapshot_collection_bounds_fail_closed_before_serialization() -> None:
     assert response.json()["error"]["code"] == "runtime_unavailable"
 
 
+def test_snapshot_timestamp_outside_json_safe_integer_range_fails_closed() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    unsafe = _snapshot()
+    unsafe["generatedAt"] = 2**53
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=lambda: unsafe,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        return await client.get(
+            "/v1/instances/dev/demo/snapshot", headers=_headers(_token(private_key))
+        )
+
+    response = _exercise(app, action)
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "runtime_unavailable"
+
+
 def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
     private_key, public_key = _keys()
     config = remote_gateway.DevelopmentGatewayConfig(
@@ -561,3 +595,68 @@ def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
     discovery, snapshot, discovery_elapsed = _exercise(app, action)
     assert discovery.status_code == snapshot.status_code == 200
     assert discovery_elapsed < 0.25
+
+
+def test_hung_snapshot_saturation_times_out_without_starving_discovery() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    entered = threading.Event()
+    release = threading.Event()
+
+    def hung_snapshot():
+        entered.set()
+        release.wait(timeout=2)
+        return _snapshot()
+
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=hung_snapshot,
+                )
+            }
+        ),
+        runtime_calls=remote_gateway.RuntimeCallPolicy(
+            deadline_seconds=0.1,
+            snapshot_concurrency=1,
+            availability_concurrency=1,
+        ),
+    )
+
+    async def action(client):
+        token = _token(private_key)
+        first = asyncio.create_task(
+            client.get("/v1/instances/dev/demo/snapshot", headers=_headers(token))
+        )
+        for _ in range(50):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert entered.is_set()
+        second = asyncio.create_task(
+            client.get("/v1/instances/dev/demo/snapshot", headers=_headers(token))
+        )
+        discovery = await asyncio.wait_for(
+            client.get("/v1/instances", params={"limit": "50"}, headers=_headers(token)),
+            timeout=0.25,
+        )
+        timed_out = await asyncio.gather(first, second)
+        return discovery, timed_out
+
+    try:
+        discovery, timed_out = _exercise(app, action)
+    finally:
+        release.set()
+
+    assert discovery.status_code == 200
+    assert [response.status_code for response in timed_out] == [503, 503]
+    assert all(response.json()["error"]["code"] == "runtime_unavailable" for response in timed_out)

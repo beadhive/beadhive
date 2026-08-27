@@ -24,7 +24,8 @@ registry receive no runtime access.
 - `GET /v1/instances/dev/demo/snapshot` returns a `gateway.v1` envelope containing snapshot
   schema version 1. Only the explicitly projected work-item and agent summary fields cross the
   remote boundary. The initial profile fails unavailable rather than serializing more than 1,000
-  work items, 256 agents, or 64 labels on one work item.
+  work items, 256 agents, or 64 labels on one work item. Millisecond timestamps are non-negative
+  integers no greater than JavaScript's exact integer limit (`2^53 - 1`).
 
 Both calls require `Authorization: Bearer <token>` and the exact Development `Origin`. Browser
 preflight permits only GET and Authorization. All responses are `no-store`; the profile exposes
@@ -41,3 +42,5 @@ internal exception.
 The executable conformance contract is in `tests/test_remote_gateway.py`; response construction
 is guarded by a recursive exact-value and wire-type `remote_payload_is_allowlisted` check before
 JSON serialization. Runtime source callbacks and projection run outside the ASGI event loop.
+Availability and snapshot calls use separate bounded worker pools, each call has a five-second
+deadline, and saturation fails unavailable without admitting an unbounded executor queue.
