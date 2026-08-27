@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "handoff": "bh-infra-lum.3",
+  "contractVersion": "gateway.v1",
+  "conformanceVersion": 1,
+  "instanceId": "dev/demo",
+  "candidate": {
+    "commit": "3a43e045bbfa07d9fe1e98e50d1e89ed6f1c2fba",
+    "tree": "39433e8572d5d3f7a07dea400731d5333424a7e7",
+    "artifact": "beadhive-0.15.1-py3-none-any.whl",
+    "sha256": "f1f069560dda55ae859752fb7e5f758c4e0acfdc26ce02e54e0c184ee0567509",
+    "bytes": 1372265,
+    "sourceDateEpoch": 1787813110
+  },
+  "conformance": {
+    "command": "just check",
+    "passed": 6560,
+    "skipped": 41,
+    "failed": 0,
+    "gatewayTests": 56,
+    "testFile": "tests/test_remote_gateway.py",
+    "runtimeTestFile": "tests/test_remote_gateway_runtime.py"
+  },
+  "scans": {
+    "encryptedDevelopmentValuesChecked": 3,
+    "encryptedDevelopmentValueMatches": 0,
+    "forbiddenStructuralMatches": 0,
+    "externalMutations": 0
+  }
+}

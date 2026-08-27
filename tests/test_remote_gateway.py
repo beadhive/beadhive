@@ -1346,6 +1346,47 @@ def test_discovery_rejects_non_boolean_availability() -> None:
     assert response.json()["error"]["code"] == "runtime_unavailable"
 
 
+def test_offline_runtime_is_disclosed_but_snapshot_fails_bounded() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+
+    async def offline() -> bool:
+        return False
+
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=_read_snapshot,
+                    online=offline,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        token = _token(private_key)
+        discovery = await client.get(
+            "/v1/instances", params={"limit": "50"}, headers=_headers(token)
+        )
+        snapshot = await client.get("/v1/instances/dev/demo/snapshot", headers=_headers(token))
+        return discovery, snapshot
+
+    discovery, snapshot = _exercise(app, action)
+    assert discovery.json()["items"][0]["availability"] == "offline"
+    assert snapshot.status_code == 503
+    assert snapshot.json()["error"]["code"] == "runtime_unavailable"
+
+
 def test_runtime_port_rejects_blocking_callbacks() -> None:
     with pytest.raises(TypeError, match="snapshot operation must be async"):
         remote_gateway.RemoteInstance(
