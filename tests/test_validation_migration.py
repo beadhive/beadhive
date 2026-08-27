@@ -18,6 +18,8 @@ from beadhive import (
     validation_records,
 )
 
+_REPO = Path(__file__).resolve().parents[1]
+
 
 def _git(repo: Path, *args: str) -> str:
     return subprocess.run(
@@ -461,10 +463,13 @@ def test_doctor_warns_for_exact_two_minor_legacy_window(tmp_path, monkeypatch):
     assert warning in warnings
 
 
-def test_compatibility_removal_tripwire_keeps_code_and_docs_in_lockstep():
-    source = Path("src/beadhive/validation_ledger.py").read_text()
-    triage = Path("src/beadhive/triage_store.py").read_text()
-    upgrading = Path("docs/UPGRADING.md").read_text()
+def test_compatibility_removal_tripwire_keeps_code_and_docs_in_lockstep(tmp_path, monkeypatch):
+    # xdist workers can execute this after tests that temporarily run from another checkout.
+    # Repository-shape assertions must not inherit the worker's process-global cwd.
+    monkeypatch.chdir(tmp_path)
+    source = (_REPO / "src/beadhive/validation_ledger.py").read_text()
+    triage = (_REPO / "src/beadhive/triage_store.py").read_text()
+    upgrading = (_REPO / "docs/UPGRADING.md").read_text()
     upgrading_words = " ".join(upgrading.split())
 
     assert 'LEGACY_LEDGER_FILENAME = "bh-validation-ledger.json"' in source
