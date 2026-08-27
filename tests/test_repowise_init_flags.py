@@ -18,10 +18,12 @@ from pathlib import Path
 
 import pytest
 
+from beadhive import repowise_plugin
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CONFIG_EXAMPLE = REPO_ROOT / "src" / "beadhive" / "templates" / "config.example.yaml"
 
-_EXAMPLE_RE = re.compile(r'run:\s*"(repowise init [^"]+)"')
+_EXAMPLE_RE = re.compile(r'run:\s*"(env REPOWISE_SKIP_EDITOR_SETUP=1 repowise init [^"]+)"')
 
 
 def _documented_repowise_cmd() -> str:
@@ -48,3 +50,17 @@ def test_documented_repowise_flags_are_accepted():
         f"installed repowise no longer accepts (bh-rcroq) — update the example (and any live "
         f"worktrees.init / worktree_init rule copied from it)."
     )
+
+
+def test_documented_repowise_command_is_noninteractive_and_editor_isolated():
+    tokens = shlex.split(_documented_repowise_cmd())
+
+    assert tokens[:3] == ["env", "REPOWISE_SKIP_EDITOR_SETUP=1", "repowise"]
+    assert "-y" in tokens
+    assert repowise_plugin._REQUIRED_INIT_FLAGS - {"--all", "--yes"} <= set(tokens)
+
+
+@pytest.mark.skipif(shutil.which("repowise") is None, reason="repowise not installed")
+def test_installed_repowise_satisfies_the_plugin_init_contract():
+    repowise_plugin.capabilities.cache_clear()
+    assert repowise_plugin.capability_error() is None

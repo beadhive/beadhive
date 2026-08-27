@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from ruamel.yaml import YAML
 from typer.testing import CliRunner
 
@@ -30,10 +31,14 @@ def test_capabilities_probe_init_help_not_version(monkeypatch):
         repowise_plugin.run,
         "run",
         lambda command, **kwargs: SimpleNamespace(
-            stdout="init options: --no-mcp-json --no-vscode", stderr=""
+            stdout=(
+                "init options: --mode --no-prose --no-claude-md --no-codex "
+                "--no-mcp-json --no-vscode --no-workspace --all --yes"
+            ),
+            stderr="",
         ),
     )
-    assert repowise_plugin.capabilities() == frozenset({"--no-mcp-json", "--no-vscode"})
+    assert repowise_plugin.capabilities() == repowise_plugin._REQUIRED_INIT_FLAGS
 
 
 def test_capability_error_is_actionable_for_stock_cli(monkeypatch):
@@ -44,7 +49,12 @@ def test_capability_error_is_actionable_for_stock_cli(monkeypatch):
         "run",
         lambda command, **kwargs: SimpleNamespace(stdout="init options: --mode", stderr=""),
     )
-    assert "missing --no-mcp-json, --no-vscode" in repowise_plugin.capability_error()
+    error = repowise_plugin.capability_error()
+    assert error is not None
+    assert "missing" in error
+    assert "--no-codex" in error
+    assert "--no-mcp-json" in error
+    assert "--no-workspace" in error
 
 
 def test_plugin_cli_help_is_registered(world):
@@ -80,7 +90,7 @@ def test_single_repo_index_uses_no_workspace_and_skips_editor_setup(monkeypatch,
     calls = []
     monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
     monkeypatch.setattr(
-        repowise_plugin, "capabilities", lambda: frozenset({"--no-mcp-json", "--no-vscode"})
+        repowise_plugin, "capabilities", lambda: repowise_plugin._REQUIRED_INIT_FLAGS
     )
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -102,7 +112,7 @@ def test_workspace_index_uses_exact_host_flags_without_no_workspace(monkeypatch,
     calls = []
     monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
     monkeypatch.setattr(
-        repowise_plugin, "capabilities", lambda: frozenset({"--no-mcp-json", "--no-vscode"})
+        repowise_plugin, "capabilities", lambda: repowise_plugin._REQUIRED_INIT_FLAGS
     )
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -159,6 +169,7 @@ def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
     (tmp_path / ".repowise" / "state.json").write_text(json.dumps({"last_sync_commit": "old"}))
     config_path = tmp_path / ".repowise" / "config.yaml"
     config_path.write_text("editor_files:\n  claude_md: false\n")
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda: None)
     monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "new")
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -240,6 +251,7 @@ def test_seed_uses_auto_detection_and_installs_overlay(monkeypatch, tmp_path):
         "version: 1\nrepos:\n- path: github/acme/widget\n  alias: widget\n"
     )
     calls = []
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda: None)
     monkeypatch.setattr(repowise_plugin, "_workspace", lambda cfg: workspace)
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -254,14 +266,35 @@ def test_seed_uses_auto_detection_and_installs_overlay(monkeypatch, tmp_path):
     assert "--seed-from" not in argv
     assert str(target) not in argv
     assert kwargs["cwd"] == target
+    assert kwargs["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
     assert (target / ".repowise-workspace").resolve() == overlay.resolve()
     manifest = YAML().load((target / ".repowise-workspace.yaml").read_text())
     assert manifest["repos"][0]["path"] == str(repo.resolve())
 
 
+def test_seed_refuses_unsupported_cli_before_invocation(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(
+        repowise_plugin,
+        "capability_error",
+        lambda: "repowise is present but missing --no-codex",
+    )
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match="missing --no-codex"):
+        repowise_plugin._seed_worktree({}, {}, main=tmp_path, branch="wt/x", target=tmp_path)
+
+    assert calls == []
+
+
 def test_seed_cleanly_skips_absent_host_overlay(monkeypatch, tmp_path):
     target = tmp_path / "worktree"
     target.mkdir()
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda: None)
     monkeypatch.setattr(repowise_plugin, "_workspace", lambda cfg: tmp_path / "missing")
     monkeypatch.setattr(
         repowise_plugin.run,

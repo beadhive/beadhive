@@ -20,6 +20,20 @@ from .identity import workspace_root
 
 cli = typer.Typer(no_args_is_help=True, help="repowise local codebase-index integration.")
 
+_REQUIRED_INIT_FLAGS = frozenset(
+    {
+        "--all",
+        "--mode",
+        "--no-claude-md",
+        "--no-codex",
+        "--no-mcp-json",
+        "--no-prose",
+        "--no-vscode",
+        "--no-workspace",
+        "--yes",
+    }
+)
+
 
 def _has_cli() -> bool:
     return shutil.which("repowise") is not None
@@ -35,21 +49,26 @@ def capabilities() -> frozenset[str]:
     except Exception:  # noqa: BLE001 - a capability probe must never break a hook
         return frozenset()
     help_text = f"{result.stdout}\n{result.stderr}"
-    return frozenset(flag for flag in ("--no-mcp-json", "--no-vscode") if flag in help_text)
+    return frozenset(flag for flag in _REQUIRED_INIT_FLAGS if flag in help_text)
 
 
 def capability_error() -> str | None:
     """Return an actionable reason when the configured plugin cannot be safely used."""
     if not _has_cli():
         return "repowise is not installed"
-    missing = sorted({"--no-mcp-json", "--no-vscode"} - capabilities())
+    missing = sorted(_REQUIRED_INIT_FLAGS - capabilities())
     if missing:
         return (
             "repowise is present but missing "
             + ", ".join(missing)
-            + "; install briancripe/repowise@feat/no-mcp-json-no-vscode"
+            + "; install briancripe/repowise@feat/no-mcp-json-no-vscode-flags"
         )
     return None
+
+
+def _require_init_capabilities() -> None:
+    if (error := capability_error()) is not None:
+        raise RuntimeError(f"unsupported repowise init capability: {error}")
 
 
 def enabled(cfg, entry) -> bool:
@@ -194,6 +213,7 @@ def _refresh_base(cfg, entry, *, main: Path, branch: str, target: Path, start_po
         typer.echo("• repowise: base index already current")
         return
 
+    _require_init_capabilities()
     started = time.monotonic()
     result = run.run(
         ["repowise", "update", str(main), "--index-only", "--no-workspace"],
@@ -228,6 +248,7 @@ def _install_workspace_overlay(cfg, target: Path) -> None:
 def _seed_worktree(cfg, entry, *, main: Path, branch: str, target: Path) -> None:
     """Let repowise auto-detect the linked worktree's validated base and seed from it."""
     del entry, main, branch
+    _require_init_capabilities()
     started = time.monotonic()
     result = run.run(
         ["repowise", "init", *_BASE_ARGS, "-y"],
