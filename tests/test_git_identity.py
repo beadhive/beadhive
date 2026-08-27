@@ -6,8 +6,8 @@ host): the VM passed all ten provisioning steps with an entirely empty global gi
 the human's config"; on a host with no human there is nothing to inherit.
 
 Isolation: the autouse ``_sandbox_global_git_config`` fixture (conftest) points
-``GIT_CONFIG_GLOBAL`` at an empty scratch file, so every ``git config --global`` read and write
-below is against that file and never the operator's own ``~/.gitconfig``.
+``GIT_CONFIG_GLOBAL`` at a scratch file with no identity, so every ``git config --global`` read
+and write below is against that file and never the operator's own ``~/.gitconfig``.
 """
 
 from __future__ import annotations

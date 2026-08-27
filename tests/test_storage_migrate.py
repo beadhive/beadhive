@@ -22,10 +22,10 @@ import typer
 from beadhive import registry, storage_migrate
 from beadhive.run import run as real_run
 
-# Real `git` calls below (bh-xsv3's gitignore fix) must not inherit an ambient GIT_* env var —
-# this suite itself runs inside a real git worktree, and a stray `GIT_DIR`/`GIT_WORK_TREE` would
-# point a "real" git call at THIS repo instead of the fixture's own tmp_path one.
-_CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+# Real `git` calls below (bh-xsv3's gitignore fix) must not inherit repository-routing GIT_*
+# variables — this suite itself runs inside a real git worktree, and a stray
+# `GIT_DIR`/`GIT_WORK_TREE` would point a fixture call at THIS repo instead of its tmp_path one.
+_GIT_REPOSITORY_ENV = {"GIT_DIR", "GIT_INDEX_FILE", "GIT_WORK_TREE"}
 
 # ---- fixtures -----------------------------------------------------------------
 
@@ -1119,8 +1119,13 @@ def test_hive_with_beads_but_no_store_is_not_would_migrate(tmp_path, monkeypatch
 # `_git` helper uses for exactly this reason.
 
 
+def _git_env():
+    """Keep isolated/config Git state; remove only variables that redirect the fixture repo."""
+    return {key: value for key, value in os.environ.items() if key not in _GIT_REPOSITORY_ENV}
+
+
 def _git(*args, cwd):
-    return real_run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_CLEAN_ENV)
+    return real_run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_git_env())
 
 
 def _init_tracked_gitignore(base, lines=None):
@@ -1134,9 +1139,42 @@ def _init_tracked_gitignore(base, lines=None):
     _git("init", "-q", "-b", "main", cwd=base)
     _git("config", "user.email", "test@example.com", cwd=base)
     _git("config", "user.name", "Test", cwd=base)
-    _git("add", "--", ".beads/.gitignore", cwd=base)
+    # This exact fixture file is intentionally tracked even when an operator's global excludes
+    # hide `.beads/*`. Do not disable ignores wholesale: production Git configuration still
+    # participates in every other fixture operation and verdict.
+    _git("add", "-f", "--", ".beads/.gitignore", cwd=base)
     _git("commit", "-q", "-m", "init", cwd=base)
     return gi
+
+
+def test_tracked_gitignore_fixture_is_hermetic_under_global_excludes(tmp_path, monkeypatch):
+    """An operator-wide `.beads/*` exclude cannot change fixture setup or its verdict.
+
+    The poison files live under this test's tmp_path: the fixture must neither consult nor
+    mutate the operator's repository or global Git state while proving the exact global-config
+    shape that exposed bh-idn2c.
+    """
+    excludes = tmp_path / "global-excludes"
+    excludes.write_text(".beads/*\n")
+    global_config = tmp_path / "global-gitconfig"
+    global_config.write_text(f"[core]\n\texcludesFile = {excludes}\n")
+    before = (global_config.read_bytes(), excludes.read_bytes())
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "operator-repo.git"))
+
+    env = _git_env()
+    assert env["GIT_CONFIG_GLOBAL"] == str(global_config)
+    assert env["GIT_CONFIG_SYSTEM"] == os.devnull
+    assert "GIT_DIR" not in env
+    monkeypatch.delenv("GIT_DIR")
+
+    repo = tmp_path / "fixture-repo"
+    gi = _init_tracked_gitignore(repo)
+    assert _git("ls-files", "--error-unmatch", ".beads/.gitignore", cwd=repo).stdout.strip()
+    assert storage_migrate._ensure_pre_migrate_gitignore(repo) is True
+    assert "embeddeddolt.pre-migrate-*/" in gi.read_text()
+    assert (global_config.read_bytes(), excludes.read_bytes()) == before
 
 
 def test_ensure_pre_migrate_gitignore_is_a_noop_with_no_gitignore_file(tmp_path):

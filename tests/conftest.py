@@ -180,10 +180,16 @@ def _sandbox_global_git_config(tmp_path_factory, monkeypatch):
 
     ``GIT_CONFIG_GLOBAL`` (not ``HOME``) is the lever, because it is surgical: it redirects
     only what ``--global`` reads and writes, leaving ``~/.ssh`` probing and every other
-    home-relative lookup honest. Seeded EMPTY so a test observes a bare host by default —
-    a test that wants an existing identity writes it into this file itself."""
-    cfg = tmp_path_factory.mktemp("git-global") / "gitconfig"
-    cfg.write_text("")
+    home-relative lookup honest. It has no identity, so a test observes a bare host by default;
+    its sole seed points ``core.excludesFile`` at an empty sibling file. Git otherwise falls back
+    to the operator's ``$XDG_CONFIG_HOME/git/ignore`` independently of ``GIT_CONFIG_GLOBAL``,
+    making hermetic fixture setup depend on personal ignore state (bh-idn2c). A test that wants
+    existing identity or excludes writes them into this isolated file itself."""
+    root = tmp_path_factory.mktemp("git-global")
+    cfg = root / "gitconfig"
+    excludes = root / "excludes"
+    excludes.write_text("")
+    cfg.write_text(f"[core]\n\texcludesFile = {excludes}\n")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
 
 
