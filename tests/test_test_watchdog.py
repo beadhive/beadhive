@@ -15,12 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 WATCHDOG = ROOT / "scripts" / "test-watchdog.py"
 
 
-def test_timeout_dumps_python_and_process_diagnostics_then_fails() -> None:
-    child = (
-        "import faulthandler,signal,time; "
-        "faulthandler.register(signal.SIGUSR1, all_threads=True); "
-        "time.sleep(300)"
-    )
+def test_timeout_reports_process_diagnostics_without_signaling_unregistered_python() -> None:
+    child = "import time; time.sleep(300)"
     started_at = time.monotonic()
     result = subprocess.run(
         [
@@ -47,7 +43,8 @@ def test_timeout_dumps_python_and_process_diagnostics_then_fails() -> None:
     assert elapsed < 3
     assert "TEST WATCHDOG TIMEOUT" in diagnostics
     assert "child process diagnostics" in diagnostics
-    assert "Current thread" in diagnostics
+    assert "requesting registered pytest stacks from 0 process(es)" in diagnostics
+    assert "no registered pytest stacks were captured" in diagnostics
 
 
 def test_child_failure_is_preserved_instead_of_turning_green() -> None:
@@ -66,6 +63,56 @@ def test_child_failure_is_preserved_instead_of_turning_green() -> None:
         timeout=5,
     )
     assert result.returncode == 17
+
+
+@pytest.mark.skipif(os.name != "posix", reason="SIGUSR1 diagnostics are POSIX-only")
+def test_xdist_timeout_reports_safe_active_tests_and_registered_stacks(tmp_path) -> None:
+    secret = "must-not-appear-in-watchdog-output"
+    probe = tmp_path / "test_probe.py"
+    probe.write_text(
+        "import time\n"
+        "import pytest\n\n"
+        f"@pytest.mark.parametrize('token', [{secret!r}])\n"
+        "def test_hangs(token):\n"
+        "    time.sleep(300)\n"
+    )
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join([str(ROOT / "tests"), env.get("PYTHONPATH", "")]).rstrip(
+        os.pathsep
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(WATCHDOG),
+            "--timeout",
+            "8",
+            "--grace",
+            "0.5",
+            "--",
+            sys.executable,
+            "-m",
+            "pytest",
+            "-q",
+            "-n",
+            "2",
+            "-p",
+            "harness.watchdog_diagnostics",
+            str(probe),
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=20,
+    )
+    diagnostics = result.stdout + result.stderr
+    assert result.returncode == 124
+    assert "active pytest tests" in diagnostics
+    assert "worker gw" in diagnostics
+    assert "test_probe.py::test_hangs" in diagnostics
+    assert "pytest stack diagnostics" in diagnostics
+    assert "test_hangs" in diagnostics
+    assert secret not in diagnostics
 
 
 @pytest.mark.skipif(os.name != "posix", reason="process-group cleanup is POSIX-only")

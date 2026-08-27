@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import faulthandler
 import getpass
 import os
-import signal
 import tempfile
 from pathlib import Path
 
@@ -20,6 +18,8 @@ from harness.world import (
     reap_dolt_server,
     sweep_orphaned_dolt_servers,
 )
+
+pytest_plugins = ("harness.watchdog_diagnostics",)
 
 
 def _pytest_tmp_root(config):
@@ -62,8 +62,6 @@ def pytest_configure(config):
     :func:`harness.world.sweep_orphaned_dolt_servers` for what it can and cannot catch. Runs at
     START as well as end because the leak this exists for is a run that never REACHED its end."""
     _sweep(config, "session start")
-    if hasattr(signal, "SIGUSR1"):
-        faulthandler.register(signal.SIGUSR1, all_threads=True, chain=False)
 
 
 def pytest_unconfigure(config):

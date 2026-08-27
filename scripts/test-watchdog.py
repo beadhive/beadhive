@@ -4,12 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 TIMEOUT_EXIT = 124
 
@@ -21,6 +24,14 @@ class ProcessInfo:
     state: str
     elapsed: str
     command: str
+
+
+@dataclass(frozen=True)
+class ActiveTest:
+    pid: int
+    worker: str
+    nodeid: str | None
+    signal_ready: bool
 
 
 def _process_table() -> list[ProcessInfo]:
@@ -60,7 +71,33 @@ def _descendants(root: int, rows: list[ProcessInfo]) -> list[ProcessInfo]:
     return ([root_row] if root_row is not None else []) + selected
 
 
-def _diagnose(process: subprocess.Popen[bytes]) -> None:
+def _active_tests(active_dir: Path, descendant_pids: set[int]) -> list[ActiveTest]:
+    active: list[ActiveTest] = []
+    for path in active_dir.glob("*.json"):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+            pid = int(value["pid"])
+            worker = str(value["worker"])
+            nodeid = value.get("nodeid")
+            signal_ready = value.get("signal_ready") is True
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            continue
+        if pid not in descendant_pids or path.name != f"{pid}.json":
+            continue
+        if nodeid is not None and not isinstance(nodeid, str):
+            continue
+        active.append(
+            ActiveTest(
+                pid=pid,
+                worker="".join(char for char in worker if char.isalnum() or char in "-_")[:32],
+                nodeid=nodeid[:512] if nodeid else None,
+                signal_ready=signal_ready,
+            )
+        )
+    return sorted(active, key=lambda item: (item.worker, item.pid))
+
+
+def _diagnose(process: subprocess.Popen[bytes], active_dir: Path) -> list[ActiveTest]:
     print(
         f"\n=== TEST WATCHDOG TIMEOUT: pid {process.pid} did not finish ===",
         file=sys.stderr,
@@ -76,18 +113,47 @@ def _diagnose(process: subprocess.Popen[bytes]) -> None:
             )
     else:
         print("  no live descendants found", file=sys.stderr)
+    active = _active_tests(active_dir, {row.pid for row in rows})
+    print("active pytest tests (parameter values omitted):", file=sys.stderr)
+    if active:
+        for item in active:
+            print(
+                f"  pid {item.pid} worker {item.worker or '?'}: {item.nodeid or 'idle'}",
+                file=sys.stderr,
+            )
+    else:
+        print("  no registered pytest processes", file=sys.stderr)
     if hasattr(signal, "SIGUSR1"):
-        python_rows = [row for row in rows if "python" in row.command.lower()]
+        registered = [item for item in active if item.signal_ready]
         print(
-            f"requesting Python all-thread stacks from {len(python_rows)} process(es)",
+            f"requesting registered pytest stacks from {len(registered)} process(es)",
             file=sys.stderr,
             flush=True,
         )
-        for row in python_rows:
+        for item in registered:
             try:
-                os.kill(row.pid, signal.SIGUSR1)
+                os.kill(item.pid, signal.SIGUSR1)
             except OSError:
                 pass
+    return active
+
+
+def _print_pytest_stacks(active_dir: Path, active: list[ActiveTest]) -> None:
+    print("pytest stack diagnostics (arguments and locals omitted):", file=sys.stderr)
+    printed = False
+    for item in active:
+        path = active_dir / f"{item.pid}.stack"
+        try:
+            stack = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if not stack:
+            continue
+        printed = True
+        print(f"--- pid {item.pid} worker {item.worker or '?'} ---", file=sys.stderr)
+        print(stack[-65536:], file=sys.stderr, end="" if stack.endswith("\n") else "\n")
+    if not printed:
+        print("  no registered pytest stacks were captured", file=sys.stderr)
 
 
 def _process_group_exists(process_group: int) -> bool:
@@ -143,20 +209,25 @@ def _stop(process: subprocess.Popen[bytes], grace: float, *, process_group: int 
 def run(command: list[str], *, timeout: float, grace: float) -> int:
     if not command:
         raise ValueError("a command is required after --")
-    process = subprocess.Popen(command, start_new_session=os.name == "posix")
-    process_group = process.pid if os.name == "posix" else None
-    try:
-        return process.wait(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        _diagnose(process)
-        time.sleep(grace)
-        _stop(process, grace, process_group=process_group)
-        print(f"test watchdog exiting nonzero ({TIMEOUT_EXIT}) after timeout", file=sys.stderr)
-        return TIMEOUT_EXIT
-    except KeyboardInterrupt:
-        print("test watchdog interrupted; terminating child process tree", file=sys.stderr)
-        _stop(process, grace, process_group=process_group)
-        return 130
+    with tempfile.TemporaryDirectory(prefix="bh-test-watchdog-") as active_root:
+        active_dir = Path(active_root)
+        child_env = os.environ.copy()
+        child_env["BH_TEST_ACTIVE_DIR"] = str(active_dir)
+        process = subprocess.Popen(command, start_new_session=os.name == "posix", env=child_env)
+        process_group = process.pid if os.name == "posix" else None
+        try:
+            return process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            active = _diagnose(process, active_dir)
+            time.sleep(grace)
+            _print_pytest_stacks(active_dir, active)
+            _stop(process, grace, process_group=process_group)
+            print(f"test watchdog exiting nonzero ({TIMEOUT_EXIT}) after timeout", file=sys.stderr)
+            return TIMEOUT_EXIT
+        except KeyboardInterrupt:
+            print("test watchdog interrupted; terminating child process tree", file=sys.stderr)
+            _stop(process, grace, process_group=process_group)
+            return 130
 
 
 def main() -> int:
