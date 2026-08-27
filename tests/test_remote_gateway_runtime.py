@@ -40,7 +40,7 @@ def _operator_app() -> Starlette:
             return JSONResponse({"action": "resnapshot"}, status_code=409)
 
         async def stream():
-            payload = json.dumps({"revision": "sha256:" + "b" * 64, "private": "hidden"})
+            payload = json.dumps({"revision": "beads-local-2", "private": "hidden"})
             yield f"event: operator-event\nid: {EPOCH}:2\ndata: {payload}\n\n"
 
         return StreamingResponse(stream(), media_type="text/event-stream")
@@ -88,7 +88,7 @@ def test_real_loopback_profile_maps_snapshot_refresh_and_retained_events() -> No
     assert events == [
         {
             "cursor": "123e4567-e89b-42d3-a456-426614174000:2",
-            "revision": "sha256:" + "b" * 64,
+            "revision": REVISION,
         }
     ]
     assert "private" not in str(events)

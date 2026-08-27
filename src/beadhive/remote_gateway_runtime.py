@@ -110,6 +110,8 @@ class LoopbackDemoRuntime:
                         payload = json.loads(line.removeprefix("data: "))
                         if not isinstance(payload, dict) or event_id is None:
                             raise RuntimeError("operator event is incompatible")
+                        current = await self.snapshot()
+                        revision = current.get("revision")
                         yield {
                             "cursor": _remote_cursor(
                                 {
@@ -117,7 +119,7 @@ class LoopbackDemoRuntime:
                                     "sequence": int(event_id.rsplit(":", 1)[1]),
                                 }
                             ),
-                            "revision": payload.get("revision"),
+                            "revision": revision,
                         }
                         event_id = None
             finally:
