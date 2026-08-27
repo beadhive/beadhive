@@ -13,7 +13,7 @@ import json
 import math
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -23,7 +23,7 @@ from joserfc import jwt
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 CONTRACT_VERSION = "gateway.v1"
@@ -86,12 +86,25 @@ class StaleCommandScope(Exception):
     """The runtime atomically refused a command against an old revision."""
 
 
+class StaleEventCursor(Exception):
+    """A stream cursor cannot be replayed and requires a fresh snapshot."""
+
+
+class EventRetentionGap(StaleEventCursor):
+    """The requested cursor predates the retained event window."""
+
+
+class ProducerEpochChanged(StaleEventCursor):
+    """The event producer restarted since the supplied cursor."""
+
+
 @dataclass(frozen=True)
 class ClerkTokenVerifier:
     config: DevelopmentGatewayConfig
     key: Any
     revoked_subjects: frozenset[str] = frozenset()
     now: Callable[[], float] = time.time
+    subject_is_revoked: Callable[[str], bool] = lambda _subject: False
 
     def verify(self, encoded: str) -> str:
         if not 1 <= len(encoded) <= 16_384:
@@ -107,7 +120,12 @@ class ClerkTokenVerifier:
             now = self.now()
             if issuer != self.config.issuer or audience != self.config.audience:
                 raise AuthenticationFailed
-            if not isinstance(subject, str) or not subject or subject in self.revoked_subjects:
+            if (
+                not isinstance(subject, str)
+                or not subject
+                or subject in self.revoked_subjects
+                or self.subject_is_revoked(subject)
+            ):
                 raise AuthenticationFailed
             if not isinstance(expires_at, int | float) or expires_at <= now:
                 raise AuthenticationFailed
@@ -129,6 +147,7 @@ class RemoteInstance:
     snapshot: Callable[[], Awaitable[Mapping[str, object]]]
     online: Callable[[], Awaitable[bool]]
     refresh: Callable[[str, str], Awaitable[Mapping[str, object]]] | None = None
+    events: Callable[[str], Awaitable[AsyncIterator[Mapping[str, object]]]] | None = None
 
     def __post_init__(self) -> None:
         for operation, label in ((self.snapshot, "snapshot"), (self.online, "online")):
@@ -136,6 +155,8 @@ class RemoteInstance:
                 raise TypeError(f"remote {label} operation must be async and cancellation-aware")
         if self.refresh is not None and not inspect.iscoroutinefunction(self.refresh):
             raise TypeError("remote refresh operation must be async and cancellation-aware")
+        if self.events is not None and not inspect.iscoroutinefunction(self.events):
+            raise TypeError("remote events operation must be async and cancellation-aware")
 
 
 @dataclass(frozen=True)
@@ -146,6 +167,8 @@ class RuntimeCallPolicy:
     snapshot_concurrency: int = 4
     availability_concurrency: int = 2
     command_concurrency: int = 2
+    stream_concurrency: int = 16
+    stream_reauthorize_seconds: float = 1.0
 
     def __post_init__(self) -> None:
         if (
@@ -155,10 +178,18 @@ class RuntimeCallPolicy:
             or not 0.01 <= self.deadline_seconds <= 60.0
         ):
             raise ValueError("runtime deadline must be between 0.01 and 60 seconds")
+        if (
+            isinstance(self.stream_reauthorize_seconds, bool)
+            or not isinstance(self.stream_reauthorize_seconds, int | float)
+            or not math.isfinite(self.stream_reauthorize_seconds)
+            or not 0.05 <= self.stream_reauthorize_seconds <= 30.0
+        ):
+            raise ValueError("stream reauthorization interval must be between 0.05 and 30 seconds")
         for value, label in (
             (self.snapshot_concurrency, "snapshot concurrency"),
             (self.availability_concurrency, "availability concurrency"),
             (self.command_concurrency, "command concurrency"),
+            (self.stream_concurrency, "stream concurrency"),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 32:
                 raise ValueError(f"{label} must be between 1 and 32")
@@ -229,6 +260,7 @@ _COMMAND_ENVELOPE_KEYS = frozenset(
 )
 _COMMAND_RESULT_KEYS = frozenset({"status", "revision"})
 _SNAPSHOT_KEYS = frozenset({"schemaVersion", "revision", "generatedAt", "workItems", "agents"})
+_STREAM_SNAPSHOT_KEYS = _SNAPSHOT_KEYS | {"eventCursor"}
 _WORK_ITEM_KEYS = frozenset(
     {"id", "title", "status", "issueType", "priority", "labels", "assignee", "updatedAt"}
 )
@@ -242,6 +274,10 @@ _CORRELATION_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
 )
 _REVISION = re.compile(r"sha256:[0-9a-f]{64}\Z")
+_EVENT_CURSOR = re.compile(
+    r"(?P<epoch>[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
+    r":(?P<sequence>0|[1-9][0-9]{0,15})\Z"
+)
 
 
 def _exact_keys(value: object, expected: frozenset[str]) -> bool:
@@ -320,7 +356,13 @@ def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
                 and item["id"] == DEVELOPMENT_INSTANCE_ID
                 and _string(item["displayName"], maximum=256)
                 and item["availability"] in ("online", "offline")
-                and item["capabilities"] in (["snapshot"], ["snapshot", "refresh"])
+                and item["capabilities"]
+                in (
+                    ["snapshot"],
+                    ["snapshot", "refresh"],
+                    ["snapshot", "events"],
+                    ["snapshot", "refresh", "events"],
+                )
                 for item in items
             )
         )
@@ -328,7 +370,9 @@ def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
         if not _exact_keys(payload, _ENVELOPE_KEYS):
             return False
         snapshot = payload["snapshot"]
-        if not _exact_keys(snapshot, _SNAPSHOT_KEYS):
+        if not (
+            _exact_keys(snapshot, _SNAPSHOT_KEYS) or _exact_keys(snapshot, _STREAM_SNAPSHOT_KEYS)
+        ):
             return False
         work_items = snapshot["workItems"]
         agents = snapshot["agents"]
@@ -345,6 +389,13 @@ def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
             and isinstance(agents, list)
             and len(agents) <= _MAX_AGENTS
             and all(_agent_is_allowlisted(item) for item in agents)
+            and (
+                "eventCursor" not in snapshot
+                or (
+                    isinstance(snapshot["eventCursor"], str)
+                    and _EVENT_CURSOR.fullmatch(snapshot["eventCursor"]) is not None
+                )
+            )
         )
     if kind == "commandResult":
         if not _exact_keys(payload, _COMMAND_ENVELOPE_KEYS):
@@ -383,7 +434,7 @@ def _error(code: str, message: str, status_code: int, *, retryable: bool = False
     )
 
 
-def _public_snapshot(raw: Mapping[str, object]) -> dict[str, object]:
+def _public_snapshot(raw: Mapping[str, object], *, with_events: bool) -> dict[str, object]:
     try:
         if not _schema_version(raw["schemaVersion"]):
             raise RemoteProjectionFailed("runtime snapshot is incompatible")
@@ -439,15 +490,21 @@ def _public_snapshot(raw: Mapping[str, object]) -> dict[str, object]:
             "workItems": work_items,
             "agents": agents,
         }
+        if with_events:
+            event_cursor = raw["eventCursor"]
+            if not isinstance(event_cursor, str) or _EVENT_CURSOR.fullmatch(event_cursor) is None:
+                raise RemoteProjectionFailed("runtime snapshot is incompatible")
+            public["eventCursor"] = event_cursor
     except (KeyError, TypeError) as exc:
         raise RemoteProjectionFailed("runtime snapshot is incompatible") from exc
-    if not _exact_keys(public, _SNAPSHOT_KEYS):
+    expected_keys = _STREAM_SNAPSHOT_KEYS if with_events else _SNAPSHOT_KEYS
+    if not _exact_keys(public, expected_keys):
         raise RemoteProjectionFailed("runtime snapshot is incompatible")
     return public
 
 
 async def _read_public_snapshot(instance: RemoteInstance) -> dict[str, object]:
-    return _public_snapshot(await instance.snapshot())
+    return _public_snapshot(await instance.snapshot(), with_events=instance.events is not None)
 
 
 async def _read_command_input(request: Request) -> dict[str, object]:
@@ -527,6 +584,13 @@ def build_development_gateway_application(
         deadline_seconds=runtime_calls.deadline_seconds,
         name="beadhive-gateway-command",
     )
+    stream_open_calls = _BoundedRuntimeCalls(
+        concurrency=runtime_calls.stream_concurrency,
+        deadline_seconds=runtime_calls.deadline_seconds,
+        name="beadhive-gateway-stream-open",
+    )
+    stream_slots = asyncio.Semaphore(runtime_calls.stream_concurrency)
+    active_streams: set[asyncio.Task[Any]] = set()
 
     def authorize(request: Request) -> str:
         if request.headers.getlist("host") != [gateway_host]:
@@ -550,11 +614,16 @@ def build_development_gateway_application(
 
     async def public_instance(instance_id: str, instance: RemoteInstance) -> dict[str, object]:
         availability = await read_availability(discovery_availability_calls, instance)
+        capabilities = ["snapshot"]
+        if instance.refresh is not None:
+            capabilities.append("refresh")
+        if instance.events is not None:
+            capabilities.append("events")
         return {
             "id": instance_id,
             "displayName": instance.display_name,
             "availability": "online" if availability else "offline",
-            "capabilities": ["snapshot"] + (["refresh"] if instance.refresh is not None else []),
+            "capabilities": capabilities,
         }
 
     async def instances(request: Request) -> JSONResponse:
@@ -647,6 +716,136 @@ def build_development_gateway_application(
         except Exception:
             return _error("runtime_unavailable", "The runtime is unavailable.", 503, retryable=True)
 
+    async def events(request: Request) -> Response:
+        try:
+            subject = authorize(request)
+            instance_id = f"{request.path_params['stage']}/{request.path_params['slug']}"
+            instance = registry.authorized(subject).get(instance_id)
+            if instance is None or instance.events is None:
+                return _error("resource_not_found", "The resource was not found.", 404)
+            if set(request.query_params) != {"cursor"}:
+                return _error("invalid_request", "The request is not valid.", 400)
+            cursors = request.query_params.getlist("cursor")
+            if len(cursors) != 1 or _EVENT_CURSOR.fullmatch(cursors[0]) is None:
+                return _error("invalid_request", "The request is not valid.", 400)
+            cursor = cursors[0]
+            match = _EVENT_CURSOR.fullmatch(cursor)
+            assert match is not None
+            epoch = match.group("epoch")
+            sequence = int(match.group("sequence"))
+            if stream_slots.locked():
+                return _error(
+                    "runtime_unavailable", "The runtime is unavailable.", 503, retryable=True
+                )
+            await stream_slots.acquire()
+            try:
+                source = await stream_open_calls.call(lambda: instance.events(cursor))
+            except BaseException:
+                stream_slots.release()
+                raise
+            if not hasattr(source, "__aiter__"):
+                stream_slots.release()
+                raise RemoteProjectionFailed("runtime event stream is incompatible")
+
+            async def stream():
+                nonlocal sequence
+                owner = asyncio.current_task()
+                if owner is not None:
+                    active_streams.add(owner)
+                iterator = None
+                next_event = None
+                try:
+                    iterator = source.__aiter__()
+                    next_event = asyncio.create_task(
+                        anext(iterator), name="beadhive-gateway-event-next"
+                    )
+                    while True:
+                        done, _ = await asyncio.wait(
+                            {next_event}, timeout=runtime_calls.stream_reauthorize_seconds
+                        )
+                        try:
+                            current_subject = authorize(request)
+                        except (AuthenticationFailed, PermissionError):
+                            return
+                        current = registry.authorized(current_subject).get(instance_id)
+                        if current is None or current.events is not instance.events:
+                            return
+                        if not done:
+                            continue
+                        try:
+                            raw = next_event.result()
+                        except StopAsyncIteration:
+                            return
+                        try:
+                            next_cursor = raw["cursor"]
+                            revision = raw["revision"]
+                        except (KeyError, TypeError):
+                            yield 'event: resnapshot-required\ndata: {"schemaVersion":1}\n\n'
+                            return
+                        next_match = (
+                            _EVENT_CURSOR.fullmatch(next_cursor)
+                            if isinstance(next_cursor, str)
+                            else None
+                        )
+                        if (
+                            next_match is None
+                            or next_match.group("epoch") != epoch
+                            or int(next_match.group("sequence")) != sequence + 1
+                            or not isinstance(revision, str)
+                            or _REVISION.fullmatch(revision) is None
+                        ):
+                            yield 'event: resnapshot-required\ndata: {"schemaVersion":1}\n\n'
+                            return
+                        sequence += 1
+                        data = json.dumps(
+                            {
+                                "schemaVersion": SCHEMA_VERSION,
+                                "contractVersion": CONTRACT_VERSION,
+                                "instanceId": instance_id,
+                                "cursor": next_cursor,
+                                "event": {
+                                    "type": "snapshot-invalidated",
+                                    "revision": revision,
+                                },
+                            },
+                            separators=(",", ":"),
+                        )
+                        next_event = asyncio.create_task(
+                            anext(iterator), name="beadhive-gateway-event-next"
+                        )
+                        yield f"id: {next_cursor}\nevent: snapshot-invalidated\ndata: {data}\n\n"
+                finally:
+                    try:
+                        if next_event is not None:
+                            if not next_event.done():
+                                next_event.cancel()
+                            await asyncio.gather(next_event, return_exceptions=True)
+                        close = getattr(iterator, "aclose", None)
+                        if close is not None:
+                            await close()
+                    finally:
+                        stream_slots.release()
+                        if owner is not None:
+                            active_streams.discard(owner)
+
+            return StreamingResponse(
+                stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-store",
+                    "X-Accel-Buffering": "no",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+        except PermissionError:
+            return _error("request_denied", "The request is not allowed.", 403)
+        except AuthenticationFailed:
+            return _error("authentication_failed", "Authentication failed.", 401)
+        except StaleEventCursor:
+            return _error("resnapshot_required", "A fresh snapshot is required.", 409)
+        except Exception:
+            return _error("runtime_unavailable", "The runtime is unavailable.", 503, retryable=True)
+
     async def preflight(request: Request) -> Response:
         origins = request.headers.getlist("origin")
         methods = request.headers.getlist("access-control-request-method")
@@ -723,9 +922,14 @@ def build_development_gateway_application(
         try:
             yield
         finally:
+            streams = tuple(active_streams)
+            for task in streams:
+                task.cancel()
+            await asyncio.gather(*streams, return_exceptions=True)
             await asyncio.gather(
                 snapshot_calls.close(),
                 command_calls.close(),
+                stream_open_calls.close(),
                 snapshot_availability_calls.close(),
                 discovery_availability_calls.close(),
             )
@@ -734,10 +938,12 @@ def build_development_gateway_application(
         routes=[
             Route("/v1/instances", instances, methods=["GET"]),
             Route("/v1/instances/{stage}/{slug}/snapshot", snapshot, methods=["GET"]),
+            Route("/v1/instances/{stage}/{slug}/events", events, methods=["GET"]),
             Route("/v1/instances/{stage}/{slug}/commands/refresh", refresh, methods=["POST"]),
             Route("/v1/instances/{stage}/{slug}/commands/{command}", absent, methods=["POST"]),
             Route("/v1/instances", preflight, methods=["OPTIONS"]),
             Route("/v1/instances/{stage}/{slug}/snapshot", preflight, methods=["OPTIONS"]),
+            Route("/v1/instances/{stage}/{slug}/events", preflight, methods=["OPTIONS"]),
             Route(
                 "/v1/instances/{stage}/{slug}/commands/refresh",
                 command_preflight,
