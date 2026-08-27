@@ -18,6 +18,10 @@ from beadhive.cli import app
 runner = CliRunner()
 
 
+def _option_help(flags):
+    return "Options:\n" + "\n".join(f"  {flag:<30} supported" for flag in flags)
+
+
 def test_disabled_by_default_and_binary_absence_is_inert(monkeypatch):
     monkeypatch.setattr(repowise_plugin.shutil, "which", lambda name: None)
 
@@ -28,17 +32,25 @@ def test_disabled_by_default_and_binary_absence_is_inert(monkeypatch):
 
 def test_capabilities_probe_init_help_not_version(monkeypatch):
     repowise_plugin.capabilities.cache_clear()
+    calls = []
     monkeypatch.setattr(repowise_plugin.shutil, "which", lambda name: "/bin/repowise")
     monkeypatch.setattr(
         repowise_plugin.run,
         "run",
-        lambda command, **kwargs: SimpleNamespace(
-            returncode=0,
-            stdout="init options: " + " ".join(repowise_plugin._REQUIRED_INIT_FLAGS),
-            stderr="",
+        lambda command, **kwargs: (
+            calls.append((command, kwargs))
+            or SimpleNamespace(
+                returncode=0, stdout=_option_help(repowise_plugin._REQUIRED_INIT_FLAGS), stderr=""
+            )
         ),
     )
     assert repowise_plugin.capabilities("init") == repowise_plugin._REQUIRED_INIT_FLAGS
+    assert calls == [
+        (
+            ["repowise", "init", "--help"],
+            {"check": False, "capture": True, "env": repowise_plugin._repowise_env()},
+        )
+    ]
 
 
 def test_capabilities_parse_exact_tokens_and_reject_failed_help(monkeypatch):
@@ -47,7 +59,7 @@ def test_capabilities_parse_exact_tokens_and_reject_failed_help(monkeypatch):
     results = {
         "init": SimpleNamespace(
             returncode=0,
-            stdout="options: --no-codex-config --mode-extra -y-extra",
+            stdout=_option_help({"--no-codex-config", "--mode-extra", "-y-extra"}),
             stderr="",
         ),
         "update": SimpleNamespace(returncode=2, stdout="options: --index-only", stderr="boom"),
@@ -63,6 +75,50 @@ def test_capabilities_parse_exact_tokens_and_reject_failed_help(monkeypatch):
     assert "update --help capability probe failed" in repowise_plugin.capability_error()
 
 
+def test_capabilities_ignore_removed_flags_mentioned_only_in_help_prose(monkeypatch, tmp_path):
+    repowise_plugin.capabilities.cache_clear()
+    calls = []
+    monkeypatch.setattr(repowise_plugin.shutil, "which", lambda name: "/bin/repowise")
+    results = {
+        "init": SimpleNamespace(
+            returncode=0,
+            stdout=_option_help(repowise_plugin._REQUIRED_INIT_FLAGS - {"--no-codex"})
+            + "\n  This build removed --no-codex; use editor defaults instead.\n",
+            stderr="",
+        ),
+        "update": SimpleNamespace(
+            returncode=0,
+            stdout=_option_help(repowise_plugin._REQUIRED_UPDATE_FLAGS - {"--index-only"})
+            + "\n  The deprecated --index-only spelling is no longer accepted.\n",
+            stderr="",
+        ),
+    }
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda command, **kwargs: calls.append(command) or results[command[1]],
+    )
+
+    assert "--no-codex" not in repowise_plugin.capabilities("init")
+    assert "--index-only" not in repowise_plugin.capabilities("update")
+    error = repowise_plugin.capability_error()
+    assert "init missing --no-codex" in error
+    assert "update missing --index-only" in error
+
+    with pytest.raises(RuntimeError, match=r"init missing --no-codex"):
+        repowise_plugin._seed_worktree({}, {}, main=tmp_path, branch="wt/x", target=tmp_path)
+
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "state.json").write_text(json.dumps({"last_sync_commit": "old"}))
+    monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "new")
+    with pytest.raises(RuntimeError, match=r"update missing --index-only"):
+        repowise_plugin._refresh_base(
+            {}, {}, main=tmp_path, branch="wt/x", target=tmp_path, start_point="base"
+        )
+
+    assert calls == [["repowise", "init", "--help"], ["repowise", "update", "--help"]]
+
+
 def test_capability_error_is_actionable_for_stock_cli(monkeypatch):
     repowise_plugin.capabilities.cache_clear()
     monkeypatch.setattr(repowise_plugin.shutil, "which", lambda name: "/bin/repowise")
@@ -70,7 +126,7 @@ def test_capability_error_is_actionable_for_stock_cli(monkeypatch):
         repowise_plugin.run,
         "run",
         lambda command, **kwargs: SimpleNamespace(
-            returncode=0, stdout="init options: --mode", stderr=""
+            returncode=0, stdout=_option_help({"--mode"}), stderr=""
         ),
     )
     error = repowise_plugin.capability_error()
@@ -101,6 +157,11 @@ def test_repowise_guard_environment_preserves_path_but_scrubs_routing_and_secret
     monkeypatch.setenv("GIT_WORK_TREE", "/operator/repo")
     monkeypatch.setenv("GITHUB_TOKEN", "secret")
     monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "access")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "secret")
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "/operator/hooks")
 
     env = repowise_plugin._repowise_env()
 
@@ -111,6 +172,11 @@ def test_repowise_guard_environment_preserves_path_but_scrubs_routing_and_secret
     assert "GIT_WORK_TREE" not in env
     assert "GITHUB_TOKEN" not in env
     assert "ANTHROPIC_API_KEY" not in env
+    assert "AWS_ACCESS_KEY_ID" not in env
+    assert "AWS_SECRET_ACCESS_KEY" not in env
+    assert "GIT_CONFIG_COUNT" not in env
+    assert "GIT_CONFIG_KEY_0" not in env
+    assert "GIT_CONFIG_VALUE_0" not in env
 
 
 def test_plugin_cli_help_is_registered(world):

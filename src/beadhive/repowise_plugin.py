@@ -38,17 +38,31 @@ _REQUIRED_INIT_FLAGS = frozenset(
 _REQUIRED_UPDATE_FLAGS = frozenset({"--index-only", "--no-workspace"})
 _REQUIRED_FLAGS = {"init": _REQUIRED_INIT_FLAGS, "update": _REQUIRED_UPDATE_FLAGS}
 _FLAG_TOKEN = re.compile(r"(?<![\w-])--?[A-Za-z0-9][A-Za-z0-9-]*")
+_OPTION_DECLARATION_ROW = re.compile(r"^  (?P<declarations>-\S(?:.*?\S)?) {2,}\S")
 
-_REPOSITORY_ROUTING_ENV = {
-    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-    "GIT_COMMON_DIR",
-    "GIT_DIR",
-    "GIT_INDEX_FILE",
-    "GIT_NAMESPACE",
-    "GIT_OBJECT_DIRECTORY",
-    "GIT_WORK_TREE",
+_OPERATIONAL_ENV = {
+    "COMSPEC",
+    "HOME",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "LANG",
+    "LANGUAGE",
+    "LOGNAME",
+    "NO_COLOR",
+    "PATH",
+    "PATHEXT",
+    "PYTHONIOENCODING",
+    "PYTHONUTF8",
+    "SYSTEMROOT",
+    "TEMP",
+    "TERM",
+    "TMP",
+    "TMPDIR",
+    "TZ",
+    "USER",
+    "USERPROFILE",
+    "WINDIR",
 }
-_SECRET_ENV_SUFFIXES = ("_API_KEY", "_PASSWORD", "_SECRET", "_TOKEN")
 
 
 def _repowise_env() -> dict[str, str]:
@@ -61,10 +75,19 @@ def _repowise_env() -> dict[str, str]:
     env = {
         key: value
         for key, value in os.environ.items()
-        if key not in _REPOSITORY_ROUTING_ENV and not key.upper().endswith(_SECRET_ENV_SUFFIXES)
+        if key in _OPERATIONAL_ENV or key.startswith("LC_")
     }
     env["REPOWISE_SKIP_EDITOR_SETUP"] = "1"
     return env
+
+
+def _option_flags(help_text: str) -> frozenset[str]:
+    """Parse only Click option declaration rows; prose may name removed/deprecated flags."""
+    flags = set()
+    for line in help_text.splitlines():
+        if match := _OPTION_DECLARATION_ROW.match(line):
+            flags.update(_FLAG_TOKEN.findall(match.group("declarations")))
+    return frozenset(flags)
 
 
 def _has_cli() -> bool:
@@ -79,13 +102,18 @@ def capabilities(command: str) -> frozenset[str] | None:
     if not _has_cli():
         return None
     try:
-        result = run.run(["repowise", command, "--help"], check=False, capture=True)
+        result = run.run(
+            ["repowise", command, "--help"],
+            check=False,
+            capture=True,
+            env=_repowise_env(),
+        )
     except Exception:  # noqa: BLE001 - a capability probe must never break a hook
         return None
     if result.returncode != 0:
         return None
     help_text = f"{result.stdout or ''}\n{result.stderr or ''}"
-    advertised = frozenset(_FLAG_TOKEN.findall(help_text))
+    advertised = _option_flags(help_text)
     return _REQUIRED_FLAGS[command] & advertised
 
 

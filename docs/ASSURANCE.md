@@ -197,9 +197,10 @@ headless/CI contract for suppressing machine-wide editor registration and user h
 project-local editor files, while `-y` keeps provisioning noninteractive. The environment guard
 is deliberately not replaced with the removed `--no-editor-setup` option: it is not advertised by
 the supported CLI and fails before indexing on the verified build.
-Managed repowise children inherit operational host settings such as `PATH`, but Beadhive removes
-ambient Git repository-routing variables and unrelated token/password/API-key values before
-launching the local no-prose indexer.
+Managed repowise children receive a positive allowlist of operational host settings (`PATH`, home,
+temporary-directory, locale, terminal, and cross-platform process variables) rather than the raw
+ambient environment. Git configuration injection, cloud/provider credentials, and unrelated
+token/password/API-key values therefore never reach the local no-prose indexer.
 
 **Codex used to be the exception, and no longer is (bh-lnrn).** It declares Apache-2.0 and passes
 the allowlist outright — it was shipped for exactly that reason. It is now excluded anyway, by
