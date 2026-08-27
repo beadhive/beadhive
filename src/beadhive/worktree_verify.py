@@ -829,6 +829,11 @@ def _impl_clean_checkout_unadmitted(
                 drop, config.work_value(cfg, entry, "validation_protocol", "none")
             )
             child_env = test_report.export(_color_neutral_env(otel.telemetry_neutral_env()), drop)
+            # This process already holds the host permit around the complete clean-checkout gate.
+            # Commands exercised by that gate may invoke bh again (including bh's own tests); a
+            # nested invocation must inherit the admission boundary rather than trying to acquire
+            # the same counting-semaphore slot and self-deadlocking at capacity one.
+            child_env["BH_VALIDATION_SLOTS"] = "0"
             if protocol_path is not None:
                 child_env[validation_records.PROTOCOL_RESULT_ENV] = str(protocol_path)
             try:

@@ -1394,9 +1394,9 @@ def test_provision_observaloop_skips_verify_leaf(tmp_path, monkeypatch):
 def test_clean_checkout_validation_env_is_telemetry_neutral(tmp_path, monkeypatch):
     """The clean-checkout validation child runs with telemetry scrubbed: no OTEL_* /
     BH_OBSERVALOOP_PROFILE leak from the parent (so submit's result can't depend on the operator's
-    otel config), OTEL_SDK_DISABLED forced on, and non-telemetry env (PATH) preserved — the bug
-    surfaced in where submit's validation inherited the worktree overlay
-    endpoint."""
+    otel config), OTEL_SDK_DISABLED forced on, nested validation admission disabled, and
+    non-telemetry env (PATH) preserved — the bugs surfaced when submit's validation inherited the
+    worktree overlay endpoint and when its own test suite self-deadlocked on the outer host slot."""
     cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
     monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4317")
     monkeypatch.setenv("OTEL_RESOURCE_ATTRIBUTES", "ws.hive=mr")
@@ -1429,6 +1429,7 @@ def test_clean_checkout_validation_env_is_telemetry_neutral(tmp_path, monkeypatc
     assert not any(k.startswith("OTEL_") and k != "OTEL_SDK_DISABLED" for k in env)
     assert "BH_OBSERVALOOP_PROFILE" not in env
     assert env["OTEL_SDK_DISABLED"] == "true"
+    assert env["BH_VALIDATION_SLOTS"] == "0"
     assert env["PATH"] == "/sentinel/bin"  # non-telemetry env preserved
 
 
