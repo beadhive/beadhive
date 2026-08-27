@@ -186,9 +186,10 @@ acting so accepting those terms is the user's own choice.
 The supported repowise build is the fork branch named above; the currently verified checkout
 reports `0.35.0`. The version alone is not the compatibility boundary: fork and stock builds have
 shared version strings while exposing different command surfaces. Beadhive therefore probes
-`repowise init --help` for every flag it invokes. `bh setup check`, `bh doctor`, and `bh hive
-ready` report the complete missing-flag set, and indexing is skipped instead of repeatedly running
-an unsupported command.
+both `repowise init --help` and `repowise update --help`, matches exact option tokens, and requires
+every spelling it invokes. A failed help probe is unsupported rather than evidence of an empty
+option set. `bh setup check`, `bh doctor`, and `bh hive ready` report the complete missing-flag
+set, and indexing is skipped instead of repeatedly running an unsupported command.
 
 Every Beadhive-managed init also sets `REPOWISE_SKIP_EDITOR_SETUP=1`, the fork's supported
 headless/CI contract for suppressing machine-wide editor registration and user hooks. The
@@ -196,6 +197,9 @@ headless/CI contract for suppressing machine-wide editor registration and user h
 project-local editor files, while `-y` keeps provisioning noninteractive. The environment guard
 is deliberately not replaced with the removed `--no-editor-setup` option: it is not advertised by
 the supported CLI and fails before indexing on the verified build.
+Managed repowise children inherit operational host settings such as `PATH`, but Beadhive removes
+ambient Git repository-routing variables and unrelated token/password/API-key values before
+launching the local no-prose indexer.
 
 **Codex used to be the exception, and no longer is (bh-lnrn).** It declares Apache-2.0 and passes
 the allowlist outright — it was shipped for exactly that reason. It is now excluded anyway, by

@@ -57,10 +57,10 @@ def test_documented_repowise_command_is_noninteractive_and_editor_isolated():
 
     assert tokens[:3] == ["env", "REPOWISE_SKIP_EDITOR_SETUP=1", "repowise"]
     assert "-y" in tokens
-    assert repowise_plugin._REQUIRED_INIT_FLAGS - {"--all", "--yes"} <= set(tokens)
+    assert repowise_plugin._REQUIRED_INIT_FLAGS - {"--all"} <= set(tokens)
 
 
 @pytest.mark.skipif(shutil.which("repowise") is None, reason="repowise not installed")
-def test_installed_repowise_satisfies_the_plugin_init_contract():
+def test_installed_repowise_satisfies_the_plugin_command_contract():
     repowise_plugin.capabilities.cache_clear()
     assert repowise_plugin.capability_error() is None

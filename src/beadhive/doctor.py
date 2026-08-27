@@ -1244,7 +1244,7 @@ def _data_install(cfg) -> dict:
 
     repowise = None
     if config.repowise_enabled(cfg):
-        repowise = repowise_plugin.capability_error() or "required init flags available"
+        repowise = repowise_plugin.capability_error() or "required command flags available"
     return {
         "version": version,
         "running_from": str(running),
@@ -1327,7 +1327,7 @@ def _render_install(d: dict) -> None:
     _render_legacy_plane(d.get("legacy"))
     if d.get("repowise"):
         detail = d["repowise"]
-        mark = "✓" if detail == "required init flags available" else "⚠"
+        mark = "✓" if detail == "required command flags available" else "⚠"
         typer.echo(f"  {mark} repowise: {detail}")
 
 

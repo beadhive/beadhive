@@ -7,6 +7,8 @@ the other optional plugins: an absent binary, disabled flag, or unindexed clone 
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import time
 from functools import lru_cache
@@ -30,45 +32,89 @@ _REQUIRED_INIT_FLAGS = frozenset(
         "--no-prose",
         "--no-vscode",
         "--no-workspace",
-        "--yes",
+        "-y",
     }
 )
+_REQUIRED_UPDATE_FLAGS = frozenset({"--index-only", "--no-workspace"})
+_REQUIRED_FLAGS = {"init": _REQUIRED_INIT_FLAGS, "update": _REQUIRED_UPDATE_FLAGS}
+_FLAG_TOKEN = re.compile(r"(?<![\w-])--?[A-Za-z0-9][A-Za-z0-9-]*")
+
+_REPOSITORY_ROUTING_ENV = {
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_WORK_TREE",
+}
+_SECRET_ENV_SUFFIXES = ("_API_KEY", "_PASSWORD", "_SECRET", "_TOKEN")
+
+
+def _repowise_env() -> dict[str, str]:
+    """Inherited execution environment, minus unrelated repo routing and secret values.
+
+    ``run.run`` treats an explicit ``env`` as its complete base rather than an overlay, so this
+    must retain operational values such as ``PATH``. Repowise's Beadhive modes are local,
+    no-prose indexing and need neither provider credentials nor fleet/database passwords.
+    """
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if key not in _REPOSITORY_ROUTING_ENV and not key.upper().endswith(_SECRET_ENV_SUFFIXES)
+    }
+    env["REPOWISE_SKIP_EDITOR_SETUP"] = "1"
+    return env
 
 
 def _has_cli() -> bool:
     return shutil.which("repowise") is not None
 
 
-@lru_cache(maxsize=1)
-def capabilities() -> frozenset[str]:
-    """Return init flags advertised by the installed CLI, not inferred from its version."""
+@lru_cache(maxsize=2)
+def capabilities(command: str) -> frozenset[str] | None:
+    """Return exact flags advertised by one command, or ``None`` when its probe failed."""
+    if command not in _REQUIRED_FLAGS:
+        raise ValueError(f"unsupported repowise capability command: {command}")
     if not _has_cli():
-        return frozenset()
+        return None
     try:
-        result = run.run(["repowise", "init", "--help"], check=False, capture=True)
+        result = run.run(["repowise", command, "--help"], check=False, capture=True)
     except Exception:  # noqa: BLE001 - a capability probe must never break a hook
-        return frozenset()
-    help_text = f"{result.stdout}\n{result.stderr}"
-    return frozenset(flag for flag in _REQUIRED_INIT_FLAGS if flag in help_text)
+        return None
+    if result.returncode != 0:
+        return None
+    help_text = f"{result.stdout or ''}\n{result.stderr or ''}"
+    advertised = frozenset(_FLAG_TOKEN.findall(help_text))
+    return _REQUIRED_FLAGS[command] & advertised
 
 
-def capability_error() -> str | None:
+def capability_error(command: str | None = None) -> str | None:
     """Return an actionable reason when the configured plugin cannot be safely used."""
     if not _has_cli():
         return "repowise is not installed"
-    missing = sorted(_REQUIRED_INIT_FLAGS - capabilities())
-    if missing:
+    commands = (command,) if command is not None else tuple(_REQUIRED_FLAGS)
+    problems = []
+    for name in commands:
+        advertised = capabilities(name)
+        if advertised is None:
+            problems.append(f"{name} --help capability probe failed")
+            continue
+        missing = sorted(_REQUIRED_FLAGS[name] - advertised)
+        if missing:
+            problems.append(f"{name} missing {', '.join(missing)}")
+    if problems:
         return (
-            "repowise is present but missing "
-            + ", ".join(missing)
+            "repowise is present but "
+            + "; ".join(problems)
             + "; install briancripe/repowise@feat/no-mcp-json-no-vscode-flags"
         )
     return None
 
 
-def _require_init_capabilities() -> None:
-    if (error := capability_error()) is not None:
-        raise RuntimeError(f"unsupported repowise init capability: {error}")
+def _require_capabilities(command: str) -> None:
+    if (error := capability_error(command)) is not None:
+        raise RuntimeError(f"unsupported repowise {command} capability: {error}")
 
 
 def enabled(cfg, entry) -> bool:
@@ -154,7 +200,7 @@ def _backfill_vscode_config(path: Path, *, workspace: bool) -> None:
 
 def _index(path: Path, *, workspace: bool) -> int:
     """Initialize an index without touching repowise's machine-wide editor settings."""
-    if (error := capability_error()) is not None:
+    if (error := capability_error("init")) is not None:
         typer.echo(f"⚠ repowise disabled: {error}; skipping index", err=True)
         return 0
     _backfill_vscode_config(path, workspace=workspace)
@@ -169,7 +215,7 @@ def _index(path: Path, *, workspace: bool) -> int:
     result = run.run(
         args,
         check=False,
-        env={"REPOWISE_SKIP_EDITOR_SETUP": "1"},
+        env=_repowise_env(),
     )
     return result.returncode
 
@@ -213,12 +259,12 @@ def _refresh_base(cfg, entry, *, main: Path, branch: str, target: Path, start_po
         typer.echo("• repowise: base index already current")
         return
 
-    _require_init_capabilities()
+    _require_capabilities("update")
     started = time.monotonic()
     result = run.run(
         ["repowise", "update", str(main), "--index-only", "--no-workspace"],
         check=False,
-        env={"REPOWISE_SKIP_EDITOR_SETUP": "1"},
+        env=_repowise_env(),
     )
     elapsed = time.monotonic() - started
     if result.returncode:
@@ -248,13 +294,13 @@ def _install_workspace_overlay(cfg, target: Path) -> None:
 def _seed_worktree(cfg, entry, *, main: Path, branch: str, target: Path) -> None:
     """Let repowise auto-detect the linked worktree's validated base and seed from it."""
     del entry, main, branch
-    _require_init_capabilities()
+    _require_capabilities("init")
     started = time.monotonic()
     result = run.run(
         ["repowise", "init", *_BASE_ARGS, "-y"],
         check=False,
         cwd=target,
-        env={"REPOWISE_SKIP_EDITOR_SETUP": "1"},
+        env=_repowise_env(),
     )
     elapsed = time.monotonic() - started
     if result.returncode:

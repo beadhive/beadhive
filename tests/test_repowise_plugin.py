@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -31,14 +33,34 @@ def test_capabilities_probe_init_help_not_version(monkeypatch):
         repowise_plugin.run,
         "run",
         lambda command, **kwargs: SimpleNamespace(
-            stdout=(
-                "init options: --mode --no-prose --no-claude-md --no-codex "
-                "--no-mcp-json --no-vscode --no-workspace --all --yes"
-            ),
+            returncode=0,
+            stdout="init options: " + " ".join(repowise_plugin._REQUIRED_INIT_FLAGS),
             stderr="",
         ),
     )
-    assert repowise_plugin.capabilities() == repowise_plugin._REQUIRED_INIT_FLAGS
+    assert repowise_plugin.capabilities("init") == repowise_plugin._REQUIRED_INIT_FLAGS
+
+
+def test_capabilities_parse_exact_tokens_and_reject_failed_help(monkeypatch):
+    repowise_plugin.capabilities.cache_clear()
+    monkeypatch.setattr(repowise_plugin.shutil, "which", lambda name: "/bin/repowise")
+    results = {
+        "init": SimpleNamespace(
+            returncode=0,
+            stdout="options: --no-codex-config --mode-extra -y-extra",
+            stderr="",
+        ),
+        "update": SimpleNamespace(returncode=2, stdout="options: --index-only", stderr="boom"),
+    }
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda command, **kwargs: results[command[1]],
+    )
+
+    assert repowise_plugin.capabilities("init") == frozenset()
+    assert repowise_plugin.capabilities("update") is None
+    assert "update --help capability probe failed" in repowise_plugin.capability_error()
 
 
 def test_capability_error_is_actionable_for_stock_cli(monkeypatch):
@@ -47,7 +69,9 @@ def test_capability_error_is_actionable_for_stock_cli(monkeypatch):
     monkeypatch.setattr(
         repowise_plugin.run,
         "run",
-        lambda command, **kwargs: SimpleNamespace(stdout="init options: --mode", stderr=""),
+        lambda command, **kwargs: SimpleNamespace(
+            returncode=0, stdout="init options: --mode", stderr=""
+        ),
     )
     error = repowise_plugin.capability_error()
     assert error is not None
@@ -55,6 +79,38 @@ def test_capability_error_is_actionable_for_stock_cli(monkeypatch):
     assert "--no-codex" in error
     assert "--no-mcp-json" in error
     assert "--no-workspace" in error
+
+
+@pytest.mark.skipif(shutil.which("repowise") is None, reason="repowise not installed")
+def test_repowise_guard_environment_executes_the_installed_binary():
+    result = repowise_plugin.run.run(
+        ["repowise", "--version"],
+        check=False,
+        capture=True,
+        env=repowise_plugin._repowise_env(),
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "repowise" in result.stdout
+
+
+def test_repowise_guard_environment_preserves_path_but_scrubs_routing_and_secrets(monkeypatch):
+    monkeypatch.setenv("PATH", os.environ["PATH"])
+    monkeypatch.setenv("GIT_DIR", "/operator/repo.git")
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", "/operator/repo.git/objects")
+    monkeypatch.setenv("GIT_WORK_TREE", "/operator/repo")
+    monkeypatch.setenv("GITHUB_TOKEN", "secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "secret")
+
+    env = repowise_plugin._repowise_env()
+
+    assert env["PATH"] == os.environ["PATH"]
+    assert env["REPOWISE_SKIP_EDITOR_SETUP"] == "1"
+    assert "GIT_DIR" not in env
+    assert "GIT_OBJECT_DIRECTORY" not in env
+    assert "GIT_WORK_TREE" not in env
+    assert "GITHUB_TOKEN" not in env
+    assert "ANTHROPIC_API_KEY" not in env
 
 
 def test_plugin_cli_help_is_registered(world):
@@ -90,7 +146,7 @@ def test_single_repo_index_uses_no_workspace_and_skips_editor_setup(monkeypatch,
     calls = []
     monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
     monkeypatch.setattr(
-        repowise_plugin, "capabilities", lambda: repowise_plugin._REQUIRED_INIT_FLAGS
+        repowise_plugin, "capabilities", lambda command: repowise_plugin._REQUIRED_INIT_FLAGS
     )
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -105,14 +161,14 @@ def test_single_repo_index_uses_no_workspace_and_skips_editor_setup(monkeypatch,
     assert "--all" not in argv
     assert "--no-mcp-json" in argv
     assert "--no-vscode" in argv
-    assert kwargs["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
+    assert kwargs["env"] == repowise_plugin._repowise_env()
 
 
 def test_workspace_index_uses_exact_host_flags_without_no_workspace(monkeypatch, tmp_path):
     calls = []
     monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
     monkeypatch.setattr(
-        repowise_plugin, "capabilities", lambda: repowise_plugin._REQUIRED_INIT_FLAGS
+        repowise_plugin, "capabilities", lambda command: repowise_plugin._REQUIRED_INIT_FLAGS
     )
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -138,7 +194,7 @@ def test_workspace_index_uses_exact_host_flags_without_no_workspace(monkeypatch,
         "-y",
     ]
     assert "--no-workspace" not in argv
-    assert kwargs["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
+    assert kwargs["env"] == repowise_plugin._repowise_env()
 
 
 def test_onboard_indexes_base_checkout_and_missing_binary_skips(monkeypatch, tmp_path):
@@ -169,7 +225,7 @@ def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
     (tmp_path / ".repowise" / "state.json").write_text(json.dumps({"last_sync_commit": "old"}))
     config_path = tmp_path / ".repowise" / "config.yaml"
     config_path.write_text("editor_files:\n  claude_md: false\n")
-    monkeypatch.setattr(repowise_plugin, "capability_error", lambda: None)
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda command=None: None)
     monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "new")
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -188,7 +244,7 @@ def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
         "--index-only",
         "--no-workspace",
     ]
-    assert calls[0][1]["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
+    assert calls[0][1]["env"] == repowise_plugin._repowise_env()
     assert YAML().load(config_path.read_text())["editor_files"]["vscode"] is False
 
 
@@ -211,7 +267,7 @@ def test_workspace_index_backfills_each_existing_base_config(monkeypatch, tmp_pa
     for config_path in configs:
         config_path.parent.mkdir(parents=True)
         config_path.write_text("editor_files:\n  claude_md: false\n")
-    monkeypatch.setattr(repowise_plugin, "capability_error", lambda: None)
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda command=None: None)
     monkeypatch.setattr(
         repowise_plugin.run,
         "run",
@@ -251,7 +307,7 @@ def test_seed_uses_auto_detection_and_installs_overlay(monkeypatch, tmp_path):
         "version: 1\nrepos:\n- path: github/acme/widget\n  alias: widget\n"
     )
     calls = []
-    monkeypatch.setattr(repowise_plugin, "capability_error", lambda: None)
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda command=None: None)
     monkeypatch.setattr(repowise_plugin, "_workspace", lambda cfg: workspace)
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -266,7 +322,7 @@ def test_seed_uses_auto_detection_and_installs_overlay(monkeypatch, tmp_path):
     assert "--seed-from" not in argv
     assert str(target) not in argv
     assert kwargs["cwd"] == target
-    assert kwargs["env"] == {"REPOWISE_SKIP_EDITOR_SETUP": "1"}
+    assert kwargs["env"] == repowise_plugin._repowise_env()
     assert (target / ".repowise-workspace").resolve() == overlay.resolve()
     manifest = YAML().load((target / ".repowise-workspace.yaml").read_text())
     assert manifest["repos"][0]["path"] == str(repo.resolve())
@@ -277,7 +333,7 @@ def test_seed_refuses_unsupported_cli_before_invocation(monkeypatch, tmp_path):
     monkeypatch.setattr(
         repowise_plugin,
         "capability_error",
-        lambda: "repowise is present but missing --no-codex",
+        lambda command=None: "repowise is present but missing --no-codex",
     )
     monkeypatch.setattr(
         repowise_plugin.run,
@@ -291,10 +347,55 @@ def test_seed_refuses_unsupported_cli_before_invocation(monkeypatch, tmp_path):
     assert calls == []
 
 
+def test_seed_rejects_failed_help_probe_before_init_spawn(monkeypatch, tmp_path):
+    calls = []
+    repowise_plugin.capabilities.cache_clear()
+    monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
+
+    def failed_help(argv, **kwargs):
+        calls.append(argv)
+        return SimpleNamespace(returncode=2, stdout="", stderr="broken help")
+
+    monkeypatch.setattr(repowise_plugin.run, "run", failed_help)
+
+    with pytest.raises(RuntimeError, match=r"init --help capability probe failed"):
+        repowise_plugin._seed_worktree({}, {}, main=tmp_path, branch="wt/x", target=tmp_path)
+
+    assert calls == [["repowise", "init", "--help"]]
+
+
+def test_refresh_refuses_missing_update_flag_before_update_spawn(monkeypatch, tmp_path):
+    calls = []
+    (tmp_path / ".repowise").mkdir()
+    (tmp_path / ".repowise" / "state.json").write_text(json.dumps({"last_sync_commit": "old"}))
+    monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "new")
+    monkeypatch.setattr(
+        repowise_plugin,
+        "capabilities",
+        lambda command: (
+            repowise_plugin._REQUIRED_INIT_FLAGS
+            if command == "init"
+            else repowise_plugin._REQUIRED_UPDATE_FLAGS - {"--index-only"}
+        ),
+    )
+    monkeypatch.setattr(
+        repowise_plugin.run,
+        "run",
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    with pytest.raises(RuntimeError, match=r"update.*--index-only"):
+        repowise_plugin._refresh_base(
+            {}, {}, main=tmp_path, branch="wt/x", target=tmp_path, start_point="base"
+        )
+
+    assert calls == []
+
+
 def test_seed_cleanly_skips_absent_host_overlay(monkeypatch, tmp_path):
     target = tmp_path / "worktree"
     target.mkdir()
-    monkeypatch.setattr(repowise_plugin, "capability_error", lambda: None)
+    monkeypatch.setattr(repowise_plugin, "capability_error", lambda command=None: None)
     monkeypatch.setattr(repowise_plugin, "_workspace", lambda cfg: tmp_path / "missing")
     monkeypatch.setattr(
         repowise_plugin.run,
