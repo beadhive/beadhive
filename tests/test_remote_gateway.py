@@ -23,6 +23,7 @@ GATEWAY_ORIGIN = "https://gateway.dev.beadhive.cloud"
 INSTANCE_ID = "dev/demo"
 SUBJECT = "user_dev_demo"
 CORRELATION_ID = "123e4567-e89b-42d3-a456-426614174000"
+EVENT_EPOCH = "123e4567-e89b-42d3-a456-426614174000"
 
 
 def _keys() -> tuple[RSAKey, RSAKey]:
@@ -587,6 +588,300 @@ def test_refresh_cors_preflight_allows_only_post_authorization_and_json() -> Non
     assert allowed.headers["access-control-allow-methods"] == "POST"
     assert allowed.headers["access-control-allow-headers"] == "Authorization, Content-Type"
     assert widened.status_code == 403
+
+
+def test_stream_starts_from_snapshot_cursor_and_delivers_monotonic_redacted_events() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    raw_snapshot = _snapshot()
+    raw_snapshot["eventCursor"] = f"{EVENT_EPOCH}:1"
+
+    async def open_events(cursor: str):
+        assert cursor == f"{EVENT_EPOCH}:1"
+
+        async def events():
+            for sequence in (2, 3):
+                yield {
+                    "cursor": f"{EVENT_EPOCH}:{sequence}",
+                    "revision": "sha256:" + str(sequence) * 64,
+                    "workspaceRoot": "/Users/private/repository",
+                    "transcript": "must not cross the remote boundary",
+                }
+
+        return events()
+
+    instance = remote_gateway.RemoteInstance(
+        display_name="Development demo",
+        authorized_subjects=frozenset({SUBJECT}),
+        snapshot=_snapshot_reader(raw_snapshot),
+        online=_online,
+        events=open_events,
+    )
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(instances={INSTANCE_ID: instance}),
+    )
+
+    async def action(client):
+        token = _token(private_key)
+        snapshot = await client.get("/v1/instances/dev/demo/snapshot", headers=_headers(token))
+        stream = await client.get(
+            "/v1/instances/dev/demo/events",
+            params={"cursor": snapshot.json()["snapshot"]["eventCursor"]},
+            headers=_headers(token),
+        )
+        return snapshot, stream
+
+    snapshot, stream = _exercise(app, action)
+    assert snapshot.json()["snapshot"]["eventCursor"] == f"{EVENT_EPOCH}:1"
+    assert stream.status_code == 200
+    assert stream.headers["content-type"].startswith("text/event-stream")
+    assert stream.text.count("event: snapshot-invalidated") == 2
+    assert f"id: {EVENT_EPOCH}:2" in stream.text
+    assert f"id: {EVENT_EPOCH}:3" in stream.text
+    assert stream.text.index(f"id: {EVENT_EPOCH}:2") < stream.text.index(f"id: {EVENT_EPOCH}:3")
+    assert "/Users/" not in stream.text
+    assert "transcript" not in stream.text
+    assert "prod" not in stream.text.lower()
+
+
+def test_stream_replay_has_no_duplicates_and_stale_cursor_requires_resnapshot() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+
+    async def open_events(cursor: str):
+        if cursor.endswith(":0"):
+            raise remote_gateway.StaleEventCursor
+        sequence = int(cursor.rsplit(":", 1)[1]) + 1
+
+        async def events():
+            yield {
+                "cursor": f"{EVENT_EPOCH}:{sequence}",
+                "revision": "sha256:" + "c" * 64,
+            }
+
+        return events()
+
+    raw_snapshot = _snapshot()
+    raw_snapshot["eventCursor"] = f"{EVENT_EPOCH}:2"
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=_snapshot_reader(raw_snapshot),
+                    online=_online,
+                    events=open_events,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        token = _token(private_key)
+        before_disconnect = await client.get(
+            "/v1/instances/dev/demo/events",
+            params={"cursor": f"{EVENT_EPOCH}:1"},
+            headers=_headers(token),
+        )
+        replay = await client.get(
+            "/v1/instances/dev/demo/events",
+            params={"cursor": f"{EVENT_EPOCH}:2"},
+            headers=_headers(token),
+        )
+        stale = await client.get(
+            "/v1/instances/dev/demo/events",
+            params={"cursor": f"{EVENT_EPOCH}:0"},
+            headers=_headers(token),
+        )
+        return before_disconnect, replay, stale
+
+    before_disconnect, replay, stale = _exercise(app, action)
+    assert before_disconnect.text.count(f"id: {EVENT_EPOCH}:2") == 1
+    assert f"id: {EVENT_EPOCH}:3" not in before_disconnect.text
+    assert replay.text.count(f"id: {EVENT_EPOCH}:3") == 1
+    assert f"id: {EVENT_EPOCH}:2" not in replay.text
+    assert stale.status_code == 409
+    assert stale.json()["error"] == {
+        "code": "resnapshot_required",
+        "message": "A fresh snapshot is required.",
+        "retryable": False,
+    }
+
+
+@pytest.mark.parametrize("cursor", [f"{EVENT_EPOCH}:4", "223e4567-e89b-42d3-a456-426614174000:3"])
+def test_stream_gap_or_epoch_change_emits_one_resnapshot_control(cursor) -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+
+    async def open_events(_cursor: str):
+        async def events():
+            yield {
+                "cursor": cursor,
+                "revision": "sha256:" + "d" * 64,
+                "secret": "must not cross",
+            }
+
+        return events()
+
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=_read_snapshot,
+                    online=_online,
+                    events=open_events,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        return await client.get(
+            "/v1/instances/dev/demo/events",
+            params={"cursor": f"{EVENT_EPOCH}:2"},
+            headers=_headers(_token(private_key)),
+        )
+
+    response = _exercise(app, action)
+    assert response.text == 'event: resnapshot-required\ndata: {"schemaVersion":1}\n\n'
+    assert "must not cross" not in response.text
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [remote_gateway.EventRetentionGap, remote_gateway.ProducerEpochChanged],
+    ids=["retention-gap", "producer-restart"],
+)
+def test_stream_retention_gap_and_restart_require_resnapshot(failure) -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+
+    async def open_events(_cursor: str):
+        raise failure
+
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=_read_snapshot,
+                    online=_online,
+                    events=open_events,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        return await client.get(
+            "/v1/instances/dev/demo/events",
+            params={"cursor": f"{EVENT_EPOCH}:2"},
+            headers=_headers(_token(private_key)),
+        )
+
+    response = _exercise(app, action)
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "resnapshot_required"
+
+
+@pytest.mark.parametrize("revocation", ["scope", "identity"])
+def test_idle_stream_closes_promptly_when_authorization_changes(revocation) -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    entered = asyncio.Event()
+
+    async def open_events(_cursor: str):
+        async def idle_events():
+            entered.set()
+            await asyncio.Event().wait()
+            if False:
+                yield {}
+
+        return idle_events()
+
+    instance = remote_gateway.RemoteInstance(
+        display_name="Development demo",
+        authorized_subjects=frozenset({SUBJECT}),
+        snapshot=_read_snapshot,
+        online=_online,
+        events=open_events,
+    )
+    instances = {INSTANCE_ID: instance}
+    revoked = False
+
+    def subject_is_revoked(_subject: str) -> bool:
+        return revoked
+
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(
+            config=config, key=public_key, subject_is_revoked=subject_is_revoked
+        ),
+        registry=remote_gateway.DevelopmentInstanceRegistry(instances=instances),
+        runtime_calls=remote_gateway.RuntimeCallPolicy(stream_reauthorize_seconds=0.05),
+    )
+
+    async def action(client):
+        nonlocal revoked
+        request = asyncio.create_task(
+            client.get(
+                "/v1/instances/dev/demo/events",
+                params={"cursor": f"{EVENT_EPOCH}:2"},
+                headers=_headers(_token(private_key)),
+            )
+        )
+        await asyncio.wait_for(entered.wait(), timeout=0.5)
+        if revocation == "scope":
+            instances[INSTANCE_ID] = remote_gateway.RemoteInstance(
+                display_name="Development demo",
+                authorized_subjects=frozenset(),
+                snapshot=_read_snapshot,
+                online=_online,
+            )
+        else:
+            revoked = True
+        return await asyncio.wait_for(request, timeout=0.5)
+
+    response = _exercise(app, action)
+    assert response.status_code == 200
+    assert response.text == ""
 
 
 def test_development_profile_refuses_a_different_clerk_development_issuer() -> None:
