@@ -23,7 +23,8 @@ registry receive no runtime access.
   profile it contains either `dev/demo` or no items and always has `nextCursor: null`.
 - `GET /v1/instances/dev/demo/snapshot` returns a `gateway.v1` envelope containing snapshot
   schema version 1. Only the explicitly projected work-item and agent summary fields cross the
-  remote boundary.
+  remote boundary. The initial profile fails unavailable rather than serializing more than 1,000
+  work items, 256 agents, or 64 labels on one work item.
 
 Both calls require `Authorization: Bearer <token>` and the exact Development `Origin`. Browser
 preflight permits only GET and Authorization. All responses are `no-store`; the profile exposes
@@ -38,4 +39,5 @@ unauthorized resources use `resource_not_found` (404), and unusable internal sna
 internal exception.
 
 The executable conformance contract is in `tests/test_remote_gateway.py`; response construction
-is guarded by `remote_payload_is_allowlisted` before JSON serialization.
+is guarded by a recursive exact-value and wire-type `remote_payload_is_allowlisted` check before
+JSON serialization. Runtime source callbacks and projection run outside the ASGI event loop.

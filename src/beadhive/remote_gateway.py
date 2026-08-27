@@ -7,6 +7,7 @@ small, explicitly allowlisted remote representation.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -142,34 +143,106 @@ _WORK_ITEM_KEYS = frozenset(
     {"id", "title", "status", "issueType", "priority", "labels", "assignee", "updatedAt"}
 )
 _AGENT_KEYS = frozenset({"id", "state", "ownerSeat", "startedAt", "updatedAt", "endedAt"})
+_MAX_WORK_ITEMS = 1_000
+_MAX_AGENTS = 256
+_MAX_LABELS = 64
 
 
 def _exact_keys(value: object, expected: frozenset[str]) -> bool:
     return isinstance(value, dict) and set(value) == expected
 
 
+def _string(value: object, *, maximum: int, optional: bool = False) -> bool:
+    return (optional and value is None) or (isinstance(value, str) and 0 < len(value) <= maximum)
+
+
+def _timestamp(value: object, *, optional: bool = False) -> bool:
+    return (optional and value is None) or (
+        isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    )
+
+
+def _work_item_is_allowlisted(value: object) -> bool:
+    if not _exact_keys(value, _WORK_ITEM_KEYS):
+        return False
+    labels = value["labels"]
+    return (
+        _string(value["id"], maximum=256)
+        and _string(value["title"], maximum=4_096)
+        and _string(value["status"], maximum=128)
+        and _string(value["issueType"], maximum=128)
+        and isinstance(value["priority"], int)
+        and not isinstance(value["priority"], bool)
+        and 0 <= value["priority"] <= 4
+        and isinstance(labels, list)
+        and len(labels) <= _MAX_LABELS
+        and all(_string(label, maximum=256) for label in labels)
+        and _string(value["assignee"], maximum=256, optional=True)
+        and _timestamp(value["updatedAt"])
+    )
+
+
+def _agent_is_allowlisted(value: object) -> bool:
+    return (
+        _exact_keys(value, _AGENT_KEYS)
+        and _string(value["id"], maximum=256)
+        and _string(value["state"], maximum=128)
+        and _string(value["ownerSeat"], maximum=256, optional=True)
+        and _timestamp(value["startedAt"], optional=True)
+        and _timestamp(value["updatedAt"])
+        and _timestamp(value["endedAt"], optional=True)
+    )
+
+
 def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
     """Return whether *payload* is exactly one public remote wire shape."""
     if kind == "error":
         return (
-            _exact_keys(payload, _ERROR_KEYS) and _exact_keys(payload["error"], _ERROR_DETAIL_KEYS)  # type: ignore[index]
+            _exact_keys(payload, _ERROR_KEYS)
+            and _exact_keys(payload["error"], _ERROR_DETAIL_KEYS)
+            and _string(payload["error"]["code"], maximum=128)
+            and _string(payload["error"]["message"], maximum=512)
+            and isinstance(payload["error"]["retryable"], bool)
         )
     if kind == "instances":
+        if not _exact_keys(payload, _INSTANCE_PAGE_KEYS):
+            return False
+        items = payload["items"]
         return (
-            _exact_keys(payload, _INSTANCE_PAGE_KEYS)
-            and isinstance(payload["items"], list)  # type: ignore[index]
-            and all(_exact_keys(item, _INSTANCE_KEYS) for item in payload["items"])  # type: ignore[index]
+            payload["schemaVersion"] == SCHEMA_VERSION
+            and payload["nextCursor"] is None
+            and isinstance(items, list)
+            and len(items) <= 1
+            and all(
+                _exact_keys(item, _INSTANCE_KEYS)
+                and item["id"] == DEVELOPMENT_INSTANCE_ID
+                and _string(item["displayName"], maximum=256)
+                and item["availability"] in ("online", "offline")
+                and item["capabilities"] == ["snapshot"]
+                for item in items
+            )
         )
     if kind == "snapshot":
         if not _exact_keys(payload, _ENVELOPE_KEYS):
             return False
-        snapshot = payload["snapshot"]  # type: ignore[index]
+        snapshot = payload["snapshot"]
+        if not _exact_keys(snapshot, _SNAPSHOT_KEYS):
+            return False
+        work_items = snapshot["workItems"]
+        agents = snapshot["agents"]
         return (
-            _exact_keys(snapshot, _SNAPSHOT_KEYS)
-            and isinstance(snapshot["workItems"], list)  # type: ignore[index]
-            and all(_exact_keys(item, _WORK_ITEM_KEYS) for item in snapshot["workItems"])  # type: ignore[index]
-            and isinstance(snapshot["agents"], list)  # type: ignore[index]
-            and all(_exact_keys(item, _AGENT_KEYS) for item in snapshot["agents"])  # type: ignore[index]
+            payload["schemaVersion"] == SCHEMA_VERSION
+            and payload["contractVersion"] == CONTRACT_VERSION
+            and payload["instanceId"] == DEVELOPMENT_INSTANCE_ID
+            and snapshot["schemaVersion"] == SCHEMA_VERSION
+            and _string(snapshot["revision"], maximum=256)
+            and _timestamp(snapshot["generatedAt"])
+            and isinstance(work_items, list)
+            and len(work_items) <= _MAX_WORK_ITEMS
+            and all(_work_item_is_allowlisted(item) for item in work_items)
+            and isinstance(agents, list)
+            and len(agents) <= _MAX_AGENTS
+            and all(_agent_is_allowlisted(item) for item in agents)
         )
     return False
 
@@ -202,9 +275,21 @@ def _public_snapshot(raw: Mapping[str, object]) -> dict[str, object]:
             raise RemoteProjectionFailed("runtime snapshot is incompatible")
         if not isinstance(generated_at, int) or isinstance(generated_at, bool):
             raise RemoteProjectionFailed("runtime snapshot is incompatible")
+        raw_work_items = raw["workItems"]
+        raw_agents = raw["agents"]
+        if (
+            not isinstance(raw_work_items, list)
+            or len(raw_work_items) > _MAX_WORK_ITEMS
+            or not isinstance(raw_agents, list)
+            or len(raw_agents) > _MAX_AGENTS
+        ):
+            raise RemoteProjectionFailed("runtime snapshot is incompatible")
         work_items = []
-        for item in raw["workItems"]:  # type: ignore[union-attr]
+        for item in raw_work_items:
             record = item["record"]
+            labels = record["labels"]
+            if not isinstance(labels, list) or len(labels) > _MAX_LABELS:
+                raise RemoteProjectionFailed("runtime snapshot is incompatible")
             work_items.append(
                 {
                     "id": record["id"],
@@ -212,13 +297,13 @@ def _public_snapshot(raw: Mapping[str, object]) -> dict[str, object]:
                     "status": record["status"],
                     "issueType": record["issueType"],
                     "priority": record["priority"],
-                    "labels": list(record["labels"]),
+                    "labels": list(labels),
                     "assignee": record["assignee"],
                     "updatedAt": item["updatedAt"],
                 }
             )
         agents = []
-        for item in raw["agents"]:  # type: ignore[union-attr]
+        for item in raw_agents:
             agents.append(
                 {
                     "id": item["ref"]["id"],
@@ -241,6 +326,10 @@ def _public_snapshot(raw: Mapping[str, object]) -> dict[str, object]:
     if not _exact_keys(public, _SNAPSHOT_KEYS):
         raise RemoteProjectionFailed("runtime snapshot is incompatible")
     return public
+
+
+def _read_public_snapshot(instance: RemoteInstance) -> dict[str, object]:
+    return _public_snapshot(instance.snapshot())
 
 
 def build_development_gateway_application(
@@ -279,7 +368,9 @@ def build_development_gateway_application(
                 {
                     "id": instance_id,
                     "displayName": instance.display_name,
-                    "availability": "online" if instance.online() else "offline",
+                    "availability": "online"
+                    if await asyncio.to_thread(instance.online)
+                    else "offline",
                     "capabilities": ["snapshot"],
                 }
                 for instance_id, instance in registry.authorized(subject).items()
@@ -299,11 +390,11 @@ def build_development_gateway_application(
             instance = registry.authorized(subject).get(instance_id)
             if instance is None:
                 return _error("resource_not_found", "The resource was not found.", 404)
-            if not instance.online():
+            if not await asyncio.to_thread(instance.online):
                 return _error(
                     "runtime_unavailable", "The runtime is unavailable.", 503, retryable=True
                 )
-            projected = _public_snapshot(instance.snapshot())
+            projected = await asyncio.to_thread(_read_public_snapshot, instance)
             return _response(
                 "snapshot",
                 {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 import httpx
@@ -390,3 +391,173 @@ def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content
         "retryable": True,
     }
     assert "must-not-leak" not in response.text
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda value: value["workItems"][0]["record"].__setitem__(
+            "title", {"secret": "nested-must-not-leak"}
+        ),
+        lambda value: value["workItems"][0]["record"].__setitem__(
+            "labels", [{"secret": "nested-must-not-leak"}]
+        ),
+        lambda value: value["workItems"][0]["record"].__setitem__("priority", True),
+        lambda value: value["agents"][0].__setitem__(
+            "ownerSeat", {"secret": "nested-must-not-leak"}
+        ),
+        lambda value: value["agents"][0].__setitem__("updatedAt", -1),
+    ],
+    ids=["title-object", "label-object", "boolean-priority", "seat-object", "negative-time"],
+)
+def test_nested_private_values_fail_the_recursive_disclosure_allowlist(mutate) -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    malformed = _snapshot()
+    mutate(malformed)
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=lambda: malformed,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        return await client.get(
+            "/v1/instances/dev/demo/snapshot", headers=_headers(_token(private_key))
+        )
+
+    response = _exercise(app, action)
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "runtime_unavailable"
+    assert "nested-must-not-leak" not in response.text
+
+
+def test_discovery_rejects_non_scalar_registry_metadata() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name={"secret": "registry-must-not-leak"},
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=_snapshot,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        return await client.get(
+            "/v1/instances", params={"limit": "50"}, headers=_headers(_token(private_key))
+        )
+
+    response = _exercise(app, action)
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "runtime_unavailable"
+    assert "registry-must-not-leak" not in response.text
+
+
+def test_snapshot_collection_bounds_fail_closed_before_serialization() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    oversized = _snapshot()
+    oversized["workItems"] = oversized["workItems"] * 1_001
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=lambda: oversized,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        return await client.get(
+            "/v1/instances/dev/demo/snapshot", headers=_headers(_token(private_key))
+        )
+
+    response = _exercise(app, action)
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "runtime_unavailable"
+
+
+def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    release = threading.Event()
+
+    def slow_snapshot():
+        release.wait(timeout=2)
+        return _snapshot()
+
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=slow_snapshot,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        token = _token(private_key)
+        timer = threading.Timer(0.5, release.set)
+        timer.start()
+        started_at = time.monotonic()
+        snapshot_task = asyncio.create_task(
+            client.get("/v1/instances/dev/demo/snapshot", headers=_headers(token))
+        )
+        await asyncio.sleep(0)
+        discovery = await client.get(
+            "/v1/instances", params={"limit": "50"}, headers=_headers(token)
+        )
+        discovery_elapsed = time.monotonic() - started_at
+        release.set()
+        snapshot = await snapshot_task
+        timer.cancel()
+        return discovery, snapshot, discovery_elapsed
+
+    discovery, snapshot, discovery_elapsed = _exercise(app, action)
+    assert discovery.status_code == snapshot.status_code == 200
+    assert discovery_elapsed < 0.25
