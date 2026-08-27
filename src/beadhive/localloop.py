@@ -2411,6 +2411,52 @@ class LocalRuntime:
     def _submit(self, coro):
         return asyncio.run_coroutine_threadsafe(coro, self._ensure_loop()).result()
 
+    async def _shutdown_runs(self) -> None:
+        """Reap every process before the private loop that owns its pipes is stopped."""
+        for seat in tuple(self._runs.values()):
+            if seat.finished:
+                await _collect_with_timeout(seat, self.envelope_grace)
+                await reap_group(seat, grace=self.terminate_grace)
+                continue
+            await cancel(
+                seat,
+                rungs=(RUNG_SIGNAL,),
+                cooperative_grace=0.0,
+                hard_grace=0.0,
+                envelope_grace=self.envelope_grace,
+                terminate_grace=self.terminate_grace,
+            )
+        self._runs.clear()
+
+    def close(self) -> None:
+        """Stop owned processes and join the private event-loop thread.
+
+        A daemon thread is not lifecycle management: leaving these loops alive makes later
+        subprocess launches fork from a multithreaded process on platforms where Python cannot
+        use ``posix_spawn`` for that invocation. ``close`` is explicit and idempotent so callers
+        and tests can make the process boundary deterministic.
+        """
+        loop, thread = self._loop, self._thread
+        if loop is None:
+            return
+        try:
+            self._submit(self._shutdown_runs())
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            if thread is not None:
+                thread.join(timeout=max(self.terminate_grace + self.envelope_grace, 1.0))
+            if thread is not None and thread.is_alive():
+                raise RuntimeError("local runtime event loop did not stop")
+            loop.close()
+            self._loop = None
+            self._thread = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.close()
+
     # ---- Runtime ---------------------------------------------------------------------------
 
     def schedule(

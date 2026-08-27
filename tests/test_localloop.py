@@ -1099,24 +1099,26 @@ def test_local_runtime_schedules_observes_and_is_idempotent(tmp_path):
     from beadhive import runtime as runtime_mod
 
     inst = _instructions(tmp_path, "i", "STUB_STATUS=done")
-    rt = localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}")
-    assert isinstance(rt, runtime_mod.Runtime)
+    with localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}") as rt:
+        assert isinstance(rt, runtime_mod.Runtime)
 
-    handle = rt.schedule(
-        "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s1"
-    )
-    again = rt.schedule(
-        "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s2"
-    )
-    assert again.session_id == handle.session_id == "s1", "a second schedule is not a second run"
+        handle = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s1"
+        )
+        again = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s2"
+        )
+        assert again.session_id == handle.session_id == "s1", (
+            "a second schedule is not a second run"
+        )
 
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        outcome = rt.observe(handle)
-        if outcome.status != "running":
-            break
-        time.sleep(0.05)
-    assert outcome.status == "done"
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            outcome = rt.observe(handle)
+            if outcome.status != "running":
+                break
+            time.sleep(0.05)
+        assert outcome.status == "done"
 
 
 @pytest.mark.parametrize(
@@ -1130,32 +1132,52 @@ def test_local_runtime_translates_canonical_model_only_at_launch_and_reports_rou
     tmp_path, harness, canonical_model, argv_model
 ):
     inst = _instructions(tmp_path, "routing", "STUB_STATUS=done")
-    rt = localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}", harness=harness)
-    decision = _model_selection(canonical_model, harness=harness)
-    handle = rt.schedule(
-        "b1",
-        "developer",
-        workspace=str(tmp_path),
-        instructions=str(inst),
-        session_id="routing-1",
-        decision=decision,
-    )
-    seat = rt._runs["b1"]
-    model_index = seat.argv.index("--model")
-    assert seat.argv[model_index + 1] == argv_model
-    assert seat.routing["selected_model"] == canonical_model
-    assert "launch_model" not in seat.routing
+    with localloop.LocalRuntime(
+        seat_command=f"{sys.executable} {STUB_SEAT}", harness=harness
+    ) as rt:
+        decision = _model_selection(canonical_model, harness=harness)
+        handle = rt.schedule(
+            "b1",
+            "developer",
+            workspace=str(tmp_path),
+            instructions=str(inst),
+            session_id="routing-1",
+            decision=decision,
+        )
+        seat = rt._runs["b1"]
+        model_index = seat.argv.index("--model")
+        assert seat.argv[model_index + 1] == argv_model
+        assert seat.routing["selected_model"] == canonical_model
+        assert "launch_model" not in seat.routing
 
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        outcome = rt.observe(handle)
-        if outcome.status != "running":
-            break
-        time.sleep(0.05)
-    assert outcome.status == "done"
-    assert outcome.routing["complexity"] == "COMPLEX"
-    assert outcome.routing["selected_model"] == canonical_model
-    assert "launch_model" not in outcome.routing
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            outcome = rt.observe(handle)
+            if outcome.status != "running":
+                break
+            time.sleep(0.05)
+        assert outcome.status == "done"
+        assert outcome.routing["complexity"] == "COMPLEX"
+        assert outcome.routing["selected_model"] == canonical_model
+        assert "launch_model" not in outcome.routing
+
+
+def test_local_runtime_close_is_idempotent_and_joins_its_loop(tmp_path):
+    inst = _instructions(tmp_path, "close", "STUB_HANG=true")
+    rt = localloop.LocalRuntime(
+        seat_command=f"{sys.executable} {STUB_SEAT}", terminate_grace=0.2, envelope_grace=0.2
+    )
+    rt.schedule("b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s")
+    thread = rt._thread
+    seat = rt._runs["b1"]
+
+    rt.close()
+    rt.close()
+
+    assert thread is not None and not thread.is_alive()
+    assert not localloop.group_alive(seat.pgid)
+    assert rt._loop is None
+    assert rt._thread is None
 
 
 def test_local_runtime_strict_block_prevents_launch_with_full_remediation(tmp_path):
