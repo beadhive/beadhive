@@ -265,12 +265,17 @@ _GIT_REPOSITORY_ENV = {
     "GIT_ALTERNATE_OBJECT_DIRECTORIES",
     "GIT_CEILING_DIRECTORIES",
     "GIT_COMMON_DIR",
+    "GIT_CONFIG",
     "GIT_DIR",
     "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_GRAFT_FILE",
+    "GIT_IMPLICIT_WORK_TREE",
     "GIT_INDEX_FILE",
+    "GIT_INTERNAL_SUPER_PREFIX",
     "GIT_NAMESPACE",
     "GIT_NO_REPLACE_OBJECTS",
     "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
     "GIT_QUARANTINE_PATH",
     "GIT_REPLACE_REF_BASE",
     "GIT_SHALLOW_FILE",
@@ -282,11 +287,8 @@ def _is_git_repository_env(key: str) -> bool:
     # Git's command-scope config transport can inject ``core.worktree``/``core.bare`` and thereby
     # redirect an otherwise explicit fixture command. Preserve file-based isolated config above,
     # but never inherit the caller's arbitrary ``-c`` payload into a fixture repository.
-    return (
-        key in _GIT_REPOSITORY_ENV
-        or key in {"GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS"}
-        or key.startswith("GIT_CONFIG_KEY_")
-        or key.startswith("GIT_CONFIG_VALUE_")
+    return key in _GIT_REPOSITORY_ENV or (
+        key.startswith("GIT_CONFIG_") and key not in {"GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"}
     )
 
 

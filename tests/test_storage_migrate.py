@@ -1161,14 +1161,24 @@ def test_tracked_gitignore_fixture_is_hermetic_under_global_excludes(tmp_path, m
     operator_git = operator_repo / ".git"
     quarantine = operator_git / "objects" / "incoming-test"
     quarantine.mkdir()
+    operator_config = tmp_path / "operator-external-gitconfig"
+    operator_config.write_text("[operator]\n\tsentinel = unchanged\n")
+    operator_grafts = tmp_path / "operator-grafts"
+    operator_grafts.write_text("")
+    before_external = (operator_config.read_bytes(), operator_grafts.read_bytes())
     routing = {
+        "GIT_CONFIG": operator_config,
         "GIT_DIR": operator_git,
         "GIT_WORK_TREE": operator_repo,
+        "GIT_IMPLICIT_WORK_TREE": "1",
         "GIT_INDEX_FILE": operator_git / "index",
         "GIT_COMMON_DIR": operator_git,
         "GIT_OBJECT_DIRECTORY": operator_git / "objects",
         "GIT_ALTERNATE_OBJECT_DIRECTORIES": operator_git / "objects",
+        "GIT_GRAFT_FILE": operator_grafts,
         "GIT_NAMESPACE": "operator-test",
+        "GIT_PREFIX": "operator-prefix/",
+        "GIT_INTERNAL_SUPER_PREFIX": "operator-super/",
         "GIT_SHALLOW_FILE": operator_git / "shallow",
         "GIT_QUARANTINE_PATH": quarantine,
         "GIT_CEILING_DIRECTORIES": tmp_path,
@@ -1204,6 +1214,7 @@ def test_tracked_gitignore_fixture_is_hermetic_under_global_excludes(tmp_path, m
         if path.is_file()
     }
     assert after_operator == before_operator
+    assert (operator_config.read_bytes(), operator_grafts.read_bytes()) == before_external
 
 
 def test_ensure_pre_migrate_gitignore_is_a_noop_with_no_gitignore_file(tmp_path):
