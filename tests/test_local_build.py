@@ -131,6 +131,52 @@ def _build_root(root: Path) -> Path:
 needs_uv = pytest.mark.skipif(shutil.which("uv") is None, reason="a real build needs `uv`")
 
 
+# ---- portable dependencies -------------------------------------------------
+
+
+def test_the_overlay_does_not_require_gnu_tar_extensions():
+    script = BUILD_SCRIPT.read_text()
+    assert "--ignore-failed-read" not in script
+
+
+@needs_uv
+def test_the_overlay_is_tar_independent_and_preserves_every_kind_of_addition(tmp_path):
+    root = _fixture_checkout(tmp_path)
+    package = root / "src" / "fixturepkg"
+    (package / "__init__.py").write_text('UNSTAGED = "present"\n')
+    (package / "staged.py").write_text('STAGED = "present"\n')
+    _git(root, "add", "src/fixturepkg/staged.py")
+    (package / "untracked.py").write_text('UNTRACKED = "present"\n')
+    before_status = _git(root, "status", "--porcelain")
+    before_books = _bookkeeping(root)
+
+    fake_bin = root / ".git" / "fake-bin"
+    fake_bin.mkdir()
+    fake_tar = fake_bin / "tar"
+    fake_tar.write_text('#!/bin/sh\necho "unexpected tar dependency" >&2\nexit 97\n')
+    fake_tar.chmod(0o755)
+    result = subprocess.run(
+        [str(root / "scripts" / "local-build.sh"), "build"],
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+            "UV_OFFLINE": "1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    (wheel,) = (root / "dist").glob("*.whl")
+    with zipfile.ZipFile(wheel) as zf:
+        assert b"UNSTAGED" in zf.read("fixturepkg/__init__.py")
+        assert b"STAGED" in zf.read("fixturepkg/staged.py")
+        assert b"UNTRACKED" in zf.read("fixturepkg/untracked.py")
+    assert _git(root, "status", "--porcelain") == before_status
+    assert _bookkeeping(root) == before_books
+    assert not list(_build_root(root).glob("build-*"))
+
+
 # ---- the stamp --------------------------------------------------------------
 
 
