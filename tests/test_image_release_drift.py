@@ -44,6 +44,7 @@ def stub_docker(tmp_path, *, present=True, bh_version="0.11.3", source="pypi:bea
         body = '#!/usr/bin/env bash\n[ "$1" = "image" ] && exit 1\nexit 1\n'
     else:
         body = f"""#!/usr/bin/env bash
+if [ -n "${{GITHUB_TOKEN-}}" ]; then exit 99; fi
 if [ "$1" = "image" ]; then exit 0; fi
 if [ "$1" = "run" ]; then printf '%s\\t%s\\n' "{bh_version}" "{source}"; exit 0; fi
 exit 1
@@ -54,7 +55,21 @@ exit 1
 
 
 def run_script(script, tmp_path, image="beadhive/core:dev"):
-    env = {**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"}
+    """Run the synthetic checkout without inheriting worker or operator routing state.
+
+    The script needs ordinary command discovery and a scratch home; forwarding the complete
+    pytest environment makes its result depend on whichever real-CLI test previously ran on the
+    same xdist worker, and also needlessly exposes credentials to the docker stub.
+    """
+    home = tmp_path / "home"
+    home.mkdir(exist_ok=True)
+    env = {
+        "PATH": f"{tmp_path}:{os.environ['PATH']}",
+        "HOME": str(home),
+        "LC_ALL": "C",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_CONFIG_NOSYSTEM": "1",
+    }
     return subprocess.run([str(script), image], capture_output=True, text=True, env=env)
 
 
@@ -77,11 +92,12 @@ def test_version_ordering_is_numeric_not_lexical(tmp_path):
     assert result.returncode == 1, "0.9.0 is behind 0.11.3 numerically; lexical is backwards"
 
 
-def test_image_matching_release_passes(tmp_path):
+def test_image_matching_release_passes(tmp_path, monkeypatch):
+    monkeypatch.setenv("GITHUB_TOKEN", "must-not-reach-the-fixture")
     script = make_checkout(tmp_path, "0.11.3")
     stub_docker(tmp_path, bh_version="0.11.3")
     result = run_script(script, tmp_path)
-    assert result.returncode == 0
+    assert result.returncode == 0, result.stdout + result.stderr
     assert "✓" in result.stdout
 
 

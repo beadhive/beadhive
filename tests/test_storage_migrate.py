@@ -21,11 +21,7 @@ import typer
 
 from beadhive import registry, storage_migrate
 from beadhive.run import run as real_run
-
-# Real `git` calls below (bh-xsv3's gitignore fix) must not inherit an ambient GIT_* env var —
-# this suite itself runs inside a real git worktree, and a stray `GIT_DIR`/`GIT_WORK_TREE` would
-# point a "real" git call at THIS repo instead of the fixture's own tmp_path one.
-_CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+from harness.world import git_env
 
 # ---- fixtures -----------------------------------------------------------------
 
@@ -1120,7 +1116,7 @@ def test_hive_with_beads_but_no_store_is_not_would_migrate(tmp_path, monkeypatch
 
 
 def _git(*args, cwd):
-    return real_run(["git", *args], cwd=str(cwd), check=True, capture=True, env=_CLEAN_ENV)
+    return real_run(["git", *args], cwd=str(cwd), check=True, capture=True, env=git_env())
 
 
 def _init_tracked_gitignore(base, lines=None):
@@ -1134,9 +1130,91 @@ def _init_tracked_gitignore(base, lines=None):
     _git("init", "-q", "-b", "main", cwd=base)
     _git("config", "user.email", "test@example.com", cwd=base)
     _git("config", "user.name", "Test", cwd=base)
-    _git("add", "--", ".beads/.gitignore", cwd=base)
+    # This exact fixture file is intentionally tracked even when an operator's global excludes
+    # hide `.beads/*`. Do not disable ignores wholesale: production Git configuration still
+    # participates in every other fixture operation and verdict.
+    _git("add", "-f", "--", ".beads/.gitignore", cwd=base)
     _git("commit", "-q", "-m", "init", cwd=base)
     return gi
+
+
+def test_tracked_gitignore_fixture_is_hermetic_under_global_excludes(tmp_path, monkeypatch):
+    """An operator-wide `.beads/*` exclude cannot change fixture setup or its verdict.
+
+    The poison files live under this test's tmp_path: the fixture must neither consult nor
+    mutate the operator's repository or global Git state while proving the exact global-config
+    shape that exposed bh-idn2c.
+    """
+    excludes = tmp_path / "global-excludes"
+    excludes.write_text(".beads/*\n")
+    global_config = tmp_path / "global-gitconfig"
+    global_config.write_text(f"[core]\n\texcludesFile = {excludes}\n")
+    before = (global_config.read_bytes(), excludes.read_bytes())
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", os.devnull)
+    operator_repo = tmp_path / "operator-repo"
+    operator_repo.mkdir()
+    _git("init", "-q", "-b", "main", cwd=operator_repo)
+    (operator_repo / "operator-only").write_text("must remain untouched\n")
+    _git("add", "--", "operator-only", cwd=operator_repo)
+    _git("commit", "-q", "-m", "operator baseline", cwd=operator_repo)
+    operator_git = operator_repo / ".git"
+    quarantine = operator_git / "objects" / "incoming-test"
+    quarantine.mkdir()
+    operator_config = tmp_path / "operator-external-gitconfig"
+    operator_config.write_text("[operator]\n\tsentinel = unchanged\n")
+    operator_grafts = tmp_path / "operator-grafts"
+    operator_grafts.write_text("")
+    before_external = (operator_config.read_bytes(), operator_grafts.read_bytes())
+    routing = {
+        "GIT_CONFIG": operator_config,
+        "GIT_DIR": operator_git,
+        "GIT_WORK_TREE": operator_repo,
+        "GIT_IMPLICIT_WORK_TREE": "1",
+        "GIT_INDEX_FILE": operator_git / "index",
+        "GIT_COMMON_DIR": operator_git,
+        "GIT_OBJECT_DIRECTORY": operator_git / "objects",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES": operator_git / "objects",
+        "GIT_GRAFT_FILE": operator_grafts,
+        "GIT_NAMESPACE": "operator-test",
+        "GIT_PREFIX": "operator-prefix/",
+        "GIT_INTERNAL_SUPER_PREFIX": "operator-super/",
+        "GIT_SHALLOW_FILE": operator_git / "shallow",
+        "GIT_QUARANTINE_PATH": quarantine,
+        "GIT_CEILING_DIRECTORIES": tmp_path,
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM": "1",
+        "GIT_REPLACE_REF_BASE": "refs/operator-replace/",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_KEY_0": "core.worktree",
+        "GIT_CONFIG_VALUE_0": operator_repo,
+        "GIT_CONFIG_PARAMETERS": f"'core.worktree'='{operator_repo}'",
+    }
+    before_operator = {
+        path.relative_to(operator_repo): path.read_bytes()
+        for path in operator_repo.rglob("*")
+        if path.is_file()
+    }
+    with monkeypatch.context() as hostile:
+        for key, value in routing.items():
+            hostile.setenv(key, str(value))
+
+        repo = tmp_path / "fixture-repo"
+        gi = _init_tracked_gitignore(repo)
+        assert _git("ls-files", "--error-unmatch", ".beads/.gitignore", cwd=repo).stdout.strip()
+
+    # The production helper still sees the poisoned global excludes, but not the intentionally
+    # fixture-only routing attack above. Its real Git-config behavior remains part of the verdict.
+    assert storage_migrate._ensure_pre_migrate_gitignore(repo) is True
+    assert "embeddeddolt.pre-migrate-*/" in gi.read_text()
+    assert (global_config.read_bytes(), excludes.read_bytes()) == before
+    after_operator = {
+        path.relative_to(operator_repo): path.read_bytes()
+        for path in operator_repo.rglob("*")
+        if path.is_file()
+    }
+    assert after_operator == before_operator
+    assert (operator_config.read_bytes(), operator_grafts.read_bytes()) == before_external
 
 
 def test_ensure_pre_migrate_gitignore_is_a_noop_with_no_gitignore_file(tmp_path):

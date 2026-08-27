@@ -19,6 +19,7 @@ What the tests below pin, in the order the acceptance criteria state them:
 from __future__ import annotations
 
 import os
+import shutil
 from types import SimpleNamespace
 
 import pytest
@@ -109,6 +110,24 @@ def test_an_explicit_base_env_is_gap_filled_not_bypassed(monkeypatch, tmp_path):
 
     assert env["BD_NON_INTERACTIVE"] == "1"
     assert env["GIT_WORKSPACE"] == str((tmp_path / "workspace").resolve())
+
+
+def test_run_exact_env_reaches_real_child_without_gap_fill(monkeypatch):
+    """Security-sensitive local tools can opt out explicitly without changing the default."""
+    monkeypatch.setenv("GIT_WORKSPACE", "/operator/workspace")
+    intended = {"BH_EXACT_ENV_PROBE": "only-this"}
+    env_bin = shutil.which("env")
+    assert env_bin is not None
+
+    result = run_mod.run(
+        [env_bin],
+        capture=True,
+        env=intended,
+        exact_env=True,
+    )
+
+    observed = dict(line.split("=", 1) for line in result.stdout.splitlines())
+    assert observed == intended
 
 
 def test_child_env_reads_the_environment_fresh_on_every_call(monkeypatch, tmp_path):

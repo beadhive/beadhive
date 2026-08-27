@@ -480,6 +480,7 @@ FULL := ""
 # larger or smaller host (for example, `PYTEST_XDIST_AUTO_NUM_WORKERS=3 just test`); xdist
 # rejects non-integer values instead of falling back to unbounded CPU discovery.
 export PYTEST_XDIST_AUTO_NUM_WORKERS := shell("workers=${PYTEST_XDIST_AUTO_NUM_WORKERS:-6}; case $workers in 0|*[!0-9]*) echo 'PYTEST_XDIST_AUTO_NUM_WORKERS must be a positive integer' >&2; exit 2;; *) printf %s $workers;; esac")
+test_timeout_seconds := env_var_or_default("BH_TEST_TIMEOUT_SECONDS", "900")
 
 # run the suite for a marker selection (default: the fast unit-only set)
 #   just test               → unit only (fast)    just test integration → real-bd harness only
@@ -509,7 +510,8 @@ export PYTEST_XDIST_AUTO_NUM_WORKERS := shell("workers=${PYTEST_XDIST_AUTO_NUM_W
 # The suspect ran in the unfenced half for the fence's entire existence.
 # run the suite for a marker selection — fenced and parallel (default: the fast unit-only set)
 test set=FAST:
-    ./scripts/hermetic.sh uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
+    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
 # QUARANTINE (bh-4kq1b, tracking bh-tfapu): the LAND gate's integration pass, minus one test.
 #
@@ -532,7 +534,8 @@ test set=FAST:
 # opt-in. Off Linux the wrapper says so on stderr and runs unfenced; BH_HERMETIC=0 forces that.
 # the LAND gate's integration pass — fenced and parallel, minus the quarantines named above
 test-integration-land:
-    ./scripts/hermetic.sh uv run pytest -n auto -m "integration" \
+    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run pytest -n auto -m "integration" \
         --deselect "tests/test_host_fence_int.py::test_the_located_transport_repo_is_the_one_that_pushes[embedded]" \
         --deselect "tests/test_host_fence_int.py::test_the_located_transport_repo_is_the_one_that_pushes[shared-server]"
 

@@ -14,9 +14,12 @@ suite at somebody's home directory.
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 from beadhive import config, identity
+from beadhive.validation_admission import slot_root
+from harness.world import _is_git_repository_env
 
 
 def _is_sandboxed(path: Path, basetemp: Path) -> bool:
@@ -57,6 +60,19 @@ def test_bh_home_is_sandboxed_away_from_the_real_home(tmp_path_factory):
     )
 
 
+def test_validation_host_is_sandboxed_away_from_the_real_host(tmp_path_factory):
+    """Nested real-CLI tests own a fixture host, never the gate runner's admission semaphore."""
+    root = slot_root()
+
+    assert os.environ.get("BH_VALIDATION_SLOT_ROOT"), "$BH_VALIDATION_SLOT_ROOT must be set"
+    assert _is_sandboxed(root, tmp_path_factory.getbasetemp()), (
+        f"validation slot root resolves outside pytest's tmp root: {root}"
+    )
+    assert "BH_VALIDATION_SLOTS" not in os.environ, (
+        "ambient host capacity must not override a test's fixture/configured capacity"
+    )
+
+
 def test_the_sandbox_check_still_rejects_the_real_home(tmp_path_factory):
     """The guard on the guard. `_is_sandboxed` is only worth asserting if it can say no — a
     containment check that accepts everything is the same nothing as the check it replaced
@@ -94,3 +110,32 @@ def test_the_sandboxed_workspace_holds_no_repos():
     root = Path(identity.workspace_root())
 
     assert not list(root.glob("*/*/*/.git"))
+
+
+def test_every_git_reported_repo_local_environment_variable_is_scrubbed():
+    """Git owns this list; a new release adding a local redirect must fail the harness gate."""
+    result = subprocess.run(
+        ["git", "rev-parse", "--local-env-vars"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    local_vars = {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+    assert local_vars, "installed Git returned no repository-local environment variables"
+    assert not {key for key in local_vars if not _is_git_repository_env(key)}
+
+
+def test_only_isolated_file_based_git_config_channels_are_preserved():
+    """Keep fixture-owned config files; reject every ambient command/repository override."""
+    assert not _is_git_repository_env("GIT_CONFIG_GLOBAL")
+    assert not _is_git_repository_env("GIT_CONFIG_SYSTEM")
+    for key in (
+        "GIT_CONFIG",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
+    ):
+        assert _is_git_repository_env(key), key

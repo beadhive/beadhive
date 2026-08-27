@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import multiprocessing
 import stat
 import sys
 from pathlib import Path
@@ -12,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from beadhive import localloop, run_journal, seatrun
+from harness.processes import process_context
 
 SCHEMA = Path(__file__).resolve().parents[1] / "docs/schemas/run-journal-v1.schema.json"
 DIGEST = "sha256:" + "a" * 64
@@ -116,7 +116,7 @@ def test_concurrent_appenders_leave_complete_schema_valid_lines(tmp_path: Path) 
     jsonschema = pytest.importorskip("jsonschema")
     identity = _identity()
     journal = run_journal.RunJournal.create(identity, base=tmp_path)
-    ctx = multiprocessing.get_context("fork")
+    ctx = process_context()
     workers = [
         ctx.Process(target=_append_many, args=(identity, journal.run_id, str(journal.path), n, 40))
         for n in range(6)

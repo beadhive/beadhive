@@ -211,25 +211,60 @@ work="$scratch/build-$$-$RANDOM"
 
 git -C "$root" worktree add --detach --quiet "$work" HEAD
 
-# Make the throwaway match the WORKING TREE, not just HEAD. `just install` exists to put the code
-# you are looking at on PATH; building HEAD would silently drop every uncommitted edit — a far
-# worse lie than the one this script exists to fix, and it is what the `.dirty` marker is
-# promising is present. `ls-files` decides what "the tree as it is now" means, so .gitignore is
-# honoured for free and .git, .venv and dist/ are never copied.
-# --ignore-failed-read: `--cached` names INDEX paths, and an unstaged `rm` leaves one the
-# worktree no longer has. Without it tar exits 2 on the first such path and `set -euo pipefail`
-# kills the build — `just install` simply broken in an ordinary tree state, with nothing in the
-# message naming this script.
-git -C "$root" ls-files -z --cached --others --exclude-standard |
-  tar -C "$root" --null -T - --ignore-failed-read -cf - | tar -C "$work" -xf -
-# ...and REMOVE what the real tree deleted, which the HEAD checkout above still holds. Both
+# Every path handed to the destructive half comes from Git, but keep the scratch-root invariant
+# explicit at the boundary anyway. Besides making the cleanup auditable, removing a destination
+# before copying prevents a tracked symlink in HEAD from redirecting a copy outside the scratch
+# tree.
+remove_scratch_path() {
+  local path="$1" target
+  case "$path" in
+    "" | /* | ../* | */../* | */..) echo "local-build: unsafe overlay path: $path" >&2; return 1 ;;
+  esac
+  target="$work/$path"
+  if [ -d "$target" ] && [ ! -L "$target" ]; then
+    rm -rf "$target"
+  else
+    rm -f "$target"
+  fi
+}
+
+# First REMOVE what the real tree deleted, which the HEAD checkout above still holds. Both
 # flags are load-bearing, and `ls-files --deleted` (the obvious spelling) gets both wrong:
 #   * `diff HEAD` sees STAGED deletions — after `git rm`, `--deleted` prints nothing, so the
 #     wheel would keep a module you removed, silently, ENDORSED by the `.dirty` stamp.
 #   * `--no-renames` decomposes `git mv a b` into D a + A b. Without it git reports R, the D
 #     filter matches nothing, and the wheel ships BOTH paths.
 git -C "$root" diff -z --no-renames --name-only --diff-filter=D HEAD |
-  (cd "$work" && xargs -0 -r rm -f)
+  while IFS= read -r -d '' path; do
+    remove_scratch_path "$path"
+  done
+
+# Then make the throwaway match the WORKING TREE, not just HEAD. `just install` exists to put the
+# code you are looking at on PATH; building HEAD would silently drop every uncommitted edit — a
+# far worse lie than the one this script exists to fix, and it is what the `.dirty` marker is
+# promising is present. `ls-files` decides what "the tree as it is now" means, so .gitignore is
+# honoured for free and .git, .venv and dist/ are never copied.
+#
+# A NUL-delimited read/cp loop uses only POSIX cp behavior plus bash's existing `read -d` support.
+# Unlike the old tar pipeline it needs no GNU-only option to tolerate an index path absent from
+# the working tree: a missing path is skipped explicitly, after the removal pass cleared its HEAD
+# copy. Directories are created empty and their Git-listed children arrive individually, so an
+# untracked ignored child cannot hitch a ride in a recursively copied directory.
+git -C "$root" ls-files -z --cached --others --exclude-standard |
+  while IFS= read -r -d '' path; do
+    source="$root/$path"
+    target="$work/$path"
+    if [ ! -e "$source" ] && [ ! -L "$source" ]; then
+      continue
+    fi
+    remove_scratch_path "$path"
+    if [ -d "$source" ] && [ ! -L "$source" ]; then
+      mkdir -p "$target"
+      continue
+    fi
+    mkdir -p "${target%/*}"
+    cp -pP "$source" "$target"
+  done
 
 # The one mutation, and it lands in the throwaway. `--frozen --no-sync` keeps it to the single
 # pyproject key: no re-lock, no .venv.

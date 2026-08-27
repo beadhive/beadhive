@@ -5,6 +5,7 @@ from __future__ import annotations
 import getpass
 import os
 import tempfile
+import threading
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,21 @@ from harness.world import (
     reap_dolt_server,
     sweep_orphaned_dolt_servers,
 )
+
+pytest_plugins = ("harness.watchdog_diagnostics",)
+
+
+@pytest.fixture(autouse=True)
+def _reject_local_runtime_thread_leaks():
+    """Name the owning test when a LocalRuntime forgets to close its private loop."""
+    before = {thread for thread in threading.enumerate() if thread.is_alive()}
+    yield
+    leaked = [
+        thread
+        for thread in threading.enumerate()
+        if thread.is_alive() and thread not in before and thread.name == "bh-local-runtime"
+    ]
+    assert not leaked, "LocalRuntime leaked private event-loop thread(s); call close()"
 
 
 def _pytest_tmp_root(config):
@@ -178,10 +194,16 @@ def _sandbox_global_git_config(tmp_path_factory, monkeypatch):
 
     ``GIT_CONFIG_GLOBAL`` (not ``HOME``) is the lever, because it is surgical: it redirects
     only what ``--global`` reads and writes, leaving ``~/.ssh`` probing and every other
-    home-relative lookup honest. Seeded EMPTY so a test observes a bare host by default —
-    a test that wants an existing identity writes it into this file itself."""
-    cfg = tmp_path_factory.mktemp("git-global") / "gitconfig"
-    cfg.write_text("")
+    home-relative lookup honest. It has no identity, so a test observes a bare host by default;
+    its sole seed points ``core.excludesFile`` at an empty sibling file. Git otherwise falls back
+    to the operator's ``$XDG_CONFIG_HOME/git/ignore`` independently of ``GIT_CONFIG_GLOBAL``,
+    making hermetic fixture setup depend on personal ignore state (bh-idn2c). A test that wants
+    existing identity or excludes writes them into this isolated file itself."""
+    root = tmp_path_factory.mktemp("git-global")
+    cfg = root / "gitconfig"
+    excludes = root / "excludes"
+    excludes.write_text("")
+    cfg.write_text(f"[core]\n\texcludesFile = {excludes}\n")
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(cfg))
 
 
@@ -223,6 +245,22 @@ def _sandbox_worktree_root_override(monkeypatch):
     """
     monkeypatch.delenv("BH_WORKTREES", raising=False)
     monkeypatch.delenv("WS_WORKTREES", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _sandbox_validation_host(tmp_path_factory, monkeypatch):
+    """Give every test its own simulated validation host and admission semaphore.
+
+    A clean-checkout gate legitimately holds a permit from the operator host while it runs this
+    suite. Tests that exercise the real CLI must not contend with that outer permit: their host is
+    a fixture, just like their BH_HOME, workspace, Git config, and shared Dolt server. Child
+    processes inherit this per-test root, so real contention and owner-death tests still exercise
+    production flock behavior inside their sandbox. Tests needing a particular root or capacity
+    may explicitly override either variable after this baseline.
+    """
+    root = tmp_path_factory.mktemp("validation-host")
+    monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(root))
+    monkeypatch.delenv("BH_VALIDATION_SLOTS", raising=False)
 
 
 @pytest.fixture(autouse=True)

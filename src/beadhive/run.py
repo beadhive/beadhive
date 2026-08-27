@@ -300,6 +300,7 @@ def run(
     timeout=None,
     github_token=False,
     tee=None,
+    exact_env=False,
 ):
     """Run a command. Returns CompletedProcess. capture=True grabs stdout/stderr as text.
     timeout (seconds) raises subprocess.TimeoutExpired so a wedged child can't block forever.
@@ -307,8 +308,10 @@ def run(
     :func:`_tee`); it is ignored alongside ``capture``/``timeout``, which own the pipes already.
 
     The child's environment is CONSTRUCTED (:func:`child_env`), never inherited raw — an explicit
-    ``env=`` is the base it gap-fills, not a bypass. ``github_token=True`` additionally supplies a
-    freshly-derived ``GITHUB_TOKEN`` to a child that needs one.
+    ``env=`` is normally the base it gap-fills, not a bypass. Security-sensitive local tools may
+    set ``exact_env=True`` with an explicit mapping to launch with exactly those keys and no
+    gap-fills. Exact mode rejects ``github_token=True`` because deriving a token would contradict
+    that boundary.
 
     A binary that is not on PATH comes back to a ``check=False`` caller as exit 127 (the shell's
     own command-not-found code), NOT as a raised ``FileNotFoundError``. Those callers are written
@@ -316,15 +319,24 @@ def run(
     escaped as an unhandled crash from anything that merely READ through bd: `bh doctor` died with
     a traceback on precisely the broken seat it exists to diagnose (bh-7m2h9). A ``check=True``
     caller asked for an exception, so it still gets one, unchanged."""
+    if exact_env:
+        if env is None:
+            raise ValueError("exact_env=True requires an explicit env mapping")
+        if github_token:
+            raise ValueError("exact_env=True cannot derive a GitHub token")
+        launch_env = dict(env)
+    else:
+        launch_env = child_env(env, github_token=github_token)
+
     with _span(cmd):
         try:
             if tee is not None and not capture and timeout is None:
-                return _tee(cmd, env=child_env(env, github_token=github_token), cwd=cwd, tee=tee)
+                return _tee(cmd, env=launch_env, cwd=cwd, tee=tee)
             return subprocess.run(
                 cmd,
                 check=check,
                 text=True,
-                env=child_env(env, github_token=github_token),
+                env=launch_env,
                 cwd=cwd,
                 input=text_input,
                 timeout=timeout,

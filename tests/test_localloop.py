@@ -26,6 +26,7 @@ import threading
 import time
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -1099,24 +1100,26 @@ def test_local_runtime_schedules_observes_and_is_idempotent(tmp_path):
     from beadhive import runtime as runtime_mod
 
     inst = _instructions(tmp_path, "i", "STUB_STATUS=done")
-    rt = localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}")
-    assert isinstance(rt, runtime_mod.Runtime)
+    with localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}") as rt:
+        assert isinstance(rt, runtime_mod.Runtime)
 
-    handle = rt.schedule(
-        "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s1"
-    )
-    again = rt.schedule(
-        "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s2"
-    )
-    assert again.session_id == handle.session_id == "s1", "a second schedule is not a second run"
+        handle = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s1"
+        )
+        again = rt.schedule(
+            "b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s2"
+        )
+        assert again.session_id == handle.session_id == "s1", (
+            "a second schedule is not a second run"
+        )
 
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        outcome = rt.observe(handle)
-        if outcome.status != "running":
-            break
-        time.sleep(0.05)
-    assert outcome.status == "done"
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            outcome = rt.observe(handle)
+            if outcome.status != "running":
+                break
+            time.sleep(0.05)
+        assert outcome.status == "done"
 
 
 @pytest.mark.parametrize(
@@ -1130,32 +1133,101 @@ def test_local_runtime_translates_canonical_model_only_at_launch_and_reports_rou
     tmp_path, harness, canonical_model, argv_model
 ):
     inst = _instructions(tmp_path, "routing", "STUB_STATUS=done")
-    rt = localloop.LocalRuntime(seat_command=f"{sys.executable} {STUB_SEAT}", harness=harness)
-    decision = _model_selection(canonical_model, harness=harness)
-    handle = rt.schedule(
-        "b1",
-        "developer",
-        workspace=str(tmp_path),
-        instructions=str(inst),
-        session_id="routing-1",
-        decision=decision,
-    )
-    seat = rt._runs["b1"]
-    model_index = seat.argv.index("--model")
-    assert seat.argv[model_index + 1] == argv_model
-    assert seat.routing["selected_model"] == canonical_model
-    assert "launch_model" not in seat.routing
+    with localloop.LocalRuntime(
+        seat_command=f"{sys.executable} {STUB_SEAT}", harness=harness
+    ) as rt:
+        decision = _model_selection(canonical_model, harness=harness)
+        handle = rt.schedule(
+            "b1",
+            "developer",
+            workspace=str(tmp_path),
+            instructions=str(inst),
+            session_id="routing-1",
+            decision=decision,
+        )
+        seat = rt._runs["b1"]
+        model_index = seat.argv.index("--model")
+        assert seat.argv[model_index + 1] == argv_model
+        assert seat.routing["selected_model"] == canonical_model
+        assert "launch_model" not in seat.routing
 
-    deadline = time.monotonic() + 15
-    while time.monotonic() < deadline:
-        outcome = rt.observe(handle)
-        if outcome.status != "running":
-            break
-        time.sleep(0.05)
-    assert outcome.status == "done"
-    assert outcome.routing["complexity"] == "COMPLEX"
-    assert outcome.routing["selected_model"] == canonical_model
-    assert "launch_model" not in outcome.routing
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            outcome = rt.observe(handle)
+            if outcome.status != "running":
+                break
+            time.sleep(0.05)
+        assert outcome.status == "done"
+        assert outcome.routing["complexity"] == "COMPLEX"
+        assert outcome.routing["selected_model"] == canonical_model
+        assert "launch_model" not in outcome.routing
+
+
+def test_local_runtime_close_is_idempotent_and_joins_its_loop(tmp_path):
+    inst = _instructions(tmp_path, "close", "STUB_HANG=true")
+    rt = localloop.LocalRuntime(
+        seat_command=f"{sys.executable} {STUB_SEAT}", terminate_grace=0.2, envelope_grace=0.2
+    )
+    rt.schedule("b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s")
+    thread = rt._thread
+    seat = rt._runs["b1"]
+
+    rt.close()
+    rt.close()
+
+    assert thread is not None and not thread.is_alive()
+    assert not localloop.group_alive(seat.pgid)
+    assert rt._loop is None
+    assert rt._thread is None
+
+
+def test_local_runtime_close_is_bounded_and_reaps_when_shutdown_stalls(tmp_path, monkeypatch):
+    inst = _instructions(tmp_path, "stalled-close", "STUB_HANG=true")
+    rt = localloop.LocalRuntime(
+        seat_command=f"{sys.executable} {STUB_SEAT}", terminate_grace=0.1, envelope_grace=0.0
+    )
+    rt.schedule("b1", "developer", workspace=str(tmp_path), instructions=str(inst), session_id="s")
+    thread = rt._thread
+    seat = rt._runs["b1"]
+
+    async def never_finishes():
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(rt, "_shutdown_runs", never_finishes)
+    started = time.monotonic()
+
+    with pytest.raises(RuntimeError, match="cleanup timed out"):
+        rt.close()
+
+    assert time.monotonic() - started < 2.5
+    assert thread is not None and not thread.is_alive()
+    assert not localloop.group_alive(seat.pgid)
+
+
+def test_local_runtime_shutdown_attempts_every_seat_and_rejects_a_surviving_group(monkeypatch):
+    rt = localloop.LocalRuntime()
+    first = SimpleNamespace(finished=True, bead_id="first", pgid=101)
+    second = SimpleNamespace(finished=True, bead_id="second", pgid=202)
+    rt._runs = {"first": first, "second": second}
+    attempted = []
+
+    async def collect(_seat, _grace):
+        return ""
+
+    async def reap(seat, *, grace):
+        attempted.append(seat.bead_id)
+        if seat is first:
+            raise PermissionError("first cleanup denied")
+        return localloop.ReapResult(group_gone=False)
+
+    monkeypatch.setattr(localloop, "_collect_with_timeout", collect)
+    monkeypatch.setattr(localloop, "reap_group", reap)
+
+    with pytest.raises(RuntimeError, match=r"first.*cleanup failed.*second.*survived cleanup"):
+        asyncio.run(rt._shutdown_runs())
+
+    assert attempted == ["first", "first", "second"]
+    assert rt._runs == {}
 
 
 def test_local_runtime_strict_block_prevents_launch_with_full_remediation(tmp_path):

@@ -177,23 +177,32 @@ That layer is acknowledged here, not audited.
 
 | tool | licence | why it is not in the image |
 |---|---|---|
-| `repowise` | AGPL-3.0 | optional user-installed dependency; use `briancripe/repowise@feat/no-mcp-json-no-vscode` |
+| `repowise` | AGPL-3.0 | optional user-installed dependency; use `briancripe/repowise@feat/no-mcp-json-no-vscode-flags` |
 | Claude Code | `SEE LICENSE IN README.md` | proprietary — shipping it would redistribute it under Anthropic's commercial terms |
 
 Claude Code is installed at runtime with `bh dep install claude`, which names the licence before
 acting so accepting those terms is the user's own choice.
 
-The repowise plugin requires the fork's `--no-mcp-json` and `--no-vscode` flags. Both the fork
-and stock repowise report `0.45.0`, so bh probes `repowise init --help` instead of trusting a
-version. Install the fork from its branch (or another build advertising both flags); `bh setup
-check`, `bh doctor`, and `bh hive ready` report an actionable warning when the configured plugin
-cannot provide them, and indexing is skipped rather than failing each worktree.
+The supported repowise build is the fork branch named above; the currently verified checkout
+reports `0.35.0`. The version alone is not the compatibility boundary: fork and stock builds have
+shared version strings while exposing different command surfaces. Beadhive therefore probes
+both `repowise init --help` and `repowise update --help`, matches exact option tokens, and requires
+every spelling it invokes. A failed help probe is unsupported rather than evidence of an empty
+option set. `bh setup check`, `bh doctor`, and `bh hive ready` report the complete missing-flag
+set, and indexing is skipped instead of repeatedly running an unsupported command.
 
-The repowise plugin requires the fork's `--no-mcp-json` and `--no-vscode` flags. Both the fork
-and stock repowise report `0.45.0`, so bh probes `repowise init --help` instead of trusting a
-version. Install the fork from its branch (or another build advertising both flags); `bh setup
-check` and `bh hive ready` report an actionable warning when the configured plugin cannot provide
-them, and indexing is skipped rather than failing each worktree.
+Every Beadhive-managed init also sets `REPOWISE_SKIP_EDITOR_SETUP=1`, the fork's supported
+headless/CI contract for suppressing machine-wide editor registration and user hooks. The
+`--no-claude-md`, `--no-codex`, `--no-mcp-json`, and `--no-vscode` flags independently suppress
+project-local editor files, while `-y` keeps provisioning noninteractive. The environment guard
+is deliberately not replaced with the removed `--no-editor-setup` option: it is not advertised by
+the supported CLI and fails before indexing on the verified build.
+Managed repowise children receive a positive allowlist of operational host settings (`PATH`, home,
+temporary-directory, locale, terminal, and cross-platform process variables) rather than the raw
+ambient environment. Git configuration injection, cloud/provider credentials, and unrelated
+token/password/API-key values therefore never reach the local no-prose indexer. The subprocess
+launcher uses its exact-environment mode for these calls, so its normal `GIT_WORKSPACE` gap-fill
+cannot widen that allowlist after the repowise plugin constructs it.
 
 **Codex used to be the exception, and no longer is (bh-lnrn).** It declares Apache-2.0 and passes
 the allowlist outright — it was shipped for exactly that reason. It is now excluded anyway, by

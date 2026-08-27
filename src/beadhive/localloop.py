@@ -82,6 +82,7 @@ WHAT IS NOT HERE
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import json
 import os
@@ -2410,6 +2411,117 @@ class LocalRuntime:
 
     def _submit(self, coro):
         return asyncio.run_coroutine_threadsafe(coro, self._ensure_loop()).result()
+
+    async def _shutdown_runs(self) -> None:
+        """Reap every process before the private loop that owns its pipes is stopped."""
+        failures: list[str] = []
+        for seat in tuple(self._runs.values()):
+            reap = None
+            try:
+                if seat.finished:
+                    await _collect_with_timeout(seat, self.envelope_grace)
+                    reap = await reap_group(seat, grace=self.terminate_grace)
+                else:
+                    result = await cancel(
+                        seat,
+                        rungs=(RUNG_SIGNAL,),
+                        cooperative_grace=0.0,
+                        hard_grace=0.0,
+                        envelope_grace=self.envelope_grace,
+                        terminate_grace=self.terminate_grace,
+                    )
+                    reap = result.reap
+            except Exception as exc:
+                failures.append(f"{seat.bead_id}: cleanup failed: {exc}")
+                try:
+                    reap = await reap_group(seat, grace=self.terminate_grace)
+                except Exception as reap_exc:
+                    failures.append(f"{seat.bead_id}: fallback reap failed: {reap_exc}")
+            if reap is not None and not reap.group_gone:
+                failures.append(f"{seat.bead_id}: process group {seat.pgid} survived cleanup")
+        self._runs.clear()
+        if failures:
+            raise RuntimeError("; ".join(failures))
+
+    def _shutdown_timeout(self) -> float:
+        # cancel may consume three envelope windows and reap_group has separate SIGTERM and
+        # SIGKILL grace windows. If ordinary cleanup raises late, its fallback reap can consume
+        # both termination windows again.
+        per_seat = 3 * max(self.envelope_grace, 0.0) + 4 * max(self.terminate_grace, 0.0) + 1.0
+        return max(per_seat * max(len(self._runs), 1), 1.0)
+
+    async def _fallback_reap_runs(self) -> list[str]:
+        failures: list[str] = []
+        for seat in tuple(self._runs.values()):
+            try:
+                reap = await reap_group(seat, grace=self.terminate_grace)
+            except BaseException as exc:
+                failures.append(f"{seat.bead_id}: last-resort reap failed: {exc}")
+                continue
+            if not reap.group_gone:
+                failures.append(
+                    f"{seat.bead_id}: process group {seat.pgid} survived last-resort reap"
+                )
+        self._runs.clear()
+        return failures
+
+    def close(self) -> None:
+        """Stop owned processes and join the private event-loop thread.
+
+        A daemon thread is not lifecycle management: leaving these loops alive makes later
+        subprocess launches fork from a multithreaded process on platforms where Python cannot
+        use ``posix_spawn`` for that invocation. ``close`` is explicit and idempotent so callers
+        and tests can make the process boundary deterministic.
+        """
+        loop, thread = self._loop, self._thread
+        if loop is None:
+            return
+        failure: BaseException | None = None
+        try:
+            future = asyncio.run_coroutine_threadsafe(self._shutdown_runs(), loop)
+            try:
+                future.result(timeout=self._shutdown_timeout())
+            except concurrent.futures.TimeoutError:
+                future.cancel()
+                try:
+                    asyncio.run_coroutine_threadsafe(asyncio.sleep(0), loop).result(timeout=1.0)
+                except (concurrent.futures.TimeoutError, RuntimeError):
+                    pass
+                fallback = asyncio.run_coroutine_threadsafe(self._fallback_reap_runs(), loop)
+                fallback_timeout = max(
+                    (2 * max(self.terminate_grace, 0.0) + 1.0) * max(len(self._runs), 1),
+                    1.0,
+                )
+                try:
+                    fallback_failures = fallback.result(timeout=fallback_timeout)
+                except concurrent.futures.TimeoutError:
+                    fallback.cancel()
+                    fallback_failures = ["last-resort process-group reap timed out"]
+                detail = f"; {'; '.join(fallback_failures)}" if fallback_failures else ""
+                failure = RuntimeError(f"local runtime process cleanup timed out{detail}")
+            except BaseException as exc:
+                failure = exc
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            if thread is not None:
+                thread.join(timeout=max(self.terminate_grace + self.envelope_grace, 1.0))
+            if thread is not None and thread.is_alive():
+                failure = RuntimeError("local runtime event loop did not stop")
+            else:
+                try:
+                    loop.close()
+                except BaseException as exc:
+                    failure = failure or exc
+                self._loop = None
+                self._thread = None
+        if failure is not None:
+            raise RuntimeError(f"local runtime close failed: {failure}") from failure
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.close()
 
     # ---- Runtime ---------------------------------------------------------------------------
 
