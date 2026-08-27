@@ -84,7 +84,13 @@ def _repowise_env() -> dict[str, str]:
 def _option_flags(help_text: str) -> frozenset[str]:
     """Parse only Click option declaration rows; prose may name removed/deprecated flags."""
     flags = set()
+    in_options = False
     for line in help_text.splitlines():
+        if not in_options:
+            in_options = line.strip() == "Options:"
+            continue
+        if line and not line[0].isspace():
+            break
         if match := _OPTION_DECLARATION_ROW.match(line):
             flags.update(_FLAG_TOKEN.findall(match.group("declarations")))
     return frozenset(flags)
@@ -107,6 +113,7 @@ def capabilities(command: str) -> frozenset[str] | None:
             check=False,
             capture=True,
             env=_repowise_env(),
+            exact_env=True,
         )
     except Exception:  # noqa: BLE001 - a capability probe must never break a hook
         return None
@@ -244,6 +251,7 @@ def _index(path: Path, *, workspace: bool) -> int:
         args,
         check=False,
         env=_repowise_env(),
+        exact_env=True,
     )
     return result.returncode
 
@@ -293,6 +301,7 @@ def _refresh_base(cfg, entry, *, main: Path, branch: str, target: Path, start_po
         ["repowise", "update", str(main), "--index-only", "--no-workspace"],
         check=False,
         env=_repowise_env(),
+        exact_env=True,
     )
     elapsed = time.monotonic() - started
     if result.returncode:
@@ -329,6 +338,7 @@ def _seed_worktree(cfg, entry, *, main: Path, branch: str, target: Path) -> None
         check=False,
         cwd=target,
         env=_repowise_env(),
+        exact_env=True,
     )
     elapsed = time.monotonic() - started
     if result.returncode:

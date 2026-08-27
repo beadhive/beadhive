@@ -48,7 +48,12 @@ def test_capabilities_probe_init_help_not_version(monkeypatch):
     assert calls == [
         (
             ["repowise", "init", "--help"],
-            {"check": False, "capture": True, "env": repowise_plugin._repowise_env()},
+            {
+                "check": False,
+                "capture": True,
+                "env": repowise_plugin._repowise_env(),
+                "exact_env": True,
+            },
         )
     ]
 
@@ -83,13 +88,13 @@ def test_capabilities_ignore_removed_flags_mentioned_only_in_help_prose(monkeypa
         "init": SimpleNamespace(
             returncode=0,
             stdout=_option_help(repowise_plugin._REQUIRED_INIT_FLAGS - {"--no-codex"})
-            + "\n  This build removed --no-codex; use editor defaults instead.\n",
+            + "\nNotes:\n  --no-codex  removed; use editor defaults instead.\n",
             stderr="",
         ),
         "update": SimpleNamespace(
             returncode=0,
             stdout=_option_help(repowise_plugin._REQUIRED_UPDATE_FLAGS - {"--index-only"})
-            + "\n  The deprecated --index-only spelling is no longer accepted.\n",
+            + "\nDeprecated:\n  --index-only was removed.  Use the default update mode.\n",
             stderr="",
         ),
     }
@@ -144,10 +149,29 @@ def test_repowise_guard_environment_executes_the_installed_binary():
         check=False,
         capture=True,
         env=repowise_plugin._repowise_env(),
+        exact_env=True,
     )
 
     assert result.returncode == 0, result.stderr
     assert "repowise" in result.stdout
+
+
+def test_repowise_exact_environment_reaches_the_final_real_child_unchanged(monkeypatch):
+    monkeypatch.setenv("GIT_WORKSPACE", "/operator/workspace")
+    intended = repowise_plugin._repowise_env()
+    env_bin = shutil.which("env")
+    assert env_bin is not None
+    result = repowise_plugin.run.run(
+        [env_bin],
+        check=True,
+        capture=True,
+        env=intended,
+        exact_env=True,
+    )
+
+    observed = dict(line.split("=", 1) for line in result.stdout.splitlines())
+    assert observed == intended
+    assert "GIT_WORKSPACE" not in observed
 
 
 def test_repowise_guard_environment_preserves_path_but_scrubs_routing_and_secrets(monkeypatch):
@@ -228,6 +252,7 @@ def test_single_repo_index_uses_no_workspace_and_skips_editor_setup(monkeypatch,
     assert "--no-mcp-json" in argv
     assert "--no-vscode" in argv
     assert kwargs["env"] == repowise_plugin._repowise_env()
+    assert kwargs["exact_env"] is True
 
 
 def test_workspace_index_uses_exact_host_flags_without_no_workspace(monkeypatch, tmp_path):
@@ -261,6 +286,7 @@ def test_workspace_index_uses_exact_host_flags_without_no_workspace(monkeypatch,
     ]
     assert "--no-workspace" not in argv
     assert kwargs["env"] == repowise_plugin._repowise_env()
+    assert kwargs["exact_env"] is True
 
 
 def test_onboard_indexes_base_checkout_and_missing_binary_skips(monkeypatch, tmp_path):
@@ -311,6 +337,7 @@ def test_refresh_base_runs_before_create_only_when_stale(monkeypatch, tmp_path):
         "--no-workspace",
     ]
     assert calls[0][1]["env"] == repowise_plugin._repowise_env()
+    assert calls[0][1]["exact_env"] is True
     assert YAML().load(config_path.read_text())["editor_files"]["vscode"] is False
 
 
@@ -389,6 +416,7 @@ def test_seed_uses_auto_detection_and_installs_overlay(monkeypatch, tmp_path):
     assert str(target) not in argv
     assert kwargs["cwd"] == target
     assert kwargs["env"] == repowise_plugin._repowise_env()
+    assert kwargs["exact_env"] is True
     assert (target / ".repowise-workspace").resolve() == overlay.resolve()
     manifest = YAML().load((target / ".repowise-workspace.yaml").read_text())
     assert manifest["repos"][0]["path"] == str(repo.resolve())

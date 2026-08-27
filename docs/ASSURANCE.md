@@ -200,7 +200,9 @@ the supported CLI and fails before indexing on the verified build.
 Managed repowise children receive a positive allowlist of operational host settings (`PATH`, home,
 temporary-directory, locale, terminal, and cross-platform process variables) rather than the raw
 ambient environment. Git configuration injection, cloud/provider credentials, and unrelated
-token/password/API-key values therefore never reach the local no-prose indexer.
+token/password/API-key values therefore never reach the local no-prose indexer. The subprocess
+launcher uses its exact-environment mode for these calls, so its normal `GIT_WORKSPACE` gap-fill
+cannot widen that allowlist after the repowise plugin constructs it.
 
 **Codex used to be the exception, and no longer is (bh-lnrn).** It declares Apache-2.0 and passes
 the allowlist outright — it was shipped for exactly that reason. It is now excluded anyway, by
