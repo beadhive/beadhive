@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import multiprocessing as mp
 import os
 import time
 
 import pytest
 
 from beadhive import validation_admission, worktree_verify
+from harness.processes import process_context
 
 
 def _hold(root, entered, release):
@@ -16,14 +16,123 @@ def _hold(root, entered, release):
         release.wait(5)
 
 
+def _exact_caller_worker(
+    state_path,
+    hive_root,
+    arrivals,
+    starts,
+    uses,
+    running,
+    release,
+    results,
+    verdict,
+    exit_code,
+):
+    def latest(*_args, **_kwargs):
+        return json.loads(state_path.read_text()) if state_path.exists() else None
+
+    def reuse(*_args, **_kwargs):
+        value = latest()
+        return bool(
+            value and value.get("lifecycle") == "completed" and value.get("verdict") == "green"
+        )
+
+    def execute(*_args, **_kwargs):
+        with starts.get_lock():
+            starts.value += 1
+        state_path.write_text(json.dumps({"run_id": "leader", "lifecycle": "running"}))
+        running.set()
+        release.wait(5)
+        state_path.write_text(
+            json.dumps(
+                {
+                    "run_id": "leader",
+                    "lifecycle": "completed",
+                    "verdict": verdict,
+                    "exit_code": exit_code,
+                }
+            )
+        )
+        return exit_code
+
+    def record_use(*_args, **_kwargs):
+        with uses.get_lock():
+            uses.value += 1
+
+    worktree_verify._branch_sha = lambda *_args: "a" * 40
+    worktree_verify.registry.hive_dir = lambda *_args: hive_root
+    worktree_verify.validation_ledger.tree_of = lambda *_args: "tree"
+    worktree_verify.validation_ledger.cmd_hash = lambda *_args: "command"
+    worktree_verify.validation_records.latest_run = latest
+    worktree_verify.validation_records.record_use = record_use
+    worktree_verify._reuse_verdict_hit = reuse
+    worktree_verify._impl_clean_checkout_unadmitted = execute
+    with arrivals.get_lock():
+        arrivals.value += 1
+    results.put(worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=True))
+
+
+def _abandoned_caller_worker(state_path, hive_root, starts):
+    def latest(*_args, **_kwargs):
+        return json.loads(state_path.read_text())
+
+    def read_run(_main, run_id):
+        if run_id != "dead":
+            return None
+        return {
+            "run_id": "dead",
+            "tree": "tree",
+            "command_hash": "command",
+            "lifecycle": "abandoned",
+            "verdict": "none",
+        }
+
+    def execute(*_args, **_kwargs):
+        with starts.get_lock():
+            starts.value += 1
+        staged = state_path.with_name(f"run-{os.getpid()}.tmp")
+        staged.write_text(
+            json.dumps(
+                {
+                    "run_id": "replacement",
+                    "lifecycle": "completed",
+                    "verdict": "green",
+                    "exit_code": 0,
+                }
+            )
+        )
+        os.replace(staged, state_path)
+        return 0
+
+    worktree_verify._branch_sha = lambda *_args: "a" * 40
+    worktree_verify.registry.hive_dir = lambda *_args: hive_root
+    worktree_verify.validation_ledger.tree_of = lambda *_args: "tree"
+    worktree_verify.validation_ledger.cmd_hash = lambda *_args: "command"
+    worktree_verify.validation_records.latest_run = latest
+    worktree_verify.validation_records.read_run = read_run
+    worktree_verify._reuse_verdict_hit = lambda *_args, **_kwargs: (
+        json.loads(state_path.read_text()).get("verdict") == "green"
+    )
+    worktree_verify._impl_clean_checkout_unadmitted = execute
+    worktree_verify.impl_clean_checkout(
+        {},
+        "main",
+        "true",
+        cfg={},
+        reuse=True,
+        observed_active_run_id="dead",
+    )
+
+
 def test_host_slot_contends_across_processes_and_releases(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_VALIDATION_SLOTS", "1")
-    entered, release = mp.Event(), mp.Event()
-    child = mp.Process(target=_hold, args=(tmp_path, entered, release))
+    ctx = process_context()
+    entered, release = ctx.Event(), ctx.Event()
+    child = ctx.Process(target=_hold, args=(tmp_path, entered, release))
     child.start()
     assert entered.wait(3)
-    second = mp.Event()
-    waiter = mp.Process(target=_hold, args=(tmp_path, second, release))
+    second = ctx.Event()
+    waiter = ctx.Process(target=_hold, args=(tmp_path, second, release))
     waiter.start()
     time.sleep(0.15)
     assert not second.is_set()
@@ -36,8 +145,9 @@ def test_host_slot_contends_across_processes_and_releases(tmp_path, monkeypatch)
 
 def test_slot_owner_death_releases_kernel_permit(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_VALIDATION_SLOTS", "1")
-    entered, release = mp.Event(), mp.Event()
-    child = mp.Process(target=_hold, args=(tmp_path, entered, release))
+    ctx = process_context()
+    entered, release = ctx.Event(), ctx.Event()
+    child = ctx.Process(target=_hold, args=(tmp_path, entered, release))
     child.start()
     assert entered.wait(3)
     child.kill()
@@ -143,8 +253,9 @@ def test_exact_callers_start_one_child_and_share_terminal_result(
     tmp_path, monkeypatch, verdict, exit_code, expected
 ):
     """Real processes contend on the production flocks; only the leader enters the child seam."""
-    ctx = mp.get_context("fork")
+    ctx = process_context()
     state = tmp_path / "run.json"
+    arrivals = ctx.Value("i", 0)
     starts = ctx.Value("i", 0)
     uses = ctx.Value("i", 0)
     running = ctx.Event()
@@ -152,56 +263,28 @@ def test_exact_callers_start_one_child_and_share_terminal_result(
     results = ctx.Queue()
     monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(tmp_path / "locks"))
     monkeypatch.setenv("BH_VALIDATION_SLOTS", "2")
-    monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
-    monkeypatch.setattr(worktree_verify.registry, "hive_dir", lambda *_: tmp_path)
-    monkeypatch.setattr(worktree_verify.validation_ledger, "tree_of", lambda *a: "tree")
-    monkeypatch.setattr(worktree_verify.validation_ledger, "cmd_hash", lambda *a: "command")
-
-    def latest(*args, **kwargs):
-        return json.loads(state.read_text()) if state.exists() else None
-
-    def reuse(*args, **kwargs):
-        value = latest()
-        return bool(
-            value and value.get("lifecycle") == "completed" and value.get("verdict") == "green"
-        )
-
-    def execute(*args, **kwargs):
-        with starts.get_lock():
-            starts.value += 1
-        state.write_text(json.dumps({"run_id": "leader", "lifecycle": "running"}))
-        running.set()
-        release.wait(5)
-        state.write_text(
-            json.dumps(
-                {
-                    "run_id": "leader",
-                    "lifecycle": "completed",
-                    "verdict": verdict,
-                    "exit_code": exit_code,
-                }
-            )
-        )
-        return exit_code
-
-    def record_use(*args, **kwargs):
-        with uses.get_lock():
-            uses.value += 1
-
-    monkeypatch.setattr(worktree_verify.validation_records, "latest_run", latest)
-    monkeypatch.setattr(worktree_verify.validation_records, "record_use", record_use)
-    monkeypatch.setattr(worktree_verify, "_reuse_verdict_hit", reuse)
-    monkeypatch.setattr(worktree_verify, "_impl_clean_checkout_unadmitted", execute)
-
-    def call():
-        results.put(worktree_verify.impl_clean_checkout({}, "main", "true", cfg={}, reuse=True))
-
-    leader = ctx.Process(target=call)
+    worker_args = (
+        state,
+        tmp_path,
+        arrivals,
+        starts,
+        uses,
+        running,
+        release,
+        results,
+        verdict,
+        exit_code,
+    )
+    leader = ctx.Process(target=_exact_caller_worker, args=worker_args)
     leader.start()
     assert running.wait(3)
-    followers = [ctx.Process(target=call) for _ in range(4)]
+    followers = [ctx.Process(target=_exact_caller_worker, args=worker_args) for _ in range(4)]
     for follower in followers:
         follower.start()
+    deadline = time.monotonic() + 3
+    while arrivals.value != 5 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert arrivals.value == 5
     time.sleep(0.1)
     release.set()
     for process in [leader, *followers]:
@@ -225,63 +308,11 @@ def test_abandoned_identity_allows_one_replacement_execution(tmp_path, monkeypat
         os.replace(staged, state)
 
     write_state({"run_id": "dead", "lifecycle": "abandoned", "verdict": "none"})
-    starts = mp.Value("i", 0)
+    ctx = process_context()
+    starts = ctx.Value("i", 0)
     monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(tmp_path / "locks"))
-    monkeypatch.setattr(worktree_verify, "_branch_sha", lambda *_: "a" * 40)
-    monkeypatch.setattr(worktree_verify.registry, "hive_dir", lambda *_: tmp_path)
-    monkeypatch.setattr(worktree_verify.validation_ledger, "tree_of", lambda *a: "tree")
-    monkeypatch.setattr(worktree_verify.validation_ledger, "cmd_hash", lambda *a: "command")
-    monkeypatch.setattr(
-        worktree_verify.validation_records,
-        "latest_run",
-        lambda *a, **k: json.loads(state.read_text()),
-    )
-    monkeypatch.setattr(
-        worktree_verify.validation_records,
-        "read_run",
-        lambda _main, run_id: (
-            {
-                "run_id": "dead",
-                "tree": "tree",
-                "command_hash": "command",
-                "lifecycle": "abandoned",
-                "verdict": "none",
-            }
-            if run_id == "dead"
-            else None
-        ),
-    )
-    monkeypatch.setattr(
-        worktree_verify,
-        "_reuse_verdict_hit",
-        lambda *a, **k: json.loads(state.read_text()).get("verdict") == "green",
-    )
-
-    def execute(*args, **kwargs):
-        with starts.get_lock():
-            starts.value += 1
-        write_state(
-            {
-                "run_id": "replacement",
-                "lifecycle": "completed",
-                "verdict": "green",
-                "exit_code": 0,
-            }
-        )
-        return 0
-
-    monkeypatch.setattr(worktree_verify, "_impl_clean_checkout_unadmitted", execute)
     processes = [
-        mp.get_context("fork").Process(
-            target=lambda: worktree_verify.impl_clean_checkout(
-                {},
-                "main",
-                "true",
-                cfg={},
-                reuse=True,
-                observed_active_run_id="dead",
-            )
-        )
+        ctx.Process(target=_abandoned_caller_worker, args=(state, tmp_path, starts))
         for _ in range(4)
     ]
     for process in processes:

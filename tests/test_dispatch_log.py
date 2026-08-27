@@ -10,10 +10,10 @@ exercise the actual `O_APPEND` guarantee this module's docstring rests its claim
 from __future__ import annotations
 
 import json
-import multiprocessing
 import os
 
 from beadhive import dispatch_log, log
+from harness.processes import process_context
 
 
 def test_truncate_field_leaves_short_values_untouched():
@@ -83,7 +83,7 @@ def test_concurrent_writers_produce_parseable_lines(tmp_path):
     n_writers = 6
     n_records = 40
 
-    ctx = multiprocessing.get_context("spawn")
+    ctx = process_context()
     procs = [
         ctx.Process(target=_write_records, args=(str(sink), writer_id, n_records))
         for writer_id in range(n_writers)

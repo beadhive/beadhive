@@ -9,7 +9,6 @@ passes after its lifecycle preflight.
 from __future__ import annotations
 
 import json
-import multiprocessing as mp
 import os
 import signal
 import subprocess
@@ -20,6 +19,7 @@ from pathlib import Path
 import pytest
 
 from beadhive import host, validation_admission, validation_ledger, validation_records, worktree
+from harness.processes import process_context
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -52,6 +52,7 @@ def _read_state(root: Path) -> dict:
 
 
 def _run_submit_gate(entry, branch, command, cfg, bead, results) -> None:
+    host.host_id = lambda: "proof-host"
     rc = worktree.clean_checkout(
         entry,
         branch,
@@ -166,7 +167,7 @@ while not (root / 'release').exists():
 def test_two_submits_and_duplicate_retry_obey_capacity_and_coalesce(proof_hive, slots):
     entry, main, command, state_root, worktrees_root = proof_hive
     cfg = {"work": {"validation_slots": slots}}
-    ctx = mp.get_context("fork")
+    ctx = process_context()
     results = ctx.Queue()
     branch_a = "wt/bead/issue/proof-a"
     branch_b = "wt/bead/issue/proof-b"
@@ -227,7 +228,7 @@ def test_two_submits_and_duplicate_retry_obey_capacity_and_coalesce(proof_hive, 
 def test_forced_submit_owner_death_reaps_child_checkout_record_and_locks(proof_hive):
     entry, main, command, state_root, worktrees_root = proof_hive
     cfg = {"work": {"validation_slots": 1}}
-    ctx = mp.get_context("fork")
+    ctx = process_context()
     discarded = ctx.Queue()
     branch = "wt/bead/issue/proof-a"
     owner = ctx.Process(

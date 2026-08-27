@@ -11,7 +11,6 @@ from __future__ import annotations
 import datetime
 import io
 import json
-import multiprocessing as mp
 import os
 import re
 import shutil
@@ -44,6 +43,7 @@ from beadhive import (
     worktree,
 )
 from beadhive.run import run as real_run
+from harness.processes import process_context
 from harness.validation_state import age as age_verdict
 
 _CLEAN_ENV = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
@@ -1354,7 +1354,10 @@ def _wait_validation_state(root, predicate, timeout=10.0):
     raise AssertionError("validation sentinel did not reach the expected state")
 
 
-def _submit_in_process(bead, results):
+def _submit_in_process(bead, results, fakebd):
+    work.run = fakebd
+    bd_mod._run = fakebd
+    plan.verify_epic = lambda *a, **k: []
     output = io.StringIO()
     rc = 0
     try:
@@ -1433,15 +1436,18 @@ while not (root / 'release').exists():
         _git("add", "identity.txt", cwd=target)
         _git("commit", "-qm", f"feat: submit identity {identity_value}", cwd=target)
 
-    ctx = mp.get_context("fork")
+    ctx = process_context()
     results = ctx.Queue()
-    leader = ctx.Process(target=_submit_in_process, args=("mr-submit-a", results))
+    leader = ctx.Process(target=_submit_in_process, args=("mr-submit-a", results, fakebd))
     leader.start()
     _wait_validation_state(state_root, lambda state: state.get("children", {}).get("A") == 1)
-    other = ctx.Process(target=_submit_in_process, args=("mr-submit-b", results))
-    duplicate = ctx.Process(target=_submit_in_process, args=("mr-submit-a", results))
-    other.start()
+    other = ctx.Process(target=_submit_in_process, args=("mr-submit-b", results, fakebd))
+    duplicate = ctx.Process(target=_submit_in_process, args=("mr-submit-a", results, fakebd))
     duplicate.start()
+    # Spawn starts a fresh interpreter rather than cloning this pytest worker. Give the exact
+    # retry time to reach active-run discovery before admitting the unrelated branch.
+    time.sleep(0.5)
+    other.start()
     if slots == 2:
         _wait_validation_state(state_root, lambda state: state.get("peak") == 2)
     else:
