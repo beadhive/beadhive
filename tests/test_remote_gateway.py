@@ -13,6 +13,7 @@ import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 from joserfc import jwt
 from joserfc.jwk import RSAKey
+from joserfc.jws import JWSRegistry
 
 from beadhive import remote_gateway
 
@@ -31,7 +32,12 @@ def _keys() -> tuple[RSAKey, RSAKey]:
     return RSAKey.import_key(private), RSAKey.import_key(private.public_key())
 
 
-def _token(private_key: RSAKey, **overrides: object) -> str:
+def _token(
+    private_key: RSAKey,
+    *,
+    header_overrides: dict[str, object] | None = None,
+    **overrides: object,
+) -> str:
     claims: dict[str, object] = {
         "iss": ISSUER,
         "aud": AUDIENCE,
@@ -39,7 +45,14 @@ def _token(private_key: RSAKey, **overrides: object) -> str:
         "exp": int(time.time()) + 300,
     }
     claims.update(overrides)
-    return jwt.encode({"alg": "RS256", "kid": "development-test"}, claims, private_key)
+    header: dict[str, object] = {"alg": "RS256", "kid": "development-test"}
+    header.update(header_overrides or {})
+    return jwt.encode(
+        header,
+        claims,
+        private_key,
+        registry=JWSRegistry(algorithms=["RS256"], strict_check_header=False),
+    )
 
 
 def _snapshot() -> dict[str, object]:
@@ -450,6 +463,36 @@ def test_invalid_identities_share_one_non_disclosing_failure(token_factory, revo
         }
     }
     assert remote_gateway.remote_payload_is_allowlisted("error", response.json())
+
+
+def test_clerk_token_category_header_is_supported_and_strictly_validated() -> None:
+    private_key, public_key = _keys()
+    app = _app(public_key)
+
+    async def action(client):
+        valid = await client.get(
+            "/v1/instances",
+            params={"limit": "50"},
+            headers=_headers(_token(private_key, header_overrides={"cat": "cl_test"})),
+        )
+        invalid = []
+        for category in (42, "session", "cl_", "cl_" + "a" * 129):
+            invalid.append(
+                await client.get(
+                    "/v1/instances",
+                    params={"limit": "50"},
+                    headers=_headers(
+                        _token(private_key, header_overrides={"cat": category})
+                    ),
+                )
+            )
+        return valid, invalid
+
+    valid, invalid = _exercise(app, action)
+    assert valid.status_code == 200
+    for response in invalid:
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "authentication_failed"
 
 
 def test_wrong_signature_origin_and_instance_fail_before_runtime_access() -> None:

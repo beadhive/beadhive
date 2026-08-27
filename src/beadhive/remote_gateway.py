@@ -20,6 +20,8 @@ from typing import Any
 from urllib.parse import urlsplit
 
 from joserfc import jwt
+from joserfc.jws import JWSRegistry
+from joserfc.registry import HeaderParameter
 from starlette.applications import Starlette
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -31,6 +33,19 @@ SCHEMA_VERSION = 1
 DEVELOPMENT_INSTANCE_ID = "dev/demo"
 DEVELOPMENT_ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 _ALGORITHM = "RS256"
+
+
+def _validate_clerk_token_category(value: Any) -> None:
+    if not isinstance(value, str) or re.fullmatch(r"cl_[A-Za-z0-9_-]{1,128}", value) is None:
+        raise ValueError("must be a Clerk token category")
+
+
+_CLERK_JWS_REGISTRY = JWSRegistry(
+    header_registry={
+        "cat": HeaderParameter("Clerk token category", _validate_clerk_token_category),
+    },
+    algorithms=[_ALGORITHM],
+)
 
 
 @dataclass(frozen=True)
@@ -110,7 +125,12 @@ class ClerkTokenVerifier:
         if not 1 <= len(encoded) <= 16_384:
             raise AuthenticationFailed
         try:
-            token = jwt.decode(encoded, self.key, algorithms=[_ALGORITHM])
+            token = jwt.decode(
+                encoded,
+                self.key,
+                algorithms=[_ALGORITHM],
+                registry=_CLERK_JWS_REGISTRY,
+            )
             claims = token.claims
             issuer = claims.get("iss")
             audience = claims.get("aud")
