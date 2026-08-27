@@ -77,3 +77,32 @@ snapshot availability, snapshot reads, commands, and stream opens have independe
 bulkheads. Calls have a five-second deadline, saturation fails unavailable immediately instead
 of creating an internal queue, and ASGI shutdown cancels and joins every admitted runtime
 operation or event read.
+
+## Owned-host Development profile
+
+The `beadhive-gateway` entry point is the deployable `dev/demo` profile. It binds only
+`127.0.0.1:8787` and reads the real registered `github/beadhive/beadhive` snapshot and retained
+event stream from the existing loopback host daemon at `127.0.0.1:8420`. It never reads a fixture
+or accepts a browser-selected hive. Its `refresh` command performs a revision-checked refresh of
+that authoritative source.
+
+The launcher accepts Clerk public JWKS and the authorized Development subject list only through
+mode-0600 service credential files. Under systemd, the default names are
+`clerk-jwks.json` and `authorized-subjects.json` below `CREDENTIALS_DIRECTORY`; optional explicit
+paths exist for other service managers. The process never accepts keys, subjects, origins,
+audiences, instance IDs, listener addresses, or local source locations as command arguments.
+
+[`deploy/systemd/beadhive-gateway-dev.service.example`](../deploy/systemd/beadhive-gateway-dev.service.example)
+is the least-privilege user-service template. It has no capabilities, writable home, device
+access, or mutable system paths. Cloudflared remains a separate service and credential boundary.
+The local health probe is:
+
+```sh
+curl --fail --silent --show-error \
+  --header 'Host: gateway.dev.beadhive.cloud' \
+  http://127.0.0.1:8787/healthz
+```
+
+The health response contains only liveness and `gateway.v1`; requests carrying a browser Origin
+are refused. Readiness of the real data source remains visible through authenticated discovery as
+`online` or `offline`.

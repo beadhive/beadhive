@@ -148,6 +148,7 @@ class RemoteInstance:
     online: Callable[[], Awaitable[bool]]
     refresh: Callable[[str, str], Awaitable[Mapping[str, object]]] | None = None
     events: Callable[[str], Awaitable[AsyncIterator[Mapping[str, object]]]] | None = None
+    close: Callable[[], Awaitable[None]] | None = None
 
     def __post_init__(self) -> None:
         for operation, label in ((self.snapshot, "snapshot"), (self.online, "online")):
@@ -157,6 +158,8 @@ class RemoteInstance:
             raise TypeError("remote refresh operation must be async and cancellation-aware")
         if self.events is not None and not inspect.iscoroutinefunction(self.events):
             raise TypeError("remote events operation must be async and cancellation-aware")
+        if self.close is not None and not inspect.iscoroutinefunction(self.close):
+            raise TypeError("remote close operation must be async and cancellation-aware")
 
 
 @dataclass(frozen=True)
@@ -917,6 +920,14 @@ def build_development_gateway_application(
     async def absent_preflight(_request: Request) -> JSONResponse:
         return _error("request_denied", "The request is not allowed.", 403)
 
+    async def health(request: Request) -> JSONResponse:
+        if request.headers.getlist("host") != [gateway_host] or request.headers.getlist("origin"):
+            return _error("request_denied", "The request is not allowed.", 403)
+        return JSONResponse(
+            {"live": True, "contractVersion": CONTRACT_VERSION},
+            headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+        )
+
     @asynccontextmanager
     async def lifespan(_app: Starlette):
         try:
@@ -933,9 +944,14 @@ def build_development_gateway_application(
                 snapshot_availability_calls.close(),
                 discovery_availability_calls.close(),
             )
+            close_operations = {
+                instance.close for instance in registry.instances.values() if instance.close
+            }
+            await asyncio.gather(*(close() for close in close_operations), return_exceptions=True)
 
     app = Starlette(
         routes=[
+            Route("/healthz", health, methods=["GET"]),
             Route("/v1/instances", instances, methods=["GET"]),
             Route("/v1/instances/{stage}/{slug}/snapshot", snapshot, methods=["GET"]),
             Route("/v1/instances/{stage}/{slug}/events", events, methods=["GET"]),
