@@ -1,0 +1,31 @@
+[Unit]
+Description=Beadhive Development gateway
+After=beadhive-host.service
+Requires=beadhive-host.service
+
+[Service]
+Type=simple
+ExecStart=/opt/beadhive-gateway/bin/beadhive-gateway
+LoadCredential=clerk-jwks.json:/etc/beadhive/gateway-dev/clerk-jwks.json
+LoadCredential=authorized-subjects.json:/etc/beadhive/gateway-dev/authorized-subjects.json
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=15s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+CapabilityBoundingSet=
+IPAddressDeny=any
+IPAddressAllow=localhost
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target
