@@ -38,9 +38,10 @@ real loopback runtime profile contributed 56 passing tests.
 
 Install the wheel by its digest into `/opt/beadhive-gateway`, then use the reviewed
 [`beadhive-gateway-dev.service.example`](../../deploy/systemd/beadhive-gateway-dev.service.example).
-The launcher binds only loopback port 8787. It consumes the existing loopback Beadhive host daemon
-on port 8420 and resolves exactly `github/beadhive/beadhive`; there is no fixture fallback or hive
-selector. Cloudflared owns a separate service and credential.
+The launcher binds only loopback port 8787. The service sandbox independently denies every
+non-loopback address. It consumes the existing loopback Beadhive host daemon on port 8420 and
+resolves exactly `github/beadhive/beadhive`; there is no fixture fallback or hive selector.
+Cloudflared owns a separate service and credential.
 
 - Health: use the exact local probe in [`REMOTE_GATEWAY_V1.md`](../REMOTE_GATEWAY_V1.md). An
   authenticated discovery result of `offline` is readiness evidence; `/healthz` is liveness only.

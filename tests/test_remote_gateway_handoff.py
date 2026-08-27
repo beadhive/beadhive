@@ -44,3 +44,13 @@ def test_gateway_handoff_contains_no_mutable_or_deferred_environment_reference()
         "app.beadhive.ai",
     )
     assert not [value for value in forbidden if value in text]
+
+
+def test_gateway_service_is_capability_free_and_loopback_network_only() -> None:
+    unit = (ROOT / "deploy/systemd/beadhive-gateway-dev.service.example").read_text(
+        encoding="utf-8"
+    )
+    assert "CapabilityBoundingSet=\n" in unit
+    assert "IPAddressDeny=any" in unit
+    assert "IPAddressAllow=localhost" in unit
+    assert "NoNewPrivileges=true" in unit
