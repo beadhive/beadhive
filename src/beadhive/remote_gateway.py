@@ -8,10 +8,10 @@ small, explicitly allowlisted remote representation.
 from __future__ import annotations
 
 import asyncio
+import inspect
 import math
 import time
-from collections.abc import Callable, Mapping
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
@@ -120,13 +120,18 @@ class ClerkTokenVerifier:
 class RemoteInstance:
     display_name: str
     authorized_subjects: frozenset[str]
-    snapshot: Callable[[], Mapping[str, object]]
-    online: Callable[[], bool] = lambda: True
+    snapshot: Callable[[], Awaitable[Mapping[str, object]]]
+    online: Callable[[], Awaitable[bool]]
+
+    def __post_init__(self) -> None:
+        for operation, label in ((self.snapshot, "snapshot"), (self.online, "online")):
+            if not inspect.iscoroutinefunction(operation):
+                raise TypeError(f"remote {label} operation must be async and cancellation-aware")
 
 
 @dataclass(frozen=True)
 class RuntimeCallPolicy:
-    """Concurrency bulkheads and per-call deadline for blocking runtime sources."""
+    """Concurrency bulkheads and per-call deadline for async runtime sources."""
 
     deadline_seconds: float = 5.0
     snapshot_concurrency: int = 4
@@ -148,42 +153,42 @@ class RuntimeCallPolicy:
                 raise ValueError(f"{label} must be between 1 and 32")
 
 
-class _BoundedRuntimeCallPool:
-    """Run blocking callbacks without sharing capacity or building an unbounded work queue."""
+class _BoundedRuntimeCalls:
+    """Bound cancellation-aware runtime operations without an internal work queue."""
 
     def __init__(self, *, concurrency: int, deadline_seconds: float, name: str) -> None:
         self._deadline_seconds = deadline_seconds
         self._slots = asyncio.Semaphore(concurrency)
-        self._executor = ThreadPoolExecutor(max_workers=concurrency, thread_name_prefix=name)
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._closed = False
+        self._name = name
 
-    async def call(self, callback: Callable[[], Any]) -> Any:
+    async def call(self, operation: Callable[[], Awaitable[Any]]) -> Any:
+        if self._closed or self._slots.locked():
+            raise RuntimeCallTimedOut
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self._deadline_seconds
+        await self._slots.acquire()
+        task = asyncio.create_task(operation(), name=self._name)
+        self._tasks.add(task)
         try:
             async with asyncio.timeout_at(deadline):
-                await self._slots.acquire()
+                return await task
         except TimeoutError as exc:
             raise RuntimeCallTimedOut from exc
-
-        try:
-            future = loop.run_in_executor(self._executor, callback)
-        except Exception:
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._tasks.discard(task)
             self._slots.release()
-            raise
 
-        # Shielding retains the slot until the underlying thread really exits. A timed-out
-        # request therefore cannot enqueue replacement work behind an indefinitely stuck call.
-        future.add_done_callback(lambda _future: self._slots.release())
-        try:
-            async with asyncio.timeout_at(deadline):
-                return await asyncio.shield(future)
-        except TimeoutError as exc:
-            raise RuntimeCallTimedOut from exc
-
-    def close(self) -> None:
-        # ASGI shutdown must not wait forever for a defective runtime callback. No work can be
-        # queued beyond the worker count because acquisition precedes submission.
-        self._executor.shutdown(wait=False, cancel_futures=True)
+    async def close(self) -> None:
+        self._closed = True
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @dataclass(frozen=True)
@@ -234,6 +239,10 @@ def _timestamp(value: object, *, optional: bool = False) -> bool:
     )
 
 
+def _schema_version(value: object) -> bool:
+    return type(value) is int and value == SCHEMA_VERSION
+
+
 def _work_item_is_allowlisted(value: object) -> bool:
     if not _exact_keys(value, _WORK_ITEM_KEYS):
         return False
@@ -281,7 +290,7 @@ def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
             return False
         items = payload["items"]
         return (
-            payload["schemaVersion"] == SCHEMA_VERSION
+            _schema_version(payload["schemaVersion"])
             and payload["nextCursor"] is None
             and isinstance(items, list)
             and len(items) <= 1
@@ -303,10 +312,10 @@ def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
         work_items = snapshot["workItems"]
         agents = snapshot["agents"]
         return (
-            payload["schemaVersion"] == SCHEMA_VERSION
+            _schema_version(payload["schemaVersion"])
             and payload["contractVersion"] == CONTRACT_VERSION
             and payload["instanceId"] == DEVELOPMENT_INSTANCE_ID
-            and snapshot["schemaVersion"] == SCHEMA_VERSION
+            and _schema_version(snapshot["schemaVersion"])
             and _string(snapshot["revision"], maximum=256)
             and _timestamp(snapshot["generatedAt"])
             and isinstance(work_items, list)
@@ -339,7 +348,7 @@ def _error(code: str, message: str, status_code: int, *, retryable: bool = False
 
 def _public_snapshot(raw: Mapping[str, object]) -> dict[str, object]:
     try:
-        if raw["schemaVersion"] != SCHEMA_VERSION:
+        if not _schema_version(raw["schemaVersion"]):
             raise RemoteProjectionFailed("runtime snapshot is incompatible")
         revision = raw["revision"]
         generated_at = raw["generatedAt"]
@@ -400,8 +409,8 @@ def _public_snapshot(raw: Mapping[str, object]) -> dict[str, object]:
     return public
 
 
-def _read_public_snapshot(instance: RemoteInstance) -> dict[str, object]:
-    return _public_snapshot(instance.snapshot())
+async def _read_public_snapshot(instance: RemoteInstance) -> dict[str, object]:
+    return _public_snapshot(await instance.snapshot())
 
 
 def build_development_gateway_application(
@@ -414,12 +423,17 @@ def build_development_gateway_application(
     """Build the remote Development read profile without mutating the loopback application."""
     runtime_calls = runtime_calls or RuntimeCallPolicy()
     gateway_host = urlsplit(config.gateway_origin).netloc
-    availability_pool = _BoundedRuntimeCallPool(
+    discovery_availability_calls = _BoundedRuntimeCalls(
         concurrency=runtime_calls.availability_concurrency,
         deadline_seconds=runtime_calls.deadline_seconds,
-        name="beadhive-gateway-availability",
+        name="beadhive-gateway-discovery-availability",
     )
-    snapshot_pool = _BoundedRuntimeCallPool(
+    snapshot_availability_calls = _BoundedRuntimeCalls(
+        concurrency=runtime_calls.availability_concurrency,
+        deadline_seconds=runtime_calls.deadline_seconds,
+        name="beadhive-gateway-snapshot-availability",
+    )
+    snapshot_calls = _BoundedRuntimeCalls(
         concurrency=runtime_calls.snapshot_concurrency,
         deadline_seconds=runtime_calls.deadline_seconds,
         name="beadhive-gateway-snapshot",
@@ -439,6 +453,21 @@ def build_development_gateway_application(
             raise AuthenticationFailed
         return verifier.verify(encoded)
 
+    async def read_availability(calls: _BoundedRuntimeCalls, instance: RemoteInstance) -> bool:
+        availability = await calls.call(instance.online)
+        if type(availability) is not bool:
+            raise RemoteProjectionFailed("runtime availability is incompatible")
+        return availability
+
+    async def public_instance(instance_id: str, instance: RemoteInstance) -> dict[str, object]:
+        availability = await read_availability(discovery_availability_calls, instance)
+        return {
+            "id": instance_id,
+            "displayName": instance.display_name,
+            "availability": "online" if availability else "offline",
+            "capabilities": ["snapshot"],
+        }
+
     async def instances(request: Request) -> JSONResponse:
         try:
             subject = authorize(request)
@@ -449,14 +478,7 @@ def build_development_gateway_application(
             if request.query_params.getlist("cursor"):
                 return _error("invalid_request", "The request is not valid.", 400)
             items = [
-                {
-                    "id": instance_id,
-                    "displayName": instance.display_name,
-                    "availability": "online"
-                    if await availability_pool.call(instance.online)
-                    else "offline",
-                    "capabilities": ["snapshot"],
-                }
+                await public_instance(instance_id, instance)
                 for instance_id, instance in registry.authorized(subject).items()
             ]
             return _response("instances", {"schemaVersion": 1, "items": items, "nextCursor": None})
@@ -474,11 +496,11 @@ def build_development_gateway_application(
             instance = registry.authorized(subject).get(instance_id)
             if instance is None:
                 return _error("resource_not_found", "The resource was not found.", 404)
-            if not await availability_pool.call(instance.online):
+            if not await read_availability(snapshot_availability_calls, instance):
                 return _error(
                     "runtime_unavailable", "The runtime is unavailable.", 503, retryable=True
                 )
-            projected = await snapshot_pool.call(lambda: _read_public_snapshot(instance))
+            projected = await snapshot_calls.call(lambda: _read_public_snapshot(instance))
             return _response(
                 "snapshot",
                 {
@@ -544,8 +566,11 @@ def build_development_gateway_application(
         try:
             yield
         finally:
-            snapshot_pool.close()
-            availability_pool.close()
+            await asyncio.gather(
+                snapshot_calls.close(),
+                snapshot_availability_calls.close(),
+                discovery_availability_calls.close(),
+            )
 
     app = Starlette(
         routes=[

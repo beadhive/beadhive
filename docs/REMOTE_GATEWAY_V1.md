@@ -41,6 +41,8 @@ internal exception.
 
 The executable conformance contract is in `tests/test_remote_gateway.py`; response construction
 is guarded by a recursive exact-value and wire-type `remote_payload_is_allowlisted` check before
-JSON serialization. Runtime source callbacks and projection run outside the ASGI event loop.
-Availability and snapshot calls use separate bounded worker pools, each call has a five-second
-deadline, and saturation fails unavailable without admitting an unbounded executor queue.
+JSON serialization. Runtime sources implement an async, cancellation-aware port and must move
+any blocking storage access behind their own cancellable boundary. Discovery availability,
+snapshot availability, and snapshot reads have independent concurrency bulkheads. Calls have a
+five-second deadline, saturation fails unavailable immediately instead of creating an internal
+queue, and ASGI shutdown cancels and joins every admitted runtime operation.

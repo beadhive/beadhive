@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import threading
+import subprocess
+import sys
+import textwrap
 import time
 
 import httpx
@@ -76,6 +78,21 @@ def _snapshot() -> dict[str, object]:
     }
 
 
+async def _read_snapshot() -> dict[str, object]:
+    return _snapshot()
+
+
+async def _online() -> bool:
+    return True
+
+
+def _snapshot_reader(value: dict[str, object]):
+    async def read() -> dict[str, object]:
+        return value
+
+    return read
+
+
 def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
     config = remote_gateway.DevelopmentGatewayConfig(
         issuer=ISSUER,
@@ -93,7 +110,8 @@ def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
             INSTANCE_ID: remote_gateway.RemoteInstance(
                 display_name="Development demo",
                 authorized_subjects=frozenset({SUBJECT}),
-                snapshot=_snapshot,
+                snapshot=_read_snapshot,
+                online=_online,
             )
         }
     )
@@ -220,7 +238,7 @@ def test_wrong_signature_origin_and_instance_fail_before_runtime_access() -> Non
     attacker_key, _ = _keys()
     calls = 0
 
-    def guarded_snapshot():
+    async def guarded_snapshot():
         nonlocal calls
         calls += 1
         return _snapshot()
@@ -240,6 +258,7 @@ def test_wrong_signature_origin_and_instance_fail_before_runtime_access() -> Non
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=guarded_snapshot,
+                    online=_online,
                 )
             }
         ),
@@ -354,7 +373,10 @@ def test_unadvertised_capability_uses_the_stable_allowlisted_not_found_shape() -
     assert remote_gateway.remote_payload_is_allowlisted("error", response.json())
 
 
-def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content() -> None:
+@pytest.mark.parametrize("schema_version", [True, 1.0, "1", -1, 2])
+def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content(
+    schema_version: object,
+) -> None:
     private_key, public_key = _keys()
     config = remote_gateway.DevelopmentGatewayConfig(
         issuer=ISSUER,
@@ -363,7 +385,7 @@ def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content
         gateway_origin=GATEWAY_ORIGIN,
     )
     incompatible = _snapshot()
-    incompatible["schemaVersion"] = 2
+    incompatible["schemaVersion"] = schema_version
     app = remote_gateway.build_development_gateway_application(
         config=config,
         verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
@@ -372,7 +394,8 @@ def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content
                 INSTANCE_ID: remote_gateway.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
-                    snapshot=lambda: incompatible,
+                    snapshot=_snapshot_reader(incompatible),
+                    online=_online,
                 )
             }
         ),
@@ -428,7 +451,8 @@ def test_nested_private_values_fail_the_recursive_disclosure_allowlist(mutate) -
                 INSTANCE_ID: remote_gateway.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
-                    snapshot=lambda: malformed,
+                    snapshot=_snapshot_reader(malformed),
+                    online=_online,
                 )
             }
         ),
@@ -461,7 +485,8 @@ def test_discovery_rejects_non_scalar_registry_metadata() -> None:
                 INSTANCE_ID: remote_gateway.RemoteInstance(
                     display_name={"secret": "registry-must-not-leak"},
                     authorized_subjects=frozenset({SUBJECT}),
-                    snapshot=_snapshot,
+                    snapshot=_read_snapshot,
+                    online=_online,
                 )
             }
         ),
@@ -496,7 +521,8 @@ def test_snapshot_collection_bounds_fail_closed_before_serialization() -> None:
                 INSTANCE_ID: remote_gateway.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
-                    snapshot=lambda: oversized,
+                    snapshot=_snapshot_reader(oversized),
+                    online=_online,
                 )
             }
         ),
@@ -530,7 +556,8 @@ def test_snapshot_timestamp_outside_json_safe_integer_range_fails_closed() -> No
                 INSTANCE_ID: remote_gateway.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
-                    snapshot=lambda: unsafe,
+                    snapshot=_snapshot_reader(unsafe),
+                    online=_online,
                 )
             }
         ),
@@ -546,6 +573,26 @@ def test_snapshot_timestamp_outside_json_safe_integer_range_fails_closed() -> No
     assert response.json()["error"]["code"] == "runtime_unavailable"
 
 
+@pytest.mark.parametrize("schema_version", [True, 1.0, "1", -1, 2])
+def test_schema_versions_require_the_exact_supported_integer(schema_version: object) -> None:
+    instance_page = {"schemaVersion": schema_version, "items": [], "nextCursor": None}
+    assert not remote_gateway.remote_payload_is_allowlisted("instances", instance_page)
+
+    envelope = {
+        "schemaVersion": schema_version,
+        "contractVersion": "gateway.v1",
+        "instanceId": "dev/demo",
+        "snapshot": {
+            "schemaVersion": schema_version,
+            "revision": "revision",
+            "generatedAt": 0,
+            "workItems": [],
+            "agents": [],
+        },
+    }
+    assert not remote_gateway.remote_payload_is_allowlisted("snapshot", envelope)
+
+
 def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
     private_key, public_key = _keys()
     config = remote_gateway.DevelopmentGatewayConfig(
@@ -554,10 +601,10 @@ def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
         app_origin=APP_ORIGIN,
         gateway_origin=GATEWAY_ORIGIN,
     )
-    release = threading.Event()
+    release = asyncio.Event()
 
-    def slow_snapshot():
-        release.wait(timeout=2)
+    async def slow_snapshot():
+        await release.wait()
         return _snapshot()
 
     app = remote_gateway.build_development_gateway_application(
@@ -569,6 +616,7 @@ def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=slow_snapshot,
+                    online=_online,
                 )
             }
         ),
@@ -576,8 +624,6 @@ def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
 
     async def action(client):
         token = _token(private_key)
-        timer = threading.Timer(0.5, release.set)
-        timer.start()
         started_at = time.monotonic()
         snapshot_task = asyncio.create_task(
             client.get("/v1/instances/dev/demo/snapshot", headers=_headers(token))
@@ -589,7 +635,6 @@ def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
         discovery_elapsed = time.monotonic() - started_at
         release.set()
         snapshot = await snapshot_task
-        timer.cancel()
         return discovery, snapshot, discovery_elapsed
 
     discovery, snapshot, discovery_elapsed = _exercise(app, action)
@@ -605,12 +650,12 @@ def test_hung_snapshot_saturation_times_out_without_starving_discovery() -> None
         app_origin=APP_ORIGIN,
         gateway_origin=GATEWAY_ORIGIN,
     )
-    entered = threading.Event()
-    release = threading.Event()
+    entered = asyncio.Event()
+    release = asyncio.Event()
 
-    def hung_snapshot():
+    async def hung_snapshot():
         entered.set()
-        release.wait(timeout=2)
+        await release.wait()
         return _snapshot()
 
     app = remote_gateway.build_development_gateway_application(
@@ -622,6 +667,7 @@ def test_hung_snapshot_saturation_times_out_without_starving_discovery() -> None
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=hung_snapshot,
+                    online=_online,
                 )
             }
         ),
@@ -652,11 +698,205 @@ def test_hung_snapshot_saturation_times_out_without_starving_discovery() -> None
         timed_out = await asyncio.gather(first, second)
         return discovery, timed_out
 
-    try:
-        discovery, timed_out = _exercise(app, action)
-    finally:
-        release.set()
+    discovery, timed_out = _exercise(app, action)
 
     assert discovery.status_code == 200
     assert [response.status_code for response in timed_out] == [503, 503]
     assert all(response.json()["error"]["code"] == "runtime_unavailable" for response in timed_out)
+
+
+def test_snapshot_availability_saturation_does_not_starve_discovery() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def online() -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            entered.set()
+            await release.wait()
+        return True
+
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=_read_snapshot,
+                    online=online,
+                )
+            }
+        ),
+        runtime_calls=remote_gateway.RuntimeCallPolicy(
+            deadline_seconds=0.1,
+            snapshot_concurrency=1,
+            availability_concurrency=1,
+        ),
+    )
+
+    async def action(client):
+        token = _token(private_key)
+        snapshot = asyncio.create_task(
+            client.get("/v1/instances/dev/demo/snapshot", headers=_headers(token))
+        )
+        for _ in range(50):
+            if entered.is_set():
+                break
+            await asyncio.sleep(0.01)
+        assert entered.is_set()
+        discovery = await client.get(
+            "/v1/instances", params={"limit": "50"}, headers=_headers(token)
+        )
+        return await snapshot, discovery
+
+    snapshot, discovery = _exercise(app, action)
+
+    assert snapshot.status_code == 503
+    assert discovery.status_code == 200
+
+
+def test_discovery_rejects_non_boolean_availability() -> None:
+    private_key, public_key = _keys()
+    config = remote_gateway.DevelopmentGatewayConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+
+    async def invalid_online():
+        return 1
+
+    app = remote_gateway.build_development_gateway_application(
+        config=config,
+        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=_read_snapshot,
+                    online=invalid_online,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        return await client.get(
+            "/v1/instances", params={"limit": "50"}, headers=_headers(_token(private_key))
+        )
+
+    response = _exercise(app, action)
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "runtime_unavailable"
+
+
+def test_runtime_port_rejects_blocking_callbacks() -> None:
+    with pytest.raises(TypeError, match="snapshot operation must be async"):
+        remote_gateway.RemoteInstance(
+            display_name="Development demo",
+            authorized_subjects=frozenset({SUBJECT}),
+            snapshot=_snapshot,
+            online=_online,
+        )
+
+
+def test_lifespan_cancels_runtime_work_and_allows_clean_process_restart() -> None:
+    program = textwrap.dedent(
+        f"""
+        import asyncio
+        import time
+
+        import httpx
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from joserfc import jwt
+        from joserfc.jwk import RSAKey
+
+        from beadhive import remote_gateway
+
+        async def run_once():
+            key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+            private = RSAKey.import_key(key)
+            public = RSAKey.import_key(key.public_key())
+            config = remote_gateway.DevelopmentGatewayConfig(
+                issuer={ISSUER!r},
+                audience={AUDIENCE!r},
+                app_origin={APP_ORIGIN!r},
+                gateway_origin={GATEWAY_ORIGIN!r},
+            )
+            entered = asyncio.Event()
+
+            async def online():
+                return True
+
+            async def never_returns():
+                entered.set()
+                await asyncio.Event().wait()
+
+            app = remote_gateway.build_development_gateway_application(
+                config=config,
+                verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public),
+                registry=remote_gateway.DevelopmentInstanceRegistry(
+                    instances={{
+                        {INSTANCE_ID!r}: remote_gateway.RemoteInstance(
+                            display_name="Development demo",
+                            authorized_subjects=frozenset({{{SUBJECT!r}}}),
+                            snapshot=never_returns,
+                            online=online,
+                        )
+                    }}
+                ),
+                runtime_calls=remote_gateway.RuntimeCallPolicy(deadline_seconds=5),
+            )
+            token = jwt.encode(
+                {{"alg": "RS256", "kid": "test"}},
+                {{"iss": {ISSUER!r}, "aud": {AUDIENCE!r}, "sub": {SUBJECT!r},
+                  "exp": int(time.time()) + 60}},
+                private,
+            )
+            lifespan = app.router.lifespan_context(app)
+            await lifespan.__aenter__()
+            transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5000))
+            async with httpx.AsyncClient(
+                transport=transport, base_url={GATEWAY_ORIGIN!r}
+            ) as client:
+                request = asyncio.create_task(client.get(
+                    "/v1/instances/dev/demo/snapshot",
+                    headers={{"Authorization": f"Bearer {{token}}", "Origin": {APP_ORIGIN!r}}},
+                ))
+                await asyncio.wait_for(entered.wait(), timeout=1)
+                await asyncio.wait_for(lifespan.__aexit__(None, None, None), timeout=1)
+                await asyncio.gather(request, return_exceptions=True)
+                assert request.done()
+                assert not [
+                    task for task in asyncio.all_tasks()
+                    if task.get_name().startswith("beadhive-gateway")
+                ]
+
+        async def main():
+            await run_once()
+            await run_once()
+
+        asyncio.run(main())
+        """
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", program],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    assert completed.returncode == 0, completed.stderr
