@@ -84,7 +84,10 @@ The `beadhive-gateway` entry point is the deployable `dev/demo` profile. It bind
 `127.0.0.1:8787` and reads the real registered `github/beadhive/beadhive` snapshot and retained
 event stream from the existing loopback host daemon at `127.0.0.1:8420`. It never reads a fixture
 or accepts a browser-selected hive. Its `refresh` command performs a revision-checked refresh of
-that authoritative source.
+that authoritative source. The Development demo projection includes current `open`,
+`in_progress`, and `blocked` work while omitting closed/deferred history and internal `event` and
+`gate` records. The gateway's independent 1,000-item fail-closed bound still applies after this
+selection.
 
 The launcher accepts Clerk public JWKS and the authorized Development subject list only through
 mode-0600 service credential files. Under systemd, the default names are

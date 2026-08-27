@@ -94,6 +94,27 @@ def test_real_loopback_profile_maps_snapshot_refresh_and_retained_events() -> No
     assert "private" not in str(events)
 
 
+def test_development_projection_selects_only_current_non_operational_work() -> None:
+    items = [
+        {"record": {"id": "active", "status": "open", "issueType": "task"}},
+        {"record": {"id": "running", "status": "in_progress", "issueType": "feature"}},
+        {"record": {"id": "blocked", "status": "blocked", "issueType": "bug"}},
+        {"record": {"id": "closed", "status": "closed", "issueType": "task"}},
+        {"record": {"id": "deferred", "status": "deferred", "issueType": "task"}},
+        {"record": {"id": "event", "status": "open", "issueType": "event"}},
+        {"record": {"id": "gate", "status": "open", "issueType": "gate"}},
+    ]
+
+    selected = remote_gateway_runtime._development_work_items(items)
+
+    assert [item["record"]["id"] for item in selected] == ["active", "running", "blocked"]
+
+
+def test_development_projection_rejects_malformed_work_items() -> None:
+    with pytest.raises(RuntimeError, match="work item is incompatible"):
+        remote_gateway_runtime._development_work_items([{"record": {"status": "open"}}])
+
+
 def test_loopback_profile_rejects_stale_refresh_and_event_cursor() -> None:
     async def exercise():
         runtime = _runtime()

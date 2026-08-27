@@ -32,6 +32,8 @@ LOOPBACK_ORIGIN = "http://127.0.0.1:8420"
 HIVE_ID = "github/beadhive/beadhive"
 _HIVE_PATH = "/api/v1/hives/github%2Fbeadhive%2Fbeadhive"
 _SUBJECT = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
+_DEMO_STATUSES = frozenset({"open", "in_progress", "blocked"})
+_INTERNAL_WORK_ITEM_TYPES = frozenset({"event", "gate"})
 
 
 def _remote_cursor(local: Mapping[str, object]) -> str:
@@ -45,6 +47,23 @@ def _remote_cursor(local: Mapping[str, object]) -> str:
 def _local_cursor(remote: str) -> str:
     epoch, sequence = remote.rsplit(":", 1)
     return f"{uuid.UUID(epoch).hex}:{int(sequence)}"
+
+
+def _development_work_items(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list):
+        raise RuntimeError("operator work items are incompatible")
+    selected: list[Mapping[str, object]] = []
+    for item in value:
+        if not isinstance(item, Mapping) or not isinstance(item.get("record"), Mapping):
+            raise RuntimeError("operator work item is incompatible")
+        record = item["record"]
+        status = record.get("status")
+        issue_type = record.get("issueType")
+        if not isinstance(status, str) or not isinstance(issue_type, str):
+            raise RuntimeError("operator work item is incompatible")
+        if status in _DEMO_STATUSES and issue_type not in _INTERNAL_WORK_ITEM_TYPES:
+            selected.append(item)
+    return selected
 
 
 class LoopbackDemoRuntime:
@@ -74,7 +93,7 @@ class LoopbackDemoRuntime:
             "schemaVersion": value.get("schemaVersion"),
             "revision": value.get("revision"),
             "generatedAt": value.get("generatedAt"),
-            "workItems": value.get("workItems"),
+            "workItems": _development_work_items(value.get("workItems")),
             "agents": value.get("agents"),
             "eventCursor": _remote_cursor(value["cursor"]),
         }
