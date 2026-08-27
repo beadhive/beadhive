@@ -18,6 +18,7 @@ import subprocess
 from pathlib import Path
 
 from beadhive import config, identity
+from beadhive.validation_admission import slot_root
 from harness.world import _is_git_repository_env
 
 
@@ -56,6 +57,19 @@ def test_bh_home_is_sandboxed_away_from_the_real_home(tmp_path_factory):
     assert os.environ.get("BH_HOME"), "$BH_HOME must be set"
     assert _is_sandboxed(home, tmp_path_factory.getbasetemp()), (
         f"config.home() resolves outside pytest's tmp root: {home}"
+    )
+
+
+def test_validation_host_is_sandboxed_away_from_the_real_host(tmp_path_factory):
+    """Nested real-CLI tests own a fixture host, never the gate runner's admission semaphore."""
+    root = slot_root()
+
+    assert os.environ.get("BH_VALIDATION_SLOT_ROOT"), "$BH_VALIDATION_SLOT_ROOT must be set"
+    assert _is_sandboxed(root, tmp_path_factory.getbasetemp()), (
+        f"validation slot root resolves outside pytest's tmp root: {root}"
+    )
+    assert "BH_VALIDATION_SLOTS" not in os.environ, (
+        "ambient host capacity must not override a test's fixture/configured capacity"
     )
 
 

@@ -248,6 +248,22 @@ def _sandbox_worktree_root_override(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _sandbox_validation_host(tmp_path_factory, monkeypatch):
+    """Give every test its own simulated validation host and admission semaphore.
+
+    A clean-checkout gate legitimately holds a permit from the operator host while it runs this
+    suite. Tests that exercise the real CLI must not contend with that outer permit: their host is
+    a fixture, just like their BH_HOME, workspace, Git config, and shared Dolt server. Child
+    processes inherit this per-test root, so real contention and owner-death tests still exercise
+    production flock behavior inside their sandbox. Tests needing a particular root or capacity
+    may explicitly override either variable after this baseline.
+    """
+    root = tmp_path_factory.mktemp("validation-host")
+    monkeypatch.setenv("BH_VALIDATION_SLOT_ROOT", str(root))
+    monkeypatch.delenv("BH_VALIDATION_SLOTS", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_bd_version_memo():
     """`dolt_health._local_bd_version_string` is memoized for the process (bh-i6e5g: `bh doctor`
     spawned `bd --version` 12 times per run, 1.30 s of pure repetition). A process-lifetime memo
