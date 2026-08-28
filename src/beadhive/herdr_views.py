@@ -824,6 +824,7 @@ def agent_payload(agent: Mapping[str, object], roster: Mapping[str, object]) -> 
             "surface": {"placement": "popup", "lifecycle": "session-modal", "pane_id": None},
             "row": row,
             "detail": {
+                "facts": agent.get("facts"),
                 "lifecycle": agent.get("lifecycle"),
                 "worktree": agent.get("worktree"),
                 "presentation": agent.get("presentation"),

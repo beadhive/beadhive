@@ -26,7 +26,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, operator_actions, plugins, run, worktree
+from . import bd, config, operator_actions, operator_agents, plugins, run, store_locator, worktree
 
 _SESSION = "bh-supervisor"
 _WARMUP_TOKEN = "BH_HERDR_WARMUP_OK"
@@ -680,10 +680,11 @@ def _roster_agent(
     ownership_state = "foreign"
     worktree_state = "unknown"
     branch = None
+    main: Path | None = None
     expected: Path | None = None
     if association != "none" and hive and bead:
         try:
-            _entry, _main, expected, branch = worktree.locate(cfg, hive, bead)
+            _entry, main, expected, branch = worktree.locate(cfg, hive, bead)
         except (KeyError, TypeError, ValueError, typer.Exit):
             reason = "ownership metadata names an unknown or ambiguous hive"
         else:
@@ -810,6 +811,126 @@ def _roster_agent(
             if target
             else []
         ),
+        # Internal projection inputs, removed by ``_roster_payload`` before the
+        # public record is emitted.  Keeping the already-resolved main avoids a
+        # second ambiguous hive lookup when joining Beadhive work facts.
+        "_main": str(main) if main is not None else None,
+        "_record": record,
+    }
+
+
+def _label_value(issue: dict, prefix: str) -> str | None:
+    for value in issue.get("labels") or []:
+        text = str(value)
+        if text.startswith(prefix):
+            return text[len(prefix) :] or None
+    return None
+
+
+def _work_observation(agent: dict) -> dict[str, object]:
+    """Join one proven presentation record to Beadhive-owned work facts.
+
+    Explicit semantic fields from a future supervisor take precedence.  The
+    current adapter can still provide useful facts from the exact bead record,
+    but never infers terminal work from Herdr's terminal/idle presentation.
+    """
+
+    raw = agent.get("_record") if isinstance(agent.get("_record"), dict) else {}
+    main = agent.get("_main")
+    bead = agent.get("bead")
+    issue: dict = {}
+    if (
+        isinstance(main, str)
+        and isinstance(bead, str)
+        and store_locator.dolt_mode(Path(main)) is not None
+    ):
+        try:
+            issue = bd.show(bead, main, strict=True) or {}
+        except (OSError, RuntimeError, TypeError, ValueError, typer.Exit):
+            issue = {}
+
+    labels = [str(value) for value in issue.get("labels") or []]
+    assignee = str(issue.get("assignee") or "")
+    issue_type = str(issue.get("issue_type") or "").lower()
+    role = _value(raw, "beadhive_role", "role")
+    if role is None:
+        if assignee.startswith("dev/"):
+            role = operator_agents.AgentRole.DEVELOPER.value
+        elif assignee.startswith("disp/") or issue_type == "epic":
+            role = operator_agents.AgentRole.DISPATCHER.value
+    elif role == "dev":
+        role = operator_agents.AgentRole.DEVELOPER.value
+    elif role == "disp":
+        role = operator_agents.AgentRole.DISPATCHER.value
+
+    harness = _value(raw, "harness", "agent_kind", "kind") or _label_value(issue, "harness:")
+    phase = _value(raw, "work_phase", "phase")
+    operation = _value(raw, "work_operation", "operation")
+    terminal_raw = raw.get("terminal_phase")
+    terminal_phase = terminal_raw if isinstance(terminal_raw, bool) else None
+    status = str(issue.get("status") or "").lower()
+    if phase is None:
+        if status == "closed":
+            phase = operator_agents.WorkPhase.TERMINAL.value
+            operation = operation or operator_agents.WorkOperation.COMPLETE.value
+            terminal_phase = True
+        elif "review:pending" in labels:
+            phase = operator_agents.WorkPhase.REVIEW.value
+            operation = operation or operator_agents.WorkOperation.REVIEW.value
+            terminal_phase = False
+        elif "review:approved" in labels:
+            phase = operator_agents.WorkPhase.MERGE.value
+            operation = operation or operator_agents.WorkOperation.MERGE.value
+            terminal_phase = False
+        elif issue_type == "epic":
+            phase = operator_agents.WorkPhase.DISPATCH.value
+            operation = operation or operator_agents.WorkOperation.DISPATCH.value
+            terminal_phase = False
+        elif issue:
+            phase = operator_agents.WorkPhase.IMPLEMENT.value
+            operation = operation or operator_agents.WorkOperation.IMPLEMENT.value
+            terminal_phase = False
+    operation_for_phase = {
+        operator_agents.WorkPhase.IMPLEMENT.value: operator_agents.WorkOperation.IMPLEMENT.value,
+        operator_agents.WorkPhase.DISPATCH.value: operator_agents.WorkOperation.DISPATCH.value,
+        operator_agents.WorkPhase.SUBMIT.value: operator_agents.WorkOperation.SUBMIT.value,
+        operator_agents.WorkPhase.REVIEW.value: operator_agents.WorkOperation.REVIEW.value,
+        operator_agents.WorkPhase.MERGE.value: operator_agents.WorkOperation.MERGE.value,
+        operator_agents.WorkPhase.TERMINAL.value: operator_agents.WorkOperation.COMPLETE.value,
+    }
+    operation = operation or operation_for_phase.get(str(phase or "").lower())
+    if isinstance(operation, str) and not operation.startswith("work."):
+        operation = f"work.{operation}"
+    if terminal_phase is None and phase in operation_for_phase:
+        terminal_phase = phase == operator_agents.WorkPhase.TERMINAL.value
+
+    lifecycle = agent.get("lifecycle") if isinstance(agent.get("lifecycle"), dict) else {}
+    lifecycle_state = str(lifecycle.get("state") or "unknown").lower()
+    presence = _value(raw, "beadhive_presence", "presence")
+    if presence is None:
+        presence = (
+            operator_agents.AgentPresence.LIVE.value
+            if lifecycle_state in _LIVE_AGENT_STATES
+            else operator_agents.AgentPresence.RETAINED.value
+        )
+
+    return {
+        "target": agent.get("target"),
+        "hive": agent.get("hive"),
+        "bead": bead,
+        "harness": harness,
+        "role": role,
+        "operation": operation,
+        "phase": phase,
+        "terminal_phase": terminal_phase,
+        "parent_bead": raw.get("parent_bead") or issue.get("parent"),
+        "presence": presence,
+        "active": True,
+        "source_revision": ":".join(
+            value
+            for value in (str(agent.get("revision") or ""), str(issue.get("updated_at") or ""))
+            if value
+        ),
     }
 
 
@@ -839,6 +960,26 @@ def _roster_payload(snapshot: dict, cfg: dict | None = None, *, operation_id: st
         )
         for record in records
     ]
+    facts = operator_agents.project_agent_facts([_work_observation(agent) for agent in agents])
+    facts_by_target = {
+        item["target"]: item for item in facts["agents"] if item.get("target") is not None
+    }
+    for agent in agents:
+        agent["facts"] = facts_by_target.get(agent.get("target"))
+        agent.pop("_main", None)
+        agent.pop("_record", None)
+        revision_input = json.dumps(
+            ["bh-agent-v1", agent.get("revision"), agent.get("facts")],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode()
+        agent["revision"] = f"sha256:{hashlib.sha256(revision_input).hexdigest()}"
+        for action in agent.get("advertised_actions") or []:
+            action["sourceRevision"] = agent["revision"]
+            preconditions = action.get("preconditions")
+            if isinstance(preconditions, dict):
+                preconditions["sourceRevision"] = agent["revision"]
     agents.sort(
         key=lambda agent: (
             str(agent.get("target") or ""),
