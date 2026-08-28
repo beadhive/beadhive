@@ -1,0 +1,25 @@
+{
+  "artifact": "gateway-read-v1-development.json",
+  "byteCount": 330030,
+  "contractVersion": "gateway.read.v1",
+  "encoding": "utf-8",
+  "environment": "Development",
+  "eventCount": 3,
+  "packageVersions": {
+    "@beadhive/factory-contract": "0.1.0",
+    "@beadhive/operator-contract": "0.1.0",
+    "@beadhive/operator-testkit": "0.1.0"
+  },
+  "scenarioNames": [
+    "small",
+    "dense",
+    "multi-hive",
+    "blocked-path",
+    "gate-pending",
+    "ready-kickoff"
+  ],
+  "selectedScenarioId": "multi-hive",
+  "schemaVersion": 1,
+  "sha256": "c45b4b80553f16d7973ff3758fae866415f624e4083c742c161bdc31fda5991b",
+  "snapshotCount": 8
+}
