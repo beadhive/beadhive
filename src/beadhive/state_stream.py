@@ -69,6 +69,21 @@ class StreamIssue:
     assignee: str | None = None
     parent_id: str | None = None
     dependencies: tuple[StreamDependency, ...] = ()
+    # Exact-detail facts intentionally do not widen the v1 state-stream wire payload.  They
+    # travel with the provider snapshot so bounded resource projections can close the old
+    # partial-detail gap without breaking existing stream consumers.
+    description: str = ""
+    design: str = ""
+    acceptance_criteria: str = ""
+    notes: str = ""
+    mol_type: str | None = None
+    owner: str | None = None
+    created_by: str | None = None
+    created_at: str | None = None
+    closed_at: str | None = None
+    due_at: str | None = None
+    defer_until: str | None = None
+    lease_expires_at: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "labels", tuple(self.labels))

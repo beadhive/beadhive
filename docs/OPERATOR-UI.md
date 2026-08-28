@@ -40,6 +40,50 @@ counts instead of looking empty. The browser derives each authoritative hive rou
 frames after the snapshot cursor. Run activity is also read directly from `/api/v1`. Browser
 requests omit cookies and do not send an `Authorization` header in this phase-one profile.
 
+## Bounded work-item reads
+
+Operator clients that need a queue or inspector use the generic work-item resources instead of
+scraping `bd` or human-oriented `bh work` output:
+
+```text
+GET /api/v1/hives/{canonical-hive}/work-items?queue=ready&limit=50
+GET /api/v1/hives/{canonical-hive}/work-items/{exact-bead-id}
+```
+
+Encode the two separators in the canonical `provider/org/repository` hive identity as uppercase
+`%2F`. A prefix, repository name by itself, title, or current working directory is never an
+identity fallback.
+
+The collection requires one of four queue names:
+
+| Queue | Membership | Stable order |
+| --- | --- | --- |
+| `ready` | Open work with no unresolved direct blocking dependency or open gate | Configured release-aware order when enabled, otherwise priority, most-recent update, then ID |
+| `active` | In-progress work with no unresolved direct blocker | Most-recent update, priority, then ID |
+| `blocked` | Non-closed work with blocked status, an unresolved direct blocking dependency, or an open gate | Priority, most-recent update, then ID |
+| `recent` | Closed work | Most-recent close or update, priority, then ID |
+
+`limit` defaults to 50 and must be from 1 through 200. Optional `priority` and `label` parameters
+may be repeated; priorities use OR semantics while every supplied label must be present. Exact
+`assignee`, `type`, and `parent` filters are also available. Unknown filters and duplicate
+single-value parameters fail with `400` rather than being ignored.
+
+Every list response reports its revision, observation and coverage state, returned count,
+truncation, warnings, and an opaque `nextCursor`. A cursor pins the exact hive, queue, filters,
+ordering policy, and source revision. Pass it back unchanged. A cursor from another scope, or one
+whose source revision is no longer current, returns `409`; restart from the first page. Clients
+must not decode or modify cursor contents.
+
+Queue rows contain bounded labels and summary counts. The exact-detail resource loads the full
+description, design, acceptance criteria, notes, lifecycle timestamps, all labels, direct
+dependencies and dependents, claim and lease facts, gates, and associated generic agent summaries
+on demand. These are domain facts only; terminal labels, glyphs, key hints, and layouts belong to
+the presentation adapter.
+
+Both resources return an `ETag`. Send it in `If-None-Match` to receive `304` when the selected
+representation is unchanged. A missing exact hive or bead is `404`. An unavailable authoritative
+source is `503` with `Retry-After`; it is never reported as an empty queue.
+
 ## Safety boundary
 
 The phase-one daemon exposes only the read-only operator `GET` routes, their SSE stream,
