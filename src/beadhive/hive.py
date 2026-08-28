@@ -1319,9 +1319,34 @@ def available(cfg=None) -> dict:
     }
 
 
-def ls(show_available: bool = False) -> None:
+def ls(
+    show_available: bool = False,
+    *,
+    as_json: bool = False,
+    limit: int = 50,
+    cursor: str | None = None,
+) -> None:
     """CLI: list hives. Default lists registered hives; `--available` lists discoverable-but-
-    unregistered candidate repos (from the lock file). Both views share `available()`'s core."""
+    unregistered candidate repos (from the lock file). `--json` emits the generic versioned,
+    bounded identity/affiliation contract while the default human rendering remains unchanged."""
+    if as_json:
+        from . import hive_identity, jsonout
+
+        try:
+            payload = hive_identity.list_payload(config.load(), limit=limit, cursor=cursor)
+        except hive_identity.HiveIdentityContractError as exc:
+            jsonout.emit(
+                jsonout.envelope(
+                    "hive list",
+                    hive_identity.SCHEMA_VERSION,
+                    {"error": {"code": exc.code, "detail": exc.detail}},
+                )
+            )
+            raise typer.Exit(1) from exc
+        except (OSError, ValueError, TypeError):
+            payload = hive_identity.unavailable_payload(limit=limit)
+        jsonout.emit(payload)
+        return
     result = available()
     if show_available:
         rows = result["candidates"]
