@@ -25,17 +25,30 @@ register the synthetic identity so ``bh hq bd ready`` resolves to it. See ``clon
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import stat
 import sys
 import tarfile
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
 
-from . import config, engine, git_identity, gitworkspace, hub, registry, safety, store_locator
+from . import (
+    config,
+    engine,
+    git_identity,
+    gitworkspace,
+    hub,
+    jsonout,
+    registry,
+    safety,
+    store_locator,
+)
 from .bd import err_line
 from .run import run
 
@@ -200,12 +213,182 @@ def _dolt_status_line(dolt) -> str:
 # treated as "attempt the idempotent `bd dolt push` and trust its own success/failure".
 _DOLT_PUSHABLE = frozenset({"ahead", "diverged", "no-remote", "unknown"})
 
+_HQ_STATUS_SCHEMA_VERSION = 1
 
-def status() -> None:
+
+def _hq_identity() -> dict[str, str]:
+    """The reserved singleton identity, expanded so consumers never parse its ID."""
+
+    return {
+        "canonical_id": "/".join(registry.HQ_TRIPLET),
+        "provider": registry.HQ_PROVIDER,
+        "organization": registry.HQ_ORG,
+        "repository": registry.HQ_REPO,
+        "prefix": registry.HQ_PREFIX,
+        "kind": registry.HQ_KIND,
+    }
+
+
+def _hq_git_status(branch) -> dict[str, object]:
+    if branch is None:
+        state = "no-main"
+    elif not branch.has_upstream:
+        state = "no-upstream"
+    elif branch.ahead and branch.behind:
+        state = "diverged"
+    elif branch.ahead:
+        state = "ahead"
+    elif branch.behind:
+        state = "behind"
+    else:
+        state = "clean"
+    return {
+        "state": state,
+        "ahead": branch.ahead if branch is not None else None,
+        "behind": branch.behind if branch is not None else None,
+        "has_upstream": branch.has_upstream if branch is not None else None,
+        "dirty": branch.dirty if branch is not None else None,
+    }
+
+
+def _hq_remote_status(result: safety.ScanResult) -> dict[str, object]:
+    branch = _hq_main_branch(result)
+    dolt = result.dolt_ref
+    return {
+        "configured": result.has_origin,
+        "working_tree_dirty": any(item.dirty for item in result.branches),
+        "git": _hq_git_status(branch),
+        "dolt": {
+            "state": dolt.status,
+            "ahead": dolt.ahead,
+            "behind": dolt.behind,
+            "reason": dolt.reason or None,
+        },
+    }
+
+
+def _hq_status_revision(observation: dict[str, object]) -> str:
+    encoded = json.dumps(observation, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def status_payload(*, generated_at: int | None = None) -> dict[str, object]:
+    """Build the v1 machine projection for the local Factory HQ singleton.
+
+    This is deliberately an observation, not an action surface.  In particular,
+    ``retirement.intent`` is advisory input for a consumer that independently proves plugin
+    ownership and local safety; it never authorizes a Beadhive lifecycle transition.
+    """
+
+    now = generated_at if generated_at is not None else time.time_ns() // 1_000_000
+    identity = _hq_identity()
+    try:
+        hq_dir = config.hq_dir().resolve()
+    except (OSError, RuntimeError):
+        # Preserve the configured lexical target for diagnostics, but do not call it canonical
+        # or let an unreadable path authorize creation/retirement.
+        hq_dir = config.hq_dir().absolute()
+        path_observable = False
+    else:
+        path_observable = True
+
+    remote: dict[str, object] | None = None
+    warning: dict[str, str] | None = None
+    if not path_observable:
+        availability = {"state": "unavailable", "reason_code": "hq_path_unavailable"}
+        coverage_state = "unavailable"
+    else:
+        try:
+            initialized = stat.S_ISDIR((hq_dir / ".beads").stat().st_mode)
+        except FileNotFoundError:
+            initialized = False
+        except OSError:
+            initialized = False
+            path_observable = False
+        if not path_observable:
+            availability = {"state": "unavailable", "reason_code": "hq_path_unavailable"}
+            coverage_state = "unavailable"
+        elif not initialized:
+            availability = {"state": "absent", "reason_code": "hq_not_initialized"}
+            coverage_state = "complete"
+        else:
+            try:
+                remote = _hq_remote_status(safety.scan(hq_dir, fetch=True))
+            except OSError as exc:
+                availability = {
+                    "state": "unavailable",
+                    "reason_code": "hq_status_unavailable",
+                }
+                coverage_state = "partial"
+                warning = {
+                    "code": "hq_status_unavailable",
+                    "detail": (str(exc) or "Factory HQ status could not be observed.")[:512],
+                }
+            else:
+                availability = {"state": "available", "reason_code": "hq_initialized"}
+                coverage_state = "complete"
+
+    if availability["state"] == "absent" and coverage_state == "complete":
+        retirement = {
+            "intent": "retire",
+            "reason_code": "hq_authoritatively_absent",
+            "advisory": True,
+        }
+    elif availability["state"] == "available":
+        retirement = {
+            "intent": "retain",
+            "reason_code": "hq_available",
+            "advisory": True,
+        }
+    else:
+        retirement = {
+            "intent": "retain",
+            "reason_code": "hq_facts_incomplete",
+            "advisory": True,
+        }
+
+    coverage = {
+        "state": coverage_state,
+        "sources": {
+            "identity": {"state": "complete"},
+            "path": {"state": "complete" if path_observable else "unavailable"},
+            "status": {"state": coverage_state},
+        },
+    }
+    observation: dict[str, object] = {
+        "identity": identity,
+        "cwd": str(hq_dir) if path_observable else None,
+        "availability": availability,
+        "coverage": coverage,
+        "remote": remote,
+        "retirement": retirement,
+    }
+    source_revision = _hq_status_revision(observation)
+    return jsonout.envelope(
+        "hq status",
+        _HQ_STATUS_SCHEMA_VERSION,
+        {
+            "source_revision": source_revision,
+            "generated_at": now,
+            "freshness": {
+                "state": "fresh" if coverage_state == "complete" else "unknown",
+                "as_of": now if coverage_state == "complete" else None,
+            },
+            **observation,
+            "warnings": [warning] if warning is not None else [],
+        },
+    )
+
+
+def status(*, as_json: bool = False) -> None:
     """`bh hq status`: read-only ahead/behind report for BOTH halves of HQ against its wired
     remote (bh-z9hl) — the status view nothing previously surfaced (an operator had to `git
     rev-parse main` vs `git ls-remote origin` by hand to find drift). Pays for one real network
     call (`bd federation status`, via `fetch=True`) so the Dolt half's counts are verified."""
+    if as_json:
+        jsonout.emit(status_payload())
+        return
+
     hq_dir = _hq_dir_or_exit()
     result = safety.scan(hq_dir, fetch=True)
     if not result.has_origin:

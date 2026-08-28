@@ -943,10 +943,16 @@ def hq_prune_aggregate(
     help="read-only ahead/behind report for HQ against its wired remote, for BOTH the git half "
     "(main) and the Dolt half (bead state).",
 )
-def hq_status():
+def hq_status(
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="emit the versioned authoritative HQ identity/status projection",
+    ),
+):
     from . import hq
 
-    hq.status()
+    hq.status(as_json=as_json)
 
 
 @hq_app.command(
