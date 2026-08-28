@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.dev/schemas/herdr-presentation-v1.schema.json",
+  "title": "Beadhive Herdr display-only presentation patches v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "command",
+    "view",
+    "revision",
+    "generated_at",
+    "scope",
+    "freshness",
+    "coverage",
+    "policy",
+    "summary",
+    "workspace",
+    "panes",
+    "returned",
+    "limit",
+    "truncated"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "command": {"const": "plugin herdr view presentation"},
+    "view": {"const": "presentation"},
+    "revision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "generated_at": {"type": "integer", "minimum": 0},
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hive"],
+      "properties": {"hive": {"type": "string", "minLength": 1}}
+    },
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "as_of", "expires_at", "ttl_ms"],
+      "properties": {
+        "state": {"enum": ["fresh", "partial"]},
+        "as_of": {"type": "integer", "minimum": 0},
+        "expires_at": {"type": "integer", "minimum": 1},
+        "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000}
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "sources"],
+      "properties": {
+        "state": {"enum": ["complete", "partial"]},
+        "sources": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["state"],
+            "properties": {
+              "state": {"enum": ["complete", "partial", "stale", "unavailable", "unknown"]}
+            }
+          }
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "sequence",
+        "sequence_scope",
+        "revision",
+        "ttl_ms",
+        "expiry_behavior",
+        "values_only",
+        "theme_owner",
+        "lifecycle_authority",
+        "report_agent_authority"
+      ],
+      "properties": {
+        "source": {"const": "bh.plugin.herdr.presentation/v1"},
+        "sequence": {"type": "integer", "minimum": 0},
+        "sequence_scope": {"type": "string", "minLength": 1},
+        "revision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "expiry_behavior": {"type": "string", "minLength": 1},
+        "values_only": {"const": true},
+        "theme_owner": {"const": "herdr-host"},
+        "lifecycle_authority": {"const": false},
+        "report_agent_authority": {"const": false}
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ready", "running", "needs_you"],
+      "properties": {
+        "ready": {"type": ["integer", "null"], "minimum": 0},
+        "running": {"type": ["integer", "null"], "minimum": 0},
+        "needs_you": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "workspace": {"$ref": "#/$defs/workspacePatch"},
+    "panes": {
+      "type": "array",
+      "maxItems": 200,
+      "items": {"$ref": "#/$defs/panePatch"}
+    },
+    "returned": {"type": "integer", "minimum": 0, "maximum": 200},
+    "limit": {"const": 200},
+    "truncated": {"type": "boolean"},
+    "warnings": {"type": "array", "items": {"type": "string", "maxLength": 240}}
+  },
+  "$defs": {
+    "nullableLocator": {"type": ["string", "null"], "maxLength": 256},
+    "tokens": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {"pattern": "^[A-Za-z0-9_-]{1,32}$"},
+      "additionalProperties": {"type": "string", "maxLength": 80}
+    },
+    "baseReport": {
+      "type": "object",
+      "required": ["source", "seq", "ttl_ms", "tokens"],
+      "properties": {
+        "source": {"const": "bh.plugin.herdr.presentation/v1"},
+        "seq": {"type": "integer", "minimum": 0},
+        "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "tokens": {"$ref": "#/$defs/tokens"}
+      }
+    },
+    "workspaceReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "seq", "ttl_ms", "tokens"],
+      "properties": {
+        "source": {"const": "bh.plugin.herdr.presentation/v1"},
+        "seq": {"type": "integer", "minimum": 0},
+        "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "tokens": {"$ref": "#/$defs/tokens"}
+      }
+    },
+    "paneReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source", "seq", "ttl_ms", "tokens", "display_agent", "state_labels"],
+      "properties": {
+        "source": {"const": "bh.plugin.herdr.presentation/v1"},
+        "seq": {"type": "integer", "minimum": 0},
+        "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "tokens": {"$ref": "#/$defs/tokens"},
+        "display_agent": {"type": "string", "maxLength": 80},
+        "state_labels": {
+          "type": "object",
+          "maxProperties": 8,
+          "additionalProperties": {"type": "string", "maxLength": 24}
+        }
+      }
+    },
+    "workspacePatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locator", "correlation", "report"],
+      "properties": {
+        "locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["session", "workspace_id"],
+          "properties": {
+            "session": {"const": "bh-supervisor"},
+            "workspace_id": {"$ref": "#/$defs/nullableLocator"}
+          }
+        },
+        "correlation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "hive_id"],
+          "properties": {
+            "state": {"enum": ["exact", "missing", "ambiguous", "unavailable"]},
+            "reason": {"type": "string", "maxLength": 240},
+            "hive_id": {"type": "string", "minLength": 1}
+          }
+        },
+        "report": {"oneOf": [{"$ref": "#/$defs/workspaceReport"}, {"type": "null"}]}
+      }
+    },
+    "panePatch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["locator", "correlation", "report"],
+      "properties": {
+        "locator": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["session", "workspace_id", "tab_id", "pane_id"],
+          "properties": {
+            "session": {"const": "bh-supervisor"},
+            "workspace_id": {"$ref": "#/$defs/nullableLocator"},
+            "tab_id": {"$ref": "#/$defs/nullableLocator"},
+            "pane_id": {"$ref": "#/$defs/nullableLocator"}
+          }
+        },
+        "correlation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "reason", "hive_id", "bead_id", "target", "worktree_id"],
+          "properties": {
+            "state": {"enum": ["exact", "missing", "stale"]},
+            "reason": {"type": "string", "maxLength": 240},
+            "hive_id": {"type": "string", "minLength": 1},
+            "bead_id": {"$ref": "#/$defs/nullableLocator"},
+            "target": {"$ref": "#/$defs/nullableLocator"},
+            "worktree_id": {"$ref": "#/$defs/nullableLocator"}
+          }
+        },
+        "report": {"oneOf": [{"$ref": "#/$defs/paneReport"}, {"type": "null"}]}
+      }
+    }
+  }
+}
