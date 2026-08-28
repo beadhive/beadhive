@@ -49,7 +49,11 @@
     "hive": { "type": ["string", "null"] },
     "bead": { "type": ["string", "null"] },
     "target": { "type": ["string", "null"] },
-    "session": { "const": "bh-supervisor" },
+    "session": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+$",
+      "minLength": 1
+    },
     "workspace": { "type": ["string", "null"] },
     "pane": { "type": ["string", "null"] },
     "worktree": { "type": ["string", "null"] },

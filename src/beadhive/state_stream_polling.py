@@ -454,6 +454,7 @@ class PollingStateStreamProvider:
             assignments=projection.assignments,
             partial=projection.partial_reason is not None,
             partial_reason=projection.partial_reason,
+            content_revision=f"sha256:{digest}",
         )
 
     def refresh(self, request: StreamRequest) -> ProviderSnapshot:

@@ -259,7 +259,41 @@ def layout_payload(hive: str | None, context: Mapping[str, object] | None = None
             "inspector": "overlay",
             "section_order": ["needs-you", "running", "ready"],
         }
-    revision = _revision("layout-v1", hive, width, height)
+    rendered_context = {
+        "invoking_session": _token(context.get("invoking_session"), 80) or None,
+        "workspace_id": _token(context.get("workspace_id"), 80) or None,
+        "tab_id": _token(context.get("tab_id"), 80) or None,
+        "pane_id": _token(context.get("pane_id"), 80) or None,
+    }
+    workspace_companion = hive is not None and bool(
+        rendered_context["workspace_id"] or rendered_context["pane_id"]
+    )
+    if workspace_companion:
+        deck_surface = {
+            "placement": "split",
+            "direction": "down" if variant == "narrow" else "right",
+            "target_role": "agents",
+            "lifecycle": "ordinary-pane",
+            "close_behavior": "close",
+            "reopen_behavior": "reopen-split",
+            "focus": False,
+            **deck,
+        }
+    else:
+        # Additive v1 compatibility: callers that only supplied a viewport continue to receive
+        # the original dedicated Deck tab.  A workspace or exact pane identity opts into the
+        # companion-split contract without requiring a schema-version break.
+        deck_surface = {
+            "placement": "tab",
+            "direction": None,
+            "target_role": "board",
+            "lifecycle": "ordinary-tab",
+            "close_behavior": "close",
+            "reopen_behavior": "reopen-tab",
+            "focus": False,
+            **deck,
+        }
+    revision = _revision("layout-v1", hive, width, height, rendered_context, deck_surface)
     payload = _base(
         "layout",
         revision,
@@ -285,7 +319,7 @@ def layout_payload(hive: str | None, context: Mapping[str, object] | None = None
                 "pane_id": None,
                 "close_behavior": "exit-after-handoff-or-cancel",
             },
-            "deck": {"placement": "tab", "focus": False, **deck},
+            "deck": deck_surface,
             "agent_actions": {
                 "placement": "popup",
                 "lifecycle": "session-modal",
@@ -303,12 +337,7 @@ def layout_payload(hive: str | None, context: Mapping[str, object] | None = None
         },
         "viewport": {"width": width, "height": height},
     }
-    payload["context"] = {
-        "invoking_session": _token(context.get("invoking_session"), 80) or None,
-        "workspace_id": _token(context.get("workspace_id"), 80) or None,
-        "tab_id": _token(context.get("tab_id"), 80) or None,
-        "pane_id": _token(context.get("pane_id"), 80) or None,
-    }
+    payload["context"] = rendered_context
     return payload
 
 
@@ -655,6 +684,7 @@ def deck_payload(
     limit: int,
     cursor: str | None,
     width: int = 120,
+    queue_scopes: Mapping[str, Mapping[str, object]] | None = None,
 ) -> dict:
     sections: dict[str, list[tuple[dict, list[dict]]]] = {
         "ready": [],
@@ -696,8 +726,16 @@ def deck_payload(
         for section in ordering
         for row, action_rows in sections[section]
     ]
+    queue_contract = {
+        name: {
+            "schema_version": queues[name].get("schemaVersion"),
+            "query": dict((queue_scopes or {}).get(name) or {"queue": name}),
+        }
+        for name in ("ready", "active", "blocked")
+    }
     revision = _revision(
         "deck-v1",
+        {"schema_version": SCHEMA_VERSION, "queues": queue_contract},
         hive,
         [queues[name].get("revision") for name in ("ready", "active", "blocked")],
         roster.get("revision"),
@@ -1448,7 +1486,9 @@ class ViewBackend:
             summaries = list(pool.map(summary, hives))
         return picker_payload(summaries, self.roster(), limit=limit, cursor=cursor)
 
-    def hive_facts(self, hive_id: str) -> tuple[dict[str, dict], dict]:
+    def hive_facts(
+        self, hive_id: str
+    ) -> tuple[dict[str, dict], dict, dict[str, dict[str, object]]]:
         hive = self.sources.resolve_hive(hive_id)
         beads, runtime = self.sources.refresh_hive(hive)
         launch_preflight = self.launch_preflight(hive_id, hive.entry)
@@ -1456,12 +1496,14 @@ class ViewBackend:
             cfg=self.cfg, entry=dict(hive.entry)
         )
         queues = {}
+        queue_scopes = {}
         for name in ("ready", "active", "blocked"):
             query = operator_work_items.WorkItemQuery(
                 queue=name,
                 limit=operator_work_items.MAX_LIMIT,
                 ordering=ordering if name == "ready" else "beadhive.work-items/v1",
             )
+            queue_scopes[name] = query.scope
             queues[name] = operator_work_items.complete_queue_payload(
                 hive_id=hive_id,
                 beads=beads,
@@ -1479,11 +1521,19 @@ class ViewBackend:
                     advertised_at=int(queues[name]["generatedAt"] or 0),
                 )
                 _constrain_launch(item["advertisedActions"], launch_preflight)
-        return queues, self.roster()
+        return queues, self.roster(), queue_scopes
 
     def deck(self, hive: str, *, limit: int, cursor: str | None, width: int = 120) -> dict:
-        queues, roster = self.hive_facts(hive)
-        return deck_payload(hive, queues, roster, limit=limit, cursor=cursor, width=width)
+        queues, roster, queue_scopes = self.hive_facts(hive)
+        return deck_payload(
+            hive,
+            queues,
+            roster,
+            limit=limit,
+            cursor=cursor,
+            width=width,
+            queue_scopes=queue_scopes,
+        )
 
     def bead(self, hive_id: str, bead_id: str) -> dict:
         hive = self.sources.resolve_hive(hive_id)
@@ -1529,7 +1579,7 @@ class ViewBackend:
                 hive=hive_id,
                 limit=MAX_LIMIT,
             )
-        queues, roster = self.hive_facts(hive_id)
+        queues, roster, _queue_scopes = self.hive_facts(hive_id)
         return presentation_payload(
             hive_id,
             identity,

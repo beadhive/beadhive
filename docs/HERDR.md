@@ -117,8 +117,8 @@ sets the ownership line so this remains an optional interactive surface, not a p
 | `bh plugin herdr status` | `herdr status`, `integration status` | One-shot health: server running? which agent kinds have hooks installed? |
 | `bh plugin herdr add --local PATH` | `herdr plugin link PATH --enabled` | Explicitly link the validated `beadhive.herdr` package during private development; `--managed-ref REF --yes` installs the known GitHub source after release |
 | `bh plugin herdr integrate <kind>` | `herdr integration install <kind>` | Explicit opt-in per agent kind — do not auto-install every kind on onboard |
-| `bh plugin herdr launch <bead-id>` | exact hive lookup → native `bh work claim` → live reuse or warm agent creation | High-level get-or-create path: the bead ID is the only required input; returns the target and retained native worktree |
-| `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | existing worktree → `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | Low-level escape hatch when the caller intentionally prepared the claim and worktree itself; its three required options are unchanged |
+| `bh plugin herdr launch <bead-id>` | exact hive lookup → native `bh work claim` → live reuse or warm agent creation | High-level get-or-create path: the bead ID is the only required input; returns the session, target, and retained native worktree |
+| `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | existing worktree → `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | Low-level escape hatch when the caller intentionally prepared the claim and worktree itself; accepts the same explicit session selection as `launch` |
 | `bh plugin herdr dispatch <target> "<prompt>"` | metadata-backed ownership proof → local socket or legacy `agent prompt` → bounded readback | Safe stdin/file input uses Herdr's structured socket acknowledgement; the legacy positional form additionally requires a new exact prompt occurrence in visible pane content |
 | `bh plugin herdr watch <target>` | `agent wait --until blocked` | For a dispatcher polling loop: block until an agent needs input or finishes |
 | `bh plugin herdr ps` | `agent list` / `api snapshot` | Fleet view: every live herdr-managed agent, its hive/bead if tagged, and its lifecycle state — the natural `bh hive status`-style dashboard row |
@@ -147,14 +147,14 @@ bh plugin herdr launch nvhack-lvxi
 ```
 
 `launch` discovers the exact registered hive, resolves the configured agent kind, verifies that
-the kind's Herdr integration is installed, and uses or creates the isolated `bh-supervisor`
-session without attaching to or focusing the operator's terminal. Only after those preflights
+the kind's Herdr integration is installed, and uses or creates the selected session without
+attaching to or focusing the operator's terminal. Only after those preflights
 does it enforce the host lease and call the native structured `bh work claim` lifecycle. An open
 bead is claimed and provisioned; the current actor's existing claim/worktree is reattached. A
 foreign claim, closed or missing bead, unsupported kind, missing integration, unavailable
 session, or ambiguous hive is refused with a staged remedy.
 
-The optional overrides are `--hive`, `--kind`, `--as`, `--adopt-expired`, `--direction
+The optional overrides are `--hive`, `--kind`, `--session`, `--as`, `--adopt-expired`, `--direction
 right|down`, `--focus/--no-focus`, and `--json`. Direction defaults to `right`; no-focus is the
 safe default. `--adopt-expired` uses the normal non-forced host-adoption core only for a released
 or expired lease. It never seizes an active foreign lease; forced takeover remains the separate,
@@ -173,16 +173,45 @@ For an agent, consume the returned target rather than predicting its encoded nam
 ```bash
 launch_json="$(bh plugin herdr launch nvhack-lvxi --json)"
 target="$(printf '%s' "$launch_json" | jq -r '.target')"
-bh plugin herdr dispatch "$target" "Implement the claimed bead and submit it for review."
-bh plugin herdr watch "$target"
-bh plugin herdr attach "$target"  # prints the human attach command; never attaches itself
-bh plugin herdr reap "$target"    # closes only the proven owned pane, never the worktree
+session="$(printf '%s' "$launch_json" | jq -r '.session')"
+bh plugin herdr dispatch "$target" "Implement the claimed bead and submit it for review." --session "$session"
+bh plugin herdr watch "$target" --session "$session"
+bh plugin herdr attach "$target" --session "$session"  # prints; never attaches itself
+bh plugin herdr reap "$target" --session "$session"    # closes only the proven owned pane
 ```
 
 JSON stdout is one version-1 document: `schema_version`, `command`, `status`, `disposition`,
-`hive`, `bead`, `kind`, `worktree`, `workspace`, `pane`, and `target`. Read `.target`; do not
+`session`, `hive`, `bead`, `kind`, `worktree`, `workspace`, `pane`, and `target`. Read both
+`.session` and `.target`; do not
 derive it from the bead ID because dotted or long IDs use a deterministic collision-resistant
 Herdr-safe encoding.
+
+### Session selection and lifecycle propagation
+
+Every session-aware command accepts `--session`:
+
+- Omitting it preserves the noninteractive `bh-supervisor` default.
+- `--session current` and `--session active` are aliases for the calling pane's session. They
+  are accepted only with Herdr's injected `HERDR_ENV=1` and `HERDR_PANE_ID`; a named pane uses
+  `HERDR_SESSION`, while the original session resolves to `default`. The wrapper never infers a
+  session from another client's focus.
+- `--session NAME` selects that exact Herdr session. Names use Herdr's ASCII letters, digits,
+  dot, underscore, and dash grammar. The command never falls back to `default` or enumerates a
+  different live session as a substitute.
+
+`launch` and `spawn` use Herdr's exact-session snapshot as the get-or-create boundary. If the
+reserved `bh-supervisor` session exists as a stopped tombstone, Beadhive may delete that stopped
+record and recreate it; a concurrent launcher that wins the recreation race is safely reused.
+No other stopped named session is deleted automatically. Instead the failure prints an explicit
+`herdr session delete NAME` recovery command so a human can confirm that teardown. Invalid or
+incompatible session inventory is a refusal, not permission to guess. These session rules are
+independent of the host-lease gate: an active foreign host lease is still never adopted.
+
+The launch result, lifecycle receipts, roster, and pane presentation locators all carry the
+resolved session name. Pass that emitted value to `dispatch`, `watch`, `attach`, `ps`, and
+`reap`; omitting the flag deliberately returns to `bh-supervisor`, where the target may not
+exist. This explicit propagation prevents a target name in one session from authorizing an
+operation against a same-named target in another session.
 
 ### Lifecycle receipts and prompt input
 
@@ -226,10 +255,10 @@ or `--prompt-file` is required.
 
 ### Live roster and correlation
 
-`bh plugin herdr ps --json` returns the version-1 live roster documented by
+`bh plugin herdr ps --json --session NAME` returns the version-1 live roster documented by
 [`herdr-agent-roster-v1.schema.json`](schemas/herdr-agent-roster-v1.schema.json). The complete
-snapshot is embedded in the shared lifecycle receipt and scoped explicitly to the authoritative
-`bh-supervisor` session. Each agent carries its target, canonical hive and bead, lifecycle
+snapshot is embedded in the shared lifecycle receipt and scoped explicitly to the selected
+authoritative session. Each agent carries its target, canonical hive and bead, lifecycle
 timestamps, managed worktree and branch, and Herdr workspace/tab/pane locator. The document
 validates as both a `ps` lifecycle receipt and the roster extension contract. Each agent has a
 deterministic revision over those correlation facts, including both the observed pane cwd and the
@@ -299,8 +328,14 @@ never turn unknown counts into authoritative zeroes.
 Layout intent is deterministic by terminal width: wide uses three columns, medium uses tabs, and
 narrow uses one attention-first list with an overlay inspector. The sole owned session is
 `bh-supervisor`; Board does not own agent panes, Agents does. The picker and agent actions are
-session-modal popups. The activity tray is an ordinary right split whose hide operation closes it
-and whose show operation recreates it; it is not modeled as a native collapsible.
+session-modal popups. For a resolved hive, supplying `workspace_id` or `pane_id` in the layout
+context requests an ordinary companion Deck split targeting the `agents` role and exact invoking
+pane: down when narrow, right when medium or wide. Closing the companion closes its ordinary pane;
+reopening recreates the split. The version-1 compatibility behavior for callers that supply only
+viewport dimensions is the original dedicated `board` Deck tab, with explicit tab lifecycle and
+close/reopen intent. An unresolved hive always retains the picker popup even if Herdr supplied
+workspace context. The activity tray is an ordinary right split whose hide operation closes it and
+whose show operation recreates it; it is not modeled as a native collapsible.
 
 `stream` emits bounded NDJSON. Every connection starts with a complete Deck snapshot, followed
 by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-scope, or stale

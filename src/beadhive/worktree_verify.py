@@ -73,6 +73,10 @@ def _pid_alive(*args, **kwargs):
     return _call_facade("_pid_alive", *args, **kwargs)
 
 
+def _pid_state(*args, **kwargs):
+    return _call_facade("_pid_state", *args, **kwargs)
+
+
 def _pid_start(*args, **kwargs):
     return _call_facade("_pid_start", *args, **kwargs)
 
@@ -230,6 +234,25 @@ def impl__pid_alive(pid: int) -> bool:
     except (OverflowError, ValueError, OSError):
         return False
     return True
+
+
+def impl__pid_state(pid: int) -> str:
+    """Best-effort process state (``S``, ``R``, ``Z`` …), or ``""`` when unprobeable.
+
+    ``kill(pid, 0)`` reports zombies as existing even though their execution has ended. Validation
+    ownership needs this second, deliberately local probe so an exited-but-unreaped owner cannot
+    keep a running receipt live forever.  Unknown state stays unknown; callers must remain
+    conservative rather than declaring a process dead merely because ``ps`` is unavailable.
+    """
+    try:
+        res = subprocess.run(
+            ["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True, check=False
+        )
+        if res.returncode != 0:
+            return ""
+        return (res.stdout.strip().split(maxsplit=1) or [""])[0]
+    except Exception:
+        return ""
 
 
 def impl__pid_start(pid: int) -> str:

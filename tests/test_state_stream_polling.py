@@ -129,6 +129,27 @@ def test_factory_hub_and_hive_each_take_one_export_shaped_initial_snapshot(world
     assert all(snapshot.as_of == "2026-08-24T00:00:00Z" for snapshot in snapshots)
 
 
+def test_content_revision_is_stable_across_provider_instances_and_tracks_source(world):
+    cfg, _entry, _factory, _hub, hive = world
+    request = state_stream.StreamRequest("hive", hive="beadhive")
+
+    first = provider(cfg, ExportBackend({hive: [[raw_issue()]]})).refresh(request)
+    second = provider(
+        cfg,
+        ExportBackend({hive: [[raw_issue()]]}),
+        now=lambda: NOW + timedelta(seconds=1),
+    ).refresh(request)
+    changed = provider(
+        cfg,
+        ExportBackend({hive: [[raw_issue(status="closed")]]}),
+        now=lambda: NOW + timedelta(seconds=2),
+    ).refresh(request)
+
+    assert first.revision != second.revision
+    assert first.content_revision == second.content_revision
+    assert changed.content_revision != first.content_revision
+
+
 def test_export_records_are_normalized_without_backend_fields(world):
     cfg, _entry, _factory, _hub, hive = world
     backend = ExportBackend(

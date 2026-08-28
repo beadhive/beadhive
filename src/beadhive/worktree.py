@@ -986,6 +986,11 @@ def _pid_alive(pid: int) -> bool:
     return _worktree_verify.impl__pid_alive(pid)
 
 
+def _pid_state(pid: int) -> str:
+    """Compatibility facade for ``worktree_verify.impl__pid_state``."""
+    return _worktree_verify.impl__pid_state(pid)
+
+
 def _pid_start(pid: int) -> str:
     """Compatibility facade for ``worktree_verify.impl__pid_start``."""
     return _worktree_verify.impl__pid_start(pid)

@@ -1,6 +1,7 @@
 # herdr integration ADR — isolated panes, native worktrees, visible bead identity
 
-**Status:** decided (GO) · **Date:** 2026-08-23 · **Decision owner:** `bh-ffwnu.1` ·
+**Status:** decided (GO), session selection amended by `bh-tvre4` ·
+**Date:** 2026-08-23 · **Decision owner:** `bh-ffwnu.1` ·
 **Related:** [HERDR.md](../HERDR.md),
 [work-runtime-tiers-adr.md](work-runtime-tiers-adr.md), and
 [managed-harness-config-adr.md](managed-harness-config-adr.md).
@@ -22,19 +23,25 @@ Proceed with the `bh plugin herdr` implementation beads. The integration is an o
 best-effort interactive execution surface with explicit lifecycle boundaries below. Beads and git
 remain the durable record; herdr is a live terminal/process controller.
 
-### 1. Use a bh-owned named herdr session
+### 1. Default to a bh-owned session; allow explicit exact selection
 
-The plugin uses a dedicated named session, `bh-supervisor`, for every session-scoped herdr call.
-It must never enumerate, reuse, rename, close, or focus the operator's `default` session.
+The plugin defaults every session-scoped call to the dedicated `bh-supervisor` session. An
+operator may explicitly select an exact named session, or use the `current` / `active` sentinel
+from a Herdr-managed pane. The sentinel resolves only from Herdr's injected caller environment;
+it never follows another client's focused workspace. The resolved session is emitted in JSON and
+must be carried through later lifecycle commands.
 
 The supervisor process may invoke herdr from outside a herdr pane; `HERDR_ENV` is not relied on
 as an authorization boundary because the experiment established that it is unenforced. Isolation
-comes from selecting the named session and from every create operation being non-focusing by
-default. A future explicit human attach command may print the command needed to attach, but `bh`
-must not take over the user's TTY or workspace.
+comes from exact session selection and from every create operation being non-focusing by default.
+A human attach command may print the exact session command, but `bh` must not take over the user's
+TTY or workspace. Only a stopped `bh-supervisor` tombstone may be automatically deleted and
+recreated. Other stopped sessions require an explicit human recovery action, and a session
+failure never permits fallback to another session.
 
-**Why:** a dedicated namespace prevents unattended dispatch from touching a human's existing
-panes while retaining the benefits of a persistent, inspectable herdr server.
+**Why:** the dedicated default keeps unattended dispatch isolated, while explicit/current
+selection lets an operator deliberately reuse the pane and workspace they are already managing.
+Carrying the selected name through every command preserves that intent without ambient focus.
 
 ### 2. bh owns worktree lifecycle; herdr receives an existing worktree
 
@@ -100,8 +107,9 @@ server a dependency of routine dispatch.
   no onboarding-time pane creation or per-agent integration installation. External package
   registration is a separate consent-only action enabled by explicit `--plugin herdr`; a running
   server alone never enables it.
-- All plugin actions target `bh-supervisor`; no command may fall back to `default` when session
-  selection fails.
+- All plugin actions target the exact resolved session; no command may fall back to `default` or
+  another live session when selection fails. Omission alone selects `bh-supervisor` for backward
+  compatibility.
 - The initial worktree hooks remain `None`. This is an intentional boundary, not deferred
   plumbing.
 - `launch` is a native-lifecycle composition, not a second lifecycle: hive lookup and claim /
@@ -115,8 +123,10 @@ server a dependency of routine dispatch.
 
 ## Rejected alternatives
 
-1. **Drive the user's default session.** Rejected because `HERDR_ENV` does not technically
-   prevent it, so an unattended supervisor could modify a human's active workspace.
+1. **Implicitly drive the user's default or focused session.** Rejected because `HERDR_ENV` does
+   not technically prevent it, so an unattended supervisor could modify a human's active
+   workspace. The amended contract permits it only through explicit `--session default` or a
+   verified in-pane `--session current` selection.
 2. **Delegate worktree management to herdr.** Rejected because it duplicates bh's durable
    worktree/branch lifecycle and creates two cleanup authorities.
 3. **Keep a bh-side agent-to-bead database.** Rejected because it is a second, stale-prone source

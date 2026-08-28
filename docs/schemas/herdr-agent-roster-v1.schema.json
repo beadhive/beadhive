@@ -10,7 +10,7 @@
     "command": {"const": "plugin herdr ps"},
     "revision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "generated_at": {"type": "string", "format": "date-time"},
-    "session": {"const": "bh-supervisor"},
+    "session": {"type": "string", "pattern": "^[A-Za-z0-9._-]+$", "minLength": 1},
     "authoritative_session": {"const": true},
     "roster_schema_version": {"const": 1},
     "agents": {
@@ -164,7 +164,11 @@
           "additionalProperties": false,
           "required": ["session", "workspace", "workspace_label", "tab", "pane"],
           "properties": {
-            "session": {"const": "bh-supervisor"},
+            "session": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._-]+$",
+              "minLength": 1
+            },
             "workspace": {"$ref": "#/$defs/nullableString"},
             "workspace_label": {"$ref": "#/$defs/nullableString"},
             "tab": {"$ref": "#/$defs/nullableString"},

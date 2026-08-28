@@ -15,6 +15,7 @@ from beadhive import (
     herdr_plugin,
     herdr_views,
     operator_actions,
+    operator_sources,
     operator_work_items,
     state_stream,
 )
@@ -410,17 +411,25 @@ def test_bead_and_agent_inspectors_preserve_exact_generic_and_roster_facts() -> 
 
 
 @pytest.mark.parametrize(
-    ("width", "variant", "mode", "inspector"),
+    ("width", "variant", "mode", "inspector", "direction"),
     [
-        (60, "narrow", "single-list", "overlay"),
-        (100, "medium", "tabs", "below"),
-        (140, "wide", "columns", "below"),
+        (60, "narrow", "single-list", "overlay", "down"),
+        (100, "medium", "tabs", "below", "right"),
+        (140, "wide", "columns", "below", "right"),
     ],
 )
-def test_layout_has_deterministic_supervisor_roles_and_popup_split_semantics(
-    width: int, variant: str, mode: str, inspector: str
+def test_workspace_layout_has_deterministic_popup_and_companion_split_semantics(
+    width: int, variant: str, mode: str, inspector: str, direction: str
 ) -> None:
-    payload = herdr_views.layout_payload(HIVE, {"width": width, "height": 40})
+    payload = herdr_views.layout_payload(
+        HIVE,
+        {
+            "width": width,
+            "height": 40,
+            "workspace_id": "workspace-1",
+            "pane_id": "pane-1",
+        },
+    )
     layout = payload["layout"]
     deck = layout["surfaces"]["deck"]
 
@@ -435,6 +444,21 @@ def test_layout_has_deterministic_supervisor_roles_and_popup_split_semantics(
         mode,
         inspector,
     )
+    assert (
+        deck["placement"],
+        deck["direction"],
+        deck["target_role"],
+        deck["lifecycle"],
+        deck["close_behavior"],
+        deck["reopen_behavior"],
+    ) == (
+        "split",
+        direction,
+        "agents",
+        "ordinary-pane",
+        "close",
+        "reopen-split",
+    )
     assert layout["surfaces"]["picker"]["placement"] == "popup"
     assert layout["surfaces"]["agent_actions"]["pane_id"] is None
     tray = layout["surfaces"]["activity_tray"]
@@ -443,6 +467,40 @@ def test_layout_has_deterministic_supervisor_roles_and_popup_split_semantics(
         "close",
         "reopen-split",
     )
+    jsonschema.validate(payload, SCHEMA)
+
+
+def test_layout_without_workspace_context_preserves_explicit_dedicated_tab_contract() -> None:
+    payload = herdr_views.layout_payload(HIVE, {"width": 100, "height": 40})
+    deck = payload["layout"]["surfaces"]["deck"]
+
+    assert (
+        deck["placement"],
+        deck["direction"],
+        deck["target_role"],
+        deck["lifecycle"],
+        deck["close_behavior"],
+        deck["reopen_behavior"],
+    ) == (
+        "tab",
+        None,
+        "board",
+        "ordinary-tab",
+        "close",
+        "reopen-tab",
+    )
+    assert payload["schema_version"] == 1
+    jsonschema.validate(payload, SCHEMA)
+
+
+def test_unresolved_hive_keeps_picker_popup_even_with_workspace_context() -> None:
+    payload = herdr_views.layout_payload(
+        None,
+        {"width": 100, "height": 40, "workspace_id": "workspace-1", "pane_id": "pane-1"},
+    )
+
+    assert payload["layout"]["surfaces"]["picker"]["placement"] == "popup"
+    assert payload["layout"]["surfaces"]["deck"]["placement"] == "tab"
     jsonschema.validate(payload, SCHEMA)
 
 
@@ -529,6 +587,143 @@ def test_deck_cursor_reaches_ready_items_beyond_the_generic_queue_page_limit(
     assert third["sections"][0]["rows"][0]["entity"]["id"] == "widget-400"
     assert third["truncated"] is False
     assert queue_calls == ["ready", "active", "blocked"] * 3
+
+
+def test_live_operator_sources_deck_cursor_survives_a_new_polling_instance(
+    tmp_path, monkeypatch
+) -> None:
+    hive_id = "github/acme/widgets"
+    cfg = {
+        "managed_repos": [
+            {
+                "provider": "github",
+                "org": "acme",
+                "repo": "widgets",
+                "prefix": "widget",
+                "kind": "org-native",
+            }
+        ]
+    }
+    runtime = AgentRunSnapshot(
+        host_id="host-1",
+        source_id="runtime-1",
+        revision="runtime-content-r1",
+        summaries=(),
+        coverage=Coverage.COMPLETE,
+        coverage_reason=None,
+        freshness=Freshness(state="fresh", as_of="2026-08-27T12:00:00Z"),
+    )
+    issues = tuple(
+        state_stream.StreamIssue(
+            id=f"widget-{index}",
+            hive=hive_id,
+            issue_type="task",
+            status="open",
+            priority="P1",
+            title=f"Widget {index}",
+            updated_at="2026-08-27T12:00:00Z",
+            labels=(("release:feature",) if index == 0 else ("release:fix",) if index == 1 else ()),
+        )
+        for index in range(3)
+    )
+
+    class Provider:
+        def __init__(self, *, instance: str, content: str, source_issues=issues):
+            self.instance = instance
+            self.content = content
+            self.source_issues = source_issues
+
+        def refresh(self, _request):
+            return state_stream.ProviderSnapshot(
+                scope="hive",
+                revision=f"{self.instance}:opaque-source-revision",
+                as_of="2026-08-27T12:00:01Z",
+                issues=self.source_issues,
+                content_revision=self.content,
+            )
+
+    def backend(provider, backend_cfg=cfg):
+        sources = operator_sources.OperatorSources(
+            cfg=backend_cfg,
+            host_id="host-1",
+            provider=provider,
+            summary_reader=lambda *_args: runtime,
+            dispatch_sink_for_entry=lambda *_args: tmp_path / "dispatch.jsonl",
+        )
+        return herdr_views.ViewBackend(cfg=backend_cfg, sources=sources, _roster=_roster())
+
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: False)
+    first = backend(Provider(instance="poll-a", content="content-r1")).deck(
+        hive_id, limit=1, cursor=None, width=100
+    )
+    second = backend(Provider(instance="poll-b", content="content-r1")).deck(
+        hive_id, limit=1, cursor=first["next_cursor"], width=100
+    )
+
+    first_ids = {row["entity"]["id"] for section in first["sections"] for row in section["rows"]}
+    second_ids = {row["entity"]["id"] for section in second["sections"] for row in section["rows"]}
+    assert first_ids == {"widget-0"}
+    assert second_ids == {"widget-1"}
+
+    reordered_cfg = {**cfg, "release": {"strategy": "stable-versioning"}}
+    reordered_first = backend(
+        Provider(instance="poll-c", content="content-r1"), reordered_cfg
+    ).deck(hive_id, limit=1, cursor=None, width=100)
+    assert {
+        row["entity"]["id"] for section in reordered_first["sections"] for row in section["rows"]
+    } == {"widget-1"}
+    with pytest.raises(OperatorSourceError) as reordered:
+        backend(Provider(instance="poll-d", content="content-r1"), reordered_cfg).deck(
+            hive_id, limit=1, cursor=first["next_cursor"], width=100
+        )
+    assert (reordered.value.code, reordered.value.status_code) == (
+        "view_cursor_revision_mismatch",
+        409,
+    )
+
+    changed_issues = (
+        *issues[:-1],
+        state_stream.StreamIssue(**{**issues[-1].__dict__, "title": "Changed"}),
+    )
+    with pytest.raises(OperatorSourceError) as exc:
+        backend(
+            Provider(instance="poll-e", content="content-r2", source_issues=changed_issues)
+        ).deck(hive_id, limit=1, cursor=first["next_cursor"], width=100)
+    assert (exc.value.code, exc.value.status_code) == ("view_cursor_revision_mismatch", 409)
+
+
+def test_presentation_composes_extended_hive_facts_without_losing_queues(
+    monkeypatch,
+) -> None:
+    queues = _queues()
+    roster = _roster()
+    sources = SimpleNamespace(
+        resolve_hive=lambda _hive: SimpleNamespace(
+            entry={
+                "provider": "github",
+                "org": "acme",
+                "repo": "widgets",
+                "prefix": "widget",
+            }
+        )
+    )
+    backend = herdr_views.ViewBackend(cfg={}, sources=sources, _roster=roster)
+    monkeypatch.setattr(
+        backend,
+        "hive_facts",
+        lambda _hive: (queues, roster, {"ready": {"queue": "ready"}}),
+    )
+    monkeypatch.setattr(backend, "session_snapshot", lambda: None)
+    monkeypatch.setattr(
+        herdr_views.worktree,
+        "inventory_snapshot_payload",
+        lambda **_kwargs: {"worktrees": [], "total": 0, "warnings": []},
+    )
+
+    payload = backend.presentation(HIVE)
+
+    assert payload["view"] == "presentation"
+    assert payload["scope"] == {"hive": HIVE}
 
 
 def test_deck_disables_launch_when_herdr_cli_preflight_is_unavailable(monkeypatch) -> None:
