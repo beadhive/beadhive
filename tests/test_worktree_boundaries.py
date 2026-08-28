@@ -16,6 +16,7 @@ VERIFY_OPERATIONS = (
     "_rules",
     "run_init",
     "_pid_alive",
+    "_pid_state",
     "_pid_start",
     "_pid_starts",
     "_verify_marker_root",
@@ -176,6 +177,29 @@ def test_pid_start_degrades_on_nonzero_probe(monkeypatch):
         lambda *_args, **_kwargs: SimpleNamespace(returncode=1, stdout="ignored"),
     )
     assert worktree._pid_start(os.getpid()) == ""
+
+
+@pytest.mark.parametrize(
+    ("stdout", "expected"),
+    [("Z+\n", "Z+"), ("Ssl\n", "Ssl"), ("\n", "")],
+)
+def test_pid_state_reads_the_process_state(monkeypatch, stdout, expected):
+    monkeypatch.setattr(
+        worktree_verify.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=stdout),
+    )
+    assert worktree._pid_state(os.getpid()) == expected
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError(), PermissionError(), OSError()])
+def test_pid_state_degrades_when_the_process_table_is_unavailable(monkeypatch, error):
+    monkeypatch.setattr(
+        worktree_verify.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(error),
+    )
+    assert worktree._pid_state(os.getpid()) == ""
 
 
 def test_verify_marker_regular_symlink_missing_matrix(tmp_path):
