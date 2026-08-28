@@ -15,7 +15,7 @@ import json
 import time
 import unicodedata
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import typer
 
@@ -1011,34 +1011,13 @@ class ViewBackend:
                 limit=operator_work_items.MAX_LIMIT,
                 ordering=ordering if name == "ready" else "beadhive.work-items/v1",
             )
-            items = []
-            while True:
-                page = operator_work_items.queue_payload(
-                    hive_id=hive_id,
-                    beads=beads,
-                    runtime=runtime,
-                    query=query,
-                    ready_policy=ready_policy if name == "ready" else None,
-                )
-                items.extend(page["items"])
-                if not page["truncated"]:
-                    break
-                next_cursor = page.get("nextCursor")
-                if not isinstance(next_cursor, str) or not next_cursor:
-                    raise OperatorSourceError(
-                        "work_items_cursor_missing",
-                        "A truncated work-items page did not provide its continuation cursor.",
-                        status_code=409,
-                    )
-                query = replace(query, cursor=next_cursor)
-            queues[name] = {
-                **page,
-                "limit": len(items),
-                "returned": len(items),
-                "truncated": False,
-                "nextCursor": None,
-                "items": items,
-            }
+            queues[name] = operator_work_items.complete_queue_payload(
+                hive_id=hive_id,
+                beads=beads,
+                runtime=runtime,
+                query=query,
+                ready_policy=ready_policy if name == "ready" else None,
+            )
             for item in queues[name]["items"]:
                 item["advertisedActions"] = operator_actions.work_item_actions(
                     target=item["ref"],

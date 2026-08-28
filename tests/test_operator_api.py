@@ -201,6 +201,22 @@ class FactoryProvider:
                     title="Blocked",
                     updated_at=NOW,
                 ),
+                state_stream.StreamIssue(
+                    id="bh-closed-with-edge",
+                    hive=hive,
+                    issue_type="task",
+                    status="closed",
+                    priority="P1",
+                    title="Closed with retained dependency",
+                    updated_at=NOW,
+                    dependencies=(
+                        state_stream.StreamDependency(
+                            issue_id="bh-closed-with-edge",
+                            depends_on_id="bh-active",
+                            type="blocks",
+                        ),
+                    ),
+                ),
             )
         return state_stream.ProviderSnapshot(
             scope="hive",

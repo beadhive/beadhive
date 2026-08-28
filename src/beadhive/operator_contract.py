@@ -181,7 +181,8 @@ def factory_hive_summary(
         for gate in snapshot.gate_requests
         if gate.status.lower() in {"open", "pending"}
     }
-    blocked_ids = {issue.id for issue in issues if issue.status.lower() == "blocked"}
+    canonical_blocked_ids = {issue.id for issue in issues if issue.status.lower() == "blocked"}
+    blocked_ids = set(canonical_blocked_ids)
     for issue in issues:
         for edge in issue.dependencies:
             if edge.depends_on_id in nonterminal_ids or edge.depends_on_id in open_gate_ids:
@@ -195,7 +196,7 @@ def factory_hive_summary(
         "open": len(open_ids),
         "ready": len(open_ids - blocked_ids),
         "active": sum(issue.status.lower() == "in_progress" for issue in issues),
-        "blocked": len({issue.id for issue in issues if issue.id in blocked_ids}),
+        "blocked": len(blocked_ids & (open_ids | canonical_blocked_ids)),
     }
     return {
         **base,

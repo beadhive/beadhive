@@ -11,7 +11,13 @@ import jsonschema
 import pytest
 from typer.testing import CliRunner
 
-from beadhive import herdr_plugin, herdr_views, operator_actions, state_stream
+from beadhive import (
+    herdr_plugin,
+    herdr_views,
+    operator_actions,
+    operator_work_items,
+    state_stream,
+)
 from beadhive.agent_run_summary import Freshness
 from beadhive.cli import app
 from beadhive.operator_sources import OperatorSourceError
@@ -374,7 +380,9 @@ def test_stream_is_snapshot_first_bounded_and_resyncs_an_opaque_stale_cursor() -
     assert stale[0]["resync_reason"] == "view_cursor_revision_mismatch"
 
 
-def test_deck_cursor_reaches_ready_items_beyond_the_generic_queue_page_limit() -> None:
+def test_deck_cursor_reaches_ready_items_beyond_the_generic_queue_page_limit(
+    monkeypatch,
+) -> None:
     now = datetime(2026, 8, 27, 12, tzinfo=UTC).isoformat().replace("+00:00", "Z")
     beads = state_stream.ProviderSnapshot(
         scope="hive",
@@ -390,7 +398,7 @@ def test_deck_cursor_reaches_ready_items_beyond_the_generic_queue_page_limit() -
                 title=f"Widget {index:03d}",
                 updated_at=now,
             )
-            for index in range(201)
+            for index in range(401)
         ),
     )
     runtime = AgentRunSnapshot(
@@ -416,15 +424,27 @@ def test_deck_cursor_reaches_ready_items_beyond_the_generic_queue_page_limit() -
         def close(self):
             pass
 
+    queue_calls = []
+    queue_payload = operator_work_items.queue_payload
+
+    def counted_queue_payload(**kwargs):
+        queue_calls.append(kwargs["query"].queue)
+        return queue_payload(**kwargs)
+
+    monkeypatch.setattr(operator_work_items, "queue_payload", counted_queue_payload)
     backend = herdr_views.ViewBackend(cfg={}, sources=Sources(), _roster=_roster())
     first = backend.deck(HIVE, limit=200, cursor=None)
     second = backend.deck(HIVE, limit=200, cursor=first["next_cursor"])
+    third = backend.deck(HIVE, limit=200, cursor=second["next_cursor"])
 
     assert first["returned"] == 200
     assert first["truncated"] is True
-    assert second["returned"] == 1
-    assert second["sections"][0]["rows"][0]["entity"]["id"] == "widget-200"
-    assert second["truncated"] is False
+    assert second["returned"] == 200
+    assert second["truncated"] is True
+    assert third["returned"] == 1
+    assert third["sections"][0]["rows"][0]["entity"]["id"] == "widget-400"
+    assert third["truncated"] is False
+    assert queue_calls == ["ready", "active", "blocked"] * 3
 
 
 def test_deck_disables_launch_when_herdr_cli_preflight_is_unavailable(monkeypatch) -> None:

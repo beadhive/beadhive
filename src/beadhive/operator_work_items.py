@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 
@@ -386,6 +386,31 @@ def queue_payload(
         ],
         "warnings": warnings,
     }
+
+
+def complete_queue_payload(
+    *,
+    hive_id: str,
+    beads: ProviderSnapshot,
+    runtime: AgentRunSnapshot,
+    query: WorkItemQuery,
+    ready_policy: tuple[str, int] | None = None,
+) -> dict[str, object]:
+    """Project one complete queue once for an in-process composite view.
+
+    Public HTTP callers remain capped by :func:`queue_payload` and the API's 200-row
+    validation.  A composite projection already owns the full immutable provider snapshot,
+    so paging that same snapshot internally would repeat its full selection and sort for every
+    page.  Selecting at most the snapshot's issue count keeps that composition to one pass.
+    """
+
+    return queue_payload(
+        hive_id=hive_id,
+        beads=beads,
+        runtime=runtime,
+        query=replace(query, limit=max(1, len(beads.issues)), cursor=None),
+        ready_policy=ready_policy,
+    )
 
 
 def _dependency_detail(
