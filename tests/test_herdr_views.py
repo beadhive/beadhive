@@ -245,6 +245,68 @@ def test_real_roster_revision_invalidates_deck_cursor_on_agent_change(
     assert stale_roster["revision"] != second_roster["revision"]
 
 
+def test_real_roster_revision_tracks_observed_and_expected_worktree_paths(
+    tmp_path, monkeypatch
+) -> None:
+    expected = tmp_path / "expected-widget-1"
+    observed_a = tmp_path / "observed-a"
+    observed_b = tmp_path / "observed-b"
+    expected.mkdir()
+    observed_a.mkdir()
+    observed_b.mkdir()
+    (expected / ".git").write_text("gitdir: elsewhere\n")
+    target = "bh-widget-1"
+    pane = {
+        "pane_id": "w1:p2",
+        "workspace_id": "w1",
+        "tab_id": "w1:t1",
+        "label": target,
+        "cwd": str(observed_a),
+        "tokens": {
+            "bh_owner": "bh.plugin.herdr/v1",
+            "bh_hive_id": HIVE,
+            "bh_bead_id": "widget-1",
+            "bh_target": target,
+            "bh_schema": "1",
+        },
+    }
+    snapshot = {
+        "agents": [{"name": target, "state": "working", "pane_id": "w1:p2"}],
+        "panes": [pane],
+        "workspaces": [{"workspace_id": "w1", "label": f"bh:{HIVE}"}],
+    }
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "locate",
+        lambda *_args: ({}, tmp_path, expected, "wt/bead/issue/widget-1"),
+    )
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "managed",
+        lambda _cfg: [("widget", str(expected), "wt/bead/issue/widget-1")],
+    )
+
+    first_roster = herdr_plugin._roster_payload(snapshot, {"managed_repos": []})
+    first = herdr_views.deck_payload(HIVE, _queues(), first_roster, limit=1, cursor=None)
+    pane["cwd"] = str(observed_b)
+    second_roster = herdr_plugin._roster_payload(snapshot, {"managed_repos": []})
+
+    first_agent = first_roster["agents"][0]
+    second_agent = second_roster["agents"][0]
+    assert first_agent["ownership"] == second_agent["ownership"]
+    assert first_agent["revision"] != second_agent["revision"]
+    assert first_roster["revision"] != second_roster["revision"]
+    with pytest.raises(OperatorSourceError) as exc:
+        herdr_views.deck_payload(
+            HIVE,
+            _queues(),
+            second_roster,
+            limit=1,
+            cursor=first["next_cursor"],
+        )
+    assert exc.value.code == "view_cursor_revision_mismatch"
+
+
 def test_deck_sections_layout_tokens_and_action_invocations_are_safe() -> None:
     roster = _roster(_agent(state="working"), _agent(target="bh-widget-2", state="blocked"))
 

@@ -888,6 +888,60 @@ def test_safe_dispatch_accepts_maximum_prompt_when_socket_acknowledges_delivery(
     assert prompt not in result.stdout
 
 
+def test_prompt_file_enforces_limit_during_read(monkeypatch):
+    read_sizes = []
+
+    class FakeFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            if size == -1:
+                return "x" * (herdr_plugin._MAX_PROMPT_BYTES + 1)
+            return b"x" * size
+
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: FakeFile())
+
+    with pytest.raises(ValueError, match="exceeds"):
+        herdr_plugin._prompt_input(None, from_stdin=False, prompt_file="/fake/prompt")
+
+    assert read_sizes == [herdr_plugin._MAX_PROMPT_BYTES + 1]
+
+
+def test_prompt_stdin_enforces_limit_during_binary_read(monkeypatch):
+    read_sizes = []
+
+    class FakeBuffer:
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return b"x" * size
+
+    class FakeStdin:
+        buffer = FakeBuffer()
+
+        def read(self, _size=-1):
+            raise AssertionError("bounded prompt input must use the binary stdin stream")
+
+    monkeypatch.setattr(herdr_plugin.sys, "stdin", FakeStdin())
+
+    with pytest.raises(ValueError, match="exceeds"):
+        herdr_plugin._prompt_input(None, from_stdin=True, prompt_file="")
+
+    assert read_sizes == [herdr_plugin._MAX_PROMPT_BYTES + 1]
+
+
+def test_prompt_file_rejects_invalid_utf8(tmp_path):
+    prompt_path = tmp_path / "invalid-prompt.txt"
+    prompt_path.write_bytes(b"valid prefix\xffinvalid suffix")
+
+    with pytest.raises(ValueError, match="prompt input must be valid UTF-8"):
+        herdr_plugin._prompt_input(None, from_stdin=False, prompt_file=str(prompt_path))
+
+
 def test_dispatch_json_refusal_is_structured_and_not_retryable(tmp_path, monkeypatch):
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
     target = _owned_dispatch_target(tmp_path, monkeypatch)
@@ -1011,7 +1065,16 @@ def test_safe_prompt_socket_request_keeps_body_out_of_process_metadata(monkeypat
             return None
 
         def readline(self, _limit):
-            return b'{"id":"x","result":{"type":"agent_prompt","agent_status":"done"}}\n'
+            request_id = json.loads(sent[0])["id"]
+            return (
+                json.dumps(
+                    {
+                        "id": request_id,
+                        "result": {"type": "agent_prompt", "agent_status": "done"},
+                    }
+                ).encode()
+                + b"\n"
+            )
 
     class FakeSocket:
         def __enter__(self):
@@ -1043,6 +1106,140 @@ def test_safe_prompt_socket_request_keeps_body_out_of_process_metadata(monkeypat
     assert request["params"]["text"] == secret
     assert secret not in "\0".join(result.args)
     assert secret not in result.stdout
+
+
+def test_safe_prompt_socket_refuses_mismatched_response_id(monkeypatch):
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def readline(self, _limit):
+            return b'{"id":"other","result":{"type":"agent_prompt","agent_status":"done"}}\n'
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _value):
+            pass
+
+        def makefile(self, _mode):
+            return FakeStream()
+
+    monkeypatch.setattr(herdr_plugin, "_session_socket_path", lambda: (Path("/tmp/herdr.sock"), ""))
+    monkeypatch.setattr(herdr_plugin.socket, "socket", lambda *_args: FakeSocket())
+    monkeypatch.setattr(herdr_plugin.uuid, "uuid4", lambda: SimpleNamespace(hex="expected"))
+
+    result = herdr_plugin._prompt_over_socket("bh-bh-7", "secret")
+
+    assert result.returncode == 1
+    assert result.stderr == "Herdr returned a mismatched agent.prompt response"
+
+
+def test_safe_prompt_socket_refuses_unexpected_result_semantics(monkeypatch):
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def readline(self, _limit):
+            return (
+                b'{"id":"bh_prompt_expected","result":'
+                b'{"type":"workspace_created","agent_status":"done"}}\n'
+            )
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _value):
+            pass
+
+        def makefile(self, _mode):
+            return FakeStream()
+
+    monkeypatch.setattr(herdr_plugin, "_session_socket_path", lambda: (Path("/tmp/x"), ""))
+    monkeypatch.setattr(herdr_plugin.socket, "socket", lambda *_args: FakeSocket())
+    monkeypatch.setattr(herdr_plugin.uuid, "uuid4", lambda: SimpleNamespace(hex="expected"))
+
+    result = herdr_plugin._prompt_over_socket("bh-bh-7", "secret")
+
+    assert result.returncode == 1
+    assert result.stderr == "Herdr returned an invalid agent.prompt response"
+
+
+def test_safe_prompt_socket_redacts_server_error_messages(monkeypatch):
+    secret = "raw server echoed this secret"
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def readline(self, _limit):
+            return (
+                json.dumps(
+                    {
+                        "id": "bh_prompt_expected",
+                        "error": {"code": "refused", "message": secret},
+                    }
+                ).encode()
+                + b"\n"
+            )
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _value):
+            pass
+
+        def makefile(self, _mode):
+            return FakeStream()
+
+    monkeypatch.setattr(herdr_plugin, "_session_socket_path", lambda: (Path("/tmp/x"), ""))
+    monkeypatch.setattr(herdr_plugin.socket, "socket", lambda *_args: FakeSocket())
+    monkeypatch.setattr(herdr_plugin.uuid, "uuid4", lambda: SimpleNamespace(hex="expected"))
+
+    result = herdr_plugin._prompt_over_socket("bh-bh-7", secret)
+
+    assert result.returncode == 1
+    assert result.stderr == "Herdr refused the agent.prompt request"
+    assert secret not in result.stderr
 
 
 def test_lifecycle_receipt_schema_covers_every_json_command():

@@ -211,12 +211,14 @@ printf '%s' "$prompt" | bh plugin herdr dispatch "$target" --stdin --json
 bh plugin herdr dispatch "$target" --prompt-file /private/path/instruction.txt --json
 ```
 
-These modes read arbitrary UTF-8 text up to 1 MiB and send it through Herdr's local NDJSON socket,
-so the prompt body appears in neither the `bh` argv nor a child `herdr` argv. Receipts, errors, and
-default logs never include prompt or transcript content. A successful structured socket response
-is the delivery proof for these modes; visible pane readback is bounded and cannot contain every
-valid 1 MiB prompt. The positional `PROMPT` form remains for human compatibility but necessarily
-appears in process arguments, so automation must not use it for sensitive content. Because that
+These modes read at most 1 MiB plus one sentinel byte, reject invalid UTF-8, and send valid text
+through Herdr's local NDJSON socket, so the prompt body appears in neither the `bh` argv nor a
+child `herdr` argv. Receipts, errors, and default logs never include prompt or transcript content.
+Delivery proof requires a response with the matching request ID and an `agent_prompt` result in
+an expected terminal state; server error detail is replaced with a stable redacted failure.
+Visible pane readback is bounded and cannot contain every valid 1 MiB prompt. The positional
+`PROMPT` form remains for human compatibility but necessarily appears in process arguments, so
+automation must not use it for sensitive content. Because that
 legacy transport has no structured acknowledgement, it still requires a new exact prompt
 occurrence in the before/after visible-pane read. Exactly one of positional `PROMPT`, `--stdin`,
 or `--prompt-file` is required.
@@ -229,9 +231,10 @@ snapshot is embedded in the shared lifecycle receipt and scoped explicitly to th
 `bh-supervisor` session. Each agent carries its target, canonical hive and bead, lifecycle
 timestamps, managed worktree and branch, and Herdr workspace/tab/pane locator. The document
 validates as both a `ps` lifecycle receipt and the roster extension contract. Each agent has a
-deterministic revision over those correlation facts, and the roster has a deterministic aggregate
-revision over its ordered agents. Consumers use those revisions to invalidate stale actions,
-pagination cursors, and view streams when lifecycle or ownership changes.
+deterministic revision over those correlation facts, including both the observed pane cwd and the
+expected managed-worktree path. The roster has a deterministic aggregate revision over its ordered
+agents. Consumers use those revisions to invalidate stale actions, pagination cursors, and view
+streams whenever the underlying lifecycle or ownership proof changes.
 
 New launches write `bh.plugin.herdr/v1` ownership metadata to the workspace and pane through
 Herdr's metadata API. Pane tokens carry the exact hive, bead, and opaque target; this is what

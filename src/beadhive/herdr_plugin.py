@@ -251,12 +251,20 @@ def _prompt_over_socket(target: str, prompt: str, *, timeout_ms: int = 60_000):
         return subprocess.CompletedProcess(
             argv, 1, stdout="", stderr=f"local Herdr socket request failed: {exc}"
         )
-    error = decoded.get("error") if isinstance(decoded, dict) else None
-    if isinstance(error, dict):
-        code = str(error.get("code") or "herdr_error")
-        message = str(error.get("message") or "agent prompt was refused")
-        return subprocess.CompletedProcess(argv, 1, stdout="", stderr=f"{code}: {message}")
-    if not isinstance(decoded, dict) or not isinstance(decoded.get("result"), dict):
+    if not isinstance(decoded, dict) or decoded.get("id") != request["id"]:
+        return subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr="Herdr returned a mismatched agent.prompt response"
+        )
+    if decoded.get("error") is not None:
+        return subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr="Herdr refused the agent.prompt request"
+        )
+    result = decoded.get("result")
+    if (
+        not isinstance(result, dict)
+        or result.get("type") != "agent_prompt"
+        or result.get("agent_status") not in {"idle", "done", "blocked"}
+    ):
         return subprocess.CompletedProcess(
             argv, 1, stdout="", stderr="Herdr returned an invalid agent.prompt response"
         )
@@ -271,13 +279,18 @@ def _prompt_input(
     if selected != 1:
         raise ValueError("provide exactly one of PROMPT, --stdin, or --prompt-file PATH")
     if from_stdin:
-        prompt = sys.stdin.read()
+        binary_stdin = getattr(sys.stdin, "buffer", None)
+        if binary_stdin is not None:
+            prompt = _decode_prompt_bytes(binary_stdin.read(_MAX_PROMPT_BYTES + 1))
+        else:
+            prompt = sys.stdin.read(_MAX_PROMPT_BYTES + 1)
         source = "stdin"
         safe = True
     elif prompt_file:
         try:
-            prompt = Path(prompt_file).read_text()
-        except (OSError, UnicodeError) as exc:
+            with Path(prompt_file).open("rb") as stream:
+                prompt = _decode_prompt_bytes(stream.read(_MAX_PROMPT_BYTES + 1))
+        except OSError as exc:
             raise ValueError(f"could not read --prompt-file: {exc}") from exc
         source = "file"
         safe = True
@@ -287,9 +300,23 @@ def _prompt_input(
         safe = False
     if not prompt:
         raise ValueError("prompt input must not be empty")
-    if len(prompt.encode()) > _MAX_PROMPT_BYTES:
+    try:
+        encoded = prompt.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError("prompt input must be valid UTF-8") from exc
+    if len(encoded) > _MAX_PROMPT_BYTES:
         raise ValueError(f"prompt input exceeds the {_MAX_PROMPT_BYTES}-byte limit")
     return prompt, source, safe
+
+
+def _decode_prompt_bytes(raw: bytes) -> str:
+    """Decode at most one bounded prompt, rejecting invalid UTF-8 without replacement."""
+    if len(raw) > _MAX_PROMPT_BYTES:
+        raise ValueError(f"prompt input exceeds the {_MAX_PROMPT_BYTES}-byte limit")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("prompt input must be valid UTF-8") from exc
 
 
 def _require(result, action: str):
@@ -726,7 +753,8 @@ def _roster_agent(
         ownership_state,
         marker,
         association,
-        str(expected) if expected is not None else cwd,
+        cwd,
+        str(expected) if expected is not None else None,
         worktree_state,
         branch,
     ]
