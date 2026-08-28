@@ -16,8 +16,12 @@ import json
 import re
 import shlex
 import shutil
+import socket
 import subprocess
+import sys
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 import typer
@@ -27,7 +31,110 @@ from . import config, plugins, run, worktree
 _SESSION = "bh-supervisor"
 _WARMUP_TOKEN = "BH_HERDR_WARMUP_OK"
 _LAUNCH_SCHEMA = 1
+_LIFECYCLE_SCHEMA = 1
+_MAX_PROMPT_BYTES = 1024 * 1024
 _HERDR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
+_OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+def _operation_id(value: str) -> str:
+    """Validate a caller correlation ID or mint one without consulting durable state."""
+    if not value:
+        return f"op-{uuid.uuid4().hex}"
+    if _OPERATION_ID_RE.fullmatch(value) is None:
+        raise ValueError(
+            "--operation-id must be 1-128 ASCII letters, digits, dot, underscore, colon, or dash"
+        )
+    return value
+
+
+def _observed_at() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _lifecycle_payload(
+    operation: str,
+    disposition: str,
+    *,
+    operation_id: str,
+    outcome: str = "succeeded",
+    hive: str | None = None,
+    bead: str | None = None,
+    target: str | None = None,
+    workspace: str | None = None,
+    pane: str | None = None,
+    worktree_path: str | None = None,
+    capabilities: list[str] | None = None,
+    warnings: list[str] | None = None,
+    retained_resources: list[dict] | None = None,
+    error: dict | None = None,
+    **result,
+) -> dict:
+    """Build the shared additive v1 lifecycle receipt.
+
+    Prompt and transcript content are intentionally not accepted by this builder.  Keeping the
+    receipt vocabulary explicit makes it difficult for a future caller to accidentally serialize
+    either one into stdout or an activity log.
+    """
+    from . import jsonout
+
+    payload = {
+        "operation_id": operation_id,
+        "operation": operation,
+        "outcome": outcome,
+        "disposition": disposition,
+        "observed_at": _observed_at(),
+        "hive": hive,
+        "bead": bead,
+        "target": target,
+        "session": _SESSION,
+        "workspace": workspace,
+        "pane": pane,
+        "worktree": worktree_path,
+        "capabilities": capabilities or [],
+        "warnings": warnings or [],
+        "retained_resources": retained_resources or [],
+        **result,
+    }
+    if error is not None:
+        payload["error"] = error
+    return jsonout.envelope(f"plugin herdr {operation}", _LIFECYCLE_SCHEMA, payload)
+
+
+def _emit_lifecycle(operation: str, disposition: str, *, operation_id: str, **fields) -> None:
+    from . import jsonout
+
+    jsonout.emit(_lifecycle_payload(operation, disposition, operation_id=operation_id, **fields))
+
+
+def _lifecycle_failure(
+    operation: str,
+    *,
+    operation_id: str,
+    code: str,
+    message: str,
+    subsystem: str = "herdr",
+    retryable: bool = False,
+    disposition: str = "failed",
+    exit_code: int = 1,
+    **fields,
+) -> None:
+    """Emit one stable machine failure and preserve the caller-visible exit category."""
+    _emit_lifecycle(
+        operation,
+        disposition,
+        operation_id=operation_id,
+        outcome="refused" if disposition == "refused" else "failed",
+        error={
+            "code": code,
+            "message": message,
+            "subsystem": subsystem,
+            "retryable": retryable,
+            "details": {},
+        },
+        **fields,
+    )
+    raise typer.Exit(exit_code)
 
 
 def _has_cli() -> bool:
@@ -75,6 +182,106 @@ def _output(result) -> str:
 def _command(*args: str, timeout: float | None = None):
     """Run one session-scoped herdr command, fencing every external failure."""
     return _invoke(["herdr", "--session", _SESSION, *args], timeout=timeout)
+
+
+def _session_socket_path() -> tuple[Path | None, str]:
+    """Ask Herdr for the dedicated session socket without deriving private paths."""
+    status = _invoke(["herdr", "--session", _SESSION, "status", "--json"])
+    if status is None or status.returncode != 0:
+        return None, _output(status) if status is not None else "status unavailable"
+    try:
+        payload = json.loads(str(status.stdout or ""))
+    except (TypeError, ValueError):
+        return None, "status returned invalid JSON"
+    server = payload.get("server") if isinstance(payload, dict) else None
+    path = server.get("socket") if isinstance(server, dict) else None
+    if not isinstance(path, str) or not path:
+        return None, "status response did not include the session socket"
+    if server.get("running") is False:
+        return None, "the bh-supervisor session is not running"
+    return Path(path), ""
+
+
+def _prompt_over_socket(target: str, prompt: str, *, timeout_ms: int = 60_000):
+    """Submit sensitive prompt text over Herdr's local NDJSON socket.
+
+    The ordinary CLI requires prompt text as a positional argument.  That is convenient for
+    humans but exposes the text through process listings.  Safe stdin/file dispatch therefore
+    uses Herdr's documented raw ``agent.prompt`` method.  No subprocess argv, environment,
+    receipt, or error contains the prompt body.
+    """
+    path, detail = _session_socket_path()
+    argv = ["herdr", "<local-socket>", "agent.prompt", target]
+    if path is None:
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr=detail)
+    request = {
+        "id": f"bh_prompt_{uuid.uuid4().hex}",
+        "method": "agent.prompt",
+        "params": {
+            "target": target,
+            "text": prompt,
+            "wait": {"until": ["idle", "done", "blocked"], "timeout_ms": timeout_ms},
+        },
+    }
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout((timeout_ms / 1000) + 5)
+            client.connect(str(path))
+            client.sendall((json.dumps(request, separators=(",", ":")) + "\n").encode())
+            with client.makefile("rb") as stream:
+                response = stream.readline(1024 * 1024 + 1)
+        if not response or len(response) > 1024 * 1024:
+            return subprocess.CompletedProcess(
+                argv, 1, stdout="", stderr="Herdr returned an empty or oversized response"
+            )
+        decoded = json.loads(response)
+    except TimeoutError:
+        return subprocess.CompletedProcess(
+            argv, 124, stdout="", stderr=f"timed out after {timeout_ms / 1000:g}s"
+        )
+    except (OSError, TypeError, ValueError) as exc:
+        return subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr=f"local Herdr socket request failed: {exc}"
+        )
+    error = decoded.get("error") if isinstance(decoded, dict) else None
+    if isinstance(error, dict):
+        code = str(error.get("code") or "herdr_error")
+        message = str(error.get("message") or "agent prompt was refused")
+        return subprocess.CompletedProcess(argv, 1, stdout="", stderr=f"{code}: {message}")
+    if not isinstance(decoded, dict) or not isinstance(decoded.get("result"), dict):
+        return subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr="Herdr returned an invalid agent.prompt response"
+        )
+    return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(decoded), stderr="")
+
+
+def _prompt_input(
+    positional: str | None, *, from_stdin: bool, prompt_file: str
+) -> tuple[str, str, bool]:
+    """Read exactly one prompt source and report whether it uses the safe transport."""
+    selected = int(positional is not None) + int(from_stdin) + int(bool(prompt_file))
+    if selected != 1:
+        raise ValueError("provide exactly one of PROMPT, --stdin, or --prompt-file PATH")
+    if from_stdin:
+        prompt = sys.stdin.read()
+        source = "stdin"
+        safe = True
+    elif prompt_file:
+        try:
+            prompt = Path(prompt_file).read_text()
+        except (OSError, UnicodeError) as exc:
+            raise ValueError(f"could not read --prompt-file: {exc}") from exc
+        source = "file"
+        safe = True
+    else:
+        prompt = positional or ""
+        source = "argument"
+        safe = False
+    if not prompt:
+        raise ValueError("prompt input must not be empty")
+    if len(prompt.encode()) > _MAX_PROMPT_BYTES:
+        raise ValueError(f"prompt input exceeds the {_MAX_PROMPT_BYTES}-byte limit")
+    return prompt, source, safe
 
 
 def _require(result, action: str):
@@ -1036,21 +1243,75 @@ def _owned_live_pane(target: str) -> str | None:
 
 
 @cli.command("status", help="show herdr server health and installed agent integrations.")
-def _status_cmd() -> None:
+def _status_cmd(
+    as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
+    operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
+) -> None:
     """A safe one-shot health report for herdr and its per-kind hook integrations."""
+    try:
+        op_id = _operation_id(operation_id)
+    except ValueError as exc:
+        if as_json:
+            _lifecycle_failure(
+                "status",
+                operation_id="invalid",
+                code="invalid_operation_id",
+                message=str(exc),
+                subsystem="beadhive",
+                exit_code=2,
+            )
+        raise typer.BadParameter(str(exc), param_hint="--operation-id") from exc
     if not _has_cli():
+        if as_json:
+            _emit_lifecycle(
+                "status",
+                "unavailable",
+                operation_id=op_id,
+                capabilities=["status"],
+                server={"available": False, "reason": "herdr_cli_unavailable"},
+                integrations=[],
+                warnings=["Herdr CLI is not on PATH."],
+            )
+            return
         typer.echo("herdr: server=down (herdr CLI not on PATH)")
         typer.echo("herdr integrations: unavailable")
         return
 
     status = _invoke(["herdr", "status"])
+    server_available = status is not None and status.returncode == 0
+    integrations = _invoke(["herdr", "integration", "status"])
+    integration_rows = []
+    if integrations is not None and integrations.returncode == 0:
+        for line in _output(integrations).splitlines():
+            kind, separator, state = line.partition(":")
+            integration_rows.append(
+                {"kind": kind.strip(), "state": state.strip()}
+                if separator
+                else {"kind": line.strip(), "state": "unknown"}
+            )
+    if as_json:
+        capabilities = ["status"]
+        if server_available:
+            capabilities.extend(["ps", "spawn", "dispatch", "watch", "attach", "reap"])
+        warnings = []
+        if integrations is None or integrations.returncode != 0:
+            warnings.append("Herdr integration status is unavailable.")
+        _emit_lifecycle(
+            "status",
+            "available" if server_available else "unavailable",
+            operation_id=op_id,
+            capabilities=capabilities,
+            server={"available": server_available, "detail": _output(status)},
+            integrations=integration_rows,
+            warnings=warnings,
+        )
+        return
     if status is None or status.returncode != 0:
         typer.echo("herdr: server=down")
     else:
         typer.echo("herdr: server=up")
         if output := _output(status):
             typer.echo(output)
-    integrations = _invoke(["herdr", "integration", "status"])
     if integrations is None or integrations.returncode != 0:
         typer.echo("herdr integrations: unavailable")
     else:
@@ -1060,21 +1321,80 @@ def _status_cmd() -> None:
 
 
 @cli.command("ps", help="list live herdr agents and their bh identity.")
-def _ps_cmd() -> None:
+def _ps_cmd(
+    as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
+    operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
+) -> None:
     """Show live agents without maintaining a bh-side identity table."""
+    try:
+        op_id = _operation_id(operation_id)
+    except ValueError as exc:
+        if as_json:
+            _lifecycle_failure(
+                "ps",
+                operation_id="invalid",
+                code="invalid_operation_id",
+                message=str(exc),
+                subsystem="beadhive",
+                exit_code=2,
+            )
+        raise typer.BadParameter(str(exc), param_hint="--operation-id") from exc
     if not _has_cli():
+        if as_json:
+            _emit_lifecycle(
+                "ps",
+                "unavailable",
+                operation_id=op_id,
+                capabilities=["status"],
+                agents=[],
+                warnings=["Herdr CLI is not on PATH."],
+            )
+            return
         typer.echo("herdr: server=down (herdr CLI not on PATH)")
         return
     if not server_up():
+        if as_json:
+            _emit_lifecycle(
+                "ps",
+                "unavailable",
+                operation_id=op_id,
+                capabilities=["status"],
+                agents=[],
+                warnings=["Herdr server is down."],
+            )
+            return
         typer.echo("herdr: server=down")
         return
     records = _read_agents()
     if records is None:
+        if as_json:
+            _lifecycle_failure(
+                "ps",
+                operation_id=op_id,
+                code="agent_list_unavailable",
+                message="Herdr agent list is unavailable.",
+                retryable=True,
+            )
         typer.echo("herdr: agent list unavailable", err=True)
         raise typer.Exit(1)
-    typer.echo("name\thive\tbead\tstate")
+    agents = []
     for record in records:
         name, hive, bead, state = _agent_identity(record)
+        agents.append({"target": name, "hive": hive, "bead": bead, "state": state})
+    if as_json:
+        _emit_lifecycle(
+            "ps",
+            "listed" if agents else "empty",
+            operation_id=op_id,
+            capabilities=["status", "ps"],
+            agents=agents,
+            count=len(agents),
+        )
+        return
+    typer.echo("name\thive\tbead\tstate")
+    for name, hive, bead, state in (
+        (item["target"], item["hive"], item["bead"], item["state"]) for item in agents
+    ):
         typer.echo(f"{name}\t{hive or 'unmanaged'}\t{bead or 'unmanaged'}\t{state}")
 
 
@@ -1112,31 +1432,121 @@ def _integrate_cmd(kind: str = typer.Argument(..., metavar="KIND")) -> None:
 
 
 @cli.command("attach", help="print the command for a human to attach to an agent pane.")
-def _attach_cmd(target: str = typer.Argument(..., metavar="TARGET")) -> None:
+def _attach_cmd(
+    target: str = typer.Argument(..., metavar="TARGET"),
+    as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
+    operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
+) -> None:
     """Print, but never run, the interactive attach command.
 
     Attaching transfers an operator's terminal.  Keeping this as a copy/paste
     instruction means a ``bh`` invocation cannot focus or take over their TTY.
     """
-    typer.echo(shlex.join(["herdr", "--session", _SESSION, "agent", "attach", target]))
+    argv = ["herdr", "--session", _SESSION, "agent", "attach", target]
+    if as_json:
+        try:
+            op_id = _operation_id(operation_id)
+        except ValueError as exc:
+            _lifecycle_failure(
+                "attach",
+                operation_id="invalid",
+                code="invalid_operation_id",
+                message=str(exc),
+                subsystem="beadhive",
+                exit_code=2,
+            )
+        _emit_lifecycle(
+            "attach",
+            "instructions",
+            operation_id=op_id,
+            target=target,
+            capabilities=["attach"],
+            attach_argv=argv,
+        )
+        return
+    typer.echo(shlex.join(argv))
 
 
 @cli.command("reap", help="close a pane previously created by bh plugin herdr spawn.")
-def _reap_cmd(target: str = typer.Argument(..., metavar="TARGET")) -> None:
+def _reap_cmd(
+    target: str = typer.Argument(..., metavar="TARGET"),
+    as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
+    operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
+) -> None:
     """Best-effort close of one live, bh-reserved spawned pane.
 
     Worktrees remain native-bh resources, and a hive workspace may host several
     bead panes, so neither is removed here.  A missing/ambiguous record is a
     refusal rather than a guess that could close an operator-owned pane.
     """
+    try:
+        op_id = _operation_id(operation_id)
+    except ValueError as exc:
+        if as_json:
+            _lifecycle_failure(
+                "reap",
+                operation_id="invalid",
+                code="invalid_operation_id",
+                message=str(exc),
+                subsystem="beadhive",
+                exit_code=2,
+                target=target,
+            )
+        raise typer.BadParameter(str(exc), param_hint="--operation-id") from exc
     if not server_up():
+        if as_json:
+            _lifecycle_failure(
+                "reap",
+                operation_id=op_id,
+                code="herdr_server_unavailable",
+                message="Herdr server is down; start Herdr before reaping an agent.",
+                retryable=True,
+                target=target,
+                retained_resources=[{"kind": "target", "id": target}],
+            )
         typer.echo("✗ herdr: server=down (start herdr before reaping an agent)", err=True)
         raise typer.Exit(1)
     pane = _owned_live_pane(target)
     if pane is None:
+        if as_json:
+            _lifecycle_failure(
+                "reap",
+                operation_id=op_id,
+                code="ownership_not_proven",
+                message="The target is unmanaged, stale, or ambiguous; no pane was closed.",
+                disposition="refused",
+                target=target,
+                retained_resources=[{"kind": "target", "id": target}],
+            )
         typer.echo(f"✗ herdr: refusing unmanaged or ambiguous target {target!r}", err=True)
         raise typer.Exit(1)
-    _require(_command("pane", "close", pane, "--no-focus"), "pane close")
+    closed = _command("pane", "close", pane, "--no-focus")
+    if closed is None or closed.returncode != 0:
+        if as_json:
+            _lifecycle_failure(
+                "reap",
+                operation_id=op_id,
+                code="pane_close_failed",
+                message=_output(closed) or "Herdr did not close the proven pane.",
+                retryable=True,
+                target=target,
+                pane=pane,
+                retained_resources=[
+                    {"kind": "target", "id": target},
+                    {"kind": "pane", "id": pane},
+                ],
+            )
+        _require(closed, "pane close")
+    if as_json:
+        _emit_lifecycle(
+            "reap",
+            "reaped",
+            operation_id=op_id,
+            target=target,
+            pane=pane,
+            capabilities=["status", "ps"],
+        )
+        return
     typer.echo(f"herdr target={target} reaped pane={pane}")
 
 
@@ -1145,17 +1555,65 @@ def _spawn_cmd(
     hive: str = typer.Option(..., "--hive", help="managed hive identifier"),
     bead: str = typer.Option(..., "--bead", help="already-claimed bead identifier"),
     kind: str = typer.Option(..., "--kind", help="Herdr agent kind, e.g. claude or codex"),
+    as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
+    operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
     """Create an isolated pane and prove its first conversational turn is promptable."""
+    try:
+        op_id = _operation_id(operation_id)
+    except ValueError as exc:
+        if as_json:
+            _lifecycle_failure(
+                "spawn",
+                operation_id="invalid",
+                code="invalid_operation_id",
+                message=str(exc),
+                subsystem="beadhive",
+                exit_code=2,
+                hive=hive,
+                bead=bead,
+            )
+        raise typer.BadParameter(str(exc), param_hint="--operation-id") from exc
     if not server_up():
+        if as_json:
+            _lifecycle_failure(
+                "spawn",
+                operation_id=op_id,
+                code="herdr_server_unavailable",
+                message="Herdr server is down or its integration is unavailable.",
+                retryable=True,
+                hive=hive,
+                bead=bead,
+            )
         typer.echo("✗ herdr: server=down (start herdr and install its agent integration)", err=True)
         raise typer.Exit(1)
-    cfg = config.load()
-    entry, cwd = _managed_worktree(hive, bead, cfg)
-    kind = _resolve_kind(kind, cfg, entry)
-    workspace, root_pane = _workspace(hive, cwd)
     pane = ""
     try:
+        cfg = config.load()
+        entry, cwd = _managed_worktree(hive, bead, cfg)
+        kind = _resolve_kind(kind, cfg, entry)
+        name = _launch_target(bead)
+        existing = _strict_live_target(name, hive, cwd)
+        if existing is not None:
+            workspace, pane = existing
+            if as_json:
+                _emit_lifecycle(
+                    "spawn",
+                    "reused",
+                    operation_id=op_id,
+                    hive=hive,
+                    bead=bead,
+                    target=name,
+                    workspace=workspace,
+                    pane=pane,
+                    worktree_path=str(cwd),
+                    capabilities=["dispatch", "watch", "attach", "reap"],
+                    kind=kind,
+                )
+                return
+            typer.echo(f"herdr target={name} pane={pane} workspace={workspace} bead={bead}")
+            return
+        workspace, root_pane = _workspace(hive, cwd)
         split = _command(
             "pane",
             "split",
@@ -1169,7 +1627,6 @@ def _spawn_cmd(
         )
         _require(split, "pane split")
         pane = _required_id(split, "pane split", "pane", "pane_id", "id")
-        name = f"bh-{bead}"
         _require(_command("agent", "start", name, "--kind", kind, "--pane", pane), "agent start")
         _require(_command("pane", "rename", pane, name), "pane rename")
         _require(
@@ -1211,14 +1668,58 @@ def _spawn_cmd(
     except Exception:
         if pane:
             _close_pane(pane)
+        if as_json:
+            _lifecycle_failure(
+                "spawn",
+                operation_id=op_id,
+                code="spawn_failed",
+                message="Herdr could not create and warm the requested agent pane.",
+                retryable=False,
+                hive=hive,
+                bead=bead,
+                target=locals().get("name"),
+                workspace=locals().get("workspace"),
+                pane=pane or None,
+                worktree_path=str(locals()["cwd"]) if "cwd" in locals() else None,
+                retained_resources=(
+                    [{"kind": "worktree", "path": str(locals()["cwd"])}]
+                    if "cwd" in locals()
+                    else []
+                ),
+            )
         raise
+    if as_json:
+        _emit_lifecycle(
+            "spawn",
+            "created",
+            operation_id=op_id,
+            hive=hive,
+            bead=bead,
+            target=name,
+            workspace=workspace,
+            pane=pane,
+            worktree_path=str(cwd),
+            capabilities=["dispatch", "watch", "attach", "reap"],
+            kind=kind,
+        )
+        return
     typer.echo(f"herdr target={name} pane={pane} workspace={workspace} bead={bead}")
 
 
 @cli.command("dispatch", help="send a prompt and verify it reached the agent pane.")
 def _dispatch_cmd(
     target: str = typer.Argument(..., metavar="TARGET", help="herdr agent target"),
-    prompt: str = typer.Argument(..., metavar="PROMPT", help="prompt to deliver"),
+    prompt: str | None = typer.Argument(
+        None, metavar="[PROMPT]", help="legacy positional prompt; prefer --stdin or --prompt-file"
+    ),
+    from_stdin: bool = typer.Option(
+        False, "--stdin", help="read prompt from stdin and keep it out of process arguments"
+    ),
+    prompt_file: str = typer.Option(
+        "", "--prompt-file", help="read prompt from this file and keep it out of process arguments"
+    ),
+    as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
+    operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
     """Deliver a prompt only when a before/after pane read proves a new real turn.
 
@@ -1229,27 +1730,132 @@ def _dispatch_cmd(
     dispatch.  This preserves the exact user prompt while making the proof turn-
     specific, including when the user deliberately repeats a prompt.
     """
+    try:
+        op_id = _operation_id(operation_id)
+    except ValueError as exc:
+        if as_json:
+            _lifecycle_failure(
+                "dispatch",
+                operation_id="invalid",
+                code="invalid_operation_id",
+                message=str(exc),
+                subsystem="beadhive",
+                exit_code=2,
+                target=target,
+            )
+        raise typer.BadParameter(str(exc), param_hint="--operation-id") from exc
+    try:
+        prompt_text, input_source, safe_transport = _prompt_input(
+            prompt, from_stdin=from_stdin, prompt_file=prompt_file
+        )
+    except ValueError as exc:
+        if as_json:
+            _lifecycle_failure(
+                "dispatch",
+                operation_id=op_id,
+                code="invalid_prompt_input",
+                message=str(exc),
+                subsystem="beadhive",
+                exit_code=2,
+                target=target,
+            )
+        raise typer.BadParameter(str(exc)) from exc
     if not server_up():
+        if as_json:
+            _lifecycle_failure(
+                "dispatch",
+                operation_id=op_id,
+                code="herdr_server_unavailable",
+                message="Herdr server is down or its integration is unavailable.",
+                retryable=True,
+                target=target,
+            )
         typer.echo("✗ herdr: server=down (start herdr and install its agent integration)", err=True)
         raise typer.Exit(1)
-    before = _require(
-        _command("agent", "read", target, "--source", "visible", "--lines", "80"),
-        "agent dispatch pre-read",
-    )
-    _require(
-        _command("agent", "prompt", target, prompt, "--wait", "--timeout", "60000"),
-        "agent dispatch",
-    )
-    visible = _require(
-        _command("agent", "read", target, "--source", "visible", "--lines", "80"),
-        "agent dispatch read-back",
-    )
-    if not prompt or visible.count(prompt) <= before.count(prompt):
+    pre_read = _command("agent", "read", target, "--source", "visible", "--lines", "80")
+    if pre_read is None or pre_read.returncode != 0:
+        if as_json:
+            _lifecycle_failure(
+                "dispatch",
+                operation_id=op_id,
+                code="dispatch_pre_read_failed",
+                message=_output(pre_read) or "Herdr could not read the target before dispatch.",
+                retryable=True,
+                target=target,
+            )
+        _require(pre_read, "agent dispatch pre-read")
+    before = _output(pre_read)
+    if safe_transport:
+        dispatched = _prompt_over_socket(target, prompt_text)
+    else:
+        # Compatibility only. The safe stdin/file forms above avoid putting text in child argv.
+        dispatched = _command(
+            "agent", "prompt", target, prompt_text, "--wait", "--timeout", "60000"
+        )
+    if dispatched is None or dispatched.returncode != 0:
+        if as_json:
+            detail = (_output(dispatched) or "Herdr refused the agent prompt.").replace(
+                prompt_text, "[redacted]"
+            )
+            code = (
+                "dispatch_timeout"
+                if getattr(dispatched, "returncode", None) == 124
+                else "dispatch_failed"
+            )
+            _lifecycle_failure(
+                "dispatch",
+                operation_id=op_id,
+                code=code,
+                message=detail,
+                retryable=False,
+                target=target,
+                input_source=input_source,
+            )
+        _require(dispatched, "agent dispatch")
+    post_read = _command("agent", "read", target, "--source", "visible", "--lines", "80")
+    if post_read is None or post_read.returncode != 0:
+        if as_json:
+            _lifecycle_failure(
+                "dispatch",
+                operation_id=op_id,
+                code="dispatch_readback_failed",
+                message=_output(post_read) or "Herdr could not verify the target after dispatch.",
+                retryable=False,
+                target=target,
+                input_source=input_source,
+            )
+        _require(post_read, "agent dispatch read-back")
+    visible = _output(post_read)
+    if visible.count(prompt_text) <= before.count(prompt_text):
+        if as_json:
+            _lifecycle_failure(
+                "dispatch",
+                operation_id=op_id,
+                code="dispatch_unverified",
+                message="The prompt was not proven in a new real agent turn.",
+                retryable=False,
+                disposition="refused",
+                target=target,
+                input_source=input_source,
+            )
         typer.echo(
             "✗ herdr dispatch did not reach a new real agent turn; prompt was absent from new pane content",
             err=True,
         )
         raise typer.Exit(1)
+    if as_json:
+        warnings = [] if safe_transport else ["Legacy positional prompt transport was used."]
+        _emit_lifecycle(
+            "dispatch",
+            "dispatched",
+            operation_id=op_id,
+            target=target,
+            capabilities=["watch", "attach", "dispatch"],
+            warnings=warnings,
+            input_source=input_source,
+            delivery_verified=True,
+        )
+        return
     typer.echo(f"herdr dispatched target={target}")
 
 
@@ -1262,6 +1868,8 @@ def _watch_cmd(
         min=0.0,
         help="seconds to wait before giving up (herdr's millisecond timeout is derived from it)",
     ),
+    as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
+    operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
     """Wait for TARGET's blocked/settled state without polling from bh.
 
@@ -1269,17 +1877,80 @@ def _watch_cmd(
     wrapper only fences availability and translates bh's seconds-oriented timeout option to
     herdr's millisecond argument; a timed-out wait is reported as a normal command failure.
     """
+    try:
+        op_id = _operation_id(operation_id)
+    except ValueError as exc:
+        if as_json:
+            _lifecycle_failure(
+                "watch",
+                operation_id="invalid",
+                code="invalid_operation_id",
+                message=str(exc),
+                subsystem="beadhive",
+                exit_code=2,
+                target=target,
+            )
+        raise typer.BadParameter(str(exc), param_hint="--operation-id") from exc
     if not _has_cli():
+        if as_json:
+            _lifecycle_failure(
+                "watch",
+                operation_id=op_id,
+                code="herdr_cli_unavailable",
+                message="Herdr CLI is not on PATH.",
+                target=target,
+            )
         typer.echo("✗ herdr: cannot watch — herdr CLI not on PATH", err=True)
         raise typer.Exit(1)
     if not server_up():
+        if as_json:
+            _lifecycle_failure(
+                "watch",
+                operation_id=op_id,
+                code="herdr_server_unavailable",
+                message="Herdr server is down; start Herdr before watching an agent.",
+                retryable=True,
+                target=target,
+            )
         typer.echo("✗ herdr: server=down (start herdr before watching an agent)", err=True)
         raise typer.Exit(1)
 
     wait_args = ["agent", "wait", target, "--until", "blocked"]
     if timeout is not None:
         wait_args.extend(["--timeout", str(int(timeout * 1000))])
-    output = _require(_command(*wait_args, timeout=timeout), "agent wait")
+    waited = _command(*wait_args, timeout=timeout)
+    if waited is None or waited.returncode != 0:
+        if as_json:
+            timed_out = getattr(waited, "returncode", None) == 124
+            _lifecycle_failure(
+                "watch",
+                operation_id=op_id,
+                code="watch_timeout" if timed_out else "watch_failed",
+                message=_output(waited) or "Herdr agent wait failed.",
+                retryable=True,
+                disposition="timed_out" if timed_out else "failed",
+                target=target,
+            )
+        _require(waited, "agent wait")
+    output = _output(waited)
+    if as_json:
+        decoded = _decoded(waited)
+        state = None
+        if isinstance(decoded, dict):
+            data = _result_payload(decoded)
+            state = _string_field(data, "agent_status", "status", "state")
+        if state is None:
+            match = re.search(r"(?:agent_)?status\s*[:=]\s*([A-Za-z_-]+)", output)
+            state = match.group(1) if match else None
+        _emit_lifecycle(
+            "watch",
+            "settled",
+            operation_id=op_id,
+            target=target,
+            capabilities=["watch", "attach", "dispatch"],
+            resulting_state=state,
+        )
+        return
     if output:
         typer.echo(output)
     else:
