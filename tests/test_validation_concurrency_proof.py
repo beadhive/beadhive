@@ -51,8 +51,18 @@ def _read_state(root: Path) -> dict:
         return {"active": 0, "peak": 0, "children": {}}
 
 
-def _run_submit_gate(entry, branch, command, cfg, bead, results) -> None:
+def _run_submit_gate(entry, branch, command, cfg, bead, results, active_retry=None) -> None:
     host.host_id = lambda: "proof-host"
+    if active_retry is not None:
+        original_latest_run = validation_records.latest_run
+
+        def latest_run(*args, **kwargs):
+            run = original_latest_run(*args, **kwargs)
+            if run is not None and run.get("lifecycle") == "running":
+                active_retry.set()
+            return run
+
+        validation_records.latest_run = latest_run
     rc = worktree.clean_checkout(
         entry,
         branch,
@@ -169,6 +179,7 @@ def test_two_submits_and_duplicate_retry_obey_capacity_and_coalesce(proof_hive, 
     cfg = {"work": {"validation_slots": slots}}
     ctx = process_context()
     results = ctx.Queue()
+    active_retry = ctx.Event()
     branch_a = "wt/bead/issue/proof-a"
     branch_b = "wt/bead/issue/proof-b"
 
@@ -184,14 +195,14 @@ def test_two_submits_and_duplicate_retry_obey_capacity_and_coalesce(proof_hive, 
     )
     duplicate = ctx.Process(
         target=_run_submit_gate,
-        args=(entry, branch_a, command, cfg, "proof-a", results),
+        args=(entry, branch_a, command, cfg, "proof-a", results, active_retry),
     )
     other.start()
     duplicate.start()
+    assert active_retry.wait(10), "exact retry did not observe the active leader"
     if slots == 2:
         _wait_for(lambda: _read_state(state_root)["peak"] == 2)
     else:
-        time.sleep(0.2)
         assert _read_state(state_root)["peak"] == 1
     (state_root / "release").touch()
 
