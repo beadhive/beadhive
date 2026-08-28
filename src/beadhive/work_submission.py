@@ -362,6 +362,8 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
         owner_dead = False
         if owner.get("host") == api.host.host_id() and isinstance(pid, int):
             owner_dead = not api.worktree._pid_alive(pid)
+            if not owner_dead:
+                owner_dead = api.worktree._pid_state(pid).upper().startswith("Z")
             if not owner_dead and token:
                 current_token = api.worktree._pid_start(pid)
                 owner_dead = bool(current_token and current_token != token)
