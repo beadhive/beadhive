@@ -495,6 +495,8 @@ def test_product_factory_composes_operator_state_into_daemon_core(tmp_path: Path
         "/api/v1/factory",
         "/api/v1/factory/hives",
         "/api/v1/hives/{hive_id:path}/snapshot",
+        "/api/v1/hives/{hive_id:path}/work-items",
+        "/api/v1/hives/{hive_id:path}/work-items/{bead_id}",
         "/api/v1/hives/{hive_id:path}/events",
         "/api/v1/runs/{run_id}/activity",
         "/openapi.json",

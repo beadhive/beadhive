@@ -10,6 +10,7 @@ import json
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import replace
 from importlib import resources
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -19,7 +20,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import BaseRoute, Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import operator_contract
+from . import operator_contract, operator_work_items
 from .operator_feed import OperatorFeed
 from .operator_sources import OperatorSourceError, OperatorSources, validate_canonical_identity
 
@@ -32,6 +33,7 @@ _EVENTS_RAW_PATH = re.compile(
     rb"^/api/v1/hives/[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F"
     rb"[A-Za-z0-9._~-]+/events$"
 )
+_WORK_ITEM_ID = re.compile(r"^[A-Za-z0-9._~-]+$")
 
 
 def error_payload(error: OperatorSourceError) -> dict[str, object]:
@@ -45,7 +47,8 @@ def error_payload(error: OperatorSourceError) -> dict[str, object]:
 
 
 def _error_response(error: OperatorSourceError) -> JSONResponse:
-    return JSONResponse(error_payload(error), status_code=error.status_code)
+    headers = {"Retry-After": "1"} if error.retryable else None
+    return JSONResponse(error_payload(error), status_code=error.status_code, headers=headers)
 
 
 def openapi_document() -> dict[str, Any]:
@@ -105,6 +108,110 @@ def canonical_run_parameter(request: Request) -> str:
             status_code=400,
         )
     return decoded
+
+
+def canonical_work_item_parameters(request: Request, *, detail: bool) -> tuple[str, str | None]:
+    hive_id = str(request.path_params["hive_id"])
+    validate_canonical_identity(hive_id)
+    bead_id = str(request.path_params["bead_id"]) if detail else None
+    if bead_id is not None and not _WORK_ITEM_ID.fullmatch(bead_id):
+        raise OperatorSourceError(
+            "invalid_work_item_id",
+            "Work-item identity must be one canonical path segment.",
+            status_code=400,
+        )
+    raw_path = request.scope.get("raw_path")
+    if not isinstance(raw_path, bytes):
+        raw_path = request.scope["path"].encode("utf-8")
+    expected = b"/api/v1/hives/" + quote(hive_id, safe="-._~").encode("ascii") + b"/work-items"
+    if bead_id is not None:
+        expected += b"/" + quote(bead_id, safe="-._~").encode("ascii")
+    if raw_path != expected:
+        raise OperatorSourceError(
+            "invalid_path_encoding",
+            "Resource identities must use their canonical path encoding.",
+            status_code=400,
+        )
+    return hive_id, bead_id
+
+
+def _single_query_parameter(request: Request, name: str) -> str | None:
+    values = request.query_params.getlist(name)
+    if len(values) > 1:
+        raise OperatorSourceError(
+            "invalid_work_items_filter",
+            f"Work-items requests accept at most one {name} parameter.",
+            status_code=400,
+        )
+    return values[0] if values else None
+
+
+def work_item_query(request: Request) -> operator_work_items.WorkItemQuery:
+    allowed = {"queue", "limit", "cursor", "priority", "label", "assignee", "type", "parent"}
+    unknown = sorted(set(request.query_params) - allowed)
+    if unknown:
+        raise OperatorSourceError(
+            "invalid_work_items_filter",
+            f"Unknown work-items filter: {unknown[0]}.",
+            status_code=400,
+        )
+    queue = _single_query_parameter(request, "queue")
+    if queue not in operator_work_items.QUEUES:
+        raise OperatorSourceError(
+            "invalid_work_items_queue",
+            "Queue must be one of ready, active, blocked, or recent.",
+            status_code=400,
+        )
+    raw_limit = _single_query_parameter(request, "limit")
+    try:
+        limit = operator_work_items.DEFAULT_LIMIT if raw_limit is None else int(raw_limit)
+    except ValueError as exc:
+        raise OperatorSourceError(
+            "invalid_work_items_limit",
+            "Work-items limit must be an integer from 1 through 200.",
+            status_code=400,
+        ) from exc
+    if not 1 <= limit <= operator_work_items.MAX_LIMIT:
+        raise OperatorSourceError(
+            "invalid_work_items_limit",
+            "Work-items limit must be an integer from 1 through 200.",
+            status_code=400,
+        )
+    priorities = tuple(
+        sorted(
+            {
+                value.upper() if value.upper().startswith("P") else f"P{value}"
+                for value in request.query_params.getlist("priority")
+                if value
+            }
+        )
+    )
+    if any(not re.fullmatch(r"P[0-4]", value) for value in priorities):
+        raise OperatorSourceError(
+            "invalid_work_items_filter",
+            "Priority filters must be P0 through P4.",
+            status_code=400,
+        )
+    labels = tuple(sorted({value for value in request.query_params.getlist("label") if value}))
+    return operator_work_items.WorkItemQuery(
+        queue=queue,
+        limit=limit,
+        cursor=_single_query_parameter(request, "cursor"),
+        priorities=priorities,
+        labels=labels,
+        assignee=_single_query_parameter(request, "assignee"),
+        issue_type=_single_query_parameter(request, "type"),
+        parent=_single_query_parameter(request, "parent"),
+    )
+
+
+def _conditional_json(request: Request, payload: dict[str, object]) -> Response:
+    value = operator_work_items.etag(payload)
+    candidates = {item.strip() for item in request.headers.get("if-none-match", "").split(",")}
+    headers = {"ETag": value}
+    if "*" in candidates or value in candidates:
+        return Response(status_code=304, headers=headers)
+    return JSONResponse(payload, headers=headers)
 
 
 def activity_cursor(request: Request) -> tuple[str, int] | None:
@@ -359,6 +466,64 @@ class OperatorAPI:
                 )
             )
 
+    async def work_items(self, request: Request) -> Response:
+        try:
+            identity, _ = canonical_work_item_parameters(request, detail=False)
+            query = work_item_query(request)
+            hive = await asyncio.to_thread(self.sources.resolve_hive, identity)
+            beads, runtime = await asyncio.to_thread(self.sources.refresh_hive, hive)
+            ready_policy = None
+            if query.queue == "ready":
+                ready_policy, ordering = operator_work_items.configured_ready_policy(
+                    cfg=self.sources.cfg,
+                    entry=dict(hive.entry),
+                )
+                query = replace(query, ordering=ordering)
+            payload = operator_work_items.queue_payload(
+                hive_id=identity,
+                beads=beads,
+                runtime=runtime,
+                query=query,
+                ready_policy=ready_policy,
+            )
+            return _conditional_json(request, payload)
+        except OperatorSourceError as exc:
+            return _error_response(exc)
+        except Exception:
+            return _error_response(
+                OperatorSourceError(
+                    "work_items_source_unavailable",
+                    "The authoritative work-items source is unavailable.",
+                    status_code=503,
+                    retryable=True,
+                )
+            )
+
+    async def work_item_detail(self, request: Request) -> Response:
+        try:
+            identity, bead_id = canonical_work_item_parameters(request, detail=True)
+            assert bead_id is not None
+            hive = await asyncio.to_thread(self.sources.resolve_hive, identity)
+            beads, runtime = await asyncio.to_thread(self.sources.refresh_hive, hive)
+            payload = operator_work_items.detail_payload(
+                hive_id=identity,
+                bead_id=bead_id,
+                beads=beads,
+                runtime=runtime,
+            )
+            return _conditional_json(request, payload)
+        except OperatorSourceError as exc:
+            return _error_response(exc)
+        except Exception:
+            return _error_response(
+                OperatorSourceError(
+                    "work_item_source_unavailable",
+                    "The authoritative exact work-item source is unavailable.",
+                    status_code=503,
+                    retryable=True,
+                )
+            )
+
     async def openapi(self, _request: Request) -> JSONResponse:
         return JSONResponse(openapi_document())
 
@@ -376,6 +541,18 @@ class OperatorAPI:
                 self.snapshot,
                 methods=["GET"],
                 name="operator_hive_snapshot",
+            ),
+            Route(
+                "/api/v1/hives/{hive_id:path}/work-items",
+                self.work_items,
+                methods=["GET"],
+                name="operator_work_items",
+            ),
+            Route(
+                "/api/v1/hives/{hive_id:path}/work-items/{bead_id}",
+                self.work_item_detail,
+                methods=["GET"],
+                name="operator_work_item_detail",
             ),
             Route(
                 "/api/v1/runs/{run_id}/activity",
