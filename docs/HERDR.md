@@ -115,6 +115,7 @@ sets the ownership line so this remains an optional interactive surface, not a p
 | Command | Wraps | Notes |
 |---|---|---|
 | `bh plugin herdr status` | `herdr status`, `integration status` | One-shot health: server running? which agent kinds have hooks installed? |
+| `bh plugin herdr add --local PATH` | `herdr plugin link PATH --enabled` | Explicitly link the validated `beadhive.herdr` package during private development; `--managed-ref REF --yes` installs the known GitHub source after release |
 | `bh plugin herdr integrate <kind>` | `herdr integration install <kind>` | Explicit opt-in per agent kind — do not auto-install every kind on onboard |
 | `bh plugin herdr launch <bead-id>` | exact hive lookup → native `bh work claim` → live reuse or warm agent creation | High-level get-or-create path: the bead ID is the only required input; returns the target and retained native worktree |
 | `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | existing worktree → `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | Low-level escape hatch when the caller intentionally prepared the claim and worktree itself; its three required options are unchanged |
@@ -128,9 +129,9 @@ sets the ownership line so this remains an optional interactive surface, not a p
 
 - `enabled(cfg, entry)` — gate on `shutil.which("herdr")` and the server actually being up
   (`herdr status`), same idiom as `orca.is_available`.
-- `on_onboard(ctx)` — **do nothing by default.** Unlike orca (a passive registry), starting a
-  herdr pane is an active, visible action; onboarding a hive should not spawn terminal panes.
-  Leave this hook a no-op (or config-gated) rather than auto-wiring every hive into herdr.
+- `on_onboard(ctx)` — only an explicit `--plugin herdr` links the validated local
+  `beadhive/herdr-plugin` checkout. Merely detecting a running server never installs code, and
+  onboarding never spawns terminal panes or installs per-agent lifecycle hooks.
 - `readiness(cfg, entry)` — report whether this hive's agent kind has its herdr integration
   installed, for `bh hive ready`.
 - `wt_create` / `wt_remove` — **leave unclaimed.** herdr's `worktree create/open` and `bh`'s own
@@ -185,8 +186,8 @@ Herdr-safe encoding.
 
 ### Lifecycle receipts and prompt input
 
-`status`, `ps`, `spawn`, `dispatch`, `watch`, `attach`, and `reap` accept `--json` and return the
-shared [lifecycle receipt v1 schema](schemas/herdr-lifecycle-receipt-v1.schema.json). Successful
+`add`, `status`, `ps`, `spawn`, `dispatch`, `watch`, `attach`, and `reap` accept `--json` and
+return the shared [lifecycle receipt v1 schema](schemas/herdr-lifecycle-receipt-v1.schema.json). Successful
 and refused operations use the same additive envelope: `operation_id`, operation, outcome,
 disposition, observation time, exact hive/bead identity where known, Herdr session and locator,
 capabilities, warnings, retained resources, and a structured error on failure. Callers may pass a

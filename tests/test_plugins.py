@@ -77,6 +77,7 @@ def test_worktree_hooks_default_to_none():
     assert p.wt_remove is None
     assert p.wt_creating is None
     assert p.wt_created is None
+    assert p.onboard_requires_opt_in is False
 
 
 def test_worktree_hooks_are_settable():
