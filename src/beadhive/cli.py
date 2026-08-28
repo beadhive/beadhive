@@ -1899,10 +1899,34 @@ def hive_list(
         help="list discoverable-but-unregistered repos (diffs git-workspace's tracked repos "
         "from workspace-lock.toml against the registry — zero API calls)",
     ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="emit a versioned, bounded registered-hive identity page as JSON",
+    ),
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        min=1,
+        max=200,
+        help="maximum registered hives returned by --json (1-200)",
+    ),
+    cursor: str = typer.Option(
+        "", "--cursor", help="opaque next_cursor from an earlier --json response"
+    ),
 ):
     from . import hive
 
-    hive.ls(show_available=available)
+    if available and as_json:
+        raise typer.BadParameter("--json currently describes registered hives, not --available")
+    if not as_json and (limit != 50 or cursor):
+        raise typer.BadParameter("--limit and --cursor require --json")
+    hive.ls(
+        show_available=available,
+        as_json=as_json,
+        limit=limit,
+        cursor=cursor or None,
+    )
 
 
 @hive_app.command(
