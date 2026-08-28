@@ -288,6 +288,11 @@ class ProviderSnapshot:
     gate_requests: tuple[GateRequest, ...] = ()
     epic_schedules: tuple[EpicSchedule, ...] = ()
     assignments: tuple[Assignment, ...] = ()
+    # A provider revision is scoped to one adapter instance and is intentionally unsuitable
+    # for durable projection cursors.  Providers that can cheaply identify normalized source
+    # content publish that identity separately so stateless consumers can compare equal reads
+    # across adapter processes without parsing the opaque provider revision.
+    content_revision: str | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "scope", StreamScope(self.scope))

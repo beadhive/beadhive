@@ -70,8 +70,9 @@ def _millis(value: str | float | int | None) -> int | None:
 
 
 def projection_revision(beads: ProviderSnapshot, runtime: AgentRunSnapshot) -> str:
+    bead_revision = beads.content_revision or beads.revision
     value = json.dumps(
-        [beads.revision, runtime.revision], separators=(",", ":"), ensure_ascii=True
+        [bead_revision, runtime.revision], separators=(",", ":"), ensure_ascii=True
     ).encode()
     return f"sha256:{hashlib.sha256(value).hexdigest()}"
 
