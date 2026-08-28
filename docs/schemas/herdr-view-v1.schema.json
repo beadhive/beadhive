@@ -4,6 +4,7 @@
   "title": "Beadhive Herdr view projection v1",
   "oneOf": [
     { "$ref": "#/$defs/view" },
+    { "$ref": "#/$defs/crew" },
     { "$ref": "#/$defs/streamFrame" }
   ],
   "$defs": {
@@ -181,6 +182,158 @@
           }
         },
         "viewport": { "type": "object" }
+      }
+    },
+    "crewLocator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["session", "workspace_id", "tab_id", "pane_id", "target"],
+      "properties": {
+        "session": { "const": "bh-supervisor" },
+        "workspace_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "tab_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "pane_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "target": { "type": "string", "minLength": 1, "maxLength": 256 }
+      }
+    },
+    "crewNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target", "relation", "bead", "harness", "role", "work", "topology",
+        "safe_actions", "children"
+      ],
+      "properties": {
+        "target": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "relation": {
+          "enum": [
+            "root-dispatcher", "direct-agent", "direct-child",
+            "direct-child-dispatcher", "orphan"
+          ]
+        },
+        "bead": { "type": ["string", "null"], "maxLength": 256 },
+        "harness": { "type": "string", "maxLength": 80 },
+        "role": { "enum": ["developer", "dispatcher", "unknown"] },
+        "work": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation", "phase"],
+          "properties": {
+            "operation": { "type": "string", "maxLength": 80 },
+            "phase": { "type": "string", "maxLength": 40 }
+          }
+        },
+        "topology": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["coverage", "direct_active_children", "total_active_descendants"],
+          "properties": {
+            "coverage": { "enum": ["complete", "partial", "unavailable"] },
+            "direct_active_children": { "type": ["integer", "null"], "minimum": 0 },
+            "total_active_descendants": { "type": ["integer", "null"], "minimum": 0 }
+          }
+        },
+        "safe_actions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["focus", "attach"] }
+        },
+        "locator": { "$ref": "#/$defs/crewLocator" },
+        "layout": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["role"],
+          "properties": { "role": { "enum": ["dispatcher", "direct-agent"] } }
+        },
+        "stage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["desired", "placement", "role"],
+          "properties": {
+            "desired": { "const": true },
+            "placement": { "const": "right" },
+            "role": { "const": "child-stage" }
+          }
+        },
+        "safe_removal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availability", "reason_code", "source_revision"],
+          "properties": {
+            "availability": { "const": "confirmation-required" },
+            "reason_code": { "const": "operator-confirmation-required" },
+            "source_revision": { "type": "string", "minLength": 1, "maxLength": 256 }
+          }
+        },
+        "children": { "type": "array", "items": { "$ref": "#/$defs/crewNode" } }
+      }
+    },
+    "crew": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema_version", "command", "view", "revision", "source_revision", "generated_at",
+        "hive_id", "scope", "freshness", "coverage", "workspace", "roots", "returned",
+        "limit", "truncated", "next_cursor", "diagnostics", "warnings"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "plugin herdr view crew" },
+        "view": { "const": "crew" },
+        "revision": { "type": "string", "minLength": 1 },
+        "source_revision": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": "integer", "minimum": 0 },
+        "hive_id": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hive", "session"],
+          "properties": {
+            "hive": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "session": { "const": "bh-supervisor" }
+          }
+        },
+        "freshness": { "type": "object" },
+        "coverage": { "type": "object" },
+        "workspace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["locator", "role", "desired_tabs"],
+          "properties": {
+            "locator": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["session", "workspace_id"],
+              "properties": {
+                "session": { "const": "bh-supervisor" },
+                "workspace_id": { "type": ["string", "null"], "maxLength": 256 }
+              }
+            },
+            "role": { "const": "hive" },
+            "desired_tabs": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["role", "label"],
+                "properties": {
+                  "role": { "enum": ["crew", "dispatcher", "direct-agent"] },
+                  "target": { "type": "string", "minLength": 1, "maxLength": 256 },
+                  "label": { "type": "string", "minLength": 1, "maxLength": 80 }
+                }
+              }
+            }
+          }
+        },
+        "roots": { "type": "array", "items": { "$ref": "#/$defs/crewNode" } },
+        "returned": { "type": "integer", "minimum": 0, "maximum": 200 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "truncated": { "type": "boolean" },
+        "next_cursor": { "type": "null" },
+        "diagnostics": {
+          "type": "array", "maxItems": 256, "items": { "type": "object" }
+        },
+        "warnings": { "type": "array", "maxItems": 200, "items": { "type": "string" } }
       }
     },
     "view": {
