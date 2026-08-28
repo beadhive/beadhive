@@ -44,9 +44,17 @@ from . import (
     worktree,
 )
 
-_SESSION = "bh-supervisor"
+_DEFAULT_SESSION = "default"
+_RESERVED_RECOVERY_SESSION = "bh-supervisor"
+# Kept as the module's canonical default spelling for callers/tests that import the private
+# constant.  Recovery policy must use _RESERVED_RECOVERY_SESSION explicitly.
+_SESSION = _DEFAULT_SESSION
 _CURRENT_SESSION_SENTINELS = frozenset({"current", "active"})
 _SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_MAX_SESSION_NAME_BYTES = 128
+_SESSION_OPTION_HELP = (
+    "exact Herdr session, or current/active inside Herdr; flag > BH_HERDR_SESSION > default"
+)
 _SESSION_CONTEXT: ContextVar[_SessionSelection] = ContextVar("herdr_session_selection")
 _WARMUP_TOKEN = "BH_HERDR_WARMUP_OK"
 _LAUNCH_SCHEMA = 1
@@ -93,7 +101,7 @@ class _SessionState:
 
 
 def _active_session() -> _SessionSelection:
-    """Return the command-scoped selection, or the backward-compatible default."""
+    """Return the command-scoped selection, or the normal Herdr default."""
     try:
         return _SESSION_CONTEXT.get()
     except LookupError:
@@ -113,19 +121,39 @@ def _current_session_name() -> str:
     return os.environ.get("HERDR_SESSION", "").strip() or "default"
 
 
-def _session_selection(value: str) -> _SessionSelection:
-    requested = value.strip() or _SESSION
+def _session_selection(value: str, *, source: str = "--session") -> _SessionSelection:
+    """Validate one selected spelling and resolve only Herdr's explicit pane sentinels."""
+    requested = value.strip()
+    if not requested:
+        raise ValueError(f"{source} must not be empty")
     if requested.lower() in _CURRENT_SESSION_SENTINELS:
         current = _current_session_name()
-        if current in {".", ".."} or _SESSION_NAME_RE.fullmatch(current) is None:
+        if (
+            current in {".", ".."}
+            or len(current.encode()) > _MAX_SESSION_NAME_BYTES
+            or _SESSION_NAME_RE.fullmatch(current) is None
+        ):
             raise ValueError("Herdr injected an invalid current session name")
         return _SessionSelection(current, requested, current=True)
-    if requested in {".", ".."} or _SESSION_NAME_RE.fullmatch(requested) is None:
+    if (
+        requested in {".", ".."}
+        or len(requested.encode()) > _MAX_SESSION_NAME_BYTES
+        or _SESSION_NAME_RE.fullmatch(requested) is None
+    ):
         raise ValueError(
-            "--session must be a Herdr session name (ASCII letters, digits, dot, underscore, "
-            "or dash), or `current`/`active`"
+            f"{source} must be a Herdr session name (ASCII letters, digits, dot, underscore, "
+            "or dash; at most 128 bytes), or `current`/`active`"
         )
     return _SessionSelection(requested, requested)
+
+
+def _resolve_session(explicit: str | None) -> _SessionSelection:
+    """Resolve flag > Beadhive environment override > normal default."""
+    if explicit is not None:
+        return _session_selection(explicit, source="--session")
+    if "BH_HERDR_SESSION" in os.environ:
+        return _session_selection(os.environ["BH_HERDR_SESSION"], source="BH_HERDR_SESSION")
+    return _session_selection(_DEFAULT_SESSION, source="default session")
 
 
 def _session_scoped(fn):
@@ -135,11 +163,12 @@ def _session_scoped(fn):
     @wraps(fn)
     def wrapped(*args, **kwargs):
         bound = signature.bind_partial(*args, **kwargs)
-        raw = str(bound.arguments.get("session", _SESSION) or _SESSION)
+        explicit = bound.arguments.get("session")
         try:
-            selection = _session_selection(raw)
+            selection = _resolve_session(None if explicit is None else str(explicit))
         except ValueError as exc:
-            raise typer.BadParameter(str(exc), param_hint="--session") from exc
+            source = "--session" if explicit is not None else "BH_HERDR_SESSION"
+            raise typer.BadParameter(str(exc), param_hint=source) from exc
         token = _SESSION_CONTEXT.set(selection)
         try:
             return fn(*args, **kwargs)
@@ -286,7 +315,7 @@ def server_up() -> bool:
     selection = _active_session()
     result = (
         _invoke(["herdr", "status"])
-        if selection.name == _SESSION and selection.requested == _SESSION
+        if selection.name == _DEFAULT_SESSION and selection.requested == _DEFAULT_SESSION
         else _command("status")
     )
     return result is not None and result.returncode == 0
@@ -960,7 +989,8 @@ def _prepare_selected_session() -> tuple[dict | None, str]:
     """Ensure launch/spawn can use the selected session without seizing foreign state.
 
     A live or absent exact session is handled by Herdr's normal get-or-create snapshot request.
-    A stopped session is a tombstone: only bh's reserved default may be deleted automatically.
+    A stopped session is a tombstone: only bh's reserved legacy recovery session may be deleted
+    automatically.  The ordinary ``default`` session remains operator-owned.
     The retry after delete deliberately accepts a concurrent creator's winning live session.
     """
     if not _has_cli():
@@ -980,7 +1010,7 @@ def _prepare_selected_session() -> tuple[dict | None, str]:
         )
     if state.running:
         return None, f"session {selection.name!r} is running but its snapshot is unavailable"
-    if selection.name != _SESSION:
+    if selection.name != _RESERVED_RECOVERY_SESSION:
         return None, f"session {selection.name!r} is stopped; {_session_recovery(selection.name)}"
 
     deleted = _invoke(["herdr", "session", "delete", selection.name, "--json"])
@@ -1784,10 +1814,10 @@ def _launch_cmd(
     kind: str | None = typer.Option(
         None, "--kind", help="Herdr kind; overrides per-hive/global herdr.kind defaults"
     ),
-    session: str = typer.Option(
-        _SESSION,
+    session: str | None = typer.Option(
+        None,
         "--session",
-        help="exact Herdr session, or current/active inside a Herdr-managed pane",
+        help=_SESSION_OPTION_HELP,
     ),
     as_: str = typer.Option(
         "", "--as", help="developer identity; otherwise use normal bh work claim precedence"
@@ -2333,9 +2363,7 @@ def _add_cmd(
 @cli.command("status", help="show herdr server health and installed agent integrations.")
 @_session_scoped
 def _status_cmd(
-    session: str = typer.Option(
-        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
-    ),
+    session: str | None = typer.Option(None, "--session", help=_SESSION_OPTION_HELP),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
@@ -2442,9 +2470,7 @@ def _status_cmd(
 @cli.command("ps", help="list live herdr agents and their bh identity.")
 @_session_scoped
 def _ps_cmd(
-    session: str = typer.Option(
-        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
-    ),
+    session: str | None = typer.Option(None, "--session", help=_SESSION_OPTION_HELP),
     as_json: bool = typer.Option(
         False, "--json", help="emit a versioned lifecycle receipt with the live roster"
     ),
@@ -2564,9 +2590,7 @@ def _integrate_cmd(kind: str = typer.Argument(..., metavar="KIND")) -> None:
 @_session_scoped
 def _attach_cmd(
     target: str = typer.Argument(..., metavar="TARGET"),
-    session: str = typer.Option(
-        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
-    ),
+    session: str | None = typer.Option(None, "--session", help=_SESSION_OPTION_HELP),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
@@ -2604,9 +2628,7 @@ def _attach_cmd(
 @_session_scoped
 def _reap_cmd(
     target: str = typer.Argument(..., metavar="TARGET"),
-    session: str = typer.Option(
-        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
-    ),
+    session: str | None = typer.Option(None, "--session", help=_SESSION_OPTION_HELP),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
@@ -2695,10 +2717,10 @@ def _spawn_cmd(
     hive: str = typer.Option(..., "--hive", help="managed hive identifier"),
     bead: str = typer.Option(..., "--bead", help="already-claimed bead identifier"),
     kind: str = typer.Option(..., "--kind", help="Herdr agent kind, e.g. claude or codex"),
-    session: str = typer.Option(
-        _SESSION,
+    session: str | None = typer.Option(
+        None,
         "--session",
-        help="exact Herdr session, or current/active inside a Herdr-managed pane",
+        help=_SESSION_OPTION_HELP,
     ),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
@@ -2869,9 +2891,7 @@ def _dispatch_cmd(
     prompt_file: str = typer.Option(
         "", "--prompt-file", help="read prompt from this file and keep it out of process arguments"
     ),
-    session: str = typer.Option(
-        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
-    ),
+    session: str | None = typer.Option(None, "--session", help=_SESSION_OPTION_HELP),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
@@ -3034,9 +3054,7 @@ def _dispatch_cmd(
 @_session_scoped
 def _watch_cmd(
     target: str = typer.Argument(..., metavar="TARGET"),
-    session: str = typer.Option(
-        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
-    ),
+    session: str | None = typer.Option(None, "--session", help=_SESSION_OPTION_HELP),
     timeout: float | None = typer.Option(
         None,
         "--timeout",

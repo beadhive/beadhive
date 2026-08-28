@@ -63,7 +63,7 @@ def test_status_reports_server_and_integrations(monkeypatch):
         calls.append(argv)
         if argv == ["herdr", "plugin", "list", "--json"]:
             return _registry_result([])
-        if argv == ["herdr", "--session", "bh-supervisor", "status"]:
+        if argv in (["herdr", "--session", "default", "status"], ["herdr", "status"]):
             return _result(stdout="server ready")
         if argv == ["herdr", "integration", "status"]:
             return _result(stdout="claude: installed\ncodex: absent")
@@ -77,7 +77,7 @@ def test_status_reports_server_and_integrations(monkeypatch):
     assert "claude: installed" in result.output
     assert calls == [
         ["herdr", "plugin", "list", "--json"],
-        ["herdr", "--session", "bh-supervisor", "status"],
+        ["herdr", "--session", "default", "status"],
         ["herdr", "integration", "status"],
     ]
 
@@ -322,7 +322,7 @@ def test_status_separates_adapter_package_server_and_agent_integrations(monkeypa
         calls.append(argv)
         if argv == ["herdr", "plugin", "list", "--json"]:
             return _registry_result([row])
-        if argv == ["herdr", "--session", "bh-supervisor", "status"]:
+        if argv == ["herdr", "--session", "default", "status"]:
             return _result(stdout="server ready")
         if argv == ["herdr", "integration", "status"]:
             return _result(stdout="codex: installed")
@@ -341,7 +341,7 @@ def test_status_separates_adapter_package_server_and_agent_integrations(monkeypa
     assert payload["integrations"] == [{"kind": "codex", "state": "installed"}]
     assert calls == [
         ["herdr", "plugin", "list", "--json"],
-        ["herdr", "--session", "bh-supervisor", "status"],
+        ["herdr", "--session", "default", "status"],
         ["herdr", "integration", "status"],
     ]
 
@@ -399,8 +399,17 @@ def test_herdr_plugin_onboard_hook_is_explicit_opt_in(monkeypatch, tmp_path):
 
 
 def test_session_selection_defaults_and_resolves_current_only_inside_herdr(monkeypatch):
-    assert herdr_plugin._session_selection("").name == "bh-supervisor"
+    monkeypatch.delenv("BH_HERDR_SESSION", raising=False)
+    assert herdr_plugin._resolve_session(None).name == "default"
     assert herdr_plugin._session_selection("named.team").name == "named.team"
+
+    monkeypatch.setenv("BH_HERDR_SESSION", "operator-team")
+    assert herdr_plugin._resolve_session(None).name == "operator-team"
+    assert herdr_plugin._resolve_session("explicit-team").name == "explicit-team"
+    monkeypatch.setenv("BH_HERDR_SESSION", "not a session")
+    with pytest.raises(ValueError, match="BH_HERDR_SESSION"):
+        herdr_plugin._resolve_session(None)
+    monkeypatch.delenv("BH_HERDR_SESSION")
 
     monkeypatch.delenv("HERDR_ENV", raising=False)
     monkeypatch.delenv("HERDR_PANE_ID", raising=False)
@@ -552,35 +561,40 @@ def test_stopped_reserved_session_is_recreated_and_accepts_concurrent_winner(mon
         lambda argv, **_kwargs: deletes.append(argv) or _result(1, stderr="already deleted"),
     )
 
-    snapshot, detail = herdr_plugin._prepare_selected_session()
+    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection("bh-supervisor"))
+    try:
+        snapshot, detail = herdr_plugin._prepare_selected_session()
+    finally:
+        herdr_plugin._SESSION_CONTEXT.reset(token)
 
     assert snapshot == {}
     assert detail == ""
     assert deletes == [["herdr", "session", "delete", "bh-supervisor", "--json"]]
 
 
-def test_stopped_nonreserved_session_is_never_deleted(monkeypatch):
+@pytest.mark.parametrize("session", ["default", "team"])
+def test_stopped_operator_owned_session_is_never_deleted(monkeypatch, session):
     monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
     monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: None)
     monkeypatch.setattr(
         herdr_plugin,
         "_session_states",
-        lambda: ({"team": herdr_plugin._SessionState("team", False)}, ""),
+        lambda: ({session: herdr_plugin._SessionState(session, False)}, ""),
     )
     monkeypatch.setattr(
         herdr_plugin,
         "_invoke",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not delete")),
     )
-    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection("team"))
+    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection(session))
     try:
         snapshot, detail = herdr_plugin._prepare_selected_session()
     finally:
         herdr_plugin._SESSION_CONTEXT.reset(token)
 
     assert snapshot is None
-    assert "session 'team' is stopped" in detail
-    assert "herdr session delete team" in detail
+    assert f"session '{session}' is stopped" in detail
+    assert f"herdr session delete {session}" in detail
 
 
 def test_running_named_session_with_unavailable_snapshot_is_never_seized(monkeypatch):
@@ -690,7 +704,7 @@ def test_ps_accepts_valid_empty_agent_list_without_snapshot(monkeypatch):
     assert result.output.splitlines() == ["name\thive\tbead\tstate"]
     assert calls == [
         ["herdr", "status"],
-        ["herdr", "--session", "bh-supervisor", "agent", "list", "--json"],
+        ["herdr", "--session", "default", "agent", "list", "--json"],
     ]
 
 
@@ -913,7 +927,7 @@ def test_spawn_uses_bh_worktree_names_pane_and_verifies_warmup(tmp_path, monkeyp
     assert [
         "herdr",
         "--session",
-        "bh-supervisor",
+        "default",
         "agent",
         "start",
         "bh-bh-1",
@@ -922,7 +936,7 @@ def test_spawn_uses_bh_worktree_names_pane_and_verifies_warmup(tmp_path, monkeyp
         "--pane",
         "w1:p2",
     ] in calls
-    assert ["herdr", "--session", "bh-supervisor", "pane", "rename", "w1:p2", "bh-bh-1"] in calls
+    assert ["herdr", "--session", "default", "pane", "rename", "w1:p2", "bh-bh-1"] in calls
     assert any(
         "prompt" in call and any("BH_HERDR_WARMUP_OK" in item for item in call) for call in calls
     )
@@ -966,7 +980,7 @@ def test_spawn_reuses_snapshot_workspace_and_its_actual_pane(tmp_path, monkeypat
     assert [
         "herdr",
         "--session",
-        "bh-supervisor",
+        "default",
         "pane",
         "split",
         "--pane",
@@ -1064,7 +1078,7 @@ def test_spawn_retries_after_first_run_dialog_and_refuses_unreadable_prompt(tmp_
     assert "did not reach an idle agent prompt" in result.output
     assert any("send-keys" in call and "esc" in call for call in calls)
     assert sum("prompt" in call for call in calls) == 2
-    assert ["herdr", "--session", "bh-supervisor", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
 
 
 def test_spawn_closes_new_pane_when_setup_fails(tmp_path, monkeypatch):
@@ -1093,7 +1107,7 @@ def test_spawn_closes_new_pane_when_setup_fails(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert "pane rename failed" in result.output
-    assert ["herdr", "--session", "bh-supervisor", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
 
 
 def test_spawn_closes_pane_when_agent_start_fails(tmp_path, monkeypatch):
@@ -1126,7 +1140,7 @@ def test_spawn_closes_pane_when_agent_start_fails(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert "agent start failed" in result.output
-    assert ["herdr", "--session", "bh-supervisor", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
 
 
 def test_spawn_fences_missing_server_before_worktree_lookup(monkeypatch):
@@ -1168,7 +1182,7 @@ def test_dispatch_verifies_a_new_prompt_landed_for_claude_and_codex(tmp_path, mo
         assert [
             "herdr",
             "--session",
-            "bh-supervisor",
+            "default",
             "agent",
             "prompt",
             target,
@@ -1256,7 +1270,7 @@ def _assert_lifecycle_receipt(payload, operation, disposition):
     assert payload["disposition"] == disposition
     assert payload["operation_id"]
     assert payload["observed_at"].endswith("Z")
-    assert payload["session"] == "bh-supervisor"
+    assert payload["session"] == "default"
     for key in (
         "hive",
         "bead",
@@ -1282,9 +1296,7 @@ def test_lifecycle_status_ps_and_attach_emit_shared_json_receipts(tmp_path, monk
     monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
 
     def fake_run(argv, **kwargs):
-        if argv == ["herdr", "status"]:
-            return _result(stdout="server ready")
-        if argv == ["herdr", "--session", "bh-supervisor", "status"]:
+        if argv in (["herdr", "--session", "default", "status"], ["herdr", "status"]):
             return _result(stdout="server ready")
         if argv == ["herdr", "integration", "status"]:
             return _result(stdout="claude: installed\ncodex: not installed")
@@ -1324,7 +1336,7 @@ def test_lifecycle_status_ps_and_attach_emit_shared_json_receipts(tmp_path, monk
     assert attach_payload["attach_argv"] == [
         "herdr",
         "--session",
-        "bh-supervisor",
+        "default",
         "agent",
         "attach",
         "bh-bh-7",
@@ -1808,7 +1820,42 @@ def test_attach_only_prints_a_copy_pasteable_session_scoped_command(monkeypatch)
     result = runner.invoke(app, ["plugin", "herdr", "attach", "bh-bh-1"])
 
     assert result.exit_code == 0, result.output
-    assert result.output.strip() == "herdr --session bh-supervisor agent attach bh-bh-1"
+    assert result.output.strip() == "herdr --session default agent attach bh-bh-1"
+
+
+def test_attach_uses_environment_then_explicit_session_without_mutation(monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("attach must not inspect or alter herdr state")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", boom)
+    monkeypatch.setenv("BH_HERDR_SESSION", "team")
+    environment = runner.invoke(app, ["plugin", "herdr", "attach", "bh-bh-1"])
+    explicit = runner.invoke(app, ["plugin", "herdr", "attach", "bh-bh-1", "--session", "other"])
+
+    assert environment.exit_code == explicit.exit_code == 0
+    assert environment.output.strip() == "herdr --session team agent attach bh-bh-1"
+    assert explicit.output.strip() == "herdr --session other agent attach bh-bh-1"
+
+
+@pytest.mark.parametrize(
+    ("environment", "arguments", "source"),
+    [
+        ("not a session", [], "BH_HERDR_SESSION"),
+        ("team", ["--session", "not a session"], "--session"),
+    ],
+)
+def test_invalid_session_source_refuses_before_attach_action(
+    monkeypatch, environment, arguments, source
+):
+    def boom(*args, **kwargs):
+        raise AssertionError("invalid selection must fail before any Herdr action")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", boom)
+    monkeypatch.setenv("BH_HERDR_SESSION", environment)
+    result = runner.invoke(app, ["plugin", "herdr", "attach", "bh-bh-1", *arguments])
+
+    assert result.exit_code == 2
+    assert source in result.output
 
 
 def test_reap_refuses_reserved_name_without_current_ownership_metadata(monkeypatch):
@@ -2070,7 +2117,7 @@ def test_watch_waits_for_blocked_and_translates_timeout(monkeypatch):
             [
                 "herdr",
                 "--session",
-                "bh-supervisor",
+                "default",
                 "agent",
                 "wait",
                 "bh-agent",
@@ -2179,7 +2226,7 @@ def test_launch_fresh_bead_emits_exact_json_and_forwards_layout(tmp_path, monkey
         "command": "plugin herdr launch",
         "status": "ready",
         "disposition": "created",
-        "session": "bh-supervisor",
+        "session": "default",
         "hive": "github/acme/widgets",
         "bead": "widget-1",
         "kind": "codex",
@@ -2430,7 +2477,7 @@ def test_roster_correlates_encoded_target_from_explicit_metadata(tmp_path, monke
 
     assert payload["schema_version"] == 1
     assert payload["revision"].startswith("sha256:")
-    assert payload["session"] == "bh-supervisor"
+    assert payload["session"] == "default"
     assert payload["authoritative_session"] is True
     assert agent["target"] == target
     assert agent["revision"].startswith("sha256:")
@@ -2438,7 +2485,7 @@ def test_roster_correlates_encoded_target_from_explicit_metadata(tmp_path, monke
     assert agent["ownership"]["state"] == "owned"
     assert agent["ownership"]["association"] == "metadata"
     assert agent["presentation"] == {
-        "session": "bh-supervisor",
+        "session": "default",
         "workspace": "w1",
         "workspace_label": "bh:github/acme/widgets",
         "tab": "w1:t1",
@@ -2716,6 +2763,8 @@ def test_session_aware_command_help_documents_current_selection(command):
     assert result.exit_code == 0, result.output
     assert "--session" in result.output
     assert "current" in result.output
+    assert "BH_HERDR_SESSION" in result.output
+    assert "default" in result.output
 
 
 def test_spawn_keeps_its_three_required_low_level_options():

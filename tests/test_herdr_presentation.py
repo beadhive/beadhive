@@ -158,7 +158,7 @@ def _agent(
             "branch": f"wt/bead/issue/{bead}",
         },
         "presentation": {
-            "session": "bh-supervisor",
+            "session": "default",
             "workspace": "w17",
             "workspace_label": f"bh:{HIVE}",
             "tab": "w17:t4",
@@ -232,7 +232,7 @@ def test_exact_workspace_and_panes_are_direct_bounded_metadata_reports() -> None
     }
     assert payload["coverage"]["state"] == "complete"
     assert payload["workspace"]["locator"] == {
-        "session": "bh-supervisor",
+        "session": "default",
         "workspace_id": "w17",
     }
     workspace_report = payload["workspace"]["report"]
@@ -261,7 +261,7 @@ def test_exact_workspace_and_panes_are_direct_bounded_metadata_reports() -> None
     by_bead = {item["correlation"]["bead_id"]: item for item in payload["panes"]}
     working = by_bead["task-working"]
     assert working["locator"] == {
-        "session": "bh-supervisor",
+        "session": "default",
         "workspace_id": "w17",
         "tab_id": "w17:t4",
         "pane_id": "w17:p2",

@@ -148,7 +148,7 @@ def _crew_agent(
     direct: int = 0,
     total: int = 0,
     terminal: bool = False,
-    session: str = "bh-supervisor",
+    session: str = "default",
 ) -> dict:
     action_target = {"hiveId": HIVE, "kind": "agent", "id": target}
     reason = "current bh-owned live pane is proven"
@@ -211,7 +211,7 @@ def _crew_agent(
 def _crew_roster(*agents: dict) -> dict:
     return {
         "revision": "roster-r1",
-        "session": "bh-supervisor",
+        "session": "default",
         "authoritative_session": True,
         "observed_at": 1000,
         "agents": list(agents),
@@ -543,7 +543,7 @@ def test_workspace_layout_has_deterministic_popup_and_companion_split_semantics(
     layout = payload["layout"]
     deck = layout["surfaces"]["deck"]
 
-    assert layout["session"] == "bh-supervisor"
+    assert layout["session"] == "default"
     assert layout["cross_session_focus"] is False
     assert [(tab["role"], tab["owns_agents"]) for tab in layout["tabs"]] == [
         ("board", False),
@@ -1053,7 +1053,7 @@ def test_crew_structural_and_locator_failures_are_partial_without_navigation_or_
     elif case == "cycle":
         agents[0]["facts"]["parent"].update({"relation": "direct", "target": "dispatcher-2"})
     elif case == "cross-session":
-        agents[1]["presentation"]["session"] = "default"
+        agents[1]["presentation"]["session"] = "bh-supervisor"
     else:
         agents.append(json.loads(json.dumps(agents[1])))
 
@@ -1344,3 +1344,38 @@ def test_eight_view_commands_are_registered_and_layout_emits_json() -> None:
     )
     assert layout.exit_code == 0, layout.output
     assert json.loads(layout.output)["layout"]["surfaces"]["deck"]["variant"] == "narrow"
+
+
+@pytest.mark.parametrize(
+    "command", ["picker", "deck", "bead", "agent", "presentation", "crew", "layout", "stream"]
+)
+def test_roster_dependent_view_help_exposes_shared_session_selection(command: str) -> None:
+    result = runner.invoke(app, ["plugin", "herdr", "view", command, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--session" in result.output
+    assert "BH_HERDR_SESSION" in result.output
+    assert "default" in result.output
+
+
+def test_layout_session_uses_flag_environment_default_precedence(monkeypatch) -> None:
+    monkeypatch.delenv("BH_HERDR_SESSION", raising=False)
+    default = runner.invoke(app, ["plugin", "herdr", "view", "layout", "--json"])
+    assert default.exit_code == 0, default.output
+    assert json.loads(default.output)["layout"]["session"] == "default"
+
+    monkeypatch.setenv("BH_HERDR_SESSION", "team")
+    environment = runner.invoke(app, ["plugin", "herdr", "view", "layout", "--json"])
+    assert environment.exit_code == 0, environment.output
+    assert json.loads(environment.output)["layout"]["session"] == "team"
+
+    explicit = runner.invoke(
+        app, ["plugin", "herdr", "view", "layout", "--session", "other", "--json"]
+    )
+    assert explicit.exit_code == 0, explicit.output
+    assert json.loads(explicit.output)["layout"]["session"] == "other"
+
+    monkeypatch.setenv("BH_HERDR_SESSION", "not a session")
+    invalid = runner.invoke(app, ["plugin", "herdr", "view", "layout", "--json"])
+    assert invalid.exit_code == 2
+    assert "BH_HERDR_SESSION" in invalid.output
