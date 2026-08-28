@@ -26,7 +26,7 @@ from pathlib import Path
 
 import typer
 
-from . import config, plugins, run, worktree
+from . import config, operator_actions, plugins, run, worktree
 
 _SESSION = "bh-supervisor"
 _WARMUP_TOKEN = "BH_HERDR_WARMUP_OK"
@@ -593,13 +593,20 @@ def _same_path(left: str | None, right: Path) -> bool:
         return left == str(right)
 
 
-def _action_capabilities(owned: bool, live: bool, reason: str) -> dict[str, dict[str, str]]:
+def _action_capabilities(
+    ownership_state: str, lifecycle_state: str, reason: str
+) -> dict[str, dict[str, str]]:
     """Advertise only operations that the ownership gates can safely target."""
-    unavailable = reason or "current bh ownership proof is unavailable"
+    availability, _reason_code, detail = operator_actions.agent_action_availability(
+        ownership_state, lifecycle_state, reason
+    )
+    # This pre-existing compatibility field has a two-state vocabulary.  Rich
+    # policy facts live in advertised_actions below.
+    legacy_availability = "allowed" if availability == "allowed" else "unavailable"
     return {
         action: {
-            "availability": "allowed" if owned and live else "unavailable",
-            "reason": "current bh-owned live pane is proven" if owned and live else unavailable,
+            "availability": legacy_availability,
+            "reason": detail,
         }
         for action in ("attach", "dispatch", "watch", "reap")
     }
@@ -611,6 +618,8 @@ def _roster_agent(
     target_count: dict[str, int],
     pane_count: dict[str, int],
     managed_paths: dict[str, str],
+    *,
+    advertised_at: int,
 ) -> dict:
     """Project one joined Herdr record into the versioned correlation contract."""
     target = _value(record, "name", "agent_name", "target") or ""
@@ -698,10 +707,27 @@ def _roster_agent(
                 reason = "; ".join(failed) or "ownership proof is stale"
 
     live = state in _LIVE_AGENT_STATES
-    owned_live = ownership_state == "owned" and live
     if ownership_state == "owned" and not live:
         ownership_state = "stale" if state != "unknown" else "unknown"
         reason = f"Herdr lifecycle state is {state}"
+
+    revision_facts = [
+        target,
+        hive,
+        bead,
+        state,
+        pane_id,
+        ownership_state,
+        marker,
+        str(expected) if expected is not None else cwd,
+    ]
+    revision = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(revision_facts, separators=(",", ":"), ensure_ascii=True).encode()
+        ).hexdigest()
+    )
+    target_ref = {"hiveId": hive, "kind": "agent", "id": target}
 
     return {
         "target": target or None,
@@ -732,7 +758,20 @@ def _roster_agent(
             "state": ownership_state,
             "reason": reason,
         },
-        "capabilities": _action_capabilities(owned_live, live, reason),
+        "capabilities": _action_capabilities(ownership_state, state, reason),
+        "advertised_actions": (
+            operator_actions.agent_actions(
+                target=target_ref,
+                ownership_state=ownership_state,
+                lifecycle_state=state,
+                reason=reason,
+                revision=revision,
+                advertised_at=advertised_at,
+                max_prompt_bytes=_MAX_PROMPT_BYTES,
+            )
+            if target
+            else []
+        ),
     }
 
 
@@ -750,8 +789,17 @@ def _roster_payload(snapshot: dict, cfg: dict | None = None, *, operation_id: st
         }
     except (OSError, TypeError, ValueError):
         managed_paths = {}
+    advertised_at = int(datetime.now(UTC).timestamp() * 1000)
     agents = [
-        _roster_agent(record, cfg, target_count, pane_count, managed_paths) for record in records
+        _roster_agent(
+            record,
+            cfg,
+            target_count,
+            pane_count,
+            managed_paths,
+            advertised_at=advertised_at,
+        )
+        for record in records
     ]
     payload = _lifecycle_payload(
         "ps",
@@ -1495,7 +1543,13 @@ def _owned_live_pane(target: str) -> str | None:
     if records is None:
         return None
     matches = [record for record in records if _agent_identity(record)[0] == target]
-    if len(matches) != 1 or _agent_identity(matches[0])[3].lower() not in _LIVE_AGENT_STATES:
+    if len(matches) != 1:
+        return None
+    lifecycle_state = _agent_identity(matches[0])[3].lower()
+    availability, _reason_code, _reason = operator_actions.agent_action_availability(
+        "owned", lifecycle_state, f"Herdr lifecycle state is {lifecycle_state}"
+    )
+    if availability != "allowed":
         return None
     pane = _record_pane(matches[0])
     if pane is None:

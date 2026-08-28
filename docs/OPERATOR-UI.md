@@ -84,6 +84,28 @@ Both resources return an `ETag`. Send it in `If-None-Match` to receive `304` whe
 representation is unchanged. A missing exact hive or bead is `404`. An unavailable authoritative
 source is `503` with `Retry-After`; it is never reported as an empty queue.
 
+## Advertised actions
+
+Factory hive summaries and exact work-item detail expose `advertisedActions`. The live Herdr
+roster exposes the same descriptors as `advertised_actions`. Clients should render or invoke an
+operation from these facts instead of reconstructing policy from status strings.
+
+Every applicable action is present. `allowed` can run immediately,
+`confirmation-required` needs an explicit operator confirmation, `forbidden` is a proven policy
+refusal, and `unavailable` means the host lacks current evidence needed to decide safely. An action
+that does not apply to that entity kind is omitted. `reasonCode` is stable for control flow;
+`reason` is explanatory text.
+
+Mutation descriptors set `preconditions.mustMatch` and carry the exact `sourceRevision` that was
+observed. Re-read the entity if that revision is no longer current, then use the refreshed action
+rather than overriding the mismatch. The `input` member declares whether an operation takes no
+input, structured parameters, or sensitive standard input. In particular, agent instruction text
+uses `stdin`; it must not be interpolated into a shell command, argument list, log, or receipt.
+
+Descriptors are domain facts only. They deliberately omit menu labels, key bindings, pane
+placement, layouts, and executable shell strings. Every mutation rechecks the authoritative
+lifecycle and ownership policy when it runs, so an advertisement is never a durable grant.
+
 ## Safety boundary
 
 The phase-one daemon exposes only the read-only operator `GET` routes, their SSE stream,

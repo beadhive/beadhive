@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
-from . import config, release_order
+from . import config, operator_actions, release_order
 from .agent_run_summary import AgentRunState
 from .operator_sources import OperatorSourceError
 from .public_readers import AgentRunSnapshot
@@ -454,6 +454,7 @@ def detail_payload(
         )
     ]
     warnings = [value for value in (beads.partial_reason, runtime.coverage_reason) if value]
+    advertised_at = _millis(beads.as_of) or 0
     return {
         "schemaVersion": SCHEMA_VERSION,
         "hiveId": hive_id,
@@ -483,6 +484,14 @@ def detail_payload(
             "dependents": dependents,
             "gates": gates,
             "agents": _agents(issue, runtime),
+            "advertisedActions": operator_actions.work_item_actions(
+                target=row["ref"],
+                readiness=str(row["readiness"]["state"]),
+                readiness_reason=str(row["readiness"]["reason"]),
+                partial=beads.partial,
+                revision=revision,
+                advertised_at=advertised_at,
+            ),
         },
         "warnings": warnings,
     }

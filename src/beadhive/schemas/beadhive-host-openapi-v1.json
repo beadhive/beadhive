@@ -785,10 +785,54 @@
           "ready": {"type": "boolean"}
         }
       },
+      "AdvertisedAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "capability", "target", "availability", "reasonCode", "reason", "consequence", "advertisedAt", "sourceRevision", "preconditions", "input"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$"},
+          "capability": {"type": "string", "minLength": 1},
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["hiveId", "kind", "id"],
+            "properties": {
+              "hiveId": {"type": ["string", "null"]},
+              "kind": {"enum": ["hive", "work-item", "agent"]},
+              "id": {"type": "string", "minLength": 1}
+            }
+          },
+          "availability": {"enum": ["allowed", "confirmation-required", "forbidden", "unavailable"]},
+          "reasonCode": {"type": ["string", "null"]},
+          "reason": {"type": "string", "minLength": 1},
+          "consequence": {"enum": ["navigate", "read", "reversible-write", "approval", "destructive"]},
+          "advertisedAt": {"type": "integer", "minimum": 0},
+          "sourceRevision": {"type": ["string", "null"]},
+          "preconditions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sourceRevision", "mustMatch"],
+            "properties": {
+              "sourceRevision": {"type": ["string", "null"]},
+              "mustMatch": {"type": "boolean"}
+            }
+          },
+          "input": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["transport", "required", "schema"],
+            "properties": {
+              "transport": {"enum": ["none", "parameters", "stdin"]},
+              "required": {"type": "boolean"},
+              "schema": {"type": ["object", "null"]}
+            }
+          }
+        }
+      },
       "FactoryHiveSummary": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["id", "displayLabel", "opaqueRef", "prefix", "provider", "org", "repo", "kind", "availability", "counts", "revision", "asOf", "coverage"],
+        "required": ["id", "displayLabel", "opaqueRef", "prefix", "provider", "org", "repo", "kind", "availability", "counts", "revision", "asOf", "coverage", "advertisedActions"],
         "properties": {
           "id": {"type": "string", "pattern": "^[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+$"},
           "displayLabel": {"type": "string", "minLength": 1},
@@ -828,7 +872,8 @@
               "state": {"enum": ["complete", "partial", "unavailable"]},
               "reason": {"type": ["string", "null"]}
             }
-          }
+          },
+          "advertisedActions": {"type": "array", "items": {"$ref": "#/components/schemas/AdvertisedAction"}}
         }
       },
       "FactoryHivePage": {
@@ -959,7 +1004,7 @@
           {"$ref": "#/components/schemas/WorkItemRow"},
           {
             "type": "object",
-            "required": ["description", "design", "acceptanceCriteria", "notes", "moleculeType", "createdBy", "createdAt", "closedAt", "dueAt", "deferUntil", "claim", "dependencies", "dependents", "gates", "agents"],
+            "required": ["description", "design", "acceptanceCriteria", "notes", "moleculeType", "createdBy", "createdAt", "closedAt", "dueAt", "deferUntil", "claim", "dependencies", "dependents", "gates", "agents", "advertisedActions"],
             "properties": {
               "description": {"type": "string"},
               "design": {"type": "string"},
@@ -975,7 +1020,8 @@
               "dependencies": {"type": "array", "items": {"$ref": "#/components/schemas/WorkDependencyDetail"}},
               "dependents": {"type": "array", "items": {"$ref": "#/components/schemas/WorkDependencyDetail"}},
               "gates": {"type": "array", "items": {"type": "object"}},
-              "agents": {"type": "array", "items": {"type": "object"}}
+              "agents": {"type": "array", "items": {"type": "object"}},
+              "advertisedActions": {"type": "array", "items": {"$ref": "#/components/schemas/AdvertisedAction"}}
             }
           }
         ]
