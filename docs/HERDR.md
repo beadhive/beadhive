@@ -342,16 +342,21 @@ by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-sc
 `--since` cursors do not suppress the snapshot: the first frame sets `resync_required` and names
 the reason so a client can discard old state safely.
 
-`presentation` composes the generic hive identity, managed-worktree inventory, work queues, and
-agent-facts contracts with the exact live `bh-supervisor` workspace/tab/pane locators. Its
+`presentation` composes the generic hive identity, managed-worktree inventory, read-only bounded
+Dolt comparison, work queues, and agent-facts contracts with the exact live `bh-supervisor`
+workspace/tab/pane locators. Its
 [`herdr-presentation-v1.schema.json`](schemas/herdr-presentation-v1.schema.json) output contains
 ready-to-submit argument objects for Herdr's `workspace.report-metadata` and
 `pane.report-metadata` APIs: a Herdr-safe stable source ID, unsigned sequence, TTL, and at most
-sixteen bounded, single-line, control-free tokens. Workspace tokens include the precomputed
-`[prefix] org/repo` Space title and summarize Ready, Running, and Needs You. Pane tokens include
+sixteen bounded, single-line, control-free tokens plus an explicit `clearTokens` set. Workspace
+tokens include the precomputed `[prefix] org/repo` Space title, affiliation, exact managed-
+worktree count, and Dolt ahead/behind counts. A measured zero remains `0`; unavailable or stale
+counts remain `-`. Pane tokens include
 the precomputed `[harness] bh-role` Agent title, name the exact bead, Beadhive role and phase,
 parent/child facts, dispatcher-owned direct-agent count, correlation, and worktree coverage.
-State-label values are text only; Herdr retains all color and theme choices.
+Direct developers clear the dispatcher-only managed-agent count. The projection never supplies
+idle/working/attention labels or Git tokens: Herdr's built-in status icon and Git branch/
+ahead-behind rows remain authoritative, including their host-owned color and theme choices.
 
 New reports use the Herdr-valid source ID `bh.plugin.herdr.presentation.v1`. The policy-level
 protocol identifier remains `bh.plugin.herdr.presentation/v1`; the v1 schema continues to accept
@@ -359,7 +364,8 @@ that legacy slash-form report source when reading payloads recorded before this 
 
 Only a uniquely correlated workspace or bh-owned pane receives a non-null report object. Missing,
 ambiguous, and stale correlations remain in the output with exact locators where known and a null
-report, so a consumer never decorates a guessed resource. The projection is read-only: it does not
+report plus a stable `reason_code`, so a consumer never decorates a guessed resource. The
+projection is read-only: it does not
 invoke either metadata API, report a semantic agent identity, change a Herdr lifecycle state, or
 advance Beadhive work. Consumers should submit a report before `expires_at`, keep sequences
 monotonic per source and resource, and let Herdr remove that source's display metadata after the

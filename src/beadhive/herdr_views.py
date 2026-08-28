@@ -21,12 +21,15 @@ import typer
 
 from . import (
     config,
+    engine,
     hive_identity,
+    hive_sync,
     host,
     jsonout,
     operator_actions,
     operator_contract,
     operator_work_items,
+    registry,
     worktree,
 )
 from .operator_sources import OperatorSourceError, OperatorSources
@@ -908,6 +911,7 @@ def _workspace_correlation(
         return (
             {
                 "state": "unavailable",
+                "reason_code": "supervisor_unavailable",
                 "reason": "the authoritative bh-supervisor snapshot is unavailable",
             },
             {"session": _SESSION, "workspace_id": None},
@@ -923,16 +927,28 @@ def _workspace_correlation(
                 matches.append(workspace_id)
     if len(matches) == 1:
         return (
-            {"state": "exact", "reason": "one exact canonical hive workspace is live"},
+            {
+                "state": "exact",
+                "reason_code": "exact_workspace",
+                "reason": "one exact canonical hive workspace is live",
+            },
             {"session": _SESSION, "workspace_id": matches[0]},
         )
     if not matches:
         return (
-            {"state": "missing", "reason": "no exact canonical hive workspace is live"},
+            {
+                "state": "missing",
+                "reason_code": "workspace_missing",
+                "reason": "no exact canonical hive workspace is live",
+            },
             {"session": _SESSION, "workspace_id": None},
         )
     return (
-        {"state": "ambiguous", "reason": "multiple canonical hive workspaces are live"},
+        {
+            "state": "ambiguous",
+            "reason_code": "workspace_ambiguous",
+            "reason": "multiple canonical hive workspaces are live",
+        },
         {"session": _SESSION, "workspace_id": None},
     )
 
@@ -987,6 +1003,35 @@ def _count_token(value: int | None) -> str:
     return "?" if value is None else str(value)
 
 
+def _sidebar_count(value: object, unavailable: str) -> str:
+    return str(value) if type(value) is int and value >= 0 else unavailable
+
+
+def _dolt_tokens(comparison: Mapping[str, object] | None) -> tuple[dict[str, str], str]:
+    coverage = comparison.get("coverage") if isinstance(comparison, Mapping) else None
+    coverage_state = (
+        str(coverage.get("state") or "unknown") if isinstance(coverage, Mapping) else "unavailable"
+    )
+    ahead = comparison.get("ahead") if isinstance(comparison, Mapping) else None
+    behind = comparison.get("behind") if isinstance(comparison, Mapping) else None
+    counts_known = (
+        coverage_state == "complete"
+        and type(ahead) is int
+        and ahead >= 0
+        and type(behind) is int
+        and behind >= 0
+    )
+    return (
+        {
+            "bh_dolt_ahead": f"dolt ↑{ahead if counts_known else '-'}",
+            "bh_dolt_behind": f"↓{behind if counts_known else '-'}",
+        },
+        coverage_state
+        if coverage_state in {"complete", "partial", "stale", "unavailable"}
+        else "unknown",
+    )
+
+
 def presentation_payload(
     hive: str,
     identity: Mapping[str, object],
@@ -995,6 +1040,7 @@ def presentation_payload(
     roster: Mapping[str, object],
     snapshot: Mapping[str, object] | None,
     *,
+    dolt: Mapping[str, object] | None = None,
     generated_at: int | None = None,
     sequence: int | None = None,
     ttl_ms: int = PRESENTATION_TTL_MS,
@@ -1031,6 +1077,7 @@ def presentation_payload(
         and item.get("bead_id") is not None
     }
     worktree_total = inventory.get("total") if isinstance(inventory.get("total"), int) else None
+    dolt_tokens, dolt_source_state = _dolt_tokens(dolt)
 
     agent_source_state = "unavailable" if roster.get("revision") == "unavailable" else "complete"
     if agent_source_state == "complete":
@@ -1042,8 +1089,19 @@ def presentation_payload(
             if topology.get("coverage") != "complete":
                 agent_source_state = "partial"
                 break
+    identity_complete = (
+        identity.get("canonical_id") == hive
+        and "/".join(
+            str(identity.get(part) or "") for part in ("provider", "organization", "repository")
+        )
+        == hive
+        and bool(identity.get("prefix"))
+        and bool(identity.get("organization"))
+        and bool(identity.get("repository"))
+        and identity.get("affiliation") in {"maintainer", "contributor"}
+    )
     source_states = {
-        "identity": "complete" if identity.get("canonical_id") == hive else "partial",
+        "identity": "complete" if identity_complete else "partial",
         "work_items": (
             "complete"
             if all(
@@ -1053,6 +1111,7 @@ def presentation_payload(
             else "partial"
         ),
         "worktrees": _source_coverage(inventory),
+        "dolt": dolt_source_state,
         "agents": agent_source_state,
         "workspace": "complete" if workspace_correlation["state"] == "exact" else "partial",
     }
@@ -1062,24 +1121,29 @@ def presentation_payload(
         hive,
         identity,
         inventory.get("source_revision"),
+        dolt.get("sourceRevision") if isinstance(dolt, Mapping) else None,
         [queues.get(name, {}).get("revision") for name in ("ready", "active", "blocked")],
         roster.get("revision"),
         workspace_locator,
         counts,
     )
-    hive_display = _token(identity.get("display_name") or hive, PRESENTATION_TOKEN_LIMIT)
-    hive_prefix = _token(identity.get("prefix") or "unknown", PRESENTATION_TOKEN_LIMIT)
+    hive_display = _token(
+        f"{identity.get('organization')}/{identity.get('repository')}"
+        if identity_complete
+        else "hive -",
+        PRESENTATION_TOKEN_LIMIT,
+    )
+    hive_prefix = _token(identity.get("prefix") if identity_complete else "-", 24)
     workspace_tokens = {
-        "bh_space_title": _token(f"[{hive_prefix}] {hive_display}", PRESENTATION_TOKEN_LIMIT),
-        "bh_hive": hive_display,
-        "bh_hive_id": _token(hive, PRESENTATION_TOKEN_LIMIT),
-        "bh_affiliation": _token(identity.get("affiliation") or "unknown", 24),
-        "bh_ready": _count_token(counts["ready"]),
-        "bh_running": _count_token(counts["running"]),
-        "bh_needs_you": _count_token(counts["needs_you"]),
-        "bh_worktrees": _count_token(worktree_total),
-        "bh_coverage": overall_coverage,
-        "bh_revision": _token(revision, PRESENTATION_TOKEN_LIMIT),
+        "bh_space_title": _token(
+            f"[{hive_prefix}] {hive_display}" if identity_complete else "hive -",
+            PRESENTATION_TOKEN_LIMIT,
+        ),
+        "bh_affiliation": _token(
+            identity.get("affiliation") if identity_complete else "role -", 24
+        ),
+        "bh_worktrees": _sidebar_count(worktree_total, "worktrees -"),
+        **dolt_tokens,
     }
     workspace_report = None
     if workspace_correlation["state"] == "exact":
@@ -1087,6 +1151,15 @@ def presentation_payload(
             "source": PRESENTATION_SOURCE,
             "seq": seq,
             "ttl_ms": ttl_ms,
+            "clearTokens": [
+                "bh_hive",
+                "bh_hive_id",
+                "bh_ready",
+                "bh_running",
+                "bh_needs_you",
+                "bh_coverage",
+                "bh_revision",
+            ],
             "tokens": workspace_tokens,
         }
 
@@ -1099,11 +1172,9 @@ def presentation_payload(
             agent.get("presentation") if isinstance(agent.get("presentation"), Mapping) else {}
         )
         ownership = agent.get("ownership") if isinstance(agent.get("ownership"), Mapping) else {}
-        lifecycle = agent.get("lifecycle") if isinstance(agent.get("lifecycle"), Mapping) else {}
         facts = agent.get("facts") if isinstance(agent.get("facts"), Mapping) else {}
         work = facts.get("work") if isinstance(facts.get("work"), Mapping) else {}
         topology = facts.get("topology") if isinstance(facts.get("topology"), Mapping) else {}
-        parent = facts.get("parent") if isinstance(facts.get("parent"), Mapping) else {}
         bead = _locator(agent.get("bead"))
         target = _locator(agent.get("target"))
         workspace_id = _locator(presentation.get("workspace"))
@@ -1119,50 +1190,40 @@ def presentation_payload(
         )
         if exact:
             correlation_state = "exact"
+            reason_code = "exact_agent_pane"
             reason = "owned agent and exact workspace, tab, and pane locators agree"
-        elif ownership.get("state") == "stale" or locator_complete:
+        elif workspace_correlation["state"] == "unavailable":
             correlation_state = "stale"
+            reason_code = "supervisor_unavailable"
+            reason = "the authoritative bh-supervisor snapshot is unavailable"
+        elif locator_complete and workspace_id != workspace_locator.get("workspace_id"):
+            correlation_state = "stale"
+            reason_code = "locator_mismatch"
+            reason = "the agent pane belongs to another hive workspace"
+        elif ownership.get("state") == "stale":
+            correlation_state = "stale"
+            reason_code = "ownership_stale"
             reason = _token(ownership.get("reason") or "agent correlation is stale", 200)
         else:
             correlation_state = "missing"
+            reason_code = "locator_missing"
             reason = _token(ownership.get("reason") or "agent correlation is incomplete", 200)
         worktree_item = inventory_items.get(bead or "")
-        worktree_state = (
-            str(worktree_item.get("state")) if isinstance(worktree_item, Mapping) else "missing"
-        )
-        lifecycle_state = _token(lifecycle.get("state") or "unknown", 24)
         role = _token(facts.get("role") or "unknown", 24)
         harness = _token(facts.get("harness") or "unknown", 24)
-        attention = (
-            "needs_you"
-            if correlation_state != "exact" or lifecycle_state in {"blocked", "failed"}
-            else "running"
-        )
         pane_tokens = {
             "bh_agent_title": _token(f"[{harness}] bh-{role}", PRESENTATION_TOKEN_LIMIT),
-            "bh_hive_id": _token(hive, PRESENTATION_TOKEN_LIMIT),
             "bh_bead": _token(bead or "unknown", PRESENTATION_TOKEN_LIMIT),
-            "bh_role": role,
             "bh_phase": _token(work.get("phase") or "unknown", 24),
             "bh_operation": _token(work.get("operation") or "unknown", 32),
-            "bh_parent": _token(parent.get("bead") or "root", PRESENTATION_TOKEN_LIMIT),
-            "bh_children": _count_token(
-                topology.get("direct_active_children")
-                if isinstance(topology.get("direct_active_children"), int)
-                else None
-            ),
-            "bh_state": lifecycle_state,
-            "bh_attention": attention,
-            "bh_correlation": correlation_state,
-            "bh_worktree": _token(worktree_state, 24),
-            "bh_coverage": _token(topology.get("coverage") or "unknown", 24),
         }
         if role == "dispatcher":
-            pane_tokens["bh_managed_agents"] = _count_token(
+            pane_tokens["bh_managed_agents"] = _sidebar_count(
                 topology.get("direct_active_children")
                 if topology.get("coverage") == "complete"
                 and isinstance(topology.get("direct_active_children"), int)
-                else None
+                else None,
+                "-",
             )
         report = None
         if exact:
@@ -1170,17 +1231,18 @@ def presentation_payload(
                 "source": PRESENTATION_SOURCE,
                 "seq": seq,
                 "ttl_ms": ttl_ms,
-                "display_agent": _token(
-                    f"{facts.get('role') or 'agent'} {bead or target or 'unknown'}", 80
-                ),
-                "state_labels": {
-                    "working": "RUNNING",
-                    "blocked": "NEEDS YOU",
-                    "idle": "IDLE",
-                    "done": "DONE",
-                    "failed": "FAILED",
-                    "unknown": "UNKNOWN",
-                },
+                "clearTokens": [
+                    "bh_hive_id",
+                    "bh_role",
+                    "bh_parent",
+                    "bh_children",
+                    "bh_state",
+                    "bh_attention",
+                    "bh_correlation",
+                    "bh_worktree",
+                    "bh_coverage",
+                    *([] if role == "dispatcher" else ["bh_managed_agents"]),
+                ],
                 "tokens": pane_tokens,
             }
         panes.append(
@@ -1193,6 +1255,7 @@ def presentation_payload(
                 },
                 "correlation": {
                     "state": correlation_state,
+                    "reason_code": reason_code,
                     "reason": reason,
                     "hive_id": hive,
                     "bead_id": bead,
@@ -1223,6 +1286,7 @@ def presentation_payload(
                 },
                 "correlation": {
                     "state": "missing",
+                    "reason_code": "agent_correlation_missing",
                     "reason": "active Beadhive work has no correlated Herdr agent pane",
                     "hive_id": hive,
                     "bead_id": bead,
@@ -1257,12 +1321,19 @@ def presentation_payload(
                 warnings.append(str(warning.get("code") or warning.get("detail") or "warning"))
             else:
                 warnings.append(str(warning))
+    freshness_state = (
+        "stale"
+        if "stale" in source_states.values()
+        else "fresh"
+        if overall_coverage == "complete"
+        else "partial"
+    )
     payload = _base(
         "presentation",
         revision,
         scope={"hive": hive},
         freshness={
-            "state": "fresh" if overall_coverage == "complete" else "partial",
+            "state": freshness_state,
             "as_of": now,
             "expires_at": now + ttl_ms,
             "ttl_ms": ttl_ms,
@@ -1276,6 +1347,7 @@ def presentation_payload(
     )
     payload.update(
         {
+            "source_revision": revision,
             "policy": {
                 "source": PRESENTATION_PROTOCOL,
                 "sequence": seq,
@@ -1287,6 +1359,11 @@ def presentation_payload(
                 "theme_owner": "herdr-host",
                 "lifecycle_authority": False,
                 "report_agent_authority": False,
+                "preserves_host_rows": [
+                    "status_icon",
+                    "git_branch",
+                    "git_ahead_behind",
+                ],
             },
             "summary": counts,
             "workspace": {
@@ -1559,6 +1636,28 @@ class ViewBackend:
             )
         return agent_payload(matches[0], roster)
 
+    def dolt_comparison(self, hive_id: str, entry: Mapping[str, object]) -> Mapping[str, object]:
+        """Read one bounded generic Dolt comparison without mutating sync state."""
+
+        try:
+            status = engine.get_engine(self.cfg).federation_status(
+                registry.hive_dir(entry), timeout=engine.FEDERATION_TIMEOUT
+            )
+        except (OSError, RuntimeError, TypeError, ValueError):
+            status = engine.FederationStatus(ok=False, error="federation status unavailable")
+        payload = hive_sync.comparison_payload([dict(entry)], [status])
+        comparisons = payload.get("comparisons")
+        if (
+            isinstance(comparisons, list)
+            and len(comparisons) == 1
+            and isinstance(comparisons[0], Mapping)
+            and comparisons[0].get("hive") == hive_id
+        ):
+            return comparisons[0]
+        return hive_sync._comparison(
+            hive_id, None, failure="a unique Dolt comparison is unavailable"
+        )
+
     def presentation(self, hive_id: str, *, ttl_ms: int = PRESENTATION_TTL_MS) -> dict:
         hive = self.sources.resolve_hive(hive_id)
         identity = hive_identity.identity_record(hive.entry)
@@ -1587,6 +1686,7 @@ class ViewBackend:
             queues,
             roster,
             self.session_snapshot(),
+            dolt=self.dolt_comparison(hive_id, hive.entry),
             ttl_ms=ttl_ms,
         )
 

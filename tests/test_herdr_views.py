@@ -21,6 +21,7 @@ from beadhive import (
 )
 from beadhive.agent_run_summary import Freshness
 from beadhive.cli import app
+from beadhive.engine import FederationPeer, FederationStatus
 from beadhive.operator_sources import OperatorSourceError
 from beadhive.public_readers import AgentRunSnapshot, Coverage
 
@@ -715,6 +716,17 @@ def test_presentation_composes_extended_hive_facts_without_losing_queues(
     )
     monkeypatch.setattr(backend, "session_snapshot", lambda: None)
     monkeypatch.setattr(
+        backend,
+        "dolt_comparison",
+        lambda _hive, _entry: {
+            "hive": HIVE,
+            "ahead": 0,
+            "behind": 0,
+            "sourceRevision": "dolt-r1",
+            "coverage": {"state": "complete", "counts": "known"},
+        },
+    )
+    monkeypatch.setattr(
         herdr_views.worktree,
         "inventory_snapshot_payload",
         lambda **_kwargs: {"worktrees": [], "total": 0, "warnings": []},
@@ -724,6 +736,39 @@ def test_presentation_composes_extended_hive_facts_without_losing_queues(
 
     assert payload["view"] == "presentation"
     assert payload["scope"] == {"hive": HIVE}
+
+
+def test_presentation_dolt_comparison_is_one_bounded_read_only_observation(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    class Engine:
+        def federation_status(self, path, *, timeout):
+            calls.append((Path(path), timeout))
+            return FederationStatus(
+                ok=True,
+                peers=(FederationPeer(peer="origin", reachable=True, ahead=2, behind=0),),
+            )
+
+    entry = {
+        "provider": "github",
+        "org": "acme",
+        "repo": "widgets",
+        "prefix": "wdg",
+    }
+    monkeypatch.setattr(herdr_views.engine, "get_engine", lambda _cfg: Engine())
+    monkeypatch.setattr(
+        herdr_views.registry, "hive_dir", lambda _entry: Path("/managed/acme/widgets")
+    )
+    backend = herdr_views.ViewBackend(cfg={}, sources=SimpleNamespace())
+
+    comparison = backend.dolt_comparison("github/acme/widgets", entry)
+
+    assert comparison["ahead"] == 2
+    assert comparison["behind"] == 0
+    assert comparison["coverage"]["state"] == "complete"
+    assert calls == [(Path("/managed/acme/widgets"), herdr_views.engine.FEDERATION_TIMEOUT)]
 
 
 def test_deck_disables_launch_when_herdr_cli_preflight_is_unavailable(monkeypatch) -> None:
