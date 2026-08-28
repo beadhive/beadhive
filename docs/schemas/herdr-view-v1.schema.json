@@ -113,6 +113,75 @@
         "actions": { "type": "array", "items": { "type": "string" } }
       }
     },
+    "deckSurface": {
+      "type": "object",
+      "required": [
+        "placement",
+        "direction",
+        "target_role",
+        "lifecycle",
+        "close_behavior",
+        "reopen_behavior",
+        "focus",
+        "variant",
+        "section_mode",
+        "columns",
+        "inspector"
+      ],
+      "properties": {
+        "placement": { "enum": ["split", "tab"] },
+        "direction": { "type": ["string", "null"], "enum": ["right", "down", null] },
+        "target_role": { "enum": ["agents", "board"] },
+        "lifecycle": { "enum": ["ordinary-pane", "ordinary-tab"] },
+        "close_behavior": { "const": "close" },
+        "reopen_behavior": { "enum": ["reopen-split", "reopen-tab"] },
+        "focus": { "type": "boolean" },
+        "variant": { "enum": ["narrow", "medium", "wide"] },
+        "section_mode": { "enum": ["single-list", "tabs", "columns"] },
+        "columns": { "type": "integer", "minimum": 1 },
+        "inspector": { "enum": ["overlay", "below"] }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "placement": { "const": "split" },
+            "direction": { "enum": ["right", "down"] },
+            "target_role": { "const": "agents" },
+            "lifecycle": { "const": "ordinary-pane" },
+            "reopen_behavior": { "const": "reopen-split" }
+          }
+        },
+        {
+          "properties": {
+            "placement": { "const": "tab" },
+            "direction": { "type": "null" },
+            "target_role": { "const": "board" },
+            "lifecycle": { "const": "ordinary-tab" },
+            "reopen_behavior": { "const": "reopen-tab" }
+          }
+        }
+      ]
+    },
+    "layout": {
+      "type": "object",
+      "required": ["session", "cross_session_focus", "tabs", "surfaces", "viewport"],
+      "properties": {
+        "session": { "const": "bh-supervisor" },
+        "cross_session_focus": { "const": false },
+        "tabs": { "type": "array", "items": { "type": "object" } },
+        "surfaces": {
+          "type": "object",
+          "required": ["picker", "deck", "agent_actions", "activity_tray"],
+          "properties": {
+            "picker": { "type": "object" },
+            "deck": { "$ref": "#/$defs/deckSurface" },
+            "agent_actions": { "type": "object" },
+            "activity_tray": { "type": "object" }
+          }
+        },
+        "viewport": { "type": "object" }
+      }
+    },
     "view": {
       "allOf": [
         { "$ref": "#/$defs/base" },
@@ -134,7 +203,7 @@
               }
             },
             "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
-            "layout": { "type": "object" },
+            "layout": { "$ref": "#/$defs/layout" },
             "surface": { "type": "object" },
             "detail": { "type": "object" },
             "next_cursor": { "type": ["string", "null"] },
