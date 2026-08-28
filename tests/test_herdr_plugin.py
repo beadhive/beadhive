@@ -1051,6 +1051,31 @@ def test_reap_refuses_a_terminal_or_stale_agent_record(monkeypatch):
     assert not any("close" in call for call in calls)
 
 
+def test_reap_guard_and_advertisement_share_the_live_lifecycle_policy(monkeypatch):
+    record = {
+        "name": "bh-bh-1",
+        "state": "idle",
+        "pane_id": "w1:p2",
+        "pane_name": "bh-bh-1",
+    }
+    monkeypatch.setattr(herdr_plugin, "_live_agent_records", lambda: [record])
+
+    assert herdr_plugin._owned_live_pane("bh-bh-1") == "w1:p2"
+    assert (
+        herdr_plugin.operator_actions.agent_action_availability("owned", "idle", "current")[0]
+        == "allowed"
+    )
+
+    record["state"] = "done"
+    assert herdr_plugin._owned_live_pane("bh-bh-1") is None
+    assert (
+        herdr_plugin.operator_actions.agent_action_availability(
+            "stale", "done", "Herdr lifecycle state is done"
+        )[0]
+        == "unavailable"
+    )
+
+
 def test_reap_refuses_a_pane_whose_visible_name_does_not_match_target(monkeypatch):
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
     calls = []
@@ -1573,6 +1598,12 @@ def test_roster_correlates_encoded_target_from_explicit_metadata(tmp_path, monke
         "pane": "w1:p2",
     }
     assert {item["availability"] for item in agent["capabilities"].values()} == {"allowed"}
+    actions = {item["id"]: item for item in agent["advertised_actions"]}
+    assert actions["agent.dispatch"]["availability"] == "allowed"
+    assert actions["agent.dispatch"]["input"]["transport"] == "stdin"
+    assert actions["agent.dispatch"]["input"]["schema"]["sensitive"] is True
+    assert actions["agent.reap"]["availability"] == "confirmation-required"
+    assert actions["agent.reap"]["preconditions"]["mustMatch"] is True
 
 
 def test_roster_accepts_fully_proven_legacy_target_without_guessing_foreign_panes(
@@ -1600,6 +1631,9 @@ def test_roster_accepts_fully_proven_legacy_target_without_guessing_foreign_pane
     assert foreign["bead"] is None
     assert foreign["ownership"]["state"] == "foreign"
     assert {item["availability"] for item in foreign["capabilities"].values()} == {"unavailable"}
+    foreign_actions = {item["id"]: item for item in foreign["advertised_actions"]}
+    assert foreign_actions["agent.dispatch"]["availability"] == "forbidden"
+    assert foreign_actions["agent.dispatch"]["reasonCode"] == "agent_not_bh_managed"
 
 
 def test_roster_retains_metadata_identity_but_disables_stale_missing_worktree(

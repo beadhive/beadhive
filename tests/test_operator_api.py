@@ -269,12 +269,23 @@ def test_factory_hives_are_bounded_deterministic_and_distinguish_unavailable(
     beadhive = first.json()["items"][1]
     assert beadhive["counts"] == {"open": 2, "ready": 1, "active": 1, "blocked": 2}
     assert beadhive["opaqueRef"].startswith("hive-sha256-")
+    assert [action["id"] for action in beadhive["advertisedActions"]] == [
+        "hive.inspect",
+        "hive.refresh",
+    ]
+    assert all(
+        action["target"] == {"hiveId": HIVE, "kind": "hive", "id": HIVE}
+        for action in beadhive["advertisedActions"]
+    )
     assert unchanged.status_code == 304
     assert unchanged.content == b""
 
     schema = operator_api.openapi_document()["components"]["schemas"]
     page_schema = copy.deepcopy(schema["FactoryHivePage"])
     page_schema["properties"]["items"]["items"] = schema["FactoryHiveSummary"]
+    page_schema["properties"]["items"]["items"]["properties"]["advertisedActions"]["items"] = (
+        schema["AdvertisedAction"]
+    )
     jsonschema.Draft202012Validator(page_schema).validate(first.json())
 
 

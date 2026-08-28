@@ -306,6 +306,18 @@ def test_exact_detail_is_complete_and_supports_conditional_get(tmp_path: Path) -
     assert item["notes"] == "Notes bh-ready-1"
     assert item["moleculeType"] == "workflow"
     assert item["labels"] == ["api", "chosen"]
+    ready_actions = {action["id"]: action for action in item["advertisedActions"]}
+    assert ready_actions["work-item.launch"]["availability"] == "allowed"
+    assert ready_actions["work-item.launch"]["preconditions"] == {
+        "sourceRevision": response.json()["revision"],
+        "mustMatch": True,
+    }
+    assert ready_actions["work-item.launch"]["target"] == item["ref"]
+    blocked_actions = {
+        action["id"]: action for action in blocked.json()["item"]["advertisedActions"]
+    }
+    assert blocked_actions["work-item.launch"]["availability"] == "forbidden"
+    assert blocked_actions["work-item.launch"]["reasonCode"] == "work_item_blocked"
     assert blocked.json()["item"]["dependencies"] == [
         {
             "id": "bh-prerequisite",

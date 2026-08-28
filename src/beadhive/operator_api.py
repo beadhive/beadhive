@@ -366,11 +366,15 @@ class OperatorAPI:
                         snapshot = await asyncio.to_thread(self.sources.refresh_hive_state, hive)
                     except OperatorSourceError as exc:
                         return operator_contract.factory_hive_summary(
-                            hive.entry, None, unavailable_reason=exc.code
+                            hive.entry,
+                            None,
+                            unavailable_reason=exc.code,
                         )
                     except Exception:
                         return operator_contract.factory_hive_summary(
-                            hive.entry, None, unavailable_reason="snapshot_source_unavailable"
+                            hive.entry,
+                            None,
+                            unavailable_reason="snapshot_source_unavailable",
                         )
                     return operator_contract.factory_hive_summary(hive.entry, snapshot)
 

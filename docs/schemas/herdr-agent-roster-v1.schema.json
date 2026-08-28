@@ -29,10 +29,54 @@
         "reason": {"type": "string"}
       }
     },
+    "advertisedAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "capability", "target", "availability", "reasonCode", "reason", "consequence", "advertisedAt", "sourceRevision", "preconditions", "input"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$"},
+        "capability": {"type": "string", "minLength": 1},
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hiveId", "kind", "id"],
+          "properties": {
+            "hiveId": {"type": ["string", "null"]},
+            "kind": {"const": "agent"},
+            "id": {"type": "string", "minLength": 1}
+          }
+        },
+        "availability": {"enum": ["allowed", "confirmation-required", "forbidden", "unavailable"]},
+        "reasonCode": {"type": ["string", "null"]},
+        "reason": {"type": "string", "minLength": 1},
+        "consequence": {"enum": ["navigate", "read", "reversible-write", "approval", "destructive"]},
+        "advertisedAt": {"type": "integer", "minimum": 0},
+        "sourceRevision": {"type": "string", "minLength": 1},
+        "preconditions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sourceRevision", "mustMatch"],
+          "properties": {
+            "sourceRevision": {"type": "string", "minLength": 1},
+            "mustMatch": {"type": "boolean"}
+          }
+        },
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["transport", "required", "schema"],
+          "properties": {
+            "transport": {"enum": ["none", "parameters", "stdin"]},
+            "required": {"type": "boolean"},
+            "schema": {"type": ["object", "null"]}
+          }
+        }
+      }
+    },
     "agent": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["target", "hive", "bead", "lifecycle", "worktree", "presentation", "ownership", "capabilities"],
+      "required": ["target", "hive", "bead", "lifecycle", "worktree", "presentation", "ownership", "capabilities", "advertised_actions"],
       "properties": {
         "target": {"$ref": "#/$defs/nullableString"},
         "hive": {"$ref": "#/$defs/nullableString"},
@@ -90,6 +134,10 @@
             "watch": {"$ref": "#/$defs/capability"},
             "reap": {"$ref": "#/$defs/capability"}
           }
+        },
+        "advertised_actions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/advertisedAction"}
         }
       }
     }

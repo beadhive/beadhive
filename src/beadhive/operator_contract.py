@@ -13,6 +13,7 @@ from collections.abc import Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
+from . import operator_actions
 from .agent_run_summary import AgentRunSummary, Freshness
 from .public_readers import AgentRunSnapshot, Coverage, RunJournalFrame
 from .state_stream import (
@@ -126,6 +127,7 @@ def factory_hive_summary(
     snapshot: ProviderSnapshot | None,
     *,
     unavailable_reason: str | None = None,
+    advertised_at: int | None = None,
 ) -> dict[str, object]:
     """Project one reusable, path-safe factory hive summary.
 
@@ -151,6 +153,15 @@ def factory_hive_summary(
         "repo": str(entry["repo"]),
         "kind": str(entry.get("kind", "")),
     }
+    observed_at = (
+        advertised_at
+        if advertised_at is not None
+        else (_millis(snapshot.as_of) if snapshot is not None else 0)
+    )
+    revision = snapshot.revision if snapshot is not None else None
+    actions = operator_actions.hive_actions(
+        hive_id=identity, revision=revision, advertised_at=observed_at
+    )
     if snapshot is None:
         return {
             **base,
@@ -159,6 +170,7 @@ def factory_hive_summary(
             "revision": None,
             "asOf": None,
             "coverage": {"state": "unavailable", "reason": unavailable_reason},
+            "advertisedActions": actions,
         }
 
     issues = tuple(snapshot.issues)
@@ -195,6 +207,7 @@ def factory_hive_summary(
             "state": "partial" if snapshot.partial else "complete",
             "reason": snapshot.partial_reason,
         },
+        "advertisedActions": actions,
     }
 
 
