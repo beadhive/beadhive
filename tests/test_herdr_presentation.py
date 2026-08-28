@@ -14,6 +14,7 @@ from beadhive import herdr_views
 from beadhive.cli import app
 
 HIVE = "github/acme/widgets"
+_DEFAULT = object()
 SCHEMA = json.loads(
     (
         Path(__file__).parents[1] / "docs" / "schemas" / "herdr-presentation-v1.schema.json"
@@ -84,6 +85,24 @@ def _queues(*, partial: bool = False) -> dict[str, dict]:
         "ready": _queue("ready", ["task-ready"], state=state),
         "active": _queue("active", ["task-working", "task-blocked", "task-missing"], state=state),
         "blocked": _queue("blocked", ["task-dependency"], state=state),
+    }
+
+
+def _dolt(*, ahead: int | None = 0, behind: int | None = 0, state: str = "complete") -> dict:
+    return {
+        "hive": HIVE,
+        "relativeTo": "origin",
+        "ahead": ahead,
+        "behind": behind,
+        "comparisonState": "equal" if ahead == behind == 0 else "diverged",
+        "observedAt": "2026-08-28T06:00:00Z",
+        "remoteObservedAt": "2026-08-28T06:00:00Z",
+        "sourceRevision": "dolt-r1",
+        "coverage": {
+            "state": state,
+            "counts": "known" if ahead is not None and behind is not None else "unknown",
+            "reason": None,
+        },
     }
 
 
@@ -170,14 +189,22 @@ def _snapshot() -> dict:
     }
 
 
-def _payload(*agents: dict, queues: dict[str, dict] | None = None) -> dict:
+def _payload(
+    *agents: dict,
+    queues: dict[str, dict] | None = None,
+    identity: dict | None = None,
+    inventory: dict | None = None,
+    dolt: dict | None = None,
+    snapshot: dict | None | object = _DEFAULT,
+) -> dict:
     return herdr_views.presentation_payload(
         HIVE,
-        _identity(),
-        _inventory("task-working", "task-blocked", "task-missing"),
+        identity or _identity(),
+        inventory or _inventory("task-working", "task-blocked", "task-missing"),
         queues or _queues(),
         {"revision": "roster-r1", "agents": list(agents), "warnings": []},
-        _snapshot(),
+        _snapshot() if snapshot is _DEFAULT else snapshot,
+        dolt=dolt or _dolt(ahead=1, behind=0),
         generated_at=10_000,
         sequence=99,
         ttl_ms=15_000,
@@ -213,17 +240,21 @@ def test_exact_workspace_and_panes_are_direct_bounded_metadata_reports() -> None
         "source": "bh.plugin.herdr.presentation.v1",
         "seq": 99,
         "ttl_ms": 15_000,
+        "clearTokens": [
+            "bh_hive",
+            "bh_hive_id",
+            "bh_ready",
+            "bh_running",
+            "bh_needs_you",
+            "bh_coverage",
+            "bh_revision",
+        ],
         "tokens": {
             "bh_space_title": "[wdg] acme/widgets",
-            "bh_hive": "acme/widgets",
-            "bh_hive_id": HIVE,
             "bh_affiliation": "maintainer",
-            "bh_ready": "1",
-            "bh_running": "2",
-            "bh_needs_you": "2",
             "bh_worktrees": "3",
-            "bh_coverage": "complete",
-            "bh_revision": payload["revision"],
+            "bh_dolt_ahead": "dolt ↑1",
+            "bh_dolt_behind": "↓0",
         },
     }
 
@@ -239,20 +270,148 @@ def test_exact_workspace_and_panes_are_direct_bounded_metadata_reports() -> None
     assert working["report"]["source"] == "bh.plugin.herdr.presentation.v1"
     assert working["report"]["tokens"]["bh_agent_title"] == "[codex] bh-developer"
     assert working["report"]["tokens"]["bh_phase"] == "implement"
-    assert working["report"]["tokens"]["bh_children"] == "0"
+    assert working["report"]["tokens"]["bh_operation"] == "work.implement"
+    assert set(working["report"]["tokens"]) == {
+        "bh_agent_title",
+        "bh_bead",
+        "bh_phase",
+        "bh_operation",
+    }
     assert "bh_managed_agents" not in working["report"]["tokens"]
-    assert working["report"]["state_labels"]["blocked"] == "NEEDS YOU"
+    assert "bh_managed_agents" in working["report"]["clearTokens"]
+    assert "state_labels" not in working["report"]
+    assert "display_agent" not in working["report"]
     assert "agent" not in working["report"]
     assert "applies_to_source" not in working["report"]
     blocked_tokens = by_bead["task-blocked"]["report"]["tokens"]
     assert blocked_tokens["bh_agent_title"] == "[claude] bh-dispatcher"
     assert blocked_tokens["bh_managed_agents"] == "0"
-    assert blocked_tokens["bh_attention"] == "needs_you"
+    assert set(blocked_tokens) == {
+        "bh_agent_title",
+        "bh_bead",
+        "bh_phase",
+        "bh_operation",
+        "bh_managed_agents",
+    }
+    assert "bh_managed_agents" not in by_bead["task-blocked"]["report"]["clearTokens"]
+    assert "bh_attention" not in blocked_tokens
+    assert "bh_state" not in blocked_tokens
     assert by_bead["task-missing"]["correlation"]["state"] == "missing"
     assert by_bead["task-missing"]["report"] is None
 
     jsonschema.Draft202012Validator.check_schema(SCHEMA)
     jsonschema.Draft202012Validator(SCHEMA).validate(payload)
+
+
+def test_maintainer_and_contributor_space_rows_include_dolt_and_true_zero() -> None:
+    maintainer = _payload(
+        _agent("task-working", "w17:p2", state="working"),
+        inventory=_inventory(),
+        dolt=_dolt(ahead=0, behind=0),
+    )
+    assert {
+        "bh_space_title": "[wdg] acme/widgets",
+        "bh_affiliation": "maintainer",
+        "bh_worktrees": "0",
+        "bh_dolt_ahead": "dolt ↑0",
+        "bh_dolt_behind": "↓0",
+    }.items() <= maintainer["workspace"]["report"]["tokens"].items()
+
+    contributor_identity = _identity()
+    contributor_identity.update(
+        {
+            "prefix": "fork",
+            "display_name": "ignored/display",
+            "registration_kind": "external",
+            "affiliation": "contributor",
+        }
+    )
+    contributor = _payload(
+        _agent("task-working", "w17:p2", state="working"),
+        identity=contributor_identity,
+        inventory=_inventory("one", "two"),
+        dolt=_dolt(ahead=0, behind=3),
+    )
+    assert {
+        "bh_space_title": "[fork] acme/widgets",
+        "bh_affiliation": "contributor",
+        "bh_worktrees": "2",
+        "bh_dolt_ahead": "dolt ↑0",
+        "bh_dolt_behind": "↓3",
+    }.items() <= contributor["workspace"]["report"]["tokens"].items()
+
+
+def test_unavailable_counts_are_not_fabricated_as_zero() -> None:
+    payload = _payload(
+        _agent("task-working", "w17:p2", state="working"),
+        inventory=_inventory(state="unavailable"),
+        dolt=_dolt(ahead=None, behind=None, state="unavailable"),
+    )
+    tokens = payload["workspace"]["report"]["tokens"]
+
+    assert tokens["bh_worktrees"] == "worktrees -"
+    assert tokens["bh_dolt_ahead"] == "dolt ↑-"
+    assert tokens["bh_dolt_behind"] == "↓-"
+    assert payload["coverage"]["sources"]["worktrees"]["state"] == "unavailable"
+    assert payload["coverage"]["sources"]["dolt"]["state"] == "unavailable"
+
+
+def test_stale_missing_supervisor_and_locator_mismatch_are_reason_coded() -> None:
+    stale = _payload(
+        _agent("task-working", "w17:p2", state="working"),
+        inventory=_inventory(state="stale"),
+        dolt=_dolt(state="stale"),
+    )
+    assert stale["freshness"]["state"] == "stale"
+    assert stale["workspace"]["report"]["tokens"]["bh_dolt_ahead"] == "dolt ↑-"
+
+    unavailable = _payload(_agent("task-working", "w17:p2", state="working"), snapshot=None)
+    assert unavailable["workspace"]["correlation"]["reason_code"] == "supervisor_unavailable"
+    assert unavailable["workspace"]["report"] is None
+    unavailable_pane = next(
+        item for item in unavailable["panes"] if item["correlation"]["bead_id"] == "task-working"
+    )
+    assert unavailable_pane["correlation"]["reason_code"] == "supervisor_unavailable"
+    assert unavailable_pane["report"] is None
+
+    mismatch_agent = _agent("task-working", "w17:p2", state="working")
+    mismatch_agent["presentation"]["workspace"] = "w99"
+    mismatch = _payload(mismatch_agent)
+    pane = next(
+        item for item in mismatch["panes"] if item["correlation"]["bead_id"] == "task-working"
+    )
+    assert pane["correlation"]["reason_code"] == "locator_mismatch"
+    assert pane["report"] is None
+
+
+def test_sidebar_tokens_are_bounded_control_free_and_do_not_replace_host_status_rows() -> None:
+    identity = _identity()
+    identity["prefix"] = "wdg\x1b[31m" + "x" * 100
+    identity["organization"] = "acme\ncorp"
+    agent = _agent(
+        "task-working",
+        "w17:p2",
+        state="idle",
+        harness="codex\x00" + "x" * 100,
+    )
+    payload = _payload(agent, identity=identity)
+    pane = next(item for item in payload["panes"] if item["report"] is not None)
+
+    assert payload["source_revision"] == payload["revision"]
+    assert payload["policy"]["preserves_host_rows"] == [
+        "status_icon",
+        "git_branch",
+        "git_ahead_behind",
+    ]
+    for report in (payload["workspace"]["report"], pane["report"]):
+        assert report is not None
+        for value in report["tokens"].values():
+            assert len(value) <= herdr_views.PRESENTATION_TOKEN_LIMIT
+            assert not any(unicodedata.category(char).startswith("C") for char in value)
+    forbidden = {"bh_state", "bh_attention", "status_icon", "git_branch", "git_ahead_behind"}
+    assert forbidden.isdisjoint(payload["workspace"]["report"]["tokens"])
+    assert forbidden.isdisjoint(pane["report"]["tokens"])
+    assert "state_labels" not in pane["report"]
 
 
 def test_incomplete_dispatcher_topology_preserves_unknown_managed_count() -> None:
@@ -270,7 +429,7 @@ def test_incomplete_dispatcher_topology_preserves_unknown_managed_count() -> Non
     pane = next(
         item for item in payload["panes"] if item["correlation"]["bead_id"] == "task-working"
     )
-    assert pane["report"]["tokens"]["bh_managed_agents"] == "?"
+    assert pane["report"]["tokens"]["bh_managed_agents"] == "-"
     jsonschema.Draft202012Validator(SCHEMA).validate(payload)
 
 

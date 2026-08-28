@@ -21,6 +21,7 @@ from beadhive import (
 )
 from beadhive.agent_run_summary import Freshness
 from beadhive.cli import app
+from beadhive.engine import FederationPeer, FederationStatus
 from beadhive.operator_sources import OperatorSourceError
 from beadhive.public_readers import AgentRunSnapshot, Coverage
 
@@ -135,6 +136,115 @@ def _agent(
 
 def _roster(*agents: dict) -> dict:
     return {"revision": "roster-r1", "observed_at": 1000, "agents": list(agents), "warnings": []}
+
+
+def _crew_agent(
+    target: str,
+    bead: str,
+    *,
+    role: str = "developer",
+    parent: str | None = None,
+    relation: str = "root",
+    direct: int = 0,
+    total: int = 0,
+    terminal: bool = False,
+    session: str = "bh-supervisor",
+) -> dict:
+    action_target = {"hiveId": HIVE, "kind": "agent", "id": target}
+    reason = "current bh-owned live pane is proven"
+    actions = operator_actions.agent_actions(
+        target=action_target,
+        ownership_state="owned",
+        lifecycle_state="idle",
+        reason=reason,
+        revision="roster-r1",
+        advertised_at=1000,
+        max_prompt_bytes=8192,
+    )
+    return {
+        "revision": f"agent:{target}",
+        "target": target,
+        "hive": HIVE,
+        "bead": bead,
+        "facts": {
+            "harness": "codex",
+            "role": role,
+            "work": {
+                "operation": "work.complete"
+                if terminal
+                else "work.dispatch"
+                if role == "dispatcher"
+                else "work.implement",
+                "phase": "terminal"
+                if terminal
+                else "dispatch"
+                if role == "dispatcher"
+                else "implement",
+                "terminal_phase": terminal,
+            },
+            "parent": {"relation": relation, "target": parent, "bead": None},
+            "topology": {
+                "coverage": "complete",
+                "direct_active_children": direct,
+                "total_active_descendants": total,
+            },
+            "retirement": {
+                "availability": "forbidden",
+                "reason_code": "live",
+                "reason": "the agent remains live",
+                "source_revision": "roster-r1",
+                "advisory": True,
+            },
+        },
+        "lifecycle": {"state": "idle"},
+        "presentation": {
+            "session": session,
+            "workspace": "ws-1",
+            "tab": f"tab-{target}",
+            "pane": f"pane-{target}",
+        },
+        "ownership": {"state": "owned", "reason": reason},
+        "advertised_actions": actions,
+    }
+
+
+def _crew_roster(*agents: dict) -> dict:
+    return {
+        "revision": "roster-r1",
+        "session": "bh-supervisor",
+        "authoritative_session": True,
+        "observed_at": 1000,
+        "agents": list(agents),
+        "warnings": [],
+    }
+
+
+def _crew_snapshot() -> dict:
+    return {"workspaces": [{"workspace_id": "ws-1", "label": f"bh:{HIVE}"}]}
+
+
+def _crew_fixture() -> tuple[dict, ...]:
+    return (
+        _crew_agent("dispatcher-1", "epic-root", role="dispatcher", direct=2, total=3),
+        _crew_agent(
+            "developer-b",
+            "task-b",
+            parent="dispatcher-1",
+            relation="direct",
+            terminal=True,
+        ),
+        _crew_agent(
+            "dispatcher-2",
+            "epic-child",
+            role="dispatcher",
+            parent="dispatcher-1",
+            relation="direct",
+            direct=1,
+            total=1,
+        ),
+        _crew_agent("developer-c", "task-c", parent="dispatcher-2", relation="direct"),
+        _crew_agent("developer-direct", "task-direct"),
+    )
 
 
 def _queues() -> dict[str, dict]:
@@ -715,6 +825,17 @@ def test_presentation_composes_extended_hive_facts_without_losing_queues(
     )
     monkeypatch.setattr(backend, "session_snapshot", lambda: None)
     monkeypatch.setattr(
+        backend,
+        "dolt_comparison",
+        lambda _hive, _entry: {
+            "hive": HIVE,
+            "ahead": 0,
+            "behind": 0,
+            "sourceRevision": "dolt-r1",
+            "coverage": {"state": "complete", "counts": "known"},
+        },
+    )
+    monkeypatch.setattr(
         herdr_views.worktree,
         "inventory_snapshot_payload",
         lambda **_kwargs: {"worktrees": [], "total": 0, "warnings": []},
@@ -724,6 +845,293 @@ def test_presentation_composes_extended_hive_facts_without_losing_queues(
 
     assert payload["view"] == "presentation"
     assert payload["scope"] == {"hive": HIVE}
+
+
+def test_presentation_dolt_comparison_is_one_bounded_read_only_observation(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    class Engine:
+        def federation_status(self, path, *, timeout):
+            calls.append((Path(path), timeout))
+            return FederationStatus(
+                ok=True,
+                peers=(FederationPeer(peer="origin", reachable=True, ahead=2, behind=0),),
+            )
+
+    entry = {
+        "provider": "github",
+        "org": "acme",
+        "repo": "widgets",
+        "prefix": "wdg",
+    }
+    monkeypatch.setattr(herdr_views.engine, "get_engine", lambda _cfg: Engine())
+    monkeypatch.setattr(
+        herdr_views.registry, "hive_dir", lambda _entry: Path("/managed/acme/widgets")
+    )
+    backend = herdr_views.ViewBackend(cfg={}, sources=SimpleNamespace())
+
+    comparison = backend.dolt_comparison("github/acme/widgets", entry)
+
+    assert comparison["ahead"] == 2
+    assert comparison["behind"] == 0
+    assert comparison["coverage"]["state"] == "complete"
+    assert calls == [(Path("/managed/acme/widgets"), herdr_views.engine.FEDERATION_TIMEOUT)]
+
+
+def test_backend_composes_sidebar_metadata_and_exact_crew_topology(monkeypatch) -> None:
+    hive = "github/acme/widgets"
+    agents = list(json.loads(json.dumps(_crew_fixture())))
+    for agent in agents:
+        agent["hive"] = hive
+        for action in agent["advertised_actions"]:
+            action["target"]["hiveId"] = hive
+    roster = _crew_roster(*agents)
+    queues = _queues()
+    snapshot = {"workspaces": [{"workspace_id": "ws-1", "label": f"bh:{hive}"}]}
+    sources = SimpleNamespace(
+        resolve_hive=lambda requested: SimpleNamespace(
+            entry={
+                "provider": "github",
+                "org": "acme",
+                "repo": "widgets",
+                "prefix": "wdg",
+            }
+        )
+    )
+    backend = herdr_views.ViewBackend(cfg={}, sources=sources, _roster=roster)
+    monkeypatch.setattr(
+        herdr_views.hive_identity,
+        "identity_record",
+        lambda _entry: {
+            "canonical_id": hive,
+            "provider": "github",
+            "organization": "acme",
+            "repository": "widgets",
+            "prefix": "wdg",
+            "affiliation": "maintainer",
+        },
+    )
+    monkeypatch.setattr(
+        herdr_views.worktree,
+        "inventory_snapshot_payload",
+        lambda **_kwargs: {
+            "source_revision": "inventory-r1",
+            "coverage": {"state": "complete"},
+            "worktrees": [],
+            "total": 0,
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        backend,
+        "hive_facts",
+        lambda _hive: (queues, roster, {"ready": {"queue": "ready"}}),
+    )
+    monkeypatch.setattr(backend, "session_snapshot", lambda: snapshot)
+    monkeypatch.setattr(
+        backend,
+        "dolt_comparison",
+        lambda _hive, _entry: {
+            "hive": hive,
+            "ahead": 0,
+            "behind": 0,
+            "sourceRevision": "dolt-r1",
+            "coverage": {"state": "complete", "counts": "known"},
+        },
+    )
+
+    presentation = backend.presentation(hive)
+    crew = backend.crew(hive, limit=200, cursor=None)
+
+    assert presentation["coverage"]["state"] == "complete"
+    assert presentation["workspace"]["report"]["tokens"] == {
+        "bh_space_title": "[wdg] acme/widgets",
+        "bh_affiliation": "maintainer",
+        "bh_worktrees": "0",
+        "bh_dolt_ahead": "dolt ↑0",
+        "bh_dolt_behind": "↓0",
+    }
+    dispatcher_report = next(
+        pane["report"]
+        for pane in presentation["panes"]
+        if pane["correlation"]["target"] == "dispatcher-1"
+    )
+    assert dispatcher_report["tokens"]["bh_managed_agents"] == "2"
+    assert dispatcher_report["tokens"]["bh_operation"] == "work.dispatch"
+    assert crew["coverage"]["state"] == "complete"
+    assert [node["target"] for node in crew["roots"]] == [
+        "dispatcher-1",
+        "developer-direct",
+    ]
+    assert crew["roots"][0]["children"][0]["safe_removal"]["source_revision"] == "roster-r1"
+    assert crew["workspace"]["desired_tabs"][-1] == {
+        "role": "direct-agent",
+        "target": "developer-direct",
+        "label": "Direct Agent",
+    }
+
+
+def test_crew_projects_exact_mixed_forest_layout_and_retirement_offer() -> None:
+    payload = herdr_views.crew_payload(
+        HIVE,
+        _crew_roster(*reversed(_crew_fixture())),
+        _crew_snapshot(),
+        limit=200,
+        generated_at=1000,
+    )
+
+    assert payload["source_revision"] == "roster-r1"
+    assert payload["coverage"]["state"] == "complete"
+    assert payload["freshness"] == {"state": "fresh", "as_of": 1000, "expires_at": 16000}
+    assert [node["target"] for node in payload["roots"]] == [
+        "dispatcher-1",
+        "developer-direct",
+    ]
+    parent = payload["roots"][0]
+    assert parent["relation"] == "root-dispatcher"
+    assert [child["target"] for child in parent["children"]] == [
+        "developer-b",
+        "dispatcher-2",
+    ]
+    assert parent["stage"] == {
+        "desired": True,
+        "placement": "right",
+        "role": "child-stage",
+    }
+    assert parent["children"][1]["relation"] == "direct-child-dispatcher"
+    assert parent["children"][1]["children"][0]["target"] == "developer-c"
+    assert parent["children"][0]["safe_removal"] == {
+        "availability": "confirmation-required",
+        "reason_code": "operator-confirmation-required",
+        "source_revision": "roster-r1",
+    }
+    assert payload["roots"][1]["relation"] == "direct-agent"
+    assert [tab["role"] for tab in payload["workspace"]["desired_tabs"]] == [
+        "crew",
+        "dispatcher",
+        "dispatcher",
+        "direct-agent",
+    ]
+    assert payload["returned"] == 5
+    assert payload["truncated"] is False
+    jsonschema.validate(payload, SCHEMA)
+
+
+def test_crew_direct_only_and_reordered_inputs_are_deterministic() -> None:
+    direct = _crew_agent("developer-direct", "task-direct")
+    direct_only = herdr_views.crew_payload(
+        HIVE, _crew_roster(direct), _crew_snapshot(), limit=200, generated_at=1000
+    )
+    first = herdr_views.crew_payload(
+        HIVE, _crew_roster(*_crew_fixture()), _crew_snapshot(), limit=200, generated_at=1000
+    )
+    second = herdr_views.crew_payload(
+        HIVE,
+        _crew_roster(*reversed(_crew_fixture())),
+        _crew_snapshot(),
+        limit=200,
+        generated_at=1000,
+    )
+
+    assert direct_only["roots"][0]["relation"] == "direct-agent"
+    assert direct_only["workspace"]["desired_tabs"] == [
+        {"role": "crew", "label": "Crew"},
+        {"role": "direct-agent", "target": "developer-direct", "label": "Direct Agent"},
+    ]
+    assert first == second
+
+
+@pytest.mark.parametrize("case", ["missing-parent", "cycle", "cross-session", "duplicate"])
+def test_crew_structural_and_locator_failures_are_partial_without_navigation_or_removal(
+    case: str,
+) -> None:
+    agents = list(_crew_fixture())
+    if case == "missing-parent":
+        agents[1]["facts"]["parent"].update({"relation": "direct", "target": "missing-dispatcher"})
+    elif case == "cycle":
+        agents[0]["facts"]["parent"].update({"relation": "direct", "target": "dispatcher-2"})
+    elif case == "cross-session":
+        agents[1]["presentation"]["session"] = "default"
+    else:
+        agents.append(json.loads(json.dumps(agents[1])))
+
+    payload = herdr_views.crew_payload(
+        HIVE, _crew_roster(*agents), _crew_snapshot(), limit=200, generated_at=1000
+    )
+    pending = list(payload["roots"])
+    nodes = []
+    while pending:
+        current = pending.pop()
+        nodes.append(current)
+        pending.extend(current["children"])
+
+    assert payload["coverage"]["state"] == "partial"
+    assert all("safe_removal" not in node for node in nodes)
+    assert all(node["safe_actions"] == [] for node in nodes)
+    assert all("stage" not in node for node in nodes)
+    assert len({node["target"] for node in nodes}) == len(nodes)
+    if case == "cross-session":
+        child = next(node for node in nodes if node["target"] == "developer-b")
+        assert "locator" not in child
+        assert child["safe_actions"] == []
+    assert payload["diagnostics"]
+    jsonschema.validate(payload, SCHEMA)
+
+
+def test_crew_over_limit_is_partial_atomic_and_has_no_continuation_or_removal() -> None:
+    payload = herdr_views.crew_payload(
+        HIVE, _crew_roster(*_crew_fixture()), _crew_snapshot(), limit=2, generated_at=1000
+    )
+
+    assert payload["coverage"]["state"] == "partial"
+    assert payload["returned"] == 2
+    assert payload["truncated"] is True
+    assert payload["next_cursor"] is None
+    assert "safe_removal" not in payload["roots"][0]["children"][0]
+    with pytest.raises(OperatorSourceError) as error:
+        herdr_views.crew_payload(
+            HIVE,
+            _crew_roster(*_crew_fixture()),
+            _crew_snapshot(),
+            limit=200,
+            cursor="page-2",
+        )
+    assert (error.value.code, error.value.status_code) == ("crew_cursor_unsupported", 409)
+
+
+def test_crew_last_child_absence_only_withdraws_stage_intent() -> None:
+    before_agents = [
+        _crew_agent("dispatcher-1", "epic-root", role="dispatcher", direct=1, total=1),
+        _crew_agent(
+            "developer-b",
+            "task-b",
+            parent="dispatcher-1",
+            relation="direct",
+            terminal=True,
+        ),
+    ]
+    before = herdr_views.crew_payload(
+        HIVE, _crew_roster(*before_agents), _crew_snapshot(), limit=200, generated_at=1000
+    )
+    after_parent = _crew_agent("dispatcher-1", "epic-root", role="dispatcher", direct=0, total=0)
+    after_roster = _crew_roster(after_parent)
+    after_roster["revision"] = "roster-r2"
+    for action in after_parent["advertised_actions"]:
+        action["sourceRevision"] = "roster-r2"
+        action["preconditions"]["sourceRevision"] = "roster-r2"
+    after = herdr_views.crew_payload(
+        HIVE, after_roster, _crew_snapshot(), limit=200, generated_at=2000
+    )
+
+    assert before["roots"][0]["stage"]["role"] == "child-stage"
+    assert before["roots"][0]["children"][0]["safe_removal"]["source_revision"] == "roster-r1"
+    assert after["source_revision"] == "roster-r2"
+    assert after["roots"][0]["children"] == []
+    assert "stage" not in after["roots"][0]
+    assert "close" not in json.dumps(after, sort_keys=True)
+    assert after["workspace"]["desired_tabs"][1]["target"] == "dispatcher-1"
 
 
 def test_deck_disables_launch_when_herdr_cli_preflight_is_unavailable(monkeypatch) -> None:
@@ -905,10 +1313,19 @@ def test_degraded_sources_are_explicit_and_do_not_fabricate_agent_counts() -> No
     assert launch["invoke"] is None
 
 
-def test_seven_view_commands_are_registered_and_layout_emits_json() -> None:
+def test_eight_view_commands_are_registered_and_layout_emits_json() -> None:
     help_result = runner.invoke(app, ["plugin", "herdr", "view", "--help"])
     assert help_result.exit_code == 0, help_result.output
-    for command in ("picker", "deck", "bead", "agent", "layout", "presentation", "stream"):
+    for command in (
+        "picker",
+        "deck",
+        "bead",
+        "agent",
+        "crew",
+        "layout",
+        "presentation",
+        "stream",
+    ):
         assert command in help_result.output
 
     layout = runner.invoke(

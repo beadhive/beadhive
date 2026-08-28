@@ -263,8 +263,10 @@ timestamps, managed worktree and branch, and Herdr workspace/tab/pane locator. T
 validates as both a `ps` lifecycle receipt and the roster extension contract. Each agent has a
 deterministic revision over those correlation facts, including both the observed pane cwd and the
 expected managed-worktree path. The roster has a deterministic aggregate revision over its ordered
-agents. Consumers use those revisions to invalidate stale actions, pagination cursors, and view
-streams whenever the underlying lifecycle or ownership proof changes.
+agents. Lifecycle actions use that atomic roster revision as their precondition, while the
+per-agent revision remains the exact row identity. Consumers use those revisions to invalidate
+stale actions, topology projections, pagination cursors, and view streams whenever the underlying
+lifecycle or ownership proof changes.
 
 New launches write `bh.plugin.herdr/v1` ownership metadata to the workspace and pane through
 Herdr's metadata API. Pane tokens carry the exact hive, bead, and opaque target; this is what
@@ -291,7 +293,7 @@ record intentionally contains no Herdr workspace, pane, metadata-token, or layou
 
 ### Herdr view projections
 
-The Deck plugin consumes seven additive version-1 JSON projections. They are deliberately
+The Deck plugin consumes eight additive version-1 JSON projections. They are deliberately
 presentation adapters over the generic hive summaries, work queues, exact bead detail,
 advertised actions, and live roster above; they do not decide readiness, ownership, or mutation
 authority themselves.
@@ -301,13 +303,14 @@ bh plugin herdr view picker --limit 50 --json
 bh plugin herdr view deck --hive github/beadhive/beadhive --width 140 --json
 bh plugin herdr view bead --hive github/beadhive/beadhive --bead bh-123 --json
 bh plugin herdr view agent --target bh-bh-123 --json
+bh plugin herdr view crew --hive github/beadhive/beadhive --json
 bh plugin herdr view layout --hive github/beadhive/beadhive \
   --context-json '{"width":100,"height":40}' --json
 bh plugin herdr view presentation --hive github/beadhive/beadhive --json
 bh plugin herdr view stream --hive github/beadhive/beadhive --limit 50
 ```
 
-`picker`, `deck`, `bead`, `agent`, and `layout` emit one document conforming to
+`picker`, `deck`, `bead`, `agent`, `crew`, and `layout` emit one document conforming to
 [`herdr-view-v1.schema.json`](schemas/herdr-view-v1.schema.json). Rows contain bounded,
 single-line, control-free render tokens and stable entity/action IDs. Advertised invocations are
 argv arrays rooted only in `bh plugin herdr`; they are never shell strings. Prompt-bearing
@@ -324,6 +327,24 @@ The picker and Deck are bounded and use opaque, revision-scoped cursors. A curso
 scope is refused, and a cursor whose source revision changed requires a fresh snapshot. Missing
 factory or Herdr observations are explicit in `coverage`, `freshness`, and `warnings`; the views
 never turn unknown counts into authoritative zeroes.
+
+`crew` is an atomic, bounded forest over the exact authoritative `bh-supervisor` roster. It maps
+generic parent and topology facts once into stable `root-dispatcher`, `direct-agent`,
+`direct-child`, `direct-child-dispatcher`, and `orphan` relations; preserves true direct and total
+counts; and points only at existing exact workspace/tab/pane/target locators. Its desired tabs
+identify real dispatcher and direct-agent terminals without creating, copying, or reparenting
+them. The sole synthetic surfaces are one Crew TUI and a right-side Child Stage selector for a
+dispatcher with direct children. Duplicate targets, cycles, missing parents, foreign sessions,
+locator disagreement, depth overflow, or node overflow make the whole forest partial and remove
+navigation and removal authority. The atomic forest therefore refuses continuation cursors.
+
+A direct child receives `safe_removal` only when the complete fresh forest, exact ownership,
+terminal Beadhive work phase, and the roster-wide revision of one confirmation-required reap
+action all agree. This remains advisory: `reap` re-reads the live roster, closes only the proven
+pane without focus, and returns that pre-close roster revision in its correlated receipt. A
+consumer must then obtain a newer fresh complete Crew forest proving absence. Only the external
+plugin's separately recorded Child Stage ownership may authorize closing an empty Stage; the
+projection never asks to close dispatcher, direct-agent, or user panes.
 
 Layout intent is deterministic by terminal width: wide uses three columns, medium uses tabs, and
 narrow uses one attention-first list with an overlay inspector. The sole owned session is
@@ -342,16 +363,21 @@ by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-sc
 `--since` cursors do not suppress the snapshot: the first frame sets `resync_required` and names
 the reason so a client can discard old state safely.
 
-`presentation` composes the generic hive identity, managed-worktree inventory, work queues, and
-agent-facts contracts with the exact live `bh-supervisor` workspace/tab/pane locators. Its
+`presentation` composes the generic hive identity, managed-worktree inventory, read-only bounded
+Dolt comparison, work queues, and agent-facts contracts with the exact live `bh-supervisor`
+workspace/tab/pane locators. Its
 [`herdr-presentation-v1.schema.json`](schemas/herdr-presentation-v1.schema.json) output contains
 ready-to-submit argument objects for Herdr's `workspace.report-metadata` and
 `pane.report-metadata` APIs: a Herdr-safe stable source ID, unsigned sequence, TTL, and at most
-sixteen bounded, single-line, control-free tokens. Workspace tokens include the precomputed
-`[prefix] org/repo` Space title and summarize Ready, Running, and Needs You. Pane tokens include
+sixteen bounded, single-line, control-free tokens plus an explicit `clearTokens` set. Workspace
+tokens include the precomputed `[prefix] org/repo` Space title, affiliation, exact managed-
+worktree count, and Dolt ahead/behind counts. A measured zero remains `0`; unavailable or stale
+counts remain `-`. Pane tokens include
 the precomputed `[harness] bh-role` Agent title, name the exact bead, Beadhive role and phase,
 parent/child facts, dispatcher-owned direct-agent count, correlation, and worktree coverage.
-State-label values are text only; Herdr retains all color and theme choices.
+Direct developers clear the dispatcher-only managed-agent count. The projection never supplies
+idle/working/attention labels or Git tokens: Herdr's built-in status icon and Git branch/
+ahead-behind rows remain authoritative, including their host-owned color and theme choices.
 
 New reports use the Herdr-valid source ID `bh.plugin.herdr.presentation.v1`. The policy-level
 protocol identifier remains `bh.plugin.herdr.presentation/v1`; the v1 schema continues to accept
@@ -359,7 +385,8 @@ that legacy slash-form report source when reading payloads recorded before this 
 
 Only a uniquely correlated workspace or bh-owned pane receives a non-null report object. Missing,
 ambiguous, and stale correlations remain in the output with exact locators where known and a null
-report, so a consumer never decorates a guessed resource. The projection is read-only: it does not
+report plus a stable `reason_code`, so a consumer never decorates a guessed resource. The
+projection is read-only: it does not
 invoke either metadata API, report a semantic agent identity, change a Herdr lifecycle state, or
 advance Beadhive work. Consumers should submit a report before `expires_at`, keep sequences
 monotonic per source and resource, and let Herdr remove that source's display metadata after the
