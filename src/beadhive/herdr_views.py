@@ -242,7 +242,41 @@ def layout_payload(hive: str | None, context: Mapping[str, object] | None = None
             "inspector": "overlay",
             "section_order": ["needs-you", "running", "ready"],
         }
-    revision = _revision("layout-v1", hive, width, height)
+    rendered_context = {
+        "invoking_session": _token(context.get("invoking_session"), 80) or None,
+        "workspace_id": _token(context.get("workspace_id"), 80) or None,
+        "tab_id": _token(context.get("tab_id"), 80) or None,
+        "pane_id": _token(context.get("pane_id"), 80) or None,
+    }
+    workspace_companion = hive is not None and bool(
+        rendered_context["workspace_id"] or rendered_context["pane_id"]
+    )
+    if workspace_companion:
+        deck_surface = {
+            "placement": "split",
+            "direction": "down" if variant == "narrow" else "right",
+            "target_role": "agents",
+            "lifecycle": "ordinary-pane",
+            "close_behavior": "close",
+            "reopen_behavior": "reopen-split",
+            "focus": False,
+            **deck,
+        }
+    else:
+        # Additive v1 compatibility: callers that only supplied a viewport continue to receive
+        # the original dedicated Deck tab.  A workspace or exact pane identity opts into the
+        # companion-split contract without requiring a schema-version break.
+        deck_surface = {
+            "placement": "tab",
+            "direction": None,
+            "target_role": "board",
+            "lifecycle": "ordinary-tab",
+            "close_behavior": "close",
+            "reopen_behavior": "reopen-tab",
+            "focus": False,
+            **deck,
+        }
+    revision = _revision("layout-v1", hive, width, height, rendered_context, deck_surface)
     payload = _base(
         "layout",
         revision,
@@ -268,7 +302,7 @@ def layout_payload(hive: str | None, context: Mapping[str, object] | None = None
                 "pane_id": None,
                 "close_behavior": "exit-after-handoff-or-cancel",
             },
-            "deck": {"placement": "tab", "focus": False, **deck},
+            "deck": deck_surface,
             "agent_actions": {
                 "placement": "popup",
                 "lifecycle": "session-modal",
@@ -286,12 +320,7 @@ def layout_payload(hive: str | None, context: Mapping[str, object] | None = None
         },
         "viewport": {"width": width, "height": height},
     }
-    payload["context"] = {
-        "invoking_session": _token(context.get("invoking_session"), 80) or None,
-        "workspace_id": _token(context.get("workspace_id"), 80) or None,
-        "tab_id": _token(context.get("tab_id"), 80) or None,
-        "pane_id": _token(context.get("pane_id"), 80) or None,
-    }
+    payload["context"] = rendered_context
     return payload
 
 

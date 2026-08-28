@@ -287,8 +287,14 @@ never turn unknown counts into authoritative zeroes.
 Layout intent is deterministic by terminal width: wide uses three columns, medium uses tabs, and
 narrow uses one attention-first list with an overlay inspector. The sole owned session is
 `bh-supervisor`; Board does not own agent panes, Agents does. The picker and agent actions are
-session-modal popups. The activity tray is an ordinary right split whose hide operation closes it
-and whose show operation recreates it; it is not modeled as a native collapsible.
+session-modal popups. For a resolved hive, supplying `workspace_id` or `pane_id` in the layout
+context requests an ordinary companion Deck split targeting the `agents` role and exact invoking
+pane: down when narrow, right when medium or wide. Closing the companion closes its ordinary pane;
+reopening recreates the split. The version-1 compatibility behavior for callers that supply only
+viewport dimensions is the original dedicated `board` Deck tab, with explicit tab lifecycle and
+close/reopen intent. An unresolved hive always retains the picker popup even if Herdr supplied
+workspace context. The activity tray is an ordinary right split whose hide operation closes it and
+whose show operation recreates it; it is not modeled as a native collapsible.
 
 `stream` emits bounded NDJSON. Every connection starts with a complete Deck snapshot, followed
 by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-scope, or stale

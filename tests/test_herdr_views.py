@@ -410,17 +410,25 @@ def test_bead_and_agent_inspectors_preserve_exact_generic_and_roster_facts() -> 
 
 
 @pytest.mark.parametrize(
-    ("width", "variant", "mode", "inspector"),
+    ("width", "variant", "mode", "inspector", "direction"),
     [
-        (60, "narrow", "single-list", "overlay"),
-        (100, "medium", "tabs", "below"),
-        (140, "wide", "columns", "below"),
+        (60, "narrow", "single-list", "overlay", "down"),
+        (100, "medium", "tabs", "below", "right"),
+        (140, "wide", "columns", "below", "right"),
     ],
 )
-def test_layout_has_deterministic_supervisor_roles_and_popup_split_semantics(
-    width: int, variant: str, mode: str, inspector: str
+def test_workspace_layout_has_deterministic_popup_and_companion_split_semantics(
+    width: int, variant: str, mode: str, inspector: str, direction: str
 ) -> None:
-    payload = herdr_views.layout_payload(HIVE, {"width": width, "height": 40})
+    payload = herdr_views.layout_payload(
+        HIVE,
+        {
+            "width": width,
+            "height": 40,
+            "workspace_id": "workspace-1",
+            "pane_id": "pane-1",
+        },
+    )
     layout = payload["layout"]
     deck = layout["surfaces"]["deck"]
 
@@ -435,6 +443,21 @@ def test_layout_has_deterministic_supervisor_roles_and_popup_split_semantics(
         mode,
         inspector,
     )
+    assert (
+        deck["placement"],
+        deck["direction"],
+        deck["target_role"],
+        deck["lifecycle"],
+        deck["close_behavior"],
+        deck["reopen_behavior"],
+    ) == (
+        "split",
+        direction,
+        "agents",
+        "ordinary-pane",
+        "close",
+        "reopen-split",
+    )
     assert layout["surfaces"]["picker"]["placement"] == "popup"
     assert layout["surfaces"]["agent_actions"]["pane_id"] is None
     tray = layout["surfaces"]["activity_tray"]
@@ -443,6 +466,40 @@ def test_layout_has_deterministic_supervisor_roles_and_popup_split_semantics(
         "close",
         "reopen-split",
     )
+    jsonschema.validate(payload, SCHEMA)
+
+
+def test_layout_without_workspace_context_preserves_explicit_dedicated_tab_contract() -> None:
+    payload = herdr_views.layout_payload(HIVE, {"width": 100, "height": 40})
+    deck = payload["layout"]["surfaces"]["deck"]
+
+    assert (
+        deck["placement"],
+        deck["direction"],
+        deck["target_role"],
+        deck["lifecycle"],
+        deck["close_behavior"],
+        deck["reopen_behavior"],
+    ) == (
+        "tab",
+        None,
+        "board",
+        "ordinary-tab",
+        "close",
+        "reopen-tab",
+    )
+    assert payload["schema_version"] == 1
+    jsonschema.validate(payload, SCHEMA)
+
+
+def test_unresolved_hive_keeps_picker_popup_even_with_workspace_context() -> None:
+    payload = herdr_views.layout_payload(
+        None,
+        {"width": 100, "height": 40, "workspace_id": "workspace-1", "pane_id": "pane-1"},
+    )
+
+    assert payload["layout"]["surfaces"]["picker"]["placement"] == "popup"
+    assert payload["layout"]["surfaces"]["deck"]["placement"] == "tab"
     jsonschema.validate(payload, SCHEMA)
 
 
