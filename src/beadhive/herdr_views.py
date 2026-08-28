@@ -45,7 +45,6 @@ PRESENTATION_TOKEN_LIMIT = 80
 CREW_MAX_DEPTH = 12
 CREW_MAX_DIAGNOSTICS = 256
 CREW_TTL_MS = 15_000
-_SESSION = "bh-supervisor"
 _SAFE_ID = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-")
 _ACTION_LABELS = {
     "hive.inspect": "Open Hive Deck",
@@ -72,6 +71,20 @@ _STYLE = {
     "unknown": ("UNKNOWN", "?"),
     "stale": ("STALE", "?"),
 }
+
+
+def _session_name() -> str:
+    """Use the lifecycle plugin's one command-scoped session authority."""
+    from . import herdr_plugin
+
+    return herdr_plugin._active_session().name
+
+
+def _session_scoped(fn):
+    """Share lifecycle flag/environment/default selection without a second resolver."""
+    from . import herdr_plugin
+
+    return herdr_plugin._session_scoped(fn)
 
 
 def _now_ms() -> int:
@@ -308,7 +321,7 @@ def layout_payload(hive: str | None, context: Mapping[str, object] | None = None
         coverage={"state": "complete", "sources": {"layout": {"state": "complete"}}},
     )
     payload["layout"] = {
-        "session": _SESSION,
+        "session": _session_name(),
         "cross_session_focus": False,
         "workspace_label": f"bh:{hive}" if hive else None,
         "workspace_tokens": {"bh.hive_id": hive} if hive else {},
@@ -704,7 +717,7 @@ def deck_payload(
             _disable_mutations(
                 *rendered,
                 "herdr_session_unavailable",
-                "the authoritative bh-supervisor session is unavailable",
+                f"the authoritative {_session_name()} session is unavailable",
             )
         sections["ready"].append(rendered)
     correlated_beads = {
@@ -830,7 +843,7 @@ def bead_payload(detail: Mapping[str, object], roster: Mapping[str, object]) -> 
             row,
             generic_actions,
             "herdr_session_unavailable",
-            "the authoritative bh-supervisor session is unavailable",
+            f"the authoritative {_session_name()} session is unavailable",
         )
     agents = [
         agent
@@ -915,9 +928,9 @@ def _workspace_correlation(
             {
                 "state": "unavailable",
                 "reason_code": "supervisor_unavailable",
-                "reason": "the authoritative bh-supervisor snapshot is unavailable",
+                "reason": f"the authoritative {_session_name()} snapshot is unavailable",
             },
-            {"session": _SESSION, "workspace_id": None},
+            {"session": _session_name(), "workspace_id": None},
         )
     matches = []
     workspaces = snapshot.get("workspaces")
@@ -935,7 +948,7 @@ def _workspace_correlation(
                 "reason_code": "exact_workspace",
                 "reason": "one exact canonical hive workspace is live",
             },
-            {"session": _SESSION, "workspace_id": matches[0]},
+            {"session": _session_name(), "workspace_id": matches[0]},
         )
     if not matches:
         return (
@@ -944,7 +957,7 @@ def _workspace_correlation(
                 "reason_code": "workspace_missing",
                 "reason": "no exact canonical hive workspace is live",
             },
-            {"session": _SESSION, "workspace_id": None},
+            {"session": _session_name(), "workspace_id": None},
         )
     return (
         {
@@ -952,7 +965,7 @@ def _workspace_correlation(
             "reason_code": "workspace_ambiguous",
             "reason": "multiple canonical hive workspaces are live",
         },
-        {"session": _SESSION, "workspace_id": None},
+        {"session": _session_name(), "workspace_id": None},
     )
 
 
@@ -1059,7 +1072,7 @@ def _crew_locator(
     workspace = _locator(presentation.get("workspace"))
     tab = _locator(presentation.get("tab"))
     pane = _locator(presentation.get("pane"))
-    if session != _SESSION:
+    if session != _session_name():
         return None, "locator-session-mismatch"
     if ownership.get("state") != "owned":
         return None, "ownership-not-exact"
@@ -1069,7 +1082,7 @@ def _crew_locator(
         return None, "locator-incomplete"
     return (
         {
-            "session": _SESSION,
+            "session": _session_name(),
             "workspace_id": workspace,
             "tab_id": tab,
             "pane_id": pane,
@@ -1147,10 +1160,10 @@ def crew_payload(
 
     if roster_revision is None or roster_revision == "unavailable":
         diagnose("agents-unavailable", detail="The authoritative Herdr roster is unavailable.")
-    if roster_session != _SESSION or not authoritative:
+    if roster_session != _session_name() or not authoritative:
         diagnose(
             "roster-session-mismatch",
-            detail="The roster is not authoritative for the bh-supervisor session.",
+            detail=f"The roster is not authoritative for the {_session_name()} session.",
         )
     if workspace_correlation["state"] != "exact" or workspace_id is None:
         diagnose(
@@ -1405,7 +1418,7 @@ def crew_payload(
         "source_revision": source_revision,
         "generated_at": now,
         "hive_id": hive,
-        "scope": {"hive": hive, "session": _SESSION},
+        "scope": {"hive": hive, "session": _session_name()},
         "freshness": {
             "state": freshness_state,
             "as_of": now if freshness_state == "fresh" else None,
@@ -1421,7 +1434,7 @@ def crew_payload(
             },
         },
         "workspace": {
-            "locator": {"session": _SESSION, "workspace_id": workspace_id},
+            "locator": {"session": _session_name(), "workspace_id": workspace_id},
             "role": "hive",
             "desired_tabs": desired_tabs,
         },
@@ -1600,7 +1613,7 @@ def presentation_payload(
         elif workspace_correlation["state"] == "unavailable":
             correlation_state = "stale"
             reason_code = "supervisor_unavailable"
-            reason = "the authoritative bh-supervisor snapshot is unavailable"
+            reason = f"the authoritative {_session_name()} snapshot is unavailable"
         elif locator_complete and workspace_id != workspace_locator.get("workspace_id"):
             correlation_state = "stale"
             reason_code = "locator_mismatch"
@@ -1653,7 +1666,7 @@ def presentation_payload(
         panes.append(
             {
                 "locator": {
-                    "session": _SESSION,
+                    "session": _session_name(),
                     "workspace_id": workspace_id,
                     "tab_id": tab_id,
                     "pane_id": pane_id,
@@ -1684,7 +1697,7 @@ def presentation_payload(
         panes.append(
             {
                 "locator": {
-                    "session": _SESSION,
+                    "session": _session_name(),
                     "workspace_id": workspace_locator.get("workspace_id"),
                     "tab_id": None,
                     "pane_id": None,
@@ -1874,7 +1887,7 @@ class ViewBackend:
                 "revision": "unavailable",
                 "observed_at": None,
                 "agents": [],
-                "warnings": ["Herdr bh-supervisor session is unavailable."],
+                "warnings": [f"Herdr {_session_name()} session is unavailable."],
             }
         else:
             self._roster = herdr_plugin._roster_payload(snapshot, self.cfg)
@@ -1920,7 +1933,7 @@ class ViewBackend:
             return {
                 "availability": "unavailable",
                 "reasonCode": "herdr_session_unavailable",
-                "reason": "The authoritative bh-supervisor session is unavailable.",
+                "reason": f"The authoritative {_session_name()} session is unavailable.",
             }
         from . import guard
 
@@ -2141,7 +2154,11 @@ cli = typer.Typer(no_args_is_help=True, help="Herdr-specific, nearly-rendered vi
 
 
 @cli.command("picker")
+@_session_scoped
 def picker_cmd(
+    session: str | None = typer.Option(
+        None, "--session", help="exact Herdr session; flag > BH_HERDR_SESSION > default"
+    ),
     limit: int = typer.Option(DEFAULT_LIMIT, "--limit"),
     cursor: str | None = typer.Option(None, "--cursor"),
     as_json: bool = typer.Option(False, "--json", help="accepted for the machine JSON contract"),
@@ -2158,8 +2175,12 @@ def picker_cmd(
 
 
 @cli.command("deck")
+@_session_scoped
 def deck_cmd(
     hive: str = typer.Option(..., "--hive"),
+    session: str | None = typer.Option(
+        None, "--session", help="exact Herdr session; flag > BH_HERDR_SESSION > default"
+    ),
     limit: int = typer.Option(DEFAULT_LIMIT, "--limit"),
     cursor: str | None = typer.Option(None, "--cursor"),
     width: int = typer.Option(120, "--width", min=40, max=1000),
@@ -2177,9 +2198,13 @@ def deck_cmd(
 
 
 @cli.command("bead")
+@_session_scoped
 def bead_cmd(
     hive: str = typer.Option(..., "--hive"),
     bead: str = typer.Option(..., "--bead"),
+    session: str | None = typer.Option(
+        None, "--session", help="exact Herdr session; flag > BH_HERDR_SESSION > default"
+    ),
     as_json: bool = typer.Option(False, "--json", help="accepted for the machine JSON contract"),
 ) -> None:
     """Render the exact generic bead detail as a Herdr inspector."""
@@ -2194,8 +2219,12 @@ def bead_cmd(
 
 
 @cli.command("agent")
+@_session_scoped
 def agent_cmd(
     target: str = typer.Option(..., "--target"),
+    session: str | None = typer.Option(
+        None, "--session", help="exact Herdr session; flag > BH_HERDR_SESSION > default"
+    ),
     as_json: bool = typer.Option(False, "--json", help="accepted for the machine JSON contract"),
 ) -> None:
     """Render one exact correlated Herdr agent inspector."""
@@ -2210,8 +2239,12 @@ def agent_cmd(
 
 
 @cli.command("presentation")
+@_session_scoped
 def presentation_cmd(
     hive: str = typer.Option(..., "--hive"),
+    session: str | None = typer.Option(
+        None, "--session", help="exact Herdr session; flag > BH_HERDR_SESSION > default"
+    ),
     ttl_ms: int = typer.Option(PRESENTATION_TTL_MS, "--ttl-ms", min=1, max=86_400_000),
     as_json: bool = typer.Option(False, "--json", help="accepted for the machine JSON contract"),
 ) -> None:
@@ -2227,8 +2260,12 @@ def presentation_cmd(
 
 
 @cli.command("crew")
+@_session_scoped
 def crew_cmd(
     hive: str = typer.Option(..., "--hive"),
+    session: str | None = typer.Option(
+        None, "--session", help="exact Herdr session; flag > BH_HERDR_SESSION > default"
+    ),
     limit: int = typer.Option(MAX_LIMIT, "--limit"),
     cursor: str | None = typer.Option(None, "--cursor"),
     as_json: bool = typer.Option(False, "--json", help="accepted for the machine JSON contract"),
@@ -2245,8 +2282,12 @@ def crew_cmd(
 
 
 @cli.command("layout")
+@_session_scoped
 def layout_cmd(
     hive: str | None = typer.Option(None, "--hive"),
+    session: str | None = typer.Option(
+        None, "--session", help="exact Herdr session; flag > BH_HERDR_SESSION > default"
+    ),
     context_json: str = typer.Option("", "--context-json"),
     as_json: bool = typer.Option(False, "--json", help="accepted for the machine JSON contract"),
 ) -> None:
@@ -2275,8 +2316,12 @@ def layout_cmd(
 
 
 @cli.command("stream")
+@_session_scoped
 def stream_cmd(
     hive: str = typer.Option(..., "--hive"),
+    session: str | None = typer.Option(
+        None, "--session", help="exact Herdr session; flag > BH_HERDR_SESSION > default"
+    ),
     since: str | None = typer.Option(None, "--since"),
     limit: int = typer.Option(STREAM_DEFAULT_LIMIT, "--limit"),
     width: int = typer.Option(120, "--width", min=40, max=1000),
