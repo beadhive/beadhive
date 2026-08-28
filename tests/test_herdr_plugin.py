@@ -691,8 +691,15 @@ def _assert_lifecycle_receipt(payload, operation, disposition):
         assert key in payload
 
 
-def test_lifecycle_status_ps_and_attach_emit_shared_json_receipts(monkeypatch):
+def test_lifecycle_status_ps_and_attach_emit_shared_json_receipts(tmp_path, monkeypatch):
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    cwd = tmp_path / "bh-7"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    snapshot = _roster_snapshot("bh-bh-7", cwd, bead="bh-7")
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "bh-7")
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
 
     def fake_run(argv, **kwargs):
         if argv == ["herdr", "status"]:
@@ -726,14 +733,10 @@ def test_lifecycle_status_ps_and_attach_emit_shared_json_receipts(monkeypatch):
     ]
     ps_payload = json.loads(ps.stdout)
     _assert_lifecycle_receipt(ps_payload, "ps", "listed")
-    assert ps_payload["agents"] == [
-        {
-            "target": "bh-bh-7",
-            "hive": "github/acme/widgets",
-            "bead": "bh-7",
-            "state": "working",
-        }
-    ]
+    assert ps_payload["agents"][0]["target"] == "bh-bh-7"
+    assert ps_payload["agents"][0]["hive"] == "github/acme/widgets"
+    assert ps_payload["agents"][0]["bead"] == "bh-7"
+    assert ps_payload["agents"][0]["ownership"]["state"] == "owned"
     attach_payload = json.loads(attach.stdout)
     _assert_lifecycle_receipt(attach_payload, "attach", "instructions")
     assert attach_payload["attach_argv"] == [
@@ -1321,6 +1324,11 @@ def test_launch_fresh_bead_emits_exact_json_and_forwards_layout(tmp_path, monkey
     split = next(call for call in calls if call[:2] == ("pane", "split"))
     assert split[-2:] == (str(claim.worktree), "--focus")
     assert "down" in split
+    pane_metadata = next(call for call in calls if call[:2] == ("pane", "report-metadata"))
+    assert "bh_owner=bh.plugin.herdr/v1" in pane_metadata
+    assert "bh_hive_id=github/acme/widgets" in pane_metadata
+    assert "bh_bead_id=widget-1" in pane_metadata
+    assert "bh_target=bh-widget-1" in pane_metadata
     assert not any("worktree" in call for call in calls)
 
 
@@ -1489,6 +1497,173 @@ def test_launch_target_is_legacy_when_valid_and_hashed_when_encoding_is_needed()
     assert len(long) == 32
     assert herdr_plugin._HERDR_NAME_RE.fullmatch(dotted)
     assert herdr_plugin._HERDR_NAME_RE.fullmatch(long)
+
+
+def _roster_snapshot(target, cwd, *, hive="github/acme/widgets", bead="widget-1", tokens=True):
+    pane = {
+        "pane_id": "w1:p2",
+        "workspace_id": "w1",
+        "tab_id": "w1:t1",
+        "label": target,
+        "cwd": str(cwd),
+    }
+    if tokens:
+        pane["tokens"] = {
+            "bh_owner": "bh.plugin.herdr/v1",
+            "bh_hive_id": hive,
+            "bh_bead_id": bead,
+            "bh_target": target,
+            "bh_schema": "1",
+        }
+    return {
+        "agents": [
+            {
+                "name": target,
+                "state": "idle",
+                "pane_id": "w1:p2",
+                "created_at": "2026-08-27T12:00:00Z",
+                "last_activity_at": "2026-08-27T12:01:00Z",
+            }
+        ],
+        "panes": [pane],
+        "workspaces": [{"workspace_id": "w1", "label": f"bh:{hive}"}],
+    }
+
+
+def _mock_roster_worktree(monkeypatch, root, cwd, bead):
+    branch = f"wt/bead/issue/{bead}"
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "locate",
+        lambda *_args: ({}, root, cwd, branch),
+    )
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "managed",
+        lambda _cfg: [("widget", str(cwd), branch)] if cwd.is_dir() else [],
+    )
+
+
+def test_roster_correlates_encoded_target_from_explicit_metadata(tmp_path, monkeypatch):
+    cwd = tmp_path / "widget-1.2"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    bead = "widget-1.2"
+    target = herdr_plugin._launch_target(bead)
+    assert target != f"bh-{bead}"
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, bead)
+
+    payload = herdr_plugin._roster_payload(
+        _roster_snapshot(target, cwd, bead=bead), {"managed_repos": []}
+    )
+    agent = payload["agents"][0]
+
+    assert payload["schema_version"] == 1
+    assert payload["session"] == "bh-supervisor"
+    assert payload["authoritative_session"] is True
+    assert agent["target"] == target
+    assert agent["bead"] == bead
+    assert agent["ownership"]["state"] == "owned"
+    assert agent["ownership"]["association"] == "metadata"
+    assert agent["presentation"] == {
+        "session": "bh-supervisor",
+        "workspace": "w1",
+        "workspace_label": "bh:github/acme/widgets",
+        "tab": "w1:t1",
+        "pane": "w1:p2",
+    }
+    assert {item["availability"] for item in agent["capabilities"].values()} == {"allowed"}
+
+
+def test_roster_accepts_fully_proven_legacy_target_without_guessing_foreign_panes(
+    tmp_path, monkeypatch
+):
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
+    legacy = herdr_plugin._roster_payload(
+        _roster_snapshot("bh-widget-1", cwd, tokens=False), {"managed_repos": []}
+    )["agents"][0]
+    foreign_snapshot = _roster_snapshot("manual", cwd, tokens=False)
+    foreign_snapshot["panes"][0]["label"] = "manual"
+    foreign = herdr_plugin._roster_payload(foreign_snapshot, {"managed_repos": []})["agents"][0]
+
+    assert legacy["bead"] == "widget-1"
+    assert legacy["ownership"] == {
+        "marker": "legacy-target-v0",
+        "association": "legacy",
+        "state": "owned",
+        "reason": "explicit bh correlation and live resource identities agree",
+    }
+    assert foreign["hive"] is None
+    assert foreign["bead"] is None
+    assert foreign["ownership"]["state"] == "foreign"
+    assert {item["availability"] for item in foreign["capabilities"].values()} == {"unavailable"}
+
+
+def test_roster_retains_metadata_identity_but_disables_stale_missing_worktree(
+    tmp_path, monkeypatch
+):
+    missing = tmp_path / "missing-widget"
+    target = herdr_plugin._launch_target("widget-1.2")
+    _mock_roster_worktree(monkeypatch, tmp_path, missing, "widget-1.2")
+    agent = herdr_plugin._roster_payload(
+        _roster_snapshot(target, missing, bead="widget-1.2"), {"managed_repos": []}
+    )["agents"][0]
+
+    assert agent["hive"] == "github/acme/widgets"
+    assert agent["bead"] == "widget-1.2"
+    assert agent["worktree"]["state"] == "missing"
+    assert agent["ownership"]["state"] == "stale"
+    assert "managed worktree is missing" in agent["ownership"]["reason"]
+    assert {item["availability"] for item in agent["capabilities"].values()} == {"unavailable"}
+
+
+def test_ps_json_emits_atomic_versioned_roster(tmp_path, monkeypatch):
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    snapshot = _roster_snapshot("bh-widget-1", cwd)
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
+
+    result = runner.invoke(app, ["plugin", "herdr", "ps", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "plugin herdr ps"
+    assert payload["agents"][0]["ownership"]["state"] == "owned"
+
+
+def test_roster_schema_is_valid_and_accepts_the_projection(tmp_path, monkeypatch):
+    jsonschema = pytest.importorskip("jsonschema")
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
+    schema_path = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "schemas"
+        / "herdr-agent-roster-v1.schema.json"
+    )
+    schema = json.loads(schema_path.read_text())
+    payload = herdr_plugin._roster_payload(
+        _roster_snapshot("bh-widget-1", cwd), {"managed_repos": []}
+    )
+
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(
+        payload
+    )
+    jsonschema.Draft202012Validator(
+        json.loads(_LIFECYCLE_SCHEMA_PATH.read_text()),
+        format_checker=jsonschema.FormatChecker(),
+    ).validate(payload)
 
 
 def test_launch_lease_adopts_only_expired_state_when_explicit(monkeypatch):
