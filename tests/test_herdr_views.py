@@ -1,0 +1,355 @@
+"""Contract tests for the Herdr-specific, nearly-rendered projections."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import jsonschema
+import pytest
+from typer.testing import CliRunner
+
+from beadhive import herdr_views, operator_actions
+from beadhive.cli import app
+from beadhive.operator_sources import OperatorSourceError
+
+runner = CliRunner()
+SCHEMA = json.loads(
+    (Path(__file__).parents[1] / "docs" / "schemas" / "herdr-view-v1.schema.json").read_text()
+)
+HIVE = "acme/widgets"
+
+
+def _summary(hive: str = HIVE, *, label: str = "Widgets", ready: int = 1) -> dict:
+    return {
+        "id": hive,
+        "displayLabel": label,
+        "prefix": "wdg",
+        "provider": "github",
+        "org": hive.split("/")[0],
+        "repo": hive.split("/")[-1],
+        "availability": {"state": "available", "reason": None},
+        "counts": {"open": ready, "ready": ready, "active": 0, "blocked": 0},
+        "revision": "factory-r1",
+        "asOf": 1000,
+        "coverage": {"state": "complete"},
+        "advertisedActions": operator_actions.hive_actions(
+            hive_id=hive, revision="factory-r1", advertised_at=1000
+        ),
+    }
+
+
+def _work(bead: str, readiness: str, *, title: str = "Ship widget") -> dict:
+    target = {"hiveId": HIVE, "kind": "work-item", "id": bead}
+    reason = {
+        "ready": "all prerequisites satisfied",
+        "blocked": "waiting on dependency",
+        "active": "claimed by an agent",
+    }[readiness]
+    return {
+        "ref": target,
+        "revision": "work-r1",
+        "hiveId": HIVE,
+        "id": bead,
+        "title": title,
+        "description": "Description\nwith an ESC \x1b[31m token",
+        "design": "design",
+        "acceptanceCriteria": "acceptance",
+        "notes": "notes",
+        "labels": ["ui"],
+        "issueType": "task",
+        "priority": 1,
+        "status": "open",
+        "readiness": {"state": readiness, "reason": reason},
+        "blockerCount": 1 if readiness == "blocked" else 0,
+        "dependencies": [],
+        "dependents": [],
+        "gates": [],
+        "claim": None,
+        "advertisedActions": operator_actions.work_item_actions(
+            target=target,
+            readiness=readiness,
+            readiness_reason=reason,
+            partial=False,
+            revision="work-r1",
+            advertised_at=1000,
+        ),
+    }
+
+
+def _queue(name: str, items: list[dict]) -> dict:
+    return {
+        "schemaVersion": 1,
+        "hiveId": HIVE,
+        "queue": name,
+        "revision": f"{name}-r1",
+        "generatedAt": 1000,
+        "freshness": {"state": "fresh", "asOf": 1000},
+        "coverage": {"state": "complete"},
+        "limit": 200,
+        "returned": len(items),
+        "truncated": False,
+        "nextCursor": None,
+        "items": items,
+        "warnings": [],
+    }
+
+
+def _agent(
+    *, target: str = "bh-widget-1", state: str = "working", ownership: str = "owned"
+) -> dict:
+    reason = "current bh-owned live pane is proven"
+    action_target = {"hiveId": HIVE, "kind": "agent", "id": target}
+    return {
+        "target": target,
+        "hive": HIVE,
+        "bead": "widget-1",
+        "lifecycle": {"state": state},
+        "worktree": {"path": "/tmp/widgets", "state": "present"},
+        "presentation": {"tab": "Agents", "pane": "pane-1"},
+        "ownership": {"state": ownership, "reason": reason},
+        "capabilities": ["attach", "dispatch", "watch", "reap"],
+        "revision": "agent-r1",
+        "advertised_actions": operator_actions.agent_actions(
+            target=action_target,
+            ownership_state=ownership,
+            lifecycle_state=state,
+            reason=reason,
+            revision="agent-r1",
+            advertised_at=1000,
+            max_prompt_bytes=8192,
+        ),
+    }
+
+
+def _roster(*agents: dict) -> dict:
+    return {"revision": "roster-r1", "observed_at": 1000, "agents": list(agents), "warnings": []}
+
+
+def _queues() -> dict[str, dict]:
+    return {
+        "ready": _queue("ready", [_work("widget-2", "ready", title="Line 1\n\x1b[31mLine 2")]),
+        "active": _queue("active", []),
+        "blocked": _queue("blocked", [_work("widget-3", "blocked")]),
+    }
+
+
+def test_picker_is_attention_ordered_bounded_and_cursor_scoped() -> None:
+    roster = _roster(_agent(state="blocked"))
+    summaries = [_summary("acme/quiet", label="Quiet"), _summary()]
+
+    first = herdr_views.picker_payload(summaries, roster, limit=1, cursor=None)
+
+    assert first["rows"][0]["entity"]["id"] == HIVE
+    assert first["returned"] == 1
+    assert first["truncated"] is True
+    assert first["next_cursor"] and "/" not in first["next_cursor"]
+    assert first["rows"][0]["key"] == f"hive:{HIVE}"
+    assert first["rows"][0]["tokens"]["provider"] == "github"
+    assert first["actions"][0]["invoke"]["argv"] == [
+        "bh",
+        "plugin",
+        "herdr",
+        "view",
+        "deck",
+        "--hive",
+        HIVE,
+        "--json",
+    ]
+    jsonschema.validate(first, SCHEMA)
+
+    second = herdr_views.picker_payload(summaries, roster, limit=1, cursor=first["next_cursor"])
+    assert second["rows"][0]["entity"]["id"] == "acme/quiet"
+
+    with pytest.raises(OperatorSourceError, match="projection changed") as exc:
+        herdr_views.picker_payload(
+            [*summaries, _summary("acme/new")],
+            roster,
+            limit=1,
+            cursor=first["next_cursor"],
+        )
+    assert exc.value.code == "view_cursor_revision_mismatch"
+
+
+def test_deck_sections_layout_tokens_and_action_invocations_are_safe() -> None:
+    roster = _roster(_agent(state="working"), _agent(target="bh-widget-2", state="blocked"))
+
+    wide = herdr_views.deck_payload(HIVE, _queues(), roster, limit=20, cursor=None, width=140)
+    narrow = herdr_views.deck_payload(HIVE, _queues(), roster, limit=20, cursor=None, width=60)
+
+    assert [section["id"] for section in wide["sections"]] == ["ready", "running", "needs-you"]
+    assert [section["id"] for section in narrow["sections"]] == ["needs-you", "running", "ready"]
+    assert wide["layout"]["surfaces"]["deck"]["section_mode"] == "columns"
+    assert narrow["layout"]["surfaces"]["deck"]["section_mode"] == "single-list"
+
+    rendered = json.dumps(wide)
+    assert "\x1b" not in rendered
+    for section in wide["sections"]:
+        for row in section["rows"]:
+            assert "\n" not in row["primary"]
+            assert len(row["primary"]) <= 160
+            assert row["key"].startswith(("work-item:", "agent:"))
+
+    launch = next(
+        action
+        for action in wide["actions"]
+        if action["source_action"] == "work-item.launch" and action["availability"] == "allowed"
+    )
+    actions = {action["source_action"]: action for action in wide["actions"] if action["invoke"]}
+    assert launch["invoke"]["argv"][:3] == ["bh", "plugin", "herdr"]
+    assert launch["invoke"]["shell"] is False
+    dispatch = actions["agent.dispatch"]
+    assert dispatch["invoke"]["input"] == "stdin"
+    assert "--stdin" in dispatch["invoke"]["argv"]
+    assert dispatch["input"]["schema"]["sensitive"] is True
+    assert "prompt" not in rendered.casefold()
+    assert actions["agent.reap"]["availability"] == "confirmation-required"
+    jsonschema.validate(wide, SCHEMA)
+    jsonschema.validate(narrow, SCHEMA)
+
+
+def test_unavailable_and_unsafe_actions_never_publish_an_invocation() -> None:
+    foreign = _agent(target="bh-foreign", ownership="foreign")
+    actions = {
+        item["source_action"]: item
+        for item in herdr_views.agent_payload(foreign, _roster(foreign))["actions"]
+    }
+    assert actions["agent.dispatch"]["availability"] == "forbidden"
+    assert actions["agent.dispatch"]["invoke"] is None
+
+    unsafe = operator_actions.hive_actions(
+        hive_id="acme/widgets;touch-pwned", revision="r1", advertised_at=1000
+    )[0]
+    rendered = herdr_views.render_action(unsafe)
+    assert rendered["availability"] == "unavailable"
+    assert rendered["reason_code"] == "unsafe_entity_identity"
+    assert rendered["invoke"] is None
+
+
+def test_bead_and_agent_inspectors_preserve_exact_generic_and_roster_facts() -> None:
+    item = _work("widget-2", "ready")
+    detail = {
+        "hiveId": HIVE,
+        "revision": "detail-r1",
+        "freshness": {"state": "fresh", "asOf": 1000},
+        "coverage": {"state": "complete"},
+        "warnings": [],
+        "item": item,
+    }
+    agent = {**_agent(), "bead": "widget-2"}
+
+    bead = herdr_views.bead_payload(detail, _roster(agent))
+    inspector = herdr_views.agent_payload(agent, _roster(agent))
+
+    assert bead["scope"] == {"hive": HIVE, "bead": "widget-2"}
+    assert bead["freshness"]["as_of"] == 1000
+    assert "asOf" not in bead["freshness"]
+    assert bead["detail"]["agents"][0]["entity"]["id"] == "bh-widget-1"
+    assert inspector["scope"]["target"] == "bh-widget-1"
+    assert inspector["detail"]["ownership"] == agent["ownership"]
+    jsonschema.validate(bead, SCHEMA)
+    jsonschema.validate(inspector, SCHEMA)
+
+
+@pytest.mark.parametrize(
+    ("width", "variant", "mode", "inspector"),
+    [
+        (60, "narrow", "single-list", "overlay"),
+        (100, "medium", "tabs", "below"),
+        (140, "wide", "columns", "below"),
+    ],
+)
+def test_layout_has_deterministic_supervisor_roles_and_popup_split_semantics(
+    width: int, variant: str, mode: str, inspector: str
+) -> None:
+    payload = herdr_views.layout_payload(HIVE, {"width": width, "height": 40})
+    layout = payload["layout"]
+    deck = layout["surfaces"]["deck"]
+
+    assert layout["session"] == "bh-supervisor"
+    assert layout["cross_session_focus"] is False
+    assert [(tab["role"], tab["owns_agents"]) for tab in layout["tabs"]] == [
+        ("board", False),
+        ("agents", True),
+    ]
+    assert (deck["variant"], deck["section_mode"], deck["inspector"]) == (
+        variant,
+        mode,
+        inspector,
+    )
+    assert layout["surfaces"]["picker"]["placement"] == "popup"
+    assert layout["surfaces"]["agent_actions"]["pane_id"] is None
+    tray = layout["surfaces"]["activity_tray"]
+    assert (tray["placement"], tray["hide_behavior"], tray["show_behavior"]) == (
+        "split",
+        "close",
+        "reopen-split",
+    )
+    jsonschema.validate(payload, SCHEMA)
+
+
+def test_stream_is_snapshot_first_bounded_and_resyncs_an_opaque_stale_cursor() -> None:
+    deck = herdr_views.deck_payload(HIVE, _queues(), _roster(_agent()), limit=20, cursor=None)
+
+    frames = herdr_views.stream_frames(deck, hive=HIVE, since=None, limit=2)
+    assert [frame["type"] for frame in frames] == ["snapshot", "agent-observed"]
+    assert len(frames) == 2
+    assert frames[0]["snapshot"] == deck
+    assert frames[0]["cursor"] and HIVE not in frames[0]["cursor"]
+    for frame in frames:
+        jsonschema.validate(frame, SCHEMA)
+
+    changed = {**deck, "revision": "new-revision"}
+    stale = herdr_views.stream_frames(changed, hive=HIVE, since=frames[0]["cursor"], limit=1)
+    assert stale[0]["type"] == "snapshot"
+    assert stale[0]["resync_required"] is True
+    assert stale[0]["resync_reason"] == "view_cursor_revision_mismatch"
+
+
+def test_degraded_sources_are_explicit_and_do_not_fabricate_agent_counts() -> None:
+    unavailable = {
+        "revision": "unavailable",
+        "observed_at": None,
+        "agents": [],
+        "warnings": ["Herdr unavailable\ntry later"],
+    }
+    picker = herdr_views.picker_payload([_summary()], unavailable, limit=10, cursor=None)
+    deck = herdr_views.deck_payload(HIVE, _queues(), unavailable, limit=10, cursor=None)
+
+    assert picker["coverage"]["state"] == "partial"
+    assert picker["coverage"]["sources"]["agents"]["state"] == "unavailable"
+    assert picker["rows"][0]["counts"]["running"] is None
+    assert "running ?" in picker["rows"][0]["secondary"]
+    assert deck["coverage"]["state"] == "partial"
+    assert deck["coverage"]["sources"]["agents"]["state"] == "unavailable"
+    assert picker["warnings"] == ["Herdr unavailable try later"]
+    launch = next(
+        action for action in deck["actions"] if action["source_action"] == "work-item.launch"
+    )
+    assert launch["availability"] == "unavailable"
+    assert launch["reason_code"] == "herdr_session_unavailable"
+    assert launch["invoke"] is None
+
+
+def test_six_view_commands_are_registered_and_layout_emits_json() -> None:
+    help_result = runner.invoke(app, ["plugin", "herdr", "view", "--help"])
+    assert help_result.exit_code == 0, help_result.output
+    for command in ("picker", "deck", "bead", "agent", "layout", "stream"):
+        assert command in help_result.output
+
+    layout = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "view",
+            "layout",
+            "--hive",
+            HIVE,
+            "--context-json",
+            '{"width":60,"height":24}',
+            "--json",
+        ],
+    )
+    assert layout.exit_code == 0, layout.output
+    assert json.loads(layout.output)["layout"]["surfaces"]["deck"]["variant"] == "narrow"
