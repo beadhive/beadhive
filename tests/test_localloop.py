@@ -1840,6 +1840,85 @@ time.sleep(60)
             pass
 
 
+def test_bd_init_is_non_interactive_even_when_it_inherits_a_pty(tmp_path):
+    """The merge-time root cause: inherited TTY stdin must never activate bd's prompt path."""
+    if os.name != "posix":
+        pytest.skip("PTY inheritance and process-group behavior are POSIX-only")
+    import pty
+
+    demo_script = Path(__file__).resolve().parents[1] / "scripts" / "demo_local_loop.py"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    argv_record = tmp_path / "bd-argv.json"
+    fake_bd = bindir / "bd"
+    fake_bd.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+record = {"argv": sys.argv[1:], "stdin_isatty": sys.stdin.isatty()}
+with open(os.environ["BD_ARGV_RECORD"], "w") as stream:
+    json.dump(record, stream)
+if not sys.stdin.isatty():
+    raise SystemExit("regression fixture did not inherit a PTY")
+if "--non-interactive" not in sys.argv:
+    print("Contributing to someone else's repo? [y/N]:", flush=True)
+    sys.stdin.readline()  # the exact merge-time hang: the PTY remains open and sends no input
+    raise SystemExit(92)
+"""
+    )
+    fake_bd.chmod(0o755)
+    helper = tmp_path / "invoke_bounded_init.py"
+    helper.write_text(
+        """import runpy
+import sys
+from pathlib import Path
+
+namespace = runpy.run_path(sys.argv[1])
+namespace["BD_INIT_TIMEOUT_SECONDS"] = 0.4
+namespace["BD_INIT_DIAGNOSTIC_GRACE_SECONDS"] = 0.1
+namespace["BD_INIT_KILL_DRAIN_SECONDS"] = 0.1
+namespace["BD_INIT_REAP_SECONDS"] = 0.2
+namespace["_bounded_bd_init"](Path(sys.argv[2]))
+"""
+    )
+    main = tmp_path / "main"
+    main.mkdir()
+    env = os.environ.copy()
+    env["PATH"] = f"{bindir}{os.pathsep}{env['PATH']}"
+    env["BD_ARGV_RECORD"] = str(argv_record)
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [sys.executable, str(helper), str(demo_script), str(main)],
+        stdin=slave,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        stdout, stderr = process.communicate(timeout=3)
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=2)
+
+    assert process.returncode == 0, stdout + stderr
+    record = json.loads(argv_record.read_text())
+    assert record["stdin_isatty"] is True
+    assert record["argv"] == [
+        "init",
+        "--prefix",
+        "dm",
+        "--quiet",
+        "--non-interactive",
+    ]
+
+
 def test_the_tripwire_still_catches_a_real_escape(tmp_path, monkeypatch):
     """A deliberate write to a path OUTSIDE the demo's scratch root must still fail the run.
 
