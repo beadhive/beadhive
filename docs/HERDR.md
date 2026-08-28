@@ -237,6 +237,47 @@ agent operation. Unrelated Herdr panes remain visible as foreign with no inferre
 Consumers should use the capability records rather than interpreting lifecycle strings or
 reconstructing identity from a target.
 
+### Herdr view projections
+
+The Deck plugin consumes six additive version-1 JSON projections. They are deliberately
+presentation adapters over the generic hive summaries, work queues, exact bead detail,
+advertised actions, and live roster above; they do not decide readiness, ownership, or mutation
+authority themselves.
+
+```bash
+bh plugin herdr view picker --limit 50 --json
+bh plugin herdr view deck --hive github/beadhive/beadhive --width 140 --json
+bh plugin herdr view bead --hive github/beadhive/beadhive --bead bh-123 --json
+bh plugin herdr view agent --target bh-bh-123 --json
+bh plugin herdr view layout --hive github/beadhive/beadhive \
+  --context-json '{"width":100,"height":40}' --json
+bh plugin herdr view stream --hive github/beadhive/beadhive --limit 50
+```
+
+`picker`, `deck`, `bead`, `agent`, and `layout` emit one document conforming to
+[`herdr-view-v1.schema.json`](schemas/herdr-view-v1.schema.json). Rows contain bounded,
+single-line, control-free render tokens and stable entity/action IDs. Advertised invocations are
+argv arrays rooted only in `bh plugin herdr`; they are never shell strings. Prompt-bearing
+`agent.dispatch` actions declare stdin transport and use lifecycle `dispatch --stdin`, so no
+prompt value belongs in the projection or process arguments. Forbidden, unavailable, or unsafe
+actions have a null invocation. Lifecycle commands recheck every precondition at invocation.
+
+The picker and Deck are bounded and use opaque, revision-scoped cursors. A cursor from another
+scope is refused, and a cursor whose source revision changed requires a fresh snapshot. Missing
+factory or Herdr observations are explicit in `coverage`, `freshness`, and `warnings`; the views
+never turn unknown counts into authoritative zeroes.
+
+Layout intent is deterministic by terminal width: wide uses three columns, medium uses tabs, and
+narrow uses one attention-first list with an overlay inspector. The sole owned session is
+`bh-supervisor`; Board does not own agent panes, Agents does. The picker and agent actions are
+session-modal popups. The activity tray is an ordinary right split whose hide operation closes it
+and whose show operation recreates it; it is not modeled as a native collapsible.
+
+`stream` emits bounded NDJSON. Every connection starts with a complete Deck snapshot, followed
+by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-scope, or stale
+`--since` cursors do not suppress the snapshot: the first frame sets `resync_required` and names
+the reason so a client can discard old state safely.
+
 ### Choosing Task/Agent or herdr
 
 Use the in-process **Task/Agent** route for ordinary fire-and-forget subagent work that the

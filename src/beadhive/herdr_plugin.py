@@ -2293,3 +2293,9 @@ PLUGIN = plugins.Plugin(
     cli=cli,
     enabled=lambda cfg, entry: server_up(),
 )
+
+# Keep the presentation adapter in its own module: this lifecycle wrapper remains the authority
+# for launch/dispatch/watch/attach/reap, while ``view`` only binds those commands declaratively.
+from . import herdr_views as _herdr_views  # noqa: E402
+
+cli.add_typer(_herdr_views.cli, name="view")
