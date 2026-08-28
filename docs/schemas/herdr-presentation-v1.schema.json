@@ -9,6 +9,7 @@
     "command",
     "view",
     "revision",
+    "source_revision",
     "generated_at",
     "scope",
     "freshness",
@@ -26,6 +27,7 @@
     "command": {"const": "plugin herdr view presentation"},
     "view": {"const": "presentation"},
     "revision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "source_revision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "generated_at": {"type": "integer", "minimum": 0},
     "scope": {
       "type": "object",
@@ -38,7 +40,7 @@
       "additionalProperties": false,
       "required": ["state", "as_of", "expires_at", "ttl_ms"],
       "properties": {
-        "state": {"enum": ["fresh", "partial"]},
+        "state": {"enum": ["fresh", "partial", "stale"]},
         "as_of": {"type": "integer", "minimum": 0},
         "expires_at": {"type": "integer", "minimum": 1},
         "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000}
@@ -76,7 +78,8 @@
         "values_only",
         "theme_owner",
         "lifecycle_authority",
-        "report_agent_authority"
+        "report_agent_authority",
+        "preserves_host_rows"
       ],
       "properties": {
         "source": {"const": "bh.plugin.herdr.presentation/v1"},
@@ -88,7 +91,10 @@
         "values_only": {"const": true},
         "theme_owner": {"const": "herdr-host"},
         "lifecycle_authority": {"const": false},
-        "report_agent_authority": {"const": false}
+        "report_agent_authority": {"const": false},
+        "preserves_host_rows": {
+          "const": ["status_icon", "git_branch", "git_ahead_behind"]
+        }
       }
     },
     "summary": {
@@ -126,35 +132,44 @@
       "propertyNames": {"pattern": "^[A-Za-z0-9_-]{1,32}$"},
       "additionalProperties": {"type": "string", "maxLength": 80}
     },
+    "clearTokens": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,32}$"}
+    },
     "baseReport": {
       "type": "object",
-      "required": ["source", "seq", "ttl_ms", "tokens"],
+      "required": ["source", "seq", "ttl_ms", "clearTokens", "tokens"],
       "properties": {
         "source": {"$ref": "#/$defs/reportSource"},
         "seq": {"type": "integer", "minimum": 0},
         "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "clearTokens": {"$ref": "#/$defs/clearTokens"},
         "tokens": {"$ref": "#/$defs/tokens"}
       }
     },
     "workspaceReport": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source", "seq", "ttl_ms", "tokens"],
+      "required": ["source", "seq", "ttl_ms", "clearTokens", "tokens"],
       "properties": {
         "source": {"$ref": "#/$defs/reportSource"},
         "seq": {"type": "integer", "minimum": 0},
         "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "clearTokens": {"$ref": "#/$defs/clearTokens"},
         "tokens": {"$ref": "#/$defs/tokens"}
       }
     },
     "paneReport": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["source", "seq", "ttl_ms", "tokens", "display_agent", "state_labels"],
+      "required": ["source", "seq", "ttl_ms", "clearTokens", "tokens"],
       "properties": {
         "source": {"$ref": "#/$defs/reportSource"},
         "seq": {"type": "integer", "minimum": 0},
         "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
+        "clearTokens": {"$ref": "#/$defs/clearTokens"},
         "tokens": {"$ref": "#/$defs/tokens"},
         "display_agent": {"type": "string", "maxLength": 80},
         "state_labels": {
@@ -181,9 +196,10 @@
         "correlation": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "reason", "hive_id"],
+          "required": ["state", "reason_code", "reason", "hive_id"],
           "properties": {
             "state": {"enum": ["exact", "missing", "ambiguous", "unavailable"]},
+            "reason_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
             "reason": {"type": "string", "maxLength": 240},
             "hive_id": {"type": "string", "minLength": 1}
           }
@@ -210,9 +226,10 @@
         "correlation": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["state", "reason", "hive_id", "bead_id", "target", "worktree_id"],
+          "required": ["state", "reason_code", "reason", "hive_id", "bead_id", "target", "worktree_id"],
           "properties": {
             "state": {"enum": ["exact", "missing", "stale"]},
+            "reason_code": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
             "reason": {"type": "string", "maxLength": 240},
             "hive_id": {"type": "string", "minLength": 1},
             "bead_id": {"$ref": "#/$defs/nullableLocator"},

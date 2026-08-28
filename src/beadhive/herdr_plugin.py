@@ -1468,11 +1468,6 @@ def _roster_payload(snapshot: dict, cfg: dict | None = None, *, operation_id: st
             ensure_ascii=True,
         ).encode()
         agent["revision"] = f"sha256:{hashlib.sha256(revision_input).hexdigest()}"
-        for action in agent.get("advertised_actions") or []:
-            action["sourceRevision"] = agent["revision"]
-            preconditions = action.get("preconditions")
-            if isinstance(preconditions, dict):
-                preconditions["sourceRevision"] = agent["revision"]
     agents.sort(
         key=lambda agent: (
             str(agent.get("target") or ""),
@@ -1485,6 +1480,15 @@ def _roster_payload(snapshot: dict, cfg: dict | None = None, *, operation_id: st
         ensure_ascii=True,
     ).encode()
     roster_revision = f"sha256:{hashlib.sha256(revision_input).hexdigest()}"
+    # Agent actions are revalidated against this atomic roster revision.  A Crew topology and an
+    # exact agent inspector therefore name the same source fact, allowing a reap receipt to prove
+    # precisely which pre-removal forest the operator confirmed.
+    for agent in agents:
+        for action in agent.get("advertised_actions") or []:
+            action["sourceRevision"] = roster_revision
+            preconditions = action.get("preconditions")
+            if isinstance(preconditions, dict):
+                preconditions["sourceRevision"] = roster_revision
     payload = _lifecycle_payload(
         "ps",
         "listed" if agents else "empty",
@@ -2223,6 +2227,37 @@ def _owned_live_pane(target: str) -> str | None:
     return str(pane_id) if pane_id else None
 
 
+def _owned_live_pane_proof(target: str) -> tuple[str, str] | None:
+    """Return one exact pane and the atomic pre-close roster revision."""
+    snapshot = _session_snapshot()
+    if snapshot is None:
+        return None
+    roster = _roster_payload(snapshot, config.load())
+    matches = [agent for agent in roster["agents"] if agent.get("target") == target]
+    if len(matches) != 1:
+        return None
+    agent = matches[0]
+    ownership = agent.get("ownership") or {}
+    lifecycle = agent.get("lifecycle") or {}
+    lifecycle_state = str(lifecycle.get("state") or "unknown").lower()
+    availability, _reason_code, _reason = operator_actions.agent_action_availability(
+        str(ownership.get("state")), lifecycle_state, str(ownership.get("reason") or "")
+    )
+    presentation = agent.get("presentation") or {}
+    pane = presentation.get("pane")
+    revision = roster.get("revision")
+    if (
+        ownership.get("state") != "owned"
+        or availability != "allowed"
+        or not isinstance(pane, str)
+        or not pane
+        or not isinstance(revision, str)
+        or not revision
+    ):
+        return None
+    return pane, revision
+
+
 @cli.command(
     "add",
     help="explicitly link or install the external Beadhive package in Herdr's user registry.",
@@ -2608,8 +2643,8 @@ def _reap_cmd(
             )
         typer.echo("✗ herdr: server=down (start herdr before reaping an agent)", err=True)
         raise typer.Exit(1)
-    pane = _owned_live_pane(target)
-    if pane is None:
+    proof = _owned_live_pane_proof(target)
+    if proof is None:
         if as_json:
             _lifecycle_failure(
                 "reap",
@@ -2622,6 +2657,7 @@ def _reap_cmd(
             )
         typer.echo(f"✗ herdr: refusing unmanaged or ambiguous target {target!r}", err=True)
         raise typer.Exit(1)
+    pane, source_revision = proof
     closed = _command("pane", "close", pane, "--no-focus")
     if closed is None or closed.returncode != 0:
         if as_json:
@@ -2646,6 +2682,7 @@ def _reap_cmd(
             operation_id=op_id,
             target=target,
             pane=pane,
+            source_revision=source_revision,
             capabilities=["status", "ps"],
         )
         return

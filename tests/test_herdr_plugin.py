@@ -1545,7 +1545,11 @@ def test_spawn_watch_and_reap_success_emit_json_dispositions(tmp_path, monkeypat
     monkeypatch.setattr(herdr_plugin, "_resolve_kind", lambda kind, *_args: kind)
     monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
     monkeypatch.setattr(herdr_plugin, "_workspace", lambda *_args: ("w1", "w1:p1"))
-    monkeypatch.setattr(herdr_plugin, "_owned_live_pane", lambda _target: "w1:p2")
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_owned_live_pane_proof",
+        lambda _target: ("w1:p2", "sha256:" + "1" * 64),
+    )
     monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: {})
 
     def command(*args, **kwargs):
@@ -1588,6 +1592,7 @@ def test_spawn_watch_and_reap_success_emit_json_dispositions(tmp_path, monkeypat
     reap_payload = json.loads(reaped.stdout)
     _assert_lifecycle_receipt(reap_payload, "reap", "reaped")
     assert reap_payload["pane"] == "w1:p2"
+    assert reap_payload["source_revision"] == "sha256:" + "1" * 64
 
 
 def test_safe_prompt_socket_request_keeps_body_out_of_process_metadata(monkeypatch):
@@ -2446,7 +2451,8 @@ def test_roster_correlates_encoded_target_from_explicit_metadata(tmp_path, monke
     assert actions["agent.dispatch"]["input"]["schema"]["sensitive"] is True
     assert actions["agent.reap"]["availability"] == "confirmation-required"
     assert actions["agent.reap"]["preconditions"]["mustMatch"] is True
-    assert actions["agent.reap"]["sourceRevision"] == agent["revision"]
+    assert actions["agent.reap"]["sourceRevision"] == payload["revision"]
+    assert actions["agent.reap"]["preconditions"]["sourceRevision"] == payload["revision"]
 
 
 def test_reap_accepts_encoded_target_when_current_roster_proves_ownership(tmp_path, monkeypatch):
@@ -2471,7 +2477,9 @@ def test_reap_accepts_encoded_target_when_current_roster_proves_ownership(tmp_pa
     result = runner.invoke(app, ["plugin", "herdr", "reap", target, "--json"])
 
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout)["disposition"] == "reaped"
+    receipt = json.loads(result.stdout)
+    assert receipt["disposition"] == "reaped"
+    assert receipt["source_revision"].startswith("sha256:")
     assert ("pane", "close", "w1:p2", "--no-focus") in calls
 
 
