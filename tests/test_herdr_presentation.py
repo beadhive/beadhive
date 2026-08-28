@@ -7,6 +7,7 @@ import unicodedata
 from pathlib import Path
 
 import jsonschema
+import pytest
 from typer.testing import CliRunner
 
 from beadhive import herdr_views
@@ -93,6 +94,10 @@ def _agent(
     state: str,
     ownership: str = "owned",
     target: str | None = None,
+    harness: str = "codex",
+    role: str = "developer",
+    direct_children: int | None = 0,
+    topology_coverage: str = "complete",
 ) -> dict:
     target = target or f"bh-{bead}"
     return {
@@ -106,8 +111,8 @@ def _agent(
             "target": target,
             "hive": HIVE,
             "bead": bead,
-            "harness": "codex",
-            "role": "developer",
+            "harness": harness,
+            "role": role,
             "work": {
                 "operation": "work.implement",
                 "phase": "implement",
@@ -115,8 +120,8 @@ def _agent(
             },
             "parent": {"relation": "direct", "target": "dispatcher", "bead": "epic-1"},
             "topology": {
-                "coverage": "complete",
-                "direct_active_children": 0,
+                "coverage": topology_coverage,
+                "direct_active_children": direct_children,
                 "total_active_descendants": 0,
             },
             "retirement": {
@@ -182,7 +187,13 @@ def _payload(*agents: dict, queues: dict[str, dict] | None = None) -> dict:
 def test_exact_workspace_and_panes_are_direct_bounded_metadata_reports() -> None:
     payload = _payload(
         _agent("task-working", "w17:p2", state="working"),
-        _agent("task-blocked", "w17:p3", state="blocked"),
+        _agent(
+            "task-blocked",
+            "w17:p3",
+            state="blocked",
+            harness="claude",
+            role="dispatcher",
+        ),
     )
 
     assert payload["summary"] == {"ready": 1, "running": 2, "needs_you": 2}
@@ -199,10 +210,11 @@ def test_exact_workspace_and_panes_are_direct_bounded_metadata_reports() -> None
     }
     workspace_report = payload["workspace"]["report"]
     assert workspace_report == {
-        "source": "bh.plugin.herdr.presentation/v1",
+        "source": "bh.plugin.herdr.presentation.v1",
         "seq": 99,
         "ttl_ms": 15_000,
         "tokens": {
+            "bh_space_title": "[wdg] acme/widgets",
             "bh_hive": "acme/widgets",
             "bh_hive_id": HIVE,
             "bh_affiliation": "maintainer",
@@ -224,16 +236,74 @@ def test_exact_workspace_and_panes_are_direct_bounded_metadata_reports() -> None
         "pane_id": "w17:p2",
     }
     assert working["correlation"]["state"] == "exact"
+    assert working["report"]["source"] == "bh.plugin.herdr.presentation.v1"
+    assert working["report"]["tokens"]["bh_agent_title"] == "[codex] bh-developer"
     assert working["report"]["tokens"]["bh_phase"] == "implement"
     assert working["report"]["tokens"]["bh_children"] == "0"
+    assert "bh_managed_agents" not in working["report"]["tokens"]
     assert working["report"]["state_labels"]["blocked"] == "NEEDS YOU"
     assert "agent" not in working["report"]
     assert "applies_to_source" not in working["report"]
-    assert by_bead["task-blocked"]["report"]["tokens"]["bh_attention"] == "needs_you"
+    blocked_tokens = by_bead["task-blocked"]["report"]["tokens"]
+    assert blocked_tokens["bh_agent_title"] == "[claude] bh-dispatcher"
+    assert blocked_tokens["bh_managed_agents"] == "0"
+    assert blocked_tokens["bh_attention"] == "needs_you"
     assert by_bead["task-missing"]["correlation"]["state"] == "missing"
     assert by_bead["task-missing"]["report"] is None
 
     jsonschema.Draft202012Validator.check_schema(SCHEMA)
+    jsonschema.Draft202012Validator(SCHEMA).validate(payload)
+
+
+def test_incomplete_dispatcher_topology_preserves_unknown_managed_count() -> None:
+    payload = _payload(
+        _agent(
+            "task-working",
+            "w17:p2",
+            state="working",
+            role="dispatcher",
+            direct_children=None,
+            topology_coverage="partial",
+        )
+    )
+
+    pane = next(
+        item for item in payload["panes"] if item["correlation"]["bead_id"] == "task-working"
+    )
+    assert pane["report"]["tokens"]["bh_managed_agents"] == "?"
+    jsonschema.Draft202012Validator(SCHEMA).validate(payload)
+
+
+@pytest.mark.parametrize("relation", ["root", "direct"])
+def test_root_and_nested_dispatchers_publish_direct_managed_count(relation: str) -> None:
+    agent = _agent(
+        "task-working",
+        "w17:p2",
+        state="working",
+        role="dispatcher",
+        direct_children=3,
+    )
+    agent["facts"]["parent"] = {
+        "relation": relation,
+        "target": None if relation == "root" else "dispatcher",
+        "bead": None if relation == "root" else "epic-1",
+    }
+    payload = _payload(agent)
+
+    pane = next(
+        item for item in payload["panes"] if item["correlation"]["bead_id"] == "task-working"
+    )
+    assert pane["report"]["tokens"]["bh_managed_agents"] == "3"
+
+
+def test_v1_schema_keeps_legacy_report_source_documents_readable() -> None:
+    payload = _payload(_agent("task-working", "w17:p2", state="working"))
+    payload["workspace"]["report"]["source"] = "bh.plugin.herdr.presentation/v1"
+    pane = next(
+        item for item in payload["panes"] if item["correlation"]["bead_id"] == "task-working"
+    )
+    pane["report"]["source"] = "bh.plugin.herdr.presentation/v1"
+
     jsonschema.Draft202012Validator(SCHEMA).validate(payload)
 
 

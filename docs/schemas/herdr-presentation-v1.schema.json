@@ -114,6 +114,12 @@
   },
   "$defs": {
     "nullableLocator": {"type": ["string", "null"], "maxLength": 256},
+    "reportSource": {
+      "enum": [
+        "bh.plugin.herdr.presentation.v1",
+        "bh.plugin.herdr.presentation/v1"
+      ]
+    },
     "tokens": {
       "type": "object",
       "maxProperties": 16,
@@ -124,7 +130,7 @@
       "type": "object",
       "required": ["source", "seq", "ttl_ms", "tokens"],
       "properties": {
-        "source": {"const": "bh.plugin.herdr.presentation/v1"},
+        "source": {"$ref": "#/$defs/reportSource"},
         "seq": {"type": "integer", "minimum": 0},
         "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
         "tokens": {"$ref": "#/$defs/tokens"}
@@ -135,7 +141,7 @@
       "additionalProperties": false,
       "required": ["source", "seq", "ttl_ms", "tokens"],
       "properties": {
-        "source": {"const": "bh.plugin.herdr.presentation/v1"},
+        "source": {"$ref": "#/$defs/reportSource"},
         "seq": {"type": "integer", "minimum": 0},
         "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
         "tokens": {"$ref": "#/$defs/tokens"}
@@ -146,7 +152,7 @@
       "additionalProperties": false,
       "required": ["source", "seq", "ttl_ms", "tokens", "display_agent", "state_labels"],
       "properties": {
-        "source": {"const": "bh.plugin.herdr.presentation/v1"},
+        "source": {"$ref": "#/$defs/reportSource"},
         "seq": {"type": "integer", "minimum": 0},
         "ttl_ms": {"type": "integer", "minimum": 1, "maximum": 86400000},
         "tokens": {"$ref": "#/$defs/tokens"},

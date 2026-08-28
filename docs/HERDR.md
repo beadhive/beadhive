@@ -311,10 +311,16 @@ the reason so a client can discard old state safely.
 agent-facts contracts with the exact live `bh-supervisor` workspace/tab/pane locators. Its
 [`herdr-presentation-v1.schema.json`](schemas/herdr-presentation-v1.schema.json) output contains
 ready-to-submit argument objects for Herdr's `workspace.report-metadata` and
-`pane.report-metadata` APIs: stable source, unsigned sequence, TTL, and at most sixteen bounded,
-single-line, control-free tokens. Workspace tokens summarize Ready, Running, and Needs You.
-Pane tokens name the exact bead, Beadhive role and phase, parent/child facts, correlation, and
-worktree coverage. State-label values are text only; Herdr retains all color and theme choices.
+`pane.report-metadata` APIs: a Herdr-safe stable source ID, unsigned sequence, TTL, and at most
+sixteen bounded, single-line, control-free tokens. Workspace tokens include the precomputed
+`[prefix] org/repo` Space title and summarize Ready, Running, and Needs You. Pane tokens include
+the precomputed `[harness] bh-role` Agent title, name the exact bead, Beadhive role and phase,
+parent/child facts, dispatcher-owned direct-agent count, correlation, and worktree coverage.
+State-label values are text only; Herdr retains all color and theme choices.
+
+New reports use the Herdr-valid source ID `bh.plugin.herdr.presentation.v1`. The policy-level
+protocol identifier remains `bh.plugin.herdr.presentation/v1`; the v1 schema continues to accept
+that legacy slash-form report source when reading payloads recorded before this correction.
 
 Only a uniquely correlated workspace or bh-owned pane receives a non-null report object. Missing,
 ambiguous, and stale correlations remain in the output with exact locators where known and a null
