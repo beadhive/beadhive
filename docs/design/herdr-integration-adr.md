@@ -97,7 +97,9 @@ server a dependency of routine dispatch.
 - `herdr_plugin.py` is optional and import-safe: missing binary, unavailable server, or a failed
   subprocess degrades to a clear warning/falsy result where the command contract permits it.
 - The plugin is mounted through the existing static plugin registry. It is config-gated and does
-  no onboarding-time pane creation or integration installation.
+  no onboarding-time pane creation or per-agent integration installation. External package
+  registration is a separate consent-only action enabled by explicit `--plugin herdr`; a running
+  server alone never enables it.
 - All plugin actions target `bh-supervisor`; no command may fall back to `default` when session
   selection fails.
 - The initial worktree hooks remain `None`. This is an intentional boundary, not deferred

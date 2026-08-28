@@ -29,6 +29,9 @@ class Plugin:
     aborts onboarding / retire / hive-ready / worktree create-remove:
 
     - ``on_onboard(ctx)``               — wire the hive into the tool during onboarding.
+      ``onboard_requires_opt_in`` keeps installation/registration hooks consent-only: the
+      hook runs for an explicit ``--plugin NAME``, never merely because ``enabled`` reports a
+      live runtime.
     - ``on_retire(clone_path, cfg, entry)`` — notify on retire (WARN-only; no de-registration).
     - ``readiness(cfg, entry)``         — a ``(state, detail)`` pair for ``bh hive ready`` (or
       ``None`` when the entry lacks what the probe needs).
@@ -52,6 +55,7 @@ class Plugin:
     cli: typer.Typer
     enabled: Callable[[Any, Any], bool]
     on_onboard: Callable[[Any], None] | None = None
+    onboard_requires_opt_in: bool = False
     on_retire: Callable[[Path | str, Any, Any], None] | None = None
     readiness: Callable[[Any, Any], tuple[str, str] | None] | None = None
     wt_create: Callable[..., Path | None] | None = None

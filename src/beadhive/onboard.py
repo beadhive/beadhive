@@ -1235,7 +1235,8 @@ def _plugin_step(p) -> Step:
     recording ``plan.installers_run`` on success (mirrors ``_do_observaloop``'s fence).
 
     Enabled when the plugin was forced on via ``--plugin <name>`` (``ctx.plugins``) OR the
-    plugin's own ``enabled(cfg, entry)`` predicate is true."""
+    plugin's own ``enabled(cfg, entry)`` predicate is true.  A consent-only installer sets
+    ``onboard_requires_opt_in`` so runtime availability can never trigger code installation."""
 
     def action(ctx: Ctx) -> None:
         try:
@@ -1252,7 +1253,10 @@ def _plugin_step(p) -> Step:
         action,
         requires=["register"],
         mutates=True,
-        enabled=lambda c, _p=p: _p.name in c.plugins or _p.enabled(c.cfg, c.existing),
+        enabled=lambda c, _p=p: (
+            _p.name in c.plugins
+            or (not _p.onboard_requires_opt_in and _p.enabled(c.cfg, c.existing))
+        ),
     )
 
 
