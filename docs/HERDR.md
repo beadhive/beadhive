@@ -115,6 +115,7 @@ sets the ownership line so this remains an optional interactive surface, not a p
 | Command | Wraps | Notes |
 |---|---|---|
 | `bh plugin herdr status` | `herdr status`, `integration status` | One-shot health: server running? which agent kinds have hooks installed? |
+| `bh plugin herdr add --local PATH` | `herdr plugin link PATH --enabled` | Explicitly link the validated `beadhive.herdr` package during private development; `--managed-ref REF --yes` installs the known GitHub source after release |
 | `bh plugin herdr integrate <kind>` | `herdr integration install <kind>` | Explicit opt-in per agent kind — do not auto-install every kind on onboard |
 | `bh plugin herdr launch <bead-id>` | exact hive lookup → native `bh work claim` → live reuse or warm agent creation | High-level get-or-create path: the bead ID is the only required input; returns the session, target, and retained native worktree |
 | `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | existing worktree → `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | Low-level escape hatch when the caller intentionally prepared the claim and worktree itself; accepts the same explicit session selection as `launch` |
@@ -128,9 +129,9 @@ sets the ownership line so this remains an optional interactive surface, not a p
 
 - `enabled(cfg, entry)` — gate on `shutil.which("herdr")` and the server actually being up
   (`herdr status`), same idiom as `orca.is_available`.
-- `on_onboard(ctx)` — **do nothing by default.** Unlike orca (a passive registry), starting a
-  herdr pane is an active, visible action; onboarding a hive should not spawn terminal panes.
-  Leave this hook a no-op (or config-gated) rather than auto-wiring every hive into herdr.
+- `on_onboard(ctx)` — only an explicit `--plugin herdr` links the validated local
+  `beadhive/herdr-plugin` checkout. Merely detecting a running server never installs code, and
+  onboarding never spawns terminal panes or installs per-agent lifecycle hooks.
 - `readiness(cfg, entry)` — report whether this hive's agent kind has its herdr integration
   installed, for `bh hive ready`.
 - `wt_create` / `wt_remove` — **leave unclaimed.** herdr's `worktree create/open` and `bh`'s own
@@ -214,8 +215,8 @@ operation against a same-named target in another session.
 
 ### Lifecycle receipts and prompt input
 
-`status`, `ps`, `spawn`, `dispatch`, `watch`, `attach`, and `reap` accept `--json` and return the
-shared [lifecycle receipt v1 schema](schemas/herdr-lifecycle-receipt-v1.schema.json). Successful
+`add`, `status`, `ps`, `spawn`, `dispatch`, `watch`, `attach`, and `reap` accept `--json` and
+return the shared [lifecycle receipt v1 schema](schemas/herdr-lifecycle-receipt-v1.schema.json). Successful
 and refused operations use the same additive envelope: `operation_id`, operation, outcome,
 disposition, observation time, exact hive/bead identity where known, Herdr session and locator,
 capabilities, warnings, retained resources, and a structured error on failure. Callers may pass a
@@ -278,9 +279,19 @@ agent operation. Unrelated Herdr panes remain visible as foreign with no inferre
 Consumers should use the capability records rather than interpreting lifecycle strings or
 reconstructing identity from a target.
 
+Each roster agent also embeds a presentation-neutral `facts` record conforming to
+[`beadhive-agent-facts-v1.schema.json`](schemas/beadhive-agent-facts-v1.schema.json). It carries
+the exact harness, Beadhive role, work operation/phase, explicit terminal-phase flag, exact
+parent relation, and direct/total active-descendant counts. Missing parents, ambiguous joins,
+cycles, and unavailable supervisor data degrade coverage instead of becoming invented roots or
+zeroes. Its retirement receipt is advisory and revision-scoped, with stable refusal reasons for
+live or retained work, pending review/operations, and retained children. `reap` remains the
+mutation authority and re-reads live ownership immediately before closing a pane. The generic
+record intentionally contains no Herdr workspace, pane, metadata-token, or layout vocabulary.
+
 ### Herdr view projections
 
-The Deck plugin consumes six additive version-1 JSON projections. They are deliberately
+The Deck plugin consumes seven additive version-1 JSON projections. They are deliberately
 presentation adapters over the generic hive summaries, work queues, exact bead detail,
 advertised actions, and live roster above; they do not decide readiness, ownership, or mutation
 authority themselves.
@@ -292,6 +303,7 @@ bh plugin herdr view bead --hive github/beadhive/beadhive --bead bh-123 --json
 bh plugin herdr view agent --target bh-bh-123 --json
 bh plugin herdr view layout --hive github/beadhive/beadhive \
   --context-json '{"width":100,"height":40}' --json
+bh plugin herdr view presentation --hive github/beadhive/beadhive --json
 bh plugin herdr view stream --hive github/beadhive/beadhive --limit 50
 ```
 
@@ -329,6 +341,29 @@ whose show operation recreates it; it is not modeled as a native collapsible.
 by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-scope, or stale
 `--since` cursors do not suppress the snapshot: the first frame sets `resync_required` and names
 the reason so a client can discard old state safely.
+
+`presentation` composes the generic hive identity, managed-worktree inventory, work queues, and
+agent-facts contracts with the exact live `bh-supervisor` workspace/tab/pane locators. Its
+[`herdr-presentation-v1.schema.json`](schemas/herdr-presentation-v1.schema.json) output contains
+ready-to-submit argument objects for Herdr's `workspace.report-metadata` and
+`pane.report-metadata` APIs: a Herdr-safe stable source ID, unsigned sequence, TTL, and at most
+sixteen bounded, single-line, control-free tokens. Workspace tokens include the precomputed
+`[prefix] org/repo` Space title and summarize Ready, Running, and Needs You. Pane tokens include
+the precomputed `[harness] bh-role` Agent title, name the exact bead, Beadhive role and phase,
+parent/child facts, dispatcher-owned direct-agent count, correlation, and worktree coverage.
+State-label values are text only; Herdr retains all color and theme choices.
+
+New reports use the Herdr-valid source ID `bh.plugin.herdr.presentation.v1`. The policy-level
+protocol identifier remains `bh.plugin.herdr.presentation/v1`; the v1 schema continues to accept
+that legacy slash-form report source when reading payloads recorded before this correction.
+
+Only a uniquely correlated workspace or bh-owned pane receives a non-null report object. Missing,
+ambiguous, and stale correlations remain in the output with exact locators where known and a null
+report, so a consumer never decorates a guessed resource. The projection is read-only: it does not
+invoke either metadata API, report a semantic agent identity, change a Herdr lifecycle state, or
+advance Beadhive work. Consumers should submit a report before `expires_at`, keep sequences
+monotonic per source and resource, and let Herdr remove that source's display metadata after the
+TTL when refresh stops.
 
 ### Choosing Task/Agent or herdr
 

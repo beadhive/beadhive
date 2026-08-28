@@ -40,6 +40,7 @@ class FederationPeer:
     ahead: int = 0  # Status.LocalAhead
     behind: int = 0  # Status.LocalBehind
     has_conflicts: bool = False
+    remote_observed_at: str = ""  # Status.LastSync; empty/zero means no dated knowledge
 
 
 @dataclass(frozen=True)
@@ -402,6 +403,7 @@ class BdEngine:
                     ahead=_int(status.get("LocalAhead")),
                     behind=_int(status.get("LocalBehind")),
                     has_conflicts=bool(status.get("HasConflicts")),
+                    remote_observed_at=str(status.get("LastSync") or ""),
                 )
             )
         return FederationStatus(

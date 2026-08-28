@@ -13,9 +13,11 @@ NEVER touches the operator's real ``~/.beadhive/hq``: the `world` fixture isolat
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
+import jsonschema
 import pytest
 import typer
 
@@ -98,6 +100,11 @@ def _fed(ahead: int = 0, behind: int = 0) -> FederationStatus:
 # ---- status() -------------------------------------------------------------------
 
 
+def _hq_status_schema() -> dict:
+    path = Path(__file__).resolve().parents[1] / "docs/schemas/hq-status-v1.schema.json"
+    return json.loads(path.read_text())
+
+
 def test_status_reports_clean_both_halves(world, monkeypatch, capsys):
     _init_repo_with_remote(world)
     _stub_engine(monkeypatch, _StubEngine(fed_status=_fed()))
@@ -145,6 +152,145 @@ def test_status_not_initialized_exits(world, capsys):
 
     assert exc.value.exit_code == 1
     assert "not initialized" in capsys.readouterr().err
+
+
+def test_status_json_present_is_versioned_stable_and_schema_valid(world, monkeypatch, capsys):
+    hq_dir, _remote = _init_repo_with_remote(world)
+    _stub_engine(monkeypatch, _StubEngine(fed_status=_fed()))
+
+    first = hq.status_payload(generated_at=1000)
+    second = hq.status_payload(generated_at=2000)
+
+    jsonschema.Draft202012Validator.check_schema(_hq_status_schema())
+    jsonschema.Draft202012Validator(_hq_status_schema()).validate(first)
+    assert first["schema_version"] == 1
+    assert first["command"] == "hq status"
+    assert first["identity"] == {
+        "canonical_id": "local/factory/hq",
+        "provider": "local",
+        "organization": "factory",
+        "repository": "hq",
+        "prefix": "hq",
+        "kind": "hq",
+    }
+    assert first["cwd"] == str(hq_dir.resolve())
+    assert first["availability"] == {
+        "state": "available",
+        "reason_code": "hq_initialized",
+    }
+    assert first["coverage"]["state"] == "complete"
+    assert first["freshness"] == {"state": "fresh", "as_of": 1000}
+    assert first["retirement"] == {
+        "intent": "retain",
+        "reason_code": "hq_available",
+        "advisory": True,
+    }
+    assert first["remote"]["configured"] is True
+    assert first["remote"]["git"]["state"] == "clean"
+    assert first["remote"]["dolt"]["state"] == "clean"
+    assert first["source_revision"] == second["source_revision"]
+
+    hq.status(as_json=True)
+    emitted = json.loads(capsys.readouterr().out)
+    assert emitted["source_revision"] == first["source_revision"]
+
+
+def test_status_json_revision_changes_with_observed_state(world, monkeypatch):
+    hq_dir, _remote = _init_repo_with_remote(world)
+    _stub_engine(monkeypatch, _StubEngine(fed_status=_fed()))
+    clean = hq.status_payload(generated_at=1000)
+
+    _drift(hq_dir)
+    ahead = hq.status_payload(generated_at=1000)
+
+    assert clean["source_revision"] != ahead["source_revision"]
+    assert ahead["remote"]["git"]["state"] == "ahead"
+
+
+def test_status_json_absence_is_authoritative_and_non_mutating(world):
+    hq_dir = config.hq_dir()
+
+    payload = hq.status_payload(generated_at=1000)
+
+    jsonschema.Draft202012Validator(_hq_status_schema()).validate(payload)
+    assert payload["cwd"] == str(hq_dir.resolve())
+    assert payload["availability"] == {
+        "state": "absent",
+        "reason_code": "hq_not_initialized",
+    }
+    assert payload["coverage"]["state"] == "complete"
+    assert payload["retirement"] == {
+        "intent": "retire",
+        "reason_code": "hq_authoritatively_absent",
+        "advisory": True,
+    }
+    assert payload["remote"] is None
+    assert not hq_dir.exists()
+
+
+def test_status_json_unavailable_is_retain_only(world, monkeypatch):
+    _init_repo_with_remote(world)
+    monkeypatch.setattr(
+        hq.safety,
+        "scan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("unreadable")),
+    )
+
+    payload = hq.status_payload(generated_at=1000)
+
+    jsonschema.Draft202012Validator(_hq_status_schema()).validate(payload)
+    assert payload["availability"]["state"] == "unavailable"
+    assert payload["coverage"]["state"] == "partial"
+    assert payload["freshness"] == {"state": "unknown", "as_of": None}
+    assert payload["retirement"]["intent"] == "retain"
+    assert payload["retirement"]["advisory"] is True
+
+
+def test_status_json_cwd_honors_bh_hq_before_bh_home(world, monkeypatch):
+    bh_home = world.tmp / "alternate-home"
+    explicit_hq = world.tmp / "explicit" / "factory-hq"
+    monkeypatch.setenv("BH_HOME", str(bh_home))
+    monkeypatch.delenv("BH_HQ", raising=False)
+
+    inherited = hq.status_payload(generated_at=1000)
+
+    assert inherited["cwd"] == str((bh_home / "hq").resolve())
+
+    monkeypatch.setenv("BH_HQ", str(explicit_hq))
+
+    payload = hq.status_payload(generated_at=1000)
+
+    assert payload["cwd"] == str(explicit_hq.resolve())
+    assert payload["cwd"] != str((bh_home / "hq").resolve())
+
+
+def test_status_human_output_is_unchanged_when_json_mode_is_added(world, monkeypatch, capsys):
+    hq_dir, _remote = _init_repo_with_remote(world)
+    _stub_engine(monkeypatch, _StubEngine(fed_status=_fed()))
+
+    hq.status()
+
+    assert capsys.readouterr().out == (
+        f"HQ ({hq_dir})\n"
+        "  git:  `main` is up to date with origin/main\n"
+        "  dolt: refs/dolt/data is up to date with origin\n"
+        "✓ HQ is up to date with its remote\n"
+    )
+
+
+def test_hq_status_cli_json_is_the_only_stdout_document(world, monkeypatch):
+    from typer.testing import CliRunner
+
+    from beadhive.cli import app
+
+    _init_repo_with_remote(world)
+    _stub_engine(monkeypatch, _StubEngine(fed_status=_fed()))
+
+    result = CliRunner().invoke(app, ["hq", "status", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "hq status"
 
 
 # ---- push() ----------------------------------------------------------------------

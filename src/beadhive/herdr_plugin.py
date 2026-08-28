@@ -15,12 +15,14 @@ import importlib
 import inspect
 import json
 import os
+import platform
 import re
 import shlex
 import shutil
 import socket
 import subprocess
 import sys
+import tomllib
 import uuid
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -30,7 +32,17 @@ from pathlib import Path
 
 import typer
 
-from . import config, operator_actions, plugins, run, worktree
+from . import (
+    bd,
+    config,
+    identity,
+    operator_actions,
+    operator_agents,
+    plugins,
+    run,
+    store_locator,
+    worktree,
+)
 
 _SESSION = "bh-supervisor"
 _CURRENT_SESSION_SENTINELS = frozenset({"current", "active"})
@@ -50,6 +62,19 @@ _TOKEN_TARGET = "bh_target"
 _TOKEN_SCHEMA = "bh_schema"
 _HERDR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+_PACKAGE_ID = "beadhive.herdr"
+_PACKAGE_REPOSITORY = "beadhive/herdr-plugin"
+_PACKAGE_MANIFEST = "herdr-plugin.toml"
+_MANAGED_REF_RE = re.compile(r"^[^\s\x00-\x1f\x7f]{1,255}$")
+
+
+class _RegistrationError(RuntimeError):
+    """One actionable refusal at the Herdr package-registry boundary."""
+
+    def __init__(self, code: str, message: str, *, exit_code: int = 1):
+        super().__init__(message)
+        self.code = code
+        self.exit_code = exit_code
 
 
 @dataclass(frozen=True)
@@ -185,7 +210,8 @@ def _lifecycle_payload(
     }
     if error is not None:
         payload["error"] = error
-    return jsonout.envelope(f"plugin herdr {operation}", _LIFECYCLE_SCHEMA, payload)
+    command = "add" if operation == "register" else operation
+    return jsonout.envelope(f"plugin herdr {command}", _LIFECYCLE_SCHEMA, payload)
 
 
 def _emit_lifecycle(operation: str, disposition: str, *, operation_id: str, **fields) -> None:
@@ -269,6 +295,297 @@ def server_up() -> bool:
 def _output(result) -> str:
     """Best-effort text from a captured subprocess result."""
     return str(getattr(result, "stdout", "") or getattr(result, "stderr", "") or "").strip()
+
+
+def _registry_plugins() -> tuple[list[dict] | None, str]:
+    """Read Herdr's global per-user plugin registry without consulting server state."""
+    result = _invoke(["herdr", "plugin", "list", "--json"])
+    if result is None or result.returncode != 0:
+        return None, _output(result) if result is not None else "plugin registry unavailable"
+    try:
+        payload = json.loads(str(result.stdout or ""))
+    except (TypeError, ValueError):
+        return None, "plugin list returned invalid JSON"
+    body = payload.get("result", payload) if isinstance(payload, dict) else None
+    rows = body.get("plugins") if isinstance(body, dict) else None
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        return None, "plugin list response did not contain a plugins array"
+    return rows, ""
+
+
+def _package_row(rows: list[dict]) -> dict | None:
+    """The one registered Beadhive package row, if present."""
+    for row in rows:
+        if str(row.get("plugin_id") or row.get("id") or "") == _PACKAGE_ID:
+            return row
+    return None
+
+
+def _source_facts(row: dict) -> dict[str, str | None]:
+    """Normalize source facts while retaining uncertainty as ``None`` (never guess)."""
+    source = row.get("source") if isinstance(row.get("source"), dict) else {}
+    kind = str(source.get("kind") or "unknown")
+    root = (
+        row.get("plugin_root")
+        or source.get("path")
+        or source.get("root")
+        or source.get("managed_path")
+    )
+    owner = source.get("owner")
+    repo = source.get("repo")
+    repository = (
+        source.get("repository")
+        or source.get("slug")
+        or row.get("repository")
+        or (f"{owner}/{repo}" if owner and repo else None)
+    )
+    ref = (
+        source.get("ref")
+        or source.get("reference")
+        or source.get("requested_ref")
+        or row.get("ref")
+    )
+    return {
+        "kind": kind,
+        "path": str(root) if root else None,
+        "repository": str(repository) if repository else None,
+        "ref": str(ref) if ref else None,
+    }
+
+
+def _platform_name() -> str:
+    return {"Linux": "linux", "Darwin": "macos"}.get(platform.system(), platform.system().lower())
+
+
+def _is_git_checkout(root: Path) -> bool:
+    """Ask git itself; do not infer repository ownership from hidden-file paths."""
+    result = run.run(
+        ["git", "-C", str(root), "rev-parse", "--show-toplevel"], check=False, capture=True
+    )
+    if result.returncode != 0:
+        return False
+    try:
+        return Path(str(result.stdout or "").strip()).resolve() == root
+    except OSError:
+        return False
+
+
+def _validate_local_package(path: Path) -> dict:
+    """Validate the known Beadhive package before allowing Herdr to execute its build hooks."""
+    root = path.expanduser().resolve()
+    if not root.is_dir():
+        raise _RegistrationError(
+            "local_checkout_missing",
+            f"local Herdr package checkout does not exist: {root}",
+            exit_code=2,
+        )
+    if not _is_git_checkout(root):
+        raise _RegistrationError(
+            "local_checkout_invalid",
+            f"local Herdr package is not a git checkout: {root}",
+            exit_code=2,
+        )
+    manifest_path = root / _PACKAGE_MANIFEST
+    try:
+        manifest = tomllib.loads(manifest_path.read_text())
+    except FileNotFoundError as exc:
+        raise _RegistrationError(
+            "manifest_missing",
+            f"local Herdr package has no {_PACKAGE_MANIFEST}: {root}",
+            exit_code=2,
+        ) from exc
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as exc:
+        raise _RegistrationError(
+            "manifest_invalid", f"cannot read a valid {manifest_path}: {exc}", exit_code=2
+        ) from exc
+    plugin_id = str(manifest.get("id") or "")
+    if plugin_id != _PACKAGE_ID:
+        raise _RegistrationError(
+            "manifest_incompatible",
+            f"expected plugin id {_PACKAGE_ID!r}, found {plugin_id!r} in {manifest_path}",
+            exit_code=2,
+        )
+    platforms = manifest.get("platforms")
+    current_platform = _platform_name()
+    if not isinstance(platforms, list) or current_platform not in platforms:
+        raise _RegistrationError(
+            "manifest_incompatible",
+            f"plugin {_PACKAGE_ID} does not declare support for {current_platform}",
+            exit_code=2,
+        )
+    return {
+        "plugin_id": _PACKAGE_ID,
+        "source": "local",
+        "path": str(root),
+        "repository": None,
+        "ref": None,
+        "version": str(manifest.get("version") or "unknown"),
+    }
+
+
+def _managed_package(ref: str) -> dict:
+    ref = ref.strip()
+    if _MANAGED_REF_RE.fullmatch(ref) is None:
+        raise _RegistrationError(
+            "managed_ref_invalid",
+            "--managed-ref must be a non-empty Git ref without whitespace or control characters",
+            exit_code=2,
+        )
+    return {
+        "plugin_id": _PACKAGE_ID,
+        "source": "managed",
+        "path": None,
+        "repository": _PACKAGE_REPOSITORY,
+        "ref": ref,
+        "version": None,
+    }
+
+
+def _registration_matches(row: dict, desired: dict) -> bool:
+    source = _source_facts(row)
+    if desired["source"] == "local":
+        if source["kind"] != "local" or not source["path"]:
+            return False
+        try:
+            return Path(str(source["path"])).expanduser().resolve() == Path(desired["path"])
+        except OSError:
+            return False
+    return (
+        source["kind"] in {"github", "managed"}
+        and source["repository"] == desired["repository"]
+        and source["ref"] == desired["ref"]
+    )
+
+
+def _describe_registration(row: dict) -> str:
+    source = _source_facts(row)
+    if source["kind"] == "local":
+        return f"local path={source['path'] or 'unknown'}"
+    return (
+        f"{source['kind']} repository={source['repository'] or 'unknown'} "
+        f"ref={source['ref'] or 'unknown'}"
+    )
+
+
+def _converge_package(
+    *, local: Path | None = None, managed_ref: str = "", yes: bool = False, dry_run: bool = False
+) -> dict:
+    """Converge exactly one known package source, or refuse without changing the registry."""
+    if not _has_cli():
+        raise _RegistrationError(
+            "herdr_cli_unavailable", "Herdr CLI is not on PATH; install Herdr and retry"
+        )
+    if (local is None) == (not bool(managed_ref.strip())):
+        raise _RegistrationError(
+            "source_selection_invalid",
+            "choose exactly one source: --local PATH or --managed-ref REF",
+            exit_code=2,
+        )
+    desired = _validate_local_package(local) if local is not None else _managed_package(managed_ref)
+    if desired["source"] == "managed" and not yes and not dry_run:
+        raise _RegistrationError(
+            "consent_required",
+            "managed installation requires --yes after reviewing the source and ref",
+            exit_code=2,
+        )
+
+    rows, detail = _registry_plugins()
+    if rows is None:
+        raise _RegistrationError(
+            "plugin_registry_unavailable", f"cannot read Herdr plugin registry: {detail}"
+        )
+    current = _package_row(rows)
+    if current is not None:
+        if _registration_matches(current, desired):
+            return {**desired, "disposition": "already_current"}
+        raise _RegistrationError(
+            "source_conflict",
+            f"refusing to replace {_PACKAGE_ID} registration ({_describe_registration(current)}); "
+            "uninstall or unlink that source explicitly first",
+        )
+    if dry_run:
+        return {**desired, "disposition": "planned"}
+
+    if desired["source"] == "local":
+        argv = ["herdr", "plugin", "link", str(desired["path"]), "--enabled"]
+        success_disposition = "linked"
+    else:
+        argv = [
+            "herdr",
+            "plugin",
+            "install",
+            _PACKAGE_REPOSITORY,
+            "--ref",
+            str(desired["ref"]),
+            "--yes",
+        ]
+        success_disposition = "installed"
+    result = _invoke(argv)
+    if result is None or result.returncode != 0:
+        native = _output(result) if result is not None else "Herdr command unavailable"
+        raise _RegistrationError(
+            "registration_failed",
+            f"Herdr could not register {_PACKAGE_ID} from {desired['source']}: {native}",
+        )
+
+    after, detail = _registry_plugins()
+    registered = _package_row(after) if after is not None else None
+    if registered is None or not _registration_matches(registered, desired):
+        observed = _describe_registration(registered) if registered is not None else "absent"
+        raise _RegistrationError(
+            "partial_installation",
+            f"Herdr returned success but persistent registration is {observed}; inspect "
+            f"`herdr plugin list --plugin {_PACKAGE_ID} --json` before retrying",
+        )
+    return {**desired, "disposition": success_disposition}
+
+
+def _package_status() -> tuple[dict, str]:
+    """Status projection for the external Herdr package, separate from server and hooks."""
+    if not _has_cli():
+        return {"state": "unavailable", "plugin_id": _PACKAGE_ID}, "Herdr CLI is not on PATH."
+    rows, detail = _registry_plugins()
+    if rows is None:
+        return {"state": "unknown", "plugin_id": _PACKAGE_ID}, detail
+    row = _package_row(rows)
+    if row is None:
+        return {"state": "absent", "plugin_id": _PACKAGE_ID}, ""
+    source = _source_facts(row)
+    return {
+        "state": "registered",
+        "plugin_id": _PACKAGE_ID,
+        "enabled": bool(row.get("enabled", False)),
+        "version": row.get("version"),
+        "source": source,
+    }, ""
+
+
+def _local_package_checkout() -> Path:
+    """Find one unambiguous private-development checkout under the configured workspace."""
+    root = Path(identity.workspace_root())
+    candidates = sorted(path for path in root.glob("*/beadhive/herdr-plugin") if path.is_dir())
+    if not candidates:
+        raise _RegistrationError(
+            "local_checkout_missing",
+            f"no local {_PACKAGE_REPOSITORY} checkout found under {root}; clone it or run "
+            "`bh plugin herdr add --managed-ref REF --yes` after a public release",
+        )
+    if len(candidates) > 1:
+        shown = ", ".join(str(path) for path in candidates)
+        raise _RegistrationError(
+            "local_checkout_ambiguous",
+            f"multiple local {_PACKAGE_REPOSITORY} checkouts found: {shown}; run "
+            "`bh plugin herdr add --local PATH` explicitly",
+        )
+    return candidates[0]
+
+
+def _on_onboard(ctx) -> None:
+    """Explicit ``--plugin herdr`` consent links the private-development package once."""
+    result = _converge_package(local=_local_package_checkout())
+    typer.echo(
+        f"✓ plugin {_PACKAGE_ID}: {result['disposition']} source=local path={result['path']}"
+    )
 
 
 def _command(*args: str, timeout: float | None = None):
@@ -583,6 +900,21 @@ def _integration_ready(kind: str) -> tuple[bool, str]:
     return False, f"{kind} was not reported"
 
 
+def _readiness(cfg, entry) -> tuple[str, str]:
+    """Keep adapter, package registration, and per-agent hooks visibly separate."""
+    package, warning = _package_status()
+    kind = config.herdr_kind(cfg, entry) or config.harness_name(cfg, entry)
+    integrated, integration_detail = _integration_ready(kind)
+    package_state = str(package.get("state") or "unknown")
+    detail = (
+        f"adapter=available; package={package_state} plugin_id={_PACKAGE_ID}; "
+        f"agent-integration[{kind}]={integration_detail or 'unknown'}"
+    )
+    if warning:
+        detail = f"{detail}; package-status={warning}"
+    return ("ok" if package_state == "registered" and integrated else "warn", detail)
+
+
 def _session_snapshot():
     """Read the selected session noninteractively and return its snapshot."""
     result = _command("api", "snapshot")
@@ -841,10 +1173,11 @@ def _roster_agent(
     ownership_state = "foreign"
     worktree_state = "unknown"
     branch = None
+    main: Path | None = None
     expected: Path | None = None
     if association != "none" and hive and bead:
         try:
-            _entry, _main, expected, branch = worktree.locate(cfg, hive, bead)
+            _entry, main, expected, branch = worktree.locate(cfg, hive, bead)
         except (KeyError, TypeError, ValueError, typer.Exit):
             reason = "ownership metadata names an unknown or ambiguous hive"
         else:
@@ -971,6 +1304,126 @@ def _roster_agent(
             if target
             else []
         ),
+        # Internal projection inputs, removed by ``_roster_payload`` before the
+        # public record is emitted.  Keeping the already-resolved main avoids a
+        # second ambiguous hive lookup when joining Beadhive work facts.
+        "_main": str(main) if main is not None else None,
+        "_record": record,
+    }
+
+
+def _label_value(issue: dict, prefix: str) -> str | None:
+    for value in issue.get("labels") or []:
+        text = str(value)
+        if text.startswith(prefix):
+            return text[len(prefix) :] or None
+    return None
+
+
+def _work_observation(agent: dict) -> dict[str, object]:
+    """Join one proven presentation record to Beadhive-owned work facts.
+
+    Explicit semantic fields from a future supervisor take precedence.  The
+    current adapter can still provide useful facts from the exact bead record,
+    but never infers terminal work from Herdr's terminal/idle presentation.
+    """
+
+    raw = agent.get("_record") if isinstance(agent.get("_record"), dict) else {}
+    main = agent.get("_main")
+    bead = agent.get("bead")
+    issue: dict = {}
+    if (
+        isinstance(main, str)
+        and isinstance(bead, str)
+        and store_locator.dolt_mode(Path(main)) is not None
+    ):
+        try:
+            issue = bd.show(bead, main, strict=True) or {}
+        except (OSError, RuntimeError, TypeError, ValueError, typer.Exit):
+            issue = {}
+
+    labels = [str(value) for value in issue.get("labels") or []]
+    assignee = str(issue.get("assignee") or "")
+    issue_type = str(issue.get("issue_type") or "").lower()
+    role = _value(raw, "beadhive_role", "role")
+    if role is None:
+        if assignee.startswith("dev/"):
+            role = operator_agents.AgentRole.DEVELOPER.value
+        elif assignee.startswith("disp/") or issue_type == "epic":
+            role = operator_agents.AgentRole.DISPATCHER.value
+    elif role == "dev":
+        role = operator_agents.AgentRole.DEVELOPER.value
+    elif role == "disp":
+        role = operator_agents.AgentRole.DISPATCHER.value
+
+    harness = _value(raw, "harness", "agent_kind", "kind") or _label_value(issue, "harness:")
+    phase = _value(raw, "work_phase", "phase")
+    operation = _value(raw, "work_operation", "operation")
+    terminal_raw = raw.get("terminal_phase")
+    terminal_phase = terminal_raw if isinstance(terminal_raw, bool) else None
+    status = str(issue.get("status") or "").lower()
+    if phase is None:
+        if status == "closed":
+            phase = operator_agents.WorkPhase.TERMINAL.value
+            operation = operation or operator_agents.WorkOperation.COMPLETE.value
+            terminal_phase = True
+        elif "review:pending" in labels:
+            phase = operator_agents.WorkPhase.REVIEW.value
+            operation = operation or operator_agents.WorkOperation.REVIEW.value
+            terminal_phase = False
+        elif "review:approved" in labels:
+            phase = operator_agents.WorkPhase.MERGE.value
+            operation = operation or operator_agents.WorkOperation.MERGE.value
+            terminal_phase = False
+        elif issue_type == "epic":
+            phase = operator_agents.WorkPhase.DISPATCH.value
+            operation = operation or operator_agents.WorkOperation.DISPATCH.value
+            terminal_phase = False
+        elif issue:
+            phase = operator_agents.WorkPhase.IMPLEMENT.value
+            operation = operation or operator_agents.WorkOperation.IMPLEMENT.value
+            terminal_phase = False
+    operation_for_phase = {
+        operator_agents.WorkPhase.IMPLEMENT.value: operator_agents.WorkOperation.IMPLEMENT.value,
+        operator_agents.WorkPhase.DISPATCH.value: operator_agents.WorkOperation.DISPATCH.value,
+        operator_agents.WorkPhase.SUBMIT.value: operator_agents.WorkOperation.SUBMIT.value,
+        operator_agents.WorkPhase.REVIEW.value: operator_agents.WorkOperation.REVIEW.value,
+        operator_agents.WorkPhase.MERGE.value: operator_agents.WorkOperation.MERGE.value,
+        operator_agents.WorkPhase.TERMINAL.value: operator_agents.WorkOperation.COMPLETE.value,
+    }
+    operation = operation or operation_for_phase.get(str(phase or "").lower())
+    if isinstance(operation, str) and not operation.startswith("work."):
+        operation = f"work.{operation}"
+    if terminal_phase is None and phase in operation_for_phase:
+        terminal_phase = phase == operator_agents.WorkPhase.TERMINAL.value
+
+    lifecycle = agent.get("lifecycle") if isinstance(agent.get("lifecycle"), dict) else {}
+    lifecycle_state = str(lifecycle.get("state") or "unknown").lower()
+    presence = _value(raw, "beadhive_presence", "presence")
+    if presence is None:
+        presence = (
+            operator_agents.AgentPresence.LIVE.value
+            if lifecycle_state in _LIVE_AGENT_STATES
+            else operator_agents.AgentPresence.RETAINED.value
+        )
+
+    return {
+        "target": agent.get("target"),
+        "hive": agent.get("hive"),
+        "bead": bead,
+        "harness": harness,
+        "role": role,
+        "operation": operation,
+        "phase": phase,
+        "terminal_phase": terminal_phase,
+        "parent_bead": raw.get("parent_bead") or issue.get("parent"),
+        "presence": presence,
+        "active": True,
+        "source_revision": ":".join(
+            value
+            for value in (str(agent.get("revision") or ""), str(issue.get("updated_at") or ""))
+            if value
+        ),
     }
 
 
@@ -1000,6 +1453,26 @@ def _roster_payload(snapshot: dict, cfg: dict | None = None, *, operation_id: st
         )
         for record in records
     ]
+    facts = operator_agents.project_agent_facts([_work_observation(agent) for agent in agents])
+    facts_by_target = {
+        item["target"]: item for item in facts["agents"] if item.get("target") is not None
+    }
+    for agent in agents:
+        agent["facts"] = facts_by_target.get(agent.get("target"))
+        agent.pop("_main", None)
+        agent.pop("_record", None)
+        revision_input = json.dumps(
+            ["bh-agent-v1", agent.get("revision"), agent.get("facts")],
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode()
+        agent["revision"] = f"sha256:{hashlib.sha256(revision_input).hexdigest()}"
+        for action in agent.get("advertised_actions") or []:
+            action["sourceRevision"] = agent["revision"]
+            preconditions = action.get("preconditions")
+            if isinstance(preconditions, dict):
+                preconditions["sourceRevision"] = agent["revision"]
     agents.sort(
         key=lambda agent: (
             str(agent.get("target") or ""),
@@ -1750,6 +2223,78 @@ def _owned_live_pane(target: str) -> str | None:
     return str(pane_id) if pane_id else None
 
 
+@cli.command(
+    "add",
+    help="explicitly link or install the external Beadhive package in Herdr's user registry.",
+)
+def _add_cmd(
+    local: Path | None = typer.Option(  # noqa: B008
+        None, "--local", help="validated local beadhive/herdr-plugin checkout to link"
+    ),
+    managed_ref: str = typer.Option(
+        "",
+        "--managed-ref",
+        help="auditable Git ref of the known beadhive/herdr-plugin repository to install",
+    ),
+    yes: bool = typer.Option(
+        False, "--yes", help="consent to execute the managed package's installation/build"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="validate and print the plan only"),
+    as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
+    operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
+) -> None:
+    """Converge one explicit package source without changing agent-hook integrations."""
+    try:
+        op_id = _operation_id(operation_id)
+    except ValueError as exc:
+        if as_json:
+            _lifecycle_failure(
+                "register",
+                operation_id="invalid",
+                code="invalid_operation_id",
+                message=str(exc),
+                subsystem="beadhive",
+                exit_code=2,
+            )
+        raise typer.BadParameter(str(exc), param_hint="--operation-id") from exc
+    try:
+        result = _converge_package(local=local, managed_ref=managed_ref, yes=yes, dry_run=dry_run)
+    except _RegistrationError as exc:
+        if as_json:
+            _lifecycle_failure(
+                "register",
+                operation_id=op_id,
+                code=exc.code,
+                message=str(exc),
+                subsystem="herdr" if exc.code != "source_selection_invalid" else "beadhive",
+                disposition="refused",
+                exit_code=exc.exit_code,
+                package={"plugin_id": _PACKAGE_ID},
+            )
+        typer.echo(f"✗ herdr package registration refused [{exc.code}]: {exc}", err=True)
+        raise typer.Exit(exc.exit_code) from exc
+
+    if as_json:
+        _emit_lifecycle(
+            "register",
+            str(result["disposition"]),
+            operation_id=op_id,
+            capabilities=["status", "add", "integrate"],
+            package=result,
+        )
+        return
+    source = (
+        f"local path={result['path']}"
+        if result["source"] == "local"
+        else f"managed repository={result['repository']} ref={result['ref']}"
+    )
+    prefix = "DRY-RUN " if dry_run else ""
+    typer.echo(
+        f"{prefix}herdr package plugin_id={result['plugin_id']} "
+        f"disposition={result['disposition']} source={source}"
+    )
+
+
 @cli.command("status", help="show herdr server health and installed agent integrations.")
 @_session_scoped
 def _status_cmd(
@@ -1780,15 +2325,20 @@ def _status_cmd(
                 "unavailable",
                 operation_id=op_id,
                 capabilities=["status"],
+                adapter={"state": "available", "command": "bh plugin herdr"},
+                package={"state": "unavailable", "plugin_id": _PACKAGE_ID},
                 server={"available": False, "reason": "herdr_cli_unavailable"},
                 integrations=[],
                 warnings=["Herdr CLI is not on PATH."],
             )
             return
+        typer.echo("bh herdr adapter: available")
+        typer.echo(f"herdr package: unavailable plugin_id={_PACKAGE_ID} (Herdr CLI not on PATH)")
         typer.echo("herdr: server=down (herdr CLI not on PATH)")
-        typer.echo("herdr integrations: unavailable")
+        typer.echo("herdr agent integrations: unavailable")
         return
 
+    package, package_warning = _package_status()
     status = _command("status")
     server_available = status is not None and status.returncode == 0
     integrations = _invoke(["herdr", "integration", "status"])
@@ -1802,10 +2352,12 @@ def _status_cmd(
                 else {"kind": line.strip(), "state": "unknown"}
             )
     if as_json:
-        capabilities = ["status"]
+        capabilities = ["status", "add", "integrate"]
         if server_available:
             capabilities.extend(["ps", "spawn", "dispatch", "watch", "attach", "reap"])
         warnings = []
+        if package_warning:
+            warnings.append(f"Herdr package registry: {package_warning}")
         if integrations is None or integrations.returncode != 0:
             warnings.append("Herdr integration status is unavailable.")
         _emit_lifecycle(
@@ -1813,11 +2365,31 @@ def _status_cmd(
             "available" if server_available else "unavailable",
             operation_id=op_id,
             capabilities=capabilities,
+            adapter={"state": "available", "command": "bh plugin herdr"},
+            package=package,
             server={"available": server_available, "detail": _output(status)},
             integrations=integration_rows,
             warnings=warnings,
         )
         return
+    typer.echo("bh herdr adapter: available")
+    if package["state"] == "registered":
+        source = package.get("source") or {}
+        if source.get("kind") == "local":
+            source_text = f"local path={source.get('path') or 'unknown'}"
+        else:
+            source_text = (
+                f"{source.get('kind') or 'unknown'} "
+                f"repository={source.get('repository') or 'unknown'} "
+                f"ref={source.get('ref') or 'unknown'}"
+            )
+        typer.echo(
+            f"herdr package: registered plugin_id={_PACKAGE_ID} source={source_text} "
+            f"enabled={str(bool(package.get('enabled'))).lower()}"
+        )
+    else:
+        suffix = f" ({package_warning})" if package_warning else ""
+        typer.echo(f"herdr package: {package['state']} plugin_id={_PACKAGE_ID}{suffix}")
     if status is None or status.returncode != 0:
         typer.echo("herdr: server=down")
     else:
@@ -1825,9 +2397,9 @@ def _status_cmd(
         if output := _output(status):
             typer.echo(output)
     if integrations is None or integrations.returncode != 0:
-        typer.echo("herdr integrations: unavailable")
+        typer.echo("herdr agent integrations: unavailable")
     else:
-        typer.echo("herdr integrations:")
+        typer.echo("herdr agent integrations:")
         if output := _output(integrations):
             typer.echo(output)
 
@@ -2527,6 +3099,9 @@ PLUGIN = plugins.Plugin(
     name="herdr",
     cli=cli,
     enabled=lambda cfg, entry: server_up(),
+    on_onboard=_on_onboard,
+    onboard_requires_opt_in=True,
+    readiness=_readiness,
 )
 
 # Keep the presentation adapter in its own module: this lifecycle wrapper remains the authority

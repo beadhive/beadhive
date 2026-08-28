@@ -14,12 +14,13 @@ from beadhive import config, hub, onboard, plugins, registry
 from harness.world import git
 
 
-def _mk_plugin(name="orca", *, enabled=False, hook=None):
+def _mk_plugin(name="orca", *, enabled=False, hook=None, opt_in=False):
     return plugins.Plugin(
         name=name,
         cli=typer.Typer(),
         enabled=lambda cfg, entry: enabled,
         on_onboard=hook,
+        onboard_requires_opt_in=opt_in,
     )
 
 
@@ -86,6 +87,18 @@ def test_plugin_step_disabled_and_unflagged(world, monkeypatch):
     ctx = _ctx(world, _make_repo(world))
     step = next(s for s in ctx.steps if s.id == "plugin-orca")
     assert step.enabled(ctx) is False
+
+
+def test_consent_only_plugin_ignores_runtime_availability_without_flag(world, monkeypatch):
+    _stub(monkeypatch, [_mk_plugin(name="herdr", enabled=True, hook=lambda c: None, opt_in=True)])
+    target = _make_repo(world)
+    implicit = _ctx(world, target)
+    explicit = _ctx(world, target, plugins=["herdr"])
+
+    implicit_step = next(s for s in implicit.steps if s.id == "plugin-herdr")
+    explicit_step = next(s for s in explicit.steps if s.id == "plugin-herdr")
+    assert implicit_step.enabled(implicit) is False
+    assert explicit_step.enabled(explicit) is True
 
 
 # ---- run_onboard fence behavior ---------------------------------------------

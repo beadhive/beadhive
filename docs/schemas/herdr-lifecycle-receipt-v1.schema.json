@@ -27,6 +27,7 @@
     "command": {
       "enum": [
         "plugin herdr status",
+        "plugin herdr add",
         "plugin herdr ps",
         "plugin herdr spawn",
         "plugin herdr dispatch",
@@ -40,7 +41,7 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
     },
     "operation": {
-      "enum": ["status", "ps", "spawn", "dispatch", "watch", "attach", "reap"]
+      "enum": ["status", "register", "ps", "spawn", "dispatch", "watch", "attach", "reap"]
     },
     "outcome": { "enum": ["succeeded", "failed", "refused"] },
     "disposition": { "type": "string", "minLength": 1 },

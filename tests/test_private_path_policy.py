@@ -401,6 +401,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("host_provision.py", "status", ".beads")
     | _owned("host_retire.py", "_hq_fold", ".beads")
     | _owned("hq.py", "_hq_dir_or_exit", ".beads")
+    | _owned("hq.py", "status_payload", ".beads")
     | _owned("hq.py", "_wire_remote", ".beads")
     | _owned("hq_restore.py", "_plan_jsonl", ".beads")
     | _owned("hub.py", "ensure_store", ".beads")

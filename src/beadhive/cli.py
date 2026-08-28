@@ -943,10 +943,16 @@ def hq_prune_aggregate(
     help="read-only ahead/behind report for HQ against its wired remote, for BOTH the git half "
     "(main) and the Dolt half (bead state).",
 )
-def hq_status():
+def hq_status(
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="emit the versioned authoritative HQ identity/status projection",
+    ),
+):
     from . import hq
 
-    hq.status()
+    hq.status(as_json=as_json)
 
 
 @hq_app.command(
@@ -1665,6 +1671,7 @@ def _run_sync_peers(
     peer: str | None,
     strategy: str | None,
     dry_run: bool,
+    as_json: bool = False,
 ) -> None:
     from . import hive_sync
 
@@ -1674,9 +1681,16 @@ def _run_sync_peers(
     if strategy and strategy not in hive_sync.STRATEGIES:
         typer.echo(f"✗ --strategy must be ours|theirs (got {strategy!r})", err=True)
         raise typer.Exit(1)
+    if as_json and not dry_run:
+        typer.echo("✗ --json is read-only and requires --dry-run", err=True)
+        raise typer.Exit(1)
 
     offending = hive_sync.hive_sync(
-        hive_ids=list(hive) if hive else None, peer=peer, strategy=strategy, dry_run=dry_run
+        hive_ids=list(hive) if hive else None,
+        peer=peer,
+        strategy=strategy,
+        dry_run=dry_run,
+        as_json=as_json,
     )
     if offending:
         raise typer.Exit(1)
@@ -1754,10 +1768,17 @@ def sync_peers_cmd(
         help="conflict resolution: ours|theirs (omit → pause and report conflicted tables)",
     ),
     dry_run: bool = typer.Option(
-        False, "--dry-run", help="read-only: render the federation status table, sync nothing"
+        False,
+        "--dry-run",
+        help="read-only: perform a timeout-bounded remote observation and sync nothing",
+    ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="with --dry-run, emit versioned revision comparisons; never performs sync mutation",
     ),
 ):
-    _run_sync_peers(hive, all_hives, peer, strategy, dry_run)
+    _run_sync_peers(hive, all_hives, peer, strategy, dry_run, as_json)
 
 
 hive_app.add_typer(sync_app, name="sync", rich_help_panel=HIVE_PANEL)
@@ -1899,10 +1920,34 @@ def hive_list(
         help="list discoverable-but-unregistered repos (diffs git-workspace's tracked repos "
         "from workspace-lock.toml against the registry — zero API calls)",
     ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="emit a versioned, bounded registered-hive identity page as JSON",
+    ),
+    limit: int = typer.Option(
+        50,
+        "--limit",
+        min=1,
+        max=200,
+        help="maximum registered hives returned by --json (1-200)",
+    ),
+    cursor: str = typer.Option(
+        "", "--cursor", help="opaque next_cursor from an earlier --json response"
+    ),
 ):
     from . import hive
 
-    hive.ls(show_available=available)
+    if available and as_json:
+        raise typer.BadParameter("--json currently describes registered hives, not --available")
+    if not as_json and (limit != 50 or cursor):
+        raise typer.BadParameter("--limit and --cursor require --json")
+    hive.ls(
+        show_available=available,
+        as_json=as_json,
+        limit=limit,
+        cursor=cursor or None,
+    )
 
 
 @hive_app.command(
@@ -2519,10 +2564,26 @@ def wt_add(
 @wt_app.command(
     "list", help=f"list {config.BINARY_ALIAS}-managed worktrees (prefix / branch / path)."
 )
-def wt_list():
+def wt_list(
+    as_json: bool = typer.Option(False, "--json", help="emit the versioned worktree inventory"),
+    hive: str = typer.Option("", "--hive", help="limit JSON inventory to one exact hive"),
+    state: str = typer.Option("", "--state", help="limit JSON inventory to one worktree state"),
+    limit: int = typer.Option(50, "--limit", min=1, max=200, help="maximum JSON rows returned"),
+    cursor: str | None = typer.Option(None, "--cursor", help="opaque JSON inventory cursor"),
+):
     from . import worktree
 
-    worktree.list_cmd()
+    machine_options = bool(hive or state or cursor or limit != 50)
+    if machine_options and not as_json:
+        typer.echo("\u2717 --hive/--state/--limit/--cursor require --json", err=True)
+        raise typer.Exit(2)
+    worktree.list_cmd(
+        as_json=as_json,
+        hive=hive,
+        states=(state,) if state else (),
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 @wt_app.command("path", help="print the absolute path of a managed worktree (for scripts).")

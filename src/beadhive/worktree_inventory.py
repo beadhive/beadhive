@@ -6,14 +6,18 @@ The pure lifecycle classifier stays in :mod:`beadhive.wt_status`. Implementation
 
 from __future__ import annotations
 
+import base64
 import contextlib
+import hashlib
+import json
 import os
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import typer
 
-from . import bd, config, registry, wt_status
+from . import bd, config, jsonout, registry, wt_status
 from .identity import workspace_identity
 
 
@@ -33,6 +37,11 @@ _BOX_PIPE = _facade()._BOX_PIPE
 _BOX_BRANCH = _facade()._BOX_BRANCH
 _BOX_LAST = _facade()._BOX_LAST
 _BOX_SPACE = _facade()._BOX_SPACE
+
+_INVENTORY_SCHEMA_VERSION = 1
+_INVENTORY_DEFAULT_LIMIT = 50
+_INVENTORY_MAX_LIMIT = 200
+_INVENTORY_STATES = frozenset(str(state) for state in wt_status.WtClassification)
 
 
 def _managed_for_entry(*args, **kwargs):
@@ -240,7 +249,375 @@ def impl_unregistered_worktrees(cfg):
     return out
 
 
-def impl_list_cmd():
+def _inventory_digest(value) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _inventory_cursor(revision: str, scope: dict, offset: int) -> str:
+    value = {"v": 1, "revision": revision, "scope": scope, "offset": offset}
+    return (
+        base64.urlsafe_b64encode(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+        .decode()
+        .rstrip("=")
+    )
+
+
+def _inventory_cursor_offset(cursor: str | None, revision: str, scope: dict) -> int:
+    if cursor is None:
+        return 0
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        value = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("the worktree inventory cursor is malformed") from exc
+    if (
+        not isinstance(value, dict)
+        or value.get("v") != 1
+        or not isinstance(value.get("offset"), int)
+        or value["offset"] < 0
+    ):
+        raise ValueError("the worktree inventory cursor is malformed")
+    if value.get("scope") != scope:
+        raise ValueError("the worktree inventory cursor belongs to different filters")
+    if value.get("revision") != revision:
+        raise ValueError("the worktree inventory changed; restart without a cursor")
+    return value["offset"]
+
+
+def _inventory_item(observation: dict, status) -> dict:
+    hive_id = str(observation["hive_id"])
+    classification = str(status.classification)
+    return {
+        "hive_id": hive_id,
+        "hive_prefix": str(observation["hive_prefix"]),
+        "bead_id": status.bead_id,
+        "worktree_id": f"{hive_id}:{status.leaf}",
+        "leaf": status.leaf,
+        "branch": status.branch,
+        "path": status.path,
+        "state": classification,
+        "retention": "reclaimable" if status.safe else "retained",
+        "merged": status.merged,
+        "dirty": status.dirty,
+        "safe": status.safe,
+        "underlying_state": str(status.underlying) if status.underlying else None,
+        "unknown_reason": status.unknown_reason or None,
+    }
+
+
+def _inventory_coverage_state(observations: list[dict]) -> str:
+    states = {str(observation.get("state", "unavailable")) for observation in observations}
+    if not states or states == {"complete"}:
+        return "complete"
+    if states == {"unavailable"}:
+        return "unavailable"
+    if states == {"stale"}:
+        return "stale"
+    return "partial"
+
+
+def impl_inventory_payload(
+    observations: list[dict],
+    *,
+    hive: str = "",
+    states: tuple[str, ...] = (),
+    limit: int = _INVENTORY_DEFAULT_LIMIT,
+    cursor: str | None = None,
+    generated_at: int | None = None,
+) -> dict:
+    """Build the versioned, bounded managed-worktree contract from source observations.
+
+    An observation has an exact ``hive_id``, its configured ``hive_prefix``, a coverage
+    ``state`` (complete/partial/stale/unavailable), an optional ``reason`` and ``revision``, and
+    zero or more classified ``statuses``.  Keeping this fold pure makes the important count
+    rule explicit: totals are numbers only when every covered source is complete.  A partial
+    page is safe because totals are computed over the complete filtered snapshot before paging.
+    """
+    if not 1 <= limit <= _INVENTORY_MAX_LIMIT:
+        raise ValueError(f"limit must be from 1 through {_INVENTORY_MAX_LIMIT}")
+    requested_states = tuple(sorted(set(states)))
+    invalid_states = sorted(set(requested_states) - _INVENTORY_STATES)
+    if invalid_states:
+        raise ValueError(f"unknown worktree state: {invalid_states[0]}")
+
+    normalized: list[dict] = []
+    all_items: list[dict] = []
+    warnings: list[dict] = []
+    for raw in observations:
+        observation = {
+            "hive_id": str(raw["hive_id"]),
+            "hive_prefix": str(raw["hive_prefix"]),
+            "state": str(raw.get("state") or "unavailable"),
+            "reason": str(raw.get("reason") or "") or None,
+            "revision": raw.get("revision"),
+            "statuses": list(raw.get("statuses") or []),
+        }
+        if observation["state"] == "complete" and any(
+            str(status.classification) == "unknown" for status in observation["statuses"]
+        ):
+            observation["state"] = "partial"
+            observation["reason"] = "one or more worktree states could not be resolved"
+        normalized.append(observation)
+        all_items.extend(_inventory_item(observation, status) for status in observation["statuses"])
+        if observation["state"] != "complete":
+            warnings.append(
+                {
+                    "code": f"worktree_source_{observation['state']}",
+                    "hive_id": observation["hive_id"],
+                    "detail": observation["reason"],
+                }
+            )
+
+    all_items.sort(key=lambda item: (item["hive_id"], item["worktree_id"]))
+    coverage_state = _inventory_coverage_state(normalized)
+    coverage_complete = coverage_state == "complete"
+    filtered = [
+        item for item in all_items if not requested_states or item["state"] in requested_states
+    ]
+    source_revision = (
+        None
+        if coverage_state == "unavailable"
+        else _inventory_digest(
+            [
+                {
+                    "hive_id": observation["hive_id"],
+                    "state": observation["state"],
+                    "revision": observation["revision"],
+                    "items": [
+                        item for item in all_items if item["hive_id"] == observation["hive_id"]
+                    ],
+                }
+                for observation in normalized
+            ]
+        )
+    )
+    scope = {"hive": hive or None, "states": list(requested_states)}
+    offset = _inventory_cursor_offset(cursor, source_revision or "unavailable", scope)
+    if offset > len(filtered):
+        raise ValueError("the worktree inventory cursor is outside the collection")
+    page = filtered[offset : offset + limit]
+    next_offset = offset + len(page)
+    truncated = next_offset < len(filtered)
+
+    counts = None
+    if coverage_complete:
+        counts = []
+        for observation in normalized:
+            hive_items = [item for item in all_items if item["hive_id"] == observation["hive_id"]]
+            by_state = {
+                state: sum(item["state"] == state for item in hive_items)
+                for state in sorted({item["state"] for item in hive_items})
+            }
+            counts.append(
+                {
+                    "hive_id": observation["hive_id"],
+                    "hive_prefix": observation["hive_prefix"],
+                    "total": len(hive_items),
+                    "by_state": by_state,
+                }
+            )
+
+    now = generated_at if generated_at is not None else time.time_ns() // 1_000_000
+    freshness_state = (
+        "stale"
+        if any(observation["state"] == "stale" for observation in normalized)
+        else "unknown"
+        if coverage_state == "unavailable"
+        else "fresh"
+    )
+    reason = (
+        "; ".join(
+            sorted(
+                {str(observation["reason"]) for observation in normalized if observation["reason"]}
+            )
+        )
+        or None
+    )
+    return jsonout.envelope(
+        "worktree list",
+        _INVENTORY_SCHEMA_VERSION,
+        {
+            "source_revision": source_revision,
+            "generated_at": now,
+            "freshness": {
+                "state": freshness_state,
+                "as_of": now if freshness_state != "unknown" else None,
+            },
+            "coverage": {
+                "state": coverage_state,
+                "reason": reason,
+                "sources": [
+                    {
+                        "hive_id": observation["hive_id"],
+                        "state": observation["state"],
+                        "reason": observation["reason"],
+                        "revision": observation["revision"],
+                    }
+                    for observation in normalized
+                ],
+            },
+            "filters": scope,
+            "worktrees": page,
+            "returned": len(page),
+            "total": len(filtered) if coverage_complete else None,
+            "counts": counts,
+            "limit": limit,
+            "truncated": truncated,
+            "next_cursor": (
+                _inventory_cursor(source_revision or "unavailable", scope, next_offset)
+                if truncated
+                else None
+            ),
+            "warnings": warnings,
+        },
+    )
+
+
+def _inventory_observations(hive: str = "") -> list[dict]:
+    """Read each scoped registered hive independently so one failed source stays partial."""
+    cfg = config.load()
+    entries, _unused = _status_scope(cfg, hive, [])
+    root = str(config.worktrees_root().resolve())
+    observations: list[dict] = []
+    for entry in entries:
+        hive_id = registry.hive_key(entry)
+        prefix = str(entry.get("prefix", ""))
+        main = registry.hive_dir(entry)
+        try:
+            result = _run_git(
+                ["git", "-C", str(main), "worktree", "list", "--porcelain"],
+                check=False,
+                capture=True,
+            )
+        except Exception as exc:
+            observations.append(
+                {
+                    "hive_id": hive_id,
+                    "hive_prefix": prefix,
+                    "state": "unavailable",
+                    "reason": f"git could not enumerate the registered hive's worktrees: {exc}",
+                    "revision": None,
+                    "statuses": [],
+                }
+            )
+            continue
+        if result.returncode != 0:
+            observations.append(
+                {
+                    "hive_id": hive_id,
+                    "hive_prefix": prefix,
+                    "state": "unavailable",
+                    "reason": "git could not enumerate the registered hive's worktrees",
+                    "revision": None,
+                    "statuses": [],
+                }
+            )
+            continue
+        rows: list = []
+        path = branch_ref = None
+        for line in (result.stdout or "").splitlines():
+            if line.startswith("worktree "):
+                path = line[len("worktree ") :]
+                branch_ref = None
+            elif line.startswith("branch "):
+                branch_ref = line[len("branch ") :].removeprefix("refs/heads/")
+            elif not line.strip() and path:
+                _emit(rows, entry, root, path, branch_ref)
+                path = branch_ref = None
+        if path:
+            _emit(rows, entry, root, path, branch_ref)
+        try:
+            with store_probe_cache():
+                statuses = _classify_entry(entry, rows, cfg) if rows else []
+        except Exception as exc:
+            observations.append(
+                {
+                    "hive_id": hive_id,
+                    "hive_prefix": prefix,
+                    "state": "unavailable",
+                    "reason": f"worktree classification failed: {exc}",
+                    "revision": _inventory_digest(result.stdout or ""),
+                    "statuses": [],
+                }
+            )
+            continue
+        observations.append(
+            {
+                "hive_id": hive_id,
+                "hive_prefix": prefix,
+                "state": "complete",
+                "reason": None,
+                "revision": _inventory_digest(
+                    {"porcelain": result.stdout or "", "statuses": [s.as_dict() for s in statuses]}
+                ),
+                "statuses": statuses,
+            }
+        )
+
+    # Hub inventory must not claim exact fleet counts while managed-shaped worktrees exist for
+    # an unregistered repository.  The human command already warns about these rows; the machine
+    # contract represents the same gap as partial coverage rather than silently returning a
+    # plausible smaller total.  A hive-scoped read intentionally excludes unrelated orphans.
+    if not hive:
+        ident = workspace_identity()
+        cwd = Path.cwd()
+        try:
+            under_worktrees = cwd.resolve().is_relative_to(config.worktrees_root().resolve())
+        except OSError:
+            under_worktrees = False
+        registered_cwd = False
+        if ident is not None:
+            registered_cwd = any(
+                (str(entry["provider"]), str(entry["org"]), str(entry["repo"])) == ident
+                for entry in cfg.get("managed_repos", []) or []
+            )
+        elif under_worktrees:
+            try:
+                _entry_for_path(cfg, cwd)
+            except SystemExit:
+                pass
+            else:
+                registered_cwd = True
+        if not registered_cwd:
+            by_slug: dict[str, list] = {}
+            for row in unregistered_worktrees(cfg):
+                by_slug.setdefault(row[0], []).append(row)
+            for slug, rows in sorted(by_slug.items()):
+                observations.append(
+                    {
+                        "hive_id": slug,
+                        "hive_prefix": slug,
+                        "state": "partial",
+                        "reason": "managed worktrees exist for an unregistered repository",
+                        "revision": _inventory_digest(rows),
+                        "statuses": [],
+                    }
+                )
+    return observations
+
+
+def impl_list_cmd(
+    *,
+    as_json: bool = False,
+    hive: str = "",
+    states: tuple[str, ...] = (),
+    limit: int = _INVENTORY_DEFAULT_LIMIT,
+    cursor: str | None = None,
+):
+    if as_json:
+        try:
+            payload = impl_inventory_snapshot_payload(
+                hive=hive,
+                states=states,
+                limit=limit,
+                cursor=cursor,
+            )
+        except ValueError as exc:
+            typer.echo(f"\u2717 {exc}", err=True)
+            raise typer.Exit(2) from exc
+        jsonout.emit(payload)
+        return
     cfg = config.load()
     rows = managed(cfg)
     unreg = unregistered_worktrees(cfg)
@@ -253,6 +630,31 @@ def impl_list_cmd():
         typer.echo(f"{slug}\t{br}\t{path}")
     if unreg:
         _warn_unregistered(unreg)
+
+
+def impl_inventory_snapshot_payload(
+    *,
+    hive: str = "",
+    states: tuple[str, ...] = (),
+    limit: int = _INVENTORY_DEFAULT_LIMIT,
+    cursor: str | None = None,
+    generated_at: int | None = None,
+) -> dict:
+    """Read and project the live inventory through the public machine contract.
+
+    Composite read-only views use this seam instead of reaching into the observation collector.
+    It has exactly the same coverage, revision, bounds, and cursor semantics as
+    ``bh worktree list --json`` and performs no cleanup or lifecycle mutation.
+    """
+
+    return impl_inventory_payload(
+        _inventory_observations(hive),
+        hive=hive,
+        states=states,
+        limit=limit,
+        cursor=cursor,
+        generated_at=generated_at,
+    )
 
 
 def impl__classify_entries(

@@ -692,6 +692,40 @@ def test_live_operator_sources_deck_cursor_survives_a_new_polling_instance(
     assert (exc.value.code, exc.value.status_code) == ("view_cursor_revision_mismatch", 409)
 
 
+def test_presentation_composes_extended_hive_facts_without_losing_queues(
+    monkeypatch,
+) -> None:
+    queues = _queues()
+    roster = _roster()
+    sources = SimpleNamespace(
+        resolve_hive=lambda _hive: SimpleNamespace(
+            entry={
+                "provider": "github",
+                "org": "acme",
+                "repo": "widgets",
+                "prefix": "widget",
+            }
+        )
+    )
+    backend = herdr_views.ViewBackend(cfg={}, sources=sources, _roster=roster)
+    monkeypatch.setattr(
+        backend,
+        "hive_facts",
+        lambda _hive: (queues, roster, {"ready": {"queue": "ready"}}),
+    )
+    monkeypatch.setattr(backend, "session_snapshot", lambda: None)
+    monkeypatch.setattr(
+        herdr_views.worktree,
+        "inventory_snapshot_payload",
+        lambda **_kwargs: {"worktrees": [], "total": 0, "warnings": []},
+    )
+
+    payload = backend.presentation(HIVE)
+
+    assert payload["view"] == "presentation"
+    assert payload["scope"] == {"hive": HIVE}
+
+
 def test_deck_disables_launch_when_herdr_cli_preflight_is_unavailable(monkeypatch) -> None:
     now = datetime(2026, 8, 27, 12, tzinfo=UTC).isoformat().replace("+00:00", "Z")
     beads = state_stream.ProviderSnapshot(
@@ -871,10 +905,10 @@ def test_degraded_sources_are_explicit_and_do_not_fabricate_agent_counts() -> No
     assert launch["invoke"] is None
 
 
-def test_six_view_commands_are_registered_and_layout_emits_json() -> None:
+def test_seven_view_commands_are_registered_and_layout_emits_json() -> None:
     help_result = runner.invoke(app, ["plugin", "herdr", "view", "--help"])
     assert help_result.exit_code == 0, help_result.output
-    for command in ("picker", "deck", "bead", "agent", "layout", "stream"):
+    for command in ("picker", "deck", "bead", "agent", "layout", "presentation", "stream"):
         assert command in help_result.output
 
     layout = runner.invoke(

@@ -464,7 +464,8 @@ existing classifier remains the sole removal guard.
 
 ```text
 bh worktree add    [-r HIVE] [--bead ID | --branch NAME] [--dry-run|--preview] [--json]  # short: bh wt add
-bh worktree list                                                      # managed only
+bh worktree list [--json [--hive HIVE] [--state STATE] [--limit N] [--cursor TOKEN]]
+                                                                      # managed only
 bh worktree path   [-r HIVE] [--bead ID | REF]                        # abs path (for scripts)
 bh worktree init   PATH                                               # re-run init ops
 bh worktree rm     [-r HIVE] [--bead ID | REF] [--force] [--json]
@@ -576,6 +577,20 @@ element) of `WtStatus` records: `hive`, `leaf`, `branch`, `path`, `bead_id`,
 `classification`, `merged`, `dirty`, `safe` (see
 [`bh worktree status` — classification pre-flight](#bh-worktree-status--classification-pre-flight)
 for the `classification` enum and what `safe` gates).
+
+`bh worktree list --json` is the bounded inventory contract for clients that need exact
+worktree identities and counts rather than the legacy human table. It emits a versioned
+`worktree list` envelope containing canonical `hive_id`, `bead_id`, `worktree_id`, branch,
+path, stable classification `state`, and retention state for each item. `--hive` selects one
+exact registered hive, `--state` filters one classification, and `--limit` is constrained to
+1–200 (default 50); continue with the opaque `next_cursor` while `truncated` is true.
+
+`coverage.state` is `complete`, `partial`, `stale`, or `unavailable`. `total` and the per-hive
+`counts` are numeric only for complete source coverage; they are `null` otherwise, so source
+failure can never look like a real zero. Pagination does not degrade coverage: totals are folded
+over the complete filtered snapshot before the page is selected. `source_revision` scopes every
+cursor, and changing either the source revision or filters requires restarting without a cursor.
+Human `bh worktree list` output is unchanged.
 
 `bh worktree rm --json` emits `{op: "rm", hive, path, removed: true}` on success (same
 raise-on-failure contract as every other verb here — a non-zero exit means nothing was

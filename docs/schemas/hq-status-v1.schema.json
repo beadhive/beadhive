@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.dev/schemas/hq-status-v1.schema.json",
+  "title": "Beadhive authoritative Factory HQ status v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "command",
+    "source_revision",
+    "generated_at",
+    "freshness",
+    "identity",
+    "cwd",
+    "availability",
+    "coverage",
+    "remote",
+    "retirement",
+    "warnings"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "command": {"const": "hq status"},
+    "source_revision": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$"
+    },
+    "generated_at": {"type": "integer", "minimum": 0},
+    "freshness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "as_of"],
+      "properties": {
+        "state": {"enum": ["fresh", "unknown"]},
+        "as_of": {"type": ["integer", "null"], "minimum": 0}
+      }
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "canonical_id",
+        "provider",
+        "organization",
+        "repository",
+        "prefix",
+        "kind"
+      ],
+      "properties": {
+        "canonical_id": {"const": "local/factory/hq"},
+        "provider": {"const": "local"},
+        "organization": {"const": "factory"},
+        "repository": {"const": "hq"},
+        "prefix": {"const": "hq"},
+        "kind": {"const": "hq"}
+      }
+    },
+    "cwd": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "pattern": "^/"
+    },
+    "availability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason_code"],
+      "properties": {
+        "state": {"enum": ["available", "absent", "unavailable"]},
+        "reason_code": {
+          "enum": ["hq_initialized", "hq_not_initialized", "hq_path_unavailable", "hq_status_unavailable"]
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "sources"],
+      "properties": {
+        "state": {"enum": ["complete", "partial", "unavailable"]},
+        "sources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["identity", "path", "status"],
+          "properties": {
+            "identity": {"$ref": "#/$defs/sourceCoverage"},
+            "path": {"$ref": "#/$defs/sourceCoverage"},
+            "status": {"$ref": "#/$defs/sourceCoverage"}
+          }
+        }
+      }
+    },
+    "remote": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["configured", "working_tree_dirty", "git", "dolt"],
+          "properties": {
+            "configured": {"type": "boolean"},
+            "working_tree_dirty": {"type": "boolean"},
+            "git": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state", "ahead", "behind", "has_upstream", "dirty"],
+              "properties": {
+                "state": {"enum": ["clean", "ahead", "behind", "diverged", "no-main", "no-upstream"]},
+                "ahead": {"type": ["integer", "null"], "minimum": 0},
+                "behind": {"type": ["integer", "null"], "minimum": 0},
+                "has_upstream": {"type": ["boolean", "null"]},
+                "dirty": {"type": ["boolean", "null"]}
+              }
+            },
+            "dolt": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state", "ahead", "behind", "reason"],
+              "properties": {
+                "state": {"type": "string", "minLength": 1},
+                "ahead": {"type": "integer", "minimum": 0},
+                "behind": {"type": "integer", "minimum": 0},
+                "reason": {"type": ["string", "null"]}
+              }
+            }
+          }
+        }
+      ]
+    },
+    "retirement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intent", "reason_code", "advisory"],
+      "properties": {
+        "intent": {"enum": ["retain", "retire"]},
+        "reason_code": {"enum": ["hq_available", "hq_authoritatively_absent", "hq_facts_incomplete"]},
+        "advisory": {"const": true}
+      }
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "detail"],
+        "properties": {
+          "code": {"type": "string", "minLength": 1},
+          "detail": {"type": "string", "minLength": 1, "maxLength": 512}
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sourceCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state"],
+      "properties": {
+        "state": {"enum": ["complete", "partial", "unavailable"]}
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"availability": {"properties": {"state": {"const": "available"}}}}},
+      "then": {
+        "properties": {
+          "cwd": {"type": "string"},
+          "coverage": {"properties": {"state": {"const": "complete"}}},
+          "retirement": {"properties": {"intent": {"const": "retain"}}},
+          "remote": {"type": "object"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"availability": {"properties": {"state": {"const": "absent"}}}}},
+      "then": {
+        "properties": {
+          "cwd": {"type": "string"},
+          "coverage": {"properties": {"state": {"const": "complete"}}},
+          "retirement": {"properties": {"intent": {"const": "retire"}}},
+          "remote": {"type": "null"}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"availability": {"properties": {"state": {"const": "unavailable"}}}}},
+      "then": {
+        "properties": {
+          "retirement": {"properties": {"intent": {"const": "retain"}}}
+        }
+      }
+    }
+  ]
+}

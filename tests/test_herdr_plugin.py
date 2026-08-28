@@ -61,9 +61,13 @@ def test_status_reports_server_and_integrations(monkeypatch):
 
     def fake_run(argv, **kwargs):
         calls.append(argv)
-        if argv[1] == "status":
+        if argv == ["herdr", "plugin", "list", "--json"]:
+            return _registry_result([])
+        if argv == ["herdr", "--session", "bh-supervisor", "status"]:
             return _result(stdout="server ready")
-        return _result(stdout="claude: installed\ncodex: absent")
+        if argv == ["herdr", "integration", "status"]:
+            return _result(stdout="claude: installed\ncodex: absent")
+        raise AssertionError(argv)
 
     monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
     result = runner.invoke(app, ["plugin", "herdr", "status"])
@@ -72,6 +76,7 @@ def test_status_reports_server_and_integrations(monkeypatch):
     assert "herdr: server=up" in result.output
     assert "claude: installed" in result.output
     assert calls == [
+        ["herdr", "plugin", "list", "--json"],
         ["herdr", "--session", "bh-supervisor", "status"],
         ["herdr", "integration", "status"],
     ]
@@ -89,6 +94,308 @@ def test_status_fences_missing_binary_and_stopped_server(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "server=down" in result.output
     assert "integrations: unavailable" in result.output
+
+
+def _local_package(tmp_path: Path, *, plugin_id: str = "beadhive.herdr") -> Path:
+    root = tmp_path / "herdr-plugin"
+    root.mkdir()
+    (root / ".git").mkdir()
+    (root / "herdr-plugin.toml").write_text(
+        f'id = "{plugin_id}"\n'
+        'name = "Beadhive"\n'
+        'version = "0.1.0"\n'
+        'platforms = ["linux", "macos"]\n'
+    )
+    return root
+
+
+def _registry_result(rows: list[dict]) -> SimpleNamespace:
+    return _result(stdout=json.dumps({"id": "cli:plugin", "result": {"plugins": rows}}))
+
+
+def _allow_local_checkout(monkeypatch) -> None:
+    monkeypatch.setattr(herdr_plugin, "_is_git_checkout", lambda _root: True)
+
+
+def test_register_links_local_package_idempotently_across_invocations(tmp_path, monkeypatch):
+    root = _local_package(tmp_path)
+    _allow_local_checkout(monkeypatch)
+    rows: list[dict] = []
+    mutations: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "plugin", "list", "--json"]:
+            return _registry_result(rows)
+        if argv == ["herdr", "plugin", "link", str(root.resolve()), "--enabled"]:
+            mutations.append(argv)
+            rows.append(
+                {
+                    "plugin_id": "beadhive.herdr",
+                    "plugin_root": str(root.resolve()),
+                    "source": {"kind": "local"},
+                    "enabled": True,
+                    "version": "0.1.0",
+                }
+            )
+            return _result(stdout="linked")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    first = runner.invoke(app, ["plugin", "herdr", "add", "--local", str(root)])
+    restarted = runner.invoke(app, ["plugin", "herdr", "add", "--local", str(root)])
+
+    assert first.exit_code == 0, first.output
+    assert "disposition=linked" in first.output
+    assert restarted.exit_code == 0, restarted.output
+    assert "disposition=already_current" in restarted.output
+    assert len(mutations) == 1
+
+
+def test_register_managed_source_requires_consent_and_pins_ref(monkeypatch):
+    rows: list[dict] = []
+    mutations: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "plugin", "list", "--json"]:
+            return _registry_result(rows)
+        expected = [
+            "herdr",
+            "plugin",
+            "install",
+            "beadhive/herdr-plugin",
+            "--ref",
+            "v0.1.0",
+            "--yes",
+        ]
+        assert argv == expected
+        mutations.append(argv)
+        rows.append(
+            {
+                "plugin_id": "beadhive.herdr",
+                "source": {
+                    "kind": "github",
+                    "owner": "beadhive",
+                    "repo": "herdr-plugin",
+                    "requested_ref": "v0.1.0",
+                },
+                "enabled": True,
+            }
+        )
+        return _result(stdout="installed")
+
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    refused = runner.invoke(app, ["plugin", "herdr", "add", "--managed-ref", "v0.1.0"])
+    installed = runner.invoke(
+        app,
+        ["plugin", "herdr", "add", "--managed-ref", "v0.1.0", "--yes"],
+    )
+
+    assert refused.exit_code == 2
+    assert "consent_required" in refused.output
+    assert installed.exit_code == 0, installed.output
+    assert "repository=beadhive/herdr-plugin ref=v0.1.0" in installed.output
+    assert len(mutations) == 1
+
+
+def test_register_refuses_source_conflict_without_mutation(tmp_path, monkeypatch):
+    root = _local_package(tmp_path)
+    _allow_local_checkout(monkeypatch)
+    rows = [
+        {
+            "plugin_id": "beadhive.herdr",
+            "source": {
+                "kind": "github",
+                "owner": "beadhive",
+                "repo": "herdr-plugin",
+                "requested_ref": "v0.1.0",
+            },
+        }
+    ]
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        assert argv == ["herdr", "plugin", "list", "--json"]
+        return _registry_result(rows)
+
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "add", "--local", str(root)])
+
+    assert result.exit_code == 1
+    assert "source_conflict" in result.output
+    assert "uninstall or unlink" in result.output
+    assert calls == [["herdr", "plugin", "list", "--json"]]
+
+
+def test_register_dry_run_validates_but_does_not_mutate(tmp_path, monkeypatch):
+    root = _local_package(tmp_path)
+    _allow_local_checkout(monkeypatch)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        return _registry_result([])
+
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "add", "--local", str(root), "--dry-run"])
+
+    assert result.exit_code == 0, result.output
+    assert "DRY-RUN" in result.output
+    assert "disposition=planned" in result.output
+    assert calls == [["herdr", "plugin", "list", "--json"]]
+
+
+def test_register_json_uses_canonical_add_command_and_registration_operation(tmp_path, monkeypatch):
+    root = _local_package(tmp_path)
+    _allow_local_checkout(monkeypatch)
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    monkeypatch.setattr(herdr_plugin.run, "run", lambda *a, **k: _registry_result([]))
+
+    result = runner.invoke(
+        app,
+        ["plugin", "herdr", "add", "--local", str(root), "--dry-run", "--json"],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["command"] == "plugin herdr add"
+    assert payload["operation"] == "register"
+    jsonschema.validate(payload, json.loads(_LIFECYCLE_SCHEMA_PATH.read_text()))
+
+
+def test_register_fences_missing_cli_and_incompatible_manifest(tmp_path, monkeypatch):
+    root = _local_package(tmp_path, plugin_id="foreign.plugin")
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: None)
+    missing = runner.invoke(app, ["plugin", "herdr", "add", "--local", str(root)])
+    assert missing.exit_code == 1
+    assert "herdr_cli_unavailable" in missing.output
+
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    _allow_local_checkout(monkeypatch)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("invalid manifest must be refused before Herdr runs")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", boom)
+    incompatible = runner.invoke(app, ["plugin", "herdr", "add", "--local", str(root)])
+    assert incompatible.exit_code == 2
+    assert "manifest_incompatible" in incompatible.output
+
+
+def test_register_reports_partial_installation_when_registry_does_not_persist(
+    tmp_path, monkeypatch
+):
+    root = _local_package(tmp_path)
+    _allow_local_checkout(monkeypatch)
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "plugin", "list", "--json"]:
+            return _registry_result([])
+        return _result(stdout="claimed success")
+
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "add", "--local", str(root)])
+
+    assert result.exit_code == 1
+    assert "partial_installation" in result.output
+    assert calls.count(["herdr", "plugin", "list", "--json"]) == 2
+
+
+def test_status_separates_adapter_package_server_and_agent_integrations(monkeypatch):
+    row = {
+        "plugin_id": "beadhive.herdr",
+        "plugin_root": "/workspace/github/beadhive/herdr-plugin",
+        "source": {"kind": "local"},
+        "enabled": True,
+        "version": "0.1.0",
+    }
+    calls = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "plugin", "list", "--json"]:
+            return _registry_result([row])
+        if argv == ["herdr", "--session", "bh-supervisor", "status"]:
+            return _result(stdout="server ready")
+        if argv == ["herdr", "integration", "status"]:
+            return _result(stdout="codex: installed")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "status", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    assert payload["adapter"]["state"] == "available"
+    assert payload["package"]["state"] == "registered"
+    assert payload["package"]["plugin_id"] == "beadhive.herdr"
+    assert payload["server"]["available"] is True
+    assert payload["integrations"] == [{"kind": "codex", "state": "installed"}]
+    assert calls == [
+        ["herdr", "plugin", "list", "--json"],
+        ["herdr", "--session", "bh-supervisor", "status"],
+        ["herdr", "integration", "status"],
+    ]
+
+
+def test_readiness_keeps_package_and_agent_integration_separate(monkeypatch):
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_package_status",
+        lambda: (
+            {"state": "registered", "plugin_id": "beadhive.herdr"},
+            "",
+        ),
+    )
+    monkeypatch.setattr(herdr_plugin.config, "herdr_kind", lambda cfg, entry: "codex")
+    monkeypatch.setattr(herdr_plugin, "_integration_ready", lambda kind: (True, "installed"))
+
+    state, detail = herdr_plugin._readiness({}, {})
+    assert state == "ok"
+    assert "adapter=available" in detail
+    assert "package=registered plugin_id=beadhive.herdr" in detail
+    assert "agent-integration[codex]=installed" in detail
+
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_package_status",
+        lambda: ({"state": "absent", "plugin_id": "beadhive.herdr"}, ""),
+    )
+    state, detail = herdr_plugin._readiness({}, {})
+    assert state == "warn"
+    assert "package=absent" in detail
+
+
+def test_herdr_plugin_onboard_hook_is_explicit_opt_in(monkeypatch, tmp_path):
+    root = _local_package(tmp_path)
+    calls: list[dict] = []
+    monkeypatch.setattr(herdr_plugin, "_local_package_checkout", lambda: root)
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_converge_package",
+        lambda **kwargs: (
+            calls.append(kwargs)
+            or {
+                "plugin_id": "beadhive.herdr",
+                "source": "local",
+                "path": str(root),
+                "disposition": "linked",
+            }
+        ),
+    )
+
+    assert herdr_plugin.PLUGIN.onboard_requires_opt_in is True
+    assert herdr_plugin.PLUGIN.on_onboard is not None
+    herdr_plugin.PLUGIN.on_onboard(SimpleNamespace())
+    assert calls == [{"local": root}]
 
 
 def test_session_selection_defaults_and_resolves_current_only_inside_herdr(monkeypatch):
@@ -122,6 +429,8 @@ def test_status_current_targets_injected_session_and_reports_it(monkeypatch):
 
     def fake_run(argv, **_kwargs):
         calls.append(argv)
+        if argv == ["herdr", "plugin", "list", "--json"]:
+            return _registry_result([])
         if argv == ["herdr", "--session", "operator-team", "status"]:
             return _result(stdout="server ready")
         if argv == ["herdr", "integration", "status"]:
@@ -133,7 +442,11 @@ def test_status_current_targets_injected_session_and_reports_it(monkeypatch):
 
     assert result.exit_code == 0, result.output
     assert json.loads(result.stdout)["session"] == "operator-team"
-    assert calls[0] == ["herdr", "--session", "operator-team", "status"]
+    assert calls == [
+        ["herdr", "plugin", "list", "--json"],
+        ["herdr", "--session", "operator-team", "status"],
+        ["herdr", "integration", "status"],
+    ]
 
     attached = runner.invoke(
         app,
@@ -1472,6 +1785,7 @@ def test_lifecycle_receipt_schema_covers_every_json_command():
     assert schema["properties"]["schema_version"] == {"const": 1}
     assert set(schema["properties"]["operation"]["enum"]) == {
         "status",
+        "register",
         "ps",
         "spawn",
         "dispatch",
