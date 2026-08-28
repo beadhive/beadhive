@@ -87,6 +87,19 @@ def _dependency(issue_id: str, depends_on_id: str) -> state_stream.WorkDependenc
     )
 
 
+class _CountingTuple(tuple):
+    """Tuple-compatible source collection that records complete projection scans."""
+
+    def __new__(cls, values):
+        instance = super().__new__(cls, values)
+        instance.iterations = 0
+        return instance
+
+    def __iter__(self):
+        self.iterations += 1
+        return super().__iter__()
+
+
 class Provider:
     def __init__(self, *, unavailable: bool = False) -> None:
         self.unavailable = unavailable
@@ -242,6 +255,49 @@ def test_ready_queue_can_use_the_same_configured_release_order_as_bh_work_ready(
         "bh-ready-2",
         "bh-ready-1",
     ]
+
+
+def test_queue_projection_indexes_sparse_dependencies_and_gates_once() -> None:
+    issues = tuple(_issue(f"bh-scale-{index:03}") for index in range(240))
+    dependencies = tuple(_dependency(f"bh-scale-{index:03}", "bh-scale-239") for index in range(80))
+    gates = tuple(
+        state_stream.GateRequest(
+            id=state_stream.projection_id("gate-request", (HIVE, f"approval-{index:03}")),
+            hive=HIVE,
+            gate_id=f"approval-{index:03}",
+            blocks=(f"bh-scale-{index + 80:03}",),
+            gate_type=None,
+            gate_kind="approval",
+            status="open",
+            reason="Awaiting approval",
+            opened_at=NOW,
+            resolved_at=None,
+        )
+        for index in range(40)
+    )
+    beads = state_stream.ProviderSnapshot(
+        scope="hive",
+        revision="beads-scale",
+        as_of=NOW,
+        issues=issues,
+        work_dependencies=dependencies,
+        gate_requests=gates,
+    )
+    counted_dependencies = _CountingTuple(beads.work_dependencies)
+    counted_gates = _CountingTuple(beads.gate_requests)
+    object.__setattr__(beads, "work_dependencies", counted_dependencies)
+    object.__setattr__(beads, "gate_requests", counted_gates)
+
+    payload = operator_work_items.queue_payload(
+        hive_id=HIVE,
+        beads=beads,
+        runtime=_runtime("host-1", "runtime"),
+        query=operator_work_items.WorkItemQuery(queue="blocked", limit=200),
+    )
+
+    assert payload["returned"] == 120
+    assert counted_dependencies.iterations == 1
+    assert counted_gates.iterations == 1
 
 
 def test_pagination_filters_and_cursor_scope_and_revision_are_stable(tmp_path: Path) -> None:

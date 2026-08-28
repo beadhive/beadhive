@@ -13,7 +13,7 @@ from . import config, operator_actions, release_order
 from .agent_run_summary import AgentRunState
 from .operator_sources import OperatorSourceError
 from .public_readers import AgentRunSnapshot
-from .state_stream import GateRequest, ProviderSnapshot, StreamIssue, WorkDependency
+from .state_stream import ProviderSnapshot, StreamIssue, WorkDependency
 
 SCHEMA_VERSION = 1
 DEFAULT_LIMIT = 50
@@ -48,6 +48,14 @@ class WorkItemQuery:
             "parent": self.parent,
             "ordering": self.ordering,
         }
+
+
+@dataclass(frozen=True)
+class _QueueIndexes:
+    issues: dict[str, StreamIssue]
+    blocker_counts: dict[str, int]
+    blocked_dependent_counts: dict[str, int]
+    open_gate_counts: dict[str, int]
 
 
 def _millis(value: str | float | int | None) -> int | None:
@@ -141,69 +149,50 @@ def _priority(value: str) -> int:
         return 2
 
 
-def _issue_index(beads: ProviderSnapshot) -> dict[str, StreamIssue]:
-    return {item.id: item for item in beads.issues}
-
-
-def _direct_blockers(
-    issue: StreamIssue, beads: ProviderSnapshot, by_id: dict[str, StreamIssue]
-) -> list[WorkDependency]:
-    return sorted(
-        (
-            dependency
-            for dependency in beads.work_dependencies
-            if dependency.issue_id == issue.id
-            and dependency.type not in _NON_BLOCKING_DEPENDENCIES
-            and (
-                dependency.depends_on_id not in by_id
-                or by_id[dependency.depends_on_id].status != "closed"
+def _queue_indexes(beads: ProviderSnapshot) -> _QueueIndexes:
+    issues = {item.id: item for item in beads.issues}
+    blocker_counts: dict[str, int] = {}
+    blocked_dependent_counts: dict[str, int] = {}
+    open_gate_counts: dict[str, int] = {}
+    for dependency in beads.work_dependencies:
+        if dependency.type in _NON_BLOCKING_DEPENDENCIES:
+            continue
+        prerequisite = issues.get(dependency.depends_on_id)
+        if prerequisite is None or prerequisite.status != "closed":
+            blocker_counts[dependency.issue_id] = blocker_counts.get(dependency.issue_id, 0) + 1
+        dependent = issues.get(dependency.issue_id)
+        if dependent is not None and dependent.status != "closed":
+            blocked_dependent_counts[dependency.depends_on_id] = (
+                blocked_dependent_counts.get(dependency.depends_on_id, 0) + 1
             )
-        ),
-        key=lambda value: (value.depends_on_id, value.type),
+    for gate in beads.gate_requests:
+        if gate.status not in {"open", "pending"}:
+            continue
+        for issue_id in dict.fromkeys(gate.blocks):
+            open_gate_counts[issue_id] = open_gate_counts.get(issue_id, 0) + 1
+    return _QueueIndexes(
+        issues=issues,
+        blocker_counts=blocker_counts,
+        blocked_dependent_counts=blocked_dependent_counts,
+        open_gate_counts=open_gate_counts,
     )
 
 
-def _blocking_gates(issue: StreamIssue, beads: ProviderSnapshot) -> list[GateRequest]:
-    return sorted(
-        (
-            gate
-            for gate in beads.gate_requests
-            if issue.id in gate.blocks and gate.status in {"open", "pending"}
-        ),
-        key=lambda value: value.id,
-    )
-
-
-def _readiness(
-    issue: StreamIssue, blockers: list[WorkDependency], gates: list[GateRequest]
-) -> tuple[str, str]:
+def _readiness(issue: StreamIssue, blocker_count: int, open_gate_count: int) -> tuple[str, str]:
     if issue.status == "closed":
         return "completed", "work item is closed"
-    if issue.status == "blocked" or blockers or gates:
+    if issue.status == "blocked" or blocker_count or open_gate_count:
         reasons = []
-        if blockers:
-            reasons.append(f"{len(blockers)} unresolved direct dependency")
-        if gates:
-            reasons.append(f"{len(gates)} open gate")
+        if blocker_count:
+            reasons.append(f"{blocker_count} unresolved direct dependency")
+        if open_gate_count:
+            reasons.append(f"{open_gate_count} open gate")
         return "blocked", " and ".join(reasons) or "work item status is blocked"
     if issue.status == "open":
         return "ready", "open with no unresolved direct dependency or open gate"
     if issue.status == "in_progress":
         return "active", "work item is in progress"
     return "unavailable", f"work item status is {issue.status or 'unknown'}"
-
-
-def _dependent_count(
-    issue: StreamIssue, beads: ProviderSnapshot, by_id: dict[str, StreamIssue]
-) -> int:
-    return sum(
-        1
-        for dependency in beads.work_dependencies
-        if dependency.depends_on_id == issue.id
-        and dependency.type not in _NON_BLOCKING_DEPENDENCIES
-        and dependency.issue_id in by_id
-        and by_id[dependency.issue_id].status != "closed"
-    )
 
 
 def _agents(issue: StreamIssue, runtime: AgentRunSnapshot) -> list[dict[str, object]]:
@@ -226,13 +215,12 @@ def _row(
     *,
     hive_id: str,
     revision: str,
-    beads: ProviderSnapshot,
     runtime: AgentRunSnapshot,
-    by_id: dict[str, StreamIssue],
+    indexes: _QueueIndexes,
 ) -> dict[str, object]:
-    blockers = _direct_blockers(issue, beads, by_id)
-    gates = _blocking_gates(issue, beads)
-    readiness, reason = _readiness(issue, blockers, gates)
+    blocker_count = indexes.blocker_counts.get(issue.id, 0)
+    open_gate_count = indexes.open_gate_counts.get(issue.id, 0)
+    readiness, reason = _readiness(issue, blocker_count, open_gate_count)
     labels = list(issue.labels)
     agents = _agents(issue, runtime)
     return {
@@ -248,11 +236,11 @@ def _row(
         "assignee": issue.assignee,
         "owner": issue.owner,
         "parentId": issue.parent_id,
-        "blockerCount": len(blockers),
-        "blockedDependentCount": _dependent_count(issue, beads, by_id),
+        "blockerCount": blocker_count,
+        "blockedDependentCount": indexes.blocked_dependent_counts.get(issue.id, 0),
         "labels": labels[:12],
         "remainingLabelCount": max(0, len(labels) - 12),
-        "openGateCount": len(gates),
+        "openGateCount": open_gate_count,
         "liveAgentCount": sum(item["state"] in _LIVE_AGENT_STATES for item in agents),
         "updatedAt": _millis(issue.updated_at),
     }
@@ -262,12 +250,13 @@ def _matches_queue(
     issue: StreamIssue,
     *,
     query: WorkItemQuery,
-    beads: ProviderSnapshot,
-    by_id: dict[str, StreamIssue],
+    indexes: _QueueIndexes,
 ) -> bool:
-    blockers = _direct_blockers(issue, beads, by_id)
-    gates = _blocking_gates(issue, beads)
-    readiness = _readiness(issue, blockers, gates)[0]
+    readiness = _readiness(
+        issue,
+        indexes.blocker_counts.get(issue.id, 0),
+        indexes.open_gate_counts.get(issue.id, 0),
+    )[0]
     if readiness != query.queue and not (query.queue == "recent" and readiness == "completed"):
         return False
     if query.priorities and issue.priority.upper() not in query.priorities:
@@ -335,13 +324,9 @@ def queue_payload(
 ) -> dict[str, object]:
     revision = projection_revision(beads, runtime)
     offset = _cursor_offset(query.cursor, hive_id=hive_id, revision=revision, query=query)
-    by_id = _issue_index(beads)
+    indexes = _queue_indexes(beads)
     selected = sorted(
-        (
-            issue
-            for issue in beads.issues
-            if _matches_queue(issue, query=query, beads=beads, by_id=by_id)
-        ),
+        (issue for issue in beads.issues if _matches_queue(issue, query=query, indexes=indexes)),
         key=lambda issue: _sort_key(issue, query.queue),
     )
     if query.queue == "ready" and ready_policy is not None:
@@ -378,9 +363,8 @@ def queue_payload(
                 issue,
                 hive_id=hive_id,
                 revision=revision,
-                beads=beads,
                 runtime=runtime,
-                by_id=by_id,
+                indexes=indexes,
             )
             for issue in page
         ],
@@ -434,7 +418,8 @@ def detail_payload(
     beads: ProviderSnapshot,
     runtime: AgentRunSnapshot,
 ) -> dict[str, object]:
-    by_id = _issue_index(beads)
+    indexes = _queue_indexes(beads)
+    by_id = indexes.issues
     issue = by_id.get(bead_id)
     if issue is None:
         raise OperatorSourceError(
@@ -445,9 +430,8 @@ def detail_payload(
         issue,
         hive_id=hive_id,
         revision=revision,
-        beads=beads,
         runtime=runtime,
-        by_id=by_id,
+        indexes=indexes,
     )
     dependencies = [
         _dependency_detail(dependency, direction="prerequisite", by_id=by_id)
