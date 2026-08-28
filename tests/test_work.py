@@ -1354,10 +1354,20 @@ def _wait_validation_state(root, predicate, timeout=10.0):
     raise AssertionError("validation sentinel did not reach the expected state")
 
 
-def _submit_in_process(bead, results, fakebd):
+def _submit_in_process(bead, results, fakebd, active_retry=None):
     work.run = fakebd
     bd_mod._run = fakebd
     plan.verify_epic = lambda *a, **k: []
+    if active_retry is not None:
+        original_running_runs = validation_records.running_runs
+
+        def running_runs(*args, **kwargs):
+            runs = original_running_runs(*args, **kwargs)
+            if runs:
+                active_retry.set()
+            return runs
+
+        validation_records.running_runs = running_runs
     output = io.StringIO()
     rc = 0
     try:
@@ -1438,20 +1448,21 @@ while not (root / 'release').exists():
 
     ctx = process_context()
     results = ctx.Queue()
+    active_retry = ctx.Event()
     leader = ctx.Process(target=_submit_in_process, args=("mr-submit-a", results, fakebd))
     leader.start()
     _wait_validation_state(state_root, lambda state: state.get("children", {}).get("A") == 1)
     other = ctx.Process(target=_submit_in_process, args=("mr-submit-b", results, fakebd))
-    duplicate = ctx.Process(target=_submit_in_process, args=("mr-submit-a", results, fakebd))
+    duplicate = ctx.Process(
+        target=_submit_in_process,
+        args=("mr-submit-a", results, fakebd, active_retry),
+    )
     duplicate.start()
-    # Spawn starts a fresh interpreter rather than cloning this pytest worker. Give the exact
-    # retry time to reach active-run discovery before admitting the unrelated branch.
-    time.sleep(0.5)
+    assert active_retry.wait(10), "exact retry did not observe the active submit blocker"
     other.start()
     if slots == 2:
         _wait_validation_state(state_root, lambda state: state.get("peak") == 2)
     else:
-        time.sleep(0.2)
         assert _wait_validation_state(state_root, lambda state: "peak" in state).get("peak") == 1
     (state_root / "release").touch()
 

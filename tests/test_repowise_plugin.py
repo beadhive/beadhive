@@ -463,6 +463,9 @@ def test_refresh_refuses_missing_update_flag_before_update_spawn(monkeypatch, tm
     (tmp_path / ".repowise").mkdir()
     (tmp_path / ".repowise" / "state.json").write_text(json.dumps({"last_sync_commit": "old"}))
     monkeypatch.setattr(repowise_plugin, "_branch_point", lambda main, start: "new")
+    # This is a capability-contract unit test: binary presence must not depend on whether the
+    # invoking user's optional Repowise install remains reachable through a hermetic HOME/PATH.
+    monkeypatch.setattr(repowise_plugin, "_has_cli", lambda: True)
     monkeypatch.setattr(
         repowise_plugin,
         "capabilities",
