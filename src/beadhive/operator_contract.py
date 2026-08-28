@@ -121,6 +121,89 @@ def factory_snapshot(
     }
 
 
+def factory_hive_summary(
+    entry: Mapping[str, object],
+    snapshot: ProviderSnapshot | None,
+    *,
+    unavailable_reason: str | None = None,
+) -> dict[str, object]:
+    """Project one reusable, path-safe factory hive summary.
+
+    ``open`` is the literal number of issues whose canonical status is ``open``.
+    ``ready`` is the subset of those issues with no known non-terminal prerequisite or open
+    gate. ``active`` is the number whose status is ``in_progress``. ``blocked`` combines the
+    canonical ``blocked`` status with open issues that have a known unresolved prerequisite.
+    The categories intentionally overlap: ready and dependency-blocked issues are both open.
+
+    Unavailable hives retain their registry identity and carry null counts.  That makes an
+    unavailable source observably different from an available hive with four zero counts.
+    """
+
+    identity = "/".join(str(entry[field]) for field in ("provider", "org", "repo"))
+    opaque_ref = f"hive-sha256-{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+    base: dict[str, object] = {
+        "id": identity,
+        "displayLabel": str(entry.get("label") or entry.get("display_name") or entry["repo"]),
+        "opaqueRef": opaque_ref,
+        "prefix": str(entry["prefix"]),
+        "provider": str(entry["provider"]),
+        "org": str(entry["org"]),
+        "repo": str(entry["repo"]),
+        "kind": str(entry.get("kind", "")),
+    }
+    if snapshot is None:
+        return {
+            **base,
+            "availability": {"state": "unavailable", "reason": unavailable_reason},
+            "counts": {"open": None, "ready": None, "active": None, "blocked": None},
+            "revision": None,
+            "asOf": None,
+            "coverage": {"state": "unavailable", "reason": unavailable_reason},
+        }
+
+    issues = tuple(snapshot.issues)
+    terminal = {"closed"}
+    nonterminal_ids = {issue.id for issue in issues if issue.status.lower() not in terminal}
+    open_gate_ids = {
+        gate.gate_id
+        for gate in snapshot.gate_requests
+        if gate.status.lower() in {"open", "pending"}
+    }
+    blocked_ids = {issue.id for issue in issues if issue.status.lower() == "blocked"}
+    for issue in issues:
+        for edge in issue.dependencies:
+            if edge.depends_on_id in nonterminal_ids or edge.depends_on_id in open_gate_ids:
+                blocked_ids.add(issue.id)
+    for edge in snapshot.work_dependencies:
+        if edge.depends_on_id in nonterminal_ids or edge.depends_on_id in open_gate_ids:
+            blocked_ids.add(edge.issue_id)
+
+    open_ids = {issue.id for issue in issues if issue.status.lower() == "open"}
+    counts = {
+        "open": len(open_ids),
+        "ready": len(open_ids - blocked_ids),
+        "active": sum(issue.status.lower() == "in_progress" for issue in issues),
+        "blocked": len({issue.id for issue in issues if issue.id in blocked_ids}),
+    }
+    return {
+        **base,
+        "availability": {"state": "available", "reason": None},
+        "counts": counts,
+        "revision": snapshot.revision,
+        "asOf": _millis(snapshot.as_of),
+        "coverage": {
+            "state": "partial" if snapshot.partial else "complete",
+            "reason": snapshot.partial_reason,
+        },
+    }
+
+
+def factory_hive_page_revision(items: Sequence[Mapping[str, object]]) -> str:
+    """Return the opaque revision shared by ETags and snapshot-scoped cursors."""
+
+    return _revision("factory-hives-v1", list(items))
+
+
 def _work_item(issue: StreamIssue, hive_id: str, revision: str, generated_at: int) -> dict:
     updated_at = _millis(issue.updated_at, fallback=generated_at)
     priority_text = issue.priority.removeprefix("P").removeprefix("p")

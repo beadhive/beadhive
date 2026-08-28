@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Beadhive Host Operator API",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Phase 1 is an unauthenticated, loopback-only, read-only GET profile. A later non-loopback profile applies the documented bearer scheme without changing these source payloads."
   },
   "security": [],
@@ -45,6 +45,53 @@
               }
             }
           },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "405": {"$ref": "#/components/responses/ReadOnly"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/api/v1/factory/hives": {
+      "get": {
+        "operationId": "operatorFactoryHives",
+        "summary": "Read bounded generic summaries for registered hives",
+        "description": "Returns canonical registry identity and source-derived aggregate counts. Ordering is lexical by canonical hive id. An unavailable hive remains present with null counts; an available empty hive has zero counts. open counts literal status=open records; ready is the subset with no known unresolved prerequisite or open gate; active counts status=in_progress; blocked combines status=blocked with open issues that have a known unresolved prerequisite. ready and blocked are subsets that may overlap the open category.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque snapshot-scoped cursor returned by nextCursor.",
+            "schema": {"type": "string", "minLength": 1}
+          },
+          {
+            "name": "availability",
+            "in": "query",
+            "required": false,
+            "schema": {"enum": ["available", "unavailable"]}
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One bounded deterministic page of hive summaries",
+            "headers": {"ETag": {"schema": {"type": "string"}}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FactoryHivePage"}}}
+          },
+          "304": {"description": "The selected page still matches If-None-Match"},
           "400": {"$ref": "#/components/responses/BadRequest"},
           "403": {"$ref": "#/components/responses/Forbidden"},
           "405": {"$ref": "#/components/responses/ReadOnly"},
@@ -630,6 +677,68 @@
           "hostId": {"type": "string"},
           "serviceInstanceId": {"type": "string"},
           "ready": {"type": "boolean"}
+        }
+      },
+      "FactoryHiveSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "displayLabel", "opaqueRef", "prefix", "provider", "org", "repo", "kind", "availability", "counts", "revision", "asOf", "coverage"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+$"},
+          "displayLabel": {"type": "string", "minLength": 1},
+          "opaqueRef": {"type": "string", "pattern": "^hive-sha256-[a-f0-9]{64}$"},
+          "prefix": {"type": "string", "minLength": 1},
+          "provider": {"type": "string", "minLength": 1},
+          "org": {"type": "string", "minLength": 1},
+          "repo": {"type": "string", "minLength": 1},
+          "kind": {"type": "string"},
+          "availability": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["state", "reason"],
+            "properties": {
+              "state": {"enum": ["available", "unavailable"]},
+              "reason": {"type": ["string", "null"]}
+            }
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["open", "ready", "active", "blocked"],
+            "properties": {
+              "open": {"type": ["integer", "null"], "minimum": 0},
+              "ready": {"type": ["integer", "null"], "minimum": 0},
+              "active": {"type": ["integer", "null"], "minimum": 0},
+              "blocked": {"type": ["integer", "null"], "minimum": 0}
+            }
+          },
+          "revision": {"type": ["string", "null"]},
+          "asOf": {"type": ["integer", "null"], "minimum": 0},
+          "coverage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["state", "reason"],
+            "properties": {
+              "state": {"enum": ["complete", "partial", "unavailable"]},
+              "reason": {"type": ["string", "null"]}
+            }
+          }
+        }
+      },
+      "FactoryHivePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "revision", "generatedAt", "items", "returnedCount", "limit", "truncated", "nextCursor", "warnings"],
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "revision": {"type": "string", "minLength": 1},
+          "generatedAt": {"type": "integer", "minimum": 0},
+          "items": {"type": "array", "maxItems": 200, "items": {"$ref": "#/components/schemas/FactoryHiveSummary"}},
+          "returnedCount": {"type": "integer", "minimum": 0, "maximum": 200},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+          "truncated": {"type": "boolean"},
+          "nextCursor": {"type": ["string", "null"]},
+          "warnings": {"type": "array", "items": {"type": "string"}}
         }
       },
       "StreamCursor": {

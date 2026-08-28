@@ -105,6 +105,7 @@ The versioned product route table is:
 | --- | --- | --- | --- |
 | `GET`, `POST`, `DELETE` | `/mcp` | `mcp:control` | FastMCP streamable HTTP transport |
 | `GET` | `/api/v1/factory` | `operator:read` | Host/factory identity and daemon status |
+| `GET` | `/api/v1/factory/hives` | `operator:read` | Bounded registered-hive summaries, availability, and aggregate counts |
 | `GET` | `/api/v1/hives/{hive_id}/snapshot` | `operator:read` | Authoritative per-hive snapshot and event cursor |
 | `GET` | `/api/v1/hives/{hive_id}/events` | `operator:read` | Authenticated SSE stream and bounded replay |
 | `GET` | `/api/v1/runs/{run_id}/activity` | `operator:read` | Authoritative activity view for one exact outer run |
