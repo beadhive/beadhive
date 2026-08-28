@@ -44,10 +44,11 @@ state (epic closed, every child closed, the cancelled bead re-dispatched and its
 anything that does not hold is listed and the script exits **non-zero**. A crash and a success
 must not be distinguishable only by reading the tail of ninety seconds of output.
 
-The fresh `bd init` is bounded because an embedded-engine startup has intermittently remained
-alive forever (bh-zayss). On its first timeout the demo captures process diagnostics, deletes
-only that partial scratch workspace, and retries once at a distinct path. A second timeout is a
-hard non-zero failure; partial state is never reused and a timeout is never accepted as success.
+The fresh `bd init` is explicitly non-interactive because a merge-time run inherited a PTY and
+waited forever at bd's contributor prompt (bh-zayss). It is bounded as a second line of defense:
+on its first timeout the demo captures process diagnostics, deletes only that partial scratch
+workspace, and retries once at a distinct path. A second timeout is a hard non-zero failure;
+partial state is never reused and a timeout is never accepted as success.
 
 Timing is stated rather than assumed: :func:`print_timing_contract` prints, before the first
 pass, which parts of the output vary between runs (pass numbers, pids, elapsed seconds) and
@@ -100,11 +101,12 @@ MAX_RUN_SECONDS = 2.0
 #: the molecule above settles in well under a dozen passes on any machine.
 MAX_PASSES = 60
 
-#: `bd init` is the only external command in this demo known to have intermittently remained
-#: alive forever in the embedded Dolt engine (bh-zayss).  A healthy fresh init finishes in
-#: 4-6 seconds in a fenced 48-run stress matrix.  Bound only that command, retain its process
-#: diagnostics, and retry once in a different throwaway workspace rather than ever continuing
-#: from a partially initialized `.beads/` directory.
+#: `bd init` is the only external command in this demo known to have remained alive forever:
+#: inherited PTY stdin let bd wait at its contributor prompt (bh-zayss).  The invocation is
+#: explicitly non-interactive below; keep this bound as defense in depth.  A healthy fresh init
+#: finishes in 4-6 seconds in a fenced 48-run stress matrix.  Retain its process diagnostics and
+#: retry once in a different throwaway workspace rather than ever continuing from a partially
+#: initialized `.beads/` directory.
 BD_INIT_TIMEOUT_SECONDS = 30.0
 BD_INIT_DIAGNOSTIC_GRACE_SECONDS = 5.0
 BD_INIT_KILL_DRAIN_SECONDS = 2.0
@@ -558,7 +560,7 @@ def _bounded_bd_init(main: Path) -> None:
     future occurrence of bh-zayss into root-cause evidence.  If the process does not honor it,
     SIGKILL follows after a short bounded grace period.  No other demo command is timed out.
     """
-    argv = ["bd", "init", "--prefix", PREFIX, "--quiet"]
+    argv = ["bd", "init", "--prefix", PREFIX, "--quiet", "--non-interactive"]
     grouped = os.name == "posix"
     process = subprocess.Popen(
         argv,
