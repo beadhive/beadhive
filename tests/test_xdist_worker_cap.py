@@ -28,8 +28,12 @@ def test_every_parallel_pytest_recipe_uses_the_shared_xdist_ceiling() -> None:
 
 def test_just_exports_default_and_override_xdist_ceiling() -> None:
     command = ["just", "--justfile", str(JUSTFILE), "--evaluate", AUTO_WORKER_ENV]
+    default_env = os.environ.copy()
+    default_env.pop(AUTO_WORKER_ENV, None)
 
-    default = subprocess.run(command, cwd=ROOT, check=True, text=True, capture_output=True)
+    default = subprocess.run(
+        command, cwd=ROOT, check=True, text=True, capture_output=True, env=default_env
+    )
     override = subprocess.run(
         command,
         cwd=ROOT,
