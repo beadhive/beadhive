@@ -173,11 +173,10 @@ For an agent, consume the returned target rather than predicting its encoded nam
 ```bash
 launch_json="$(bh plugin herdr launch nvhack-lvxi --json)"
 target="$(printf '%s' "$launch_json" | jq -r '.target')"
-session="$(printf '%s' "$launch_json" | jq -r '.session')"
-bh plugin herdr dispatch "$target" "Implement the claimed bead and submit it for review." --session "$session"
-bh plugin herdr watch "$target" --session "$session"
-bh plugin herdr attach "$target" --session "$session"  # prints; never attaches itself
-bh plugin herdr reap "$target" --session "$session"    # closes only the proven owned pane
+bh plugin herdr dispatch "$target" "Implement the claimed bead and submit it for review."
+bh plugin herdr watch "$target"
+bh plugin herdr attach "$target"  # prints; never attaches itself
+bh plugin herdr reap "$target"    # closes only the proven owned pane
 ```
 
 JSON stdout is one version-1 document: `schema_version`, `command`, `status`, `disposition`,
@@ -188,9 +187,19 @@ Herdr-safe encoding.
 
 ### Session selection and lifecycle propagation
 
-Every session-aware command accepts `--session`:
+Every session-aware lifecycle and view command uses `--session` over `BH_HERDR_SESSION` over
+`default`:
 
-- Omitting it preserves the noninteractive `bh-supervisor` default.
+- Omitting `--session` and leaving `BH_HERDR_SESSION` unset selects exactly `default`, matching a
+  normal Herdr startup. It never selects another client's focused session.
+- `BH_HERDR_SESSION=NAME` selects that exact session when the flag is omitted. An explicit
+  `--session NAME` wins over the environment. For example:
+
+  ```bash
+  BH_HERDR_SESSION=team bh plugin herdr ps --json
+  bh plugin herdr ps --session bh-supervisor --json  # explicit legacy compatibility name
+  ```
+
 - `--session current` and `--session active` are aliases for the calling pane's session. They
   are accepted only with Herdr's injected `HERDR_ENV=1` and `HERDR_PANE_ID`; a named pane uses
   `HERDR_SESSION`, while the original session resolves to `default`. The wrapper never infers a
@@ -199,19 +208,32 @@ Every session-aware command accepts `--session`:
   dot, underscore, and dash grammar. The command never falls back to `default` or enumerates a
   different live session as a substitute.
 
-`launch` and `spawn` use Herdr's exact-session snapshot as the get-or-create boundary. If the
-reserved `bh-supervisor` session exists as a stopped tombstone, Beadhive may delete that stopped
-record and recreate it; a concurrent launcher that wins the recreation race is safely reused.
-No other stopped named session is deleted automatically. Instead the failure prints an explicit
-`herdr session delete NAME` recovery command so a human can confirm that teardown. Invalid or
-incompatible session inventory is a refusal, not permission to guess. These session rules are
-independent of the host-lease gate: an active foreign host lease is still never adopted.
+`launch` and `spawn` use Herdr's exact-session snapshot as the get-or-create boundary. A stopped
+`default` tombstone is operator-owned and is never automatically deleted or recreated. The
+legacy explicit `bh-supervisor` name remains the sole reserved recovery name: if that session is
+selected and stopped, Beadhive may delete and recreate its tombstone; a concurrent launcher that
+wins the recreation race is safely reused. No other stopped named session is deleted
+automatically. Instead the failure prints an explicit `herdr session delete NAME` recovery
+command so a human can confirm that teardown. Invalid or incompatible session inventory is a
+refusal, not permission to guess. These session rules are independent of the host-lease gate: an
+active foreign host lease is still never adopted.
 
 The launch result, lifecycle receipts, roster, and pane presentation locators all carry the
-resolved session name. Pass that emitted value to `dispatch`, `watch`, `attach`, `ps`, and
-`reap`; omitting the flag deliberately returns to `bh-supervisor`, where the target may not
-exist. This explicit propagation prevents a target name in one session from authorizing an
-operation against a same-named target in another session.
+resolved session name. The normal path may omit the flag throughout because every command selects
+`default`. For a non-default session, keep the same explicit flag or `BH_HERDR_SESSION` value for
+`dispatch`, `watch`, `attach`, `ps`, views, and `reap`. Exact propagation prevents a target name
+in one session from authorizing an operation against a same-named target in another session.
+
+The linked read-only smoke test proves the installed normal path without creating, deleting,
+focusing, or otherwise mutating a pane or registry entry:
+
+```bash
+BH_BIN=bh bash scripts/smoke-herdr-default.sh github/beadhive/beadhive
+```
+
+It unsets `BH_HERDR_SESSION` for each probe and requires status to be available, presentation to
+have an exact `default` workspace correlation, and Crew scope and workspace locators to name
+`default`.
 
 ### Lifecycle receipts and prompt input
 
@@ -319,7 +341,7 @@ prompt value belongs in the projection or process arguments. Forbidden, unavaila
 actions have a null invocation. Lifecycle commands recheck every precondition at invocation.
 For generically ready work, the Deck and exact-bead projections further constrain
 `work-item.launch` with Herdr-local preflight evidence: CLI and kind availability, installed
-integration, the authoritative supervisor session, and host-lease ownership. Unknown proof is
+integration, the authoritative resolved session, and host-lease ownership. Unknown proof is
 `unavailable`, an active foreign lease is `forbidden`, and adopting an expired foreign lease is
 `confirmation-required`; these projections never broaden a generic denial.
 
@@ -328,7 +350,7 @@ scope is refused, and a cursor whose source revision changed requires a fresh sn
 factory or Herdr observations are explicit in `coverage`, `freshness`, and `warnings`; the views
 never turn unknown counts into authoritative zeroes.
 
-`crew` is an atomic, bounded forest over the exact authoritative `bh-supervisor` roster. It maps
+`crew` is an atomic, bounded forest over the exact authoritative resolved-session roster. It maps
 generic parent and topology facts once into stable `root-dispatcher`, `direct-agent`,
 `direct-child`, `direct-child-dispatcher`, and `orphan` relations; preserves true direct and total
 counts; and points only at existing exact workspace/tab/pane/target locators. Its desired tabs
@@ -347,16 +369,17 @@ plugin's separately recorded Child Stage ownership may authorize closing an empt
 projection never asks to close dispatcher, direct-agent, or user panes.
 
 Layout intent is deterministic by terminal width: wide uses three columns, medium uses tabs, and
-narrow uses one attention-first list with an overlay inspector. The sole owned session is
-`bh-supervisor`; Board does not own agent panes, Agents does. The picker and agent actions are
-session-modal popups. For a resolved hive, supplying `workspace_id` or `pane_id` in the layout
-context requests an ordinary companion Deck split targeting the `agents` role and exact invoking
-pane: down when narrow, right when medium or wide. Closing the companion closes its ordinary pane;
-reopening recreates the split. The version-1 compatibility behavior for callers that supply only
-viewport dimensions is the original dedicated `board` Deck tab, with explicit tab lifecycle and
-close/reopen intent. An unresolved hive always retains the picker popup even if Herdr supplied
-workspace context. The activity tray is an ordinary right split whose hide operation closes it and
-whose show operation recreates it; it is not modeled as a native collapsible.
+narrow uses one attention-first list with an overlay inspector. The exact resolved session is
+carried through every locator; Board does not own agent panes, Agents does. The picker and agent
+actions are session-modal popups. For a resolved hive, supplying `workspace_id` or `pane_id` in
+the layout context requests an ordinary companion Deck split targeting the `agents` role and
+exact invoking pane: down when narrow, right when medium or wide. Closing the companion closes
+its ordinary pane; reopening recreates the split. The version-1 compatibility behavior for
+callers that supply only viewport dimensions is the original dedicated `board` Deck tab, with
+explicit tab lifecycle and close/reopen intent. An unresolved hive always retains the picker
+popup even if Herdr supplied workspace context. The activity tray is an ordinary right split
+whose hide operation closes it and whose show operation recreates it; it is not modeled as a
+native collapsible.
 
 `stream` emits bounded NDJSON. Every connection starts with a complete Deck snapshot, followed
 by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-scope, or stale
@@ -364,7 +387,7 @@ by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-sc
 the reason so a client can discard old state safely.
 
 `presentation` composes the generic hive identity, managed-worktree inventory, read-only bounded
-Dolt comparison, work queues, and agent-facts contracts with the exact live `bh-supervisor`
+Dolt comparison, work queues, and agent-facts contracts with the exact live resolved-session
 workspace/tab/pane locators. Its
 [`herdr-presentation-v1.schema.json`](schemas/herdr-presentation-v1.schema.json) output contains
 ready-to-submit argument objects for Herdr's `workspace.report-metadata` and

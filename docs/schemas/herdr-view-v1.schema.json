@@ -8,6 +8,12 @@
     { "$ref": "#/$defs/streamFrame" }
   ],
   "$defs": {
+    "sessionName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?!\\.{1,2}$)[A-Za-z0-9._-]+$"
+    },
     "base": {
       "type": "object",
       "required": [
@@ -168,7 +174,7 @@
       "type": "object",
       "required": ["session", "cross_session_focus", "tabs", "surfaces", "viewport"],
       "properties": {
-        "session": { "const": "bh-supervisor" },
+        "session": { "$ref": "#/$defs/sessionName" },
         "cross_session_focus": { "const": false },
         "tabs": { "type": "array", "items": { "type": "object" } },
         "surfaces": {
@@ -189,7 +195,7 @@
       "additionalProperties": false,
       "required": ["session", "workspace_id", "tab_id", "pane_id", "target"],
       "properties": {
-        "session": { "const": "bh-supervisor" },
+        "session": { "$ref": "#/$defs/sessionName" },
         "workspace_id": { "type": "string", "minLength": 1, "maxLength": 256 },
         "tab_id": { "type": "string", "minLength": 1, "maxLength": 256 },
         "pane_id": { "type": "string", "minLength": 1, "maxLength": 256 },
@@ -290,7 +296,7 @@
           "required": ["hive", "session"],
           "properties": {
             "hive": { "type": "string", "minLength": 1, "maxLength": 256 },
-            "session": { "const": "bh-supervisor" }
+            "session": { "$ref": "#/$defs/sessionName" }
           }
         },
         "freshness": { "type": "object" },
@@ -305,7 +311,7 @@
               "additionalProperties": false,
               "required": ["session", "workspace_id"],
               "properties": {
-                "session": { "const": "bh-supervisor" },
+                "session": { "$ref": "#/$defs/sessionName" },
                 "workspace_id": { "type": ["string", "null"], "maxLength": 256 }
               }
             },

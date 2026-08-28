@@ -119,6 +119,12 @@
     "warnings": {"type": "array", "items": {"type": "string", "maxLength": 240}}
   },
   "$defs": {
+    "sessionName": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^(?!\\.{1,2}$)[A-Za-z0-9._-]+$"
+    },
     "nullableLocator": {"type": ["string", "null"], "maxLength": 256},
     "reportSource": {
       "enum": [
@@ -189,7 +195,7 @@
           "additionalProperties": false,
           "required": ["session", "workspace_id"],
           "properties": {
-            "session": {"const": "bh-supervisor"},
+            "session": {"$ref": "#/$defs/sessionName"},
             "workspace_id": {"$ref": "#/$defs/nullableLocator"}
           }
         },
@@ -217,7 +223,7 @@
           "additionalProperties": false,
           "required": ["session", "workspace_id", "tab_id", "pane_id"],
           "properties": {
-            "session": {"const": "bh-supervisor"},
+            "session": {"$ref": "#/$defs/sessionName"},
             "workspace_id": {"$ref": "#/$defs/nullableLocator"},
             "tab_id": {"$ref": "#/$defs/nullableLocator"},
             "pane_id": {"$ref": "#/$defs/nullableLocator"}
