@@ -1,17 +1,19 @@
 # ADR: Orca in the first host-runtime channel
 
-**Status:** Accepted (2026-08-28) · **Decision bead:** `bh-icn6b.3`
+**Status:** Rejected for first channel (2026-08-28) · **Decision bead:** `bh-icn6b.3`
 
 ## Context
 
 The accepted one-flake catalog needs a first optional application. Delivery/license spike
-`bh-icn6b.2` is GO (MIT + pinned Nix delivery); system-harness spike `bh-icn6b.1` is GO only for
-an upstream release containing Codex system-default real-home routing.
+`bh-icn6b.2` is GO (MIT + measured pinned Nix lifecycle). Empirical v1.4.190 execution changed
+`bh-icn6b.1` to NO-GO: serve found profile binaries but injected an Orca-private Codex home, and
+desktop was unmeasured.
 
 ## Decision
 
-**GO: Orca enters the first channel using `nix` delivery, pinned to v1.4.190 or a later verified
-release.** Required channel core and optional catalog selections come from one locked flake.
+**NO-GO: Orca does not enter the first host-runtime channel.** Its lawful delivery mode would be
+`nix`, but delivery GO cannot compensate for the failed runtime-ownership requirement. Required
+channel core and other optional catalog selections still come from one locked flake.
 
 Target-user resolution order is explicit: CLI flag/answer → configured seat user → invoking
 non-root user; never root by accident. Beadhive owns catalog metadata, target-user desired state,
@@ -19,7 +21,7 @@ the dedicated profile at `$HOME/.local/state/beadhive/profiles/host`, reconcilia
 verification. The selected user owns credentials, versioned license receipts and normal
 `~/.codex`/`~/.claude`. Orca owns its own application state, never provider binaries/homes.
 Upstream owns the authoritative source/release path; Beadhive may cache MIT-covered artifacts
-with notice and exact hash.
+with notice and exact hash when Orca is reconsidered.
 
 Catalog `required` entries are always present; `optional` entries are present iff selected.
 Reconciliation computes an exact set and removes deselected packages without deleting user
@@ -35,9 +37,9 @@ changes under unchanged MIT terms do not. No generic forever-valid acceptance fl
 
 ## Existing-work disposition
 
-- `bh-eqvhe`: **amended, not duplicated**. Replace its manually provisioned AppImage with the
-  catalog package; retain its separate serve provisioning, Electron dependency, derived service
-  PATH, pairing, idempotence and network-exposure requirements.
+- `bh-eqvhe`: remains a **separate serve-provisioning concern**, not absorbed into a catalog that
+  rejected Orca. Its Electron dependency, derived service PATH, pairing, idempotence and exposure
+  evidence remains valid; its manual AppImage assumption may be amended only after re-admission.
 - `bh-pc2a.19`: dependency/non-overlap. It decides Claude's signed apt install channel for
   containers; host-runtime consumes the resulting harness declaration and does not duplicate it.
 - `bh-2igmr`: dependency/non-overlap. Profile lifecycle must use/probe the supported Nix verb;
@@ -47,7 +49,7 @@ changes under unchanged MIT terms do not. No generic forever-valid acceptance fl
 
 ## Consequences
 
-The implementation molecule must cover flake/catalog, manifest and exact-set reconciler,
-target-user flags/answers, lifecycle CLI, receipts, migration from `/opt/orca`, rollback,
-inside-Orca verification, tests and docs. Orca versions before the real-home fix are rejected.
-`orca serve` remains gated by `bh-eqvhe`'s explicit private-network/exposure decision.
+No speculative Orca implementation molecule is filed. The general host-runtime architecture may
+proceed with another first optional item. Orca requires a released, documented real-home Codex
+selection verified inside both desktop and serve, followed by re-planning. `bh-eqvhe` remains
+gated independently by its explicit private-network/exposure decision.

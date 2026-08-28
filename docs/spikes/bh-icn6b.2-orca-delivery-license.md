@@ -12,8 +12,10 @@ accepting terms or exceeding upstream's redistribution grant?
 
 On 2026-08-28 I read the publisher's repository, MIT license, Terms (last updated
 2026-04-04), install/remote-server documentation, and v1.4.190 release. I copied the already
-installed v1.4.175 AppImage into `/tmp/orca-spike.HthJMg` (never changed `/opt/orca`), hashed
-it, launched it with an isolated `HOME`/`XDG_CONFIG_HOME`, and deleted only the copy.
+installed v1.4.175 AppImage into `/tmp/orca-spike.HthJMg`, then downloaded the authoritative
+v1.4.190 x86-64 AppImage into `/tmp/orca-190-spike`. I exercised a versioned install root,
+atomic update/rollback selector, extraction, runtime verification, and uninstall. `/opt/orca`
+and user state were never changed.
 
 ## Evidence
 
@@ -25,9 +27,10 @@ it, launched it with an isolated `HOME`/`XDG_CONFIG_HOME`, and deleted only the 
 2. Authoritative [install docs](https://www.onorca.dev/docs/install) publish AppImage and
    `.deb`, retain older GitHub releases, describe stable auto-update and rollback; the
    [latest release](https://github.com/stablyai/orca/releases/tag/v1.4.190) is v1.4.190.
-   GitHub asset URLs are version-addressed, but upstream publishes no detached Linux
-   signature/checksum in the inspected release UI. Nix must pin an independently computed
-   SHA-256; provenance is GitHub/Lovecast release hosting, not a signature.
+   GitHub asset URLs are version-addressed. GitHub's authoritative asset metadata publishes
+   digest `sha256:f5b321576d9c909f9e6987aa3bd20e8ff9f214d881b43c7109281cbc87878cde`
+   for `orca-linux.AppImage`; the downloaded 205,952,095-byte file matched it. No detached Linux
+   signature was present; provenance is GitHub/Lovecast release hosting plus its asset digest.
 3. Desktop and `serve` are the same Linux package. The remote-server docs require installing
    Orca and invoking its bundled CLI; `bh-eqvhe` already measured v1.4.175 serve, Electron
    dependencies, service PATH, Xvfb/pairing/exposure, and AppImage extraction. Those findings
@@ -38,16 +41,16 @@ it, launched it with an isolated `HOME`/`XDG_CONFIG_HOME`, and deleted only the 
 | desktop | macOS arm64/x64, Windows x64, Linux AppImage/`.deb` | GitHub stable/prerelease tags | versioned release asset; latest redirects | computed SHA-256; Linux signature UNKNOWN | `MIT-Lovecast-2026` plus Terms dated 2026-04-04 | permitted by MIT if notice retained |
 | `orca serve` | Linux package, with Electron host libraries | same version as desktop package | same asset | same | same | same |
 
-Isolated lifecycle result (v1.4.175, SHA-256
-`2b49edcf41a56d7b24bce3eb9d3b5377391d2eee86f96272f391a7e6f02e30f5`):
+Isolated lifecycle result for v1.4.190 (SHA-256 above), using v1.4.175
+(`2b49edcf41a56d7b24bce3eb9d3b5377391d2eee86f96272f391a7e6f02e30f5`) as rollback:
 
 | action | exact isolated operation | result / exit |
 |---|---|---|
-| install | copy bytes to `/tmp/orca-spike.HthJMg/orca-v1.4.175.AppImage`, mode 0755 | file present; hash matched, rc 0 |
-| verify | SHA-256 plus AppImage extraction with isolated home | extraction reached packaged executable; Electron sandbox launch was blocked by this sandbox, rc nonzero |
-| update | atomically replace version-named file after verifying a new pinned hash | supported by versioned release assets; not downloaded in this run |
-| rollback | select retained older version-named file | supported by retained releases; not executed |
-| uninstall | delete isolated versioned file, then `test ! -e` | rc 0; active installation untouched |
+| install | `install -m 0755` to `root/versions/1.4.190.AppImage` | size/hash matched, rc 0 |
+| verify | `--appimage-extract`, inspect updater metadata, then isolated `serve` + `status --json` | extraction rc 0; runtime ready, `appVersion: 1.4.190` |
+| update | create `current.next -> versions/1.4.190.AppImage`; `mv -Tf` over selector | readback selected 1.4.190, rc 0 |
+| rollback | same atomic selector operation targeting retained 1.4.175 | readback selected 1.4.175, rc 0 |
+| uninstall | remove selector and both isolated version files; assert empty | rc 0; active install/state untouched |
 
 Desktop state removal and `serve` state removal are deliberately separate and opt-in; deleting
 the executable does not delete user state. Native unattended installer/uninstaller: **UNSUPPORTED**
