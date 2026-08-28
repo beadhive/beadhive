@@ -572,28 +572,29 @@ def test_stopped_reserved_session_is_recreated_and_accepts_concurrent_winner(mon
     assert deletes == [["herdr", "session", "delete", "bh-supervisor", "--json"]]
 
 
-def test_stopped_nonreserved_session_is_never_deleted(monkeypatch):
+@pytest.mark.parametrize("session", ["default", "team"])
+def test_stopped_operator_owned_session_is_never_deleted(monkeypatch, session):
     monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
     monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: None)
     monkeypatch.setattr(
         herdr_plugin,
         "_session_states",
-        lambda: ({"team": herdr_plugin._SessionState("team", False)}, ""),
+        lambda: ({session: herdr_plugin._SessionState(session, False)}, ""),
     )
     monkeypatch.setattr(
         herdr_plugin,
         "_invoke",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not delete")),
     )
-    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection("team"))
+    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection(session))
     try:
         snapshot, detail = herdr_plugin._prepare_selected_session()
     finally:
         herdr_plugin._SESSION_CONTEXT.reset(token)
 
     assert snapshot is None
-    assert "session 'team' is stopped" in detail
-    assert "herdr session delete team" in detail
+    assert f"session '{session}' is stopped" in detail
+    assert f"herdr session delete {session}" in detail
 
 
 def test_running_named_session_with_unavailable_snapshot_is_never_seized(monkeypatch):
@@ -1822,6 +1823,41 @@ def test_attach_only_prints_a_copy_pasteable_session_scoped_command(monkeypatch)
     assert result.output.strip() == "herdr --session default agent attach bh-bh-1"
 
 
+def test_attach_uses_environment_then_explicit_session_without_mutation(monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("attach must not inspect or alter herdr state")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", boom)
+    monkeypatch.setenv("BH_HERDR_SESSION", "team")
+    environment = runner.invoke(app, ["plugin", "herdr", "attach", "bh-bh-1"])
+    explicit = runner.invoke(app, ["plugin", "herdr", "attach", "bh-bh-1", "--session", "other"])
+
+    assert environment.exit_code == explicit.exit_code == 0
+    assert environment.output.strip() == "herdr --session team agent attach bh-bh-1"
+    assert explicit.output.strip() == "herdr --session other agent attach bh-bh-1"
+
+
+@pytest.mark.parametrize(
+    ("environment", "arguments", "source"),
+    [
+        ("not a session", [], "BH_HERDR_SESSION"),
+        ("team", ["--session", "not a session"], "--session"),
+    ],
+)
+def test_invalid_session_source_refuses_before_attach_action(
+    monkeypatch, environment, arguments, source
+):
+    def boom(*args, **kwargs):
+        raise AssertionError("invalid selection must fail before any Herdr action")
+
+    monkeypatch.setattr(herdr_plugin.run, "run", boom)
+    monkeypatch.setenv("BH_HERDR_SESSION", environment)
+    result = runner.invoke(app, ["plugin", "herdr", "attach", "bh-bh-1", *arguments])
+
+    assert result.exit_code == 2
+    assert source in result.output
+
+
 def test_reap_refuses_reserved_name_without_current_ownership_metadata(monkeypatch):
     calls = []
     monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
@@ -2727,6 +2763,8 @@ def test_session_aware_command_help_documents_current_selection(command):
     assert result.exit_code == 0, result.output
     assert "--session" in result.output
     assert "current" in result.output
+    assert "BH_HERDR_SESSION" in result.output
+    assert "default" in result.output
 
 
 def test_spawn_keeps_its_three_required_low_level_options():
