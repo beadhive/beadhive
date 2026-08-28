@@ -355,7 +355,12 @@ def test_federation_status_builds_command_and_parses_verified_shape(monkeypatch)
         pending_changes=3,
         peers=(
             engine.FederationPeer(
-                peer="hub", url="file:///towns/hub", reachable=True, ahead=2, behind=1
+                peer="hub",
+                url="file:///towns/hub",
+                reachable=True,
+                ahead=2,
+                behind=1,
+                remote_observed_at="0001-01-01T00:00:00Z",
             ),
         ),
     )

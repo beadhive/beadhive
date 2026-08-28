@@ -9,8 +9,11 @@ never a real `bd federation` subprocess.
 
 from __future__ import annotations
 
+import json
+from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from beadhive import config, hive_sync
@@ -44,10 +47,12 @@ class _StubEngine:
         self._status = status if status is not None else FederationStatus(ok=True)
         self._outcome = outcome if outcome is not None else SyncOutcome(ok=True)
         self.status_calls: list[Path] = []
+        self.status_timeouts: list[float | None] = []
         self.sync_calls: list[tuple[Path, str | None]] = []
 
     def federation_status(self, cwd, *, timeout=None):
         self.status_calls.append(Path(cwd))
+        self.status_timeouts.append(timeout)
         return self._status
 
     def sync_state(self, cwd, *, peer=None, strategy=None, timeout=None):
@@ -188,6 +193,109 @@ def test_dry_run_performs_zero_sync_state_calls(world, monkeypatch):
 
     assert offending == []
     assert len(stub.status_calls) == 1
+    assert stub.status_timeouts == [hive_sync.engine.FEDERATION_TIMEOUT]
+
+
+@pytest.mark.parametrize(
+    ("peer", "failure", "expected"),
+    [
+        (FederationPeer(peer="origin", reachable=True), "", "equal"),
+        (FederationPeer(peer="origin", reachable=True, ahead=2), "", "ahead"),
+        (FederationPeer(peer="origin", reachable=True, behind=3), "", "behind"),
+        (
+            FederationPeer(peer="origin", reachable=True, ahead=2, behind=3),
+            "",
+            "diverged",
+        ),
+        (None, "", "unconfigured"),
+        (FederationPeer(peer="origin", reachable=True, ahead=-1, behind=-1), "", "incomparable"),
+        (FederationPeer(peer="origin", reachable=False, reach_error="offline"), "", "unavailable"),
+        (None, "timeout", "unavailable"),
+    ],
+)
+def test_comparison_models_every_non_stale_state(peer, failure, expected):
+    now = datetime(2026, 8, 28, 6, tzinfo=UTC)
+
+    got = hive_sync._comparison("github/myorg/myrepo", peer, observed_at=now, failure=failure)
+
+    assert got["comparisonState"] == expected
+    assert got["sourceRevision"].startswith("sha256:")
+    assert got["observedAt"] == "2026-08-28T06:00:00Z"
+    if expected == "equal":
+        assert got["ahead"] == 0 and got["behind"] == 0
+        assert got["coverage"]["counts"] == "known"
+    if expected in {"unavailable", "incomparable", "unconfigured"}:
+        assert got["ahead"] is None and got["behind"] is None
+        assert got["coverage"]["counts"] == "unknown"
+
+
+def test_comparison_marks_dated_remote_knowledge_stale():
+    now = datetime(2026, 8, 28, 6, tzinfo=UTC)
+    peer = FederationPeer(
+        peer="origin",
+        reachable=True,
+        remote_observed_at="2026-08-28T05:54:59Z",
+    )
+
+    got = hive_sync._comparison("github/myorg/myrepo", peer, observed_at=now)
+
+    assert got["comparisonState"] == "stale"
+    assert got["ahead"] == 0 and got["behind"] == 0
+    assert got["remoteObservedAt"] == "2026-08-28T05:54:59Z"
+    assert got["coverage"]["state"] == "partial"
+
+
+def test_json_requires_dry_run_before_any_engine_call(world, monkeypatch):
+    _register()
+    stub = _StubEngine()
+    _install(monkeypatch, stub)
+
+    res = runner.invoke(app, ["hive", "sync", "peers", "--all", "--json"])
+
+    assert res.exit_code == 1
+    assert "--json is read-only and requires --dry-run" in res.output
+    assert stub.status_calls == [] and stub.sync_calls == []
+
+
+def test_json_partial_multi_hive_timeout_is_bounded_and_keeps_true_zero(world, monkeypatch):
+    _register(repo="alpha")
+    _register(repo="beta")
+    stub = _StubEngine()
+
+    def status(cwd, *, timeout=None):
+        stub.status_calls.append(Path(cwd))
+        stub.status_timeouts.append(timeout)
+        if Path(cwd).name == "beta":
+            return FederationStatus(ok=False, error="timeout")
+        return FederationStatus(
+            ok=True,
+            peers=(FederationPeer(peer="origin", reachable=True, ahead=0, behind=0),),
+        )
+
+    stub.federation_status = status
+    stub.sync_state = None
+    _install(monkeypatch, stub)
+
+    res = runner.invoke(app, ["hive", "sync", "peers", "--all", "--dry-run", "--json"])
+
+    assert res.exit_code == 1
+    payload = json.loads(res.stdout)
+    assert payload["schema_version"] == 1
+    assert payload["networkPolicy"] == {
+        "mode": "bounded-fetch",
+        "readOnly": True,
+        "timeoutSeconds": hive_sync.engine.FEDERATION_TIMEOUT,
+        "maxConcurrency": 4,
+    }
+    assert payload["coverage"]["state"] == "partial"
+    equal, unavailable = payload["comparisons"]
+    assert (equal["comparisonState"], equal["ahead"], equal["behind"]) == ("equal", 0, 0)
+    assert unavailable["comparisonState"] == "unavailable"
+    assert unavailable["ahead"] is None and unavailable["behind"] is None
+    assert stub.status_timeouts == [
+        hive_sync.engine.FEDERATION_TIMEOUT,
+        hive_sync.engine.FEDERATION_TIMEOUT,
+    ]
 
 
 def test_dry_run_renders_two_axis_table(world, monkeypatch, capsys):

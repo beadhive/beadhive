@@ -21,15 +21,209 @@ Rules (bh-wty3 plan):
 
 from __future__ import annotations
 
+import hashlib
+import json
+from datetime import UTC, datetime
+
 import typer
 
-from . import config, engine, fleet, registry
+from . import config, engine, fleet, jsonout, registry
 
 _STATUS_WORKERS = 4  # read-only federation_status calls; matches sync_remote's fleet pass
+_COMPARISON_SCHEMA = 1
+_COMPARISON_STALE_SECONDS = 300
 
 STRATEGIES = ("ours", "theirs")
 
 _HEADER = ("hive", "peer", "reachable", "ahead", "behind", "conflicts")
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _stamp(value: datetime) -> str:
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _remote_stamp(value: str) -> datetime | None:
+    """Parse bd's ``Status.LastSync`` without treating its Go zero-time as evidence."""
+    if not value or value.startswith("0001-01-01"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=parsed.tzinfo or UTC).astimezone(UTC)
+
+
+def _source_revision(hive_id: str, relative_to: str | None, facts: dict) -> str:
+    encoded = json.dumps(
+        ["dolt-comparison-v1", hive_id, relative_to, facts],
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def _comparison(
+    hive_id: str,
+    peer,
+    *,
+    relative_to: str | None = None,
+    observed_at: datetime | None = None,
+    failure: str = "",
+    stale_after: int = _COMPARISON_STALE_SECONDS,
+) -> dict:
+    """One stable local-versus-remote comparison record.
+
+    Counts are nullable on purpose: ``0`` is measured equality on that axis; ``None`` means
+    the axis was not comparable.  This pure builder is shared by the CLI and tests so clients
+    never need to infer a state from human prose or from a safety classification.
+    """
+    observed = (observed_at or _now()).astimezone(UTC)
+    remote_observed = _remote_stamp(getattr(peer, "remote_observed_at", "")) if peer else None
+    relation = relative_to or (str(getattr(peer, "peer", "")) or None)
+    ahead: int | None = None
+    behind: int | None = None
+    reason = failure
+
+    if peer is None and not failure:
+        state = "unconfigured"
+        reason = "no federation peer is configured"
+    elif peer is None:
+        state = "unavailable"
+    elif not peer.reachable:
+        state = "unavailable"
+        reason = peer.reach_error or failure or "peer unreachable"
+    elif peer.ahead < 0 or peer.behind < 0:
+        state = "incomparable"
+        reason = "the remote answered without comparable revision counts"
+    else:
+        ahead, behind = peer.ahead, peer.behind
+        if peer.has_conflicts or (ahead > 0 and behind > 0):
+            state = "diverged"
+        elif ahead > 0:
+            state = "ahead"
+        elif behind > 0:
+            state = "behind"
+        else:
+            state = "equal"
+        if remote_observed is not None:
+            age = (observed - remote_observed).total_seconds()
+            if age < 0 or age > stale_after:
+                state = "stale"
+                reason = "remote comparison observation is outside the freshness window"
+
+    coverage_state = {
+        "equal": "complete",
+        "ahead": "complete",
+        "behind": "complete",
+        "diverged": "complete",
+        "stale": "partial",
+        "incomparable": "partial",
+        "unconfigured": "none",
+        "unavailable": "none",
+    }[state]
+    facts = {
+        "state": state,
+        "ahead": ahead,
+        "behind": behind,
+        "remoteObservedAt": _stamp(remote_observed) if remote_observed else None,
+        "reason": reason or None,
+    }
+    return {
+        "hive": hive_id,
+        "relativeTo": relation,
+        "ahead": ahead,
+        "behind": behind,
+        "comparisonState": state,
+        "observedAt": _stamp(observed),
+        "remoteObservedAt": facts["remoteObservedAt"],
+        "sourceRevision": _source_revision(hive_id, relation, facts),
+        "coverage": {
+            "state": coverage_state,
+            "counts": "known" if ahead is not None and behind is not None else "unknown",
+            "reason": reason or None,
+        },
+    }
+
+
+def comparison_payload(
+    entries: list[dict],
+    statuses: list,
+    *,
+    peer: str | None = None,
+    observed_at: datetime | None = None,
+    stale_after: int = _COMPARISON_STALE_SECONDS,
+) -> dict:
+    """Versioned read-only comparison page for an already-bounded federation status pass."""
+    observed = observed_at or _now()
+    comparisons: list[dict] = []
+    for entry, status in zip(entries, statuses, strict=True):
+        hive_id = _hive_id(entry)
+        if not status.ok:
+            comparisons.append(
+                _comparison(
+                    hive_id,
+                    None,
+                    relative_to=peer if peer and peer != "all" else None,
+                    observed_at=observed,
+                    failure=status.error or "federation status unavailable",
+                    stale_after=stale_after,
+                )
+            )
+            continue
+        selected = status.peers
+        if peer and peer != "all":
+            selected = tuple(value for value in selected if value.peer == peer)
+        if not selected:
+            comparisons.append(
+                _comparison(
+                    hive_id,
+                    None,
+                    relative_to=peer if peer and peer != "all" else None,
+                    observed_at=observed,
+                    stale_after=stale_after,
+                )
+            )
+            continue
+        comparisons.extend(
+            _comparison(
+                hive_id,
+                value,
+                observed_at=observed,
+                stale_after=stale_after,
+            )
+            for value in selected
+        )
+
+    states = {item["coverage"]["state"] for item in comparisons}
+    if not states or states <= {"none"}:
+        overall = "none"
+    elif states <= {"complete"}:
+        overall = "complete"
+    else:
+        overall = "partial"
+    return jsonout.envelope(
+        "hive sync peers --dry-run",
+        _COMPARISON_SCHEMA,
+        {
+            "observedAt": _stamp(observed),
+            "comparisons": comparisons,
+            "coverage": {
+                "state": overall,
+                "requestedHives": len(entries),
+                "returnedComparisons": len(comparisons),
+            },
+            "networkPolicy": {
+                "mode": "bounded-fetch",
+                "readOnly": True,
+                "timeoutSeconds": engine.FEDERATION_TIMEOUT,
+                "maxConcurrency": _STATUS_WORKERS,
+            },
+        },
+    )
 
 
 def _hive_id(entry) -> str:
@@ -93,13 +287,35 @@ def _render_table(rows: list[tuple[str, ...]]) -> None:
         typer.echo("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip())
 
 
-def _status_pass(eng, entries: list[dict], *, peer: str | None = None) -> list[str]:
+def _status_pass(
+    eng, entries: list[dict], *, peer: str | None = None, as_json: bool = False
+) -> list[str]:
     """--dry-run: read-only fleet federation status, parallel (never calls ``sync_state``).
     Renders the two-axis table; returns the hive ids whose peer state could not be verified."""
     paths = [registry.hive_dir(e) for e in entries]
+
     # SHAPE B (`fleet.fanout`): federation status is a per-hive engine call over the network,
     # not a row the shared server holds. Keeps its own smaller cap — these are network-bound.
-    statuses = fleet.fanout(eng.federation_status, paths, workers=_STATUS_WORKERS)
+    def bounded_status(path):
+        return eng.federation_status(path, timeout=engine.FEDERATION_TIMEOUT)
+
+    statuses = fleet.fanout(bounded_status, paths, workers=_STATUS_WORKERS)
+
+    if as_json:
+        jsonout.emit(comparison_payload(entries, statuses, peer=peer))
+        return [
+            _hive_id(entry)
+            for entry, status in zip(entries, statuses, strict=True)
+            if not status.ok
+            or any(
+                not value.reachable or value.ahead < 0 or value.behind < 0
+                for value in (
+                    tuple(v for v in status.peers if v.peer == peer)
+                    if peer and peer != "all"
+                    else status.peers
+                )
+            )
+        ]
 
     rows: list[tuple[str, ...]] = []
     offending: list[str] = []
@@ -170,17 +386,23 @@ def hive_sync(
     peer: str | None = None,
     strategy: str | None = None,
     dry_run: bool = False,
+    as_json: bool = False,
 ) -> list[str]:
     """Sync the targeted hive(s) with their federation peer (or preview with ``dry_run``).
     ``peer`` (unset or ``"all"`` = every peer) narrows to one named federation peer. Returns
     the offending hive ids — failed, paused-on-conflicts, or (dry-run) unverifiable. Never
     raises for a per-hive failure; the CLI decides the exit code."""
+    if as_json and not dry_run:
+        raise ValueError("JSON comparison is read-only and requires dry_run=True")
     cfg = config.load()
     entries = _targets(cfg, hive_id, hive_ids)
     if not entries:
-        typer.echo("no syncable hives registered (HQ is local-only and always skipped)")
+        if as_json:
+            jsonout.emit(comparison_payload([], []))
+        else:
+            typer.echo("no syncable hives registered (HQ is local-only and always skipped)")
         return []
     eng = engine.get_engine(cfg)
     if dry_run:
-        return _status_pass(eng, entries, peer=peer)
+        return _status_pass(eng, entries, peer=peer, as_json=as_json)
     return _live_pass(eng, entries, strategy, peer=peer)
