@@ -1119,6 +1119,12 @@ def _git(*args, cwd):
     return real_run(["git", *args], cwd=str(cwd), check=True, capture=True, env=git_env())
 
 
+def _configure_fixture_identity(repo):
+    """Give a synthetic repository its own identity, independent of host/global config."""
+    _git("config", "user.email", "test@example.com", cwd=repo)
+    _git("config", "user.name", "Test", cwd=repo)
+
+
 def _init_tracked_gitignore(base, lines=None):
     """A minimal git repo with a git-TRACKED `.beads/.gitignore` — the furnished-hive shape
     this fix targets."""
@@ -1128,8 +1134,7 @@ def _init_tracked_gitignore(base, lines=None):
         "\n".join(lines if lines is not None else ["dolt/", "embeddeddolt/", "proxieddb/"]) + "\n"
     )
     _git("init", "-q", "-b", "main", cwd=base)
-    _git("config", "user.email", "test@example.com", cwd=base)
-    _git("config", "user.name", "Test", cwd=base)
+    _configure_fixture_identity(base)
     # This exact fixture file is intentionally tracked even when an operator's global excludes
     # hide `.beads/*`. Do not disable ignores wholesale: production Git configuration still
     # participates in every other fixture operation and verdict.
@@ -1155,6 +1160,7 @@ def test_tracked_gitignore_fixture_is_hermetic_under_global_excludes(tmp_path, m
     operator_repo = tmp_path / "operator-repo"
     operator_repo.mkdir()
     _git("init", "-q", "-b", "main", cwd=operator_repo)
+    _configure_fixture_identity(operator_repo)
     (operator_repo / "operator-only").write_text("must remain untouched\n")
     _git("add", "--", "operator-only", cwd=operator_repo)
     _git("commit", "-q", "-m", "operator baseline", cwd=operator_repo)
