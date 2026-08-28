@@ -871,6 +871,13 @@ def stream_frames(
     return frames
 
 
+def _constrain_launch(actions: list[dict[str, object]], preflight: Mapping[str, object]) -> None:
+    """Further restrict a generically allowed launch using Herdr-local proof."""
+    for action in actions:
+        if action.get("id") == "work-item.launch" and action.get("availability") == "allowed":
+            action.update(preflight)
+
+
 @dataclass
 class ViewBackend:
     cfg: dict
@@ -902,6 +909,78 @@ class ViewBackend:
             self._roster = herdr_plugin._roster_payload(snapshot, self.cfg)
         return self._roster
 
+    def launch_preflight(self, hive: str, entry: Mapping[str, object]) -> dict[str, object]:
+        """Return Herdr-specific launch capability facts for a generic ready bead."""
+        from . import herdr_plugin
+
+        if not herdr_plugin._has_cli():
+            return {
+                "availability": "unavailable",
+                "reasonCode": "herdr_cli_unavailable",
+                "reason": "Herdr CLI is not available on this host.",
+            }
+        kinds = herdr_plugin.supported_kinds()
+        if not kinds:
+            return {
+                "availability": "unavailable",
+                "reasonCode": "herdr_kinds_unavailable",
+                "reason": "Herdr did not report any supported agent kinds.",
+            }
+        configured = config.herdr_kind(self.cfg, entry)
+        if configured is not None:
+            kind = configured
+        else:
+            harness = config.harness_name(self.cfg, entry)
+            kind = harness if harness in kinds else "claude" if "claude" in kinds else None
+        if kind is None or kind not in kinds:
+            return {
+                "availability": "unavailable",
+                "reasonCode": "herdr_kind_unavailable",
+                "reason": "No configured or deterministic default Herdr agent kind is available.",
+            }
+        integrated, detail = herdr_plugin._integration_ready(kind)
+        if not integrated:
+            return {
+                "availability": "unavailable",
+                "reasonCode": "herdr_integration_unavailable",
+                "reason": f"Herdr integration for {kind} is unavailable: {_token(detail, 160)}",
+            }
+        if self.roster().get("revision") == "unavailable":
+            return {
+                "availability": "unavailable",
+                "reasonCode": "herdr_session_unavailable",
+                "reason": "The authoritative bh-supervisor session is unavailable.",
+            }
+        from . import guard
+
+        try:
+            lease_state = guard.primary_state(hive, cfg=self.cfg, entry=entry)
+        except Exception:  # noqa: BLE001 - preflight degrades instead of authorizing by guess
+            return {
+                "availability": "unavailable",
+                "reasonCode": "host_lease_unavailable",
+                "reason": "Current host lease state could not be proven.",
+            }
+        if lease_state is not None:
+            _prefix, this_host, lease = lease_state
+            if not lease.held_by(this_host):
+                if not lease.is_expired():
+                    return {
+                        "availability": "forbidden",
+                        "reasonCode": "active_foreign_host_lease",
+                        "reason": "An active foreign host lease prevents launch.",
+                    }
+                return {
+                    "availability": "confirmation-required",
+                    "reasonCode": "expired_host_lease_adoption_required",
+                    "reason": "Launch requires explicit non-forced adoption of the expired lease.",
+                }
+        return {
+            "availability": "allowed",
+            "reasonCode": None,
+            "reason": f"Herdr launch preflight is available for {kind}.",
+        }
+
     def picker(self, *, limit: int, cursor: str | None) -> dict:
         hives = self.sources.registered_hives()
 
@@ -921,6 +1000,7 @@ class ViewBackend:
     def hive_facts(self, hive_id: str) -> tuple[dict[str, dict], dict]:
         hive = self.sources.resolve_hive(hive_id)
         beads, runtime = self.sources.refresh_hive(hive)
+        launch_preflight = self.launch_preflight(hive_id, hive.entry)
         ready_policy, ordering = operator_work_items.configured_ready_policy(
             cfg=self.cfg, entry=dict(hive.entry)
         )
@@ -968,6 +1048,7 @@ class ViewBackend:
                     revision=str(queues[name]["revision"]),
                     advertised_at=int(queues[name]["generatedAt"] or 0),
                 )
+                _constrain_launch(item["advertisedActions"], launch_preflight)
         return queues, self.roster()
 
     def deck(self, hive: str, *, limit: int, cursor: str | None, width: int = 120) -> dict:
@@ -979,6 +1060,9 @@ class ViewBackend:
         beads, runtime = self.sources.refresh_hive(hive)
         detail = operator_work_items.detail_payload(
             hive_id=hive_id, bead_id=bead_id, beads=beads, runtime=runtime
+        )
+        _constrain_launch(
+            detail["item"]["advertisedActions"], self.launch_preflight(hive_id, hive.entry)
         )
         return bead_payload(detail, self.roster())
 

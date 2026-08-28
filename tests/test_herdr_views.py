@@ -427,6 +427,160 @@ def test_deck_cursor_reaches_ready_items_beyond_the_generic_queue_page_limit() -
     assert second["truncated"] is False
 
 
+def test_deck_disables_launch_when_herdr_cli_preflight_is_unavailable(monkeypatch) -> None:
+    now = datetime(2026, 8, 27, 12, tzinfo=UTC).isoformat().replace("+00:00", "Z")
+    beads = state_stream.ProviderSnapshot(
+        scope="hive",
+        revision="beads-ready",
+        as_of=now,
+        issues=(
+            state_stream.StreamIssue(
+                id="widget-ready",
+                hive=HIVE,
+                issue_type="task",
+                status="open",
+                priority="P1",
+                title="Ready widget",
+                updated_at=now,
+            ),
+        ),
+    )
+    runtime = AgentRunSnapshot(
+        host_id="host-1",
+        source_id="runtime-1",
+        revision="runtime-ready",
+        summaries=(),
+        coverage=Coverage.COMPLETE,
+        coverage_reason=None,
+        freshness=Freshness(state="fresh", as_of=now),
+    )
+
+    class Sources:
+        cfg = {}
+
+        def resolve_hive(self, hive_id):
+            assert hive_id == HIVE
+            return SimpleNamespace(entry={})
+
+        def refresh_hive(self, _hive):
+            return beads, runtime
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: False)
+    backend = herdr_views.ViewBackend(cfg={}, sources=Sources(), _roster=_roster())
+
+    payload = backend.deck(HIVE, limit=20, cursor=None)
+    launch = next(
+        action for action in payload["actions"] if action["source_action"] == "work-item.launch"
+    )
+
+    assert launch["availability"] == "unavailable"
+    assert launch["reason_code"] == "herdr_cli_unavailable"
+    assert launch["invoke"] is None
+
+
+def test_bead_disables_launch_when_herdr_cli_preflight_is_unavailable(monkeypatch) -> None:
+    now = datetime(2026, 8, 27, 12, tzinfo=UTC).isoformat().replace("+00:00", "Z")
+    beads = state_stream.ProviderSnapshot(
+        scope="hive",
+        revision="beads-ready",
+        as_of=now,
+        issues=(
+            state_stream.StreamIssue(
+                id="widget-ready",
+                hive=HIVE,
+                issue_type="task",
+                status="open",
+                priority="P1",
+                title="Ready widget",
+                updated_at=now,
+            ),
+        ),
+    )
+    runtime = AgentRunSnapshot(
+        host_id="host-1",
+        source_id="runtime-1",
+        revision="runtime-ready",
+        summaries=(),
+        coverage=Coverage.COMPLETE,
+        coverage_reason=None,
+        freshness=Freshness(state="fresh", as_of=now),
+    )
+
+    class Sources:
+        def resolve_hive(self, hive_id):
+            assert hive_id == HIVE
+            return SimpleNamespace(entry={})
+
+        def refresh_hive(self, _hive):
+            return beads, runtime
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: False)
+    backend = herdr_views.ViewBackend(cfg={}, sources=Sources(), _roster=_roster())
+
+    payload = backend.bead(HIVE, "widget-ready")
+    launch = next(
+        action for action in payload["actions"] if action["source_action"] == "work-item.launch"
+    )
+
+    assert launch["availability"] == "unavailable"
+    assert launch["reason_code"] == "herdr_cli_unavailable"
+    assert launch["invoke"] is None
+
+
+def test_launch_preflight_requires_configured_kind_integration(monkeypatch) -> None:
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["codex"])
+    monkeypatch.setattr(herdr_views.config, "herdr_kind", lambda _cfg, _entry: "codex")
+    monkeypatch.setattr(herdr_plugin, "_integration_ready", lambda _kind: (False, "not installed"))
+    backend = herdr_views.ViewBackend(cfg={}, sources=SimpleNamespace(), _roster=_roster())
+
+    preflight = backend.launch_preflight(HIVE, {})
+
+    assert preflight["availability"] == "unavailable"
+    assert preflight["reasonCode"] == "herdr_integration_unavailable"
+
+
+def test_launch_preflight_requires_authoritative_supervisor_session(monkeypatch) -> None:
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["codex"])
+    monkeypatch.setattr(herdr_views.config, "herdr_kind", lambda _cfg, _entry: "codex")
+    monkeypatch.setattr(herdr_plugin, "_integration_ready", lambda _kind: (True, "installed"))
+    backend = herdr_views.ViewBackend(
+        cfg={},
+        sources=SimpleNamespace(),
+        _roster={"revision": "unavailable", "agents": [], "warnings": []},
+    )
+
+    preflight = backend.launch_preflight(HIVE, {})
+
+    assert preflight["availability"] == "unavailable"
+    assert preflight["reasonCode"] == "herdr_session_unavailable"
+
+
+def test_launch_preflight_forbids_an_active_foreign_host_lease(monkeypatch) -> None:
+    from beadhive import guard
+
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["codex"])
+    monkeypatch.setattr(herdr_views.config, "herdr_kind", lambda _cfg, _entry: "codex")
+    monkeypatch.setattr(herdr_plugin, "_integration_ready", lambda _kind: (True, "installed"))
+    lease = SimpleNamespace(held_by=lambda _host: False, is_expired=lambda: False)
+    monkeypatch.setattr(guard, "primary_state", lambda *_args, **_kwargs: ("wdg", "host-2", lease))
+    monkeypatch.setattr(herdr_views.host, "host_id", lambda: "host-1")
+    backend = herdr_views.ViewBackend(cfg={}, sources=SimpleNamespace(), _roster=_roster())
+
+    preflight = backend.launch_preflight(HIVE, {})
+
+    assert preflight["availability"] == "forbidden"
+    assert preflight["reasonCode"] == "active_foreign_host_lease"
+
+
 def test_degraded_sources_are_explicit_and_do_not_fabricate_agent_counts() -> None:
     unavailable = {
         "revision": "unavailable",

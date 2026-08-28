@@ -270,6 +270,11 @@ argv arrays rooted only in `bh plugin herdr`; they are never shell strings. Prom
 `agent.dispatch` actions declare stdin transport and use lifecycle `dispatch --stdin`, so no
 prompt value belongs in the projection or process arguments. Forbidden, unavailable, or unsafe
 actions have a null invocation. Lifecycle commands recheck every precondition at invocation.
+For generically ready work, the Deck and exact-bead projections further constrain
+`work-item.launch` with Herdr-local preflight evidence: CLI and kind availability, installed
+integration, the authoritative supervisor session, and host-lease ownership. Unknown proof is
+`unavailable`, an active foreign lease is `forbidden`, and adopting an expired foreign lease is
+`confirmation-required`; these projections never broaden a generic denial.
 
 The picker and Deck are bounded and use opaque, revision-scoped cursors. A cursor from another
 scope is refused, and a cursor whose source revision changed requires a fresh snapshot. Missing
