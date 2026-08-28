@@ -13,6 +13,7 @@ from typing import Any
 import httpx
 from joserfc.jwk import KeySet
 
+from . import gateway_read
 from .remote_gateway import (
     DEVELOPMENT_INSTANCE_ID,
     DEVELOPMENT_ISSUER,
@@ -168,7 +169,7 @@ def _authorized_subjects(path: Path) -> frozenset[str]:
 
 
 def create_application():
-    """Uvicorn factory using only two mode-0600 service credential files."""
+    """Uvicorn factory that verifies all immutable inputs before opening the listener."""
     credentials = Path(os.environ.get("CREDENTIALS_DIRECTORY", "/run/credentials"))
     jwks_path = Path(os.environ.get("BEADHIVE_GATEWAY_JWKS_FILE", credentials / "clerk-jwks.json"))
     subjects_path = Path(
@@ -180,10 +181,15 @@ def create_application():
         app_origin=APP_ORIGIN,
         gateway_origin=GATEWAY_ORIGIN,
     )
+    authorized_subjects = _authorized_subjects(subjects_path)
+    read_source = gateway_read.load_packaged_development_source(
+        authorized_subjects=authorized_subjects
+    )
+    key_set = KeySet.import_key_set(_read_json(jwks_path))
     runtime = LoopbackDemoRuntime()
     instance = RemoteInstance(
         display_name="Development demo",
-        authorized_subjects=_authorized_subjects(subjects_path),
+        authorized_subjects=authorized_subjects,
         snapshot=runtime.snapshot,
         online=runtime.online,
         refresh=runtime.refresh,
@@ -192,10 +198,9 @@ def create_application():
     )
     return build_development_gateway_application(
         config=config,
-        verifier=ClerkTokenVerifier(
-            config=config, key=KeySet.import_key_set(_read_json(jwks_path))
-        ),
+        verifier=ClerkTokenVerifier(config=config, key=key_set),
         registry=DevelopmentInstanceRegistry(instances={DEVELOPMENT_INSTANCE_ID: instance}),
+        read_source=read_source,
     )
 
 

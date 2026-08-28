@@ -8,10 +8,12 @@ small, explicitly allowlisted remote representation.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import math
 import re
+import secrets
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
@@ -27,6 +29,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+
+from beadhive import gateway_read as gateway_read_mod
 
 CONTRACT_VERSION = "gateway.v1"
 SCHEMA_VERSION = 1
@@ -184,13 +188,21 @@ class RemoteInstance:
 
 @dataclass(frozen=True)
 class RuntimeCallPolicy:
-    """Concurrency bulkheads and per-call deadline for async runtime sources."""
+    """Concurrency bulkheads and per-call deadline for async runtime sources.
+
+    Rich reads and SSE subscriptions have both a per-authenticated-subject partition and a
+    process-wide ceiling.  One principal therefore cannot consume another principal's reserved
+    admission, while the process still has a hard aggregate safety bound.
+    """
 
     deadline_seconds: float = 5.0
     snapshot_concurrency: int = 4
     availability_concurrency: int = 2
     command_concurrency: int = 2
+    rich_read_concurrency: int = 4
     stream_concurrency: int = 16
+    rich_read_concurrency_per_subject: int = 1
+    stream_concurrency_per_subject: int = 1
     stream_reauthorize_seconds: float = 1.0
 
     def __post_init__(self) -> None:
@@ -212,10 +224,17 @@ class RuntimeCallPolicy:
             (self.snapshot_concurrency, "snapshot concurrency"),
             (self.availability_concurrency, "availability concurrency"),
             (self.command_concurrency, "command concurrency"),
+            (self.rich_read_concurrency, "rich read concurrency"),
             (self.stream_concurrency, "stream concurrency"),
+            (self.rich_read_concurrency_per_subject, "rich read concurrency per subject"),
+            (self.stream_concurrency_per_subject, "stream concurrency per subject"),
         ):
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 32:
                 raise ValueError(f"{label} must be between 1 and 32")
+        if self.rich_read_concurrency_per_subject > self.rich_read_concurrency:
+            raise ValueError("rich read subject concurrency exceeds the process ceiling")
+        if self.stream_concurrency_per_subject > self.stream_concurrency:
+            raise ValueError("stream subject concurrency exceeds the process ceiling")
 
 
 class _BoundedRuntimeCalls:
@@ -247,6 +266,73 @@ class _BoundedRuntimeCalls:
             await asyncio.gather(task, return_exceptions=True)
             self._tasks.discard(task)
             self._slots.release()
+
+    async def close(self) -> None:
+        self._closed = True
+        tasks = tuple(self._tasks)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+class _SubjectAdmission:
+    """Non-queuing admission partitioned by subject under one aggregate ceiling."""
+
+    def __init__(self, *, process_limit: int, subject_limit: int) -> None:
+        self._process_limit = process_limit
+        self._subject_limit = subject_limit
+        self._active = 0
+        self._subjects: dict[str, int] = {}
+
+    def acquire(self, subject: str) -> bool:
+        subject_active = self._subjects.get(subject, 0)
+        if self._active >= self._process_limit or subject_active >= self._subject_limit:
+            return False
+        self._active += 1
+        self._subjects[subject] = subject_active + 1
+        return True
+
+    def release(self, subject: str) -> None:
+        subject_active = self._subjects.get(subject, 0)
+        if subject_active <= 0 or self._active <= 0:
+            raise RuntimeError("subject admission released without ownership")
+        self._active -= 1
+        if subject_active == 1:
+            del self._subjects[subject]
+        else:
+            self._subjects[subject] = subject_active - 1
+
+
+class _SubjectBoundedRuntimeCalls:
+    """Deadline-bound calls using subject partitions and a process-wide ceiling."""
+
+    def __init__(
+        self, *, process_limit: int, subject_limit: int, deadline_seconds: float, name: str
+    ) -> None:
+        self._deadline_seconds = deadline_seconds
+        self._admission = _SubjectAdmission(
+            process_limit=process_limit, subject_limit=subject_limit
+        )
+        self._tasks: set[asyncio.Task[Any]] = set()
+        self._closed = False
+        self._name = name
+
+    async def call(self, subject: str, operation: Callable[[], Awaitable[Any]]) -> Any:
+        if self._closed or not self._admission.acquire(subject):
+            raise RuntimeCallTimedOut
+        task = asyncio.create_task(operation(), name=self._name)
+        self._tasks.add(task)
+        try:
+            async with asyncio.timeout(self._deadline_seconds):
+                return await task
+        except TimeoutError as exc:
+            raise RuntimeCallTimedOut from exc
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._tasks.discard(task)
+            self._admission.release(subject)
 
     async def close(self) -> None:
         self._closed = True
@@ -583,6 +669,7 @@ def build_development_gateway_application(
     verifier: ClerkTokenVerifier,
     registry: DevelopmentInstanceRegistry,
     runtime_calls: RuntimeCallPolicy | None = None,
+    read_source: gateway_read_mod.GatewayReadSource | None = None,
 ) -> Starlette:
     """Build the remote Development read profile without mutating the loopback application."""
     runtime_calls = runtime_calls or RuntimeCallPolicy()
@@ -612,7 +699,16 @@ def build_development_gateway_application(
         deadline_seconds=runtime_calls.deadline_seconds,
         name="beadhive-gateway-stream-open",
     )
-    stream_slots = asyncio.Semaphore(runtime_calls.stream_concurrency)
+    rich_read_calls = _SubjectBoundedRuntimeCalls(
+        process_limit=runtime_calls.rich_read_concurrency,
+        subject_limit=runtime_calls.rich_read_concurrency_per_subject,
+        deadline_seconds=runtime_calls.deadline_seconds,
+        name="beadhive-gateway-rich-read",
+    )
+    stream_admission = _SubjectAdmission(
+        process_limit=runtime_calls.stream_concurrency,
+        subject_limit=runtime_calls.stream_concurrency_per_subject,
+    )
     active_streams: set[asyncio.Task[Any]] = set()
 
     def authorize(request: Request) -> str:
@@ -628,6 +724,316 @@ def build_development_gateway_application(
         if not encoded or encoded.strip() != encoded:
             raise AuthenticationFailed
         return verifier.verify(encoded)
+
+    def authorize_bridge(request: Request) -> str:
+        subject = authorize(request)
+        instance_id = f"{request.path_params['stage']}/{request.path_params['slug']}"
+        if instance_id != gateway_read_mod.INSTANCE_ID or instance_id not in registry.authorized(
+            subject
+        ):
+            raise gateway_read_mod.ReadSourceNotFound
+        return subject
+
+    def rich_error(
+        code: str, message: str, status_code: int, *, retryable: bool = False
+    ) -> JSONResponse:
+        headers = {"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"}
+        if code == "rate_limited" or (status_code == 503 and retryable):
+            headers["Retry-After"] = "1"
+        return JSONResponse(
+            {
+                "error": {
+                    "code": code,
+                    "message": message,
+                    "retryable": retryable,
+                    "requestId": "req_" + secrets.token_urlsafe(12),
+                    "details": {},
+                }
+            },
+            status_code=status_code,
+            headers=headers,
+        )
+
+    def rich_response(request: Request, payload: Mapping[str, object]) -> Response:
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        boundary = read_source.cache_boundary.encode() if read_source is not None else b""
+        etag = '"sha256:' + hashlib.sha256(boundary + b"\0" + encoded).hexdigest() + '"'
+        conditional = request.headers.getlist("if-none-match")
+        headers = {
+            "Cache-Control": "private, max-age=0, must-revalidate",
+            "ETag": etag,
+            "Vary": "Authorization, Origin, Accept",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if conditional:
+            if len(conditional) != 1 or conditional[0] != etag:
+                if len(conditional) != 1 or len(conditional[0]) > 256:
+                    raise gateway_read_mod.ReadSourceInvalidRequest
+            else:
+                return Response(status_code=304, headers=headers)
+        return JSONResponse(payload, headers=headers)
+
+    def bridge_hive_id(request: Request, suffix: str) -> str:
+        raw_path = request.scope.get("raw_path", b"")
+        if not isinstance(raw_path, bytes):
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        pattern = (
+            rb"/v1/instances/dev/demo/hives/"
+            rb"([A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+)" + suffix.encode() + rb"\Z"
+        )
+        match = re.fullmatch(pattern, raw_path.split(b"?", 1)[0])
+        if match is None:
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        hive_id = request.path_params.get("hive_id")
+        if not isinstance(hive_id, str) or hive_id != match.group(1).decode().replace("%2F", "/"):
+            raise gateway_read_mod.ReadSourceInvalidRequest
+        return hive_id
+
+    async def bridge_hives(request: Request) -> Response:
+        try:
+            if read_source is None:
+                raise gateway_read_mod.ReadSourceNotFound
+            subject = authorize_bridge(request)
+            if set(request.query_params) - {"limit", "after"}:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            limits = request.query_params.getlist("limit")
+            if len(limits) > 1:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            raw_limit = limits[0] if limits else "50"
+            if not raw_limit.isdecimal() or len(raw_limit) > 3 or str(int(raw_limit)) != raw_limit:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            after_values = request.query_params.getlist("after")
+            if len(after_values) > 1 or (after_values and not 1 <= len(after_values[0]) <= 2048):
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            page = await rich_read_calls.call(
+                subject,
+                lambda: read_source.list_hives(
+                    subject,
+                    limit=int(raw_limit),
+                    after=after_values[0] if after_values else None,
+                ),
+            )
+            return rich_response(request, page)
+        except PermissionError:
+            return rich_error("request_denied", "The request is not allowed.", 403)
+        except AuthenticationFailed:
+            return rich_error("authentication_failed", "Authentication failed.", 401)
+        except gateway_read_mod.ReadSourceNotFound:
+            return rich_error("resource_not_found", "The resource was not found.", 404)
+        except gateway_read_mod.ReadSourceInvalidRequest:
+            return rich_error("invalid_request", "The request is not valid.", 400)
+        except gateway_read_mod.ReadSourceResnapshotRequired:
+            return rich_error(
+                "resnapshot_required", "A fresh snapshot is required.", 409, retryable=True
+            )
+        except RuntimeCallTimedOut:
+            return rich_error("rate_limited", "The read limit was exceeded.", 429, retryable=True)
+        except Exception:
+            return rich_error(
+                "read_plane_unavailable", "The read plane is unavailable.", 503, retryable=True
+            )
+
+    async def bridge_snapshot(request: Request) -> Response:
+        try:
+            if read_source is None:
+                raise gateway_read_mod.ReadSourceNotFound
+            subject = authorize_bridge(request)
+            hive_id = bridge_hive_id(request, "/snapshot")
+            if set(request.query_params) - {"detail"}:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            details = request.query_params.getlist("detail")
+            if details not in ([], ["live"]):
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            envelope = await rich_read_calls.call(
+                subject,
+                lambda: read_source.snapshot(
+                    subject,
+                    factory_id=gateway_read_mod.FACTORY_ID,
+                    hive_id=hive_id,
+                    detail="live",
+                ),
+            )
+            return rich_response(request, envelope)
+        except PermissionError:
+            return rich_error("request_denied", "The request is not allowed.", 403)
+        except AuthenticationFailed:
+            return rich_error("authentication_failed", "Authentication failed.", 401)
+        except gateway_read_mod.ReadSourceNotFound:
+            return rich_error("resource_not_found", "The resource was not found.", 404)
+        except gateway_read_mod.ReadSourceInvalidRequest:
+            return rich_error("invalid_request", "The request is not valid.", 400)
+        except RuntimeCallTimedOut:
+            return rich_error("rate_limited", "The read limit was exceeded.", 429, retryable=True)
+        except Exception:
+            return rich_error(
+                "snapshot_unavailable", "The snapshot is unavailable.", 503, retryable=False
+            )
+
+    async def bridge_events(request: Request) -> Response:
+        admitted_subject: str | None = None
+        try:
+            if read_source is None:
+                raise gateway_read_mod.ReadSourceNotFound
+            subject = authorize_bridge(request)
+            hive_id = bridge_hive_id(request, "/events")
+            if set(request.query_params) - {"subscription", "after"}:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            subscriptions = request.query_params.getlist("subscription")
+            if (
+                len(subscriptions) != 1
+                or not 1 <= len(subscriptions[0]) <= 512
+                or subscriptions[0].strip() != subscriptions[0]
+            ):
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            after_values = request.query_params.getlist("after")
+            header_values = request.headers.getlist("last-event-id")
+            if len(after_values) > 1 or len(header_values) > 1:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            if after_values and header_values and after_values[0] != header_values[0]:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            after = after_values[0] if after_values else header_values[0] if header_values else None
+            if after is not None and not 1 <= len(after) <= 512:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            if not stream_admission.acquire(subject):
+                return rich_error(
+                    "rate_limited", "The stream limit was exceeded.", 429, retryable=True
+                )
+            admitted_subject = subject
+            source = await rich_read_calls.call(
+                subject,
+                lambda: read_source.events(
+                    subject,
+                    factory_id=gateway_read_mod.FACTORY_ID,
+                    hive_id=hive_id,
+                    subscription=subscriptions[0],
+                    after=after,
+                ),
+            )
+            if not hasattr(source, "__aiter__"):
+                raise RemoteProjectionFailed("gateway read event stream is incompatible")
+
+            async def stream():
+                owner = asyncio.current_task()
+                iterator = None
+                next_event = None
+                previous_sequence = int(after.rsplit(":", 1)[1]) if after is not None else None
+                expected_epoch = after.rsplit(":", 1)[0] if after is not None else None
+                if owner is not None:
+                    active_streams.add(owner)
+                try:
+                    iterator = source.__aiter__()
+                    next_event = asyncio.create_task(
+                        anext(iterator), name="beadhive-gateway-rich-event-next"
+                    )
+                    while True:
+                        done, _ = await asyncio.wait(
+                            {next_event}, timeout=runtime_calls.stream_reauthorize_seconds
+                        )
+                        try:
+                            current_subject = authorize_bridge(request)
+                        except (
+                            AuthenticationFailed,
+                            PermissionError,
+                            gateway_read_mod.ReadSourceNotFound,
+                        ):
+                            return
+                        if current_subject != subject:
+                            return
+                        if not done:
+                            yield ": keep-alive\n\n"
+                            continue
+                        try:
+                            envelope = next_event.result()
+                        except StopAsyncIteration:
+                            yield 'event: resnapshot-required\ndata: {"schemaVersion":1}\n\n'
+                            return
+                        if (
+                            not isinstance(envelope, Mapping)
+                            or envelope.get("schemaVersion") != gateway_read_mod.SCHEMA_VERSION
+                            or envelope.get("contractVersion") != gateway_read_mod.CONTRACT_VERSION
+                            or envelope.get("instanceId") != gateway_read_mod.INSTANCE_ID
+                            or envelope.get("factoryId") != gateway_read_mod.FACTORY_ID
+                            or envelope.get("hiveId") != hive_id
+                            or envelope.get("detailLevel") != "live"
+                        ):
+                            raise RemoteProjectionFailed(
+                                "gateway read event envelope is incompatible"
+                            )
+                        event = envelope.get("event")
+                        if not isinstance(event, Mapping):
+                            raise RemoteProjectionFailed("gateway read event is incompatible")
+                        epoch = event.get("producerEpoch")
+                        sequence = event.get("sequence")
+                        base_sequence = event.get("baseSequence")
+                        if (
+                            not isinstance(epoch, str)
+                            or not epoch
+                            or type(sequence) is not int
+                            or type(base_sequence) is not int
+                            or sequence != base_sequence + 1
+                            or (expected_epoch is not None and epoch != expected_epoch)
+                            or (
+                                previous_sequence is not None and base_sequence != previous_sequence
+                            )
+                            or event.get("subscriptionId") != subscriptions[0]
+                            or event.get("hiveId") != hive_id
+                        ):
+                            raise RemoteProjectionFailed("gateway read cursor is incompatible")
+                        expected_epoch = epoch
+                        previous_sequence = sequence
+                        cursor = f"{epoch}:{sequence}"
+                        data = json.dumps(envelope, separators=(",", ":"))
+                        next_event = asyncio.create_task(
+                            anext(iterator), name="beadhive-gateway-rich-event-next"
+                        )
+                        yield f"id: {cursor}\nevent: operator-event\ndata: {data}\n\n"
+                except Exception:
+                    yield 'event: resnapshot-required\ndata: {"schemaVersion":1}\n\n'
+                finally:
+                    try:
+                        if next_event is not None:
+                            if not next_event.done():
+                                next_event.cancel()
+                            await asyncio.gather(next_event, return_exceptions=True)
+                        close = getattr(iterator, "aclose", None)
+                        if close is not None:
+                            await close()
+                    finally:
+                        stream_admission.release(subject)
+                        if owner is not None:
+                            active_streams.discard(owner)
+
+            admitted_subject = None
+            return StreamingResponse(
+                stream(),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-store, no-transform",
+                    "X-Accel-Buffering": "no",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+        except PermissionError:
+            return rich_error("request_denied", "The request is not allowed.", 403)
+        except AuthenticationFailed:
+            return rich_error("authentication_failed", "Authentication failed.", 401)
+        except gateway_read_mod.ReadSourceNotFound:
+            return rich_error("resource_not_found", "The resource was not found.", 404)
+        except gateway_read_mod.ReadSourceInvalidRequest:
+            return rich_error("invalid_request", "The request is not valid.", 400)
+        except gateway_read_mod.ReadSourceResnapshotRequired:
+            return rich_error(
+                "resnapshot_required", "A fresh snapshot is required.", 409, retryable=True
+            )
+        except RuntimeCallTimedOut:
+            return rich_error("rate_limited", "The stream limit was exceeded.", 429, retryable=True)
+        except Exception:
+            return rich_error(
+                "read_plane_unavailable", "The read plane is unavailable.", 503, retryable=True
+            )
+        finally:
+            if admitted_subject is not None:
+                stream_admission.release(admitted_subject)
 
     async def read_availability(calls: _BoundedRuntimeCalls, instance: RemoteInstance) -> bool:
         availability = await calls.call(instance.online)
@@ -756,18 +1162,17 @@ def build_development_gateway_application(
             assert match is not None
             epoch = match.group("epoch")
             sequence = int(match.group("sequence"))
-            if stream_slots.locked():
+            if not stream_admission.acquire(subject):
                 return _error(
                     "runtime_unavailable", "The runtime is unavailable.", 503, retryable=True
                 )
-            await stream_slots.acquire()
             try:
                 source = await stream_open_calls.call(lambda: instance.events(cursor))
             except BaseException:
-                stream_slots.release()
+                stream_admission.release(subject)
                 raise
             if not hasattr(source, "__aiter__"):
-                stream_slots.release()
+                stream_admission.release(subject)
                 raise RemoteProjectionFailed("runtime event stream is incompatible")
 
             async def stream():
@@ -847,7 +1252,7 @@ def build_development_gateway_application(
                         if close is not None:
                             await close()
                     finally:
-                        stream_slots.release()
+                        stream_admission.release(subject)
                         if owner is not None:
                             active_streams.discard(owner)
 
@@ -959,6 +1364,7 @@ def build_development_gateway_application(
             await asyncio.gather(*streams, return_exceptions=True)
             await asyncio.gather(
                 snapshot_calls.close(),
+                rich_read_calls.close(),
                 command_calls.close(),
                 stream_open_calls.close(),
                 snapshot_availability_calls.close(),
@@ -973,11 +1379,33 @@ def build_development_gateway_application(
         routes=[
             Route("/healthz", health, methods=["GET"]),
             Route("/v1/instances", instances, methods=["GET"]),
+            Route("/v1/instances/{stage}/{slug}/hives", bridge_hives, methods=["GET"]),
+            Route(
+                "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
+                bridge_snapshot,
+                methods=["GET"],
+            ),
+            Route(
+                "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
+                bridge_events,
+                methods=["GET"],
+            ),
             Route("/v1/instances/{stage}/{slug}/snapshot", snapshot, methods=["GET"]),
             Route("/v1/instances/{stage}/{slug}/events", events, methods=["GET"]),
             Route("/v1/instances/{stage}/{slug}/commands/refresh", refresh, methods=["POST"]),
             Route("/v1/instances/{stage}/{slug}/commands/{command}", absent, methods=["POST"]),
             Route("/v1/instances", preflight, methods=["OPTIONS"]),
+            Route("/v1/instances/{stage}/{slug}/hives", preflight, methods=["OPTIONS"]),
+            Route(
+                "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
+                preflight,
+                methods=["OPTIONS"],
+            ),
+            Route(
+                "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
+                preflight,
+                methods=["OPTIONS"],
+            ),
             Route("/v1/instances/{stage}/{slug}/snapshot", preflight, methods=["OPTIONS"]),
             Route("/v1/instances/{stage}/{slug}/events", preflight, methods=["OPTIONS"]),
             Route(
@@ -1003,7 +1431,8 @@ def build_development_gateway_application(
             response = await call_next(request)
         if request.headers.get("origin") == config.app_origin:
             response.headers["Access-Control-Allow-Origin"] = config.app_origin
-            response.headers["Vary"] = "Origin"
+            if "vary" not in response.headers:
+                response.headers["Vary"] = "Origin"
         response.headers.setdefault("Cache-Control", "no-store")
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         return response

@@ -74,3 +74,7 @@ dolt:
     shared-server: true
 backup:
     enabled: true
+external_projects:
+    beadhive-ui: ../beadhive-ui
+    beadhive-gateway: ../beadhive-gateway
+    infra: ../infra
