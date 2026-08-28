@@ -2157,7 +2157,12 @@ def _dispatch_cmd(
             )
         _require(post_read, "agent dispatch read-back")
     visible = _output(post_read)
-    if visible.count(prompt_text) <= before.count(prompt_text):
+    # The local socket's successful structured response is the delivery proof for safe input.
+    # A full prompt can be far larger than Herdr's bounded visible-pane readback, so requiring
+    # the entire body to reappear there would turn successful large dispatches into refusals.
+    # Legacy argv transport has no such protocol acknowledgement and retains the stricter
+    # before/after visible-turn proof.
+    if not safe_transport and visible.count(prompt_text) <= before.count(prompt_text):
         if as_json:
             _lifecycle_failure(
                 "dispatch",

@@ -796,6 +796,50 @@ def test_dispatch_safe_input_preserves_adversarial_multiline_without_leakage(
     assert secret not in caplog.text
 
 
+def test_safe_dispatch_accepts_maximum_prompt_when_socket_acknowledges_delivery(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    prompt = "x" * (1024 * 1024)
+    prompt_path = tmp_path / "maximum-prompt.txt"
+    prompt_path.write_text(prompt)
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "read" in argv:
+            return _result(stdout="agent: idle")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_prompt_over_socket",
+        lambda target, value: _result(
+            stdout='{"result":{"type":"agent_prompt","agent_status":"done"}}'
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "dispatch",
+            "bh-bh-7",
+            "--prompt-file",
+            str(prompt_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["disposition"] == "dispatched"
+    assert payload["delivery_verified"] is True
+    assert prompt not in result.stdout
+
+
 def test_dispatch_json_refusal_is_structured_and_not_retryable(monkeypatch):
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
     prompt = "same prompt"

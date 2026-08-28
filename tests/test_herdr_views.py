@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import jsonschema
 import pytest
 from typer.testing import CliRunner
 
-from beadhive import herdr_views, operator_actions
+from beadhive import herdr_views, operator_actions, state_stream
+from beadhive.agent_run_summary import Freshness
 from beadhive.cli import app
 from beadhive.operator_sources import OperatorSourceError
+from beadhive.public_readers import AgentRunSnapshot, Coverage
 
 runner = CliRunner()
 SCHEMA = json.loads(
@@ -304,6 +308,59 @@ def test_stream_is_snapshot_first_bounded_and_resyncs_an_opaque_stale_cursor() -
     assert stale[0]["type"] == "snapshot"
     assert stale[0]["resync_required"] is True
     assert stale[0]["resync_reason"] == "view_cursor_revision_mismatch"
+
+
+def test_deck_cursor_reaches_ready_items_beyond_the_generic_queue_page_limit() -> None:
+    now = datetime(2026, 8, 27, 12, tzinfo=UTC).isoformat().replace("+00:00", "Z")
+    beads = state_stream.ProviderSnapshot(
+        scope="hive",
+        revision="beads-many",
+        as_of=now,
+        issues=tuple(
+            state_stream.StreamIssue(
+                id=f"widget-{index:03d}",
+                hive=HIVE,
+                issue_type="task",
+                status="open",
+                priority="P1",
+                title=f"Widget {index:03d}",
+                updated_at=now,
+            )
+            for index in range(201)
+        ),
+    )
+    runtime = AgentRunSnapshot(
+        host_id="host-1",
+        source_id="runtime-1",
+        revision="runtime-many",
+        summaries=(),
+        coverage=Coverage.COMPLETE,
+        coverage_reason=None,
+        freshness=Freshness(state="fresh", as_of=now),
+    )
+
+    class Sources:
+        cfg = {}
+
+        def resolve_hive(self, hive_id):
+            assert hive_id == HIVE
+            return SimpleNamespace(entry={})
+
+        def refresh_hive(self, _hive):
+            return beads, runtime
+
+        def close(self):
+            pass
+
+    backend = herdr_views.ViewBackend(cfg={}, sources=Sources(), _roster=_roster())
+    first = backend.deck(HIVE, limit=200, cursor=None)
+    second = backend.deck(HIVE, limit=200, cursor=first["next_cursor"])
+
+    assert first["returned"] == 200
+    assert first["truncated"] is True
+    assert second["returned"] == 1
+    assert second["sections"][0]["rows"][0]["entity"]["id"] == "widget-200"
+    assert second["truncated"] is False
 
 
 def test_degraded_sources_are_explicit_and_do_not_fabricate_agent_counts() -> None:
