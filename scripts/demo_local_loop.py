@@ -44,6 +44,11 @@ state (epic closed, every child closed, the cancelled bead re-dispatched and its
 anything that does not hold is listed and the script exits **non-zero**. A crash and a success
 must not be distinguishable only by reading the tail of ninety seconds of output.
 
+The fresh `bd init` is bounded because an embedded-engine startup has intermittently remained
+alive forever (bh-zayss). On its first timeout the demo captures process diagnostics, deletes
+only that partial scratch workspace, and retries once at a distinct path. A second timeout is a
+hard non-zero failure; partial state is never reused and a timeout is never accepted as success.
+
 Timing is stated rather than assumed: :func:`print_timing_contract` prints, before the first
 pass, which parts of the output vary between runs (pass numbers, pids, elapsed seconds) and
 which are fixed (the sequence of outcomes). Nothing in the script keys off a pass number — the
@@ -65,6 +70,7 @@ import errno
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -93,6 +99,17 @@ MAX_RUN_SECONDS = 2.0
 #: Hard bound on passes. Reaching it is a FAILURE (reported, non-zero exit), not a quiet stop:
 #: the molecule above settles in well under a dozen passes on any machine.
 MAX_PASSES = 60
+
+#: `bd init` is the only external command in this demo known to have intermittently remained
+#: alive forever in the embedded Dolt engine (bh-zayss).  A healthy fresh init finishes in
+#: 4-6 seconds in a fenced 48-run stress matrix.  Bound only that command, retain its process
+#: diagnostics, and retry once in a different throwaway workspace rather than ever continuing
+#: from a partially initialized `.beads/` directory.
+BD_INIT_TIMEOUT_SECONDS = 30.0
+BD_INIT_DIAGNOSTIC_GRACE_SECONDS = 5.0
+BD_INIT_KILL_DRAIN_SECONDS = 2.0
+BD_INIT_REAP_SECONDS = 2.0
+BD_INIT_MAX_ATTEMPTS = 2
 
 
 # --------------------------------------------------------------------------------------------
@@ -501,11 +518,112 @@ def bd_row(*args, cwd: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def build_hive(root: Path) -> Path:
-    """A real git repo with a real embedded-Dolt bd store, registered in the scratch config."""
-    from beadhive import config
+class BdInitTimedOut(TimeoutError):
+    """A bounded fresh `bd init` did not exit, including output captured while stopping it."""
 
-    main = Path(os.environ["GIT_WORKSPACE"]) / "github" / ORG / REPO_NAME
+    def __init__(
+        self,
+        timeout: float,
+        stdout: str,
+        stderr: str,
+        returncode: int | None,
+        *,
+        reaped: bool = True,
+    ):
+        super().__init__(f"bd init did not exit within {timeout:g}s")
+        self.timeout = timeout
+        self.stdout = stdout
+        self.stderr = stderr
+        self.returncode = returncode
+        self.reaped = reaped
+
+
+def _timeout_output(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value or ""
+
+
+def _close_process_pipes(process: subprocess.Popen) -> None:
+    """Close inherited pipe readers after their bounded drain expired."""
+    for pipe in (process.stdout, process.stderr):
+        if pipe is not None and not pipe.closed:
+            pipe.close()
+
+
+def _bounded_bd_init(main: Path) -> None:
+    """Initialize one fresh hive, stopping its whole process group if the deadline expires.
+
+    SIGQUIT is deliberate on POSIX: Go prints every goroutine before exiting, which turns a
+    future occurrence of bh-zayss into root-cause evidence.  If the process does not honor it,
+    SIGKILL follows after a short bounded grace period.  No other demo command is timed out.
+    """
+    argv = ["bd", "init", "--prefix", PREFIX, "--quiet"]
+    grouped = os.name == "posix"
+    process = subprocess.Popen(
+        argv,
+        cwd=str(main),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=grouped,
+    )
+    stdout = ""
+    stderr = ""
+    reaped = True
+    try:
+        stdout, stderr = process.communicate(timeout=BD_INIT_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as initial_timeout:
+        stdout = _timeout_output(initial_timeout.stdout)
+        stderr = _timeout_output(initial_timeout.stderr)
+        try:
+            if grouped:
+                os.killpg(process.pid, signal.SIGQUIT)
+            else:  # pragma: no cover - the supported demo hosts are POSIX
+                process.terminate()
+        except ProcessLookupError:
+            pass
+        try:
+            stdout, stderr = process.communicate(timeout=BD_INIT_DIAGNOSTIC_GRACE_SECONDS)
+        except subprocess.TimeoutExpired as quit_timeout:
+            stdout = _timeout_output(quit_timeout.stdout) or stdout
+            stderr = _timeout_output(quit_timeout.stderr) or stderr
+            try:
+                if grouped:
+                    os.killpg(process.pid, signal.SIGKILL)
+                else:  # pragma: no cover - the supported demo hosts are POSIX
+                    process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                stdout, stderr = process.communicate(timeout=BD_INIT_KILL_DRAIN_SECONDS)
+            except subprocess.TimeoutExpired as kill_timeout:
+                # A descendant that escaped the process group can retain an inherited pipe even
+                # after the direct child is dead.  Never let that turn the final drain into the
+                # same forever-hang this helper exists to prevent: retain what was read, close
+                # our pipe ends, and bound the direct-child reap independently.
+                stdout = _timeout_output(kill_timeout.stdout) or stdout
+                stderr = _timeout_output(kill_timeout.stderr) or stderr
+                _close_process_pipes(process)
+                try:
+                    process.wait(timeout=BD_INIT_REAP_SECONDS)
+                except subprocess.TimeoutExpired:
+                    reaped = False
+        raise BdInitTimedOut(
+            BD_INIT_TIMEOUT_SECONDS,
+            stdout or "",
+            stderr or "",
+            process.returncode,
+            reaped=reaped,
+        ) from None
+
+    if process.returncode != 0:
+        raise SystemExit(f"$ {' '.join(argv)}\n{stdout}\n{stderr}")
+
+
+def _initialize_hive_attempt(workspace: Path, init_runner=None) -> Path:
+    """Create one new git repo and initialize it; callers never reuse this after a timeout."""
+    main = workspace / "github" / ORG / REPO_NAME
     main.mkdir(parents=True, exist_ok=True)
     sh(["git", "init", "-q", "-b", "main", str(main)])
     for key, value in {
@@ -518,7 +636,124 @@ def build_hive(root: Path) -> Path:
     (main / ".gitignore").write_text(".beads/\nAGENTS.md\nCLAUDE.md\n")
     sh(["git", "-C", str(main), "add", "-A"])
     sh(["git", "-C", str(main), "commit", "-qm", "chore: init"])
-    sh(["bd", "init", "--prefix", PREFIX, "--quiet"], cwd=main)
+    (init_runner or _bounded_bd_init)(main)
+    return main
+
+
+class FreshWorkspace:
+    """Capability proving this invocation atomically created one scratch workspace."""
+
+    __slots__ = ("path", "device", "inode")
+
+    def __init__(self, *, path: Path, device: int, inode: int):
+        self.path = path
+        self.device = device
+        self.inode = inode
+
+
+def _fresh_bd_init_workspace(root: Path, attempt: int) -> FreshWorkspace:
+    """Atomically allocate a never-pre-existing workspace for exactly one init attempt."""
+    root = root.resolve()
+    path = Path(
+        tempfile.mkdtemp(prefix=f"workspace-bd-init-attempt-{attempt}-", dir=str(root))
+    ).absolute()
+    stat = path.lstat()
+    return FreshWorkspace(path=path, device=stat.st_dev, inode=stat.st_ino)
+
+
+def _discard_timed_out_workspace(root: Path, workspace: FreshWorkspace) -> None:
+    """Remove only the same inode atomically allocated for this init attempt."""
+    root = root.resolve()
+    path = workspace.path.absolute()
+    try:
+        stat = path.lstat()
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"refusing to discard vanished bd-init workspace: {path}") from exc
+    if (
+        path.parent != root
+        or not path.name.startswith("workspace-bd-init-attempt-")
+        or path.is_symlink()
+        or path.resolve() != path
+        or (stat.st_dev, stat.st_ino) != (workspace.device, workspace.inode)
+    ):
+        raise RuntimeError(f"refusing to discard unexpected bd-init workspace: {path}")
+    shutil.rmtree(path)
+
+
+def _diagnostic_excerpt(text: str) -> str:
+    """Keep console output actionable without dumping an unbounded Go goroutine report."""
+    lines = text.splitlines()
+    if len(lines) <= 60:
+        return "\n".join(lines)
+    return "\n".join([*lines[:40], "... diagnostic output elided ...", *lines[-20:]])
+
+
+def _report_bd_init_timeout(
+    root: Path, workspace: Path, attempt: int, error: BdInitTimedOut
+) -> None:
+    main = workspace / "github" / ORG / REPO_NAME
+    artifacts = [
+        str(path.relative_to(main))
+        for path in (
+            main / ".beads",
+            main / ".beads" / "metadata.json",
+            main / ".beads" / "config.yaml",
+            main / ".beads" / "embeddeddolt",
+        )
+        if path.exists()
+    ]
+    diagnostic = (
+        f"bd init timeout: attempt {attempt}/{BD_INIT_MAX_ATTEMPTS}\n"
+        f"workspace: {workspace}\n"
+        f"deadline: {error.timeout:g}s\n"
+        f"return code after stop: {error.returncode}\n"
+        f"direct child reaped: {error.reaped}\n"
+        f"partial artifacts: {', '.join(artifacts) if artifacts else '(none observed)'}\n"
+        f"--- stdout ---\n{error.stdout}\n--- stderr ---\n{error.stderr}\n"
+    )
+    log = root / f"bd-init-timeout-attempt-{attempt}.log"
+    log.write_text(diagnostic)
+    print(
+        "\nBD INIT TIMEOUT — the partial scratch hive will not be reused\n"
+        f"{_diagnostic_excerpt(diagnostic)}\n"
+        f"full diagnostic: {log}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+def build_hive(root: Path, *, init_runner=None) -> Path:
+    """Build a real scratch hive, retrying one timed-out fresh init at a distinct path.
+
+    A timeout is never treated as success.  The first partial workspace is diagnosed and
+    discarded before a second is created; a second timeout is a hard non-zero failure.
+    """
+    from beadhive import config
+
+    root = root.resolve()
+    main = None
+    for attempt in range(1, BD_INIT_MAX_ATTEMPTS + 1):
+        workspace = _fresh_bd_init_workspace(root, attempt)
+        os.environ["GIT_WORKSPACE"] = str(workspace.path)
+        try:
+            main = _initialize_hive_attempt(workspace.path, init_runner=init_runner)
+            break
+        except BdInitTimedOut as error:
+            _report_bd_init_timeout(root, workspace.path, attempt, error)
+            if not error.reaped:
+                raise SystemExit(
+                    "bd init did not reap after SIGKILL; refusing to delete its workspace or "
+                    "start a concurrent retry"
+                ) from None
+            _discard_timed_out_workspace(root, workspace)
+            if attempt == BD_INIT_MAX_ATTEMPTS:
+                raise SystemExit(
+                    f"bd init timed out on both fresh attempts; last diagnostic: "
+                    f"{root / f'bd-init-timeout-attempt-{attempt}.log'}"
+                ) from None
+            print("retrying bd init once in a distinct fresh scratch workspace", flush=True)
+
+    assert main is not None
 
     config.save(
         {
