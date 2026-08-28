@@ -120,6 +120,7 @@ pushed.
 bh hq push             # push both halves of HQ; reports what moved on each
 bh hq push --dry-run   # preview only; no writes
 bh hq status           # read-only: ahead/behind for BOTH halves, no push
+bh hq status --json    # versioned identity, location, availability, and freshness contract
 ```
 
 `bh hq init`'s `engine.push_state` call is **one-shot** — it fires only the first time a remote
@@ -147,6 +148,14 @@ nothing in the CLI surfacing that HQ had drifted from its remote at all (bh-z9hl
 the same ahead/behind primitive `bh hive sync-remote` and `bh doctor`'s fleet-health section
 already trust): it reports ahead/behind for both halves without pushing anything, paying for one
 real network call (`bd federation status`) so the Dolt count is verified rather than guessed.
+
+`bh hq status --json` emits the v1 machine contract documented by
+[`docs/schemas/hq-status-v1.schema.json`](schemas/hq-status-v1.schema.json). Its canonical
+`cwd` comes from Beadhive's own `BH_HQ` → `BH_HOME/hq` resolution, so an integration must not
+reconstruct or guess the path. The projection distinguishes available, authoritatively absent,
+and unavailable observations. Its retirement intent is advisory: incomplete facts always say
+retain, and consumers still own proof that a target is plugin-owned and locally safe to remove.
+The command remains read-only in every state.
 
 Both depend on `main` carrying upstream tracking, which `bh hq init`'s first push now sets
 (`git push -u origin main`) — a bare `git push`/`git pull` in `~/.beadhive/hq`, and the
