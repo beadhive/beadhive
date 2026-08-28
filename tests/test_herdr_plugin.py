@@ -71,7 +71,10 @@ def test_status_reports_server_and_integrations(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "herdr: server=up" in result.output
     assert "claude: installed" in result.output
-    assert calls == [["herdr", "status"], ["herdr", "integration", "status"]]
+    assert calls == [
+        ["herdr", "--session", "bh-supervisor", "status"],
+        ["herdr", "integration", "status"],
+    ]
 
 
 def test_status_fences_missing_binary_and_stopped_server(monkeypatch):
@@ -86,6 +89,224 @@ def test_status_fences_missing_binary_and_stopped_server(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "server=down" in result.output
     assert "integrations: unavailable" in result.output
+
+
+def test_session_selection_defaults_and_resolves_current_only_inside_herdr(monkeypatch):
+    assert herdr_plugin._session_selection("").name == "bh-supervisor"
+    assert herdr_plugin._session_selection("named.team").name == "named.team"
+
+    monkeypatch.delenv("HERDR_ENV", raising=False)
+    monkeypatch.delenv("HERDR_PANE_ID", raising=False)
+    with pytest.raises(ValueError, match="Herdr-managed pane"):
+        herdr_plugin._session_selection("current")
+
+    monkeypatch.setenv("HERDR_ENV", "1")
+    monkeypatch.setenv("HERDR_PANE_ID", "w1:p2")
+    monkeypatch.delenv("HERDR_SESSION", raising=False)
+    assert herdr_plugin._session_selection("active").name == "default"
+    monkeypatch.setenv("HERDR_SESSION", "operator-team")
+    selected = herdr_plugin._session_selection("current")
+    assert selected.name == "operator-team"
+    assert selected.current is True
+
+    with pytest.raises(ValueError, match="Herdr session name"):
+        herdr_plugin._session_selection("not a session")
+
+
+def test_status_current_targets_injected_session_and_reports_it(monkeypatch):
+    monkeypatch.setenv("HERDR_ENV", "1")
+    monkeypatch.setenv("HERDR_PANE_ID", "w7:p3")
+    monkeypatch.setenv("HERDR_SESSION", "operator-team")
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "--session", "operator-team", "status"]:
+            return _result(stdout="server ready")
+        if argv == ["herdr", "integration", "status"]:
+            return _result(stdout="codex: installed")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(app, ["plugin", "herdr", "status", "--session", "current", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["session"] == "operator-team"
+    assert calls[0] == ["herdr", "--session", "operator-team", "status"]
+
+    attached = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "attach",
+            "bh-widget-1",
+            "--session",
+            "operator-team",
+            "--json",
+        ],
+    )
+    assert attached.exit_code == 0, attached.output
+    attach_payload = json.loads(attached.stdout)
+    assert attach_payload["session"] == "operator-team"
+    assert attach_payload["attach_argv"] == [
+        "herdr",
+        "--session",
+        "operator-team",
+        "agent",
+        "attach",
+        "bh-widget-1",
+    ]
+
+
+def test_session_prepare_creates_absent_exact_session_without_touching_others(monkeypatch):
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if argv == ["herdr", "--session", "fresh", "api", "snapshot"]:
+            return _result(stdout="{}")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection("fresh"))
+    try:
+        snapshot, detail = herdr_plugin._prepare_selected_session()
+    finally:
+        herdr_plugin._SESSION_CONTEXT.reset(token)
+
+    assert snapshot == {}
+    assert detail == ""
+    assert calls == [["herdr", "--session", "fresh", "api", "snapshot"]]
+
+
+def test_stopped_reserved_session_delete_success_recreates_exact_session(monkeypatch):
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(argv)
+        if len(calls) == 1:
+            return _result(1, stderr="session is stopped")
+        if len(calls) == 2:
+            return _result(
+                stdout=json.dumps(
+                    {
+                        "sessions": [
+                            {"name": "bh-supervisor", "running": False},
+                        ]
+                    }
+                )
+            )
+        if len(calls) == 3:
+            return _result(stdout='{"deleted":"bh-supervisor"}')
+        if len(calls) == 4:
+            return _result(stdout='{"snapshot":{"session":"bh-supervisor"}}')
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection("bh-supervisor"))
+    try:
+        snapshot, detail = herdr_plugin._prepare_selected_session()
+    finally:
+        herdr_plugin._SESSION_CONTEXT.reset(token)
+
+    assert snapshot == {"session": "bh-supervisor"}
+    assert detail == ""
+    assert calls == [
+        ["herdr", "--session", "bh-supervisor", "api", "snapshot"],
+        ["herdr", "session", "list", "--json"],
+        ["herdr", "session", "delete", "bh-supervisor", "--json"],
+        ["herdr", "--session", "bh-supervisor", "api", "snapshot"],
+    ]
+
+
+def test_stopped_reserved_session_is_recreated_and_accepts_concurrent_winner(monkeypatch):
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    snapshots = iter([None, {}])
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_session_states",
+        lambda: ({"bh-supervisor": herdr_plugin._SessionState("bh-supervisor", False)}, ""),
+    )
+    deletes = []
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_invoke",
+        lambda argv, **_kwargs: deletes.append(argv) or _result(1, stderr="already deleted"),
+    )
+
+    snapshot, detail = herdr_plugin._prepare_selected_session()
+
+    assert snapshot == {}
+    assert detail == ""
+    assert deletes == [["herdr", "session", "delete", "bh-supervisor", "--json"]]
+
+
+def test_stopped_nonreserved_session_is_never_deleted(monkeypatch):
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: None)
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_session_states",
+        lambda: ({"team": herdr_plugin._SessionState("team", False)}, ""),
+    )
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_invoke",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not delete")),
+    )
+    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection("team"))
+    try:
+        snapshot, detail = herdr_plugin._prepare_selected_session()
+    finally:
+        herdr_plugin._SESSION_CONTEXT.reset(token)
+
+    assert snapshot is None
+    assert "session 'team' is stopped" in detail
+    assert "herdr session delete team" in detail
+
+
+def test_running_named_session_with_unavailable_snapshot_is_never_seized(monkeypatch):
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: None)
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_session_states",
+        lambda: ({"foreign": herdr_plugin._SessionState("foreign", True)}, ""),
+    )
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_invoke",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("must not mutate")),
+    )
+    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection("foreign"))
+    try:
+        snapshot, detail = herdr_plugin._prepare_selected_session()
+    finally:
+        herdr_plugin._SESSION_CONTEXT.reset(token)
+
+    assert snapshot is None
+    assert detail == "session 'foreign' is running but its snapshot is unavailable"
+
+
+def test_incompatible_session_inventory_refuses_recovery(monkeypatch):
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: None)
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_session_states",
+        lambda: (None, "session list included an incompatible record"),
+    )
+
+    snapshot, detail = herdr_plugin._prepare_selected_session()
+
+    assert snapshot is None
+    assert "could not inspect Herdr sessions" in detail
+    assert "incompatible record" in detail
 
 
 def test_ps_lists_tagged_and_unmanaged_agents_from_json(monkeypatch):
@@ -750,6 +971,8 @@ def test_lifecycle_status_ps_and_attach_emit_shared_json_receipts(tmp_path, monk
     def fake_run(argv, **kwargs):
         if argv == ["herdr", "status"]:
             return _result(stdout="server ready")
+        if argv == ["herdr", "--session", "bh-supervisor", "status"]:
+            return _result(stdout="server ready")
         if argv == ["herdr", "integration", "status"]:
             return _result(stdout="claude: installed\ncodex: not installed")
         if argv[-3:] == ["agent", "list", "--json"]:
@@ -1010,6 +1233,7 @@ def test_spawn_watch_and_reap_success_emit_json_dispositions(tmp_path, monkeypat
     monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
     monkeypatch.setattr(herdr_plugin, "_workspace", lambda *_args: ("w1", "w1:p1"))
     monkeypatch.setattr(herdr_plugin, "_owned_live_pane", lambda _target: "w1:p2")
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: {})
 
     def command(*args, **kwargs):
         if args[:2] == ("pane", "split"):
@@ -1636,6 +1860,7 @@ def test_launch_fresh_bead_emits_exact_json_and_forwards_layout(tmp_path, monkey
         "command": "plugin herdr launch",
         "status": "ready",
         "disposition": "created",
+        "session": "bh-supervisor",
         "hive": "github/acme/widgets",
         "bead": "widget-1",
         "kind": "codex",
@@ -1667,10 +1892,13 @@ def test_launch_same_actor_returns_proven_live_agent_without_new_pane(tmp_path, 
         raise AssertionError("proven reuse must not create a workspace or pane")
 
     monkeypatch.setattr(herdr_plugin, "_workspace", boom)
-    result = runner.invoke(app, ["plugin", "herdr", "launch", "widget-1"])
+    result = runner.invoke(
+        app, ["plugin", "herdr", "launch", "widget-1", "--session", "operator-team"]
+    )
 
     assert result.exit_code == 0, result.output
     assert "disposition=reused" in result.output
+    assert "session=operator-team" in result.output
     assert "workspace=w9" in result.output
     assert "pane=w9:p7" in result.output
     assert str(claim.worktree) in result.output
@@ -2076,9 +2304,13 @@ def test_roster_schema_is_valid_and_accepts_the_projection(tmp_path, monkeypatch
         / "herdr-agent-roster-v1.schema.json"
     )
     schema = json.loads(schema_path.read_text())
-    payload = herdr_plugin._roster_payload(
-        _roster_snapshot("bh-widget-1", cwd), {"managed_repos": []}
-    )
+    token = herdr_plugin._SESSION_CONTEXT.set(herdr_plugin._session_selection("operator-team"))
+    try:
+        payload = herdr_plugin._roster_payload(
+            _roster_snapshot("bh-widget-1", cwd), {"managed_repos": []}
+        )
+    finally:
+        herdr_plugin._SESSION_CONTEXT.reset(token)
 
     jsonschema.Draft202012Validator.check_schema(schema)
     jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(
@@ -2088,6 +2320,8 @@ def test_roster_schema_is_valid_and_accepts_the_projection(tmp_path, monkeypatch
         json.loads(_LIFECYCLE_SCHEMA_PATH.read_text()),
         format_checker=jsonschema.FormatChecker(),
     ).validate(payload)
+    assert payload["session"] == "operator-team"
+    assert payload["agents"][0]["presentation"]["session"] == "operator-team"
 
 
 def test_launch_lease_adopts_only_expired_state_when_explicit(monkeypatch):
@@ -2138,6 +2372,7 @@ def test_launch_help_leads_with_one_argument_path_and_documents_boundaries():
     for option in (
         "--hive",
         "--kind",
+        "--session",
         "--as",
         "--adopt-expired",
         "--direction",
@@ -2148,6 +2383,17 @@ def test_launch_help_leads_with_one_argument_path_and_documents_boundaries():
         assert option in result.output
     assert "active foreign host lease" in compact
     assert "never creates or removes a worktree" in compact
+
+
+@pytest.mark.parametrize(
+    "command", ["status", "ps", "launch", "spawn", "dispatch", "watch", "attach", "reap"]
+)
+def test_session_aware_command_help_documents_current_selection(command):
+    result = runner.invoke(app, ["plugin", "herdr", command, "--help"])
+
+    assert result.exit_code == 0, result.output
+    assert "--session" in result.output
+    assert "current" in result.output
 
 
 def test_spawn_keeps_its_three_required_low_level_options():

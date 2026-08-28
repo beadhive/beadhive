@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import inspect
 import json
+import os
 import re
 import shlex
 import shutil
@@ -20,8 +22,10 @@ import socket
 import subprocess
 import sys
 import uuid
+from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import wraps
 from pathlib import Path
 
 import typer
@@ -29,6 +33,9 @@ import typer
 from . import config, operator_actions, plugins, run, worktree
 
 _SESSION = "bh-supervisor"
+_CURRENT_SESSION_SENTINELS = frozenset({"current", "active"})
+_SESSION_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SESSION_CONTEXT: ContextVar[_SessionSelection] = ContextVar("herdr_session_selection")
 _WARMUP_TOKEN = "BH_HERDR_WARMUP_OK"
 _LAUNCH_SCHEMA = 1
 _LIFECYCLE_SCHEMA = 1
@@ -43,6 +50,78 @@ _TOKEN_TARGET = "bh_target"
 _TOKEN_SCHEMA = "bh_schema"
 _HERDR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+
+
+@dataclass(frozen=True)
+class _SessionSelection:
+    """One exact Herdr session chosen at the CLI boundary."""
+
+    name: str
+    requested: str
+    current: bool = False
+
+
+@dataclass(frozen=True)
+class _SessionState:
+    name: str
+    running: bool
+
+
+def _active_session() -> _SessionSelection:
+    """Return the command-scoped selection, or the backward-compatible default."""
+    try:
+        return _SESSION_CONTEXT.get()
+    except LookupError:
+        return _SessionSelection(_SESSION, _SESSION)
+
+
+def _current_session_name() -> str:
+    """Resolve Herdr's injected caller session without consulting focused UI state."""
+    if os.environ.get("HERDR_ENV") != "1" or not os.environ.get("HERDR_PANE_ID", "").strip():
+        raise ValueError(
+            "--session current requires a Herdr-managed pane (HERDR_ENV=1 and "
+            "HERDR_PANE_ID); pass an exact session name outside Herdr"
+        )
+    # Named sessions inject HERDR_SESSION.  The original/default session predates that variable,
+    # so its absence is an exact, documented compatibility spelling rather than a focused-session
+    # lookup.
+    return os.environ.get("HERDR_SESSION", "").strip() or "default"
+
+
+def _session_selection(value: str) -> _SessionSelection:
+    requested = value.strip() or _SESSION
+    if requested.lower() in _CURRENT_SESSION_SENTINELS:
+        current = _current_session_name()
+        if current in {".", ".."} or _SESSION_NAME_RE.fullmatch(current) is None:
+            raise ValueError("Herdr injected an invalid current session name")
+        return _SessionSelection(current, requested, current=True)
+    if requested in {".", ".."} or _SESSION_NAME_RE.fullmatch(requested) is None:
+        raise ValueError(
+            "--session must be a Herdr session name (ASCII letters, digits, dot, underscore, "
+            "or dash), or `current`/`active`"
+        )
+    return _SessionSelection(requested, requested)
+
+
+def _session_scoped(fn):
+    """Resolve/reset the per-command session while retaining Typer's original signature."""
+    signature = inspect.signature(fn)
+
+    @wraps(fn)
+    def wrapped(*args, **kwargs):
+        bound = signature.bind_partial(*args, **kwargs)
+        raw = str(bound.arguments.get("session", _SESSION) or _SESSION)
+        try:
+            selection = _session_selection(raw)
+        except ValueError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--session") from exc
+        token = _SESSION_CONTEXT.set(selection)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _SESSION_CONTEXT.reset(token)
+
+    return wrapped
 
 
 def _operation_id(value: str) -> str:
@@ -95,7 +174,7 @@ def _lifecycle_payload(
         "hive": hive,
         "bead": bead,
         "target": target,
-        "session": _SESSION,
+        "session": _active_session().name,
         "workspace": workspace,
         "pane": pane,
         "worktree": worktree_path,
@@ -178,7 +257,12 @@ def server_up() -> bool:
     """
     if not _has_cli():
         return False
-    result = _invoke(["herdr", "status"])
+    selection = _active_session()
+    result = (
+        _invoke(["herdr", "status"])
+        if selection.name == _SESSION and selection.requested == _SESSION
+        else _command("status")
+    )
     return result is not None and result.returncode == 0
 
 
@@ -189,12 +273,12 @@ def _output(result) -> str:
 
 def _command(*args: str, timeout: float | None = None):
     """Run one session-scoped herdr command, fencing every external failure."""
-    return _invoke(["herdr", "--session", _SESSION, *args], timeout=timeout)
+    return _invoke(["herdr", "--session", _active_session().name, *args], timeout=timeout)
 
 
 def _session_socket_path() -> tuple[Path | None, str]:
     """Ask Herdr for the dedicated session socket without deriving private paths."""
-    status = _invoke(["herdr", "--session", _SESSION, "status", "--json"])
+    status = _invoke(["herdr", "--session", _active_session().name, "status", "--json"])
     if status is None or status.returncode != 0:
         return None, _output(status) if status is not None else "status unavailable"
     try:
@@ -206,7 +290,7 @@ def _session_socket_path() -> tuple[Path | None, str]:
     if not isinstance(path, str) or not path:
         return None, "status response did not include the session socket"
     if server.get("running") is False:
-        return None, "the bh-supervisor session is not running"
+        return None, f"the {_active_session().name} session is not running"
     return Path(path), ""
 
 
@@ -462,7 +546,7 @@ def _managed_worktree(hive: str, bead: str, cfg=None) -> tuple[dict, Path]:
 
 def _close_pane(pane: str) -> None:
     """Best-effort cleanup for a failed spawn; never mask the original failure."""
-    _invoke(["herdr", "--session", _SESSION, "pane", "close", pane, "--no-focus"])
+    _command("pane", "close", pane, "--no-focus")
 
 
 def _hive_id(entry: dict) -> str:
@@ -500,7 +584,7 @@ def _integration_ready(kind: str) -> tuple[bool, str]:
 
 
 def _session_snapshot():
-    """Use or create the dedicated session noninteractively and return its snapshot."""
+    """Read the selected session noninteractively and return its snapshot."""
     result = _command("api", "snapshot")
     if result is None or result.returncode != 0:
         return None
@@ -508,6 +592,83 @@ def _session_snapshot():
     if isinstance(data, dict) and isinstance(data.get("snapshot"), dict):
         data = data["snapshot"]
     return data if isinstance(data, dict) else None
+
+
+def _session_states() -> tuple[dict[str, _SessionState] | None, str]:
+    """Read Herdr's public session inventory without guessing private runtime paths."""
+    result = _invoke(["herdr", "session", "list", "--json"])
+    if result is None or result.returncode != 0:
+        return None, _output(result) if result is not None else "session list unavailable"
+    try:
+        payload = json.loads(str(result.stdout or ""))
+    except (TypeError, ValueError):
+        return None, "session list returned invalid JSON"
+    rows = payload.get("sessions") if isinstance(payload, dict) else None
+    if not isinstance(rows, list):
+        return None, "session list response did not include sessions"
+    states: dict[str, _SessionState] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            return None, "session list included an invalid record"
+        name, running = row.get("name"), row.get("running")
+        if not isinstance(name, str) or not name or not isinstance(running, bool):
+            return None, "session list included an incompatible record"
+        states[name] = _SessionState(name, running)
+    return states, ""
+
+
+def _session_recovery(name: str) -> str:
+    return (
+        f"run `herdr session delete {shlex.quote(name)}` after confirming it is safe, then retry "
+        f"with `--session {shlex.quote(name)}`"
+    )
+
+
+def _prepare_selected_session() -> tuple[dict | None, str]:
+    """Ensure launch/spawn can use the selected session without seizing foreign state.
+
+    A live or absent exact session is handled by Herdr's normal get-or-create snapshot request.
+    A stopped session is a tombstone: only bh's reserved default may be deleted automatically.
+    The retry after delete deliberately accepts a concurrent creator's winning live session.
+    """
+    if not _has_cli():
+        return None, "Herdr CLI is not on PATH"
+    snapshot = _session_snapshot()
+    if snapshot is not None:
+        return snapshot, ""
+    selection = _active_session()
+    states, detail = _session_states()
+    if states is None:
+        return None, f"could not inspect Herdr sessions ({detail})"
+    state = states.get(selection.name)
+    if state is None:
+        return None, (
+            f"could not create or reach session {selection.name!r}; run "
+            f"`herdr --session {shlex.quote(selection.name)} status --json` and retry"
+        )
+    if state.running:
+        return None, f"session {selection.name!r} is running but its snapshot is unavailable"
+    if selection.name != _SESSION:
+        return None, f"session {selection.name!r} is stopped; {_session_recovery(selection.name)}"
+
+    deleted = _invoke(["herdr", "session", "delete", selection.name, "--json"])
+    if deleted is not None and deleted.returncode == 0:
+        snapshot = _session_snapshot()
+        if snapshot is not None:
+            return snapshot, ""
+        return None, (
+            f"recreated reserved session {selection.name!r} but its snapshot is unavailable; "
+            f"run `herdr --session {selection.name} status --json`"
+        )
+
+    # Another launcher may have deleted and recreated the same reserved tombstone first.
+    snapshot = _session_snapshot()
+    if snapshot is not None:
+        return snapshot, ""
+    return None, (
+        f"could not recover stopped reserved session {selection.name!r}: "
+        f"{_output(deleted) or 'session delete failed'}; {_session_recovery(selection.name)}"
+    )
 
 
 def _snapshot_agent_records(snapshot: dict) -> list[dict]:
@@ -784,7 +945,7 @@ def _roster_agent(
             "branch": branch,
         },
         "presentation": {
-            "session": _SESSION,
+            "session": _active_session().name,
             "workspace": workspace_id,
             "workspace_label": workspace_label,
             "tab": tab_id,
@@ -846,7 +1007,7 @@ def _roster_payload(snapshot: dict, cfg: dict | None = None, *, operation_id: st
         )
     )
     revision_input = json.dumps(
-        ["herdr-roster-v1", _SESSION, [agent["revision"] for agent in agents]],
+        ["herdr-roster-v1", _active_session().name, [agent["revision"] for agent in agents]],
         separators=(",", ":"),
         ensure_ascii=True,
     ).encode()
@@ -886,7 +1047,7 @@ def _strict_live_target(target: str, hive: str, cwd: Path) -> tuple[str, str] | 
     """Prove exact live target ownership, refusing ambiguous or conflicting records."""
     snapshot = _session_snapshot()
     if snapshot is None:
-        raise RuntimeError("the bh-supervisor session became unavailable")
+        raise RuntimeError(f"the {_active_session().name} session became unavailable")
     matches = [
         record
         for record in _snapshot_agent_records(snapshot)
@@ -956,6 +1117,7 @@ class _LaunchResult:
             {
                 "status": "ready",
                 "disposition": self.disposition,
+                "session": _active_session().name,
                 "hive": self.hive,
                 "bead": self.bead,
                 "kind": self.kind,
@@ -978,8 +1140,15 @@ def _launch_fail(stage: str, detail: str, *, claim=None, target: str = "") -> No
         )
         typer.echo(f"  status: bh work issue {claim.bead.get('id', '')} --json", err=True)
         if target:
-            typer.echo(f"  attach: bh plugin herdr attach {target}", err=True)
-        typer.echo(f"  retry: bh plugin herdr launch {claim.bead.get('id', '')}", err=True)
+            typer.echo(
+                f"  attach: bh plugin herdr attach {target} --session {_active_session().name}",
+                err=True,
+            )
+        typer.echo(
+            f"  retry: bh plugin herdr launch {claim.bead.get('id', '')} "
+            f"--session {_active_session().name}",
+            err=True,
+        )
     raise typer.Exit(1)
 
 
@@ -1121,13 +1290,15 @@ def _adopt_expired_lease(cfg, entry: dict):
         "bh plugin herdr launch nvhack-lvxi --json\n\n"
         "Claim one exact bead and start or reuse its warm Herdr coding agent. The one-argument "
         "path discovers the hive and kind. All options are overrides: --hive disambiguates, "
-        "--kind selects an installed integration, --as selects the developer identity, "
+        "--kind selects an installed integration, --session selects an exact named session "
+        "or the current in-pane session, --as selects the developer identity, "
         "--adopt-expired uses only non-forced host adoption, --direction defaults right, "
         "--no-focus is the safe focus default, and --json is the agent contract. Herdr never "
         "creates or removes a worktree, never installs an integration, and never seizes an "
         "active foreign host lease."
     ),
 )
+@_session_scoped
 def _launch_cmd(
     bead: str = typer.Argument(..., metavar="BEAD_ID", help="exact Beads issue ID"),
     hive: str = typer.Option(
@@ -1135,6 +1306,11 @@ def _launch_cmd(
     ),
     kind: str | None = typer.Option(
         None, "--kind", help="Herdr kind; overrides per-hive/global herdr.kind defaults"
+    ),
+    session: str = typer.Option(
+        _SESSION,
+        "--session",
+        help="exact Herdr session, or current/active inside a Herdr-managed pane",
     ),
     as_: str = typer.Option(
         "", "--as", help="developer identity; otherwise use normal bh work claim precedence"
@@ -1160,8 +1336,9 @@ def _launch_cmd(
 
     The command performs read-only Herdr preflight first, then uses native ``bh work claim``
     ownership to provision the managed worktree. Herdr never creates or removes a worktree.
-    Integration installation is explicit (``bh plugin herdr integrate KIND``), and an active
-    foreign host lease is never seized. ``spawn`` remains the low-level command for callers
+    Integration installation is explicit (``bh plugin herdr integrate KIND``), session selection
+    never falls back to another live session, and an active foreign host lease is never seized.
+    ``spawn`` remains the low-level command for callers
     that intentionally prepared the claim and worktree themselves.
     """
     from . import jsonout, registry
@@ -1200,11 +1377,11 @@ def _launch_cmd(
             f"Herdr integration for {resolved_kind!r} is missing ({integration_detail}); "
             f"run `bh plugin herdr integrate {resolved_kind}`",
         )
-    if _session_snapshot() is None:
+    _snapshot, session_detail = _prepare_selected_session()
+    if _snapshot is None:
         _launch_fail(
             "session",
-            f"could not use or create the noninteractive {_SESSION!r} session; "
-            "run `bh plugin herdr status`, then retry",
+            session_detail,
         )
 
     _launch_lease(cfg, entry, resolved_hive, adopt_expired)
@@ -1328,6 +1505,7 @@ def _launch_cmd(
             f"{key}={payload[key]}"
             for key in (
                 "disposition",
+                "session",
                 "hive",
                 "bead",
                 "kind",
@@ -1573,7 +1751,11 @@ def _owned_live_pane(target: str) -> str | None:
 
 
 @cli.command("status", help="show herdr server health and installed agent integrations.")
+@_session_scoped
 def _status_cmd(
+    session: str = typer.Option(
+        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
+    ),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
@@ -1607,7 +1789,7 @@ def _status_cmd(
         typer.echo("herdr integrations: unavailable")
         return
 
-    status = _invoke(["herdr", "status"])
+    status = _command("status")
     server_available = status is not None and status.returncode == 0
     integrations = _invoke(["herdr", "integration", "status"])
     integration_rows = []
@@ -1651,7 +1833,11 @@ def _status_cmd(
 
 
 @cli.command("ps", help="list live herdr agents and their bh identity.")
+@_session_scoped
 def _ps_cmd(
+    session: str = typer.Option(
+        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
+    ),
     as_json: bool = typer.Option(
         False, "--json", help="emit a versioned lifecycle receipt with the live roster"
     ),
@@ -1768,8 +1954,12 @@ def _integrate_cmd(kind: str = typer.Argument(..., metavar="KIND")) -> None:
 
 
 @cli.command("attach", help="print the command for a human to attach to an agent pane.")
+@_session_scoped
 def _attach_cmd(
     target: str = typer.Argument(..., metavar="TARGET"),
+    session: str = typer.Option(
+        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
+    ),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
@@ -1778,7 +1968,7 @@ def _attach_cmd(
     Attaching transfers an operator's terminal.  Keeping this as a copy/paste
     instruction means a ``bh`` invocation cannot focus or take over their TTY.
     """
-    argv = ["herdr", "--session", _SESSION, "agent", "attach", target]
+    argv = ["herdr", "--session", _active_session().name, "agent", "attach", target]
     if as_json:
         try:
             op_id = _operation_id(operation_id)
@@ -1804,8 +1994,12 @@ def _attach_cmd(
 
 
 @cli.command("reap", help="close a pane previously created by bh plugin herdr spawn.")
+@_session_scoped
 def _reap_cmd(
     target: str = typer.Argument(..., metavar="TARGET"),
+    session: str = typer.Option(
+        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
+    ),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
@@ -1887,14 +2081,20 @@ def _reap_cmd(
 
 
 @cli.command("spawn", help="start a warm, steerable agent pane in an existing bh worktree.")
+@_session_scoped
 def _spawn_cmd(
     hive: str = typer.Option(..., "--hive", help="managed hive identifier"),
     bead: str = typer.Option(..., "--bead", help="already-claimed bead identifier"),
     kind: str = typer.Option(..., "--kind", help="Herdr agent kind, e.g. claude or codex"),
+    session: str = typer.Option(
+        _SESSION,
+        "--session",
+        help="exact Herdr session, or current/active inside a Herdr-managed pane",
+    ),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
-    """Create an isolated pane and prove its first conversational turn is promptable."""
+    """Create a pane in the exact selected session and prove its first turn is promptable."""
     try:
         op_id = _operation_id(operation_id)
     except ValueError as exc:
@@ -1910,18 +2110,19 @@ def _spawn_cmd(
                 bead=bead,
             )
         raise typer.BadParameter(str(exc), param_hint="--operation-id") from exc
-    if not server_up():
+    _snapshot, session_detail = _prepare_selected_session()
+    if _snapshot is None:
         if as_json:
             _lifecycle_failure(
                 "spawn",
                 operation_id=op_id,
                 code="herdr_server_unavailable",
-                message="Herdr server is down or its integration is unavailable.",
+                message=session_detail,
                 retryable=True,
                 hive=hive,
                 bead=bead,
             )
-        typer.echo("✗ herdr: server=down (start herdr and install its agent integration)", err=True)
+        typer.echo(f"✗ herdr: server=down; session unavailable ({session_detail})", err=True)
         raise typer.Exit(1)
     pane = ""
     try:
@@ -2047,6 +2248,7 @@ def _spawn_cmd(
 
 
 @cli.command("dispatch", help="send a prompt and verify it reached the agent pane.")
+@_session_scoped
 def _dispatch_cmd(
     target: str = typer.Argument(..., metavar="TARGET", help="herdr agent target"),
     prompt: str | None = typer.Argument(
@@ -2057,6 +2259,9 @@ def _dispatch_cmd(
     ),
     prompt_file: str = typer.Option(
         "", "--prompt-file", help="read prompt from this file and keep it out of process arguments"
+    ),
+    session: str = typer.Option(
+        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
     ),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
@@ -2217,8 +2422,12 @@ def _dispatch_cmd(
 
 
 @cli.command("watch", help="wait for an agent to become blocked or finish.")
+@_session_scoped
 def _watch_cmd(
     target: str = typer.Argument(..., metavar="TARGET"),
+    session: str = typer.Option(
+        _SESSION, "--session", help="exact Herdr session, or current/active inside Herdr"
+    ),
     timeout: float | None = typer.Option(
         None,
         "--timeout",
