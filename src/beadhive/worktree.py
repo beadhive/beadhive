@@ -1294,6 +1294,11 @@ def inventory_payload(*args, **kwargs):
     return _worktree_inventory.impl_inventory_payload(*args, **kwargs)
 
 
+def inventory_snapshot_payload(*args, **kwargs):
+    """Compatibility facade for ``worktree_inventory.impl_inventory_snapshot_payload``."""
+    return _worktree_inventory.impl_inventory_snapshot_payload(*args, **kwargs)
+
+
 def list_cmd(*, as_json=False, hive="", states=(), limit=50, cursor=None):
     """Compatibility facade for ``worktree_inventory.impl_list_cmd``."""
     return _worktree_inventory.impl_list_cmd(

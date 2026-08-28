@@ -261,7 +261,7 @@ record intentionally contains no Herdr workspace, pane, metadata-token, or layou
 
 ### Herdr view projections
 
-The Deck plugin consumes six additive version-1 JSON projections. They are deliberately
+The Deck plugin consumes seven additive version-1 JSON projections. They are deliberately
 presentation adapters over the generic hive summaries, work queues, exact bead detail,
 advertised actions, and live roster above; they do not decide readiness, ownership, or mutation
 authority themselves.
@@ -273,6 +273,7 @@ bh plugin herdr view bead --hive github/beadhive/beadhive --bead bh-123 --json
 bh plugin herdr view agent --target bh-bh-123 --json
 bh plugin herdr view layout --hive github/beadhive/beadhive \
   --context-json '{"width":100,"height":40}' --json
+bh plugin herdr view presentation --hive github/beadhive/beadhive --json
 bh plugin herdr view stream --hive github/beadhive/beadhive --limit 50
 ```
 
@@ -304,6 +305,23 @@ and whose show operation recreates it; it is not modeled as a native collapsible
 by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-scope, or stale
 `--since` cursors do not suppress the snapshot: the first frame sets `resync_required` and names
 the reason so a client can discard old state safely.
+
+`presentation` composes the generic hive identity, managed-worktree inventory, work queues, and
+agent-facts contracts with the exact live `bh-supervisor` workspace/tab/pane locators. Its
+[`herdr-presentation-v1.schema.json`](schemas/herdr-presentation-v1.schema.json) output contains
+ready-to-submit argument objects for Herdr's `workspace.report-metadata` and
+`pane.report-metadata` APIs: stable source, unsigned sequence, TTL, and at most sixteen bounded,
+single-line, control-free tokens. Workspace tokens summarize Ready, Running, and Needs You.
+Pane tokens name the exact bead, Beadhive role and phase, parent/child facts, correlation, and
+worktree coverage. State-label values are text only; Herdr retains all color and theme choices.
+
+Only a uniquely correlated workspace or bh-owned pane receives a non-null report object. Missing,
+ambiguous, and stale correlations remain in the output with exact locators where known and a null
+report, so a consumer never decorates a guessed resource. The projection is read-only: it does not
+invoke either metadata API, report a semantic agent identity, change a Herdr lifecycle state, or
+advance Beadhive work. Consumers should submit a report before `expires_at`, keep sequences
+monotonic per source and resource, and let Herdr remove that source's display metadata after the
+TTL when refresh stops.
 
 ### Choosing Task/Agent or herdr
 

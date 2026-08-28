@@ -607,8 +607,7 @@ def impl_list_cmd(
 ):
     if as_json:
         try:
-            payload = impl_inventory_payload(
-                _inventory_observations(hive),
+            payload = impl_inventory_snapshot_payload(
                 hive=hive,
                 states=states,
                 limit=limit,
@@ -631,6 +630,31 @@ def impl_list_cmd(
         typer.echo(f"{slug}\t{br}\t{path}")
     if unreg:
         _warn_unregistered(unreg)
+
+
+def impl_inventory_snapshot_payload(
+    *,
+    hive: str = "",
+    states: tuple[str, ...] = (),
+    limit: int = _INVENTORY_DEFAULT_LIMIT,
+    cursor: str | None = None,
+    generated_at: int | None = None,
+) -> dict:
+    """Read and project the live inventory through the public machine contract.
+
+    Composite read-only views use this seam instead of reaching into the observation collector.
+    It has exactly the same coverage, revision, bounds, and cursor semantics as
+    ``bh worktree list --json`` and performs no cleanup or lifecycle mutation.
+    """
+
+    return impl_inventory_payload(
+        _inventory_observations(hive),
+        hive=hive,
+        states=states,
+        limit=limit,
+        cursor=cursor,
+        generated_at=generated_at,
+    )
 
 
 def impl__classify_entries(

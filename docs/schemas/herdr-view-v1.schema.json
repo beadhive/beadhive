@@ -28,10 +28,11 @@
             "plugin herdr view deck",
             "plugin herdr view bead",
             "plugin herdr view agent",
-            "plugin herdr view layout"
+            "plugin herdr view layout",
+            "plugin herdr view presentation"
           ]
         },
-        "view": { "enum": ["picker", "deck", "bead", "agent", "layout"] },
+        "view": { "enum": ["picker", "deck", "bead", "agent", "layout", "presentation"] },
         "revision": { "type": "string", "minLength": 1 },
         "generated_at": { "type": "integer", "minimum": 0 },
         "scope": { "type": "object" },

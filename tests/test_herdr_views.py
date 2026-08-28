@@ -710,10 +710,10 @@ def test_degraded_sources_are_explicit_and_do_not_fabricate_agent_counts() -> No
     assert launch["invoke"] is None
 
 
-def test_six_view_commands_are_registered_and_layout_emits_json() -> None:
+def test_seven_view_commands_are_registered_and_layout_emits_json() -> None:
     help_result = runner.invoke(app, ["plugin", "herdr", "view", "--help"])
     assert help_result.exit_code == 0, help_result.output
-    for command in ("picker", "deck", "bead", "agent", "layout", "stream"):
+    for command in ("picker", "deck", "bead", "agent", "layout", "presentation", "stream"):
         assert command in help_result.output
 
     layout = runner.invoke(
