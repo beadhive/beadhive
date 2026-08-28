@@ -2519,10 +2519,26 @@ def wt_add(
 @wt_app.command(
     "list", help=f"list {config.BINARY_ALIAS}-managed worktrees (prefix / branch / path)."
 )
-def wt_list():
+def wt_list(
+    as_json: bool = typer.Option(False, "--json", help="emit the versioned worktree inventory"),
+    hive: str = typer.Option("", "--hive", help="limit JSON inventory to one exact hive"),
+    state: str = typer.Option("", "--state", help="limit JSON inventory to one worktree state"),
+    limit: int = typer.Option(50, "--limit", min=1, max=200, help="maximum JSON rows returned"),
+    cursor: str | None = typer.Option(None, "--cursor", help="opaque JSON inventory cursor"),
+):
     from . import worktree
 
-    worktree.list_cmd()
+    machine_options = bool(hive or state or cursor or limit != 50)
+    if machine_options and not as_json:
+        typer.echo("\u2717 --hive/--state/--limit/--cursor require --json", err=True)
+        raise typer.Exit(2)
+    worktree.list_cmd(
+        as_json=as_json,
+        hive=hive,
+        states=(state,) if state else (),
+        limit=limit,
+        cursor=cursor,
+    )
 
 
 @wt_app.command("path", help="print the absolute path of a managed worktree (for scripts).")
