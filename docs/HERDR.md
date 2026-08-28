@@ -249,6 +249,16 @@ agent operation. Unrelated Herdr panes remain visible as foreign with no inferre
 Consumers should use the capability records rather than interpreting lifecycle strings or
 reconstructing identity from a target.
 
+Each roster agent also embeds a presentation-neutral `facts` record conforming to
+[`beadhive-agent-facts-v1.schema.json`](schemas/beadhive-agent-facts-v1.schema.json). It carries
+the exact harness, Beadhive role, work operation/phase, explicit terminal-phase flag, exact
+parent relation, and direct/total active-descendant counts. Missing parents, ambiguous joins,
+cycles, and unavailable supervisor data degrade coverage instead of becoming invented roots or
+zeroes. Its retirement receipt is advisory and revision-scoped, with stable refusal reasons for
+live or retained work, pending review/operations, and retained children. `reap` remains the
+mutation authority and re-reads live ownership immediately before closing a pane. The generic
+record intentionally contains no Herdr workspace, pane, metadata-token, or layout vocabulary.
+
 ### Herdr view projections
 
 The Deck plugin consumes six additive version-1 JSON projections. They are deliberately

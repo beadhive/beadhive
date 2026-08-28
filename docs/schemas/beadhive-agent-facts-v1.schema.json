@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.dev/schemas/beadhive-agent-facts-v1.schema.json",
+  "title": "Beadhive authoritative agent facts v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_revision", "coverage", "agents"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "source_revision": {"type": ["string", "null"]},
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "reason_code"],
+      "properties": {
+        "state": {"enum": ["complete", "partial", "stale", "unavailable"]},
+        "reason_code": {"type": ["string", "null"]}
+      }
+    },
+    "agents": {"type": "array", "items": {"$ref": "#/$defs/agent"}}
+  },
+  "$defs": {
+    "nullableString": {"type": ["string", "null"]},
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "source_revision", "target", "hive", "bead", "harness", "role", "work", "parent", "topology", "retirement"],
+      "properties": {
+        "schema_version": {"const": 1},
+        "source_revision": {"type": ["string", "null"]},
+        "target": {"$ref": "#/$defs/nullableString"},
+        "hive": {"$ref": "#/$defs/nullableString"},
+        "bead": {"$ref": "#/$defs/nullableString"},
+        "harness": {"enum": ["claude", "codex", "opencode", "unknown"]},
+        "role": {"enum": ["developer", "dispatcher", "unknown"]},
+        "work": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation", "phase", "terminal_phase"],
+          "properties": {
+            "operation": {"enum": ["work.implement", "work.dispatch", "work.submit", "work.review", "work.merge", "work.complete", "unknown"]},
+            "phase": {"enum": ["implement", "dispatch", "submit", "review", "merge", "terminal", "unknown"]},
+            "terminal_phase": {"type": ["boolean", "null"]}
+          }
+        },
+        "parent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["relation", "target", "bead"],
+          "properties": {
+            "relation": {"enum": ["root", "direct", "missing", "cycle", "unknown"]},
+            "target": {"$ref": "#/$defs/nullableString"},
+            "bead": {"$ref": "#/$defs/nullableString"}
+          }
+        },
+        "topology": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["coverage", "direct_active_children", "total_active_descendants"],
+          "properties": {
+            "coverage": {"enum": ["complete", "partial", "unavailable"]},
+            "direct_active_children": {"type": ["integer", "null"], "minimum": 0},
+            "total_active_descendants": {"type": ["integer", "null"], "minimum": 0}
+          }
+        },
+        "retirement": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["availability", "reason_code", "reason", "source_revision", "advisory"],
+          "properties": {
+            "availability": {"enum": ["allowed", "forbidden", "unavailable"]},
+            "reason_code": {"enum": ["retirable", "live", "retained", "pending-review", "pending-operation", "child-retained", "stale-revision", "supervisor-unavailable", "facts-incomplete"]},
+            "reason": {"type": "string", "minLength": 1},
+            "source_revision": {"type": ["string", "null"]},
+            "advisory": {"const": true}
+          }
+        }
+      }
+    }
+  }
+}
