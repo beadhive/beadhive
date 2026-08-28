@@ -36,7 +36,8 @@ DEFAULT_LIMIT = 50
 MAX_LIMIT = 200
 STREAM_DEFAULT_LIMIT = 50
 PRESENTATION_TTL_MS = 15_000
-PRESENTATION_SOURCE = "bh.plugin.herdr.presentation/v1"
+PRESENTATION_PROTOCOL = "bh.plugin.herdr.presentation/v1"
+PRESENTATION_SOURCE = "bh.plugin.herdr.presentation.v1"
 PRESENTATION_TOKEN_LIMIT = 80
 _SESSION = "bh-supervisor"
 _SAFE_ID = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-")
@@ -1028,8 +1029,11 @@ def presentation_payload(
         workspace_locator,
         counts,
     )
+    hive_display = _token(identity.get("display_name") or hive, PRESENTATION_TOKEN_LIMIT)
+    hive_prefix = _token(identity.get("prefix") or "unknown", PRESENTATION_TOKEN_LIMIT)
     workspace_tokens = {
-        "bh_hive": _token(identity.get("display_name") or hive, PRESENTATION_TOKEN_LIMIT),
+        "bh_space_title": _token(f"[{hive_prefix}] {hive_display}", PRESENTATION_TOKEN_LIMIT),
+        "bh_hive": hive_display,
         "bh_hive_id": _token(hive, PRESENTATION_TOKEN_LIMIT),
         "bh_affiliation": _token(identity.get("affiliation") or "unknown", 24),
         "bh_ready": _count_token(counts["ready"]),
@@ -1089,15 +1093,18 @@ def presentation_payload(
             str(worktree_item.get("state")) if isinstance(worktree_item, Mapping) else "missing"
         )
         lifecycle_state = _token(lifecycle.get("state") or "unknown", 24)
+        role = _token(facts.get("role") or "unknown", 24)
+        harness = _token(facts.get("harness") or "unknown", 24)
         attention = (
             "needs_you"
             if correlation_state != "exact" or lifecycle_state in {"blocked", "failed"}
             else "running"
         )
         pane_tokens = {
+            "bh_agent_title": _token(f"[{harness}] bh-{role}", PRESENTATION_TOKEN_LIMIT),
             "bh_hive_id": _token(hive, PRESENTATION_TOKEN_LIMIT),
             "bh_bead": _token(bead or "unknown", PRESENTATION_TOKEN_LIMIT),
-            "bh_role": _token(facts.get("role") or "unknown", 24),
+            "bh_role": role,
             "bh_phase": _token(work.get("phase") or "unknown", 24),
             "bh_operation": _token(work.get("operation") or "unknown", 32),
             "bh_parent": _token(parent.get("bead") or "root", PRESENTATION_TOKEN_LIMIT),
@@ -1112,6 +1119,13 @@ def presentation_payload(
             "bh_worktree": _token(worktree_state, 24),
             "bh_coverage": _token(topology.get("coverage") or "unknown", 24),
         }
+        if role == "dispatcher":
+            pane_tokens["bh_managed_agents"] = _count_token(
+                topology.get("direct_active_children")
+                if topology.get("coverage") == "complete"
+                and isinstance(topology.get("direct_active_children"), int)
+                else None
+            )
         report = None
         if exact:
             report = {
@@ -1225,7 +1239,7 @@ def presentation_payload(
     payload.update(
         {
             "policy": {
-                "source": PRESENTATION_SOURCE,
+                "source": PRESENTATION_PROTOCOL,
                 "sequence": seq,
                 "sequence_scope": "monotonic per source and exact resource locator",
                 "revision": revision,
