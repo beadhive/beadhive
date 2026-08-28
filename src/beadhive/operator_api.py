@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import ipaddress
 import json
 import re
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from importlib import resources
 from typing import Any
 from urllib.parse import quote, urlsplit
@@ -22,6 +24,9 @@ from .operator_feed import OperatorFeed
 from .operator_sources import OperatorSourceError, OperatorSources, validate_canonical_identity
 
 OPENAPI_CONTRACT = "beadhive-host-openapi-v1.json"
+DEFAULT_PAGE_LIMIT = 50
+MAX_PAGE_LIMIT = 200
+_HIVE_READ_CONCURRENCY = 8
 _CURSOR = re.compile(r"^([A-Za-z0-9._~-]+):(0|[1-9][0-9]*)$")
 _EVENTS_RAW_PATH = re.compile(
     rb"^/api/v1/hives/[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F"
@@ -122,6 +127,77 @@ def activity_cursor(request: Request) -> tuple[str, int] | None:
     return match.group(1), int(match.group(2))
 
 
+def _one_query_value(request: Request, name: str) -> str | None:
+    values = request.query_params.getlist(name)
+    if len(values) > 1:
+        raise OperatorSourceError(
+            f"invalid_{name}",
+            f"Hive summary requests accept at most one {name} value.",
+            status_code=400,
+        )
+    return values[0] if values else None
+
+
+def hive_page_parameters(request: Request) -> tuple[int, str | None, str | None]:
+    raw_limit = _one_query_value(request, "limit")
+    try:
+        limit = DEFAULT_PAGE_LIMIT if raw_limit is None else int(raw_limit)
+    except ValueError as exc:
+        raise OperatorSourceError(
+            "invalid_limit", "limit must be an integer from 1 through 200.", status_code=400
+        ) from exc
+    if not 1 <= limit <= MAX_PAGE_LIMIT:
+        raise OperatorSourceError(
+            "invalid_limit", "limit must be an integer from 1 through 200.", status_code=400
+        )
+    availability = _one_query_value(request, "availability")
+    if availability not in {None, "available", "unavailable"}:
+        raise OperatorSourceError(
+            "invalid_availability",
+            "availability must be available or unavailable.",
+            status_code=400,
+        )
+    return limit, availability, _one_query_value(request, "cursor")
+
+
+def _encode_hive_cursor(*, revision: str, availability: str | None, offset: int) -> str:
+    payload = json.dumps(
+        {"v": 1, "revision": revision, "availability": availability, "offset": offset},
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_hive_cursor(value: str) -> dict[str, object]:
+    try:
+        padded = value + "=" * (-len(value) % 4)
+        payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OperatorSourceError(
+            "invalid_hive_cursor", "The hive cursor is malformed.", status_code=400
+        ) from exc
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"v", "revision", "availability", "offset"}
+        or payload["v"] != 1
+        or not isinstance(payload["revision"], str)
+        or payload["availability"] not in {None, "available", "unavailable"}
+        or type(payload["offset"]) is not int
+        or payload["offset"] < 0
+    ):
+        raise OperatorSourceError(
+            "invalid_hive_cursor", "The hive cursor is malformed.", status_code=400
+        )
+    return payload
+
+
+def _page_etag(payload: Mapping[str, object]) -> str:
+    stable = {key: value for key, value in payload.items() if key != "generatedAt"}
+    encoded = json.dumps(stable, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f'"sha256:{hashlib.sha256(encoded).hexdigest()}"'
+
+
 class OperatorAPI:
     def __init__(
         self,
@@ -151,6 +227,91 @@ class OperatorAPI:
                 ready=self.ready(),
             )
             return JSONResponse(payload)
+        except OperatorSourceError as exc:
+            return _error_response(exc)
+        except Exception:
+            return _error_response(
+                OperatorSourceError(
+                    "factory_source_unavailable",
+                    "The authoritative factory source is unavailable.",
+                    status_code=503,
+                    retryable=True,
+                )
+            )
+
+    async def factory_hives(self, request: Request) -> Response:
+        try:
+            limit, availability, raw_cursor = hive_page_parameters(request)
+            cursor = _decode_hive_cursor(raw_cursor) if raw_cursor is not None else None
+            if cursor is not None and cursor["availability"] != availability:
+                raise OperatorSourceError(
+                    "hive_cursor_scope_mismatch",
+                    "The hive cursor belongs to different filters.",
+                    status_code=409,
+                )
+
+            hives = self.sources.registered_hives()
+            semaphore = asyncio.Semaphore(_HIVE_READ_CONCURRENCY)
+
+            async def summarize(hive):
+                async with semaphore:
+                    try:
+                        snapshot = await asyncio.to_thread(self.sources.refresh_hive_state, hive)
+                    except OperatorSourceError as exc:
+                        return operator_contract.factory_hive_summary(
+                            hive.entry, None, unavailable_reason=exc.code
+                        )
+                    except Exception:
+                        return operator_contract.factory_hive_summary(
+                            hive.entry, None, unavailable_reason="snapshot_source_unavailable"
+                        )
+                    return operator_contract.factory_hive_summary(hive.entry, snapshot)
+
+            summaries = list(await asyncio.gather(*(summarize(hive) for hive in hives)))
+            summaries.sort(key=lambda item: str(item["id"]))
+            if availability is not None:
+                summaries = [
+                    item for item in summaries if item["availability"]["state"] == availability
+                ]
+            revision = operator_contract.factory_hive_page_revision(summaries)
+            if cursor is not None and cursor["revision"] != revision:
+                raise OperatorSourceError(
+                    "hive_cursor_revision_mismatch",
+                    "The hive collection changed; restart pagination without a cursor.",
+                    status_code=409,
+                )
+            offset = int(cursor["offset"]) if cursor is not None else 0
+            if offset > len(summaries):
+                raise OperatorSourceError(
+                    "invalid_hive_cursor",
+                    "The hive cursor is outside the collection.",
+                    status_code=400,
+                )
+            page_items = summaries[offset : offset + limit]
+            next_offset = offset + len(page_items)
+            truncated = next_offset < len(summaries)
+            payload: dict[str, object] = {
+                "schemaVersion": operator_contract.SCHEMA_VERSION,
+                "revision": revision,
+                "generatedAt": time.time_ns() // 1_000_000,
+                "items": page_items,
+                "returnedCount": len(page_items),
+                "limit": limit,
+                "truncated": truncated,
+                "nextCursor": (
+                    _encode_hive_cursor(
+                        revision=revision, availability=availability, offset=next_offset
+                    )
+                    if truncated
+                    else None
+                ),
+                "warnings": [],
+            }
+            etag = _page_etag(payload)
+            headers = {"ETag": etag, "Cache-Control": "no-cache"}
+            if request.headers.get("if-none-match") in {etag, "*"}:
+                return Response(status_code=304, headers=headers)
+            return JSONResponse(payload, headers=headers)
         except OperatorSourceError as exc:
             return _error_response(exc)
         except Exception:
@@ -204,6 +365,12 @@ class OperatorAPI:
     def routes(self) -> list[BaseRoute]:
         routes: list[BaseRoute] = [
             Route("/api/v1/factory", self.factory, methods=["GET"], name="operator_factory"),
+            Route(
+                "/api/v1/factory/hives",
+                self.factory_hives,
+                methods=["GET"],
+                name="operator_factory_hives",
+            ),
             Route(
                 "/api/v1/hives/{hive_id:path}/snapshot",
                 self.snapshot,

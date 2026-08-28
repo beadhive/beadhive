@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
+import jsonschema
 from starlette.middleware import Middleware
 
 from beadhive import (
@@ -47,8 +49,8 @@ class Provider:
         )
 
 
-def _app(tmp_path: Path):
-    cfg = {
+def _app(tmp_path: Path, *, cfg=None, provider=None):
+    cfg = cfg or {
         "managed_repos": [
             {
                 "provider": "github",
@@ -74,7 +76,7 @@ def _app(tmp_path: Path):
     sources = operator_sources.OperatorSources(
         cfg=cfg,
         host_id="host-1",
-        provider=Provider(),
+        provider=provider or Provider(),
         summary_reader=lambda _path, host, source: runtime(host, source),
         journal_base=tmp_path,
         dispatch_sink_for_entry=lambda _cfg, _entry: tmp_path / "dispatch.jsonl",
@@ -106,8 +108,8 @@ def _app(tmp_path: Path):
     return app
 
 
-def _exercise(tmp_path: Path, action):
-    app = _app(tmp_path)
+def _exercise(tmp_path: Path, action, **app_kwargs):
+    app = _app(tmp_path, **app_kwargs)
 
     async def run():
         async with app.router.lifespan_context(app):
@@ -140,6 +142,176 @@ def test_phase_one_gets_are_unauthenticated_direct_and_path_free(tmp_path: Path)
         "contract": host_daemon.CONTRACT_VERSION,
     }
     assert snapshot.headers["cache-control"] == "no-store"
+
+
+class FactoryProvider:
+    def __init__(self) -> None:
+        self.revisions = {
+            "github/beadhive/alpha": "alpha-1",
+            "github/beadhive/beadhive": "beadhive-1",
+        }
+
+    def refresh(self, request):
+        hive = request.hive
+        if hive == "github/beadhive/zebra":
+            raise OSError("unavailable")
+        issues = ()
+        if hive == HIVE:
+            issues = (
+                state_stream.StreamIssue(
+                    id="bh-ready",
+                    hive=hive,
+                    issue_type="task",
+                    status="open",
+                    priority="P1",
+                    title="Ready",
+                    updated_at=NOW,
+                ),
+                state_stream.StreamIssue(
+                    id="bh-waiting",
+                    hive=hive,
+                    issue_type="task",
+                    status="open",
+                    priority="P1",
+                    title="Waiting",
+                    updated_at=NOW,
+                    dependencies=(
+                        state_stream.StreamDependency(
+                            issue_id="bh-waiting",
+                            depends_on_id="bh-active",
+                            type="blocks",
+                        ),
+                    ),
+                ),
+                state_stream.StreamIssue(
+                    id="bh-active",
+                    hive=hive,
+                    issue_type="task",
+                    status="in_progress",
+                    priority="P1",
+                    title="Active",
+                    updated_at=NOW,
+                ),
+                state_stream.StreamIssue(
+                    id="bh-blocked",
+                    hive=hive,
+                    issue_type="task",
+                    status="blocked",
+                    priority="P1",
+                    title="Blocked",
+                    updated_at=NOW,
+                ),
+            )
+        return state_stream.ProviderSnapshot(
+            scope="hive",
+            revision=self.revisions[hive],
+            as_of=NOW,
+            issues=issues,
+        )
+
+
+def _factory_cfg():
+    return {
+        "managed_repos": [
+            {
+                "provider": "github",
+                "org": "beadhive",
+                "repo": repo,
+                "prefix": repo,
+                "kind": "org-native",
+            }
+            for repo in ("zebra", "beadhive", "alpha")
+        ]
+    }
+
+
+def test_factory_hives_are_bounded_deterministic_and_distinguish_unavailable(
+    tmp_path: Path,
+) -> None:
+    provider = FactoryProvider()
+
+    async def action(client, _app):
+        first = await client.get("/api/v1/factory/hives", params={"limit": 2})
+        second = await client.get(
+            "/api/v1/factory/hives", params={"limit": 2, "cursor": first.json()["nextCursor"]}
+        )
+        unavailable = await client.get(
+            "/api/v1/factory/hives", params={"availability": "unavailable"}
+        )
+        unchanged = await client.get(
+            "/api/v1/factory/hives",
+            params={"limit": 2},
+            headers={"If-None-Match": first.headers["etag"]},
+        )
+        return first, second, unavailable, unchanged
+
+    first, second, unavailable, unchanged = _exercise(
+        tmp_path, action, cfg=_factory_cfg(), provider=provider
+    )
+    assert first.status_code == second.status_code == unavailable.status_code == 200
+    assert [item["id"] for item in first.json()["items"]] == [
+        "github/beadhive/alpha",
+        "github/beadhive/beadhive",
+    ]
+    assert first.json()["returnedCount"] == 2
+    assert first.json()["truncated"] is True
+    assert second.json()["items"][0]["id"] == "github/beadhive/zebra"
+    assert second.json()["items"][0]["counts"] == {
+        "open": None,
+        "ready": None,
+        "active": None,
+        "blocked": None,
+    }
+    assert unavailable.json()["items"][0]["availability"] == {
+        "state": "unavailable",
+        "reason": "snapshot_source_unavailable",
+    }
+    beadhive = first.json()["items"][1]
+    assert beadhive["counts"] == {"open": 2, "ready": 1, "active": 1, "blocked": 2}
+    assert beadhive["opaqueRef"].startswith("hive-sha256-")
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
+
+    schema = operator_api.openapi_document()["components"]["schemas"]
+    page_schema = copy.deepcopy(schema["FactoryHivePage"])
+    page_schema["properties"]["items"]["items"] = schema["FactoryHiveSummary"]
+    jsonschema.Draft202012Validator(page_schema).validate(first.json())
+
+
+def test_factory_hive_cursor_limits_filters_and_revisions_are_checked(tmp_path: Path) -> None:
+    provider = FactoryProvider()
+
+    async def action(client, _app):
+        bad_limits = [
+            await client.get("/api/v1/factory/hives", params={"limit": value})
+            for value in (0, 201, "many")
+        ]
+        malformed = await client.get("/api/v1/factory/hives", params={"cursor": "%%%"})
+        first = await client.get("/api/v1/factory/hives", params={"limit": 1})
+        wrong_filter = await client.get(
+            "/api/v1/factory/hives",
+            params={"limit": 1, "availability": "available", "cursor": first.json()["nextCursor"]},
+        )
+        provider.revisions["github/beadhive/alpha"] = "alpha-2"
+        stale = await client.get(
+            "/api/v1/factory/hives",
+            params={"limit": 1, "cursor": first.json()["nextCursor"]},
+        )
+        return bad_limits, malformed, wrong_filter, stale
+
+    bad_limits, malformed, wrong_filter, stale = _exercise(
+        tmp_path, action, cfg=_factory_cfg(), provider=provider
+    )
+    assert [item.status_code for item in bad_limits] == [400, 400, 400]
+    assert malformed.json()["error"]["code"] == "invalid_hive_cursor"
+    assert (wrong_filter.status_code, wrong_filter.json()["error"]["code"]) == (
+        409,
+        "hive_cursor_scope_mismatch",
+    )
+    assert (stale.status_code, stale.json()["error"]["code"]) == (
+        409,
+        "hive_cursor_revision_mismatch",
+    )
 
 
 def test_unsafe_hive_representations_are_refused_before_source_read(tmp_path: Path) -> None:
@@ -321,6 +493,7 @@ def test_product_factory_composes_operator_state_into_daemon_core(tmp_path: Path
     assert paths == {
         "/health",
         "/api/v1/factory",
+        "/api/v1/factory/hives",
         "/api/v1/hives/{hive_id:path}/snapshot",
         "/api/v1/hives/{hive_id:path}/events",
         "/api/v1/runs/{run_id}/activity",

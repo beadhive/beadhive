@@ -33,10 +33,12 @@ The daemon accepts that one browser origin, while the UI host binds that exact l
 origin. Stop either foreground process with `Ctrl-C`.
 
 The browser reads the daemon directly. It first loads the flat FactorySnapshot v1 factory
-response, derives each authoritative hive route from the full `provider/org/repo` identity,
-loads a hive snapshot, and only then applies `operator-event` SSE frames after the snapshot
-cursor. Run activity is also read directly from `/api/v1`. Browser requests omit cookies and do
-not send an `Authorization` header in this phase-one profile.
+response. Consumers that need health and queue counts use the bounded
+`GET /api/v1/factory/hives` summary pages; unavailable hives retain their identity and null
+counts instead of looking empty. The browser derives each authoritative hive route from the full
+`provider/org/repo` identity, loads a hive snapshot, and only then applies `operator-event` SSE
+frames after the snapshot cursor. Run activity is also read directly from `/api/v1`. Browser
+requests omit cookies and do not send an `Authorization` header in this phase-one profile.
 
 ## Safety boundary
 
