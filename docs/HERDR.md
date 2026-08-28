@@ -118,7 +118,7 @@ sets the ownership line so this remains an optional interactive surface, not a p
 | `bh plugin herdr integrate <kind>` | `herdr integration install <kind>` | Explicit opt-in per agent kind — do not auto-install every kind on onboard |
 | `bh plugin herdr launch <bead-id>` | exact hive lookup → native `bh work claim` → live reuse or warm agent creation | High-level get-or-create path: the bead ID is the only required input; returns the target and retained native worktree |
 | `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | existing worktree → `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | Low-level escape hatch when the caller intentionally prepared the claim and worktree itself; its three required options are unchanged |
-| `bh plugin herdr dispatch <target> "<prompt>"` | visible-pane read before and after `agent prompt --wait --timeout` | Wraps the finding above — never trust `--wait` alone; the post-read must add a new occurrence of the exact prompt, so an older identical turn cannot falsely verify delivery |
+| `bh plugin herdr dispatch <target> "<prompt>"` | metadata-backed ownership proof → local socket or legacy `agent prompt` → bounded readback | Safe stdin/file input uses Herdr's structured socket acknowledgement; the legacy positional form additionally requires a new exact prompt occurrence in visible pane content |
 | `bh plugin herdr watch <target>` | `agent wait --until blocked` | For a dispatcher polling loop: block until an agent needs input or finishes |
 | `bh plugin herdr ps` | `agent list` / `api snapshot` | Fleet view: every live herdr-managed agent, its hive/bead if tagged, and its lifecycle state — the natural `bh hive status`-style dashboard row |
 | `bh plugin herdr attach <target>` | prints the `herdr agent attach <target>` command | `bh` itself never takes over a TTY; it tells the human operator what to run |
@@ -213,9 +213,13 @@ bh plugin herdr dispatch "$target" --prompt-file /private/path/instruction.txt -
 
 These modes read arbitrary UTF-8 text up to 1 MiB and send it through Herdr's local NDJSON socket,
 so the prompt body appears in neither the `bh` argv nor a child `herdr` argv. Receipts, errors, and
-default logs never include prompt or transcript content. The positional `PROMPT` form remains for
-human compatibility but necessarily appears in process arguments; automation must not use it for
-sensitive content. Exactly one of positional `PROMPT`, `--stdin`, or `--prompt-file` is required.
+default logs never include prompt or transcript content. A successful structured socket response
+is the delivery proof for these modes; visible pane readback is bounded and cannot contain every
+valid 1 MiB prompt. The positional `PROMPT` form remains for human compatibility but necessarily
+appears in process arguments, so automation must not use it for sensitive content. Because that
+legacy transport has no structured acknowledgement, it still requires a new exact prompt
+occurrence in the before/after visible-pane read. Exactly one of positional `PROMPT`, `--stdin`,
+or `--prompt-file` is required.
 
 ### Live roster and correlation
 
