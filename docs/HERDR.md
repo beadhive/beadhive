@@ -183,6 +183,38 @@ JSON stdout is one version-1 document: `schema_version`, `command`, `status`, `d
 derive it from the bead ID because dotted or long IDs use a deterministic collision-resistant
 Herdr-safe encoding.
 
+### Lifecycle receipts and prompt input
+
+`status`, `ps`, `spawn`, `dispatch`, `watch`, `attach`, and `reap` accept `--json` and return the
+shared [lifecycle receipt v1 schema](schemas/herdr-lifecycle-receipt-v1.schema.json). Successful
+and refused operations use the same additive envelope: `operation_id`, operation, outcome,
+disposition, observation time, exact hive/bead identity where known, Herdr session and locator,
+capabilities, warnings, retained resources, and a structured error on failure. Callers may pass a
+safe `--operation-id`; otherwise `bh` mints one. Exit 0 means a successful observation, mutation,
+or defined no-op. Exit 1 means a runtime failure, timeout, stale target, or authority refusal.
+Exit 2 means invalid input. Error codes, not messages, are the machine decision surface.
+
+Read operations (`status`, `ps`, `attach`, and `watch`) are idempotent. `spawn` is a get-or-create
+operation: it returns `created` or reuses only a strictly proven live target and returns `reused`.
+`reap` closes only a currently proven bh-owned pane; stale, missing, unmanaged, and ambiguous
+targets are refusals that preserve every pane and worktree. `dispatch` is intentionally
+non-idempotent. A verified instruction returns `dispatched`; an unverified delivery returns
+`dispatch_unverified` with `retryable: false`, because blindly retrying could create a duplicate
+turn. An operation ID is correlation, not permission to replay a dispatch.
+
+Use stdin or a file for prompt-bearing automation:
+
+```bash
+printf '%s' "$prompt" | bh plugin herdr dispatch "$target" --stdin --json
+bh plugin herdr dispatch "$target" --prompt-file /private/path/instruction.txt --json
+```
+
+These modes read arbitrary UTF-8 text up to 1 MiB and send it through Herdr's local NDJSON socket,
+so the prompt body appears in neither the `bh` argv nor a child `herdr` argv. Receipts, errors, and
+default logs never include prompt or transcript content. The positional `PROMPT` form remains for
+human compatibility but necessarily appears in process arguments; automation must not use it for
+sensitive content. Exactly one of positional `PROMPT`, `--stdin`, or `--prompt-file` is required.
+
 ### Choosing Task/Agent or herdr
 
 Use the in-process **Task/Agent** route for ordinary fire-and-forget subagent work that the

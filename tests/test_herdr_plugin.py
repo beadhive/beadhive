@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
+import jsonschema
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -15,6 +17,9 @@ from beadhive import guard, herdr_plugin, plugins, registry, work
 from beadhive.cli import app
 
 runner = CliRunner()
+_LIFECYCLE_SCHEMA_PATH = (
+    Path(__file__).parents[1] / "docs" / "schemas" / "herdr-lifecycle-receipt-v1.schema.json"
+)
 
 
 def _result(code=0, stdout="", stderr=""):
@@ -659,6 +664,304 @@ def test_dispatch_fails_when_codex_first_run_screen_drops_prompt(monkeypatch):
     assert "did not reach a new real agent turn" in result.output
     assert any("prompt" in call and "--wait" in call for call in calls)
     assert sum("read" in call and "visible" in call for call in calls) == 2
+
+
+def _assert_lifecycle_receipt(payload, operation, disposition):
+    jsonschema.Draft202012Validator(json.loads(_LIFECYCLE_SCHEMA_PATH.read_text())).validate(
+        payload
+    )
+    assert payload["schema_version"] == 1
+    assert payload["command"] == f"plugin herdr {operation}"
+    assert payload["operation"] == operation
+    assert payload["disposition"] == disposition
+    assert payload["operation_id"]
+    assert payload["observed_at"].endswith("Z")
+    assert payload["session"] == "bh-supervisor"
+    for key in (
+        "hive",
+        "bead",
+        "target",
+        "workspace",
+        "pane",
+        "worktree",
+        "capabilities",
+        "warnings",
+        "retained_resources",
+    ):
+        assert key in payload
+
+
+def test_lifecycle_status_ps_and_attach_emit_shared_json_receipts(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result(stdout="server ready")
+        if argv == ["herdr", "integration", "status"]:
+            return _result(stdout="claude: installed\ncodex: not installed")
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(
+                stdout='{"agents":[{"name":"bh-bh-7","state":"working",'
+                '"workspace":{"label":"bh:github/acme/widgets"}}]}'
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    status = runner.invoke(
+        app, ["plugin", "herdr", "status", "--json", "--operation-id", "status:7"]
+    )
+    ps = runner.invoke(app, ["plugin", "herdr", "ps", "--json"])
+    attach = runner.invoke(
+        app,
+        ["plugin", "herdr", "attach", "bh-bh-7", "--json", "--operation-id", "attach:7"],
+    )
+
+    assert status.exit_code == ps.exit_code == attach.exit_code == 0
+    status_payload = json.loads(status.stdout)
+    _assert_lifecycle_receipt(status_payload, "status", "available")
+    assert status_payload["operation_id"] == "status:7"
+    assert status_payload["integrations"] == [
+        {"kind": "claude", "state": "installed"},
+        {"kind": "codex", "state": "not installed"},
+    ]
+    ps_payload = json.loads(ps.stdout)
+    _assert_lifecycle_receipt(ps_payload, "ps", "listed")
+    assert ps_payload["agents"] == [
+        {
+            "target": "bh-bh-7",
+            "hive": "github/acme/widgets",
+            "bead": "bh-7",
+            "state": "working",
+        }
+    ]
+    attach_payload = json.loads(attach.stdout)
+    _assert_lifecycle_receipt(attach_payload, "attach", "instructions")
+    assert attach_payload["attach_argv"] == [
+        "herdr",
+        "--session",
+        "bh-supervisor",
+        "agent",
+        "attach",
+        "bh-bh-7",
+    ]
+
+
+@pytest.mark.parametrize("source", ["stdin", "file"])
+def test_dispatch_safe_input_preserves_adversarial_multiline_without_leakage(
+    source, tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    secret = "first line\n$(touch /tmp/never) ' \" ; $TOKEN\nlast\\line"
+    reads = iter(["agent: idle", f"agent: idle\nuser: {secret}\nassistant: working"])
+    process_argv = []
+    socket_prompts = []
+
+    def fake_run(argv, **kwargs):
+        process_argv.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "read" in argv:
+            return _result(stdout=next(reads))
+        raise AssertionError(argv)
+
+    def socket_prompt(target, prompt, **kwargs):
+        socket_prompts.append((target, prompt, kwargs))
+        return _result(stdout='{"result":{"type":"agent_prompt","agent_status":"done"}}')
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    monkeypatch.setattr(herdr_plugin, "_prompt_over_socket", socket_prompt)
+    argv = ["plugin", "herdr", "dispatch", "bh-bh-7", "--json"]
+    input_text = None
+    if source == "stdin":
+        argv.append("--stdin")
+        input_text = secret
+    else:
+        prompt_path = tmp_path / "prompt.txt"
+        prompt_path.write_text(secret)
+        argv.extend(["--prompt-file", str(prompt_path)])
+
+    result = runner.invoke(app, argv, input=input_text)
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    _assert_lifecycle_receipt(payload, "dispatch", "dispatched")
+    assert payload["input_source"] == source
+    assert payload["delivery_verified"] is True
+    assert socket_prompts == [("bh-bh-7", secret, {})]
+    assert all(secret not in "\0".join(call) for call in process_argv)
+    assert secret not in result.output
+    assert secret not in caplog.text
+
+
+def test_dispatch_json_refusal_is_structured_and_not_retryable(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    prompt = "same prompt"
+    reads = iter([f"user: {prompt}", f"user: {prompt}"])
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "read" in argv:
+            return _result(stdout=next(reads))
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app,
+        ["plugin", "herdr", "dispatch", "bh-bh-7", prompt, "--json"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    _assert_lifecycle_receipt(payload, "dispatch", "refused")
+    assert payload["outcome"] == "refused"
+    assert payload["error"]["code"] == "dispatch_unverified"
+    assert payload["error"]["retryable"] is False
+    assert prompt not in result.stdout
+
+
+def test_watch_timeout_and_reap_refusal_emit_stable_json_errors(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "wait" in argv:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(stdout='{"agents": []}')
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    watched = runner.invoke(
+        app, ["plugin", "herdr", "watch", "bh-bh-7", "--timeout", "1", "--json"]
+    )
+    reaped = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-7", "--json"])
+
+    assert watched.exit_code == reaped.exit_code == 1
+    watch_payload = json.loads(watched.stdout)
+    _assert_lifecycle_receipt(watch_payload, "watch", "timed_out")
+    assert watch_payload["error"]["code"] == "watch_timeout"
+    assert watch_payload["error"]["retryable"] is True
+    reap_payload = json.loads(reaped.stdout)
+    _assert_lifecycle_receipt(reap_payload, "reap", "refused")
+    assert reap_payload["error"]["code"] == "ownership_not_proven"
+    assert reap_payload["retained_resources"] == [{"kind": "target", "id": "bh-bh-7"}]
+
+
+def test_spawn_watch_and_reap_success_emit_json_dispositions(tmp_path, monkeypatch):
+    worktree_path = tmp_path / "bh-7"
+    worktree_path.mkdir()
+    (worktree_path / ".git").write_text("gitdir: /tmp/example\n")
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {})
+    monkeypatch.setattr(herdr_plugin, "_managed_worktree", lambda *_args: ({}, worktree_path))
+    monkeypatch.setattr(herdr_plugin, "_resolve_kind", lambda kind, *_args: kind)
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_workspace", lambda *_args: ("w1", "w1:p1"))
+    monkeypatch.setattr(herdr_plugin, "_owned_live_pane", lambda _target: "w1:p2")
+
+    def command(*args, **kwargs):
+        if args[:2] == ("pane", "split"):
+            return _result(stdout='{"pane":{"pane_id":"w1:p2"}}')
+        if args[:2] == ("agent", "read"):
+            return _result(stdout=f"assistant: {herdr_plugin._WARMUP_TOKEN}")
+        if args[:2] == ("agent", "wait"):
+            return _result(stdout='{"result":{"agent_status":"blocked"}}')
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    spawned = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "spawn",
+            "--hive",
+            "github/acme/widgets",
+            "--bead",
+            "bh-7",
+            "--kind",
+            "codex",
+            "--json",
+        ],
+    )
+    watched = runner.invoke(app, ["plugin", "herdr", "watch", "bh-bh-7", "--json"])
+    reaped = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-7", "--json"])
+
+    assert spawned.exit_code == watched.exit_code == reaped.exit_code == 0
+    spawn_payload = json.loads(spawned.stdout)
+    _assert_lifecycle_receipt(spawn_payload, "spawn", "created")
+    assert spawn_payload["hive"] == "github/acme/widgets"
+    assert spawn_payload["bead"] == "bh-7"
+    assert spawn_payload["worktree"] == str(worktree_path)
+    watch_payload = json.loads(watched.stdout)
+    _assert_lifecycle_receipt(watch_payload, "watch", "settled")
+    assert watch_payload["resulting_state"] == "blocked"
+    reap_payload = json.loads(reaped.stdout)
+    _assert_lifecycle_receipt(reap_payload, "reap", "reaped")
+    assert reap_payload["pane"] == "w1:p2"
+
+
+def test_safe_prompt_socket_request_keeps_body_out_of_process_metadata(monkeypatch):
+    secret = "multiline\nsecret $(not-a-shell)\nend"
+    sent = []
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def readline(self, _limit):
+            return b'{"id":"x","result":{"type":"agent_prompt","agent_status":"done"}}\n'
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, value):
+            sent.append(value)
+
+        def makefile(self, _mode):
+            return FakeStream()
+
+    monkeypatch.setattr(herdr_plugin, "_session_socket_path", lambda: (Path("/tmp/herdr.sock"), ""))
+    monkeypatch.setattr(herdr_plugin.socket, "socket", lambda *_args: FakeSocket())
+
+    result = herdr_plugin._prompt_over_socket("bh-bh-7", secret)
+
+    assert result.returncode == 0
+    request = json.loads(sent[0])
+    assert request["method"] == "agent.prompt"
+    assert request["params"]["text"] == secret
+    assert secret not in "\0".join(result.args)
+    assert secret not in result.stdout
+
+
+def test_lifecycle_receipt_schema_covers_every_json_command():
+    schema = json.loads(_LIFECYCLE_SCHEMA_PATH.read_text())
+    jsonschema.Draft202012Validator.check_schema(schema)
+    assert schema["properties"]["schema_version"] == {"const": 1}
+    assert set(schema["properties"]["operation"]["enum"]) == {
+        "status",
+        "ps",
+        "spawn",
+        "dispatch",
+        "watch",
+        "attach",
+        "reap",
+    }
 
 
 def test_attach_only_prints_a_copy_pasteable_session_scoped_command(monkeypatch):
