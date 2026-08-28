@@ -215,6 +215,28 @@ default logs never include prompt or transcript content. The positional `PROMPT`
 human compatibility but necessarily appears in process arguments; automation must not use it for
 sensitive content. Exactly one of positional `PROMPT`, `--stdin`, or `--prompt-file` is required.
 
+### Live roster and correlation
+
+`bh plugin herdr ps --json` returns the version-1 live roster documented by
+[`herdr-agent-roster-v1.schema.json`](schemas/herdr-agent-roster-v1.schema.json). The complete
+snapshot is embedded in the shared lifecycle receipt and scoped explicitly to the authoritative
+`bh-supervisor` session. Each agent carries its target, canonical hive and bead, lifecycle
+timestamps, managed worktree and branch, and Herdr workspace/tab/pane locator. The document
+validates as both a `ps` lifecycle receipt and the roster extension contract.
+
+New launches write `bh.plugin.herdr/v1` ownership metadata to the workspace and pane through
+Herdr's metadata API. Pane tokens carry the exact hive, bead, and opaque target; this is what
+makes dotted or long bead IDs recoverable when the visible target is hashed. The roster also
+recognizes pre-metadata legacy `bh-<bead>` targets, but only when the visible pane name,
+`bh:<hive>` workspace, exact managed-worktree cwd, target spelling, and unique live identities
+all agree. A reserved-looking name alone never proves ownership.
+
+Ownership is reported as `owned`, `stale`, `unknown`, or `foreign`. Missing worktrees and
+conflicting locators retain any explicit association for diagnosis but disable every advertised
+agent operation. Unrelated Herdr panes remain visible as foreign with no inferred hive or bead.
+Consumers should use the capability records rather than interpreting lifecycle strings or
+reconstructing identity from a target.
+
 ### Choosing Task/Agent or herdr
 
 Use the in-process **Task/Agent** route for ordinary fire-and-forget subagent work that the

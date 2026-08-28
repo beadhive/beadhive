@@ -33,6 +33,14 @@ _WARMUP_TOKEN = "BH_HERDR_WARMUP_OK"
 _LAUNCH_SCHEMA = 1
 _LIFECYCLE_SCHEMA = 1
 _MAX_PROMPT_BYTES = 1024 * 1024
+_ROSTER_SCHEMA = 1
+_OWNERSHIP_MARKER = "bh.plugin.herdr/v1"
+_METADATA_SOURCE = "beadhive"
+_TOKEN_OWNER = "bh_owner"
+_TOKEN_HIVE = "bh_hive_id"
+_TOKEN_BEAD = "bh_bead_id"
+_TOKEN_TARGET = "bh_target"
+_TOKEN_SCHEMA = "bh_schema"
 _HERDR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _OPERATION_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
@@ -511,6 +519,254 @@ def _snapshot_agent_records(snapshot: dict) -> list[dict]:
     return records
 
 
+def _metadata_tokens(record: dict) -> dict[str, str]:
+    """Return Herdr's effective metadata tokens for a joined live record."""
+    tokens: dict[str, str] = {}
+    for source in (
+        record.get("workspace_record"),
+        record.get("pane_record"),
+        record.get("pane"),
+        record,
+    ):
+        if not isinstance(source, dict):
+            continue
+        raw = source.get("tokens")
+        if isinstance(raw, dict):
+            tokens.update({str(key): str(value) for key, value in raw.items() if value is not None})
+    return tokens
+
+
+def _tag_ownership(workspace: str, pane: str, hive: str, bead: str, target: str) -> None:
+    """Persist explicit live correlation in Herdr-owned presentation metadata.
+
+    The target remains opaque and length-bounded.  These tokens are the reversible association;
+    the roster never attempts to decode a hashed target name.
+    """
+    workspace_result = _command(
+        "workspace",
+        "report-metadata",
+        workspace,
+        "--source",
+        _METADATA_SOURCE,
+        "--token",
+        f"{_TOKEN_OWNER}={_OWNERSHIP_MARKER}",
+        "--token",
+        f"{_TOKEN_HIVE}={hive}",
+        "--token",
+        f"{_TOKEN_SCHEMA}={_ROSTER_SCHEMA}",
+    )
+    _require(workspace_result, "workspace ownership metadata")
+    pane_result = _command(
+        "pane",
+        "report-metadata",
+        pane,
+        "--source",
+        _METADATA_SOURCE,
+        "--token",
+        f"{_TOKEN_OWNER}={_OWNERSHIP_MARKER}",
+        "--token",
+        f"{_TOKEN_HIVE}={hive}",
+        "--token",
+        f"{_TOKEN_BEAD}={bead}",
+        "--token",
+        f"{_TOKEN_TARGET}={target}",
+        "--token",
+        f"{_TOKEN_SCHEMA}={_ROSTER_SCHEMA}",
+    )
+    _require(pane_result, "pane ownership metadata")
+
+
+def _value(record: dict, *keys: str) -> str | None:
+    for key in keys:
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            return value
+    return None
+
+
+def _same_path(left: str | None, right: Path) -> bool:
+    if not left:
+        return False
+    try:
+        return Path(left).resolve() == right.resolve()
+    except OSError:
+        return left == str(right)
+
+
+def _action_capabilities(owned: bool, live: bool, reason: str) -> dict[str, dict[str, str]]:
+    """Advertise only operations that the ownership gates can safely target."""
+    unavailable = reason or "current bh ownership proof is unavailable"
+    return {
+        action: {
+            "availability": "allowed" if owned and live else "unavailable",
+            "reason": "current bh-owned live pane is proven" if owned and live else unavailable,
+        }
+        for action in ("attach", "dispatch", "watch", "reap")
+    }
+
+
+def _roster_agent(
+    record: dict,
+    cfg: dict,
+    target_count: dict[str, int],
+    pane_count: dict[str, int],
+    managed_paths: dict[str, str],
+) -> dict:
+    """Project one joined Herdr record into the versioned correlation contract."""
+    target = _value(record, "name", "agent_name", "target") or ""
+    state = (
+        _value(record, "state", "status", "agent_status", "lifecycle", "lifecycle_state")
+        or "unknown"
+    ).lower()
+    pane_id = _record_pane_id(record)
+    pane_name = _snapshot_value(record, "pane_name", "pane_label", "label", "title")
+    workspace_id = _snapshot_value(record, "workspace_id")
+    workspace_label = _snapshot_value(record, "workspace_label")
+    if workspace_label is None and isinstance(record.get("workspace_record"), dict):
+        workspace_label = _string_field(record["workspace_record"], "label", "name")
+    cwd = _snapshot_value(record, "cwd", "working_directory", "current_dir", "foreground_cwd")
+    tab_id = _snapshot_value(record, "tab_id")
+    tokens = _metadata_tokens(record)
+
+    marker = tokens.get(_TOKEN_OWNER)
+    hive = tokens.get(_TOKEN_HIVE)
+    bead = tokens.get(_TOKEN_BEAD)
+    association = "metadata" if marker == _OWNERSHIP_MARKER else "none"
+    if association == "none":
+        match = _LEGACY_TARGET_RE.fullmatch(target)
+        if match and isinstance(workspace_label, str) and workspace_label.startswith("bh:"):
+            bead = match.group("bead")
+            hive = workspace_label[3:]
+            marker = "legacy-target-v0"
+            association = "legacy"
+
+    reason = "pane is not marked as bh-managed"
+    ownership_state = "foreign"
+    worktree_state = "unknown"
+    branch = None
+    expected: Path | None = None
+    if association != "none" and hive and bead:
+        try:
+            _entry, _main, expected, branch = worktree.locate(cfg, hive, bead)
+        except (KeyError, TypeError, ValueError, typer.Exit):
+            reason = "ownership metadata names an unknown or ambiguous hive"
+        else:
+            expected_key = str(expected.resolve())
+            inventory_branch = managed_paths.get(expected_key)
+            exists = expected.is_dir() and inventory_branch is not None
+            if inventory_branch is not None:
+                branch = inventory_branch
+            worktree_state = "available" if exists else "missing"
+            exact_target = target == _launch_target(bead)
+            exact_metadata_target = association == "legacy" or tokens.get(_TOKEN_TARGET) == target
+            unique = (
+                target_count.get(target, 0) == 1
+                and bool(pane_id)
+                and pane_count.get(pane_id or "", 0) == 1
+            )
+            workspace_matches = workspace_label == f"bh:{hive}"
+            pane_matches = pane_name == target
+            cwd_matches = _same_path(cwd, expected)
+            if all(
+                (
+                    exact_target,
+                    exact_metadata_target,
+                    unique,
+                    workspace_matches,
+                    pane_matches,
+                    cwd_matches,
+                    exists,
+                )
+            ):
+                ownership_state = "owned"
+                reason = "explicit bh correlation and live resource identities agree"
+            else:
+                ownership_state = "stale"
+                failed = []
+                if not exists:
+                    failed.append("managed worktree is missing")
+                if not cwd_matches:
+                    failed.append("pane cwd does not match the managed worktree")
+                if not exact_target or not exact_metadata_target:
+                    failed.append("target does not match its bead association")
+                if not workspace_matches:
+                    failed.append("workspace does not match the canonical hive")
+                if not pane_matches:
+                    failed.append("visible pane name does not match the target")
+                if not unique:
+                    failed.append("target or pane identity is ambiguous")
+                reason = "; ".join(failed) or "ownership proof is stale"
+
+    live = state in _LIVE_AGENT_STATES
+    owned_live = ownership_state == "owned" and live
+    if ownership_state == "owned" and not live:
+        ownership_state = "stale" if state != "unknown" else "unknown"
+        reason = f"Herdr lifecycle state is {state}"
+
+    return {
+        "target": target or None,
+        "hive": hive,
+        "bead": bead,
+        "lifecycle": {
+            "state": state,
+            "launched_at": _value(record, "launched_at", "started_at", "created_at", "start_time"),
+            "active_at": _value(
+                record, "active_at", "last_activity_at", "updated_at", "last_seen_at"
+            ),
+        },
+        "worktree": {
+            "path": str(expected) if expected is not None else cwd,
+            "state": worktree_state,
+            "branch": branch,
+        },
+        "presentation": {
+            "session": _SESSION,
+            "workspace": workspace_id,
+            "workspace_label": workspace_label,
+            "tab": tab_id,
+            "pane": pane_id,
+        },
+        "ownership": {
+            "marker": marker,
+            "association": association,
+            "state": ownership_state,
+            "reason": reason,
+        },
+        "capabilities": _action_capabilities(owned_live, live, reason),
+    }
+
+
+def _roster_payload(snapshot: dict, cfg: dict | None = None, *, operation_id: str = "") -> dict:
+    """Build one lifecycle receipt containing an atomic authoritative live roster."""
+    cfg = cfg if cfg is not None else config.load()
+    records = _snapshot_agent_records(snapshot)
+    targets = [_value(record, "name", "agent_name", "target") or "" for record in records]
+    panes = [_record_pane_id(record) or "" for record in records]
+    target_count = {value: targets.count(value) for value in set(targets) if value}
+    pane_count = {value: panes.count(value) for value in set(panes) if value}
+    try:
+        managed_paths = {
+            str(Path(path).resolve()): branch for _prefix, path, branch in worktree.managed(cfg)
+        }
+    except (OSError, TypeError, ValueError):
+        managed_paths = {}
+    agents = [
+        _roster_agent(record, cfg, target_count, pane_count, managed_paths) for record in records
+    ]
+    payload = _lifecycle_payload(
+        "ps",
+        "listed" if agents else "empty",
+        operation_id=_operation_id(operation_id),
+        capabilities=["status", "ps"],
+        agents=agents,
+        count=len(agents),
+        authoritative_session=True,
+        roster_schema_version=_ROSTER_SCHEMA,
+    )
+    payload["generated_at"] = payload["observed_at"]
+    return payload
+
+
 def _snapshot_value(record: dict, *keys: str):
     """Read a field from an agent, its joined pane, or its joined workspace."""
     for source in (
@@ -938,6 +1194,16 @@ def _launch_cmd(
                     claim=claim,
                     target=target,
                 )
+            try:
+                _tag_ownership(workspace, pane, resolved_hive, bead, target)
+            except typer.Exit:
+                _close_pane(pane)
+                _launch_fail(
+                    "startup",
+                    "could not record reversible bh ownership metadata",
+                    claim=claim,
+                    target=target,
+                )
             warm, detail = _launch_warm(target)
             if not warm:
                 _close_pane(pane)
@@ -1049,6 +1315,7 @@ def _resolve_kind(explicit: str | None, cfg, entry) -> str:
 # ``bh-``, only the resulting ``bh-bh-*`` values are claimed. Full matching
 # keeps names such as ``operator-bh-foo`` user-owned.
 _BEAD_RE = re.compile(r"^bh-(?P<bead>bh-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)$")
+_LEGACY_TARGET_RE = re.compile(r"^bh-(?P<bead>[a-z][A-Za-z0-9-]*(?:\.[A-Za-z0-9]+)*)$")
 _LIVE_AGENT_STATES = frozenset({"idle", "working", "blocked"})
 
 
@@ -1322,7 +1589,9 @@ def _status_cmd(
 
 @cli.command("ps", help="list live herdr agents and their bh identity.")
 def _ps_cmd(
-    as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
+    as_json: bool = typer.Option(
+        False, "--json", help="emit a versioned lifecycle receipt with the live roster"
+    ),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
     """Show live agents without maintaining a bh-side identity table."""
@@ -1365,6 +1634,20 @@ def _ps_cmd(
             return
         typer.echo("herdr: server=down")
         return
+    if as_json:
+        snapshot = _session_snapshot()
+        if snapshot is None:
+            _lifecycle_failure(
+                "ps",
+                operation_id=op_id,
+                code="session_snapshot_unavailable",
+                message="The authoritative Herdr session snapshot is unavailable.",
+                retryable=True,
+            )
+        from . import jsonout
+
+        jsonout.emit(_roster_payload(snapshot, operation_id=op_id))
+        return
     records = _read_agents()
     if records is None:
         if as_json:
@@ -1381,16 +1664,6 @@ def _ps_cmd(
     for record in records:
         name, hive, bead, state = _agent_identity(record)
         agents.append({"target": name, "hive": hive, "bead": bead, "state": state})
-    if as_json:
-        _emit_lifecycle(
-            "ps",
-            "listed" if agents else "empty",
-            operation_id=op_id,
-            capabilities=["status", "ps"],
-            agents=agents,
-            count=len(agents),
-        )
-        return
     typer.echo("name\thive\tbead\tstate")
     for name, hive, bead, state in (
         (item["target"], item["hive"], item["bead"], item["state"]) for item in agents
@@ -1629,6 +1902,10 @@ def _spawn_cmd(
         pane = _required_id(split, "pane split", "pane", "pane_id", "id")
         _require(_command("agent", "start", name, "--kind", kind, "--pane", pane), "agent start")
         _require(_command("pane", "rename", pane, name), "pane rename")
+        canonical_hive = (
+            _hive_id(entry) if all(key in entry for key in ("provider", "org", "repo")) else hive
+        )
+        _tag_ownership(workspace, pane, canonical_hive, bead, name)
         _require(
             _command(
                 "agent",
