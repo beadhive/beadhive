@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.dev/schemas/herdr-view-v1.schema.json",
+  "title": "Beadhive Herdr view projection v1",
+  "oneOf": [
+    { "$ref": "#/$defs/view" },
+    { "$ref": "#/$defs/streamFrame" }
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": [
+        "schema_version",
+        "command",
+        "view",
+        "revision",
+        "generated_at",
+        "scope",
+        "freshness",
+        "coverage",
+        "warnings"
+      ],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": {
+          "enum": [
+            "plugin herdr view picker",
+            "plugin herdr view deck",
+            "plugin herdr view bead",
+            "plugin herdr view agent",
+            "plugin herdr view layout"
+          ]
+        },
+        "view": { "enum": ["picker", "deck", "bead", "agent", "layout"] },
+        "revision": { "type": "string", "minLength": 1 },
+        "generated_at": { "type": "integer", "minimum": 0 },
+        "scope": { "type": "object" },
+        "freshness": { "type": "object" },
+        "coverage": { "type": "object" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "invoke": {
+      "type": ["object", "null"],
+      "properties": {
+        "argv": {
+          "type": "array",
+          "minItems": 5,
+          "items": { "type": "string" },
+          "prefixItems": [
+            { "const": "bh" },
+            { "const": "plugin" },
+            { "const": "herdr" }
+          ]
+        },
+        "input": { "enum": ["none", "parameters", "stdin"] },
+        "shell": { "const": false }
+      },
+      "required": ["argv", "input", "shell"],
+      "additionalProperties": false
+    },
+    "action": {
+      "type": "object",
+      "required": [
+        "id",
+        "source_action",
+        "label",
+        "availability",
+        "reason",
+        "consequence",
+        "preconditions",
+        "input",
+        "invoke"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "source_action": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "maxLength": 120 },
+        "availability": {
+          "enum": ["allowed", "confirmation-required", "forbidden", "unavailable"]
+        },
+        "reason": { "type": "string", "maxLength": 240 },
+        "invoke": { "$ref": "#/$defs/invoke" }
+      }
+    },
+    "row": {
+      "type": "object",
+      "required": [
+        "key",
+        "primary",
+        "secondary",
+        "style",
+        "glyph",
+        "badges",
+        "entity",
+        "tokens",
+        "primary_action",
+        "actions"
+      ],
+      "properties": {
+        "key": { "type": "string", "minLength": 1 },
+        "primary": { "type": "string", "maxLength": 160 },
+        "secondary": { "type": "string", "maxLength": 200 },
+        "style": { "type": "string" },
+        "glyph": { "type": "string", "minLength": 1, "maxLength": 2 },
+        "badges": { "type": "array", "items": { "type": "object" } },
+        "entity": { "type": "object" },
+        "tokens": {
+          "type": "object",
+          "additionalProperties": { "type": "string", "maxLength": 160 }
+        },
+        "primary_action": { "type": ["string", "null"] },
+        "actions": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "view": {
+      "allOf": [
+        { "$ref": "#/$defs/base" },
+        {
+          "type": "object",
+          "properties": {
+            "rows": { "type": "array", "items": { "$ref": "#/$defs/row" } },
+            "row": { "$ref": "#/$defs/row" },
+            "sections": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "label", "rows"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "label": { "type": "string" },
+                  "rows": { "type": "array", "items": { "$ref": "#/$defs/row" } }
+                }
+              }
+            },
+            "actions": { "type": "array", "items": { "$ref": "#/$defs/action" } },
+            "layout": { "type": "object" },
+            "surface": { "type": "object" },
+            "detail": { "type": "object" },
+            "next_cursor": { "type": ["string", "null"] },
+            "truncated": { "type": "boolean" },
+            "returned": { "type": "integer", "minimum": 0 },
+            "limit": { "type": "integer", "minimum": 1, "maximum": 200 }
+          }
+        }
+      ]
+    },
+    "streamFrame": {
+      "type": "object",
+      "required": ["schema_version", "command", "type"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "command": { "const": "plugin herdr view stream" },
+        "type": { "enum": ["snapshot", "agent-observed", "error"] },
+        "sequence": { "type": "integer", "minimum": 0 },
+        "cursor": { "type": "string", "minLength": 1 },
+        "resync_required": { "type": "boolean" },
+        "resync_reason": { "type": ["string", "null"] },
+        "snapshot": { "$ref": "#/$defs/view" },
+        "entity": { "type": "object" },
+        "error": { "type": "object" }
+      }
+    }
+  }
+}

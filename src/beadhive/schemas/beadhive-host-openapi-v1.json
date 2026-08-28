@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Beadhive Host Operator API",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Phase 1 is an unauthenticated, loopback-only, read-only GET profile. A later non-loopback profile applies the documented bearer scheme without changing these source payloads."
   },
   "security": [],
@@ -53,6 +53,53 @@
         }
       }
     },
+    "/api/v1/factory/hives": {
+      "get": {
+        "operationId": "operatorFactoryHives",
+        "summary": "Read bounded generic summaries for registered hives",
+        "description": "Returns canonical registry identity and source-derived aggregate counts. Ordering is lexical by canonical hive id. An unavailable hive remains present with null counts; an available empty hive has zero counts. open counts literal status=open records; ready is the subset with no known unresolved prerequisite or open gate; active counts status=in_progress; blocked combines status=blocked with open issues that have a known unresolved prerequisite. ready and blocked are subsets that may overlap the open category.",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque snapshot-scoped cursor returned by nextCursor.",
+            "schema": {"type": "string", "minLength": 1}
+          },
+          {
+            "name": "availability",
+            "in": "query",
+            "required": false,
+            "schema": {"enum": ["available", "unavailable"]}
+          },
+          {
+            "name": "If-None-Match",
+            "in": "header",
+            "required": false,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One bounded deterministic page of hive summaries",
+            "headers": {"ETag": {"schema": {"type": "string"}}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/FactoryHivePage"}}}
+          },
+          "304": {"description": "The selected page still matches If-None-Match"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "405": {"$ref": "#/components/responses/ReadOnly"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
     "/api/v1/hives/{hive_id}/snapshot": {
       "get": {
         "operationId": "operatorHiveSnapshot",
@@ -80,6 +127,112 @@
           "403": {"$ref": "#/components/responses/Forbidden"},
           "405": {"$ref": "#/components/responses/ReadOnly"},
           "404": {"$ref": "#/components/responses/NotFound"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/api/v1/hives/{hive_id}/work-items": {
+      "get": {
+        "operationId": "operatorWorkItems",
+        "summary": "Read one bounded generic work-item queue",
+        "description": "Returns a snapshot-stable page from the ready, active, blocked, or recently completed queue. Cursors are opaque and scoped to the exact hive, queue, filters, ordering, and source revision.",
+        "parameters": [
+          {
+            "name": "hive_id",
+            "in": "path",
+            "required": true,
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F.",
+            "schema": {"type": "string", "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$"}
+          },
+          {
+            "name": "queue",
+            "in": "query",
+            "required": true,
+            "schema": {"$ref": "#/components/schemas/WorkItemQueueName"}
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "Opaque cursor returned by the preceding page.",
+            "schema": {"type": "string", "minLength": 1}
+          },
+          {
+            "name": "priority",
+            "in": "query",
+            "required": false,
+            "description": "Repeat to select any of the supplied priorities.",
+            "schema": {"type": "array", "items": {"type": "string", "pattern": "^P[0-4]$"}},
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "label",
+            "in": "query",
+            "required": false,
+            "description": "Repeat to require every supplied label.",
+            "schema": {"type": "array", "items": {"type": "string", "minLength": 1}},
+            "style": "form",
+            "explode": true
+          },
+          {"name": "assignee", "in": "query", "required": false, "schema": {"type": "string"}},
+          {"name": "type", "in": "query", "required": false, "schema": {"type": "string"}},
+          {"name": "parent", "in": "query", "required": false, "schema": {"type": "string"}}
+        ],
+        "responses": {
+          "200": {
+            "description": "One bounded queue page",
+            "headers": {"ETag": {"schema": {"type": "string"}}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkItemQueue"}}}
+          },
+          "304": {"description": "The selected page has not changed"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/ReadOnly"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      }
+    },
+    "/api/v1/hives/{hive_id}/work-items/{bead_id}": {
+      "get": {
+        "operationId": "operatorWorkItemDetail",
+        "summary": "Read one exact work-item detail",
+        "description": "Returns complete generic issue facts for one exact canonical hive and bead identity. It never resolves a prefix, title, or current-directory inference.",
+        "parameters": [
+          {
+            "name": "hive_id",
+            "in": "path",
+            "required": true,
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F.",
+            "schema": {"type": "string", "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$"}
+          },
+          {
+            "name": "bead_id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string", "pattern": "^[A-Za-z0-9._~-]+$"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Complete exact work-item detail",
+            "headers": {"ETag": {"schema": {"type": "string"}}},
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/WorkItemDetail"}}}
+          },
+          "304": {"description": "The exact detail has not changed"},
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "404": {"$ref": "#/components/responses/NotFound"},
+          "405": {"$ref": "#/components/responses/ReadOnly"},
           "409": {"$ref": "#/components/responses/Conflict"},
           "503": {"$ref": "#/components/responses/Unavailable"}
         }
@@ -632,6 +785,113 @@
           "ready": {"type": "boolean"}
         }
       },
+      "AdvertisedAction": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "capability", "target", "availability", "reasonCode", "reason", "consequence", "advertisedAt", "sourceRevision", "preconditions", "input"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$"},
+          "capability": {"type": "string", "minLength": 1},
+          "target": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["hiveId", "kind", "id"],
+            "properties": {
+              "hiveId": {"type": ["string", "null"]},
+              "kind": {"enum": ["hive", "work-item", "agent"]},
+              "id": {"type": "string", "minLength": 1}
+            }
+          },
+          "availability": {"enum": ["allowed", "confirmation-required", "forbidden", "unavailable"]},
+          "reasonCode": {"type": ["string", "null"]},
+          "reason": {"type": "string", "minLength": 1},
+          "consequence": {"enum": ["navigate", "read", "reversible-write", "approval", "destructive"]},
+          "advertisedAt": {"type": "integer", "minimum": 0},
+          "sourceRevision": {"type": ["string", "null"]},
+          "preconditions": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sourceRevision", "mustMatch"],
+            "properties": {
+              "sourceRevision": {"type": ["string", "null"]},
+              "mustMatch": {"type": "boolean"}
+            }
+          },
+          "input": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["transport", "required", "schema"],
+            "properties": {
+              "transport": {"enum": ["none", "parameters", "stdin"]},
+              "required": {"type": "boolean"},
+              "schema": {"type": ["object", "null"]}
+            }
+          }
+        }
+      },
+      "FactoryHiveSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "displayLabel", "opaqueRef", "prefix", "provider", "org", "repo", "kind", "availability", "counts", "revision", "asOf", "coverage", "advertisedActions"],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+$"},
+          "displayLabel": {"type": "string", "minLength": 1},
+          "opaqueRef": {"type": "string", "pattern": "^hive-sha256-[a-f0-9]{64}$"},
+          "prefix": {"type": "string", "minLength": 1},
+          "provider": {"type": "string", "minLength": 1},
+          "org": {"type": "string", "minLength": 1},
+          "repo": {"type": "string", "minLength": 1},
+          "kind": {"type": "string"},
+          "availability": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["state", "reason"],
+            "properties": {
+              "state": {"enum": ["available", "unavailable"]},
+              "reason": {"type": ["string", "null"]}
+            }
+          },
+          "counts": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["open", "ready", "active", "blocked"],
+            "properties": {
+              "open": {"type": ["integer", "null"], "minimum": 0},
+              "ready": {"type": ["integer", "null"], "minimum": 0},
+              "active": {"type": ["integer", "null"], "minimum": 0},
+              "blocked": {"type": ["integer", "null"], "minimum": 0}
+            }
+          },
+          "revision": {"type": ["string", "null"]},
+          "asOf": {"type": ["integer", "null"], "minimum": 0},
+          "coverage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["state", "reason"],
+            "properties": {
+              "state": {"enum": ["complete", "partial", "unavailable"]},
+              "reason": {"type": ["string", "null"]}
+            }
+          },
+          "advertisedActions": {"type": "array", "items": {"$ref": "#/components/schemas/AdvertisedAction"}}
+        }
+      },
+      "FactoryHivePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["schemaVersion", "revision", "generatedAt", "items", "returnedCount", "limit", "truncated", "nextCursor", "warnings"],
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "revision": {"type": "string", "minLength": 1},
+          "generatedAt": {"type": "integer", "minimum": 0},
+          "items": {"type": "array", "maxItems": 200, "items": {"$ref": "#/components/schemas/FactoryHiveSummary"}},
+          "returnedCount": {"type": "integer", "minimum": 0, "maximum": 200},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+          "truncated": {"type": "boolean"},
+          "nextCursor": {"type": ["string", "null"]},
+          "warnings": {"type": "array", "items": {"type": "string"}}
+        }
+      },
       "StreamCursor": {
         "type": "object",
         "required": ["subscriptionId", "producerEpoch", "sequence", "observedAt"],
@@ -661,6 +921,123 @@
           "schedules": {"type": "array", "items": {"type": "object"}},
           "evidence": {"type": "array", "items": {"type": "object"}},
           "advertisedActions": {"type": "array", "items": {"type": "object"}}
+        }
+      },
+      "WorkItemQueueName": {
+        "type": "string",
+        "enum": ["ready", "active", "blocked", "recent"]
+      },
+      "WorkItemRef": {
+        "type": "object",
+        "required": ["hiveId", "kind", "id"],
+        "properties": {
+          "hiveId": {"type": "string", "minLength": 1},
+          "kind": {"const": "work-item"},
+          "id": {"type": "string", "minLength": 1}
+        }
+      },
+      "WorkItemReadiness": {
+        "type": "object",
+        "required": ["state", "reason"],
+        "properties": {
+          "state": {"enum": ["ready", "active", "blocked", "completed", "unavailable"]},
+          "reason": {"type": "string"}
+        }
+      },
+      "WorkItemRow": {
+        "type": "object",
+        "required": ["ref", "revision", "hiveId", "id", "title", "issueType", "priority", "status", "readiness", "assignee", "owner", "parentId", "blockerCount", "blockedDependentCount", "labels", "remainingLabelCount", "openGateCount", "liveAgentCount", "updatedAt"],
+        "properties": {
+          "ref": {"$ref": "#/components/schemas/WorkItemRef"},
+          "revision": {"type": "string", "minLength": 1},
+          "hiveId": {"type": "string", "minLength": 1},
+          "id": {"type": "string", "minLength": 1},
+          "title": {"type": "string"},
+          "issueType": {"type": "string"},
+          "priority": {"type": "integer"},
+          "status": {"type": "string"},
+          "readiness": {"$ref": "#/components/schemas/WorkItemReadiness"},
+          "assignee": {"type": ["string", "null"]},
+          "owner": {"type": ["string", "null"]},
+          "parentId": {"type": ["string", "null"]},
+          "blockerCount": {"type": "integer", "minimum": 0},
+          "blockedDependentCount": {"type": "integer", "minimum": 0},
+          "labels": {"type": "array", "maxItems": 12, "items": {"type": "string"}},
+          "remainingLabelCount": {"type": "integer", "minimum": 0},
+          "openGateCount": {"type": "integer", "minimum": 0},
+          "liveAgentCount": {"type": "integer", "minimum": 0},
+          "updatedAt": {"type": ["integer", "null"]}
+        }
+      },
+      "WorkItemQueue": {
+        "type": "object",
+        "required": ["schemaVersion", "hiveId", "queue", "revision", "generatedAt", "freshness", "coverage", "limit", "returned", "truncated", "nextCursor", "items", "warnings"],
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "hiveId": {"type": "string", "minLength": 1},
+          "queue": {"$ref": "#/components/schemas/WorkItemQueueName"},
+          "revision": {"type": "string", "minLength": 1},
+          "generatedAt": {"type": ["integer", "null"]},
+          "freshness": {"type": "object"},
+          "coverage": {"type": "object"},
+          "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+          "returned": {"type": "integer", "minimum": 0, "maximum": 200},
+          "truncated": {"type": "boolean"},
+          "nextCursor": {"type": ["string", "null"]},
+          "items": {"type": "array", "maxItems": 200, "items": {"$ref": "#/components/schemas/WorkItemRow"}},
+          "warnings": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "WorkDependencyDetail": {
+        "type": "object",
+        "required": ["id", "title", "type", "state", "direction"],
+        "properties": {
+          "id": {"type": "string"},
+          "title": {"type": ["string", "null"]},
+          "type": {"type": "string"},
+          "state": {"type": "string"},
+          "direction": {"enum": ["prerequisite", "dependent"]}
+        }
+      },
+      "WorkItemExact": {
+        "allOf": [
+          {"$ref": "#/components/schemas/WorkItemRow"},
+          {
+            "type": "object",
+            "required": ["description", "design", "acceptanceCriteria", "notes", "moleculeType", "createdBy", "createdAt", "closedAt", "dueAt", "deferUntil", "claim", "dependencies", "dependents", "gates", "agents", "advertisedActions"],
+            "properties": {
+              "description": {"type": "string"},
+              "design": {"type": "string"},
+              "acceptanceCriteria": {"type": "string"},
+              "notes": {"type": "string"},
+              "moleculeType": {"type": ["string", "null"]},
+              "createdBy": {"type": ["string", "null"]},
+              "createdAt": {"type": ["integer", "null"]},
+              "closedAt": {"type": ["integer", "null"]},
+              "dueAt": {"type": ["integer", "null"]},
+              "deferUntil": {"type": ["integer", "null"]},
+              "claim": {"type": "object"},
+              "dependencies": {"type": "array", "items": {"$ref": "#/components/schemas/WorkDependencyDetail"}},
+              "dependents": {"type": "array", "items": {"$ref": "#/components/schemas/WorkDependencyDetail"}},
+              "gates": {"type": "array", "items": {"type": "object"}},
+              "agents": {"type": "array", "items": {"type": "object"}},
+              "advertisedActions": {"type": "array", "items": {"$ref": "#/components/schemas/AdvertisedAction"}}
+            }
+          }
+        ]
+      },
+      "WorkItemDetail": {
+        "type": "object",
+        "required": ["schemaVersion", "hiveId", "revision", "generatedAt", "freshness", "coverage", "item", "warnings"],
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "hiveId": {"type": "string", "minLength": 1},
+          "revision": {"type": "string", "minLength": 1},
+          "generatedAt": {"type": ["integer", "null"]},
+          "freshness": {"type": "object"},
+          "coverage": {"type": "object"},
+          "item": {"$ref": "#/components/schemas/WorkItemExact"},
+          "warnings": {"type": "array", "items": {"type": "string"}}
         }
       },
       "RunActivityEnvelope": {

@@ -51,22 +51,28 @@ removes a worktree. Normal `bh work` lifecycle commands remain responsible for w
 durable bead-branch contract. Dual ownership would permit double-booked directories and divergent
 cleanup semantics.
 
-### 3. Put bead identity in herdr-visible deterministic names, not a bh side table
+### 3. Put bead identity in Herdr metadata and deterministic visible names, not a bh side table
 
-Each spawned agent receives a deterministic, bh-reserved agent name containing its bead ID, and
-the corresponding pane is renamed/labeled with the same bead ID. The implementation may include a
-human-readable hive component, but the bead ID is mandatory and preserved verbatim. `bh plugin
-herdr ps` derives its bead column by parsing those herdr-visible names from `agent list` or `api
-snapshot`; it does not maintain a separate durable name-to-bead mapping.
+Each spawned agent receives a deterministic, bh-reserved agent name and the corresponding pane is
+renamed/labeled with that target. Herdr's 32-character target limit means dotted and long IDs
+cannot always remain reversible in the visible name. New launches therefore report plugin-owned
+workspace and pane metadata containing the exact canonical hive, bead, opaque target, marker, and
+contract version. `bh plugin herdr ps --json` reads that metadata from one live snapshot; it does
+not maintain a separate durable name-to-bead mapping or decode hashed targets.
+
+Pre-metadata targets remain compatible only through a strict legacy proof: the deterministic
+target, pane name, `bh:<hive>` workspace, unique target/pane records, and exact managed-worktree
+cwd must all agree. A lookalike target without those facts is foreign rather than guessed.
 
 The spawn operation must complete the agent/pane naming step before reporting success. If it
 cannot tag a newly created resource, it reports failure and performs best-effort cleanup rather
 than leaving an uncorrelated pane. `ps` renders an unrecognized, manually created agent as
 unmanaged rather than guessing a bead.
 
-**Why:** herdr has no first-class bead metadata field. A bh side table would duplicate live state,
-leak on crashes or manual pane cleanup, and violate the plugin's read-through design. Visible names
-also make the association useful to an operator outside `bh`.
+**Why:** Herdr presentation tokens are live resource metadata and disappear with the resource. A
+bh side table would duplicate live state, leak on crashes or manual pane cleanup, and violate the
+plugin's read-through design. Visible names still make the association useful to an operator,
+while metadata supplies lossless machine correlation.
 
 ### 4. herdr complements, never replaces, Task/Agent fanout
 

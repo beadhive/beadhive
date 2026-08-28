@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.dev/schemas/herdr-lifecycle-receipt-v1.schema.json",
+  "title": "Beadhive Herdr lifecycle receipt v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "command",
+    "operation_id",
+    "operation",
+    "outcome",
+    "disposition",
+    "observed_at",
+    "hive",
+    "bead",
+    "target",
+    "session",
+    "workspace",
+    "pane",
+    "worktree",
+    "capabilities",
+    "warnings",
+    "retained_resources"
+  ],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "command": {
+      "enum": [
+        "plugin herdr status",
+        "plugin herdr ps",
+        "plugin herdr spawn",
+        "plugin herdr dispatch",
+        "plugin herdr watch",
+        "plugin herdr attach",
+        "plugin herdr reap"
+      ]
+    },
+    "operation_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"
+    },
+    "operation": {
+      "enum": ["status", "ps", "spawn", "dispatch", "watch", "attach", "reap"]
+    },
+    "outcome": { "enum": ["succeeded", "failed", "refused"] },
+    "disposition": { "type": "string", "minLength": 1 },
+    "observed_at": { "type": "string", "format": "date-time" },
+    "hive": { "type": ["string", "null"] },
+    "bead": { "type": ["string", "null"] },
+    "target": { "type": ["string", "null"] },
+    "session": { "const": "bh-supervisor" },
+    "workspace": { "type": ["string", "null"] },
+    "pane": { "type": ["string", "null"] },
+    "worktree": { "type": ["string", "null"] },
+    "capabilities": {
+      "type": "array",
+      "items": { "type": "string" },
+      "uniqueItems": true
+    },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "retained_resources": { "type": "array", "items": { "type": "object" } },
+    "error": {
+      "type": "object",
+      "required": ["code", "message", "subsystem", "retryable", "details"],
+      "properties": {
+        "code": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "message": { "type": "string" },
+        "subsystem": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "details": { "type": "object" }
+      },
+      "additionalProperties": true
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "outcome": { "enum": ["failed", "refused"] } } },
+      "then": { "required": ["error"] }
+    }
+  ],
+  "additionalProperties": true
+}

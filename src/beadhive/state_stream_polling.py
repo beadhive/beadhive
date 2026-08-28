@@ -318,6 +318,30 @@ class PollingStateStreamProvider:
                 assignee=str(raw["assignee"]) if raw.get("assignee") is not None else None,
                 parent_id=str(parent_id) if parent_id is not None else None,
                 dependencies=tuple(dependencies),
+                description=str(raw.get("description") or ""),
+                design=str(raw.get("design") or ""),
+                acceptance_criteria=str(
+                    raw.get("acceptance_criteria") or raw.get("acceptance") or ""
+                ),
+                notes=str(raw.get("notes") or ""),
+                mol_type=(
+                    str(raw.get("mol_type") or raw.get("molecule_type"))
+                    if raw.get("mol_type") or raw.get("molecule_type")
+                    else None
+                ),
+                owner=str(raw["owner"]) if raw.get("owner") is not None else None,
+                created_by=(str(raw["created_by"]) if raw.get("created_by") is not None else None),
+                created_at=(str(raw["created_at"]) if raw.get("created_at") is not None else None),
+                closed_at=str(raw["closed_at"]) if raw.get("closed_at") is not None else None,
+                due_at=str(raw["due_at"]) if raw.get("due_at") is not None else None,
+                defer_until=(
+                    str(raw["defer_until"]) if raw.get("defer_until") is not None else None
+                ),
+                lease_expires_at=(
+                    str(raw["lease_expires_at"])
+                    if raw.get("lease_expires_at") is not None
+                    else None
+                ),
             ),
             partial_reason,
         )

@@ -5,8 +5,10 @@ from __future__ import annotations
 import importlib
 import json
 import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
+import jsonschema
 import pytest
 import typer
 from typer.testing import CliRunner
@@ -15,6 +17,9 @@ from beadhive import guard, herdr_plugin, plugins, registry, work
 from beadhive.cli import app
 
 runner = CliRunner()
+_LIFECYCLE_SCHEMA_PATH = (
+    Path(__file__).parents[1] / "docs" / "schemas" / "herdr-lifecycle-receipt-v1.schema.json"
+)
 
 
 def _result(code=0, stdout="", stderr=""):
@@ -242,6 +247,48 @@ def _spawn_worktree(tmp_path, monkeypatch):
         herdr_plugin.worktree,
         "locate",
         lambda *_args: ({}, tmp_path, target, "wt/bead/issue/bh-1"),
+    )
+    return target
+
+
+def _owned_dispatch_target(tmp_path, monkeypatch):
+    target = "bh-bh-7"
+    bead = "bh-7"
+    hive = "github/acme/widgets"
+    cwd = tmp_path / bead
+    cwd.mkdir(exist_ok=True)
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    snapshot = {
+        "agents": [{"name": target, "state": "idle", "pane_id": "w1:p2"}],
+        "panes": [
+            {
+                "pane_id": "w1:p2",
+                "workspace_id": "w1",
+                "label": target,
+                "cwd": str(cwd),
+                "tokens": {
+                    "bh_owner": "bh.plugin.herdr/v1",
+                    "bh_hive_id": hive,
+                    "bh_bead_id": bead,
+                    "bh_target": target,
+                    "bh_schema": "1",
+                },
+            }
+        ],
+        "workspaces": [{"workspace_id": "w1", "label": f"bh:{hive}"}],
+    }
+    branch = f"wt/bead/issue/{bead}"
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "locate",
+        lambda *_args: ({}, tmp_path, cwd, branch),
+    )
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "managed",
+        lambda _cfg: [("bh", str(cwd), branch)],
     )
     return target
 
@@ -562,9 +609,10 @@ def test_spawn_fences_missing_server_before_worktree_lookup(monkeypatch):
     assert "server=down" in result.output
 
 
-def test_dispatch_verifies_a_new_prompt_landed_for_claude_and_codex(monkeypatch):
+def test_dispatch_verifies_a_new_prompt_landed_for_claude_and_codex(tmp_path, monkeypatch):
     """Both supported harnesses pass only when the post-read adds the real turn."""
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    target = _owned_dispatch_target(tmp_path, monkeypatch)
 
     for kind in ("claude", "codex"):
         prompt = f"{kind} please implement the requested change"
@@ -580,7 +628,7 @@ def test_dispatch_verifies_a_new_prompt_landed_for_claude_and_codex(monkeypatch)
             return _result(stdout="agent_status: done")
 
         monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
-        result = runner.invoke(app, ["plugin", "herdr", "dispatch", f"{kind}-1", prompt])
+        result = runner.invoke(app, ["plugin", "herdr", "dispatch", target, prompt])
 
         assert result.exit_code == 0, result.output
         assert [
@@ -589,7 +637,7 @@ def test_dispatch_verifies_a_new_prompt_landed_for_claude_and_codex(monkeypatch)
             "bh-supervisor",
             "agent",
             "prompt",
-            f"{kind}-1",
+            target,
             prompt,
             "--wait",
             "--timeout",
@@ -598,9 +646,10 @@ def test_dispatch_verifies_a_new_prompt_landed_for_claude_and_codex(monkeypatch)
         assert sum("read" in call and "visible" in call for call in calls) == 2
 
 
-def test_dispatch_rejects_stale_prompt_from_a_prior_turn(monkeypatch):
+def test_dispatch_rejects_stale_prompt_from_a_prior_turn(tmp_path, monkeypatch):
     """An unchanged pane containing an older identical prompt is not a delivery proof."""
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    target = _owned_dispatch_target(tmp_path, monkeypatch)
     prompt = "implement the requested change"
     reads = iter([f"user: {prompt}\\nassistant: done", f"user: {prompt}\\nassistant: done"])
 
@@ -612,15 +661,16 @@ def test_dispatch_rejects_stale_prompt_from_a_prior_turn(monkeypatch):
         return _result(stdout="agent_status: done")
 
     monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
-    result = runner.invoke(app, ["plugin", "herdr", "dispatch", "codex-1", prompt])
+    result = runner.invoke(app, ["plugin", "herdr", "dispatch", target, prompt])
 
     assert result.exit_code == 1
     assert "did not reach a new real agent turn" in result.output
 
 
-def test_dispatch_accepts_a_repeated_prompt_only_when_a_new_copy_appears(monkeypatch):
+def test_dispatch_accepts_a_repeated_prompt_only_when_a_new_copy_appears(tmp_path, monkeypatch):
     """Repeating an intentional prompt remains valid, but needs a new pane occurrence."""
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    target = _owned_dispatch_target(tmp_path, monkeypatch)
     prompt = "repeat this prompt"
     reads = iter([f"user: {prompt}", f"user: {prompt}\\nassistant: done\\nuser: {prompt}"])
 
@@ -632,14 +682,15 @@ def test_dispatch_accepts_a_repeated_prompt_only_when_a_new_copy_appears(monkeyp
         return _result(stdout="agent_status: done")
 
     monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
-    result = runner.invoke(app, ["plugin", "herdr", "dispatch", "claude-1", prompt])
+    result = runner.invoke(app, ["plugin", "herdr", "dispatch", target, prompt])
 
     assert result.exit_code == 0, result.output
 
 
-def test_dispatch_fails_when_codex_first_run_screen_drops_prompt(monkeypatch):
+def test_dispatch_fails_when_codex_first_run_screen_drops_prompt(tmp_path, monkeypatch):
     """Codex can say done after its hook-review screen consumed the first prompt."""
     monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    target = _owned_dispatch_target(tmp_path, monkeypatch)
     prompt = "implement the requested change"
     calls = []
     reads = iter(["user: old unrelated work", "Codex hook-review screen: trust hooks? [y/N]"])
@@ -653,12 +704,557 @@ def test_dispatch_fails_when_codex_first_run_screen_drops_prompt(monkeypatch):
         return _result(stdout="agent_status: done")
 
     monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
-    result = runner.invoke(app, ["plugin", "herdr", "dispatch", "codex-1", prompt])
+    result = runner.invoke(app, ["plugin", "herdr", "dispatch", target, prompt])
 
     assert result.exit_code == 1
     assert "did not reach a new real agent turn" in result.output
     assert any("prompt" in call and "--wait" in call for call in calls)
     assert sum("read" in call and "visible" in call for call in calls) == 2
+
+
+def _assert_lifecycle_receipt(payload, operation, disposition):
+    jsonschema.Draft202012Validator(json.loads(_LIFECYCLE_SCHEMA_PATH.read_text())).validate(
+        payload
+    )
+    assert payload["schema_version"] == 1
+    assert payload["command"] == f"plugin herdr {operation}"
+    assert payload["operation"] == operation
+    assert payload["disposition"] == disposition
+    assert payload["operation_id"]
+    assert payload["observed_at"].endswith("Z")
+    assert payload["session"] == "bh-supervisor"
+    for key in (
+        "hive",
+        "bead",
+        "target",
+        "workspace",
+        "pane",
+        "worktree",
+        "capabilities",
+        "warnings",
+        "retained_resources",
+    ):
+        assert key in payload
+
+
+def test_lifecycle_status_ps_and_attach_emit_shared_json_receipts(tmp_path, monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    cwd = tmp_path / "bh-7"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    snapshot = _roster_snapshot("bh-bh-7", cwd, bead="bh-7")
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "bh-7")
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result(stdout="server ready")
+        if argv == ["herdr", "integration", "status"]:
+            return _result(stdout="claude: installed\ncodex: not installed")
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(
+                stdout='{"agents":[{"name":"bh-bh-7","state":"working",'
+                '"workspace":{"label":"bh:github/acme/widgets"}}]}'
+            )
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    status = runner.invoke(
+        app, ["plugin", "herdr", "status", "--json", "--operation-id", "status:7"]
+    )
+    ps = runner.invoke(app, ["plugin", "herdr", "ps", "--json"])
+    attach = runner.invoke(
+        app,
+        ["plugin", "herdr", "attach", "bh-bh-7", "--json", "--operation-id", "attach:7"],
+    )
+
+    assert status.exit_code == ps.exit_code == attach.exit_code == 0
+    status_payload = json.loads(status.stdout)
+    _assert_lifecycle_receipt(status_payload, "status", "available")
+    assert status_payload["operation_id"] == "status:7"
+    assert status_payload["integrations"] == [
+        {"kind": "claude", "state": "installed"},
+        {"kind": "codex", "state": "not installed"},
+    ]
+    ps_payload = json.loads(ps.stdout)
+    _assert_lifecycle_receipt(ps_payload, "ps", "listed")
+    assert ps_payload["agents"][0]["target"] == "bh-bh-7"
+    assert ps_payload["agents"][0]["hive"] == "github/acme/widgets"
+    assert ps_payload["agents"][0]["bead"] == "bh-7"
+    assert ps_payload["agents"][0]["ownership"]["state"] == "owned"
+    attach_payload = json.loads(attach.stdout)
+    _assert_lifecycle_receipt(attach_payload, "attach", "instructions")
+    assert attach_payload["attach_argv"] == [
+        "herdr",
+        "--session",
+        "bh-supervisor",
+        "agent",
+        "attach",
+        "bh-bh-7",
+    ]
+
+
+@pytest.mark.parametrize("source", ["stdin", "file"])
+def test_dispatch_safe_input_preserves_adversarial_multiline_without_leakage(
+    source, tmp_path, monkeypatch, caplog
+):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    target = _owned_dispatch_target(tmp_path, monkeypatch)
+    secret = "first line\n$(touch /tmp/never) ' \" ; $TOKEN\nlast\\line"
+    reads = iter(["agent: idle", f"agent: idle\nuser: {secret}\nassistant: working"])
+    process_argv = []
+    socket_prompts = []
+
+    def fake_run(argv, **kwargs):
+        process_argv.append(argv)
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "read" in argv:
+            return _result(stdout=next(reads))
+        raise AssertionError(argv)
+
+    def socket_prompt(target, prompt, **kwargs):
+        socket_prompts.append((target, prompt, kwargs))
+        return _result(stdout='{"result":{"type":"agent_prompt","agent_status":"done"}}')
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    monkeypatch.setattr(herdr_plugin, "_prompt_over_socket", socket_prompt)
+    argv = ["plugin", "herdr", "dispatch", target, "--json"]
+    input_text = None
+    if source == "stdin":
+        argv.append("--stdin")
+        input_text = secret
+    else:
+        prompt_path = tmp_path / "prompt.txt"
+        prompt_path.write_text(secret)
+        argv.extend(["--prompt-file", str(prompt_path)])
+
+    result = runner.invoke(app, argv, input=input_text)
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    _assert_lifecycle_receipt(payload, "dispatch", "dispatched")
+    assert payload["input_source"] == source
+    assert payload["delivery_verified"] is True
+    assert socket_prompts == [(target, secret, {})]
+    assert all(secret not in "\0".join(call) for call in process_argv)
+    assert secret not in result.output
+    assert secret not in caplog.text
+
+
+def test_safe_dispatch_accepts_maximum_prompt_when_socket_acknowledges_delivery(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    target = _owned_dispatch_target(tmp_path, monkeypatch)
+    prompt = "x" * (1024 * 1024)
+    prompt_path = tmp_path / "maximum-prompt.txt"
+    prompt_path.write_text(prompt)
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "read" in argv:
+            return _result(stdout="agent: idle")
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_prompt_over_socket",
+        lambda target, value: _result(
+            stdout='{"result":{"type":"agent_prompt","agent_status":"done"}}'
+        ),
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "dispatch",
+            target,
+            "--prompt-file",
+            str(prompt_path),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["disposition"] == "dispatched"
+    assert payload["delivery_verified"] is True
+    assert prompt not in result.stdout
+
+
+def test_prompt_file_enforces_limit_during_read(monkeypatch):
+    read_sizes = []
+
+    class FakeFile:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, size=-1):
+            read_sizes.append(size)
+            if size == -1:
+                return "x" * (herdr_plugin._MAX_PROMPT_BYTES + 1)
+            return b"x" * size
+
+    monkeypatch.setattr(Path, "open", lambda *_args, **_kwargs: FakeFile())
+
+    with pytest.raises(ValueError, match="exceeds"):
+        herdr_plugin._prompt_input(None, from_stdin=False, prompt_file="/fake/prompt")
+
+    assert read_sizes == [herdr_plugin._MAX_PROMPT_BYTES + 1]
+
+
+def test_prompt_stdin_enforces_limit_during_binary_read(monkeypatch):
+    read_sizes = []
+
+    class FakeBuffer:
+        def read(self, size=-1):
+            read_sizes.append(size)
+            return b"x" * size
+
+    class FakeStdin:
+        buffer = FakeBuffer()
+
+        def read(self, _size=-1):
+            raise AssertionError("bounded prompt input must use the binary stdin stream")
+
+    monkeypatch.setattr(herdr_plugin.sys, "stdin", FakeStdin())
+
+    with pytest.raises(ValueError, match="exceeds"):
+        herdr_plugin._prompt_input(None, from_stdin=True, prompt_file="")
+
+    assert read_sizes == [herdr_plugin._MAX_PROMPT_BYTES + 1]
+
+
+def test_prompt_file_rejects_invalid_utf8(tmp_path):
+    prompt_path = tmp_path / "invalid-prompt.txt"
+    prompt_path.write_bytes(b"valid prefix\xffinvalid suffix")
+
+    with pytest.raises(ValueError, match="prompt input must be valid UTF-8"):
+        herdr_plugin._prompt_input(None, from_stdin=False, prompt_file=str(prompt_path))
+
+
+def test_dispatch_json_refusal_is_structured_and_not_retryable(tmp_path, monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+    target = _owned_dispatch_target(tmp_path, monkeypatch)
+    prompt = "same prompt"
+    reads = iter([f"user: {prompt}", f"user: {prompt}"])
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "read" in argv:
+            return _result(stdout=next(reads))
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    result = runner.invoke(
+        app,
+        ["plugin", "herdr", "dispatch", target, prompt, "--json"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    _assert_lifecycle_receipt(payload, "dispatch", "refused")
+    assert payload["outcome"] == "refused"
+    assert payload["error"]["code"] == "dispatch_unverified"
+    assert payload["error"]["retryable"] is False
+    assert prompt not in result.stdout
+
+
+def test_watch_timeout_and_reap_refusal_emit_stable_json_errors(monkeypatch):
+    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+
+    def fake_run(argv, **kwargs):
+        if argv == ["herdr", "status"]:
+            return _result()
+        if "wait" in argv:
+            raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
+        if argv[-3:] == ["agent", "list", "--json"]:
+            return _result(stdout='{"agents": []}')
+        raise AssertionError(argv)
+
+    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    watched = runner.invoke(
+        app, ["plugin", "herdr", "watch", "bh-bh-7", "--timeout", "1", "--json"]
+    )
+    reaped = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-7", "--json"])
+
+    assert watched.exit_code == reaped.exit_code == 1
+    watch_payload = json.loads(watched.stdout)
+    _assert_lifecycle_receipt(watch_payload, "watch", "timed_out")
+    assert watch_payload["error"]["code"] == "watch_timeout"
+    assert watch_payload["error"]["retryable"] is True
+    reap_payload = json.loads(reaped.stdout)
+    _assert_lifecycle_receipt(reap_payload, "reap", "refused")
+    assert reap_payload["error"]["code"] == "ownership_not_proven"
+    assert reap_payload["retained_resources"] == [{"kind": "target", "id": "bh-bh-7"}]
+
+
+def test_spawn_watch_and_reap_success_emit_json_dispositions(tmp_path, monkeypatch):
+    worktree_path = tmp_path / "bh-7"
+    worktree_path.mkdir()
+    (worktree_path / ".git").write_text("gitdir: /tmp/example\n")
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {})
+    monkeypatch.setattr(herdr_plugin, "_managed_worktree", lambda *_args: ({}, worktree_path))
+    monkeypatch.setattr(herdr_plugin, "_resolve_kind", lambda kind, *_args: kind)
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_workspace", lambda *_args: ("w1", "w1:p1"))
+    monkeypatch.setattr(herdr_plugin, "_owned_live_pane", lambda _target: "w1:p2")
+
+    def command(*args, **kwargs):
+        if args[:2] == ("pane", "split"):
+            return _result(stdout='{"pane":{"pane_id":"w1:p2"}}')
+        if args[:2] == ("agent", "read"):
+            return _result(stdout=f"assistant: {herdr_plugin._WARMUP_TOKEN}")
+        if args[:2] == ("agent", "wait"):
+            return _result(stdout='{"result":{"agent_status":"blocked"}}')
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    spawned = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "spawn",
+            "--hive",
+            "github/acme/widgets",
+            "--bead",
+            "bh-7",
+            "--kind",
+            "codex",
+            "--json",
+        ],
+    )
+    watched = runner.invoke(app, ["plugin", "herdr", "watch", "bh-bh-7", "--json"])
+    reaped = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-7", "--json"])
+
+    assert spawned.exit_code == watched.exit_code == reaped.exit_code == 0
+    spawn_payload = json.loads(spawned.stdout)
+    _assert_lifecycle_receipt(spawn_payload, "spawn", "created")
+    assert spawn_payload["hive"] == "github/acme/widgets"
+    assert spawn_payload["bead"] == "bh-7"
+    assert spawn_payload["worktree"] == str(worktree_path)
+    watch_payload = json.loads(watched.stdout)
+    _assert_lifecycle_receipt(watch_payload, "watch", "settled")
+    assert watch_payload["resulting_state"] == "blocked"
+    reap_payload = json.loads(reaped.stdout)
+    _assert_lifecycle_receipt(reap_payload, "reap", "reaped")
+    assert reap_payload["pane"] == "w1:p2"
+
+
+def test_safe_prompt_socket_request_keeps_body_out_of_process_metadata(monkeypatch):
+    secret = "multiline\nsecret $(not-a-shell)\nend"
+    sent = []
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def readline(self, _limit):
+            request_id = json.loads(sent[0])["id"]
+            return (
+                json.dumps(
+                    {
+                        "id": request_id,
+                        "result": {"type": "agent_prompt", "agent_status": "done"},
+                    }
+                ).encode()
+                + b"\n"
+            )
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, value):
+            sent.append(value)
+
+        def makefile(self, _mode):
+            return FakeStream()
+
+    monkeypatch.setattr(herdr_plugin, "_session_socket_path", lambda: (Path("/tmp/herdr.sock"), ""))
+    monkeypatch.setattr(herdr_plugin.socket, "socket", lambda *_args: FakeSocket())
+
+    result = herdr_plugin._prompt_over_socket("bh-bh-7", secret)
+
+    assert result.returncode == 0
+    request = json.loads(sent[0])
+    assert request["method"] == "agent.prompt"
+    assert request["params"]["text"] == secret
+    assert secret not in "\0".join(result.args)
+    assert secret not in result.stdout
+
+
+def test_safe_prompt_socket_refuses_mismatched_response_id(monkeypatch):
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def readline(self, _limit):
+            return b'{"id":"other","result":{"type":"agent_prompt","agent_status":"done"}}\n'
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _value):
+            pass
+
+        def makefile(self, _mode):
+            return FakeStream()
+
+    monkeypatch.setattr(herdr_plugin, "_session_socket_path", lambda: (Path("/tmp/herdr.sock"), ""))
+    monkeypatch.setattr(herdr_plugin.socket, "socket", lambda *_args: FakeSocket())
+    monkeypatch.setattr(herdr_plugin.uuid, "uuid4", lambda: SimpleNamespace(hex="expected"))
+
+    result = herdr_plugin._prompt_over_socket("bh-bh-7", "secret")
+
+    assert result.returncode == 1
+    assert result.stderr == "Herdr returned a mismatched agent.prompt response"
+
+
+def test_safe_prompt_socket_refuses_unexpected_result_semantics(monkeypatch):
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def readline(self, _limit):
+            return (
+                b'{"id":"bh_prompt_expected","result":'
+                b'{"type":"workspace_created","agent_status":"done"}}\n'
+            )
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _value):
+            pass
+
+        def makefile(self, _mode):
+            return FakeStream()
+
+    monkeypatch.setattr(herdr_plugin, "_session_socket_path", lambda: (Path("/tmp/x"), ""))
+    monkeypatch.setattr(herdr_plugin.socket, "socket", lambda *_args: FakeSocket())
+    monkeypatch.setattr(herdr_plugin.uuid, "uuid4", lambda: SimpleNamespace(hex="expected"))
+
+    result = herdr_plugin._prompt_over_socket("bh-bh-7", "secret")
+
+    assert result.returncode == 1
+    assert result.stderr == "Herdr returned an invalid agent.prompt response"
+
+
+def test_safe_prompt_socket_redacts_server_error_messages(monkeypatch):
+    secret = "raw server echoed this secret"
+
+    class FakeStream:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def readline(self, _limit):
+            return (
+                json.dumps(
+                    {
+                        "id": "bh_prompt_expected",
+                        "error": {"code": "refused", "message": secret},
+                    }
+                ).encode()
+                + b"\n"
+            )
+
+    class FakeSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _timeout):
+            pass
+
+        def connect(self, _path):
+            pass
+
+        def sendall(self, _value):
+            pass
+
+        def makefile(self, _mode):
+            return FakeStream()
+
+    monkeypatch.setattr(herdr_plugin, "_session_socket_path", lambda: (Path("/tmp/x"), ""))
+    monkeypatch.setattr(herdr_plugin.socket, "socket", lambda *_args: FakeSocket())
+    monkeypatch.setattr(herdr_plugin.uuid, "uuid4", lambda: SimpleNamespace(hex="expected"))
+
+    result = herdr_plugin._prompt_over_socket("bh-bh-7", secret)
+
+    assert result.returncode == 1
+    assert result.stderr == "Herdr refused the agent.prompt request"
+    assert secret not in result.stderr
+
+
+def test_lifecycle_receipt_schema_covers_every_json_command():
+    schema = json.loads(_LIFECYCLE_SCHEMA_PATH.read_text())
+    jsonschema.Draft202012Validator.check_schema(schema)
+    assert schema["properties"]["schema_version"] == {"const": 1}
+    assert set(schema["properties"]["operation"]["enum"]) == {
+        "status",
+        "ps",
+        "spawn",
+        "dispatch",
+        "watch",
+        "attach",
+        "reap",
+    }
 
 
 def test_attach_only_prints_a_copy_pasteable_session_scoped_command(monkeypatch):
@@ -672,36 +1268,37 @@ def test_attach_only_prints_a_copy_pasteable_session_scoped_command(monkeypatch)
     assert result.output.strip() == "herdr --session bh-supervisor agent attach bh-bh-1"
 
 
-def test_reap_closes_only_the_exact_pane_recorded_for_a_spawned_target(monkeypatch):
-    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+def test_reap_refuses_reserved_name_without_current_ownership_metadata(monkeypatch):
     calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        if argv == ["herdr", "status"]:
-            return _result()
-        if argv[-3:] == ["agent", "list", "--json"]:
-            return _result(2, stderr="unexpected argument '--json'")
-        if argv[-2:] == ["agent", "list"]:
-            return _result(
-                stdout=(
-                    '{"id":"cli:agent:list","result":{"agents": ['
-                    '{"name": "bh-bh-1", "agent_status": "idle", '
-                    '"pane_id": "w1:p2", "label": "bh-bh-1"}],'
-                    '"type":"agent_list"}}'
-                )
-            )
-        if "pane" in argv and "close" in argv:
-            return _result()
-        raise AssertionError(argv)
-
-    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(herdr_plugin.worktree, "managed", lambda _cfg: [])
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_session_snapshot",
+        lambda: {
+            "agents": [{"name": "bh-bh-1", "state": "idle", "pane_id": "w1:p2"}],
+            "panes": [
+                {
+                    "pane_id": "w1:p2",
+                    "workspace_id": "w1",
+                    "label": "bh-bh-1",
+                    "cwd": "/tmp/manual",
+                }
+            ],
+            "workspaces": [{"workspace_id": "w1", "label": "manual"}],
+        },
+    )
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_command",
+        lambda *args, **_kwargs: calls.append(args) or _result(),
+    )
     result = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-1"])
 
-    assert result.exit_code == 0, result.output
-    assert "reaped pane=w1:p2" in result.output
-    assert ["herdr", "--session", "bh-supervisor", "pane", "close", "w1:p2", "--no-focus"] in calls
-    assert not any("workspace" in call or "worktree" in call for call in calls)
+    assert result.exit_code == 1
+    assert "refusing unmanaged" in result.output
+    assert not any(call[:2] == ("pane", "close") for call in calls)
 
 
 def test_reap_refuses_an_unmanaged_target_without_closing_anything(monkeypatch):
@@ -853,30 +1450,62 @@ def test_reap_refuses_a_wrapper_agent_with_a_sibling_pane_claim(monkeypatch):
     assert not any("close" in call for call in calls)
 
 
-def test_reap_accepts_a_target_whose_pane_is_on_its_agent_wrapper(monkeypatch):
-    monkeypatch.setattr(herdr_plugin.shutil, "which", lambda _name: "/usr/bin/herdr")
+def test_reap_accepts_owned_metadata_on_an_agent_wrapper(tmp_path, monkeypatch):
+    target = "bh-bh-1"
+    bead = "bh-1"
+    hive = "github/acme/widgets"
+    cwd = tmp_path / bead
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    branch = f"wt/bead/issue/{bead}"
     calls = []
-
-    def fake_run(argv, **kwargs):
-        calls.append(argv)
-        if argv == ["herdr", "status"]:
-            return _result()
-        if argv[-3:] == ["agent", "list", "--json"]:
-            return _result(
-                stdout=(
-                    '{"agents": [{"agent": {"name": "bh-bh-1", "state": "idle"}, '
-                    '"pane": {"id": "w1:p2", "name": "bh-bh-1"}}]}'
-                )
-            )
-        if "pane" in argv and "close" in argv:
-            return _result()
-        raise AssertionError(argv)
-
-    monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
-    result = runner.invoke(app, ["plugin", "herdr", "reap", "bh-bh-1"])
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "locate",
+        lambda *_args: ({}, tmp_path, cwd, branch),
+    )
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "managed",
+        lambda _cfg: [("bh", str(cwd), branch)],
+    )
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_session_snapshot",
+        lambda: {
+            "agents": [
+                {
+                    "agent": {"name": target, "state": "idle"},
+                    "workspace_id": "w1",
+                    "workspace_label": f"bh:{hive}",
+                    "pane": {
+                        "id": "w1:p2",
+                        "label": target,
+                        "cwd": str(cwd),
+                        "tokens": {
+                            "bh_owner": "bh.plugin.herdr/v1",
+                            "bh_hive_id": hive,
+                            "bh_bead_id": bead,
+                            "bh_target": target,
+                            "bh_schema": "1",
+                        },
+                    },
+                }
+            ],
+            "workspaces": [{"workspace_id": "w1", "label": f"bh:{hive}"}],
+        },
+    )
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_command",
+        lambda *args, **_kwargs: calls.append(args) or _result(),
+    )
+    result = runner.invoke(app, ["plugin", "herdr", "reap", target])
 
     assert result.exit_code == 0, result.output
-    assert ["herdr", "--session", "bh-supervisor", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ("pane", "close", "w1:p2", "--no-focus") in calls
 
 
 def test_watch_waits_for_blocked_and_translates_timeout(monkeypatch):
@@ -1018,6 +1647,11 @@ def test_launch_fresh_bead_emits_exact_json_and_forwards_layout(tmp_path, monkey
     split = next(call for call in calls if call[:2] == ("pane", "split"))
     assert split[-2:] == (str(claim.worktree), "--focus")
     assert "down" in split
+    pane_metadata = next(call for call in calls if call[:2] == ("pane", "report-metadata"))
+    assert "bh_owner=bh.plugin.herdr/v1" in pane_metadata
+    assert "bh_hive_id=github/acme/widgets" in pane_metadata
+    assert "bh_bead_id=widget-1" in pane_metadata
+    assert "bh_target=bh-widget-1" in pane_metadata
     assert not any("worktree" in call for call in calls)
 
 
@@ -1186,6 +1820,274 @@ def test_launch_target_is_legacy_when_valid_and_hashed_when_encoding_is_needed()
     assert len(long) == 32
     assert herdr_plugin._HERDR_NAME_RE.fullmatch(dotted)
     assert herdr_plugin._HERDR_NAME_RE.fullmatch(long)
+
+
+def _roster_snapshot(target, cwd, *, hive="github/acme/widgets", bead="widget-1", tokens=True):
+    pane = {
+        "pane_id": "w1:p2",
+        "workspace_id": "w1",
+        "tab_id": "w1:t1",
+        "label": target,
+        "cwd": str(cwd),
+    }
+    if tokens:
+        pane["tokens"] = {
+            "bh_owner": "bh.plugin.herdr/v1",
+            "bh_hive_id": hive,
+            "bh_bead_id": bead,
+            "bh_target": target,
+            "bh_schema": "1",
+        }
+    return {
+        "agents": [
+            {
+                "name": target,
+                "state": "idle",
+                "pane_id": "w1:p2",
+                "created_at": "2026-08-27T12:00:00Z",
+                "last_activity_at": "2026-08-27T12:01:00Z",
+            }
+        ],
+        "panes": [pane],
+        "workspaces": [{"workspace_id": "w1", "label": f"bh:{hive}"}],
+    }
+
+
+def _mock_roster_worktree(monkeypatch, root, cwd, bead):
+    branch = f"wt/bead/issue/{bead}"
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "locate",
+        lambda *_args: ({}, root, cwd, branch),
+    )
+    monkeypatch.setattr(
+        herdr_plugin.worktree,
+        "managed",
+        lambda _cfg: [("widget", str(cwd), branch)] if cwd.is_dir() else [],
+    )
+
+
+def test_roster_correlates_encoded_target_from_explicit_metadata(tmp_path, monkeypatch):
+    cwd = tmp_path / "widget-1.2"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    bead = "widget-1.2"
+    target = herdr_plugin._launch_target(bead)
+    assert target != f"bh-{bead}"
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, bead)
+
+    payload = herdr_plugin._roster_payload(
+        _roster_snapshot(target, cwd, bead=bead), {"managed_repos": []}
+    )
+    agent = payload["agents"][0]
+
+    assert payload["schema_version"] == 1
+    assert payload["revision"].startswith("sha256:")
+    assert payload["session"] == "bh-supervisor"
+    assert payload["authoritative_session"] is True
+    assert agent["target"] == target
+    assert agent["revision"].startswith("sha256:")
+    assert agent["bead"] == bead
+    assert agent["ownership"]["state"] == "owned"
+    assert agent["ownership"]["association"] == "metadata"
+    assert agent["presentation"] == {
+        "session": "bh-supervisor",
+        "workspace": "w1",
+        "workspace_label": "bh:github/acme/widgets",
+        "tab": "w1:t1",
+        "pane": "w1:p2",
+    }
+    assert {item["availability"] for item in agent["capabilities"].values()} == {"allowed"}
+    actions = {item["id"]: item for item in agent["advertised_actions"]}
+    assert actions["agent.dispatch"]["availability"] == "allowed"
+    assert actions["agent.dispatch"]["input"]["transport"] == "stdin"
+    assert actions["agent.dispatch"]["input"]["schema"]["sensitive"] is True
+    assert actions["agent.reap"]["availability"] == "confirmation-required"
+    assert actions["agent.reap"]["preconditions"]["mustMatch"] is True
+    assert actions["agent.reap"]["sourceRevision"] == agent["revision"]
+
+
+def test_reap_accepts_encoded_target_when_current_roster_proves_ownership(tmp_path, monkeypatch):
+    cwd = tmp_path / "widget-1.2"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    bead = "widget-1.2"
+    target = herdr_plugin._launch_target(bead)
+    snapshot = _roster_snapshot(target, cwd, bead=bead)
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, bead)
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
+    calls = []
+
+    def command(*args, **_kwargs):
+        calls.append(args)
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+
+    result = runner.invoke(app, ["plugin", "herdr", "reap", target, "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["disposition"] == "reaped"
+    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+
+
+def test_dispatch_accepts_encoded_target_when_current_roster_proves_ownership(
+    tmp_path, monkeypatch
+):
+    cwd = tmp_path / "widget-1.2"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    bead = "widget-1.2"
+    target = herdr_plugin._launch_target(bead)
+    snapshot = _roster_snapshot(target, cwd, bead=bead)
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, bead)
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
+    reads = iter(["agent: idle", "user: ship it\nassistant: working"])
+    calls = []
+
+    def command(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("agent", "read"):
+            return _result(stdout=next(reads))
+        return _result(stdout="agent_status: working")
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+
+    result = runner.invoke(app, ["plugin", "herdr", "dispatch", target, "ship it", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["disposition"] == "dispatched"
+    assert ("agent", "prompt", target, "ship it", "--wait", "--timeout", "60000") in calls
+
+
+def test_dispatch_refuses_foreign_target_before_sending_prompt(tmp_path, monkeypatch):
+    cwd = tmp_path / "manual"
+    cwd.mkdir()
+    snapshot = _roster_snapshot("manual-agent", cwd, tokens=False)
+    snapshot["workspaces"][0]["label"] = "manual"
+    snapshot["panes"][0]["label"] = "manual-agent"
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(herdr_plugin.worktree, "managed", lambda _cfg: [])
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
+    calls = []
+
+    def command(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("agent", "read"):
+            return _result(stdout="user: do not send")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+
+    result = runner.invoke(
+        app,
+        ["plugin", "herdr", "dispatch", "manual-agent", "do not send", "--json"],
+    )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["disposition"] == "refused"
+    assert payload["error"]["code"] == "ownership_not_proven"
+    assert not any(call[:2] == ("agent", "prompt") for call in calls)
+
+
+def test_roster_accepts_fully_proven_legacy_target_without_guessing_foreign_panes(
+    tmp_path, monkeypatch
+):
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
+    legacy = herdr_plugin._roster_payload(
+        _roster_snapshot("bh-widget-1", cwd, tokens=False), {"managed_repos": []}
+    )["agents"][0]
+    foreign_snapshot = _roster_snapshot("manual", cwd, tokens=False)
+    foreign_snapshot["panes"][0]["label"] = "manual"
+    foreign = herdr_plugin._roster_payload(foreign_snapshot, {"managed_repos": []})["agents"][0]
+
+    assert legacy["bead"] == "widget-1"
+    assert legacy["ownership"] == {
+        "marker": "legacy-target-v0",
+        "association": "legacy",
+        "state": "owned",
+        "reason": "explicit bh correlation and live resource identities agree",
+    }
+    assert foreign["hive"] is None
+    assert foreign["bead"] is None
+    assert foreign["ownership"]["state"] == "foreign"
+    assert {item["availability"] for item in foreign["capabilities"].values()} == {"unavailable"}
+    foreign_actions = {item["id"]: item for item in foreign["advertised_actions"]}
+    assert foreign_actions["agent.dispatch"]["availability"] == "forbidden"
+    assert foreign_actions["agent.dispatch"]["reasonCode"] == "agent_not_bh_managed"
+
+
+def test_roster_retains_metadata_identity_but_disables_stale_missing_worktree(
+    tmp_path, monkeypatch
+):
+    missing = tmp_path / "missing-widget"
+    target = herdr_plugin._launch_target("widget-1.2")
+    _mock_roster_worktree(monkeypatch, tmp_path, missing, "widget-1.2")
+    agent = herdr_plugin._roster_payload(
+        _roster_snapshot(target, missing, bead="widget-1.2"), {"managed_repos": []}
+    )["agents"][0]
+
+    assert agent["hive"] == "github/acme/widgets"
+    assert agent["bead"] == "widget-1.2"
+    assert agent["worktree"]["state"] == "missing"
+    assert agent["ownership"]["state"] == "stale"
+    assert "managed worktree is missing" in agent["ownership"]["reason"]
+    assert {item["availability"] for item in agent["capabilities"].values()} == {"unavailable"}
+
+
+def test_ps_json_emits_atomic_versioned_roster(tmp_path, monkeypatch):
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    snapshot = _roster_snapshot("bh-widget-1", cwd)
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
+
+    result = runner.invoke(app, ["plugin", "herdr", "ps", "--json"])
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["command"] == "plugin herdr ps"
+    assert payload["agents"][0]["ownership"]["state"] == "owned"
+
+
+def test_roster_schema_is_valid_and_accepts_the_projection(tmp_path, monkeypatch):
+    jsonschema = pytest.importorskip("jsonschema")
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
+    schema_path = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "schemas"
+        / "herdr-agent-roster-v1.schema.json"
+    )
+    schema = json.loads(schema_path.read_text())
+    payload = herdr_plugin._roster_payload(
+        _roster_snapshot("bh-widget-1", cwd), {"managed_repos": []}
+    )
+
+    jsonschema.Draft202012Validator.check_schema(schema)
+    jsonschema.Draft202012Validator(schema, format_checker=jsonschema.FormatChecker()).validate(
+        payload
+    )
+    jsonschema.Draft202012Validator(
+        json.loads(_LIFECYCLE_SCHEMA_PATH.read_text()),
+        format_checker=jsonschema.FormatChecker(),
+    ).validate(payload)
 
 
 def test_launch_lease_adopts_only_expired_state_when_explicit(monkeypatch):

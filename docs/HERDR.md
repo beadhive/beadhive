@@ -118,7 +118,7 @@ sets the ownership line so this remains an optional interactive surface, not a p
 | `bh plugin herdr integrate <kind>` | `herdr integration install <kind>` | Explicit opt-in per agent kind — do not auto-install every kind on onboard |
 | `bh plugin herdr launch <bead-id>` | exact hive lookup → native `bh work claim` → live reuse or warm agent creation | High-level get-or-create path: the bead ID is the only required input; returns the target and retained native worktree |
 | `bh plugin herdr spawn --hive <id> --bead <id> --kind claude` | existing worktree → `workspace create` (or reuse) → `pane split` → `agent start` → warm-up pass | Low-level escape hatch when the caller intentionally prepared the claim and worktree itself; its three required options are unchanged |
-| `bh plugin herdr dispatch <target> "<prompt>"` | visible-pane read before and after `agent prompt --wait --timeout` | Wraps the finding above — never trust `--wait` alone; the post-read must add a new occurrence of the exact prompt, so an older identical turn cannot falsely verify delivery |
+| `bh plugin herdr dispatch <target> "<prompt>"` | metadata-backed ownership proof → local socket or legacy `agent prompt` → bounded readback | Safe stdin/file input uses Herdr's structured socket acknowledgement; the legacy positional form additionally requires a new exact prompt occurrence in visible pane content |
 | `bh plugin herdr watch <target>` | `agent wait --until blocked` | For a dispatcher polling loop: block until an agent needs input or finishes |
 | `bh plugin herdr ps` | `agent list` / `api snapshot` | Fleet view: every live herdr-managed agent, its hive/bead if tagged, and its lifecycle state — the natural `bh hive status`-style dashboard row |
 | `bh plugin herdr attach <target>` | prints the `herdr agent attach <target>` command | `bh` itself never takes over a TTY; it tells the human operator what to run |
@@ -182,6 +182,118 @@ JSON stdout is one version-1 document: `schema_version`, `command`, `status`, `d
 `hive`, `bead`, `kind`, `worktree`, `workspace`, `pane`, and `target`. Read `.target`; do not
 derive it from the bead ID because dotted or long IDs use a deterministic collision-resistant
 Herdr-safe encoding.
+
+### Lifecycle receipts and prompt input
+
+`status`, `ps`, `spawn`, `dispatch`, `watch`, `attach`, and `reap` accept `--json` and return the
+shared [lifecycle receipt v1 schema](schemas/herdr-lifecycle-receipt-v1.schema.json). Successful
+and refused operations use the same additive envelope: `operation_id`, operation, outcome,
+disposition, observation time, exact hive/bead identity where known, Herdr session and locator,
+capabilities, warnings, retained resources, and a structured error on failure. Callers may pass a
+safe `--operation-id`; otherwise `bh` mints one. Exit 0 means a successful observation, mutation,
+or defined no-op. Exit 1 means a runtime failure, timeout, stale target, or authority refusal.
+Exit 2 means invalid input. Error codes, not messages, are the machine decision surface.
+
+Read operations (`status`, `ps`, `attach`, and `watch`) are idempotent. `spawn` is a get-or-create
+operation: it returns `created` or reuses only a strictly proven live target and returns `reused`.
+`reap` closes only a currently proven bh-owned pane; stale, missing, unmanaged, and ambiguous
+targets are refusals that preserve every pane and worktree. `dispatch` is intentionally
+non-idempotent. A verified instruction returns `dispatched`; an unverified delivery returns
+`dispatch_unverified` with `retryable: false`, because blindly retrying could create a duplicate
+turn. Both mutating commands rebuild the current live roster and require the same metadata,
+managed-worktree, session, workspace, pane, and lifecycle proof used by their advertised actions
+before changing anything. An operation ID is correlation, not permission to replay a dispatch.
+
+Use stdin or a file for prompt-bearing automation:
+
+```bash
+printf '%s' "$prompt" | bh plugin herdr dispatch "$target" --stdin --json
+bh plugin herdr dispatch "$target" --prompt-file /private/path/instruction.txt --json
+```
+
+These modes read at most 1 MiB plus one sentinel byte, reject invalid UTF-8, and send valid text
+through Herdr's local NDJSON socket, so the prompt body appears in neither the `bh` argv nor a
+child `herdr` argv. Receipts, errors, and default logs never include prompt or transcript content.
+Delivery proof requires a response with the matching request ID and an `agent_prompt` result in
+an expected terminal state; server error detail is replaced with a stable redacted failure.
+Visible pane readback is bounded and cannot contain every valid 1 MiB prompt. The positional
+`PROMPT` form remains for human compatibility but necessarily appears in process arguments, so
+automation must not use it for sensitive content. Because that
+legacy transport has no structured acknowledgement, it still requires a new exact prompt
+occurrence in the before/after visible-pane read. Exactly one of positional `PROMPT`, `--stdin`,
+or `--prompt-file` is required.
+
+### Live roster and correlation
+
+`bh plugin herdr ps --json` returns the version-1 live roster documented by
+[`herdr-agent-roster-v1.schema.json`](schemas/herdr-agent-roster-v1.schema.json). The complete
+snapshot is embedded in the shared lifecycle receipt and scoped explicitly to the authoritative
+`bh-supervisor` session. Each agent carries its target, canonical hive and bead, lifecycle
+timestamps, managed worktree and branch, and Herdr workspace/tab/pane locator. The document
+validates as both a `ps` lifecycle receipt and the roster extension contract. Each agent has a
+deterministic revision over those correlation facts, including both the observed pane cwd and the
+expected managed-worktree path. The roster has a deterministic aggregate revision over its ordered
+agents. Consumers use those revisions to invalidate stale actions, pagination cursors, and view
+streams whenever the underlying lifecycle or ownership proof changes.
+
+New launches write `bh.plugin.herdr/v1` ownership metadata to the workspace and pane through
+Herdr's metadata API. Pane tokens carry the exact hive, bead, and opaque target; this is what
+makes dotted or long bead IDs recoverable when the visible target is hashed. The roster also
+recognizes pre-metadata legacy `bh-<bead>` targets, but only when the visible pane name,
+`bh:<hive>` workspace, exact managed-worktree cwd, target spelling, and unique live identities
+all agree. A reserved-looking name alone never proves ownership.
+
+Ownership is reported as `owned`, `stale`, `unknown`, or `foreign`. Missing worktrees and
+conflicting locators retain any explicit association for diagnosis but disable every advertised
+agent operation. Unrelated Herdr panes remain visible as foreign with no inferred hive or bead.
+Consumers should use the capability records rather than interpreting lifecycle strings or
+reconstructing identity from a target.
+
+### Herdr view projections
+
+The Deck plugin consumes six additive version-1 JSON projections. They are deliberately
+presentation adapters over the generic hive summaries, work queues, exact bead detail,
+advertised actions, and live roster above; they do not decide readiness, ownership, or mutation
+authority themselves.
+
+```bash
+bh plugin herdr view picker --limit 50 --json
+bh plugin herdr view deck --hive github/beadhive/beadhive --width 140 --json
+bh plugin herdr view bead --hive github/beadhive/beadhive --bead bh-123 --json
+bh plugin herdr view agent --target bh-bh-123 --json
+bh plugin herdr view layout --hive github/beadhive/beadhive \
+  --context-json '{"width":100,"height":40}' --json
+bh plugin herdr view stream --hive github/beadhive/beadhive --limit 50
+```
+
+`picker`, `deck`, `bead`, `agent`, and `layout` emit one document conforming to
+[`herdr-view-v1.schema.json`](schemas/herdr-view-v1.schema.json). Rows contain bounded,
+single-line, control-free render tokens and stable entity/action IDs. Advertised invocations are
+argv arrays rooted only in `bh plugin herdr`; they are never shell strings. Prompt-bearing
+`agent.dispatch` actions declare stdin transport and use lifecycle `dispatch --stdin`, so no
+prompt value belongs in the projection or process arguments. Forbidden, unavailable, or unsafe
+actions have a null invocation. Lifecycle commands recheck every precondition at invocation.
+For generically ready work, the Deck and exact-bead projections further constrain
+`work-item.launch` with Herdr-local preflight evidence: CLI and kind availability, installed
+integration, the authoritative supervisor session, and host-lease ownership. Unknown proof is
+`unavailable`, an active foreign lease is `forbidden`, and adopting an expired foreign lease is
+`confirmation-required`; these projections never broaden a generic denial.
+
+The picker and Deck are bounded and use opaque, revision-scoped cursors. A cursor from another
+scope is refused, and a cursor whose source revision changed requires a fresh snapshot. Missing
+factory or Herdr observations are explicit in `coverage`, `freshness`, and `warnings`; the views
+never turn unknown counts into authoritative zeroes.
+
+Layout intent is deterministic by terminal width: wide uses three columns, medium uses tabs, and
+narrow uses one attention-first list with an overlay inspector. The sole owned session is
+`bh-supervisor`; Board does not own agent panes, Agents does. The picker and agent actions are
+session-modal popups. The activity tray is an ordinary right split whose hide operation closes it
+and whose show operation recreates it; it is not modeled as a native collapsible.
+
+`stream` emits bounded NDJSON. Every connection starts with a complete Deck snapshot, followed
+by zero or more observations. Its cursor is opaque. Missing, malformed, wrong-scope, or stale
+`--since` cursors do not suppress the snapshot: the first frame sets `resync_required` and names
+the reason so a client can discard old state safely.
 
 ### Choosing Task/Agent or herdr
 

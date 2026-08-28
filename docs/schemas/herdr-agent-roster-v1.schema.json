@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.dev/schemas/herdr-agent-roster-v1.schema.json",
+  "title": "Beadhive Herdr live agent roster v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "command", "revision", "generated_at", "session", "authoritative_session", "roster_schema_version", "agents", "warnings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "command": {"const": "plugin herdr ps"},
+    "revision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+    "generated_at": {"type": "string", "format": "date-time"},
+    "session": {"const": "bh-supervisor"},
+    "authoritative_session": {"const": true},
+    "roster_schema_version": {"const": 1},
+    "agents": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/agent"}
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}}
+  },
+  "$defs": {
+    "nullableString": {"type": ["string", "null"]},
+    "capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["availability", "reason"],
+      "properties": {
+        "availability": {"enum": ["allowed", "unavailable"]},
+        "reason": {"type": "string"}
+      }
+    },
+    "advertisedAction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "capability", "target", "availability", "reasonCode", "reason", "consequence", "advertisedAt", "sourceRevision", "preconditions", "input"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$"},
+        "capability": {"type": "string", "minLength": 1},
+        "target": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["hiveId", "kind", "id"],
+          "properties": {
+            "hiveId": {"type": ["string", "null"]},
+            "kind": {"const": "agent"},
+            "id": {"type": "string", "minLength": 1}
+          }
+        },
+        "availability": {"enum": ["allowed", "confirmation-required", "forbidden", "unavailable"]},
+        "reasonCode": {"type": ["string", "null"]},
+        "reason": {"type": "string", "minLength": 1},
+        "consequence": {"enum": ["navigate", "read", "reversible-write", "approval", "destructive"]},
+        "advertisedAt": {"type": "integer", "minimum": 0},
+        "sourceRevision": {"type": "string", "minLength": 1},
+        "preconditions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sourceRevision", "mustMatch"],
+          "properties": {
+            "sourceRevision": {"type": "string", "minLength": 1},
+            "mustMatch": {"type": "boolean"}
+          }
+        },
+        "input": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["transport", "required", "schema"],
+          "properties": {
+            "transport": {"enum": ["none", "parameters", "stdin"]},
+            "required": {"type": "boolean"},
+            "schema": {"type": ["object", "null"]}
+          }
+        }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["revision", "target", "hive", "bead", "lifecycle", "worktree", "presentation", "ownership", "capabilities", "advertised_actions"],
+      "properties": {
+        "revision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
+        "target": {"$ref": "#/$defs/nullableString"},
+        "hive": {"$ref": "#/$defs/nullableString"},
+        "bead": {"$ref": "#/$defs/nullableString"},
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["state", "launched_at", "active_at"],
+          "properties": {
+            "state": {"type": "string"},
+            "launched_at": {"$ref": "#/$defs/nullableString"},
+            "active_at": {"$ref": "#/$defs/nullableString"}
+          }
+        },
+        "worktree": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "state", "branch"],
+          "properties": {
+            "path": {"$ref": "#/$defs/nullableString"},
+            "state": {"enum": ["available", "missing", "unknown"]},
+            "branch": {"$ref": "#/$defs/nullableString"}
+          }
+        },
+        "presentation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["session", "workspace", "workspace_label", "tab", "pane"],
+          "properties": {
+            "session": {"const": "bh-supervisor"},
+            "workspace": {"$ref": "#/$defs/nullableString"},
+            "workspace_label": {"$ref": "#/$defs/nullableString"},
+            "tab": {"$ref": "#/$defs/nullableString"},
+            "pane": {"$ref": "#/$defs/nullableString"}
+          }
+        },
+        "ownership": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["marker", "association", "state", "reason"],
+          "properties": {
+            "marker": {"$ref": "#/$defs/nullableString"},
+            "association": {"enum": ["metadata", "legacy", "none"]},
+            "state": {"enum": ["owned", "stale", "unknown", "foreign"]},
+            "reason": {"type": "string"}
+          }
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["attach", "dispatch", "watch", "reap"],
+          "properties": {
+            "attach": {"$ref": "#/$defs/capability"},
+            "dispatch": {"$ref": "#/$defs/capability"},
+            "watch": {"$ref": "#/$defs/capability"},
+            "reap": {"$ref": "#/$defs/capability"}
+          }
+        },
+        "advertised_actions": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/advertisedAction"}
+        }
+      }
+    }
+  }
+}

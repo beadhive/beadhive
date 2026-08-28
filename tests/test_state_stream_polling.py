@@ -151,6 +151,15 @@ def test_export_records_are_normalized_without_backend_fields(world):
                         ),
                         "metadata": {"git.commits": "backend-only"},
                         "lease_expires_at": "backend-only",
+                        "description": "Full description",
+                        "design": "Design notes",
+                        "acceptance_criteria": "Acceptance criteria",
+                        "notes": "Operator notes",
+                        "mol_type": "workflow",
+                        "owner": "owner@example.test",
+                        "created_by": "creator@example.test",
+                        "created_at": "2026-08-20T00:00:00Z",
+                        "closed_at": "2026-08-24T00:00:00Z",
                     }
                 ]
             ]
@@ -167,6 +176,16 @@ def test_export_records_are_normalized_without_backend_fields(world):
     assert item.dependencies == (
         state_stream.StreamDependency("bh-1", "bh-parent", "parent-child"),
     )
+    assert item.description == "Full description"
+    assert item.design == "Design notes"
+    assert item.acceptance_criteria == "Acceptance criteria"
+    assert item.notes == "Operator notes"
+    assert item.mol_type == "workflow"
+    assert item.owner == "owner@example.test"
+    assert item.created_by == "creator@example.test"
+    assert item.created_at == "2026-08-20T00:00:00Z"
+    assert item.closed_at == "2026-08-24T00:00:00Z"
+    assert item.lease_expires_at == "backend-only"
     payload = state_stream.frame_payload(
         next(
             state_stream.stream_frames(adapter, state_stream.StreamRequest("hive", hive="beadhive"))
@@ -174,6 +193,7 @@ def test_export_records_are_normalized_without_backend_fields(world):
     )
     assert "metadata" not in payload["issues"][0]
     assert "lease_expires_at" not in payload["issues"][0]
+    assert "description" not in payload["issues"][0]
 
 
 def test_one_export_projects_dependency_provenance_and_verbatim_assignment(world):

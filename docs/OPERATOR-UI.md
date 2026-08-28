@@ -33,10 +33,78 @@ The daemon accepts that one browser origin, while the UI host binds that exact l
 origin. Stop either foreground process with `Ctrl-C`.
 
 The browser reads the daemon directly. It first loads the flat FactorySnapshot v1 factory
-response, derives each authoritative hive route from the full `provider/org/repo` identity,
-loads a hive snapshot, and only then applies `operator-event` SSE frames after the snapshot
-cursor. Run activity is also read directly from `/api/v1`. Browser requests omit cookies and do
-not send an `Authorization` header in this phase-one profile.
+response. Consumers that need health and queue counts use the bounded
+`GET /api/v1/factory/hives` summary pages; unavailable hives retain their identity and null
+counts instead of looking empty. The browser derives each authoritative hive route from the full
+`provider/org/repo` identity, loads a hive snapshot, and only then applies `operator-event` SSE
+frames after the snapshot cursor. Run activity is also read directly from `/api/v1`. Browser
+requests omit cookies and do not send an `Authorization` header in this phase-one profile.
+
+## Bounded work-item reads
+
+Operator clients that need a queue or inspector use the generic work-item resources instead of
+scraping `bd` or human-oriented `bh work` output:
+
+```text
+GET /api/v1/hives/{canonical-hive}/work-items?queue=ready&limit=50
+GET /api/v1/hives/{canonical-hive}/work-items/{exact-bead-id}
+```
+
+Encode the two separators in the canonical `provider/org/repository` hive identity as uppercase
+`%2F`. A prefix, repository name by itself, title, or current working directory is never an
+identity fallback.
+
+The collection requires one of four queue names:
+
+| Queue | Membership | Stable order |
+| --- | --- | --- |
+| `ready` | Open work with no unresolved direct blocking dependency or open gate | Configured release-aware order when enabled, otherwise priority, most-recent update, then ID |
+| `active` | In-progress work with no unresolved direct blocker | Most-recent update, priority, then ID |
+| `blocked` | Non-closed work with blocked status, an unresolved direct blocking dependency, or an open gate | Priority, most-recent update, then ID |
+| `recent` | Closed work | Most-recent close or update, priority, then ID |
+
+`limit` defaults to 50 and must be from 1 through 200. Optional `priority` and `label` parameters
+may be repeated; priorities use OR semantics while every supplied label must be present. Exact
+`assignee`, `type`, and `parent` filters are also available. Unknown filters and duplicate
+single-value parameters fail with `400` rather than being ignored.
+
+Every list response reports its revision, observation and coverage state, returned count,
+truncation, warnings, and an opaque `nextCursor`. A cursor pins the exact hive, queue, filters,
+ordering policy, and source revision. Pass it back unchanged. A cursor from another scope, or one
+whose source revision is no longer current, returns `409`; restart from the first page. Clients
+must not decode or modify cursor contents.
+
+Queue rows contain bounded labels and summary counts. The exact-detail resource loads the full
+description, design, acceptance criteria, notes, lifecycle timestamps, all labels, direct
+dependencies and dependents, claim and lease facts, gates, and associated generic agent summaries
+on demand. These are domain facts only; terminal labels, glyphs, key hints, and layouts belong to
+the presentation adapter.
+
+Both resources return an `ETag`. Send it in `If-None-Match` to receive `304` when the selected
+representation is unchanged. A missing exact hive or bead is `404`. An unavailable authoritative
+source is `503` with `Retry-After`; it is never reported as an empty queue.
+
+## Advertised actions
+
+Factory hive summaries and exact work-item detail expose `advertisedActions`. The live Herdr
+roster exposes the same descriptors as `advertised_actions`. Clients should render or invoke an
+operation from these facts instead of reconstructing policy from status strings.
+
+Every applicable action is present. `allowed` can run immediately,
+`confirmation-required` needs an explicit operator confirmation, `forbidden` is a proven policy
+refusal, and `unavailable` means the host lacks current evidence needed to decide safely. An action
+that does not apply to that entity kind is omitted. `reasonCode` is stable for control flow;
+`reason` is explanatory text.
+
+Mutation descriptors set `preconditions.mustMatch` and carry the exact `sourceRevision` that was
+observed. Re-read the entity if that revision is no longer current, then use the refreshed action
+rather than overriding the mismatch. The `input` member declares whether an operation takes no
+input, structured parameters, or sensitive standard input. In particular, agent instruction text
+uses `stdin`; it must not be interpolated into a shell command, argument list, log, or receipt.
+
+Descriptors are domain facts only. They deliberately omit menu labels, key bindings, pane
+placement, layouts, and executable shell strings. Every mutation rechecks the authoritative
+lifecycle and ownership policy when it runs, so an advertisement is never a durable grant.
 
 ## Safety boundary
 

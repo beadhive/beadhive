@@ -192,6 +192,32 @@ class OperatorSources:
         return matches[0]
 
     def refresh_hive(self, hive: ExactHive) -> tuple[ProviderSnapshot, AgentRunSnapshot]:
+        bead_state = self.refresh_hive_state(hive)
+
+        sink = self._dispatch_sink_for_entry(self.cfg, hive.entry)
+        try:
+            runtime_state = self._summary_reader(
+                sink,
+                self.host_id,
+                f"beadhive.dispatch-summary:{self.host_id}:{hive.identity}",
+            )
+        except Exception as exc:
+            raise OperatorSourceError(
+                "runtime_source_unavailable",
+                "The host-local runtime summary source is unavailable.",
+                status_code=503,
+                retryable=True,
+            ) from exc
+        return bead_state, runtime_state
+
+    def refresh_hive_state(self, hive: ExactHive) -> ProviderSnapshot:
+        """Read only generic bead state for a registered hive.
+
+        Factory inventory must not make a missing host-local dispatch journal turn an
+        otherwise readable hive into an unavailable hive.  The richer per-hive operator
+        snapshot composes this read with the runtime summary in :meth:`refresh_hive`.
+        """
+
         request = StreamRequest(StreamScope.HIVE, hive=hive.identity)
         try:
             bead_state = self.provider.refresh(request)
@@ -222,22 +248,7 @@ class OperatorSources:
                 "The snapshot source returned an entity for a different hive.",
                 status_code=409,
             )
-
-        sink = self._dispatch_sink_for_entry(self.cfg, hive.entry)
-        try:
-            runtime_state = self._summary_reader(
-                sink,
-                self.host_id,
-                f"beadhive.dispatch-summary:{self.host_id}:{hive.identity}",
-            )
-        except Exception as exc:
-            raise OperatorSourceError(
-                "runtime_source_unavailable",
-                "The host-local runtime summary source is unavailable.",
-                status_code=503,
-                retryable=True,
-            ) from exc
-        return bead_state, runtime_state
+        return bead_state
 
     def locate_run(self, run_id: str) -> tuple[ExactHive, Path]:
         # Reuse the writer's exact path-safe validation rather than maintaining another regex.
