@@ -1587,6 +1587,338 @@ def _demo_module():
     return module
 
 
+def _synthetic_bd_init_timeout(demo, marker: str):
+    return demo.BdInitTimedOut(
+        demo.BD_INIT_TIMEOUT_SECONDS,
+        f"stdout from {marker}",
+        f"goroutine evidence from {marker}",
+        -3,
+    )
+
+
+def _isolate_demo_in_process(demo, root: Path, monkeypatch):
+    """Run the script's process-wide isolation while ensuring pytest restores every env key."""
+    keys = (
+        "BH_HOME",
+        "BH_CONFIG",
+        "BH_WORKTREES",
+        "GIT_WORKSPACE",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_SYSTEM",
+        "BEADS_SHARED_SERVER_DIR",
+        "BH_SKIP_SETUP_CHECK",
+        "GIT_PAGER",
+        "NO_COLOR",
+    )
+    for key in keys:
+        # Register the original value (including absence) with MonkeyPatch before `isolate`
+        # writes os.environ directly.  Its teardown then restores the worker for later tests.
+        monkeypatch.setenv(key, os.environ.get(key, ""))
+    return demo.isolate(root)
+
+
+def test_bd_init_first_timeout_discards_partial_state_and_retries_at_a_new_path(
+    tmp_path, capsys, monkeypatch
+):
+    """A timed-out embedded store is never resumed; only its exact scratch workspace is gone."""
+    demo = _demo_module()
+    root = tmp_path / "scratch"
+    _isolate_demo_in_process(demo, root, monkeypatch)
+    preexisting = root / "workspace" / "sentinel"
+    preexisting.write_text("this path existed before build_hive\n")
+    lookalike = root / "workspace-bd-init-attempt-1-preexisting"
+    lookalike.mkdir()
+    (lookalike / "sentinel").write_text("not allocated by this invocation\n")
+    keep = root / "keep-this-sibling"
+    keep.write_text("not part of either init attempt\n")
+    attempts = []
+
+    def init_runner(main):
+        attempts.append(main)
+        if len(attempts) == 1:
+            partial = main / ".beads" / "embeddeddolt"
+            partial.mkdir(parents=True)
+            (partial / "partial-state").write_text("must never be reused\n")
+            raise _synthetic_bd_init_timeout(demo, "attempt one")
+
+    main = demo.build_hive(root, init_runner=init_runner)
+
+    assert len(attempts) == 2
+    first_workspace, retry_workspace = (main.parents[2] for main in attempts)
+    assert first_workspace != retry_workspace
+    assert first_workspace.name.startswith("workspace-bd-init-attempt-1-")
+    assert retry_workspace.name.startswith("workspace-bd-init-attempt-2-")
+    assert not first_workspace.exists()
+    assert main == attempts[1]
+    assert main.exists()
+    assert Path(os.environ["GIT_WORKSPACE"]) == retry_workspace
+    assert preexisting.read_text() == "this path existed before build_hive\n"
+    assert (lookalike / "sentinel").read_text() == "not allocated by this invocation\n"
+    assert keep.read_text() == "not part of either init attempt\n"
+    assert "attempt one" in (root / "bd-init-timeout-attempt-1.log").read_text()
+    captured = capsys.readouterr()
+    assert "partial scratch hive will not be reused" in captured.err
+    assert "retrying bd init once in a distinct fresh scratch workspace" in captured.out
+
+
+def test_bd_init_second_timeout_is_a_hard_failure_and_keeps_no_partial_workspace(
+    tmp_path, capsys, monkeypatch
+):
+    """The retry is bounded too: two timeouts fail non-zero instead of accepting a timeout."""
+    demo = _demo_module()
+    root = tmp_path / "scratch"
+    _isolate_demo_in_process(demo, root, monkeypatch)
+    keep = root / "keep-this-sibling"
+    keep.write_text("outside the narrow cleanup targets\n")
+    attempts = []
+
+    def always_times_out(main):
+        attempts.append(main)
+        partial = main / ".beads" / "metadata.json"
+        partial.parent.mkdir(parents=True)
+        partial.write_text("partial\n")
+        raise _synthetic_bd_init_timeout(demo, f"attempt {len(attempts)}")
+
+    with pytest.raises(SystemExit) as exc:
+        demo.build_hive(root, init_runner=always_times_out)
+
+    assert "timed out on both fresh attempts" in str(exc.value)
+    assert len(attempts) == 2
+    assert attempts[0] != attempts[1]
+    assert all(not main.parents[2].exists() for main in attempts)
+    assert (root / "workspace").is_dir(), "the pre-existing default path is not an attempt"
+    assert keep.read_text() == "outside the narrow cleanup targets\n"
+    assert (root / "bd-init-timeout-attempt-1.log").is_file()
+    assert "attempt 2" in (root / "bd-init-timeout-attempt-2.log").read_text()
+    assert capsys.readouterr().err.count("BD INIT TIMEOUT") == 2
+
+
+def test_bd_init_cleanup_refuses_a_broad_or_unexpected_target(tmp_path):
+    """The timeout recovery helper cannot be repurposed to recursively remove the demo root."""
+    demo = _demo_module()
+    root = tmp_path / "scratch"
+    root.mkdir()
+    stat = root.stat()
+    broad = demo.FreshWorkspace(path=root, device=stat.st_dev, inode=stat.st_ino)
+    with pytest.raises(RuntimeError, match="refusing to discard"):
+        demo._discard_timed_out_workspace(root, broad)
+    assert root.is_dir()
+
+
+def test_bd_init_cleanup_refuses_a_replaced_workspace_inode(tmp_path):
+    """Even an allocated name is not authority after that exact directory inode is replaced."""
+    demo = _demo_module()
+    root = tmp_path / "scratch"
+    root.mkdir()
+    owned = demo._fresh_bd_init_workspace(root, 1)
+    moved = root / "original-owned-directory"
+    owned.path.rename(moved)
+    owned.path.mkdir()
+    sentinel = owned.path / "pre-existing-sentinel"
+    sentinel.write_text("replacement must survive\n")
+
+    with pytest.raises(RuntimeError, match="refusing to discard"):
+        demo._discard_timed_out_workspace(root, owned)
+
+    assert sentinel.read_text() == "replacement must survive\n"
+    assert moved.is_dir()
+
+
+def test_bd_init_ordinary_failure_is_not_retried_or_cleaned(tmp_path, monkeypatch):
+    """Retry is timeout-only; an ordinary failure preserves its one fresh hive for diagnosis."""
+    demo = _demo_module()
+    root = tmp_path / "scratch"
+    _isolate_demo_in_process(demo, root, monkeypatch)
+    preexisting = root / "workspace" / "sentinel"
+    preexisting.write_text("pre-existing default workspace\n")
+    attempts = []
+
+    def fails_normally(main):
+        attempts.append(main)
+        (main / "ordinary-failure-sentinel").write_text("preserve me\n")
+        raise SystemExit("bd init exited 23")
+
+    with pytest.raises(SystemExit, match="exited 23"):
+        demo.build_hive(root, init_runner=fails_normally)
+
+    assert len(attempts) == 1
+    assert (attempts[0] / "ordinary-failure-sentinel").read_text() == "preserve me\n"
+    assert preexisting.read_text() == "pre-existing default workspace\n"
+
+
+def test_bd_init_unreaped_process_refuses_cleanup_and_retry(tmp_path, monkeypatch):
+    """A bounded reap failure cannot race deletion or a second init against a live process."""
+    demo = _demo_module()
+    root = tmp_path / "scratch"
+    _isolate_demo_in_process(demo, root, monkeypatch)
+    attempts = []
+
+    def cannot_reap(main):
+        attempts.append(main)
+        (main / "still-owned-by-process").write_text("preserve\n")
+        raise demo.BdInitTimedOut(0.1, "", "", None, reaped=False)
+
+    with pytest.raises(SystemExit, match="refusing to delete.*concurrent retry"):
+        demo.build_hive(root, init_runner=cannot_reap)
+
+    assert len(attempts) == 1
+    assert (attempts[0] / "still-owned-by-process").read_text() == "preserve\n"
+
+
+def test_bounded_bd_init_kills_its_group_and_never_blocks_on_an_escaped_pipe_holder(
+    tmp_path, monkeypatch
+):
+    """Exercise the real deadline, group SIGKILL, bounded pipe drain, and direct-child reap."""
+    demo = _demo_module()
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake_bd = bindir / "bd"
+    fake_bd.write_text(
+        """#!/usr/bin/env python3
+import os
+import signal
+import subprocess
+import sys
+import time
+
+signal.signal(signal.SIGQUIT, signal.SIG_IGN)
+same_group = subprocess.Popen([
+    sys.executable,
+    "-c",
+    "import signal,time; signal.signal(signal.SIGQUIT, signal.SIG_IGN); time.sleep(60)",
+])
+escaped = subprocess.Popen([
+    sys.executable,
+    "-c",
+    "import signal,time; signal.signal(signal.SIGQUIT, signal.SIG_IGN); time.sleep(60)",
+], start_new_session=True)
+print(
+    f"parent={os.getpid()} pgid={os.getpgrp()} same_group={same_group.pid} escaped={escaped.pid}",
+    flush=True,
+)
+time.sleep(60)
+"""
+    )
+    fake_bd.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bindir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(demo, "BD_INIT_TIMEOUT_SECONDS", 0.15)
+    monkeypatch.setattr(demo, "BD_INIT_DIAGNOSTIC_GRACE_SECONDS", 0.15)
+    monkeypatch.setattr(demo, "BD_INIT_KILL_DRAIN_SECONDS", 0.15)
+    monkeypatch.setattr(demo, "BD_INIT_REAP_SECONDS", 0.5)
+    main = tmp_path / "main"
+    main.mkdir()
+    started = time.monotonic()
+
+    with pytest.raises(demo.BdInitTimedOut) as caught:
+        demo._bounded_bd_init(main)
+
+    elapsed = time.monotonic() - started
+    error = caught.value
+    assert elapsed >= 0.4, "the test must exercise the post-SIGKILL drain deadline"
+    assert elapsed < 1.5, "an escaped inherited pipe must not make the final drain unbounded"
+    assert error.reaped is True
+    assert error.returncode == -signal.SIGKILL
+    fields = dict(item.split("=", 1) for item in error.stdout.strip().split())
+    parent = int(fields["parent"])
+    pgid = int(fields["pgid"])
+    same_group = int(fields["same_group"])
+    escaped = int(fields["escaped"])
+    assert parent == pgid
+
+    try:
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline and (_pid_alive(parent) or _pid_alive(same_group)):
+            time.sleep(0.02)
+        assert not _pid_alive(parent), "the direct bd child was not reaped"
+        assert not _pid_alive(same_group), "a same-process-group bd descendant survived SIGKILL"
+    finally:
+        # The deliberately escaped process is the fixture that kept the inherited pipes open. It
+        # is outside the helper's process-group contract, so the test owns and reaps it explicitly.
+        try:
+            os.killpg(escaped, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+
+def test_bd_init_is_non_interactive_even_when_it_inherits_a_pty(tmp_path):
+    """The merge-time root cause: inherited TTY stdin must never activate bd's prompt path."""
+    if os.name != "posix":
+        pytest.skip("PTY inheritance and process-group behavior are POSIX-only")
+    import pty
+
+    demo_script = Path(__file__).resolve().parents[1] / "scripts" / "demo_local_loop.py"
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    argv_record = tmp_path / "bd-argv.json"
+    fake_bd = bindir / "bd"
+    fake_bd.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import sys
+
+record = {"argv": sys.argv[1:], "stdin_isatty": sys.stdin.isatty()}
+with open(os.environ["BD_ARGV_RECORD"], "w") as stream:
+    json.dump(record, stream)
+if not sys.stdin.isatty():
+    raise SystemExit("regression fixture did not inherit a PTY")
+if "--non-interactive" not in sys.argv:
+    print("Contributing to someone else's repo? [y/N]:", flush=True)
+    sys.stdin.readline()  # the exact merge-time hang: the PTY remains open and sends no input
+    raise SystemExit(92)
+"""
+    )
+    fake_bd.chmod(0o755)
+    helper = tmp_path / "invoke_bounded_init.py"
+    helper.write_text(
+        """import runpy
+import sys
+from pathlib import Path
+
+namespace = runpy.run_path(sys.argv[1])
+namespace["BD_INIT_TIMEOUT_SECONDS"] = 0.4
+namespace["BD_INIT_DIAGNOSTIC_GRACE_SECONDS"] = 0.1
+namespace["BD_INIT_KILL_DRAIN_SECONDS"] = 0.1
+namespace["BD_INIT_REAP_SECONDS"] = 0.2
+namespace["_bounded_bd_init"](Path(sys.argv[2]))
+"""
+    )
+    main = tmp_path / "main"
+    main.mkdir()
+    env = os.environ.copy()
+    env["PATH"] = f"{bindir}{os.pathsep}{env['PATH']}"
+    env["BD_ARGV_RECORD"] = str(argv_record)
+    master, slave = pty.openpty()
+    process = subprocess.Popen(
+        [sys.executable, str(helper), str(demo_script), str(main)],
+        stdin=slave,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        env=env,
+        start_new_session=True,
+    )
+    os.close(slave)
+    try:
+        stdout, stderr = process.communicate(timeout=3)
+    finally:
+        os.close(master)
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=2)
+
+    assert process.returncode == 0, stdout + stderr
+    record = json.loads(argv_record.read_text())
+    assert record["stdin_isatty"] is True
+    assert record["argv"] == [
+        "init",
+        "--prefix",
+        "dm",
+        "--quiet",
+        "--non-interactive",
+    ]
+
+
 def test_the_tripwire_still_catches_a_real_escape(tmp_path, monkeypatch):
     """A deliberate write to a path OUTSIDE the demo's scratch root must still fail the run.
 
