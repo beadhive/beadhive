@@ -514,7 +514,10 @@ def picker_payload(
             continue
         counts = agent_counts.setdefault(str(agent["hive"]), {"running": 0, "needs_attention": 0})
         state = str((agent.get("lifecycle") or {}).get("state") or "unknown")
-        if state in {"idle", "working"}:
+        ownership = str((agent.get("ownership") or {}).get("state") or "unknown")
+        if ownership != "owned":
+            counts["needs_attention"] += 1
+        elif state in {"idle", "working"}:
             counts["running"] += 1
         elif state in {"blocked", "failed"}:
             counts["needs_attention"] += 1
@@ -651,6 +654,14 @@ def deck_payload(
                 "the authoritative bh-supervisor session is unavailable",
             )
         sections["ready"].append(rendered)
+    correlated_beads = {
+        str(agent.get("bead"))
+        for agent in roster.get("agents", [])
+        if isinstance(agent, dict) and agent.get("hive") == hive and agent.get("bead")
+    }
+    for item in queues["active"].get("items", []):
+        if str(item.get("id")) not in correlated_beads:
+            sections["running"].append(_work_row(item))
     for agent in roster.get("agents", []):
         if not isinstance(agent, dict) or agent.get("hive") != hive:
             continue

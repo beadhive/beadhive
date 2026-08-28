@@ -344,6 +344,28 @@ def test_deck_sections_layout_tokens_and_action_invocations_are_safe() -> None:
     jsonschema.validate(narrow, SCHEMA)
 
 
+def test_deck_keeps_active_work_visible_without_a_correlated_agent() -> None:
+    queues = {
+        "ready": _queue("ready", []),
+        "active": _queue("active", [_work("widget-active", "active")]),
+        "blocked": _queue("blocked", []),
+    }
+
+    deck = herdr_views.deck_payload(HIVE, queues, _roster(), limit=20, cursor=None)
+    running = next(section for section in deck["sections"] if section["id"] == "running")
+
+    assert [row["entity"]["id"] for row in running["rows"]] == ["widget-active"]
+
+
+def test_picker_counts_unproven_running_agent_as_needing_attention() -> None:
+    stale = _agent(state="working", ownership="stale")
+
+    picker = herdr_views.picker_payload([_summary()], _roster(stale), limit=10, cursor=None)
+
+    assert picker["rows"][0]["counts"]["running"] == 0
+    assert picker["rows"][0]["counts"]["needs_attention"] == 1
+
+
 def test_unavailable_and_unsafe_actions_never_publish_an_invocation() -> None:
     foreign = _agent(target="bh-foreign", ownership="foreign")
     actions = {
