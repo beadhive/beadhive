@@ -200,7 +200,9 @@ operation: it returns `created` or reuses only a strictly proven live target and
 targets are refusals that preserve every pane and worktree. `dispatch` is intentionally
 non-idempotent. A verified instruction returns `dispatched`; an unverified delivery returns
 `dispatch_unverified` with `retryable: false`, because blindly retrying could create a duplicate
-turn. An operation ID is correlation, not permission to replay a dispatch.
+turn. Both mutating commands rebuild the current live roster and require the same metadata,
+managed-worktree, session, workspace, pane, and lifecycle proof used by their advertised actions
+before changing anything. An operation ID is correlation, not permission to replay a dispatch.
 
 Use stdin or a file for prompt-bearing automation:
 
@@ -222,7 +224,10 @@ sensitive content. Exactly one of positional `PROMPT`, `--stdin`, or `--prompt-f
 snapshot is embedded in the shared lifecycle receipt and scoped explicitly to the authoritative
 `bh-supervisor` session. Each agent carries its target, canonical hive and bead, lifecycle
 timestamps, managed worktree and branch, and Herdr workspace/tab/pane locator. The document
-validates as both a `ps` lifecycle receipt and the roster extension contract.
+validates as both a `ps` lifecycle receipt and the roster extension contract. Each agent has a
+deterministic revision over those correlation facts, and the roster has a deterministic aggregate
+revision over its ordered agents. Consumers use those revisions to invalidate stale actions,
+pagination cursors, and view streams when lifecycle or ownership changes.
 
 New launches write `bh.plugin.herdr/v1` ownership metadata to the workspace and pane through
 Herdr's metadata API. Pane tokens carry the exact hive, bead, and opaque target; this is what

@@ -716,10 +716,19 @@ def _roster_agent(
         hive,
         bead,
         state,
+        _value(record, "launched_at", "started_at", "created_at", "start_time"),
+        _value(record, "active_at", "last_activity_at", "updated_at", "last_seen_at"),
         pane_id,
+        pane_name,
+        workspace_id,
+        workspace_label,
+        tab_id,
         ownership_state,
         marker,
+        association,
         str(expected) if expected is not None else cwd,
+        worktree_state,
+        branch,
     ]
     revision = (
         "sha256:"
@@ -730,6 +739,7 @@ def _roster_agent(
     target_ref = {"hiveId": hive, "kind": "agent", "id": target}
 
     return {
+        "revision": revision,
         "target": target or None,
         "hive": hive,
         "bead": bead,
@@ -801,11 +811,24 @@ def _roster_payload(snapshot: dict, cfg: dict | None = None, *, operation_id: st
         )
         for record in records
     ]
+    agents.sort(
+        key=lambda agent: (
+            str(agent.get("target") or ""),
+            str((agent.get("presentation") or {}).get("pane") or ""),
+        )
+    )
+    revision_input = json.dumps(
+        ["herdr-roster-v1", _SESSION, [agent["revision"] for agent in agents]],
+        separators=(",", ":"),
+        ensure_ascii=True,
+    ).encode()
+    roster_revision = f"sha256:{hashlib.sha256(revision_input).hexdigest()}"
     payload = _lifecycle_payload(
         "ps",
         "listed" if agents else "empty",
         operation_id=_operation_id(operation_id),
         capabilities=["status", "ps"],
+        revision=roster_revision,
         agents=agents,
         count=len(agents),
         authoritative_session=True,
@@ -1488,79 +1511,37 @@ def _read_agents() -> list[dict] | None:
     return None
 
 
-def _live_agent_records() -> list[dict] | None:
-    """Read authoritative live records without the snapshot fallback used by ``ps``."""
-    for argv in (("agent", "list", "--json"), ("agent", "list")):
-        result = _command(*argv)
-        if result is None or result.returncode != 0:
-            continue
-        data = _decoded(result)
-        if not _looks_like_agent_list(data):
-            continue
-        return _agent_records(data, unique_by_name=False, include_pane_claims=True)
-    return None
-
-
-def _record_pane(record: dict) -> tuple[str, str] | None:
-    """Return the live pane id and visible name, only when both are unambiguous."""
-    pane = record.get("pane")
-    pane_id = _record_pane_id(record)
-    pane_name = (
-        record.get("pane_name")
-        or record.get("pane_label")
-        or record.get("pane_title")
-        or record.get("label")
-        or record.get("title")
-    )
-    if isinstance(pane, dict):
-        pane_name = (
-            pane.get("name")
-            or pane.get("label")
-            or pane.get("title")
-            or pane.get("pane_name")
-            or pane_name
-        )
-        nested = pane.get("pane")
-        if not pane_name and isinstance(nested, dict):
-            pane_name = (
-                nested.get("name")
-                or nested.get("label")
-                or nested.get("title")
-                or nested.get("pane_name")
-            )
-    if pane_id is None:
+def _owned_live_agent(target: str) -> dict | None:
+    """Return an agent only when the current roster proves live bh ownership."""
+    snapshot = _session_snapshot()
+    if snapshot is None:
         return None
-    if not isinstance(pane_name, str) or not pane_name.strip():
-        return None
-    return pane_id, pane_name
-
-
-def _owned_live_pane(target: str) -> str | None:
-    """Return a pane only when the live herdr records prove bh owns it."""
-    if _BEAD_RE.fullmatch(target) is None:
-        return None
-    records = _live_agent_records()
-    if records is None:
-        return None
-    matches = [record for record in records if _agent_identity(record)[0] == target]
+    roster = _roster_payload(snapshot, config.load())
+    matches = [agent for agent in roster["agents"] if agent.get("target") == target]
     if len(matches) != 1:
         return None
-    lifecycle_state = _agent_identity(matches[0])[3].lower()
+    agent = matches[0]
+    ownership = agent.get("ownership") or {}
+    lifecycle = agent.get("lifecycle") or {}
+    if ownership.get("state") != "owned":
+        return None
+    lifecycle_state = str(lifecycle.get("state") or "unknown").lower()
     availability, _reason_code, _reason = operator_actions.agent_action_availability(
-        "owned", lifecycle_state, f"Herdr lifecycle state is {lifecycle_state}"
+        str(ownership.get("state")), lifecycle_state, str(ownership.get("reason") or "")
     )
     if availability != "allowed":
         return None
-    pane = _record_pane(matches[0])
-    if pane is None:
+    return agent
+
+
+def _owned_live_pane(target: str) -> str | None:
+    """Return the pane locator from the same current proof used by roster actions."""
+    agent = _owned_live_agent(target)
+    if agent is None:
         return None
-    pane_id, pane_name = pane
-    if pane_name != target:
-        return None
-    pane_records = [record for record in records if _record_pane_id(record) == pane_id]
-    if len(pane_records) != 1:
-        return None
-    return pane_id
+    pane = agent.get("presentation") or {}
+    pane_id = pane.get("pane")
+    return str(pane_id) if pane_id else None
 
 
 @cli.command("status", help="show herdr server health and installed agent integrations.")
@@ -2102,6 +2083,18 @@ def _dispatch_cmd(
                 target=target,
             )
         typer.echo("✗ herdr: server=down (start herdr and install its agent integration)", err=True)
+        raise typer.Exit(1)
+    if _owned_live_agent(target) is None:
+        if as_json:
+            _lifecycle_failure(
+                "dispatch",
+                operation_id=op_id,
+                code="ownership_not_proven",
+                message="The target is unmanaged, stale, or ambiguous; no prompt was sent.",
+                disposition="refused",
+                target=target,
+            )
+        typer.echo(f"✗ herdr: refusing unmanaged or ambiguous target {target!r}", err=True)
         raise typer.Exit(1)
     pre_read = _command("agent", "read", target, "--source", "visible", "--lines", "80")
     if pre_read is None or pre_read.returncode != 0:

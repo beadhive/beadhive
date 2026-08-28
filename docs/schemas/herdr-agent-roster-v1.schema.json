@@ -4,10 +4,11 @@
   "title": "Beadhive Herdr live agent roster v1",
   "type": "object",
   "additionalProperties": true,
-  "required": ["schema_version", "command", "generated_at", "session", "authoritative_session", "roster_schema_version", "agents", "warnings"],
+  "required": ["schema_version", "command", "revision", "generated_at", "session", "authoritative_session", "roster_schema_version", "agents", "warnings"],
   "properties": {
     "schema_version": {"const": 1},
     "command": {"const": "plugin herdr ps"},
+    "revision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
     "generated_at": {"type": "string", "format": "date-time"},
     "session": {"const": "bh-supervisor"},
     "authoritative_session": {"const": true},
@@ -76,8 +77,9 @@
     "agent": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["target", "hive", "bead", "lifecycle", "worktree", "presentation", "ownership", "capabilities", "advertised_actions"],
+      "required": ["revision", "target", "hive", "bead", "lifecycle", "worktree", "presentation", "ownership", "capabilities", "advertised_actions"],
       "properties": {
+        "revision": {"type": "string", "pattern": "^sha256:[a-f0-9]{64}$"},
         "target": {"$ref": "#/$defs/nullableString"},
         "hive": {"$ref": "#/$defs/nullableString"},
         "bead": {"$ref": "#/$defs/nullableString"},
