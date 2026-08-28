@@ -1289,9 +1289,16 @@ def unregistered_worktrees(cfg):
     return _worktree_inventory.impl_unregistered_worktrees(cfg)
 
 
-def list_cmd():
+def inventory_payload(*args, **kwargs):
+    """Compatibility facade for ``worktree_inventory.impl_inventory_payload``."""
+    return _worktree_inventory.impl_inventory_payload(*args, **kwargs)
+
+
+def list_cmd(*, as_json=False, hive="", states=(), limit=50, cursor=None):
     """Compatibility facade for ``worktree_inventory.impl_list_cmd``."""
-    return _worktree_inventory.impl_list_cmd()
+    return _worktree_inventory.impl_list_cmd(
+        as_json=as_json, hive=hive, states=states, limit=limit, cursor=cursor
+    )
 
 
 def path_of(hive, ref):
