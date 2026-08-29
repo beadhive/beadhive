@@ -397,6 +397,12 @@ def route(
     no_hitch: bool = False,
     full_seats: bool = False,
     cfg=None,
+    managed_bead: bool | None = None,
+    bead: str | None = None,
+    available_seats: tuple[str, ...] | None = None,
+    current_seat: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
 ) -> None:
     """``bh role <seat>``'s unified entry point. An unknown (non-empty) seat delegates straight
     to :func:`beadhive.role.launch` unchanged — nothing to pick a backend for. The bare listing
@@ -426,6 +432,23 @@ def route(
 
     cfg = cfg if cfg is not None else config.load()
     resolved_harness = harness or config.harness_name(cfg)
+    resolved_profile = None
+    if managed_bead is not None:
+        try:
+            profile = role.build_launch_profile(
+                seat,
+                harness=resolved_harness,
+                managed_bead=managed_bead,
+                bead=bead,
+                available_seats=available_seats,
+                model=model,
+                effort=effort,
+            )
+            resolved_profile = role.resolve_launch_profile(profile, current_seat=current_seat)
+        except ValueError as exc:
+            typer.echo(f"✗ invalid agent launch profile: {exc}", err=True)
+            raise typer.Exit(1) from None
+        seat = resolved_profile.current_seat
     backend, hitch_target, profile = (
         ("native", None, None) if no_hitch else _resolve_backend(seat, resolved_harness, cfg)
     )
@@ -438,7 +461,19 @@ def route(
         return
 
     typer.echo(f"→ {seat}: launching via native backend")
-    role.launch(seat, harness=harness)
+    if resolved_profile is None:
+        role.launch(seat, harness=harness)
+        return
+    role.launch(
+        seat,
+        harness=harness,
+        managed_bead=resolved_profile.managed_bead if resolved_profile else None,
+        bead=resolved_profile.bead if resolved_profile else None,
+        available_seats=resolved_profile.available_seats if resolved_profile else None,
+        current_seat=seat if resolved_profile else None,
+        model=resolved_profile.model if resolved_profile else None,
+        effort=resolved_profile.effort if resolved_profile else None,
+    )
 
 
 # ---- seat-runnability reporting (bh-og0q.4) ---------------------------------------------------
