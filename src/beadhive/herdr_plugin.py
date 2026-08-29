@@ -2014,6 +2014,19 @@ def _launch_cmd(
         except ValueError as exc:
             _launch_fail("profile", str(exc))
 
+    # This is the last authoritative exact-target fence before *any* lifecycle
+    # lease, native claim, or Herdr mutation.  The earlier snapshot is preflight
+    # only: a concurrent winner may advance the Space while hive discovery and
+    # integration checks run.
+    if exact_profile is not None:
+        latest = _session_snapshot()
+        try:
+            if latest is None:
+                raise ValueError("selected Herdr session became unavailable")
+            validate_herdr_observation(exact_profile, latest)
+        except ValueError as exc:
+            _launch_fail("profile", str(exc))
+
     _launch_lease(cfg, entry, resolved_hive, adopt_expired)
     try:
         claim = work._claim_single_bead(cfg, resolved_hive, bead, as_)
@@ -2051,18 +2064,11 @@ def _launch_cmd(
             create = exact_profile.pane_create
             if create is None:
                 _launch_fail("reuse", "exact reuse target disappeared", claim=claim)
-            # The profile's preflight snapshot already proved this exact Space and anchor.
+            # The final pre-mutation snapshot already proved this exact Space and anchor.
             # Never call legacy _workspace here: it may create a label-matched Space before
-            # identity and revision are fenced.  Re-read immediately before the first mutation.
+            # identity and revision are fenced.
             workspace = exact_profile.space_id
             root_pane = create.after_pane_id
-            latest = _session_snapshot()
-            try:
-                if latest is None:
-                    raise ValueError("selected Herdr session became unavailable")
-                validate_herdr_observation(exact_profile, latest)
-            except ValueError as exc:
-                _launch_fail("profile", str(exc), claim=claim)
         else:
             try:
                 workspace, root_pane = _workspace(resolved_hive, claim.worktree)
@@ -2151,9 +2157,22 @@ def _launch_cmd(
 
     payload = result.payload()
     if exact_profile is not None:
-        payload["agent_launch_receipt"] = build_herdr_launch_receipt(
-            resolved_profile, exact_profile, pane_id=result.pane, observation=_snapshot
-        ).model_dump(mode="json")
+        post_operation = _session_snapshot()
+        try:
+            if post_operation is None:
+                raise ValueError("selected Herdr session became unavailable")
+            payload["agent_launch_receipt"] = build_herdr_launch_receipt(
+                resolved_profile,
+                exact_profile,
+                pane_id=result.pane,
+                observation=post_operation,
+            ).model_dump(mode="json")
+        except ValueError as exc:
+            if result.disposition == "created":
+                _close_pane(result.pane)
+            if claim.disposition == "claimed":
+                work._release_claim(claim.main, bead, claim.actor, detail=str(exc))
+            _launch_fail("result", str(exc))
     if as_json:
         jsonout.emit(payload)
         return
