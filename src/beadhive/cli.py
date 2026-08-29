@@ -470,6 +470,43 @@ def _resolve_role_bead_hive(cfg, bead: str, hive: str = "", *, verify: bool = Tr
     raise typer.Exit(1)
 
 
+def _resolve_attached_role_profile(
+    seat: str,
+    harness: str,
+    bead: str,
+    *,
+    available_seats: tuple[str, ...] | None = None,
+    current_seat: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+):
+    """Resolve an attached role request before any workspace or backend mutation.
+
+    The attached path may claim ``bead`` in :func:`_apply_role_workspace`, so its portable
+    launch contract must be fully constructed and resolved first.  Returning the immutable
+    resolved profile also lets the routing and native layers consume the exact preflight result
+    instead of reparsing caller-controlled strings after the claim.
+    """
+    from . import role as role_mod
+
+    cfg = config.load()
+    resolved_harness = harness or config.harness_name(cfg)
+    try:
+        generic_profile = role_mod.build_launch_profile(
+            seat,
+            harness=resolved_harness,
+            managed_bead=bool(bead),
+            bead=bead or None,
+            available_seats=available_seats,
+            model=model,
+            effort=effort,
+        )
+        return role_mod.resolve_launch_profile(generic_profile, current_seat=current_seat)
+    except ValueError as exc:
+        typer.echo(f"✗ invalid agent launch profile: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
 def _apply_role_workspace(bead: str, hive: str) -> None:
     """``bh role <seat> [--bead <id>] [--hive <hive>]``'s workspace resolution (bh-6t49w.4):
     changes bh's own cwd to the resolved workspace BEFORE ``hitch_plugin.route`` execs a seat,
@@ -874,6 +911,24 @@ def role_cmd(
 ):
     from . import hitch_plugin
 
+    if not name:
+        launch_only_flags = [
+            flag
+            for flag, present in (
+                ("--bead", bool(bead)),
+                ("--hive", bool(hive)),
+                ("--available-seat", bool(available_seat)),
+                ("--current-seat", bool(current_seat)),
+                ("--model", bool(model)),
+                ("--effort", bool(effort)),
+            )
+            if present
+        ]
+        if launch_only_flags:
+            rendered = ", ".join(launch_only_flags)
+            typer.echo(f"✗ a seat is required when using launch options: {rendered}", err=True)
+            raise typer.Exit(1)
+
     if explain:
         _role_explain(
             name,
@@ -914,6 +969,36 @@ def role_cmd(
         )
         raise typer.Exit(1)
 
+    # A bare ``bh role`` is the read-only seat listing. Keep it entirely outside the workspace
+    # path, even though ``_apply_role_workspace("", "")`` is currently a no-op: calling a
+    # mutation-owning seam at all makes the listing's safety depend on that implementation detail.
+    if not name:
+        hitch_plugin.route(
+            "",
+            harness=harness or None,
+            no_hitch=no_hitch,
+            full_seats=seats,
+            managed_bead=False,
+            bead=None,
+            available_seats=None,
+            current_seat=None,
+            model=None,
+            effort=None,
+            resolved_profile=None,
+        )
+        return
+
+    # Every actual attached launch completes portable profile preflight before the workspace
+    # helper can chdir or claim a bead.
+    resolved_profile = _resolve_attached_role_profile(
+        name,
+        harness,
+        bead,
+        available_seats=tuple(available_seat) if available_seat else None,
+        current_seat=current_seat or None,
+        model=model or None,
+        effort=effort or None,
+    )
     _apply_role_workspace(bead, hive)
     hitch_plugin.route(
         name,
@@ -926,6 +1011,7 @@ def role_cmd(
         current_seat=current_seat or None,
         model=model or None,
         effort=effort or None,
+        resolved_profile=resolved_profile,
     )
 
 
