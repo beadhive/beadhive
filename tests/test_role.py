@@ -1091,7 +1091,13 @@ def test_cli_role_headless_hitch_backend_forwards_the_brief_pointer_as_task(monk
     monkeypatch.setattr(
         hitch_plugin, "headless_plan", lambda seat, harness, cfg: ("hitch", "hitch profile x")
     )
-    with patch.object(hitch_plugin, "up", return_value=0) as mock_up:
+    child_envs = []
+
+    def fake_up(*_args, **_kwargs):
+        child_envs.append(hitch_plugin._scoped_launch_env())
+        return 0
+
+    with patch.object(hitch_plugin, "up", side_effect=fake_up) as mock_up:
         result = cli_runner.invoke(app, ["role", "developer", "--bead", "bh-6t49w.6", "-d"])
 
     assert result.exit_code == 0, result.output
@@ -1099,6 +1105,11 @@ def test_cli_role_headless_hitch_backend_forwards_the_brief_pointer_as_task(monk
     assert kwargs["detached"] is True
     assert kwargs["role_"] == "developer"
     assert "bh work brief bh-6t49w.6" in kwargs["task"]
+    receipt = json.loads(child_envs[0]["BH_AGENT_LAUNCH_RECEIPT"])
+    assert receipt["bead"] == "bh-6t49w.6"
+    assert receipt["current_seat"] == "developer"
+    assert "task" not in receipt and "argv" not in receipt and "herdr" not in receipt
+    assert hitch_plugin._scoped_launch_env() is None
 
 
 def test_cli_role_headless_lifecycle_seat_needs_a_managed_bead(monkeypatch):
@@ -1295,12 +1306,57 @@ def test_qualified_baml_launch_propagates_distinct_outer_and_provider_identity(
     assert provider_continuation != "outer-attempt-1"
     assert kwargs["env"]["BH_RUN_ID"] == "outer-attempt-1"
     assert kwargs["env"]["BH_RUN_PROVIDER"] == "claude-code"
+    receipt = json.loads(kwargs["env"]["BH_AGENT_LAUNCH_RECEIPT"])
+    assert receipt["bead"] == "bh-wi2os.2"
+    assert receipt["current_seat"] == "developer"
+    assert "secret task text" not in json.dumps(receipt)
+    assert "argv" not in receipt and "herdr" not in receipt
     assert kwargs["provider_continuation"] == provider_continuation
     assert kwargs["seat_process_id"].startswith("seat-")
     assert len({"outer-attempt-1", provider_continuation, kwargs["seat_process_id"]}) == 3
     context = argv[argv.index("--journal_context") + 1]
     assert json.loads(context)["run_id"] == "outer-attempt-1"
     assert "secret task text" not in context
+
+
+def test_unqualified_headless_native_child_receives_core_launch_receipt(monkeypatch, tmp_path):
+    from beadhive import cli, role_execution
+
+    plan = role_execution.RoleLaunchPlan(
+        backend="baml", detail="built native role binary", provider=None
+    )
+    calls = []
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(cli, "_apply_role_workspace", lambda *_args: None)
+    monkeypatch.setattr(cli, "_role_dispatch_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli.config, "dispatch_seat_command", lambda *_args: "bh-developer")
+    monkeypatch.setattr(cli.config, "dispatch_seat_bundle", lambda *_args: "")
+    monkeypatch.setattr(
+        cli,
+        "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0),
+    )
+
+    result = cli_runner.invoke(
+        app,
+        [
+            "role",
+            "developer",
+            "--task",
+            "secret native task",
+            "--bead",
+            "bh-wi2os.10",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    receipt = json.loads(calls[0][1]["env"]["BH_AGENT_LAUNCH_RECEIPT"])
+    assert receipt["bead"] == "bh-wi2os.10"
+    assert receipt["current_seat"] == "developer"
+    assert "secret native task" not in json.dumps(receipt)
+    assert "argv" not in receipt and "herdr" not in receipt
 
 
 # ---------------------------------------------------------------------------

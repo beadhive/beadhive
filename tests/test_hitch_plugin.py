@@ -19,8 +19,13 @@ Covers:
 
 from __future__ import annotations
 
+import asyncio
+import json
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
@@ -274,6 +279,103 @@ def test_up_omits_optional_flags_when_unset(monkeypatch, tmp_path):
     argv = calls[0]
     for flag in ("--workspace", "--task", "-d", "--role", "--explain"):
         assert flag not in argv
+
+
+def _receipt_payload(bead: str, *, current_seat: str = "developer") -> str:
+    resolved = role.resolve_launch_profile(
+        role.build_launch_profile(
+            "developer",
+            harness="claude",
+            managed_bead=True,
+            bead=bead,
+            available_seats=("developer", "reviewer"),
+            model="sonnet",
+            effort="high",
+        ),
+        current_seat=current_seat,
+    )
+    return role.AgentLaunchReceipt.from_resolved(resolved).model_dump_json()
+
+
+def test_up_injects_scoped_receipt_into_actual_child_env_and_restores_legacy_call(
+    monkeypatch, tmp_path
+):
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setenv("CALLER_SECRET", "must-stay-out-of-receipt")
+    monkeypatch.setattr(
+        hitch_plugin.run,
+        "run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)) or _Result(),
+    )
+    payload = _receipt_payload("bh-wi2os.10", current_seat="reviewer")
+
+    with hitch_plugin.scoped_launch_receipt(payload):
+        assert hitch_plugin.up("claude", "reviewer", cfg=cfg) == 0
+    assert hitch_plugin.up("claude", "reviewer", cfg=cfg) == 0
+
+    managed_env = calls[0][1]["env"]
+    assert managed_env["BH_AGENT_LAUNCH_RECEIPT"] == payload
+    receipt = json.loads(managed_env["BH_AGENT_LAUNCH_RECEIPT"])
+    assert receipt["bead"] == "bh-wi2os.10"
+    assert receipt["current_seat"] == "reviewer"
+    assert "CALLER_SECRET" not in receipt
+    assert "argv" not in receipt and "herdr" not in receipt
+    # A direct external Hitch call stays genuinely unmanaged and keeps the legacy run() kwargs.
+    assert "env" not in calls[1][1]
+
+
+def test_scoped_receipts_are_isolated_across_concurrent_hitch_launches(monkeypatch, tmp_path):
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    barrier = threading.Barrier(2)
+    seen = {}
+    lock = threading.Lock()
+
+    class _Result:
+        returncode = 0
+
+    def fake_run(argv, **kwargs):
+        barrier.wait(timeout=5)
+        with lock:
+            seen[argv[3]] = kwargs["env"]["BH_AGENT_LAUNCH_RECEIPT"]
+        return _Result()
+
+    monkeypatch.setattr(hitch_plugin.run, "run", fake_run)
+    payloads = {
+        "developer": _receipt_payload("bh-wi2os.10"),
+        "reviewer": _receipt_payload("bh-wi2os.11", current_seat="reviewer"),
+    }
+
+    def launch(profile: str) -> None:
+        with hitch_plugin.scoped_launch_receipt(payloads[profile]):
+            hitch_plugin.up("claude", profile, cfg=cfg)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(launch, payloads))
+
+    assert seen == payloads
+    assert hitch_plugin._scoped_launch_env() is None
+
+
+def test_scoped_receipt_restores_on_exception_and_cancellation():
+    payload = _receipt_payload("bh-wi2os.10")
+
+    with pytest.raises(RuntimeError):
+        with hitch_plugin.scoped_launch_receipt(payload):
+            raise RuntimeError("backend failed")
+    assert hitch_plugin._scoped_launch_env() is None
+
+    async def cancel_inside_scope():
+        with hitch_plugin.scoped_launch_receipt(payload):
+            raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(cancel_inside_scope())
+    assert hitch_plugin._scoped_launch_env() is None
 
 
 def test_up_opencode_target_passes_through_unchanged(monkeypatch, tmp_path):
@@ -848,6 +950,55 @@ def test_route_picks_hitch_when_enabled_and_profile_matches(monkeypatch, tmp_pat
     assert up_calls == [("claude", "developer", cfg)]
     out = capsys.readouterr().out
     assert "hitch" in out and "claude-code" in out and "developer" in out
+
+
+def test_managed_attached_route_preserves_up_call_shape_and_injects_actual_child_env(
+    monkeypatch, tmp_path
+):
+    resolved = role.resolve_launch_profile(
+        role.build_launch_profile(
+            "developer",
+            harness="claude",
+            managed_bead=True,
+            bead="bh-wi2os.10",
+            available_seats=("developer", "reviewer"),
+            model="sonnet",
+        ),
+        current_seat="reviewer",
+    )
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer", "reviewer"])
+    monkeypatch.setattr(hitch_plugin.shutil, "which", lambda _cmd: "/usr/local/bin/hitch")
+    repo = _write_repo(tmp_path, ["reviewer"])
+    cfg = {"hitch": {"enabled": True, "repo": str(repo)}}
+    child_calls = []
+
+    class _Result:
+        returncode = 0
+
+    monkeypatch.setattr(
+        hitch_plugin.run,
+        "run",
+        lambda argv, **kwargs: child_calls.append((argv, kwargs)) or _Result(),
+    )
+    real_up = hitch_plugin.up
+    up_calls = []
+
+    # The deliberately strict three-positional-argument wrapper proves route did not widen the
+    # legacy attached Hitch call while the real up() still receives the scoped child environment.
+    def exact_up(target, profile, passed_cfg):
+        up_calls.append((target, profile, passed_cfg))
+        return real_up(target, profile, passed_cfg)
+
+    monkeypatch.setattr(hitch_plugin, "up", exact_up)
+
+    hitch_plugin.route("developer", cfg=cfg, resolved_profile=resolved)
+
+    assert up_calls == [("claude", "reviewer", cfg)]
+    receipt = json.loads(child_calls[0][1]["env"]["BH_AGENT_LAUNCH_RECEIPT"])
+    assert receipt["bead"] == "bh-wi2os.10"
+    assert receipt["initial_seat"] == "developer"
+    assert receipt["current_seat"] == "reviewer"
+    assert hitch_plugin._scoped_launch_env() is None
 
 
 def test_route_no_hitch_forces_native_even_when_hitch_would_apply(monkeypatch, tmp_path, capsys):
