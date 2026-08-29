@@ -10,6 +10,7 @@ from beadhive.agent_launch_profile import (
     AgentLaunchProfile,
     AgentLaunchReceipt,
     BeadPolicy,
+    agent_launch_receipt_from_env,
     bead_policy_for_seat,
     parse_agent_launch_receipt,
     resolve_agent_launch_profile,
@@ -227,9 +228,7 @@ def test_versioned_core_receipt_is_redacted_and_round_trips():
 def test_base_receipt_consumers_fail_closed_on_extensions_and_additive_fields():
     receipt = AgentLaunchReceipt.from_resolved(
         resolve_agent_launch_profile(
-            AgentLaunchProfile(
-                managed_bead=False, initial_seat="planner", harness="claude"
-            )
+            AgentLaunchProfile(managed_bead=False, initial_seat="planner", harness="claude")
         )
     )
     with pytest.raises(ValidationError):
@@ -264,3 +263,9 @@ def test_malformed_or_policy_incompatible_core_receipts_fail_closed(changes):
     )
     with pytest.raises(ValidationError):
         parse_agent_launch_receipt({**receipt.model_dump(), **changes})
+
+
+def test_external_harness_without_receipt_is_unmanaged_but_invalid_evidence_is_refused():
+    assert agent_launch_receipt_from_env({}) is None
+    with pytest.raises(ValidationError):
+        agent_launch_receipt_from_env({"BH_AGENT_LAUNCH_RECEIPT": '{"managed_bead":true}'})

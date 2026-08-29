@@ -7,6 +7,7 @@ construction deliberately know nothing about those hosts.
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal
 
@@ -182,6 +183,22 @@ def parse_agent_launch_receipt(payload: str | bytes | dict) -> AgentLaunchReceip
     if isinstance(payload, (str, bytes)):
         return AgentLaunchReceipt.model_validate_json(payload)
     return AgentLaunchReceipt.model_validate(payload)
+
+
+def agent_launch_receipt_from_env(
+    env: dict[str, str] | None = None,
+) -> AgentLaunchReceipt | None:
+    """Classify the current harness from explicit core receipt evidence.
+
+    Absence means unmanaged.  A present but invalid value is an error, never an
+    unmanaged fallback, so injected or stale evidence fails closed.
+    """
+
+    source = os.environ if env is None else env
+    payload = source.get("BH_AGENT_LAUNCH_RECEIPT")
+    if payload is None:
+        return None
+    return parse_agent_launch_receipt(payload)
 
 
 class HarnessArgvAdapter:
