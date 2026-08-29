@@ -185,6 +185,24 @@ For example, `bh role developer --harness codex --bead bh-example.1 --baml-requi
 either describes the validated `bh-developer-codex` path or reports a machine-readable refusal.
 Proposed paths and identities are informational: explain performs no lifecycle or launch writes.
 
+### Stable agent launch-profile extension seam
+
+The harness-independent contract lives in `beadhive.agent_launch_profile`. A validated explicit
+profile launch exports a versioned, redacted `BH_AGENT_LAUNCH_RECEIPT` to the child process. The
+receipt records the exact bead binding, initial/current/available seats, harness, and effective
+model/effort; it never contains argv, environment values, or presentation-host fields. Consumers
+must parse it with `AgentLaunchReceipt` (or `agent_launch_receipt_from_env`): no receipt means an
+externally opened, unmanaged harness, while malformed evidence is refused rather than downgraded.
+
+Optional presentation hosts extend the contract by composition. They keep the independently
+valid core receipt in a typed `core` member and use a distinct `receipt_type`; core code does not
+import, recognize, or ignore host fields. Herdr's extension is implemented in
+`beadhive.herdr_launch_profile` and adds only exact session, Space revision, and pane correlation.
+Shape parsing is not proof that those facts remain current: Herdr consumers use
+`consume_herdr_launch_receipt(payload, snapshot)` to compare all four correlation facts with an
+authoritative observation. A stale revision or missing, ambiguous, cross-session, or cross-Space
+target is refused rather than classified as managed.
+
 Canonical verb vocabulary is reused everywhere (`add` / `rm` / `list` / `show` / `status` /
 `init`); "many" is a `list` verb (+ mode flags) or `--all`, never a pluralized command name.
 `--json` (bound to `as_json`) is the machine-output flag on every command that has one, and

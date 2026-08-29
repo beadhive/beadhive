@@ -1924,6 +1924,11 @@ def _launch_cmd(
     as_json: bool = typer.Option(
         False, "--json", help="emit only the versioned launch result on stdout"
     ),
+    profile_json: str | None = typer.Option(
+        None,
+        "--profile-json",
+        help="versioned HerdrAgentLaunchProfile JSON; exact targeting is mandatory when set",
+    ),
 ) -> None:
     """Launch the one-argument happy path.
 
@@ -1936,13 +1941,36 @@ def _launch_cmd(
     ``spawn`` remains the low-level command for callers
     that intentionally prepared the claim and worktree themselves.
     """
+    from pydantic import ValidationError
+
     from . import jsonout, registry
+    from .herdr_launch_profile import (
+        HerdrAgentLaunchProfile,
+        build_herdr_launch_receipt,
+        resolve_herdr_launch_profile,
+        validate_herdr_observation,
+    )
 
     # Import the lifecycle facade only when launch is actually invoked. The optional plugin is
     # statically reachable from public publish/export code through the plugin registry; making
     # the broad work facade a module dependency would falsely widen that read-only boundary to
     # work's aggregate intake modules even though publishing can never execute this command.
     work = importlib.import_module(".work", __package__)
+
+    exact_profile = None
+    if profile_json is not None:
+        try:
+            exact_profile = HerdrAgentLaunchProfile.model_validate_json(profile_json)
+            resolved_profile, _ = resolve_herdr_launch_profile(exact_profile)
+        except (TypeError, ValueError, ValidationError) as exc:
+            _launch_fail("profile", f"invalid HerdrAgentLaunchProfile: {exc}")
+        if not resolved_profile.managed_bead or resolved_profile.bead != bead:
+            _launch_fail("profile", "launch bead must equal the exact managed profile bead")
+        if exact_profile.herdr_session != _active_session().name:
+            _launch_fail("profile", "profile belongs to a different selected Herdr session")
+        if exact_profile.pane_create is not None:
+            direction = exact_profile.pane_create.direction
+            focus = exact_profile.pane_create.focus
 
     if direction not in {"right", "down"}:
         _launch_fail("input", "--direction must be `right` or `down`")
@@ -1965,6 +1993,8 @@ def _launch_cmd(
     entry = resolution.entry
     resolved_hive = _hive_id(entry)
     resolved_kind = _launch_kind(kind, cfg, entry)
+    if exact_profile is not None and resolved_kind != exact_profile.harness:
+        _launch_fail("profile", "resolved Herdr kind conflicts with profile harness")
     integrated, integration_detail = _integration_ready(resolved_kind)
     if not integrated:
         _launch_fail(
@@ -1978,6 +2008,24 @@ def _launch_cmd(
             "session",
             session_detail,
         )
+    if exact_profile is not None:
+        try:
+            validate_herdr_observation(exact_profile, _snapshot)
+        except ValueError as exc:
+            _launch_fail("profile", str(exc))
+
+    # This is the last authoritative exact-target fence before *any* lifecycle
+    # lease, native claim, or Herdr mutation.  The earlier snapshot is preflight
+    # only: a concurrent winner may advance the Space while hive discovery and
+    # integration checks run.
+    if exact_profile is not None:
+        latest = _session_snapshot()
+        try:
+            if latest is None:
+                raise ValueError("selected Herdr session became unavailable")
+            validate_herdr_observation(exact_profile, latest)
+        except ValueError as exc:
+            _launch_fail("profile", str(exc))
 
     _launch_lease(cfg, entry, resolved_hive, adopt_expired)
     try:
@@ -1993,6 +2041,13 @@ def _launch_cmd(
         existing = _strict_live_target(target, resolved_hive, claim.worktree)
     except RuntimeError as exc:
         _launch_fail("reuse", str(exc), claim=claim, target=target)
+    if exact_profile is not None and exact_profile.pane_id is not None:
+        if existing is None or existing != (exact_profile.space_id, exact_profile.pane_id):
+            _launch_fail(
+                "reuse",
+                "exact profile pane does not contain the correlated live agent",
+                claim=claim,
+            )
     if existing is not None:
         result = _LaunchResult(
             "reused",
@@ -2005,10 +2060,20 @@ def _launch_cmd(
             target,
         )
     else:
-        try:
-            workspace, root_pane = _workspace(resolved_hive, claim.worktree)
-        except Exception as exc:  # noqa: BLE001 - normalize optional-server failures by stage
-            _launch_fail("workspace", str(exc) or "workspace unavailable", claim=claim)
+        if exact_profile is not None:
+            create = exact_profile.pane_create
+            if create is None:
+                _launch_fail("reuse", "exact reuse target disappeared", claim=claim)
+            # The final pre-mutation snapshot already proved this exact Space and anchor.
+            # Never call legacy _workspace here: it may create a label-matched Space before
+            # identity and revision are fenced.
+            workspace = exact_profile.space_id
+            root_pane = create.after_pane_id
+        else:
+            try:
+                workspace, root_pane = _workspace(resolved_hive, claim.worktree)
+            except Exception as exc:  # noqa: BLE001 - normalize optional-server failures by stage
+                _launch_fail("workspace", str(exc) or "workspace unavailable", claim=claim)
         pane = ""
         split = _command(
             "pane",
@@ -2091,6 +2156,23 @@ def _launch_cmd(
             )
 
     payload = result.payload()
+    if exact_profile is not None:
+        post_operation = _session_snapshot()
+        try:
+            if post_operation is None:
+                raise ValueError("selected Herdr session became unavailable")
+            payload["agent_launch_receipt"] = build_herdr_launch_receipt(
+                resolved_profile,
+                exact_profile,
+                pane_id=result.pane,
+                observation=post_operation,
+            ).model_dump(mode="json")
+        except ValueError as exc:
+            if result.disposition == "created":
+                _close_pane(result.pane)
+            if claim.disposition == "claimed":
+                work._release_claim(claim.main, bead, claim.actor, detail=str(exc))
+            _launch_fail("result", str(exc))
     if as_json:
         jsonout.emit(payload)
         return

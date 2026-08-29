@@ -338,6 +338,75 @@ def test_launch_bh_role_in_env_inherits_os_environ(monkeypatch):
     assert env.get("SOME_EXISTING_VAR") == "hello"
 
 
+_ROLE_FINAL_ENV_PROBE = (
+    "import os,sys; from pathlib import Path; "
+    "Path(sys.argv[1]).write_text(os.environ.get('BH_AGENT_LAUNCH_RECEIPT', '<absent>'))"
+)
+
+
+@pytest.mark.parametrize("ambient_kind", ["valid", "malformed"])
+def test_legacy_native_launch_scrubs_ambient_receipt_from_actual_final_child_env(
+    monkeypatch, tmp_path, ambient_kind
+):
+    output = tmp_path / f"legacy-native-{ambient_kind}.txt"
+    resolved = role.resolve_launch_profile(
+        role.build_launch_profile(
+            "developer", harness="claude", managed_bead=True, bead="bh-wi2os.10"
+        )
+    )
+    ambient = (
+        role.AgentLaunchReceipt.from_resolved(resolved).model_dump_json()
+        if ambient_kind == "valid"
+        else "{malformed-stale-receipt"
+    )
+    monkeypatch.setenv("BH_AGENT_LAUNCH_RECEIPT", ambient)
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.harness.installed_path", return_value=sys.executable),
+        patch(
+            "beadhive.role._harness_argv",
+            return_value=[sys.executable, "-c", _ROLE_FINAL_ENV_PROBE, str(output)],
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("developer", harness="claude")
+
+    assert exc_info.value.code == 0
+    assert output.read_text() == "<absent>"
+
+
+def test_managed_native_launch_overwrites_ambient_receipt_in_actual_final_child_env(
+    monkeypatch, tmp_path
+):
+    output = tmp_path / "managed-native.txt"
+    resolved = role.resolve_launch_profile(
+        role.build_launch_profile(
+            "developer",
+            harness="claude",
+            managed_bead=True,
+            bead="bh-wi2os.10",
+            available_seats=("developer", "reviewer"),
+            model="sonnet",
+        ),
+        current_seat="reviewer",
+    )
+    expected = role.AgentLaunchReceipt.from_resolved(resolved).model_dump_json()
+    monkeypatch.setenv("BH_AGENT_LAUNCH_RECEIPT", "{malformed-stale-receipt")
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer", "reviewer"]),
+        patch("beadhive.harness.installed_path", return_value=sys.executable),
+        patch(
+            "beadhive.role._profile_harness_argv",
+            return_value=[sys.executable, "-c", _ROLE_FINAL_ENV_PROBE, str(output)],
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("reviewer", harness="claude", resolved_profile=resolved)
+
+    assert exc_info.value.code == 0
+    assert output.read_text() == expected
+
+
 # ---------------------------------------------------------------------------
 # harness_env / _bh_bin_dir — the bh-og0q.2 regression: a harness bh launches must still
 # resolve bh's own binaries by name even when the ambient PATH (e.g. a systemd service
@@ -652,22 +721,32 @@ def test_harness_name_falls_back_to_claude_on_error(monkeypatch):
 
 def test_cli_role_harness_flag_passed_through(monkeypatch):
     """`bh role <seat> --harness opencode` threads the flag into role.launch()."""
+    from beadhive import hitch_plugin
+
     monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
-    with patch("beadhive.role.launch") as mock_launch:
-        result = cli_runner.invoke(app, ["role", "developer", "--harness", "opencode"])
+    with patch.object(hitch_plugin, "route") as mock_route:
+        result = cli_runner.invoke(app, ["role", "planner", "--harness", "opencode"])
 
     assert result.exit_code == 0
-    mock_launch.assert_called_once_with("developer", harness="opencode")
+    mock_route.assert_called_once()
+    assert mock_route.call_args.args == ("planner",)
+    assert mock_route.call_args.kwargs["harness"] == "opencode"
+    assert mock_route.call_args.kwargs["resolved_profile"].harness == "opencode"
 
 
 def test_cli_role_no_harness_flag_passes_none(monkeypatch):
     """Omitting --harness passes harness=None so launch() falls back to config resolution."""
+    from beadhive import hitch_plugin
+
     monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
-    with patch("beadhive.role.launch") as mock_launch:
-        result = cli_runner.invoke(app, ["role", "developer"])
+    with patch.object(hitch_plugin, "route") as mock_route:
+        result = cli_runner.invoke(app, ["role", "planner"])
 
     assert result.exit_code == 0
-    mock_launch.assert_called_once_with("developer", harness=None)
+    mock_route.assert_called_once()
+    assert mock_route.call_args.args == ("planner",)
+    assert mock_route.call_args.kwargs["harness"] is None
+    assert mock_route.call_args.kwargs["resolved_profile"].harness
 
 
 def test_cli_role_no_hitch_flag_threaded_through(monkeypatch):
@@ -676,10 +755,25 @@ def test_cli_role_no_hitch_flag_threaded_through(monkeypatch):
 
     monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
     with patch.object(hitch_plugin, "route") as mock_route:
-        result = cli_runner.invoke(app, ["role", "developer", "--no-hitch"])
+        result = cli_runner.invoke(app, ["role", "planner", "--no-hitch"])
 
     assert result.exit_code == 0
-    mock_route.assert_called_once_with("developer", harness=None, no_hitch=True, full_seats=False)
+    mock_route.assert_called_once()
+    assert mock_route.call_args.args == ("planner",)
+    kwargs = dict(mock_route.call_args.kwargs)
+    resolved_profile = kwargs.pop("resolved_profile")
+    assert resolved_profile.current_seat == "planner"
+    assert kwargs == {
+        "harness": None,
+        "no_hitch": True,
+        "full_seats": False,
+        "managed_bead": False,
+        "bead": None,
+        "available_seats": None,
+        "current_seat": None,
+        "model": None,
+        "effort": None,
+    }
 
 
 def test_cli_role_seats_flag_threaded_through(monkeypatch):
@@ -691,7 +785,19 @@ def test_cli_role_seats_flag_threaded_through(monkeypatch):
         result = cli_runner.invoke(app, ["role", "--seats"])
 
     assert result.exit_code == 0
-    mock_route.assert_called_once_with("", harness=None, no_hitch=False, full_seats=True)
+    mock_route.assert_called_once_with(
+        "",
+        harness=None,
+        no_hitch=False,
+        full_seats=True,
+        managed_bead=False,
+        bead=None,
+        available_seats=None,
+        current_seat=None,
+        model=None,
+        effort=None,
+        resolved_profile=None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -786,20 +892,227 @@ def test_apply_role_workspace_bead_and_hive_missing_refuses_loudly(monkeypatch):
     assert exc.value.exit_code == 1
 
 
-def test_cli_role_bead_flag_resolves_workspace_before_route(monkeypatch):
-    """`bh role <seat> --bead <id>` resolves the workspace before `hitch_plugin.route` runs,
-    for both backends (route dispatches to native/hitch, chdir already happened)."""
+def test_cli_role_profile_resolves_before_workspace_and_is_passed_to_route(monkeypatch):
+    """The attached route consumes the profile resolved before its workspace claim."""
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    events = []
+    real_resolve = cli._resolve_attached_role_profile
+
+    def resolve(*args, **kwargs):
+        profile = real_resolve(*args, **kwargs)
+        events.append(("profile", profile))
+        return profile
+
+    monkeypatch.setattr(cli, "_resolve_attached_role_profile", resolve)
+    monkeypatch.setattr(
+        cli, "_apply_role_workspace", lambda bead, hive: events.append(("workspace", bead, hive))
+    )
+    with patch.object(
+        hitch_plugin, "route", side_effect=lambda *args, **kwargs: events.append(("route", kwargs))
+    ) as mock_route:
+        result = cli_runner.invoke(app, ["role", "developer", "--bead", "bh-6t49w.4"])
+
+    assert result.exit_code == 0
+    assert [event[0] for event in events] == ["profile", "workspace", "route"]
+    resolved = events[0][1]
+    assert resolved.managed_bead is True and resolved.bead == "bh-6t49w.4"
+    assert events[2][1]["resolved_profile"] is resolved
+    mock_route.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["role", "developer", "--bead", "bh-wi2os.9", "--current-seat", "supervisor"],
+        ["role", "supervisor", "--bead", "bh-wi2os.9"],
+        ["role", "developer;sh", "--bead", "bh-wi2os.9"],
+        ["role", "developer", "--bead", "not exact"],
+        [
+            "role",
+            "developer",
+            "--bead",
+            "bh-wi2os.9",
+            "--available-seat",
+            "developer",
+            "--available-seat",
+            "controller",
+        ],
+        ["role", "planner", "--harness", "bogus"],
+        ["role", "planner", "--model=--danger"],
+        ["role", "planner", "--effort", "turbo"],
+    ],
+)
+def test_cli_role_invalid_profile_never_reaches_workspace_claim_or_backend(monkeypatch, args):
+    """All caller-controlled profile failures are preflight-only, including the measured
+    unauthorized ``--current-seat supervisor`` case."""
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    workspace_calls = []
+    claim_calls = []
+    backend_calls = []
+    monkeypatch.setattr(
+        cli,
+        "_apply_role_workspace",
+        lambda *call: workspace_calls.append(call),
+    )
+    monkeypatch.setattr(cli.work, "claim", lambda **call: claim_calls.append(call))
+    monkeypatch.setattr(
+        hitch_plugin,
+        "route",
+        lambda *call, **kwargs: backend_calls.append((call, kwargs)),
+    )
+
+    result = cli_runner.invoke(app, args)
+
+    assert result.exit_code == 1, result.output
+    assert workspace_calls == []
+    assert claim_calls == []
+    assert backend_calls == []
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["role", "--bead", "bh-wi2os.9"],
+        ["role", "--hive", "bh"],
+        [
+            "role",
+            "--bead",
+            "bh-wi2os.9",
+            "--current-seat",
+            "supervisor",
+            "--model=--danger",
+        ],
+        [
+            "role",
+            "--hive",
+            "bh",
+            "--available-seat",
+            "planner",
+            "--effort",
+            "turbo",
+        ],
+    ],
+)
+def test_cli_role_empty_seat_launch_flags_never_reach_any_mutation_surface(monkeypatch, args):
     from beadhive import cli, hitch_plugin
 
     monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
     calls = []
-    monkeypatch.setattr(cli, "_apply_role_workspace", lambda bead, hive: calls.append((bead, hive)))
-    with patch.object(hitch_plugin, "route") as mock_route:
-        result = cli_runner.invoke(app, ["role", "developer", "--bead", "bh-6t49w.4"])
+    monkeypatch.setattr(cli, "_apply_role_workspace", lambda *a: calls.append(("workspace", a)))
+    monkeypatch.setattr(cli.work, "claim", lambda **kw: calls.append(("claim", kw)))
+    monkeypatch.setattr(hitch_plugin, "route", lambda *a, **kw: calls.append(("route", a, kw)))
+    monkeypatch.setattr(hitch_plugin, "up", lambda *a, **kw: calls.append(("hitch", a, kw)))
+    monkeypatch.setattr(role, "launch", lambda *a, **kw: calls.append(("native", a, kw)))
 
-    assert result.exit_code == 0
-    assert calls == [("bh-6t49w.4", "")]
-    mock_route.assert_called_once_with("developer", harness=None, no_hitch=False, full_seats=False)
+    result = cli_runner.invoke(app, args)
+
+    assert result.exit_code == 1, result.output
+    assert "a seat is required" in result.output
+    assert calls == []
+
+
+@pytest.mark.parametrize("args", [["role"], ["role", "--seats"]])
+def test_cli_role_empty_seat_listing_modes_remain_read_only(monkeypatch, args):
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(
+        cli,
+        "_apply_role_workspace",
+        lambda *_a: pytest.fail("listing applied a workspace"),
+    )
+    monkeypatch.setattr(cli.work, "claim", lambda **_kw: pytest.fail("listing claimed a bead"))
+    monkeypatch.setattr(
+        hitch_plugin, "up", lambda *_a, **_kw: pytest.fail("listing launched Hitch")
+    )
+    monkeypatch.setattr(role, "launch", lambda *_a, **_kw: pytest.fail("listing launched native"))
+    monkeypatch.setattr(
+        hitch_plugin,
+        "_seat_listing_lines",
+        lambda _cfg, _harness, *, full: [f"planner — listing-full={full}"],
+    )
+
+    result = cli_runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert "Available seats:" in result.output
+    assert f"listing-full={args == ['role', '--seats']}" in result.output
+
+
+@pytest.mark.parametrize(
+    ("args", "current_seat", "managed_bead"),
+    [
+        (
+            [
+                "role",
+                "developer",
+                "--bead",
+                "bh-wi2os.9",
+                "--available-seat",
+                "developer",
+                "--available-seat",
+                "reviewer",
+                "--current-seat",
+                "reviewer",
+            ],
+            "reviewer",
+            True,
+        ),
+        (
+            [
+                "role",
+                "planner",
+                "--available-seat",
+                "planner",
+                "--available-seat",
+                "analyst",
+                "--current-seat",
+                "analyst",
+            ],
+            "analyst",
+            False,
+        ),
+        (
+            [
+                "role",
+                "supervisor",
+                "--available-seat",
+                "supervisor",
+                "--available-seat",
+                "director",
+                "--current-seat",
+                "director",
+            ],
+            "director",
+            False,
+        ),
+    ],
+)
+def test_cli_role_valid_policy_classes_reach_backend_with_resolved_switch(
+    monkeypatch, args, current_seat, managed_bead
+):
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    workspace_calls = []
+    route_calls = []
+    monkeypatch.setattr(cli, "_apply_role_workspace", lambda *call: workspace_calls.append(call))
+    monkeypatch.setattr(
+        hitch_plugin, "route", lambda *call, **kwargs: route_calls.append((call, kwargs))
+    )
+
+    result = cli_runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert len(workspace_calls) == 1
+    assert len(route_calls) == 1
+    resolved = route_calls[0][1]["resolved_profile"]
+    assert resolved.current_seat == current_seat
+    assert resolved.managed_bead is managed_bead
 
 
 # ---------------------------------------------------------------------------
@@ -834,8 +1147,7 @@ def test_cli_role_headless_refuses_unsuitable_seat_before_touching_the_workspace
     result = cli_runner.invoke(app, ["role", "supervisor", "--bead", "bh-6t49w.6", "-d"])
 
     assert result.exit_code == 1
-    assert "not a headless-capable seat" in result.output
-    assert "bh role supervisor" in result.output
+    assert "forbids a managed bead" in result.output
 
 
 def test_cli_role_headless_hitch_backend_forwards_the_brief_pointer_as_task(monkeypatch):
@@ -848,7 +1160,13 @@ def test_cli_role_headless_hitch_backend_forwards_the_brief_pointer_as_task(monk
     monkeypatch.setattr(
         hitch_plugin, "headless_plan", lambda seat, harness, cfg: ("hitch", "hitch profile x")
     )
-    with patch.object(hitch_plugin, "up", return_value=0) as mock_up:
+    child_envs = []
+
+    def fake_up(*_args, **_kwargs):
+        child_envs.append(hitch_plugin._scoped_launch_env())
+        return 0
+
+    with patch.object(hitch_plugin, "up", side_effect=fake_up) as mock_up:
         result = cli_runner.invoke(app, ["role", "developer", "--bead", "bh-6t49w.6", "-d"])
 
     assert result.exit_code == 0, result.output
@@ -856,9 +1174,14 @@ def test_cli_role_headless_hitch_backend_forwards_the_brief_pointer_as_task(monk
     assert kwargs["detached"] is True
     assert kwargs["role_"] == "developer"
     assert "bh work brief bh-6t49w.6" in kwargs["task"]
+    receipt = json.loads(child_envs[0]["BH_AGENT_LAUNCH_RECEIPT"])
+    assert receipt["bead"] == "bh-6t49w.6"
+    assert receipt["current_seat"] == "developer"
+    assert "task" not in receipt and "argv" not in receipt and "herdr" not in receipt
+    assert "BH_AGENT_LAUNCH_RECEIPT" not in hitch_plugin._scoped_launch_env()
 
 
-def test_cli_role_headless_needs_a_bead_or_a_task(monkeypatch):
+def test_cli_role_headless_lifecycle_seat_needs_a_managed_bead(monkeypatch):
     from beadhive import cli, hitch_plugin
 
     monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
@@ -870,7 +1193,7 @@ def test_cli_role_headless_needs_a_bead_or_a_task(monkeypatch):
     result = cli_runner.invoke(app, ["role", "developer", "-d"])
 
     assert result.exit_code == 1
-    assert "--bead" in result.output
+    assert "requires a managed bead" in result.output
 
 
 def test_baml_required_refusal_happens_before_claim_or_spawn(monkeypatch):
@@ -901,6 +1224,8 @@ def test_baml_required_refusal_happens_before_claim_or_spawn(monkeypatch):
             "codex",
             "--task",
             "fixture",
+            "--bead",
+            "bh-wi2os.2",
             "--baml-required",
         ],
     )
@@ -940,6 +1265,8 @@ def test_qualified_detached_refuses_before_claim_or_spawn(monkeypatch, tmp_path)
             "codex",
             "--task",
             "fixture",
+            "--bead",
+            "bh-wi2os.2",
             "--baml-required",
             "--detached",
         ],
@@ -1030,12 +1357,14 @@ def test_qualified_baml_launch_propagates_distinct_outer_and_provider_identity(
             "claude",
             "--task",
             "secret task text",
+            "--bead",
+            "bh-wi2os.2",
             "--baml-required",
         ],
     )
 
     assert result.exit_code == 0, result.output
-    assert journal_calls == [(artifact, {"hive": "github/acme/core", "bead": ""})]
+    assert journal_calls == [(artifact, {"hive": "github/acme/core", "bead": "bh-wi2os.2"})]
     argv, kwargs = run_calls[0]
     assert argv[0] == str(binary)
     assert "--bundle" not in argv
@@ -1046,12 +1375,63 @@ def test_qualified_baml_launch_propagates_distinct_outer_and_provider_identity(
     assert provider_continuation != "outer-attempt-1"
     assert kwargs["env"]["BH_RUN_ID"] == "outer-attempt-1"
     assert kwargs["env"]["BH_RUN_PROVIDER"] == "claude-code"
+    receipt = json.loads(kwargs["env"]["BH_AGENT_LAUNCH_RECEIPT"])
+    assert receipt["bead"] == "bh-wi2os.2"
+    assert receipt["current_seat"] == "developer"
+    assert "secret task text" not in json.dumps(receipt)
+    assert "argv" not in receipt and "herdr" not in receipt
     assert kwargs["provider_continuation"] == provider_continuation
     assert kwargs["seat_process_id"].startswith("seat-")
     assert len({"outer-attempt-1", provider_continuation, kwargs["seat_process_id"]}) == 3
     context = argv[argv.index("--journal_context") + 1]
     assert json.loads(context)["run_id"] == "outer-attempt-1"
     assert "secret task text" not in context
+
+
+def test_unqualified_headless_native_child_receives_core_launch_receipt(monkeypatch, tmp_path):
+    from beadhive import cli, localloop, role_execution
+
+    plan = role_execution.RoleLaunchPlan(
+        backend="baml", detail="built native role binary", provider=None
+    )
+    output = tmp_path / "headless-native.txt"
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setenv("BH_AGENT_LAUNCH_RECEIPT", "{malformed-stale-receipt")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
+    monkeypatch.setattr(cli, "_apply_role_workspace", lambda *_args: None)
+    monkeypatch.setattr(cli, "_role_dispatch_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli.config, "dispatch_seat_command", lambda *_args: "bh-developer")
+    monkeypatch.setattr(cli.config, "dispatch_seat_bundle", lambda *_args: "")
+    monkeypatch.setattr(
+        localloop,
+        "seat_argv",
+        lambda *_args, **_kwargs: [
+            sys.executable,
+            "-c",
+            _ROLE_FINAL_ENV_PROBE,
+            str(output),
+        ],
+    )
+
+    result = cli_runner.invoke(
+        app,
+        [
+            "role",
+            "developer",
+            "--task",
+            "secret native task",
+            "--bead",
+            "bh-wi2os.10",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    receipt = json.loads(output.read_text())
+    assert receipt["bead"] == "bh-wi2os.10"
+    assert receipt["current_seat"] == "developer"
+    assert "secret native task" not in json.dumps(receipt)
+    assert "argv" not in receipt and "herdr" not in receipt
 
 
 # ---------------------------------------------------------------------------
@@ -1170,14 +1550,14 @@ def test_cli_role_explain_reports_attached_required_for_an_unsuitable_seat(monke
     assert "not a headless-capable seat" in result.output
 
 
-def test_cli_role_explain_unrecognized_seat_reports_attached_required():
+def test_cli_role_explain_unrecognized_seat_is_refused_by_core_profile():
     """A seat outside `ROLE_FOR_ACTION` (never a headless target, known-and-installed or not)
     still gets a loud, correct `attached-required` answer — no spurious "not installed" error,
     since `--explain` deliberately does not re-check `role._known_seats()`."""
     result = cli_runner.invoke(app, ["role", "nope", "--explain"])
 
-    assert result.exit_code == 0, result.output
-    assert "mode=attached-required" in result.output
+    assert result.exit_code == 1
+    assert "unknown available seat" in result.output
 
 
 def test_cli_role_explain_empty_seat_refuses():
@@ -1198,7 +1578,161 @@ def test_cli_role_explain_dry_run_alias_matches_explain(monkeypatch):
         hitch_plugin, "headless_plan", lambda seat, harness, cfg: ("baml", "built bh-developer")
     )
 
-    result = cli_runner.invoke(app, ["role", "developer", "--dry-run"])
+    result = cli_runner.invoke(app, ["role", "planner", "--dry-run"])
 
     assert result.exit_code == 0, result.output
-    assert "mode=headless-safe" in result.output
+    assert '"agent_launch_profile"' in result.output
+
+
+def test_generic_profile_switch_reaches_native_backend(monkeypatch):
+    """The initial seat is an identity fact; a switch is limited to the resolved set."""
+    mock_result = SimpleNamespace(returncode=0)
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer", "reviewer"]),
+        patch("beadhive.role._local_agent_override", return_value=True),
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch(
+                "developer",
+                harness="claude",
+                managed_bead=True,
+                bead="bh-wi2os.2",
+                available_seats=("developer", "reviewer"),
+                current_seat="reviewer",
+                model="sonnet",
+                effort="high",
+            )
+    assert exc_info.value.code == 0
+    assert mock_run.call_args.args[0] == [
+        "claude",
+        "--agent",
+        "reviewer",
+        "--model",
+        "sonnet",
+        "--effort",
+        "high",
+    ]
+    assert mock_run.call_args.kwargs["env"]["BH_ROLE"] == "reviewer"
+    receipt = json.loads(mock_run.call_args.kwargs["env"]["BH_AGENT_LAUNCH_RECEIPT"])
+    assert set(receipt.pop("available_seats")) == {"developer", "reviewer"}
+    assert receipt == {
+        "receipt_type": "beadhive.agent-launch",
+        "version": "1",
+        "managed_bead": True,
+        "bead": "bh-wi2os.2",
+        "initial_seat": "developer",
+        "current_seat": "reviewer",
+        "harness": "claude",
+        "model": "sonnet",
+        "effort": "high",
+    }
+
+
+def test_generic_profile_refuses_unauthorized_switch_before_backend(monkeypatch):
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer", "reviewer"]),
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
+        patch("beadhive.role.run", side_effect=AssertionError("backend reached")),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch(
+                "developer",
+                harness="claude",
+                managed_bead=True,
+                bead="bh-wi2os.2",
+                current_seat="reviewer",
+            )
+    assert exc_info.value.code == 1
+
+
+def test_native_launch_consumes_pre_resolved_profile_without_reparsing(monkeypatch):
+    resolved = role.resolve_launch_profile(
+        role.build_launch_profile(
+            "developer",
+            harness="claude",
+            managed_bead=True,
+            bead="bh-wi2os.9",
+            available_seats=("developer", "reviewer"),
+            model="sonnet",
+        ),
+        current_seat="reviewer",
+    )
+    mock_result = SimpleNamespace(returncode=0)
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer", "reviewer"]),
+        patch("beadhive.role._local_agent_override", return_value=True),
+        patch("beadhive.harness.installed_path", return_value="/usr/local/bin/claude"),
+        patch(
+            "beadhive.role.build_launch_profile",
+            side_effect=AssertionError("resolved profile must not be rebuilt"),
+        ),
+        patch("beadhive.role.run", return_value=mock_result) as mock_run,
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("reviewer", harness="claude", resolved_profile=resolved)
+
+    assert exc_info.value.code == 0
+    assert mock_run.call_args.args[0] == ["claude", "--agent", "reviewer", "--model", "sonnet"]
+    receipt = json.loads(mock_run.call_args.kwargs["env"]["BH_AGENT_LAUNCH_RECEIPT"])
+    assert receipt["current_seat"] == "reviewer"
+    assert receipt["bead"] == "bh-wi2os.9"
+
+
+def test_cli_role_explain_includes_redacted_generic_profile(monkeypatch):
+    from beadhive import cli
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(cli.config, "load", lambda: {})
+    monkeypatch.setattr(cli.config, "harness_name", lambda cfg: "claude")
+    result = cli_runner.invoke(
+        app,
+        ["role", "planner", "--available-seat", "planner", "--model", "sonnet", "--explain"],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    generic = payload["agent_launch_profile"]
+    assert generic["request"]["initial_seat"] == "planner"
+    assert generic["resolved"]["current_seat"] == "planner"
+    assert "herdr" not in json.dumps(generic).lower()
+
+
+def test_generic_full_launch_and_switch_does_not_require_herdr():
+    """The complete generic path stays usable with Herdr absent or explicitly disabled."""
+    import subprocess
+
+    probe = r"""
+import importlib.abc
+import sys
+from types import SimpleNamespace
+
+class RefuseHerdr(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.startswith("beadhive.herdr"):
+            raise AssertionError(f"generic role attempted Herdr import: {fullname}")
+        return None
+
+sys.meta_path.insert(0, RefuseHerdr())
+from beadhive import harness, hitch_plugin, role
+role._known_seats = lambda: ["developer", "reviewer"]
+role._local_agent_override = lambda seat: True
+harness.installed_path = lambda dep: "/usr/local/bin/claude"
+commands = []
+role.run = lambda argv, **kwargs: commands.append((argv, kwargs)) or SimpleNamespace(returncode=0)
+try:
+    hitch_plugin.route(
+        "developer", harness="claude", no_hitch=True, cfg={"herdr": {"enabled": False}},
+        managed_bead=True, bead="bh-wi2os.2", available_seats=("developer", "reviewer"),
+        current_seat="reviewer", model="sonnet", effort="high",
+    )
+except SystemExit as exc:
+    assert exc.code == 0
+assert commands[0][0] == ["claude", "--agent", "reviewer", "--model", "sonnet", "--effort", "high"]
+assert commands[0][1]["env"]["BH_ROLE"] == "reviewer"
+assert not any(name.startswith("beadhive.herdr") for name in sys.modules)
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", probe], text=True, capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr

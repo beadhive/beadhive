@@ -102,6 +102,9 @@ content on rebuild is tracked separately (bh-add2.2), out of scope here.
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import typer
 
@@ -119,6 +122,43 @@ _HITCH_TARGETS: dict[str, str] = {
     "opencode": "opencode",
     "codex": "codex",
 }
+
+_LAUNCH_RECEIPT_ENV = "BH_AGENT_LAUNCH_RECEIPT"
+_launch_receipt: ContextVar[str | None] = ContextVar("hitch_launch_receipt", default=None)
+
+
+@contextmanager
+def scoped_launch_receipt(payload: str) -> Iterator[None]:
+    """Expose one resolved core receipt only to the Hitch launch in this scope.
+
+    ``route`` must retain the legacy ``up(target, profile, cfg)`` call shape, so the receipt
+    cannot travel as a new positional or keyword argument.  A context variable supplies that
+    compatibility seam without touching ``os.environ``: values are task/thread-local and the
+    token reset restores the prior value for every exit, including exceptions and cancellation.
+    Direct ``bh plugin hitch up`` callers never enter this scope and remain unmanaged.
+    """
+
+    token = _launch_receipt.set(payload)
+    try:
+        yield
+    finally:
+        _launch_receipt.reset(token)
+
+
+def _scoped_launch_env() -> dict[str, str]:
+    """Build a Hitch child env that never trusts ambient receipt evidence.
+
+    ``run.run`` reconstructs from ``os.environ`` when ``env`` is omitted, so legacy/unmanaged
+    calls must pass an explicit base with the reserved key removed.  A managed scope overwrites
+    that scrubbed base with its already-resolved exact receipt.
+    """
+
+    env = run.child_env()
+    env.pop(_LAUNCH_RECEIPT_ENV, None)
+    payload = _launch_receipt.get()
+    if payload is not None:
+        env[_LAUNCH_RECEIPT_ENV] = payload
+    return env
 
 
 def _repo_files(repo):
@@ -239,7 +279,8 @@ def up(
         role_=role_,
         explain=explain,
     )
-    result = run.run(argv, check=False, capture=False)
+    launch_env = _scoped_launch_env()
+    result = run.run(argv, check=False, capture=False, env=launch_env)
     return result.returncode
 
 
@@ -397,6 +438,13 @@ def route(
     no_hitch: bool = False,
     full_seats: bool = False,
     cfg=None,
+    managed_bead: bool | None = None,
+    bead: str | None = None,
+    available_seats: tuple[str, ...] | None = None,
+    current_seat: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    resolved_profile: role.ResolvedAgentLaunchProfile | None = None,
 ) -> None:
     """``bh role <seat>``'s unified entry point. An unknown (non-empty) seat delegates straight
     to :func:`beadhive.role.launch` unchanged — nothing to pick a backend for. The bare listing
@@ -425,20 +473,50 @@ def route(
         return
 
     cfg = cfg if cfg is not None else config.load()
-    resolved_harness = harness or config.harness_name(cfg)
+    resolved_harness = (
+        resolved_profile.harness
+        if resolved_profile is not None
+        else harness or config.harness_name(cfg)
+    )
+    if resolved_profile is None and managed_bead is not None:
+        try:
+            profile = role.build_launch_profile(
+                seat,
+                harness=resolved_harness,
+                managed_bead=managed_bead,
+                bead=bead,
+                available_seats=available_seats,
+                model=model,
+                effort=effort,
+            )
+            resolved_profile = role.resolve_launch_profile(profile, current_seat=current_seat)
+        except ValueError as exc:
+            typer.echo(f"✗ invalid agent launch profile: {exc}", err=True)
+            raise typer.Exit(1) from None
+    if resolved_profile is not None:
+        seat = resolved_profile.current_seat
     backend, hitch_target, profile = (
         ("native", None, None) if no_hitch else _resolve_backend(seat, resolved_harness, cfg)
     )
 
     if backend == "hitch":
         typer.echo(f"→ {seat}: launching via hitch (target={hitch_target}, profile={profile})")
-        code = up(resolved_harness, profile, cfg)
+        if resolved_profile is None:
+            code = up(resolved_harness, profile, cfg)
+        else:
+            receipt = role.AgentLaunchReceipt.from_resolved(resolved_profile).model_dump_json()
+            # Keep the established attached-Hitch up(target, profile, cfg) call byte-for-byte.
+            with scoped_launch_receipt(receipt):
+                code = up(resolved_harness, profile, cfg)
         if code != 0:
             raise typer.Exit(code)
         return
 
     typer.echo(f"→ {seat}: launching via native backend")
-    role.launch(seat, harness=harness)
+    if resolved_profile is None:
+        role.launch(seat, harness=harness)
+        return
+    role.launch(seat, harness=harness, resolved_profile=resolved_profile)
 
 
 # ---- seat-runnability reporting (bh-og0q.4) ---------------------------------------------------

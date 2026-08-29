@@ -45,9 +45,16 @@ from __future__ import annotations
 import json
 import os
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from . import deps as deps_mod  # import-cheap by design (bh-hsus.2/.3) — safe at module level
+from .agent_launch_profile import (
+    AgentLaunchProfile,
+    AgentLaunchReceipt,
+    ResolvedAgentLaunchProfile,
+    resolve_agent_launch_profile,
+)
 from .run import child_env, run  # noqa: E402 — module-level so tests can patch ws.role.run
 
 # ---------------------------------------------------------------------------
@@ -157,6 +164,10 @@ def harness_env(role: str) -> dict[str, str]:
     what is genuinely harness-specific — ``BH_ROLE`` and the ``PATH`` repair below. When the bin
     dir can't be resolved, or is already on ``PATH``, that repair is a no-op."""
     env = {**child_env(), "BH_ROLE": role}
+    # A parent receipt is evidence about the parent, never authority for this child.  Legacy
+    # native launches remain explicitly unmanaged; resolved launches overwrite this scrubbed
+    # boundary with their own exact receipt below.
+    env.pop("BH_AGENT_LAUNCH_RECEIPT", None)
     bin_dir = _bh_bin_dir()
     if bin_dir is None:
         return env
@@ -185,7 +196,58 @@ def _cwd_hive() -> str:
 # ---------------------------------------------------------------------------
 
 
-def launch(role: str, harness: str | None = None) -> None:
+def build_launch_profile(
+    role: str,
+    *,
+    harness: str,
+    managed_bead: bool,
+    bead: str | None = None,
+    available_seats: Iterable[str] | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+) -> AgentLaunchProfile:
+    """Build the Herdr-independent profile for a generic ``bh role`` session."""
+
+    return AgentLaunchProfile(
+        managed_bead=managed_bead,
+        bead=bead,
+        initial_seat=role,
+        available_seats=frozenset(available_seats) if available_seats is not None else None,
+        harness=harness,
+        model=model,
+        effort=effort,
+    )
+
+
+def resolve_launch_profile(
+    profile: AgentLaunchProfile, *, current_seat: str | None = None
+) -> ResolvedAgentLaunchProfile:
+    """Resolve a launch or guarded seat switch through the shared core contract."""
+
+    return resolve_agent_launch_profile(profile, current_seat=current_seat)
+
+
+def _profile_harness_argv(resolved: ResolvedAgentLaunchProfile) -> list[str]:
+    """Apply the native launcher's Claude plugin/local-override compatibility to core argv."""
+
+    argv = list(resolved.argv)
+    if resolved.harness == "claude":
+        argv[2] = _resolve_agent_arg(resolved.current_seat, _plugin_name())
+    return argv
+
+
+def launch(
+    role: str,
+    harness: str | None = None,
+    *,
+    managed_bead: bool | None = None,
+    bead: str | None = None,
+    available_seats: Iterable[str] | None = None,
+    current_seat: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    resolved_profile: ResolvedAgentLaunchProfile | None = None,
+) -> None:
     """Launch *role* under a harness, or list available seats when role is falsy.
 
     Validates *role* against the bundled agent defs.  Unknown seats print a
@@ -196,6 +258,11 @@ def launch(role: str, harness: str | None = None) -> None:
     error and exits non-zero. On a valid role + harness, execs the seat with
     inherited stdio (interactive hand-over) and propagates the exit code.
     """
+    if resolved_profile is not None:
+        # This object is the authoritative result of pre-mutation CLI preflight.  Do not let
+        # the raw compatibility arguments select a different seat or harness afterward.
+        role = resolved_profile.current_seat
+        harness = resolved_profile.harness
     seats = _known_seats()
 
     if not role:
@@ -246,8 +313,43 @@ def launch(role: str, harness: str | None = None) -> None:
         print(harness_mod.missing_hint(harness), file=sys.stderr)
         raise SystemExit(1)
 
-    argv = _harness_argv(harness, role)
-    env = harness_env(role)
+    # ``None`` is the compatibility spelling used by pre-profile callers. It is deliberately
+    # kept at this Python seam while every explicit profile request is strict. The CLI supplies
+    # the boolean, so first-class ``bh role`` sessions always take the validated path.
+    if resolved_profile is None and managed_bead is None:
+        argv = _harness_argv(harness, role)
+        active_seat = role
+        resolved = None
+    elif resolved_profile is None:
+        try:
+            profile = build_launch_profile(
+                role,
+                harness=harness,
+                managed_bead=managed_bead,
+                bead=bead,
+                available_seats=available_seats,
+                model=model,
+                effort=effort,
+            )
+            resolved = resolve_launch_profile(profile, current_seat=current_seat)
+        except ValueError as exc:
+            print(f"✗ invalid agent launch profile: {exc}", file=sys.stderr)
+            raise SystemExit(1) from None
+        argv = _profile_harness_argv(resolved)
+        active_seat = resolved.current_seat
+    else:
+        # The CLI resolved this immutable profile before it claimed or changed workspaces.
+        # Consume that exact result; rebuilding here would reopen a post-mutation parse path.
+        resolved = resolved_profile
+        argv = _profile_harness_argv(resolved)
+        active_seat = resolved.current_seat
+    env = harness_env(active_seat)
+    if resolved is not None:
+        # The child receives portable proof of the effective launch.  Legacy/external
+        # harnesses receive no receipt and therefore remain explicitly unmanaged.
+        env["BH_AGENT_LAUNCH_RECEIPT"] = AgentLaunchReceipt.from_resolved(
+            resolved
+        ).model_dump_json()
     result = run(argv, check=False, capture=False, env=env)
     raise SystemExit(result.returncode)
 

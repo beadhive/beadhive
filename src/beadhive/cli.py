@@ -470,6 +470,43 @@ def _resolve_role_bead_hive(cfg, bead: str, hive: str = "", *, verify: bool = Tr
     raise typer.Exit(1)
 
 
+def _resolve_attached_role_profile(
+    seat: str,
+    harness: str,
+    bead: str,
+    *,
+    available_seats: tuple[str, ...] | None = None,
+    current_seat: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+):
+    """Resolve an attached role request before any workspace or backend mutation.
+
+    The attached path may claim ``bead`` in :func:`_apply_role_workspace`, so its portable
+    launch contract must be fully constructed and resolved first.  Returning the immutable
+    resolved profile also lets the routing and native layers consume the exact preflight result
+    instead of reparsing caller-controlled strings after the claim.
+    """
+    from . import role as role_mod
+
+    cfg = config.load()
+    resolved_harness = harness or config.harness_name(cfg)
+    try:
+        generic_profile = role_mod.build_launch_profile(
+            seat,
+            harness=resolved_harness,
+            managed_bead=bool(bead),
+            bead=bead or None,
+            available_seats=available_seats,
+            model=model,
+            effort=effort,
+        )
+        return role_mod.resolve_launch_profile(generic_profile, current_seat=current_seat)
+    except ValueError as exc:
+        typer.echo(f"✗ invalid agent launch profile: {exc}", err=True)
+        raise typer.Exit(1) from None
+
+
 def _apply_role_workspace(bead: str, hive: str) -> None:
     """``bh role <seat> [--bead <id>] [--hive <hive>]``'s workspace resolution (bh-6t49w.4):
     changes bh's own cwd to the resolved workspace BEFORE ``hitch_plugin.route`` execs a seat,
@@ -557,6 +594,11 @@ def _role_headless(
     hive: str,
     no_hitch: bool,
     baml_required: bool,
+    *,
+    available_seats: tuple[str, ...] | None = None,
+    current_seat: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
 ):
     """`bh role <seat> --task/-d`'s launch (bh-6t49w.6). Suitability is decided FIRST, before
     any workspace resolution, so an attached-only seat refuses immediately instead of claiming
@@ -565,11 +607,25 @@ def _role_headless(
     import uuid
 
     from . import hitch_plugin, localloop, role_execution
+    from . import role as role_mod
     from .run import child_env
 
     cfg = config.load()
     resolved_harness = harness or config.harness_name(cfg)
     try:
+        generic_profile = role_mod.build_launch_profile(
+            seat,
+            harness=resolved_harness,
+            managed_bead=bool(bead),
+            bead=bead or None,
+            available_seats=available_seats,
+            model=model,
+            effort=effort,
+        )
+        resolved_profile = role_mod.resolve_launch_profile(
+            generic_profile, current_seat=current_seat
+        )
+        seat = resolved_profile.current_seat
         plan = role_execution.resolve_headless_plan(
             seat,
             resolved_harness,
@@ -578,8 +634,14 @@ def _role_headless(
             baml_required=baml_required,
             no_hitch=no_hitch,
         )
+        launch_receipt = role_mod.AgentLaunchReceipt.from_resolved(
+            resolved_profile
+        ).model_dump_json()
     except role_execution.RoleLaunchRefused as exc:
         typer.echo(f"✗ {exc.code}: {exc.detail}", err=True)
+        raise typer.Exit(1) from None
+    except ValueError as exc:
+        typer.echo(f"✗ invalid agent launch profile: {exc}", err=True)
         raise typer.Exit(1) from None
     if detached and plan.artifact is not None:
         typer.echo(
@@ -602,15 +664,16 @@ def _role_headless(
 
     if plan.backend == "hitch":
         # hitch has no instructions-file flag; the SAME pointer travels as its --task string.
-        code = hitch_plugin.up(
-            resolved_harness,
-            seat,
-            cfg,
-            workspace=os.getcwd(),
-            task=instructions,
-            detached=detached,
-            role_=seat,
-        )
+        with hitch_plugin.scoped_launch_receipt(launch_receipt):
+            code = hitch_plugin.up(
+                resolved_harness,
+                seat,
+                cfg,
+                workspace=os.getcwd(),
+                task=instructions,
+                detached=detached,
+                role_=seat,
+            )
         if code != 0:
             raise typer.Exit(code)
         return
@@ -636,6 +699,7 @@ def _role_headless(
         )
     )
     launch_env = child_env()
+    launch_env["BH_AGENT_LAUNCH_RECEIPT"] = launch_receipt
     if qualified is not None:
         if entry is None:
             typer.echo("✗ launch_context_unavailable: workspace is not a registered hive", err=True)
@@ -714,15 +778,37 @@ def _role_explain(
     task: str,
     detached: bool,
     baml_required: bool = False,
+    *,
+    available_seats: tuple[str, ...] | None = None,
+    current_seat: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
 ) -> None:
     """Emit the complete redacted, versioned execution plan without writes or subprocesses."""
     if not seat:
         typer.echo("✗ --explain needs a seat (e.g. `bh role developer --explain`)", err=True)
         raise typer.Exit(1)
+    from . import role as role_mod
     from . import role_execution, worktree
 
     cfg = config.load()
     resolved_harness = harness or config.harness_name(cfg)
+    try:
+        generic_profile = role_mod.build_launch_profile(
+            seat,
+            harness=resolved_harness,
+            managed_bead=bool(bead),
+            bead=bead or None,
+            available_seats=available_seats,
+            model=model,
+            effort=effort,
+        )
+        resolved_profile = role_mod.resolve_launch_profile(
+            generic_profile, current_seat=current_seat
+        )
+    except ValueError as exc:
+        typer.echo(f"✗ invalid agent launch profile: {exc}", err=True)
+        raise typer.Exit(1) from None
     workspace = Path.cwd().resolve()
     entry = registry.entry_for_path(cfg, workspace)
     if entry is None:
@@ -755,6 +841,10 @@ def _role_explain(
         baml_required=baml_required,
         no_hitch=no_hitch,
     )
+    report["agent_launch_profile"] = {
+        "request": generic_profile.model_dump(mode="json"),
+        "resolved": resolved_profile.model_dump(mode="json"),
+    }
     jsonout.emit(report)
 
 
@@ -813,15 +903,69 @@ def role_cmd(
         help="print the complete redacted, versioned JSON execution plan and exit; no process, "
         "journal, dispatch artifact, or --bead worktree claim.",
     ),
+    available_seat: list[str] | None = typer.Option(  # noqa: B008 - Typer declaration
+        None,
+        "--available-seat",
+        help="seat authorized for this profile; repeat to permit guarded switching.",
+    ),
+    current_seat: str = typer.Option(
+        "", "--current-seat", help="launch as this authorized seat instead of the initial seat."
+    ),
+    model: str = typer.Option("", "--model", help="allowlisted harness model selection."),
+    effort: str = typer.Option("", "--effort", help="allowlisted harness reasoning effort."),
 ):
     from . import hitch_plugin
 
+    if not name:
+        launch_only_flags = [
+            flag
+            for flag, present in (
+                ("--bead", bool(bead)),
+                ("--hive", bool(hive)),
+                ("--available-seat", bool(available_seat)),
+                ("--current-seat", bool(current_seat)),
+                ("--model", bool(model)),
+                ("--effort", bool(effort)),
+            )
+            if present
+        ]
+        if launch_only_flags:
+            rendered = ", ".join(launch_only_flags)
+            typer.echo(f"✗ a seat is required when using launch options: {rendered}", err=True)
+            raise typer.Exit(1)
+
     if explain:
-        _role_explain(name, harness, no_hitch, bead, hive, task, detached, baml_required)
+        _role_explain(
+            name,
+            harness,
+            no_hitch,
+            bead,
+            hive,
+            task,
+            detached,
+            baml_required,
+            available_seats=tuple(available_seat) if available_seat else None,
+            current_seat=current_seat or None,
+            model=model or None,
+            effort=effort or None,
+        )
         return
 
     if task or detached:
-        _role_headless(name, harness, task, detached, bead, hive, no_hitch, baml_required)
+        _role_headless(
+            name,
+            harness,
+            task,
+            detached,
+            bead,
+            hive,
+            no_hitch,
+            baml_required,
+            available_seats=tuple(available_seat) if available_seat else None,
+            current_seat=current_seat or None,
+            model=model or None,
+            effort=effort or None,
+        )
         return
 
     if baml_required:
@@ -830,8 +974,50 @@ def role_cmd(
         )
         raise typer.Exit(1)
 
+    # A bare ``bh role`` is the read-only seat listing. Keep it entirely outside the workspace
+    # path, even though ``_apply_role_workspace("", "")`` is currently a no-op: calling a
+    # mutation-owning seam at all makes the listing's safety depend on that implementation detail.
+    if not name:
+        hitch_plugin.route(
+            "",
+            harness=harness or None,
+            no_hitch=no_hitch,
+            full_seats=seats,
+            managed_bead=False,
+            bead=None,
+            available_seats=None,
+            current_seat=None,
+            model=None,
+            effort=None,
+            resolved_profile=None,
+        )
+        return
+
+    # Every actual attached launch completes portable profile preflight before the workspace
+    # helper can chdir or claim a bead.
+    resolved_profile = _resolve_attached_role_profile(
+        name,
+        harness,
+        bead,
+        available_seats=tuple(available_seat) if available_seat else None,
+        current_seat=current_seat or None,
+        model=model or None,
+        effort=effort or None,
+    )
     _apply_role_workspace(bead, hive)
-    hitch_plugin.route(name, harness=harness or None, no_hitch=no_hitch, full_seats=seats)
+    hitch_plugin.route(
+        name,
+        harness=harness or None,
+        no_hitch=no_hitch,
+        full_seats=seats,
+        managed_bead=bool(bead),
+        bead=bead or None,
+        available_seats=tuple(available_seat) if available_seat else None,
+        current_seat=current_seat or None,
+        model=model or None,
+        effort=effort or None,
+        resolved_profile=resolved_profile,
+    )
 
 
 @app.command("statusline", hidden=True, help="print role/hive statusline from stdin JSON (TUI).")
