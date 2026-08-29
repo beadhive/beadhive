@@ -175,17 +175,17 @@ def test_receipt_consumer_accepts_authoritative_reuse_and_create_observations():
         )
     )
     create_resolved, _ = resolve_herdr_launch_profile(create_profile)
-    created = build_herdr_launch_receipt(
-        create_resolved,
-        create_profile,
-        pane_id="pane-3",
-        observation=_snapshot(),
-    )
     post_create = _snapshot(
         panes=[
             {"pane_id": "pane-2", "space_id": "space-7"},
             {"pane_id": "pane-3", "space_id": "space-7"},
         ]
+    )
+    created = build_herdr_launch_receipt(
+        create_resolved,
+        create_profile,
+        pane_id="pane-3",
+        observation=post_create,
     )
     assert consume_herdr_launch_receipt(created.model_dump_json(), post_create) == created
 

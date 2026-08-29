@@ -2319,6 +2319,7 @@ def _launch_fixture(monkeypatch, tmp_path, *, disposition="claimed"):
         actor="dev/launch",
         disposition=disposition,
         worktree=target,
+        main=tmp_path,
     )
     monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: True)
     monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"harness": "codex"})
@@ -2535,7 +2536,10 @@ def _exact_snapshot(*, revision="r1"):
 
 def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch):
     _entry, claim = _launch_fixture(monkeypatch, tmp_path)
-    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: _exact_snapshot())
+    post_create = _exact_snapshot(revision="r2")
+    post_create["panes"].append({"pane_id": "w1:p2", "space_id": "w1"})
+    snapshots = iter([_exact_snapshot(), _exact_snapshot(), post_create])
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
     monkeypatch.setattr(herdr_plugin, "_launch_warm", lambda _target: (True, ""))
     monkeypatch.setattr(
@@ -2578,12 +2582,10 @@ def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch
     assert payload["workspace"] == "w1"
     receipt = payload["agent_launch_receipt"]
     assert receipt["receipt_type"] == "beadhive.herdr-agent-launch"
-    assert receipt["space_revision"] == "r1" and receipt["pane_id"] == "w1:p2"
+    assert receipt["space_revision"] == "r2" and receipt["pane_id"] == "w1:p2"
     assert receipt["core"]["model"] == "gpt-5.6"
     assert receipt["core"]["effort"] == "high"
     assert "argv" not in json.dumps(receipt)
-    post_create = _exact_snapshot()
-    post_create["panes"].append({"pane_id": "w1:p2", "space_id": "w1"})
     assert consume_herdr_launch_receipt(receipt, post_create).pane_id == "w1:p2"
     split = next(call for call in calls if call[:2] == ("pane", "split"))
     assert split[split.index("--pane") + 1] == "w1:p1"
@@ -2640,6 +2642,8 @@ def test_launch_exact_create_race_fails_at_last_safe_point_without_mutation(tmp_
         lambda *_args: (_ for _ in ()).throw(AssertionError("must not create a Space")),
     )
     mutations = []
+    monkeypatch.setattr(herdr_plugin, "_launch_lease", lambda *_args: mutations.append(("lease",)))
+    monkeypatch.setattr(work, "_claim_single_bead", lambda *_args: mutations.append(("claim",)))
     monkeypatch.setattr(
         herdr_plugin,
         "_command",
@@ -2666,6 +2670,113 @@ def test_launch_exact_create_race_fails_at_last_safe_point_without_mutation(tmp_
     assert "stage=profile" in result.output
     assert "revision changed" in result.output
     assert mutations == []
+
+
+@pytest.mark.parametrize(
+    "post_snapshot",
+    [
+        None,
+        _exact_snapshot(revision=""),
+        _exact_snapshot(),
+        {**_exact_snapshot(revision="r2"), "session": "other"},
+        {**_exact_snapshot(revision="r2"), "spaces": []},
+        {
+            **_exact_snapshot(revision="r2"),
+            "panes": [
+                {"pane_id": "w1:p1", "space_id": "w1"},
+                {"pane_id": "w1:p2", "space_id": "w2"},
+            ],
+        },
+        {
+            **_exact_snapshot(revision="r2"),
+            "panes": [
+                {"pane_id": "w1:p1", "space_id": "w1"},
+                {"pane_id": "w1:p2", "space_id": "w1"},
+                {"pane_id": "w1:p2", "space_id": "w1"},
+            ],
+        },
+    ],
+)
+def test_launch_exact_create_post_observation_fails_closed_and_cleans_up(
+    post_snapshot, tmp_path, monkeypatch
+):
+    _entry, claim = _launch_fixture(monkeypatch, tmp_path)
+    snapshots = iter([_exact_snapshot(), _exact_snapshot(), post_snapshot])
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_launch_warm", lambda _target: (True, ""))
+    closed = []
+    monkeypatch.setattr(herdr_plugin, "_close_pane", closed.append)
+    released = []
+    monkeypatch.setattr(
+        work, "_release_claim", lambda *args, **kwargs: released.append((args, kwargs))
+    )
+
+    def command(*args, **_kwargs):
+        if args[:2] == ("pane", "split"):
+            return _result(stdout="w1:p2")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    create = {
+        "herdr_session": "default",
+        "space_id": "w1",
+        "after_pane_id": "w1:p1",
+    }
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "widget-1",
+            "--profile-json",
+            _exact_launch_profile(create=create),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "stage=result" in result.output
+    assert "agent_launch_receipt" not in result.output
+    assert closed == ["w1:p2"]
+    assert released and released[0][0][:3] == (claim.main, "widget-1", claim.actor)
+
+
+def test_launch_exact_reuse_post_observation_wrong_pane_fails_without_destructive_cleanup(
+    tmp_path, monkeypatch
+):
+    _entry, _claim = _launch_fixture(monkeypatch, tmp_path, disposition="reattached")
+    wrong_post = _exact_snapshot(revision="r2")
+    wrong_post["panes"] = [{"pane_id": "w1:p1", "space_id": "w1"}]
+    snapshots = iter([_exact_snapshot(), _exact_snapshot(), wrong_post])
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: ("w1", "w1:p7"))
+    closed = []
+    released = []
+    monkeypatch.setattr(herdr_plugin, "_close_pane", closed.append)
+    monkeypatch.setattr(
+        work, "_release_claim", lambda *args, **kwargs: released.append((args, kwargs))
+    )
+
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "widget-1",
+            "--profile-json",
+            _exact_launch_profile(pane_id="w1:p7"),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "stage=result" in result.output
+    assert "agent_launch_receipt" not in result.output
+    assert closed == []
+    assert released == []
 
 
 @pytest.mark.parametrize(

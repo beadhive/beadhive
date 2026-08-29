@@ -99,7 +99,7 @@ def build_herdr_launch_receipt(
         raise ValueError("resolved launch conflicts with Herdr profile policy")
     if profile.pane_id is not None and pane_id != profile.pane_id:
         raise ValueError("resolved pane conflicts with exact Herdr reuse target")
-    validate_herdr_observation(profile, observation)
+    validate_herdr_result_observation(profile, pane_id=pane_id, snapshot=observation)
     observed_session = observation.get("session", observation.get("session_name"))
     observed_revision = observation.get("revision")
     return HerdrAgentLaunchReceipt(
@@ -109,6 +109,51 @@ def build_herdr_launch_receipt(
         space_revision=observed_revision,
         pane_id=pane_id,
     )
+
+
+def validate_herdr_result_observation(
+    profile: HerdrAgentLaunchProfile, *, pane_id: str, snapshot: dict
+) -> None:
+    """Correlate one actual launch result against a fresh complete observation.
+
+    Unlike the pre-mutation fence, the resulting Space revision may legitimately
+    have advanced.  The receipt therefore takes that revision from this snapshot,
+    but only after the exact session, Space, and uniquely observed result pane have
+    all been proved.
+    """
+
+    session = snapshot.get("session", snapshot.get("session_name"))
+    if session != profile.herdr_session:
+        raise ValueError("result belongs to a different Herdr session")
+    revision = snapshot.get("revision")
+    if not isinstance(revision, str) or not revision:
+        raise ValueError("result observation has no authoritative Herdr Space revision")
+    spaces = snapshot.get("spaces", snapshot.get("workspaces"))
+    if not isinstance(spaces, list):
+        raise ValueError("result observation does not contain a complete Space inventory")
+    space_matches = [
+        item
+        for item in spaces
+        if isinstance(item, dict)
+        and item.get("space_id", item.get("workspace_id", item.get("id"))) == profile.space_id
+    ]
+    if len(space_matches) != 1:
+        raise ValueError("result Herdr Space correlation is missing or ambiguous")
+    if profile.pane_id is not None and pane_id != profile.pane_id:
+        raise ValueError("resolved pane conflicts with exact Herdr reuse target")
+    panes = snapshot.get("panes")
+    if not isinstance(panes, list):
+        raise ValueError("result observation does not contain a complete pane inventory")
+    pane_matches = [
+        item
+        for item in panes
+        if isinstance(item, dict) and item.get("pane_id", item.get("id")) == pane_id
+    ]
+    if len(pane_matches) != 1:
+        raise ValueError("result Herdr pane correlation is missing or ambiguous")
+    pane_space = pane_matches[0].get("space_id", pane_matches[0].get("workspace_id"))
+    if pane_space != profile.space_id:
+        raise ValueError("result Herdr pane belongs to a different Space")
 
 
 def parse_herdr_launch_receipt(payload: str | bytes | dict) -> HerdrAgentLaunchReceipt:
