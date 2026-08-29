@@ -2441,6 +2441,213 @@ def test_launch_preflight_finishes_before_native_claim(tmp_path, monkeypatch):
     assert "stage=claim" in result.output
 
 
+def test_launch_profile_core_failure_precedes_herdr_and_claim(monkeypatch):
+    def mutation(*_args, **_kwargs):
+        raise AssertionError("invalid core profile must fail before mutation")
+
+    monkeypatch.setattr(herdr_plugin, "_has_cli", mutation)
+    monkeypatch.setattr(work, "_claim_single_bead", mutation)
+    profile = {
+        "managed_bead": False,
+        "initial_seat": "developer",
+        "harness": "codex",
+        "herdr_session": "default",
+        "space_id": "w1",
+        "space_revision": "r1",
+        "pane_id": "w1:p1",
+    }
+    result = runner.invoke(
+        app,
+        ["plugin", "herdr", "launch", "widget-1", "--profile-json", json.dumps(profile)],
+    )
+
+    assert result.exit_code == 1
+    assert "stage=profile" in result.output
+
+
+def test_launch_profile_stale_observation_precedes_claim(tmp_path, monkeypatch):
+    _launch_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_session_snapshot",
+        lambda: {
+            "session": "default",
+            "revision": "winner-r2",
+            "spaces": [{"space_id": "w1"}],
+            "panes": [{"pane_id": "w1:p1", "space_id": "w1"}],
+        },
+    )
+    monkeypatch.setattr(
+        work,
+        "_claim_single_bead",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("stale profile must not claim")),
+    )
+    profile = {
+        "managed_bead": True,
+        "bead": "widget-1",
+        "initial_seat": "developer",
+        "harness": "codex",
+        "herdr_session": "default",
+        "space_id": "w1",
+        "space_revision": "loser-r1",
+        "pane_id": "w1:p1",
+    }
+    result = runner.invoke(
+        app,
+        ["plugin", "herdr", "launch", "widget-1", "--profile-json", json.dumps(profile)],
+    )
+
+    assert result.exit_code == 1
+    assert "stage=profile" in result.output
+    assert "revision changed" in result.output
+
+
+def _exact_launch_profile(*, pane_id=None, create=None):
+    return json.dumps(
+        {
+            "managed_bead": True,
+            "bead": "widget-1",
+            "initial_seat": "developer",
+            "harness": "codex",
+            "herdr_session": "default",
+            "space_id": "w1",
+            "space_revision": "r1",
+            "pane_id": pane_id,
+            "pane_create": create,
+        }
+    )
+
+
+def _exact_snapshot(*, revision="r1"):
+    return {
+        "session": "default",
+        "revision": revision,
+        "spaces": [{"space_id": "w1"}],
+        "panes": [
+            {"pane_id": "w1:p1", "space_id": "w1"},
+            {"pane_id": "w1:p7", "space_id": "w1"},
+        ],
+    }
+
+
+def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch):
+    _entry, claim = _launch_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: _exact_snapshot())
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_launch_warm", lambda _target: (True, ""))
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_workspace",
+        lambda *_args: (_ for _ in ()).throw(
+            AssertionError("exact create must not use label-based workspace creation")
+        ),
+    )
+    calls = []
+
+    def command(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("pane", "split"):
+            return _result(stdout="w1:p2")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    create = {
+        "herdr_session": "default",
+        "space_id": "w1",
+        "after_pane_id": "w1:p1",
+        "direction": "down",
+    }
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "widget-1",
+            "--profile-json",
+            _exact_launch_profile(create=create),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["workspace"] == "w1"
+    split = next(call for call in calls if call[:2] == ("pane", "split"))
+    assert split[split.index("--pane") + 1] == "w1:p1"
+    assert split[split.index("--cwd") + 1] == str(claim.worktree)
+
+
+def test_launch_exact_profile_reuses_only_correlated_pane(tmp_path, monkeypatch):
+    _launch_fixture(monkeypatch, tmp_path, disposition="reattached")
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: _exact_snapshot())
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: ("w1", "w1:p7"))
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_workspace",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("reuse must not create a Space")),
+    )
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_command",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("reuse must not mutate Herdr")),
+    )
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "widget-1",
+            "--profile-json",
+            _exact_launch_profile(pane_id="w1:p7"),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout)["disposition"] == "reused"
+    assert json.loads(result.stdout)["pane"] == "w1:p7"
+
+
+def test_launch_exact_create_race_fails_at_last_safe_point_without_mutation(tmp_path, monkeypatch):
+    _launch_fixture(monkeypatch, tmp_path)
+    snapshots = iter([_exact_snapshot(), _exact_snapshot(revision="winner-r2")])
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_workspace",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not create a Space")),
+    )
+    mutations = []
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_command",
+        lambda *args: mutations.append(args) or _result(),
+    )
+    create = {
+        "herdr_session": "default",
+        "space_id": "w1",
+        "after_pane_id": "w1:p1",
+    }
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "widget-1",
+            "--profile-json",
+            _exact_launch_profile(create=create),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "stage=profile" in result.output
+    assert "revision changed" in result.output
+    assert mutations == []
+
+
 @pytest.mark.parametrize(
     ("stage", "patch"),
     [
