@@ -1197,6 +1197,39 @@ def _value(record: dict, *keys: str) -> str | None:
     return None
 
 
+def _agent_harness(record: dict) -> str | None:
+    """Return one canonical harness only when Herdr's receipts agree.
+
+    Herdr currently exposes the live harness as ``agent`` while older and nested
+    response shapes may call it ``kind``, ``agent_kind``, or ``harness``.  These
+    are authority-bearing receipts, not preference fields: an unknown value or
+    disagreement must remain unknown instead of selecting the first value or
+    falling back to Bead metadata.
+    """
+    allowed = {
+        item.value
+        for item in operator_agents.AgentHarness
+        if item is not operator_agents.AgentHarness.UNKNOWN
+    }
+    receipts: set[str] = set()
+    for key in ("agent", "kind", "agent_kind", "harness"):
+        if key not in record or record[key] is None:
+            continue
+        value = record[key]
+        # A versioned response may wrap the complete agent record under this
+        # key.  _snapshot_agent_records already joins that mapping; it is not a
+        # harness receipt itself.
+        if key == "agent" and isinstance(value, dict):
+            continue
+        if not isinstance(value, str) or not value.strip():
+            return None
+        canonical = value.strip().lower()
+        if canonical not in allowed:
+            return None
+        receipts.add(canonical)
+    return next(iter(receipts)) if len(receipts) == 1 else None
+
+
 def _same_path(left: str | None, right: Path) -> bool:
     if not left:
         return False
@@ -1405,14 +1438,6 @@ def _roster_agent(
     }
 
 
-def _label_value(issue: dict, prefix: str) -> str | None:
-    for value in issue.get("labels") or []:
-        text = str(value)
-        if text.startswith(prefix):
-            return text[len(prefix) :] or None
-    return None
-
-
 def _work_observation(agent: dict) -> dict[str, object]:
     """Join one proven presentation record to Beadhive-owned work facts.
 
@@ -1449,7 +1474,7 @@ def _work_observation(agent: dict) -> dict[str, object]:
     elif role == "disp":
         role = operator_agents.AgentRole.DISPATCHER.value
 
-    harness = _value(raw, "harness", "agent_kind", "kind") or _label_value(issue, "harness:")
+    harness = _agent_harness(raw)
     phase = _value(raw, "work_phase", "phase")
     operation = _value(raw, "work_operation", "operation")
     terminal_raw = raw.get("terminal_phase")

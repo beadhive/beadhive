@@ -291,7 +291,7 @@ def test_herdr_adapter_joins_exact_work_facts_without_treating_idle_as_terminal(
             "revision": "agent:r1",
             "lifecycle": {"state": "idle"},
             "_main": str(tmp_path),
-            "_record": {},
+            "_record": {"agent": "codex"},
         }
     )
 
