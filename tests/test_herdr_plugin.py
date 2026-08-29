@@ -13,7 +13,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from beadhive import guard, herdr_plugin, plugins, registry, work
+from beadhive import guard, herdr_plugin, herdr_views, plugins, registry, work
 from beadhive.cli import app
 
 runner = CliRunner()
@@ -2851,6 +2851,115 @@ def test_spawn_target_proof_requires_current_idle_dispatch_action(tmp_path, monk
     current[0] = _roster_snapshot(target, cwd, state="blocked")
     with pytest.raises(herdr_plugin._SpawnReadinessError, match="state 'blocked', not idle"):
         herdr_plugin._spawn_target_proof(target, "w1", "w1:p2")
+
+
+@pytest.mark.parametrize(
+    ("receipts", "expected"),
+    [
+        ({"agent": "claude"}, "claude"),
+        ({"agent": " Codex ", "kind": "codex"}, "codex"),
+        ({}, "unknown"),
+        ({"agent": "gemini"}, "unknown"),
+        ({"agent": "claude", "kind": "codex"}, "unknown"),
+    ],
+    ids=("claude", "codex", "missing", "malformed", "conflicting"),
+)
+def test_roster_preserves_only_one_canonical_live_harness(
+    tmp_path, monkeypatch, receipts, expected
+):
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    snapshot = _roster_snapshot("bh-widget-1", cwd)
+    snapshot["agents"][0].update(receipts)
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
+    monkeypatch.setattr(herdr_plugin.store_locator, "dolt_mode", lambda _path: "server")
+    monkeypatch.setattr(
+        herdr_plugin.bd,
+        "show",
+        lambda *_args, **_kwargs: {
+            "labels": ["harness:codex"],
+            "assignee": "dev/test",
+            "issue_type": "task",
+            "status": "in_progress",
+        },
+    )
+
+    agent = herdr_plugin._roster_payload(snapshot, {"managed_repos": []})["agents"][0]
+
+    assert agent["ownership"]["state"] == "owned"
+    assert agent["facts"]["harness"] == expected
+
+
+def test_live_harness_flows_to_exact_pane_presentation_title(tmp_path, monkeypatch):
+    hive = "github/acme/widgets"
+    bead = "widget-1"
+    cwd = tmp_path / bead
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    snapshot = _roster_snapshot(f"bh-{bead}", cwd, hive=hive, bead=bead)
+    snapshot["agents"][0].update(
+        {
+            "agent": "claude",
+            "agent_session": {
+                "agent": "claude",
+                "kind": "id",
+                "source": "herdr:claude",
+                "value": "session-1",
+            },
+            "beadhive_role": "developer",
+            "work_phase": "implement",
+            "work_operation": "implement",
+            "terminal_phase": False,
+        }
+    )
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, bead)
+    roster = herdr_plugin._roster_payload(snapshot, {"managed_repos": []})
+    queues = {
+        name: {
+            "revision": f"{name}-r1",
+            "coverage": {"state": "complete"},
+            "items": ([{"id": bead}] if name == "active" else []),
+            "warnings": [],
+        }
+        for name in ("ready", "active", "blocked")
+    }
+
+    presentation = herdr_views.presentation_payload(
+        hive,
+        {
+            "canonical_id": hive,
+            "prefix": "wdg",
+            "provider": "github",
+            "organization": "acme",
+            "repository": "widgets",
+            "affiliation": "maintainer",
+        },
+        {
+            "source_revision": "inventory-r1",
+            "coverage": {"state": "complete"},
+            "worktrees": [{"hive_id": hive, "bead_id": bead, "worktree_id": f"{hive}:{bead}"}],
+            "total": 1,
+            "warnings": [],
+        },
+        queues,
+        roster,
+        snapshot,
+        dolt={
+            "sourceRevision": "dolt-r1",
+            "ahead": 0,
+            "behind": 0,
+            "coverage": {"state": "complete"},
+        },
+        generated_at=10_000,
+        sequence=99,
+    )
+
+    assert roster["agents"][0]["facts"]["harness"] == "claude"
+    assert presentation["panes"][0]["correlation"]["state"] == "exact"
+    assert presentation["panes"][0]["report"]["tokens"]["bh_agent_title"] == (
+        "[claude] bh-developer"
+    )
 
 
 def test_reap_accepts_encoded_target_when_current_roster_proves_ownership(tmp_path, monkeypatch):
