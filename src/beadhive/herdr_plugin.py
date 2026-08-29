@@ -85,6 +85,14 @@ class _RegistrationError(RuntimeError):
         self.exit_code = exit_code
 
 
+class _SpawnReadinessError(RuntimeError):
+    """A created/reused target exists but cannot accept the caller's first dispatch."""
+
+    def __init__(self, message: str, *, lifecycle_state: str = "unknown"):
+        super().__init__(message)
+        self.lifecycle_state = lifecycle_state
+
+
 @dataclass(frozen=True)
 class _SessionSelection:
     """One exact Herdr session chosen at the CLI boundary."""
@@ -2343,6 +2351,132 @@ def _owned_live_pane_proof(target: str) -> tuple[str, str] | None:
     return pane, revision
 
 
+@dataclass(frozen=True)
+class _SpawnTargetProof:
+    """Exact current roster proof captured immediately before spawn reports success."""
+
+    workspace: str
+    pane: str
+    lifecycle_state: str
+    source_revision: str
+
+
+def _spawn_target_proof(
+    target: str, expected_workspace: str, expected_pane: str
+) -> _SpawnTargetProof:
+    """Require the exact spawned target to be idle and dispatch-advertised now.
+
+    A warm-up transcript is historical evidence: the agent can become blocked or terminal between
+    the read and the receipt. This final atomic roster read is the same ownership/action evidence
+    used by ``dispatch`` and prevents a successful spawn receipt for an unusable pane.
+    """
+    snapshot = _session_snapshot()
+    if snapshot is None:
+        raise _SpawnReadinessError("the selected Herdr session became unavailable")
+    roster = _roster_payload(snapshot, config.load())
+    matches = [agent for agent in roster["agents"] if agent.get("target") == target]
+    if len(matches) != 1:
+        qualifier = "missing" if not matches else f"ambiguous ({len(matches)} records)"
+        raise _SpawnReadinessError(f"target {target!r} is {qualifier} in the current roster")
+    agent = matches[0]
+    lifecycle = agent.get("lifecycle") or {}
+    state = str(lifecycle.get("state") or "unknown").lower()
+    presentation = agent.get("presentation") or {}
+    pane = presentation.get("pane")
+    workspace = presentation.get("workspace")
+    if workspace != expected_workspace:
+        raise _SpawnReadinessError(
+            f"target {target!r} moved from workspace {expected_workspace!r} to {workspace!r}",
+            lifecycle_state=state,
+        )
+    if pane != expected_pane:
+        raise _SpawnReadinessError(
+            f"target {target!r} moved from created pane {expected_pane!r} to {pane!r}",
+            lifecycle_state=state,
+        )
+    if state != "idle":
+        raise _SpawnReadinessError(
+            f"target {target!r} startup settled in lifecycle state {state!r}, not idle",
+            lifecycle_state=state,
+        )
+    ownership = agent.get("ownership") or {}
+    actions = {item.get("id"): item for item in agent.get("advertised_actions") or []}
+    dispatch = actions.get("agent.dispatch") or {}
+    if ownership.get("state") != "owned" or dispatch.get("availability") != "allowed":
+        reason = dispatch.get("reason") or ownership.get("reason") or "ownership is not current"
+        raise _SpawnReadinessError(
+            f"target {target!r} is not dispatchable: {reason}", lifecycle_state=state
+        )
+    revision = roster.get("revision")
+    if not isinstance(revision, str) or not revision:
+        raise _SpawnReadinessError(
+            f"target {target!r} has no current roster revision", lifecycle_state=state
+        )
+    return _SpawnTargetProof(workspace, expected_pane, state, revision)
+
+
+@dataclass(frozen=True)
+class _ReceiptReapProof:
+    """Current proof for an exact pane carried by a prior spawn receipt."""
+
+    disposition: str
+    source_revision: str
+    lifecycle_state: str
+
+
+def _receipt_reap_proof(target: str, expected_pane: str) -> _ReceiptReapProof | None:
+    """Authorize receipt-bound cleanup without relaxing ordinary live ownership.
+
+    Terminal agents are deliberately stale for dispatch. They remain safe to clean only when
+    explicit plugin metadata, the exact target, and the exact receipt pane still agree. If both
+    identities are absent, cleanup is an idempotent no-op. Any partial or foreign match refuses.
+    """
+    snapshot = _session_snapshot()
+    if snapshot is None:
+        return None
+    roster = _roster_payload(snapshot, config.load())
+    revision = roster.get("revision")
+    if not isinstance(revision, str) or not revision:
+        return None
+    agents = roster.get("agents") or []
+    target_matches = [agent for agent in agents if agent.get("target") == target]
+    pane_matches = [
+        agent for agent in agents if (agent.get("presentation") or {}).get("pane") == expected_pane
+    ]
+    raw_panes = {
+        str(item.get("pane_id") or item.get("id"))
+        for item in snapshot.get("panes", [])
+        if isinstance(item, dict) and (item.get("pane_id") or item.get("id"))
+    }
+    if not target_matches and not pane_matches and expected_pane not in raw_panes:
+        return _ReceiptReapProof("already_reaped", revision, "absent")
+    if (
+        len(target_matches) != 1
+        or len(pane_matches) != 1
+        or target_matches[0] is not pane_matches[0]
+    ):
+        return None
+    agent = target_matches[0]
+    ownership = agent.get("ownership") or {}
+    lifecycle = agent.get("lifecycle") or {}
+    state = str(lifecycle.get("state") or "unknown").lower()
+    marker = ownership.get("marker")
+    association = ownership.get("association")
+    worktree_state = (agent.get("worktree") or {}).get("state")
+    currently_owned = ownership.get("state") == "owned" and state in _LIVE_AGENT_STATES
+    terminal_owned = (
+        state not in _LIVE_AGENT_STATES
+        and state != "unknown"
+        and marker == _OWNERSHIP_MARKER
+        and association == "metadata"
+        and worktree_state == "available"
+        and ownership.get("reason") == f"Herdr lifecycle state is {state}"
+    )
+    if not currently_owned and not terminal_owned:
+        return None
+    return _ReceiptReapProof("present", revision, state)
+
+
 @cli.command(
     "add",
     help="explicitly link or install the external Beadhive package in Herdr's user registry.",
@@ -2684,6 +2818,9 @@ def _attach_cmd(
 def _reap_cmd(
     target: str = typer.Argument(..., metavar="TARGET"),
     session: str | None = typer.Option(None, "--session", help=_SESSION_OPTION_HELP),
+    pane: str = typer.Option(
+        "", "--pane", help="exact pane locator from the spawn receipt (enables terminal cleanup)"
+    ),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
 ) -> None:
@@ -2720,7 +2857,29 @@ def _reap_cmd(
             )
         typer.echo("✗ herdr: server=down (start herdr before reaping an agent)", err=True)
         raise typer.Exit(1)
-    proof = _owned_live_pane_proof(target)
+    receipt_proof = _receipt_reap_proof(target, pane) if pane else None
+    if receipt_proof is not None and receipt_proof.disposition == "already_reaped":
+        if as_json:
+            _emit_lifecycle(
+                "reap",
+                "already_reaped",
+                operation_id=op_id,
+                target=target,
+                pane=pane,
+                source_revision=receipt_proof.source_revision,
+                capabilities=["status", "ps"],
+                resulting_state="absent",
+            )
+            return
+        typer.echo(f"herdr target={target} already reaped pane={pane}")
+        return
+    proof = (
+        (pane, receipt_proof.source_revision)
+        if receipt_proof is not None
+        else _owned_live_pane_proof(target)
+        if not pane
+        else None
+    )
     if proof is None:
         if as_json:
             _lifecycle_failure(
@@ -2730,7 +2889,11 @@ def _reap_cmd(
                 message="The target is unmanaged, stale, or ambiguous; no pane was closed.",
                 disposition="refused",
                 target=target,
-                retained_resources=[{"kind": "target", "id": target}],
+                pane=pane or None,
+                retained_resources=[
+                    {"kind": "target", "id": target},
+                    *([{"kind": "pane", "id": pane}] if pane else []),
+                ],
             )
         typer.echo(f"✗ herdr: refusing unmanaged or ambiguous target {target!r}", err=True)
         raise typer.Exit(1)
@@ -2811,6 +2974,8 @@ def _spawn_cmd(
         typer.echo(f"✗ herdr: server=down; session unavailable ({session_detail})", err=True)
         raise typer.Exit(1)
     pane = ""
+    created_pane = False
+    proof: _SpawnTargetProof | None = None
     try:
         cfg = config.load()
         entry, cwd = _managed_worktree(hive, bead, cfg)
@@ -2822,6 +2987,7 @@ def _spawn_cmd(
         existing = _strict_live_target(name, canonical_hive, cwd)
         if existing is not None:
             workspace, pane = existing
+            proof = _spawn_target_proof(name, workspace, pane)
             if as_json:
                 _emit_lifecycle(
                     "spawn",
@@ -2835,6 +3001,8 @@ def _spawn_cmd(
                     worktree_path=str(cwd),
                     capabilities=["dispatch", "watch", "attach", "reap"],
                     kind=kind,
+                    source_revision=proof.source_revision,
+                    lifecycle_state=proof.lifecycle_state,
                 )
                 return
             typer.echo(f"herdr target={name} pane={pane} workspace={workspace} bead={bead}")
@@ -2853,6 +3021,7 @@ def _spawn_cmd(
         )
         _require(split, "pane split")
         pane = _required_id(split, "pane split", "pane", "pane_id", "id")
+        created_pane = True
         _require(_command("agent", "start", name, "--kind", kind, "--pane", pane), "agent start")
         _require(_command("pane", "rename", pane, name), "pane rename")
         _tag_ownership(workspace, pane, canonical_hive, bead, name)
@@ -2892,15 +3061,29 @@ def _spawn_cmd(
         if _WARMUP_TOKEN not in visible:
             typer.echo("✗ herdr warm-up did not reach an idle agent prompt", err=True)
             raise typer.Exit(1)
-    except Exception:
-        if pane:
-            _close_pane(pane)
+        proof = _spawn_target_proof(name, workspace, pane)
+    except Exception as exc:
+        cleanup_succeeded = False
+        cleanup_detail = ""
+        if pane and created_pane:
+            cleanup = _command("pane", "close", pane, "--no-focus")
+            cleanup_succeeded = cleanup is not None and cleanup.returncode == 0
+            cleanup_detail = _output(cleanup) if cleanup is not None else "Herdr unavailable"
+        retained = [{"kind": "worktree", "path": str(locals()["cwd"])}] if "cwd" in locals() else []
+        if pane and (not created_pane or not cleanup_succeeded):
+            retained.append({"kind": "pane", "id": pane, "target": locals().get("name")})
         if as_json:
+            readiness = exc if isinstance(exc, _SpawnReadinessError) else None
+            message = (
+                str(readiness)
+                if readiness is not None
+                else "Herdr could not create and warm the requested agent pane."
+            )
             _lifecycle_failure(
                 "spawn",
                 operation_id=op_id,
-                code="spawn_failed",
-                message="Herdr could not create and warm the requested agent pane.",
+                code="spawn_not_dispatchable" if readiness is not None else "spawn_failed",
+                message=message,
                 retryable=False,
                 hive=hive,
                 bead=bead,
@@ -2908,12 +3091,16 @@ def _spawn_cmd(
                 workspace=locals().get("workspace"),
                 pane=pane or None,
                 worktree_path=str(locals()["cwd"]) if "cwd" in locals() else None,
-                retained_resources=(
-                    [{"kind": "worktree", "path": str(locals()["cwd"])}]
-                    if "cwd" in locals()
-                    else []
-                ),
+                retained_resources=retained,
+                resulting_state=(readiness.lifecycle_state if readiness is not None else "unknown"),
+                cleanup={
+                    "attempted": bool(pane and created_pane),
+                    "succeeded": cleanup_succeeded,
+                    "detail": cleanup_detail,
+                },
             )
+        if pane and created_pane and not cleanup_succeeded:
+            typer.echo(f"  retained: pane={pane} target={locals().get('name')}", err=True)
         raise
     if as_json:
         _emit_lifecycle(
@@ -2928,6 +3115,8 @@ def _spawn_cmd(
             worktree_path=str(cwd),
             capabilities=["dispatch", "watch", "attach", "reap"],
             kind=kind,
+            source_revision=proof.source_revision if proof is not None else None,
+            lifecycle_state=proof.lifecycle_state if proof is not None else "unknown",
         )
         return
     typer.echo(f"herdr target={name} pane={pane} workspace={workspace} bead={bead}")

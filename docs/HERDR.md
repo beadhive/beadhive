@@ -123,7 +123,7 @@ sets the ownership line so this remains an optional interactive surface, not a p
 | `bh plugin herdr watch <target>` | `agent wait --until blocked` | For a dispatcher polling loop: block until an agent needs input or finishes |
 | `bh plugin herdr ps` | `agent list` / `api snapshot` | Fleet view: every live herdr-managed agent, its hive/bead if tagged, and its lifecycle state — the natural `bh hive status`-style dashboard row |
 | `bh plugin herdr attach <target>` | prints the `herdr agent attach <target>` command | `bh` itself never takes over a TTY; it tells the human operator what to run |
-| `bh plugin herdr reap <target>` | `pane close` / `workspace close` | Cleanup once a bead's dispatch completes — mirrors `wt_remove`'s hook shape |
+| `bh plugin herdr reap <target>` | exact `pane close` | Cleanup once a bead's dispatch completes; `--pane` accepts the exact locator from a spawn receipt for terminal/idempotent cleanup |
 
 ### Lifecycle hooks (fits the existing `Plugin` dataclass)
 
@@ -246,11 +246,16 @@ safe `--operation-id`; otherwise `bh` mints one. Exit 0 means a successful obser
 or defined no-op. Exit 1 means a runtime failure, timeout, stale target, or authority refusal.
 Exit 2 means invalid input. Error codes, not messages, are the machine decision surface.
 
-Read operations (`status`, `ps`, `attach`, and `watch`) are idempotent. `spawn` is a get-or-create
-operation: it returns `created` or reuses only a strictly proven live target and returns `reused`.
-`reap` closes only a currently proven bh-owned pane; stale, missing, unmanaged, and ambiguous
-targets are refusals that preserve every pane and worktree. `dispatch` is intentionally
-non-idempotent. A verified instruction returns `dispatched`; an unverified delivery returns
+Read operations (`status`, `ps`, `attach`, and `watch`) are idempotent. After warm-up, `spawn`
+rereads the authoritative roster and returns `created` or `reused` only when the exact target and
+pane are currently idle, bh-owned, and dispatch-advertised. A blocked, terminal, missing, moved,
+or ambiguous startup is a failure. The new pane is closed exactly; if that close fails, its pane
+and target are listed in `retained_resources`. `reap` without `--pane` keeps the strict live proof.
+A caller holding a spawn receipt may pass its exact `.pane` with `--pane`; this permits cleanup of
+that same explicitly plugin-marked blocked or terminal pane and makes an already-absent pane a
+successful `already_reaped` no-op. Partial, stale, foreign, and ambiguous matches remain refusals
+that preserve every pane and worktree. `dispatch` is intentionally non-idempotent. A verified
+instruction returns `dispatched`; an unverified delivery returns
 `dispatch_unverified` with `retryable: false`, because blindly retrying could create a duplicate
 turn. Both mutating commands rebuild the current live roster and require the same metadata,
 managed-worktree, session, workspace, pane, and lifecycle proof used by their advertised actions
