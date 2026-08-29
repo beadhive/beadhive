@@ -792,6 +792,43 @@ def test_route_native_when_hitch_disabled(monkeypatch, capsys):
     assert "native backend" in capsys.readouterr().out
 
 
+def test_route_consumes_pre_resolved_profile_without_reparsing(monkeypatch, capsys):
+    resolved = role.resolve_launch_profile(
+        role.build_launch_profile(
+            "developer",
+            harness="claude",
+            managed_bead=True,
+            bead="bh-wi2os.9",
+            available_seats=("developer", "reviewer"),
+        ),
+        current_seat="reviewer",
+    )
+    monkeypatch.setattr(role, "_known_seats", lambda: ["developer", "reviewer"])
+    monkeypatch.setattr(
+        role,
+        "build_launch_profile",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("profile rebuilt")),
+    )
+    launch_calls = []
+    monkeypatch.setattr(
+        role,
+        "launch",
+        lambda *args, **kwargs: launch_calls.append((args, kwargs)),
+    )
+
+    hitch_plugin.route(
+        "developer",
+        no_hitch=True,
+        cfg={},
+        managed_bead=True,
+        bead="bh-wi2os.9",
+        resolved_profile=resolved,
+    )
+
+    assert launch_calls == [(("reviewer",), {"harness": None, "resolved_profile": resolved})]
+    assert "reviewer: launching via native backend" in capsys.readouterr().out
+
+
 def test_route_picks_hitch_when_enabled_and_profile_matches(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(role, "_known_seats", lambda: ["developer"])
     launch_calls = []

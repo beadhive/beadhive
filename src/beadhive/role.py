@@ -242,6 +242,7 @@ def launch(
     current_seat: str | None = None,
     model: str | None = None,
     effort: str | None = None,
+    resolved_profile: ResolvedAgentLaunchProfile | None = None,
 ) -> None:
     """Launch *role* under a harness, or list available seats when role is falsy.
 
@@ -253,6 +254,11 @@ def launch(
     error and exits non-zero. On a valid role + harness, execs the seat with
     inherited stdio (interactive hand-over) and propagates the exit code.
     """
+    if resolved_profile is not None:
+        # This object is the authoritative result of pre-mutation CLI preflight.  Do not let
+        # the raw compatibility arguments select a different seat or harness afterward.
+        role = resolved_profile.current_seat
+        harness = resolved_profile.harness
     seats = _known_seats()
 
     if not role:
@@ -306,10 +312,11 @@ def launch(
     # ``None`` is the compatibility spelling used by pre-profile callers. It is deliberately
     # kept at this Python seam while every explicit profile request is strict. The CLI supplies
     # the boolean, so first-class ``bh role`` sessions always take the validated path.
-    if managed_bead is None:
+    if resolved_profile is None and managed_bead is None:
         argv = _harness_argv(harness, role)
         active_seat = role
-    else:
+        resolved = None
+    elif resolved_profile is None:
         try:
             profile = build_launch_profile(
                 role,
@@ -326,8 +333,14 @@ def launch(
             raise SystemExit(1) from None
         argv = _profile_harness_argv(resolved)
         active_seat = resolved.current_seat
+    else:
+        # The CLI resolved this immutable profile before it claimed or changed workspaces.
+        # Consume that exact result; rebuilding here would reopen a post-mutation parse path.
+        resolved = resolved_profile
+        argv = _profile_harness_argv(resolved)
+        active_seat = resolved.current_seat
     env = harness_env(active_seat)
-    if managed_bead is not None:
+    if resolved is not None:
         # The child receives portable proof of the effective launch.  Legacy/external
         # harnesses receive no receipt and therefore remain explicitly unmanaged.
         env["BH_AGENT_LAUNCH_RECEIPT"] = AgentLaunchReceipt.from_resolved(

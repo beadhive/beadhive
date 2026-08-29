@@ -403,6 +403,7 @@ def route(
     current_seat: str | None = None,
     model: str | None = None,
     effort: str | None = None,
+    resolved_profile: role.ResolvedAgentLaunchProfile | None = None,
 ) -> None:
     """``bh role <seat>``'s unified entry point. An unknown (non-empty) seat delegates straight
     to :func:`beadhive.role.launch` unchanged — nothing to pick a backend for. The bare listing
@@ -431,9 +432,12 @@ def route(
         return
 
     cfg = cfg if cfg is not None else config.load()
-    resolved_harness = harness or config.harness_name(cfg)
-    resolved_profile = None
-    if managed_bead is not None:
+    resolved_harness = (
+        resolved_profile.harness
+        if resolved_profile is not None
+        else harness or config.harness_name(cfg)
+    )
+    if resolved_profile is None and managed_bead is not None:
         try:
             profile = role.build_launch_profile(
                 seat,
@@ -448,6 +452,7 @@ def route(
         except ValueError as exc:
             typer.echo(f"✗ invalid agent launch profile: {exc}", err=True)
             raise typer.Exit(1) from None
+    if resolved_profile is not None:
         seat = resolved_profile.current_seat
     backend, hitch_target, profile = (
         ("native", None, None) if no_hitch else _resolve_backend(seat, resolved_harness, cfg)
@@ -464,16 +469,7 @@ def route(
     if resolved_profile is None:
         role.launch(seat, harness=harness)
         return
-    role.launch(
-        seat,
-        harness=harness,
-        managed_bead=resolved_profile.managed_bead if resolved_profile else None,
-        bead=resolved_profile.bead if resolved_profile else None,
-        available_seats=resolved_profile.available_seats if resolved_profile else None,
-        current_seat=seat if resolved_profile else None,
-        model=resolved_profile.model if resolved_profile else None,
-        effort=resolved_profile.effort if resolved_profile else None,
-    )
+    role.launch(seat, harness=harness, resolved_profile=resolved_profile)
 
 
 # ---- seat-runnability reporting (bh-og0q.4) ---------------------------------------------------
