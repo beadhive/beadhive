@@ -880,12 +880,67 @@ def _workspace(hive: str, cwd: Path) -> tuple[str, str]:
     return workspace_id, pane_id
 
 
-def _managed_worktree(hive: str, bead: str, cfg=None) -> tuple[dict, Path]:
-    """Resolve, but never provision, a claimed native bh worktree for ``bead``."""
+class _ManagedWorktreeRefusal(ValueError):
+    """A requested bead does not prove one authoritative claimed worktree."""
+
+
+def _batch_groups(issue: dict) -> list[str]:
+    """Return distinct non-empty ``batch:`` groups, preserving their declared order."""
+    groups: dict[str, None] = {}
+    for label in issue.get("labels", []) or []:
+        text = str(label)
+        if text.startswith("batch:") and text.removeprefix("batch:"):
+            groups.setdefault(text.removeprefix("batch:"), None)
+    return list(groups)
+
+
+def _managed_worktree_location(
+    hive: str, bead: str, cfg=None, *, require_claim: bool = False
+) -> tuple[dict, Path, Path, str]:
+    """Resolve a bead's authoritative native worktree without provisioning it.
+
+    A batch member retains its requested child identity while resolving to the group's single
+    ``wt/batch/<group>`` checkout.  Resolution is intentionally scoped to the requested hive: it
+    never scans another hive or guesses from a same-named worktree leaf.
+    """
+    from . import work_group
+
     cfg = cfg if cfg is not None else config.load()
-    entry, _main, target, _branch = worktree.locate(cfg, hive, bead)
+    entry, main, target, branch = worktree.locate(cfg, hive, bead)
+    issue = bd.show(bead, main, strict=True)
+    if not issue:
+        raise _ManagedWorktreeRefusal(f"{bead} does not exist in {hive}")
+    groups = _batch_groups(issue)
+    if len(groups) > 1:
+        raise _ManagedWorktreeRefusal(f"{bead} has ambiguous batch membership: {', '.join(groups)}")
+    if require_claim and (
+        str(issue.get("status") or "").lower() != "in_progress"
+        or not str(issue.get("assignee") or "").strip()
+    ):
+        raise _ManagedWorktreeRefusal(f"{bead} is not actively claimed")
+    if groups:
+        entry, main, target, branch = worktree.locate(
+            cfg, hive, branch=f"{work_group.BATCH_PREFIX}{groups[0]}"
+        )
+    return entry, main, target, branch
+
+
+def _managed_worktree(hive: str, bead: str, cfg=None) -> tuple[dict, Path]:
+    """Resolve, but never provision, the exact actively claimed worktree for ``bead``."""
+    try:
+        entry, _main, target, branch = _managed_worktree_location(
+            hive, bead, cfg, require_claim=True
+        )
+    except (OSError, RuntimeError, TypeError, ValueError, typer.Exit):
+        typer.echo(f"✗ no managed bh worktree for {bead} in {hive} — claim it first", err=True)
+        raise typer.Exit(1) from None
     if not target.is_dir() or not (target / ".git").exists():
         typer.echo(f"✗ no managed bh worktree for {bead} in {hive} — claim it first", err=True)
+        raise typer.Exit(1)
+    if worktree.current_branch(target) != branch:
+        typer.echo(
+            f"✗ no managed bh worktree for {bead} in {hive} — expected branch {branch}", err=True
+        )
         raise typer.Exit(1)
     return entry, target
 
@@ -1207,8 +1262,8 @@ def _roster_agent(
     expected: Path | None = None
     if association != "none" and hive and bead:
         try:
-            _entry, main, expected, branch = worktree.locate(cfg, hive, bead)
-        except (KeyError, TypeError, ValueError, typer.Exit):
+            _entry, main, expected, branch = _managed_worktree_location(hive, bead, cfg)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError, typer.Exit):
             reason = "ownership metadata names an unknown or ambiguous hive"
         else:
             expected_key = str(expected.resolve())
@@ -2759,9 +2814,12 @@ def _spawn_cmd(
     try:
         cfg = config.load()
         entry, cwd = _managed_worktree(hive, bead, cfg)
+        canonical_hive = (
+            _hive_id(entry) if all(key in entry for key in ("provider", "org", "repo")) else hive
+        )
         kind = _resolve_kind(kind, cfg, entry)
         name = _launch_target(bead)
-        existing = _strict_live_target(name, hive, cwd)
+        existing = _strict_live_target(name, canonical_hive, cwd)
         if existing is not None:
             workspace, pane = existing
             if as_json:
@@ -2781,7 +2839,7 @@ def _spawn_cmd(
                 return
             typer.echo(f"herdr target={name} pane={pane} workspace={workspace} bead={bead}")
             return
-        workspace, root_pane = _workspace(hive, cwd)
+        workspace, root_pane = _workspace(canonical_hive, cwd)
         split = _command(
             "pane",
             "split",
@@ -2797,9 +2855,6 @@ def _spawn_cmd(
         pane = _required_id(split, "pane split", "pane", "pane_id", "id")
         _require(_command("agent", "start", name, "--kind", kind, "--pane", pane), "agent start")
         _require(_command("pane", "rename", pane, name), "pane rename")
-        canonical_hive = (
-            _hive_id(entry) if all(key in entry for key in ("provider", "org", "repo")) else hive
-        )
         _tag_ownership(workspace, pane, canonical_hive, bead, name)
         _require(
             _command(

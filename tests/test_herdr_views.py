@@ -319,9 +319,9 @@ def test_real_roster_revision_invalidates_deck_cursor_on_agent_change(
         "workspaces": [{"workspace_id": "w1", "label": f"bh:{HIVE}"}],
     }
     monkeypatch.setattr(
-        herdr_plugin.worktree,
-        "locate",
-        lambda *_args: ({}, tmp_path, cwd, "wt/bead/issue/widget-1"),
+        herdr_plugin,
+        "_managed_worktree_location",
+        lambda *_args, **_kwargs: ({}, tmp_path, cwd, "wt/bead/issue/widget-1"),
     )
     monkeypatch.setattr(
         herdr_plugin.worktree,

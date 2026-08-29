@@ -796,6 +796,19 @@ def _spawn_worktree(tmp_path, monkeypatch):
         "locate",
         lambda *_args: ({}, tmp_path, target, "wt/bead/issue/bh-1"),
     )
+    monkeypatch.setattr(
+        herdr_plugin.bd,
+        "show",
+        lambda *_args, **_kwargs: {
+            "id": "bh-1",
+            "status": "in_progress",
+            "assignee": "dev/test",
+            "labels": [],
+        },
+    )
+    monkeypatch.setattr(
+        herdr_plugin.worktree, "current_branch", lambda _target: "wt/bead/issue/bh-1"
+    )
     return target
 
 
@@ -829,9 +842,9 @@ def _owned_dispatch_target(tmp_path, monkeypatch):
     monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
     monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
     monkeypatch.setattr(
-        herdr_plugin.worktree,
-        "locate",
-        lambda *_args: ({}, tmp_path, cwd, branch),
+        herdr_plugin,
+        "_managed_worktree_location",
+        lambda *_args, **_kwargs: ({}, tmp_path, cwd, branch),
     )
     monkeypatch.setattr(
         herdr_plugin.worktree,
@@ -2052,9 +2065,9 @@ def test_reap_accepts_owned_metadata_on_an_agent_wrapper(tmp_path, monkeypatch):
     monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
     monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
     monkeypatch.setattr(
-        herdr_plugin.worktree,
-        "locate",
-        lambda *_args: ({}, tmp_path, cwd, branch),
+        herdr_plugin,
+        "_managed_worktree_location",
+        lambda *_args, **_kwargs: ({}, tmp_path, cwd, branch),
     )
     monkeypatch.setattr(
         herdr_plugin.worktree,
@@ -2447,12 +2460,195 @@ def _roster_snapshot(target, cwd, *, hive="github/acme/widgets", bead="widget-1"
     }
 
 
+def test_collapsed_batch_spawn_ps_dispatch_and_cleanup_keep_child_identity_and_session(
+    tmp_path, monkeypatch
+):
+    """The Herdr lifecycle follows one claimed group worktree without minting a child branch."""
+    child = "widget-1.2"
+    group = "widget-1"
+    canonical_hive = "github/acme/widgets"
+    branch = f"wt/batch/{group}"
+    batch = tmp_path / f"batch-{group}"
+    batch.mkdir()
+    (batch / ".git").write_text("gitdir: elsewhere\n")
+    dedicated = tmp_path / child
+    entry = {"provider": "github", "org": "acme", "repo": "widgets"}
+    cfg = {"managed_repos": [entry]}
+    issue = {
+        "id": child,
+        "status": "in_progress",
+        "assignee": "dev/group",
+        "labels": [f"batch:{group}"],
+    }
+
+    def locate(_cfg, hive, bead="", branch="", **_kwargs):
+        assert hive in {"widgets", canonical_hive}
+        if branch:
+            assert branch == f"batch/{group}"
+            return entry, tmp_path, batch, f"wt/{branch}"
+        assert bead == child
+        return entry, tmp_path, dedicated, f"wt/bead/issue/{child}"
+
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: cfg)
+    monkeypatch.setattr(herdr_plugin.worktree, "locate", locate)
+    monkeypatch.setattr(herdr_plugin.worktree, "current_branch", lambda _path: branch)
+    monkeypatch.setattr(
+        herdr_plugin.worktree, "managed", lambda _cfg: [("widget", str(batch), branch)]
+    )
+    monkeypatch.setattr(herdr_plugin.bd, "show", lambda *_args, **_kwargs: issue)
+    monkeypatch.setattr(herdr_plugin, "_prepare_selected_session", lambda: ({}, ""))
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_resolve_kind", lambda kind, *_args: kind)
+    workspaces = []
+
+    def workspace(hive, cwd):
+        workspaces.append((hive, cwd))
+        return "w1", "w1:p1"
+
+    monkeypatch.setattr(herdr_plugin, "_workspace", workspace)
+
+    def spawn_command(*args, **_kwargs):
+        if args[:2] == ("pane", "split"):
+            assert str(batch) in args
+            return _result(stdout='{"pane":{"pane_id":"w1:p2"}}')
+        if args[:2] == ("agent", "read"):
+            return _result(stdout=f"assistant: {herdr_plugin._WARMUP_TOKEN}")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", spawn_command)
+    spawned = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "spawn",
+            "--hive",
+            "widgets",
+            "--bead",
+            child,
+            "--kind",
+            "codex",
+            "--session",
+            "batch-session",
+            "--json",
+        ],
+    )
+
+    assert spawned.exit_code == 0, spawned.output
+    receipt = json.loads(spawned.stdout)
+    assert receipt["bead"] == child
+    assert receipt["hive"] == "widgets"  # echoes the exact --hive requested, not the canonical form
+    assert receipt["session"] == "batch-session"
+    assert receipt["worktree"] == str(batch)
+    assert not dedicated.exists()
+    assert workspaces == [(canonical_hive, batch)]
+
+    target = herdr_plugin._launch_target(child)
+    snapshot = _roster_snapshot(target, batch, hive=canonical_hive, bead=child)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    listed = runner.invoke(app, ["plugin", "herdr", "ps", "--session", "batch-session", "--json"])
+    assert listed.exit_code == 0, listed.output
+    agent = json.loads(listed.stdout)["agents"][0]
+    assert agent["bead"] == child
+    assert agent["presentation"]["session"] == "batch-session"
+    assert agent["worktree"] == {"path": str(batch), "state": "available", "branch": branch}
+    assert agent["ownership"]["state"] == "owned"
+
+    reads = iter(["agent: idle", "user: continue\nassistant: working"])
+    calls = []
+
+    def lifecycle_command(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("agent", "read"):
+            return _result(stdout=next(reads))
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", lifecycle_command)
+    dispatched = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "dispatch",
+            target,
+            "continue",
+            "--session",
+            "batch-session",
+            "--json",
+        ],
+    )
+    reaped = runner.invoke(
+        app,
+        ["plugin", "herdr", "reap", target, "--session", "batch-session", "--json"],
+    )
+    assert dispatched.exit_code == 0, dispatched.output
+    assert json.loads(dispatched.stdout)["session"] == "batch-session"
+    assert reaped.exit_code == 0, reaped.output
+    assert json.loads(reaped.stdout)["session"] == "batch-session"
+    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+
+
+@pytest.mark.parametrize(
+    ("issue", "make_batch", "requested_hive"),
+    [
+        (
+            {"id": "widget-1.2", "status": "open", "assignee": "", "labels": ["batch:g"]},
+            True,
+            "github/acme/widgets",
+        ),
+        (
+            {
+                "id": "widget-1.2",
+                "status": "in_progress",
+                "assignee": "dev/group",
+                "labels": ["batch:g", "batch:other"],
+            },
+            True,
+            "github/acme/widgets",
+        ),
+        (
+            {
+                "id": "widget-1.2",
+                "status": "in_progress",
+                "assignee": "dev/group",
+                "labels": ["batch:g", "review:pending"],
+            },
+            False,
+            "github/acme/widgets",
+        ),
+        (None, True, "github/acme/other"),
+    ],
+    ids=("unclaimed", "ambiguous", "submitted_without_worktree", "cross_hive"),
+)
+def test_batch_spawn_refuses_unproven_worktree_matches(
+    tmp_path, monkeypatch, issue, make_batch, requested_hive
+):
+    child = "widget-1.2"
+    batch = tmp_path / "batch-g"
+    if make_batch:
+        batch.mkdir()
+        (batch / ".git").write_text("gitdir: elsewhere\n")
+
+    def locate(_cfg, _hive, bead="", branch="", **_kwargs):
+        target = batch if branch else tmp_path / child
+        resolved_branch = f"wt/{branch}" if branch else f"wt/bead/issue/{bead}"
+        return {}, tmp_path, target, resolved_branch
+
+    monkeypatch.setattr(herdr_plugin.worktree, "locate", locate)
+    monkeypatch.setattr(herdr_plugin.worktree, "current_branch", lambda _path: "wt/batch/g")
+    monkeypatch.setattr(herdr_plugin.bd, "show", lambda *_args, **_kwargs: issue)
+
+    with pytest.raises(typer.Exit):
+        herdr_plugin._managed_worktree(requested_hive, child, {})
+
+
 def _mock_roster_worktree(monkeypatch, root, cwd, bead):
     branch = f"wt/bead/issue/{bead}"
     monkeypatch.setattr(
-        herdr_plugin.worktree,
-        "locate",
-        lambda *_args: ({}, root, cwd, branch),
+        herdr_plugin,
+        "_managed_worktree_location",
+        lambda *_args, **_kwargs: ({}, root, cwd, branch),
     )
     monkeypatch.setattr(
         herdr_plugin.worktree,
