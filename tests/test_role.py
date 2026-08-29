@@ -905,6 +905,76 @@ def test_cli_role_invalid_profile_never_reaches_workspace_claim_or_backend(monke
 
 
 @pytest.mark.parametrize(
+    "args",
+    [
+        ["role", "--bead", "bh-wi2os.9"],
+        ["role", "--hive", "bh"],
+        [
+            "role",
+            "--bead",
+            "bh-wi2os.9",
+            "--current-seat",
+            "supervisor",
+            "--model=--danger",
+        ],
+        [
+            "role",
+            "--hive",
+            "bh",
+            "--available-seat",
+            "planner",
+            "--effort",
+            "turbo",
+        ],
+    ],
+)
+def test_cli_role_empty_seat_launch_flags_never_reach_any_mutation_surface(monkeypatch, args):
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    calls = []
+    monkeypatch.setattr(cli, "_apply_role_workspace", lambda *a: calls.append(("workspace", a)))
+    monkeypatch.setattr(cli.work, "claim", lambda **kw: calls.append(("claim", kw)))
+    monkeypatch.setattr(hitch_plugin, "route", lambda *a, **kw: calls.append(("route", a, kw)))
+    monkeypatch.setattr(hitch_plugin, "up", lambda *a, **kw: calls.append(("hitch", a, kw)))
+    monkeypatch.setattr(role, "launch", lambda *a, **kw: calls.append(("native", a, kw)))
+
+    result = cli_runner.invoke(app, args)
+
+    assert result.exit_code == 1, result.output
+    assert "a seat is required" in result.output
+    assert calls == []
+
+
+@pytest.mark.parametrize("args", [["role"], ["role", "--seats"]])
+def test_cli_role_empty_seat_listing_modes_remain_read_only(monkeypatch, args):
+    from beadhive import cli, hitch_plugin
+
+    monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setattr(
+        cli,
+        "_apply_role_workspace",
+        lambda *_a: pytest.fail("listing applied a workspace"),
+    )
+    monkeypatch.setattr(cli.work, "claim", lambda **_kw: pytest.fail("listing claimed a bead"))
+    monkeypatch.setattr(
+        hitch_plugin, "up", lambda *_a, **_kw: pytest.fail("listing launched Hitch")
+    )
+    monkeypatch.setattr(role, "launch", lambda *_a, **_kw: pytest.fail("listing launched native"))
+    monkeypatch.setattr(
+        hitch_plugin,
+        "_seat_listing_lines",
+        lambda _cfg, _harness, *, full: [f"planner — listing-full={full}"],
+    )
+
+    result = cli_runner.invoke(app, args)
+
+    assert result.exit_code == 0, result.output
+    assert "Available seats:" in result.output
+    assert f"listing-full={args == ['role', '--seats']}" in result.output
+
+
+@pytest.mark.parametrize(
     ("args", "current_seat", "managed_bead"),
     [
         (
