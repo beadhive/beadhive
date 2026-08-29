@@ -634,6 +634,9 @@ def _role_headless(
             baml_required=baml_required,
             no_hitch=no_hitch,
         )
+        launch_receipt = role_mod.AgentLaunchReceipt.from_resolved(
+            resolved_profile
+        ).model_dump_json()
     except role_execution.RoleLaunchRefused as exc:
         typer.echo(f"✗ {exc.code}: {exc.detail}", err=True)
         raise typer.Exit(1) from None
@@ -661,15 +664,16 @@ def _role_headless(
 
     if plan.backend == "hitch":
         # hitch has no instructions-file flag; the SAME pointer travels as its --task string.
-        code = hitch_plugin.up(
-            resolved_harness,
-            seat,
-            cfg,
-            workspace=os.getcwd(),
-            task=instructions,
-            detached=detached,
-            role_=seat,
-        )
+        with hitch_plugin.scoped_launch_receipt(launch_receipt):
+            code = hitch_plugin.up(
+                resolved_harness,
+                seat,
+                cfg,
+                workspace=os.getcwd(),
+                task=instructions,
+                detached=detached,
+                role_=seat,
+            )
         if code != 0:
             raise typer.Exit(code)
         return
@@ -695,6 +699,7 @@ def _role_headless(
         )
     )
     launch_env = child_env()
+    launch_env["BH_AGENT_LAUNCH_RECEIPT"] = launch_receipt
     if qualified is not None:
         if entry is None:
             typer.echo("✗ launch_context_unavailable: workspace is not a registered hive", err=True)
