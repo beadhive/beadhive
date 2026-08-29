@@ -2152,7 +2152,7 @@ def _launch_cmd(
     payload = result.payload()
     if exact_profile is not None:
         payload["agent_launch_receipt"] = build_herdr_launch_receipt(
-            resolved_profile, exact_profile, pane_id=result.pane
+            resolved_profile, exact_profile, pane_id=result.pane, observation=_snapshot
         ).model_dump(mode="json")
     if as_json:
         jsonout.emit(payload)
