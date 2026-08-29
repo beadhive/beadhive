@@ -1273,6 +1273,19 @@ def test_generic_profile_switch_reaches_native_backend(monkeypatch):
         "high",
     ]
     assert mock_run.call_args.kwargs["env"]["BH_ROLE"] == "reviewer"
+    receipt = json.loads(mock_run.call_args.kwargs["env"]["BH_AGENT_LAUNCH_RECEIPT"])
+    assert set(receipt.pop("available_seats")) == {"developer", "reviewer"}
+    assert receipt == {
+        "receipt_type": "beadhive.agent-launch",
+        "version": "1",
+        "managed_bead": True,
+        "bead": "bh-wi2os.2",
+        "initial_seat": "developer",
+        "current_seat": "reviewer",
+        "harness": "claude",
+        "model": "sonnet",
+        "effort": "high",
+    }
 
 
 def test_generic_profile_refuses_unauthorized_switch_before_backend(monkeypatch):

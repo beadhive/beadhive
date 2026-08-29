@@ -11,7 +11,12 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
 
-from .agent_launch_profile import AgentLaunchProfile, resolve_agent_launch_profile
+from .agent_launch_profile import (
+    AgentLaunchProfile,
+    AgentLaunchReceipt,
+    ResolvedAgentLaunchProfile,
+    resolve_agent_launch_profile,
+)
 
 HerdrProfileVersion = Literal["1"]
 ExactHerdrIdentity = Annotated[
@@ -62,6 +67,105 @@ class HerdrAgentLaunchProfile(AgentLaunchProfile):
             if create.space_id != self.space_id:
                 raise ValueError("pane_create belongs to a different Herdr Space")
         return self
+
+
+class HerdrAgentLaunchReceipt(BaseModel):
+    """Typed Herdr extension around an independently valid core receipt."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    receipt_type: Literal["beadhive.herdr-agent-launch"] = "beadhive.herdr-agent-launch"
+    version: HerdrProfileVersion = "1"
+    core: AgentLaunchReceipt
+    herdr_session: ExactHerdrIdentity
+    space_id: ExactHerdrIdentity
+    space_revision: ExactHerdrIdentity
+    pane_id: ExactHerdrIdentity
+
+
+def build_herdr_launch_receipt(
+    resolved: ResolvedAgentLaunchProfile,
+    profile: HerdrAgentLaunchProfile,
+    *,
+    pane_id: str,
+    observation: dict,
+) -> HerdrAgentLaunchReceipt:
+    """Bind redacted core facts to observed Herdr identity, not requested labels."""
+
+    core = AgentLaunchReceipt.from_resolved(resolved)
+    if core.managed_bead != profile.managed_bead or core.bead != profile.bead:
+        raise ValueError("resolved launch conflicts with Herdr profile bead identity")
+    if core.initial_seat != profile.initial_seat or core.harness != profile.harness:
+        raise ValueError("resolved launch conflicts with Herdr profile policy")
+    if profile.pane_id is not None and pane_id != profile.pane_id:
+        raise ValueError("resolved pane conflicts with exact Herdr reuse target")
+    validate_herdr_observation(profile, observation)
+    observed_session = observation.get("session", observation.get("session_name"))
+    observed_revision = observation.get("revision")
+    return HerdrAgentLaunchReceipt(
+        core=core,
+        herdr_session=observed_session,
+        space_id=profile.space_id,
+        space_revision=observed_revision,
+        pane_id=pane_id,
+    )
+
+
+def parse_herdr_launch_receipt(payload: str | bytes | dict) -> HerdrAgentLaunchReceipt:
+    """Strictly parse the Herdr extension without weakening core validation."""
+
+    if isinstance(payload, (str, bytes)):
+        return HerdrAgentLaunchReceipt.model_validate_json(payload)
+    return HerdrAgentLaunchReceipt.model_validate(payload)
+
+
+def validate_herdr_receipt_observation(receipt: HerdrAgentLaunchReceipt, snapshot: dict) -> None:
+    """Verify a receipt against one authoritative Herdr observation.
+
+    Shape validation alone cannot establish freshness or correlation. Consumers must
+    use this fence (or ``consume_herdr_launch_receipt``) before treating a receipt as
+    managed presentation evidence.
+    """
+
+    session = snapshot.get("session", snapshot.get("session_name"))
+    if session != receipt.herdr_session:
+        raise ValueError("receipt belongs to a different Herdr session")
+    if snapshot.get("revision") != receipt.space_revision:
+        raise ValueError("receipt Herdr Space revision is stale")
+    spaces = snapshot.get("spaces", snapshot.get("workspaces"))
+    if not isinstance(spaces, list):
+        raise ValueError("observation does not contain a complete Space inventory")
+    space_matches = [
+        item
+        for item in spaces
+        if isinstance(item, dict)
+        and item.get("space_id", item.get("workspace_id", item.get("id"))) == receipt.space_id
+    ]
+    if len(space_matches) != 1:
+        raise ValueError("receipt Herdr Space correlation is missing or ambiguous")
+    panes = snapshot.get("panes")
+    if not isinstance(panes, list):
+        raise ValueError("observation does not contain a complete pane inventory")
+    pane_matches = [
+        item
+        for item in panes
+        if isinstance(item, dict) and item.get("pane_id", item.get("id")) == receipt.pane_id
+    ]
+    if len(pane_matches) != 1:
+        raise ValueError("receipt Herdr pane correlation is missing or ambiguous")
+    pane_space = pane_matches[0].get("space_id", pane_matches[0].get("workspace_id"))
+    if pane_space != receipt.space_id:
+        raise ValueError("receipt Herdr pane belongs to a different Space")
+
+
+def consume_herdr_launch_receipt(
+    payload: str | bytes | dict, snapshot: dict
+) -> HerdrAgentLaunchReceipt:
+    """Parse and observation-fence an extended receipt in one fail-closed operation."""
+
+    receipt = parse_herdr_launch_receipt(payload)
+    validate_herdr_receipt_observation(receipt, snapshot)
+    return receipt
 
 
 def resolve_herdr_launch_profile(profile: HerdrAgentLaunchProfile):
