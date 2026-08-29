@@ -198,6 +198,10 @@ Optional presentation hosts extend the contract by composition. They keep the in
 valid core receipt in a typed `core` member and use a distinct `receipt_type`; core code does not
 import, recognize, or ignore host fields. Herdr's extension is implemented in
 `beadhive.herdr_launch_profile` and adds only exact session, Space revision, and pane correlation.
+Shape parsing is not proof that those facts remain current: Herdr consumers use
+`consume_herdr_launch_receipt(payload, snapshot)` to compare all four correlation facts with an
+authoritative observation. A stale revision or missing, ambiguous, cross-session, or cross-Space
+target is refused rather than classified as managed.
 
 Canonical verb vocabulary is reused everywhere (`add` / `rm` / `list` / `show` / `status` /
 `init`); "many" is a `list` verb (+ mode flags) or `--all`, never a pluralized command name.

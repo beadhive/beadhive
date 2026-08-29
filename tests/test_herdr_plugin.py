@@ -15,6 +15,7 @@ from typer.testing import CliRunner
 
 from beadhive import guard, herdr_plugin, herdr_views, plugins, registry, work
 from beadhive.cli import app
+from beadhive.herdr_launch_profile import consume_herdr_launch_receipt
 
 runner = CliRunner()
 _LIFECYCLE_SCHEMA_PATH = (
@@ -2581,6 +2582,9 @@ def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch
     assert receipt["core"]["model"] == "gpt-5.6"
     assert receipt["core"]["effort"] == "high"
     assert "argv" not in json.dumps(receipt)
+    post_create = _exact_snapshot()
+    post_create["panes"].append({"pane_id": "w1:p2", "space_id": "w1"})
+    assert consume_herdr_launch_receipt(receipt, post_create).pane_id == "w1:p2"
     split = next(call for call in calls if call[:2] == ("pane", "split"))
     assert split[split.index("--pane") + 1] == "w1:p1"
     assert split[split.index("--cwd") + 1] == str(claim.worktree)
@@ -2619,6 +2623,10 @@ def test_launch_exact_profile_reuses_only_correlated_pane(tmp_path, monkeypatch)
     assert payload["pane"] == "w1:p7"
     assert payload["agent_launch_receipt"]["pane_id"] == "w1:p7"
     assert payload["agent_launch_receipt"]["core"]["model"] == "gpt-5.6"
+    assert (
+        consume_herdr_launch_receipt(payload["agent_launch_receipt"], _exact_snapshot()).pane_id
+        == "w1:p7"
+    )
 
 
 def test_launch_exact_create_race_fails_at_last_safe_point_without_mutation(tmp_path, monkeypatch):

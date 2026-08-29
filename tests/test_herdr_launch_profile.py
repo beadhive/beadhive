@@ -9,6 +9,7 @@ from beadhive.herdr_launch_profile import (
     HerdrAgentLaunchReceipt,
     HerdrPaneCreateTarget,
     build_herdr_launch_receipt,
+    consume_herdr_launch_receipt,
     parse_herdr_launch_receipt,
     resolve_herdr_launch_profile,
     validate_herdr_observation,
@@ -128,7 +129,9 @@ def test_plain_core_profile_is_not_an_implicit_herdr_request():
 def test_extended_receipt_preserves_strict_base_and_exact_correlation():
     profile = HerdrAgentLaunchProfile(**_base())
     resolved, _ = resolve_herdr_launch_profile(profile)
-    receipt = build_herdr_launch_receipt(resolved, profile, pane_id="pane-2")
+    receipt = build_herdr_launch_receipt(
+        resolved, profile, pane_id="pane-2", observation=_snapshot()
+    )
     assert parse_herdr_launch_receipt(receipt.model_dump_json()) == receipt
     assert receipt.core.managed_bead is True
     assert receipt.core.bead == "bh-123"
@@ -139,7 +142,9 @@ def test_extended_receipt_preserves_strict_base_and_exact_correlation():
 def test_extended_receipt_additive_evolution_and_conflicts_fail_closed():
     profile = HerdrAgentLaunchProfile(**_base())
     resolved, _ = resolve_herdr_launch_profile(profile)
-    receipt = build_herdr_launch_receipt(resolved, profile, pane_id="pane-2")
+    receipt = build_herdr_launch_receipt(
+        resolved, profile, pane_id="pane-2", observation=_snapshot()
+    )
     payload = receipt.model_dump()
     with pytest.raises(ValidationError):
         parse_herdr_launch_receipt({**payload, "future": True})
@@ -148,4 +153,86 @@ def test_extended_receipt_additive_evolution_and_conflicts_fail_closed():
             {**payload, "core": {**payload["core"], "bead": "not exact"}}
         )
     with pytest.raises(ValueError, match="pane conflicts"):
-        build_herdr_launch_receipt(resolved, profile, pane_id="pane-other")
+        build_herdr_launch_receipt(resolved, profile, pane_id="pane-other", observation=_snapshot())
+
+
+def test_receipt_consumer_accepts_authoritative_reuse_and_create_observations():
+    reuse_profile = HerdrAgentLaunchProfile(**_base())
+    reuse_resolved, _ = resolve_herdr_launch_profile(reuse_profile)
+    reuse = build_herdr_launch_receipt(
+        reuse_resolved, reuse_profile, pane_id="pane-2", observation=_snapshot()
+    )
+    assert consume_herdr_launch_receipt(reuse.model_dump(), _snapshot()) == reuse
+
+    create_profile = HerdrAgentLaunchProfile(
+        **_base(
+            pane_id=None,
+            pane_create={
+                "herdr_session": "team-a",
+                "space_id": "space-7",
+                "after_pane_id": "pane-2",
+            },
+        )
+    )
+    create_resolved, _ = resolve_herdr_launch_profile(create_profile)
+    created = build_herdr_launch_receipt(
+        create_resolved,
+        create_profile,
+        pane_id="pane-3",
+        observation=_snapshot(),
+    )
+    post_create = _snapshot(
+        panes=[
+            {"pane_id": "pane-2", "space_id": "space-7"},
+            {"pane_id": "pane-3", "space_id": "space-7"},
+        ]
+    )
+    assert consume_herdr_launch_receipt(created.model_dump_json(), post_create) == created
+
+
+@pytest.mark.parametrize(
+    ("snapshot", "message"),
+    [
+        (_snapshot(session="team-b"), "different Herdr session"),
+        (_snapshot(revision="stale-revision"), "revision is stale"),
+        (_snapshot(spaces=[]), "Space correlation is missing"),
+        (
+            _snapshot(spaces=[{"space_id": "space-7"}, {"space_id": "space-7"}]),
+            "Space correlation is missing or ambiguous",
+        ),
+        (_snapshot(panes=[]), "pane correlation is missing"),
+        (
+            _snapshot(
+                panes=[
+                    {"pane_id": "pane-2", "space_id": "space-7"},
+                    {"pane_id": "pane-2", "space_id": "space-7"},
+                ]
+            ),
+            "pane correlation is missing or ambiguous",
+        ),
+        (
+            _snapshot(panes=[{"pane_id": "pane-2", "space_id": "space-8"}]),
+            "pane belongs to a different Space",
+        ),
+    ],
+)
+def test_receipt_consumer_fails_closed_on_every_correlation_mismatch(snapshot, message):
+    profile = HerdrAgentLaunchProfile(**_base())
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    receipt = build_herdr_launch_receipt(
+        resolved, profile, pane_id="pane-2", observation=_snapshot()
+    )
+    with pytest.raises(ValueError, match=message):
+        consume_herdr_launch_receipt(receipt.model_dump(), snapshot)
+
+
+def test_shape_valid_but_manually_staled_receipt_is_rejected_by_observation_consumer():
+    profile = HerdrAgentLaunchProfile(**_base())
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    receipt = build_herdr_launch_receipt(
+        resolved, profile, pane_id="pane-2", observation=_snapshot()
+    )
+    mutated = {**receipt.model_dump(), "space_revision": "stale-revision"}
+    assert parse_herdr_launch_receipt(mutated).space_revision == "stale-revision"
+    with pytest.raises(ValueError, match="revision is stale"):
+        consume_herdr_launch_receipt(mutated, _snapshot())
