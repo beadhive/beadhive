@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -297,6 +298,28 @@ def _receipt_payload(bead: str, *, current_seat: str = "developer") -> str:
     return role.AgentLaunchReceipt.from_resolved(resolved).model_dump_json()
 
 
+_FINAL_ENV_PROBE = (
+    "import os,sys,time; from pathlib import Path; "
+    "time.sleep(float(sys.argv[2])); "
+    "Path(sys.argv[1]).write_text(os.environ.get('BH_AGENT_LAUNCH_RECEIPT', '<absent>')); "
+    "raise SystemExit(int(sys.argv[3]))"
+)
+
+
+def _install_actual_hitch_probe(monkeypatch, outputs, *, exit_code=0, delay=0):
+    def probe_argv(_cfg, _target, profile, **_kwargs):
+        return [
+            sys.executable,
+            "-c",
+            _FINAL_ENV_PROBE,
+            str(outputs[profile]),
+            str(delay),
+            str(exit_code),
+        ]
+
+    monkeypatch.setattr(hitch_plugin, "_hitch_argv", probe_argv)
+
+
 def test_up_injects_scoped_receipt_into_actual_child_env_and_restores_legacy_call(
     monkeypatch, tmp_path
 ):
@@ -325,49 +348,83 @@ def test_up_injects_scoped_receipt_into_actual_child_env_and_restores_legacy_cal
     assert receipt["current_seat"] == "reviewer"
     assert "CALLER_SECRET" not in receipt
     assert "argv" not in receipt and "herdr" not in receipt
-    # A direct external Hitch call stays genuinely unmanaged and keeps the legacy run() kwargs.
-    assert "env" not in calls[1][1]
+    # A direct external Hitch call stays genuinely unmanaged even if its parent was managed.
+    assert "BH_AGENT_LAUNCH_RECEIPT" not in calls[1][1]["env"]
+
+
+@pytest.mark.parametrize("ambient_kind", ["valid", "malformed"])
+def test_external_hitch_scrubs_ambient_receipt_from_actual_final_child_env(
+    monkeypatch, tmp_path, ambient_kind
+):
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    output = tmp_path / f"legacy-{ambient_kind}.txt"
+    _install_actual_hitch_probe(monkeypatch, {"developer": output})
+    ambient = (
+        _receipt_payload("bh-wi2os.10") if ambient_kind == "valid" else "{malformed-stale-receipt"
+    )
+    monkeypatch.setenv("BH_AGENT_LAUNCH_RECEIPT", ambient)
+
+    assert hitch_plugin.up("claude", "developer", cfg=cfg) == 0
+
+    assert output.read_text() == "<absent>"
+
+
+def test_managed_hitch_overwrites_ambient_receipt_in_actual_final_child_env(monkeypatch, tmp_path):
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    managed = tmp_path / "managed.txt"
+    restored = tmp_path / "restored.txt"
+    outputs = {"reviewer": managed, "developer": restored}
+    _install_actual_hitch_probe(monkeypatch, outputs)
+    monkeypatch.setenv("BH_AGENT_LAUNCH_RECEIPT", "{malformed-stale-receipt")
+    payload = _receipt_payload("bh-wi2os.10", current_seat="reviewer")
+
+    with hitch_plugin.scoped_launch_receipt(payload):
+        assert hitch_plugin.up("claude", "reviewer", cfg=cfg) == 0
+    assert hitch_plugin.up("claude", "developer", cfg=cfg) == 0
+
+    assert managed.read_text() == payload
+    assert restored.read_text() == "<absent>"
 
 
 def test_scoped_receipts_are_isolated_across_concurrent_hitch_launches(monkeypatch, tmp_path):
     cfg = _stub_ready(monkeypatch, tmp_path)
     barrier = threading.Barrier(2)
-    seen = {}
-    lock = threading.Lock()
-
-    class _Result:
-        returncode = 0
-
-    def fake_run(argv, **kwargs):
-        barrier.wait(timeout=5)
-        with lock:
-            seen[argv[3]] = kwargs["env"]["BH_AGENT_LAUNCH_RECEIPT"]
-        return _Result()
-
-    monkeypatch.setattr(hitch_plugin.run, "run", fake_run)
+    outputs = {
+        "developer": tmp_path / "developer.txt",
+        "reviewer": tmp_path / "reviewer.txt",
+    }
+    _install_actual_hitch_probe(monkeypatch, outputs, delay=0.2)
+    monkeypatch.setenv("BH_AGENT_LAUNCH_RECEIPT", "stale-parent")
     payloads = {
         "developer": _receipt_payload("bh-wi2os.10"),
         "reviewer": _receipt_payload("bh-wi2os.11", current_seat="reviewer"),
     }
 
     def launch(profile: str) -> None:
+        barrier.wait(timeout=5)
         with hitch_plugin.scoped_launch_receipt(payloads[profile]):
             hitch_plugin.up("claude", profile, cfg=cfg)
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         list(pool.map(launch, payloads))
 
-    assert seen == payloads
-    assert hitch_plugin._scoped_launch_env() is None
+    assert {profile: path.read_text() for profile, path in outputs.items()} == payloads
+    assert "BH_AGENT_LAUNCH_RECEIPT" not in hitch_plugin._scoped_launch_env()
 
 
-def test_scoped_receipt_restores_on_exception_and_cancellation():
+def test_scoped_receipt_restores_on_exception_and_cancellation(monkeypatch, tmp_path):
     payload = _receipt_payload("bh-wi2os.10")
+    cfg = _stub_ready(monkeypatch, tmp_path)
 
-    with pytest.raises(RuntimeError):
+    monkeypatch.setattr(
+        hitch_plugin.run,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("backend failed")),
+    )
+    with pytest.raises(RuntimeError, match="backend failed"):
         with hitch_plugin.scoped_launch_receipt(payload):
-            raise RuntimeError("backend failed")
-    assert hitch_plugin._scoped_launch_env() is None
+            hitch_plugin.up("claude", "developer", cfg=cfg)
+    assert "BH_AGENT_LAUNCH_RECEIPT" not in hitch_plugin._scoped_launch_env()
 
     async def cancel_inside_scope():
         with hitch_plugin.scoped_launch_receipt(payload):
@@ -375,7 +432,20 @@ def test_scoped_receipt_restores_on_exception_and_cancellation():
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(cancel_inside_scope())
-    assert hitch_plugin._scoped_launch_env() is None
+    assert "BH_AGENT_LAUNCH_RECEIPT" not in hitch_plugin._scoped_launch_env()
+
+
+def test_scoped_receipt_restores_after_actual_nonzero_hitch_child(monkeypatch, tmp_path):
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    output = tmp_path / "nonzero.txt"
+    _install_actual_hitch_probe(monkeypatch, {"developer": output}, exit_code=9)
+    payload = _receipt_payload("bh-wi2os.10")
+
+    with hitch_plugin.scoped_launch_receipt(payload):
+        assert hitch_plugin.up("claude", "developer", cfg=cfg) == 9
+
+    assert output.read_text() == payload
+    assert "BH_AGENT_LAUNCH_RECEIPT" not in hitch_plugin._scoped_launch_env()
 
 
 def test_up_opencode_target_passes_through_unchanged(monkeypatch, tmp_path):
@@ -998,7 +1068,7 @@ def test_managed_attached_route_preserves_up_call_shape_and_injects_actual_child
     assert receipt["bead"] == "bh-wi2os.10"
     assert receipt["initial_seat"] == "developer"
     assert receipt["current_seat"] == "reviewer"
-    assert hitch_plugin._scoped_launch_env() is None
+    assert "BH_AGENT_LAUNCH_RECEIPT" not in hitch_plugin._scoped_launch_env()
 
 
 def test_route_no_hitch_forces_native_even_when_hitch_would_apply(monkeypatch, tmp_path, capsys):

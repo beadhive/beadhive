@@ -145,14 +145,19 @@ def scoped_launch_receipt(payload: str) -> Iterator[None]:
         _launch_receipt.reset(token)
 
 
-def _scoped_launch_env() -> dict[str, str] | None:
-    """Build the current managed Hitch child's environment, or preserve legacy inheritance."""
+def _scoped_launch_env() -> dict[str, str]:
+    """Build a Hitch child env that never trusts ambient receipt evidence.
 
-    payload = _launch_receipt.get()
-    if payload is None:
-        return None
+    ``run.run`` reconstructs from ``os.environ`` when ``env`` is omitted, so legacy/unmanaged
+    calls must pass an explicit base with the reserved key removed.  A managed scope overwrites
+    that scrubbed base with its already-resolved exact receipt.
+    """
+
     env = run.child_env()
-    env[_LAUNCH_RECEIPT_ENV] = payload
+    env.pop(_LAUNCH_RECEIPT_ENV, None)
+    payload = _launch_receipt.get()
+    if payload is not None:
+        env[_LAUNCH_RECEIPT_ENV] = payload
     return env
 
 
@@ -275,11 +280,7 @@ def up(
         explain=explain,
     )
     launch_env = _scoped_launch_env()
-    if launch_env is None:
-        # Preserve the external/legacy call shape as well as its unmanaged environment.
-        result = run.run(argv, check=False, capture=False)
-    else:
-        result = run.run(argv, check=False, capture=False, env=launch_env)
+    result = run.run(argv, check=False, capture=False, env=launch_env)
     return result.returncode
 
 

@@ -164,6 +164,10 @@ def harness_env(role: str) -> dict[str, str]:
     what is genuinely harness-specific — ``BH_ROLE`` and the ``PATH`` repair below. When the bin
     dir can't be resolved, or is already on ``PATH``, that repair is a no-op."""
     env = {**child_env(), "BH_ROLE": role}
+    # A parent receipt is evidence about the parent, never authority for this child.  Legacy
+    # native launches remain explicitly unmanaged; resolved launches overwrite this scrubbed
+    # boundary with their own exact receipt below.
+    env.pop("BH_AGENT_LAUNCH_RECEIPT", None)
     bin_dir = _bh_bin_dir()
     if bin_dir is None:
         return env

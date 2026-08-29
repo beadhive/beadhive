@@ -338,6 +338,75 @@ def test_launch_bh_role_in_env_inherits_os_environ(monkeypatch):
     assert env.get("SOME_EXISTING_VAR") == "hello"
 
 
+_ROLE_FINAL_ENV_PROBE = (
+    "import os,sys; from pathlib import Path; "
+    "Path(sys.argv[1]).write_text(os.environ.get('BH_AGENT_LAUNCH_RECEIPT', '<absent>'))"
+)
+
+
+@pytest.mark.parametrize("ambient_kind", ["valid", "malformed"])
+def test_legacy_native_launch_scrubs_ambient_receipt_from_actual_final_child_env(
+    monkeypatch, tmp_path, ambient_kind
+):
+    output = tmp_path / f"legacy-native-{ambient_kind}.txt"
+    resolved = role.resolve_launch_profile(
+        role.build_launch_profile(
+            "developer", harness="claude", managed_bead=True, bead="bh-wi2os.10"
+        )
+    )
+    ambient = (
+        role.AgentLaunchReceipt.from_resolved(resolved).model_dump_json()
+        if ambient_kind == "valid"
+        else "{malformed-stale-receipt"
+    )
+    monkeypatch.setenv("BH_AGENT_LAUNCH_RECEIPT", ambient)
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer"]),
+        patch("beadhive.harness.installed_path", return_value=sys.executable),
+        patch(
+            "beadhive.role._harness_argv",
+            return_value=[sys.executable, "-c", _ROLE_FINAL_ENV_PROBE, str(output)],
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("developer", harness="claude")
+
+    assert exc_info.value.code == 0
+    assert output.read_text() == "<absent>"
+
+
+def test_managed_native_launch_overwrites_ambient_receipt_in_actual_final_child_env(
+    monkeypatch, tmp_path
+):
+    output = tmp_path / "managed-native.txt"
+    resolved = role.resolve_launch_profile(
+        role.build_launch_profile(
+            "developer",
+            harness="claude",
+            managed_bead=True,
+            bead="bh-wi2os.10",
+            available_seats=("developer", "reviewer"),
+            model="sonnet",
+        ),
+        current_seat="reviewer",
+    )
+    expected = role.AgentLaunchReceipt.from_resolved(resolved).model_dump_json()
+    monkeypatch.setenv("BH_AGENT_LAUNCH_RECEIPT", "{malformed-stale-receipt")
+    with (
+        patch("beadhive.role._known_seats", return_value=["developer", "reviewer"]),
+        patch("beadhive.harness.installed_path", return_value=sys.executable),
+        patch(
+            "beadhive.role._profile_harness_argv",
+            return_value=[sys.executable, "-c", _ROLE_FINAL_ENV_PROBE, str(output)],
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            role.launch("reviewer", harness="claude", resolved_profile=resolved)
+
+    assert exc_info.value.code == 0
+    assert output.read_text() == expected
+
+
 # ---------------------------------------------------------------------------
 # harness_env / _bh_bin_dir — the bh-og0q.2 regression: a harness bh launches must still
 # resolve bh's own binaries by name even when the ambient PATH (e.g. a systemd service
@@ -1109,7 +1178,7 @@ def test_cli_role_headless_hitch_backend_forwards_the_brief_pointer_as_task(monk
     assert receipt["bead"] == "bh-6t49w.6"
     assert receipt["current_seat"] == "developer"
     assert "task" not in receipt and "argv" not in receipt and "herdr" not in receipt
-    assert hitch_plugin._scoped_launch_env() is None
+    assert "BH_AGENT_LAUNCH_RECEIPT" not in hitch_plugin._scoped_launch_env()
 
 
 def test_cli_role_headless_lifecycle_seat_needs_a_managed_bead(monkeypatch):
@@ -1320,13 +1389,14 @@ def test_qualified_baml_launch_propagates_distinct_outer_and_provider_identity(
 
 
 def test_unqualified_headless_native_child_receives_core_launch_receipt(monkeypatch, tmp_path):
-    from beadhive import cli, role_execution
+    from beadhive import cli, localloop, role_execution
 
     plan = role_execution.RoleLaunchPlan(
         backend="baml", detail="built native role binary", provider=None
     )
-    calls = []
+    output = tmp_path / "headless-native.txt"
     monkeypatch.setenv("BH_SKIP_SETUP_CHECK", "1")
+    monkeypatch.setenv("BH_AGENT_LAUNCH_RECEIPT", "{malformed-stale-receipt")
     monkeypatch.setattr(cli.config, "load", lambda: {})
     monkeypatch.setattr(role_execution, "resolve_headless_plan", lambda *_a, **_kw: plan)
     monkeypatch.setattr(cli, "_apply_role_workspace", lambda *_args: None)
@@ -1334,9 +1404,14 @@ def test_unqualified_headless_native_child_receives_core_launch_receipt(monkeypa
     monkeypatch.setattr(cli.config, "dispatch_seat_command", lambda *_args: "bh-developer")
     monkeypatch.setattr(cli.config, "dispatch_seat_bundle", lambda *_args: "")
     monkeypatch.setattr(
-        cli,
-        "run",
-        lambda argv, **kwargs: calls.append((argv, kwargs)) or SimpleNamespace(returncode=0),
+        localloop,
+        "seat_argv",
+        lambda *_args, **_kwargs: [
+            sys.executable,
+            "-c",
+            _ROLE_FINAL_ENV_PROBE,
+            str(output),
+        ],
     )
 
     result = cli_runner.invoke(
@@ -1352,7 +1427,7 @@ def test_unqualified_headless_native_child_receives_core_launch_receipt(monkeypa
     )
 
     assert result.exit_code == 0, result.output
-    receipt = json.loads(calls[0][1]["env"]["BH_AGENT_LAUNCH_RECEIPT"])
+    receipt = json.loads(output.read_text())
     assert receipt["bead"] == "bh-wi2os.10"
     assert receipt["current_seat"] == "developer"
     assert "secret native task" not in json.dumps(receipt)
