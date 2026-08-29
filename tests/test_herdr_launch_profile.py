@@ -6,7 +6,10 @@ from pydantic import ValidationError
 from beadhive.agent_launch_profile import AgentLaunchProfile
 from beadhive.herdr_launch_profile import (
     HerdrAgentLaunchProfile,
+    HerdrAgentLaunchReceipt,
     HerdrPaneCreateTarget,
+    build_herdr_launch_receipt,
+    parse_herdr_launch_receipt,
     resolve_herdr_launch_profile,
     validate_herdr_observation,
 )
@@ -120,3 +123,29 @@ def test_plain_core_profile_is_not_an_implicit_herdr_request():
     )
     with pytest.raises(TypeError, match="HerdrAgentLaunchProfile"):
         resolve_herdr_launch_profile(core)  # type: ignore[arg-type]
+
+
+def test_extended_receipt_preserves_strict_base_and_exact_correlation():
+    profile = HerdrAgentLaunchProfile(**_base())
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    receipt = build_herdr_launch_receipt(resolved, profile, pane_id="pane-2")
+    assert parse_herdr_launch_receipt(receipt.model_dump_json()) == receipt
+    assert receipt.core.managed_bead is True
+    assert receipt.core.bead == "bh-123"
+    assert receipt.herdr_session == "team-a"
+    assert "argv" not in receipt.model_dump_json()
+
+
+def test_extended_receipt_additive_evolution_and_conflicts_fail_closed():
+    profile = HerdrAgentLaunchProfile(**_base())
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    receipt = build_herdr_launch_receipt(resolved, profile, pane_id="pane-2")
+    payload = receipt.model_dump()
+    with pytest.raises(ValidationError):
+        parse_herdr_launch_receipt({**payload, "future": True})
+    with pytest.raises(ValidationError):
+        HerdrAgentLaunchReceipt.model_validate(
+            {**payload, "core": {**payload["core"], "bead": "not exact"}}
+        )
+    with pytest.raises(ValueError, match="pane conflicts"):
+        build_herdr_launch_receipt(resolved, profile, pane_id="pane-other")

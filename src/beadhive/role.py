@@ -51,6 +51,7 @@ from pathlib import Path
 from . import deps as deps_mod  # import-cheap by design (bh-hsus.2/.3) — safe at module level
 from .agent_launch_profile import (
     AgentLaunchProfile,
+    AgentLaunchReceipt,
     ResolvedAgentLaunchProfile,
     resolve_agent_launch_profile,
 )
@@ -326,6 +327,12 @@ def launch(
         argv = _profile_harness_argv(resolved)
         active_seat = resolved.current_seat
     env = harness_env(active_seat)
+    if managed_bead is not None:
+        # The child receives portable proof of the effective launch.  Legacy/external
+        # harnesses receive no receipt and therefore remain explicitly unmanaged.
+        env["BH_AGENT_LAUNCH_RECEIPT"] = AgentLaunchReceipt.from_resolved(
+            resolved
+        ).model_dump_json()
     result = run(argv, check=False, capture=False, env=env)
     raise SystemExit(result.returncode)
 

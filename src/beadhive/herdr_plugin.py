@@ -1946,6 +1946,7 @@ def _launch_cmd(
     from . import jsonout, registry
     from .herdr_launch_profile import (
         HerdrAgentLaunchProfile,
+        build_herdr_launch_receipt,
         resolve_herdr_launch_profile,
         validate_herdr_observation,
     )
@@ -2149,6 +2150,10 @@ def _launch_cmd(
             )
 
     payload = result.payload()
+    if exact_profile is not None:
+        payload["agent_launch_receipt"] = build_herdr_launch_receipt(
+            resolved_profile, exact_profile, pane_id=result.pane
+        ).model_dump(mode="json")
     if as_json:
         jsonout.emit(payload)
         return

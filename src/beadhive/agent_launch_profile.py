@@ -13,6 +13,7 @@ from typing import Annotated, ClassVar, Literal
 from pydantic import BaseModel, ConfigDict, StrictBool, StringConstraints, model_validator
 
 ProfileVersion = Literal["1"]
+ReceiptVersion = Literal["1"]
 NonEmptyString = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 # ``hive_repair._PREFIX_RE`` owns the configured hive-prefix shape.  bd appends a lowercase
 # alphanumeric issue token, then dot-separated lowercase alphanumeric tokens for child beads.
@@ -115,6 +116,72 @@ class ResolvedAgentLaunchProfile(BaseModel):
     model: str | None
     effort: str | None
     argv: tuple[str, ...]
+
+
+class AgentLaunchReceipt(BaseModel):
+    """Portable, redacted facts proving one resolved core launch.
+
+    The discriminator is deliberately namespaced so extension consumers can route a
+    receipt before validation.  Core consumers accept only this exact base shape: an
+    extension must explicitly project its ``core`` member instead of relying on extra
+    fields being ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True, use_enum_values=True)
+
+    receipt_type: Literal["beadhive.agent-launch"] = "beadhive.agent-launch"
+    version: ReceiptVersion = "1"
+    managed_bead: StrictBool
+    bead: BeadId | None = None
+    initial_seat: NonEmptyString
+    current_seat: NonEmptyString
+    available_seats: frozenset[NonEmptyString]
+    harness: Harness
+    model: NonEmptyString | None = None
+    effort: NonEmptyString | None = None
+
+    @model_validator(mode="after")
+    def validate_receipt_policy(self) -> AgentLaunchReceipt:
+        # Reuse the request contract rather than maintaining a weaker receipt policy.
+        profile = AgentLaunchProfile(
+            managed_bead=self.managed_bead,
+            bead=self.bead,
+            initial_seat=self.initial_seat,
+            available_seats=self.available_seats,
+            harness=self.harness,
+            model=self.model,
+            effort=self.effort,
+        )
+        if self.current_seat not in profile.available_seats:
+            raise ValueError("current_seat must be present in available_seats")
+        if bead_policy_for_seat(self.current_seat) is BeadPolicy.REQUIRED and not self.managed_bead:
+            raise ValueError("current_seat requires a managed bead")
+        if bead_policy_for_seat(self.current_seat) is BeadPolicy.FORBIDDEN and self.managed_bead:
+            raise ValueError("current_seat forbids a managed bead")
+        return self
+
+    @classmethod
+    def from_resolved(cls, resolved: ResolvedAgentLaunchProfile) -> AgentLaunchReceipt:
+        """Create a receipt without copying executable argv or environment secrets."""
+
+        return cls(
+            managed_bead=resolved.managed_bead,
+            bead=resolved.bead,
+            initial_seat=resolved.initial_seat,
+            current_seat=resolved.current_seat,
+            available_seats=resolved.available_seats,
+            harness=resolved.harness,
+            model=resolved.model,
+            effort=resolved.effort,
+        )
+
+
+def parse_agent_launch_receipt(payload: str | bytes | dict) -> AgentLaunchReceipt:
+    """Strictly parse a base receipt; absent receipts remain the unmanaged state."""
+
+    if isinstance(payload, (str, bytes)):
+        return AgentLaunchReceipt.model_validate_json(payload)
+    return AgentLaunchReceipt.model_validate(payload)
 
 
 class HarnessArgvAdapter:

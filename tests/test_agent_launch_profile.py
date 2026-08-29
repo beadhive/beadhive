@@ -8,8 +8,10 @@ from pydantic import ValidationError
 
 from beadhive.agent_launch_profile import (
     AgentLaunchProfile,
+    AgentLaunchReceipt,
     BeadPolicy,
     bead_policy_for_seat,
+    parse_agent_launch_receipt,
     resolve_agent_launch_profile,
 )
 
@@ -200,3 +202,65 @@ assert not any(name.startswith("beadhive.herdr") for name in sys.modules)
         [sys.executable, "-I", "-c", probe], text=True, capture_output=True, check=False
     )
     assert result.returncode == 0, result.stderr
+
+
+def test_versioned_core_receipt_is_redacted_and_round_trips():
+    resolved = resolve_agent_launch_profile(
+        AgentLaunchProfile(
+            managed_bead=True,
+            bead="bh-wi2os.4",
+            initial_seat="developer",
+            available_seats={"developer", "reviewer"},
+            harness="codex",
+            model="gpt-5.6",
+            effort="high",
+        ),
+        current_seat="reviewer",
+    )
+    receipt = AgentLaunchReceipt.from_resolved(resolved)
+    payload = receipt.model_dump_json()
+    assert parse_agent_launch_receipt(payload) == receipt
+    assert receipt.version == "1" and receipt.current_seat == "reviewer"
+    assert "argv" not in payload and "herdr" not in payload.lower()
+
+
+def test_base_receipt_consumers_fail_closed_on_extensions_and_additive_fields():
+    receipt = AgentLaunchReceipt.from_resolved(
+        resolve_agent_launch_profile(
+            AgentLaunchProfile(
+                managed_bead=False, initial_seat="planner", harness="claude"
+            )
+        )
+    )
+    with pytest.raises(ValidationError):
+        parse_agent_launch_receipt({**receipt.model_dump(), "future": True})
+    with pytest.raises(ValidationError):
+        parse_agent_launch_receipt(
+            {**receipt.model_dump(), "receipt_type": "beadhive.herdr-agent-launch"}
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"managed_bead": False},
+        {"bead": "not exact"},
+        {"current_seat": "controller"},
+        {"available_seats": ["developer"]},
+    ],
+)
+def test_malformed_or_policy_incompatible_core_receipts_fail_closed(changes):
+    receipt = AgentLaunchReceipt.from_resolved(
+        resolve_agent_launch_profile(
+            AgentLaunchProfile(
+                managed_bead=True,
+                bead="bh-wi2os.4",
+                initial_seat="developer",
+                available_seats={"developer", "reviewer"},
+                harness="codex",
+            ),
+            current_seat="reviewer",
+        )
+    )
+    with pytest.raises(ValidationError):
+        parse_agent_launch_receipt({**receipt.model_dump(), **changes})
