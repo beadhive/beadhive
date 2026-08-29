@@ -1,0 +1,117 @@
+"""Typed launch targets owned by the optional Herdr integration.
+
+Core deliberately exposes only :class:`AgentLaunchProfile`.  This module is the
+plugin boundary: importing it opts into Herdr's optimistic-concurrency and pane
+targeting contract without making either concept part of the core API.
+"""
+
+from __future__ import annotations
+
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
+
+from .agent_launch_profile import AgentLaunchProfile, resolve_agent_launch_profile
+
+HerdrProfileVersion = Literal["1"]
+ExactHerdrIdentity = Annotated[
+    str,
+    StringConstraints(
+        min_length=1,
+        max_length=256,
+        pattern=r"^[^\s\x00-\x1f\x7f]+$",
+    ),
+]
+
+
+class HerdrPaneCreateTarget(BaseModel):
+    """An exact, revision-fenced location at which Herdr may create a pane."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    herdr_session: ExactHerdrIdentity
+    space_id: ExactHerdrIdentity
+    after_pane_id: ExactHerdrIdentity
+    direction: Literal["right", "down"] = "right"
+    focus: bool = False
+
+
+class HerdrAgentLaunchProfile(AgentLaunchProfile):
+    """Versioned core launch request bound to one observed Herdr Space.
+
+    ``pane_id`` means reuse exactly that pane.  ``pane_create`` is an explicit
+    split request.  Both alternatives carry enough scope to reject a locator
+    copied from another session or Space before the server can be mutated.
+    """
+
+    version: HerdrProfileVersion = "1"
+    herdr_session: ExactHerdrIdentity
+    space_id: ExactHerdrIdentity
+    space_revision: ExactHerdrIdentity
+    pane_id: ExactHerdrIdentity | None = None
+    pane_create: HerdrPaneCreateTarget | None = None
+
+    @model_validator(mode="after")
+    def validate_exact_target(self) -> HerdrAgentLaunchProfile:
+        if (self.pane_id is None) == (self.pane_create is None):
+            raise ValueError("exactly one of pane_id or pane_create is required")
+        create = self.pane_create
+        if create is not None:
+            if create.herdr_session != self.herdr_session:
+                raise ValueError("pane_create belongs to a different Herdr session")
+            if create.space_id != self.space_id:
+                raise ValueError("pane_create belongs to a different Herdr Space")
+        return self
+
+
+def resolve_herdr_launch_profile(profile: HerdrAgentLaunchProfile):
+    """Resolve core policy first, returning it alongside the immutable target.
+
+    The explicit type check is intentional: callers must not accidentally pass
+    a core-only profile and let an adapter invent a presentation target.
+    """
+
+    if type(profile) is not HerdrAgentLaunchProfile:
+        raise TypeError("Herdr launch requires HerdrAgentLaunchProfile")
+    return resolve_agent_launch_profile(profile), profile
+
+
+def validate_herdr_observation(profile: HerdrAgentLaunchProfile, snapshot: dict) -> None:
+    """Fence a launch against the exact session snapshot supplied by Herdr.
+
+    Herdr snapshots have used both ``spaces`` and the earlier ``workspaces``
+    spelling.  IDs are authoritative; labels are deliberately ignored.
+    """
+
+    session = snapshot.get("session", snapshot.get("session_name"))
+    revision = snapshot.get("revision")
+    if session != profile.herdr_session:
+        raise ValueError("snapshot belongs to a different Herdr session")
+    if revision != profile.space_revision:
+        raise ValueError("Herdr Space revision changed")
+    spaces = snapshot.get("spaces", snapshot.get("workspaces"))
+    if not isinstance(spaces, list):
+        raise ValueError("snapshot does not contain a complete Space inventory")
+    matches = [
+        item
+        for item in spaces
+        if isinstance(item, dict)
+        and item.get("space_id", item.get("workspace_id", item.get("id"))) == profile.space_id
+    ]
+    if len(matches) != 1:
+        raise ValueError("Herdr Space target is missing or ambiguous")
+
+    pane_id = profile.pane_id or profile.pane_create.after_pane_id  # type: ignore[union-attr]
+    panes = snapshot.get("panes")
+    if not isinstance(panes, list):
+        raise ValueError("snapshot does not contain a complete pane inventory")
+    pane_matches = [
+        item
+        for item in panes
+        if isinstance(item, dict) and item.get("pane_id", item.get("id")) == pane_id
+    ]
+    if len(pane_matches) != 1:
+        raise ValueError("Herdr pane target is missing or ambiguous")
+    pane_space = pane_matches[0].get("space_id", pane_matches[0].get("workspace_id"))
+    if pane_space != profile.space_id:
+        raise ValueError("Herdr pane belongs to a different Space")
