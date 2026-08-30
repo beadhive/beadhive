@@ -1713,6 +1713,127 @@ def test_verify_applies_complexity_contract_to_nested_epic(hive, monkeypatch):
     assert "epic-1.1: expected exactly one complexity label, found 0" in result.output
 
 
+def test_verify_treats_nested_epic_as_a_coordinator_not_leaf_work(hive, monkeypatch):
+    """A workstream child owns its own kickoff plumbing and has no leaf acceptance itself."""
+    coordinator = _child(
+        "epic-1.1",
+        "nested workstream",
+        labels=_TRIPLET + ["kickoff:approved"],
+        issue_type="epic",
+        acceptance="",
+    )
+    nested_leaf = _child("epic-1.1.1", "nested leaf", labels=_TRIPLET, acceptance="nested works")
+    parent_data = {
+        "id": "epic-1",
+        "title": "parent",
+        "issue_type": "epic",
+        "labels": ["complexity:MEDIUM"],
+    }
+    nested_data = {
+        "id": "epic-1.1",
+        "title": "nested",
+        "issue_type": "epic",
+        "labels": ["complexity:MEDIUM", *coordinator["labels"]],
+    }
+    monkeypatch.setattr(
+        plan,
+        "_epic_molecule",
+        lambda eid, _cwd: (
+            (
+                parent_data,
+                [
+                    {
+                        **coordinator,
+                        "type": "epic",
+                        "handle": "epic-1.1",
+                        "deps": [],
+                        "satisfied_deps": [],
+                    }
+                ],
+                [],
+            )
+            if eid == "epic-1"
+            else (
+                nested_data,
+                [
+                    {
+                        **nested_leaf,
+                        "type": "feature",
+                        "handle": "epic-1.1.1",
+                        "deps": [],
+                        "satisfied_deps": [],
+                    }
+                ],
+                [],
+            )
+        ),
+    )
+    monkeypatch.setattr(plan, "_check_swarm", lambda *_args: [])
+    monkeypatch.setattr(plan, "_check_kickoff_state", lambda *_args: [])
+    gate_checks = []
+
+    def _check_gates(eid, *_args):
+        gate_checks.append(eid)
+        return []
+
+    monkeypatch.setattr(plan, "_check_kickoff_gates", _check_gates)
+
+    assert plan.verify_epic("epic-1", plan.config.load(), hive.main) == []
+    assert gate_checks == ["epic-1", "epic-1.1"]
+
+
+def test_verify_reports_missing_nested_epic_container_plumbing(hive, monkeypatch):
+    coordinator = {
+        "handle": "epic-1.1",
+        "title": "nested",
+        "type": "epic",
+        "labels": _TRIPLET + ["complexity:MEDIUM", "kickoff:pending"],
+        "deps": [],
+        "satisfied_deps": [],
+        "acceptance": "",
+    }
+    parent_data = {
+        "id": "epic-1",
+        "title": "parent",
+        "issue_type": "epic",
+        "labels": ["complexity:MEDIUM"],
+    }
+    nested_data = {
+        "id": "epic-1.1",
+        "title": "nested",
+        "issue_type": "epic",
+        "labels": ["complexity:MEDIUM"],
+    }
+    monkeypatch.setattr(
+        plan,
+        "_epic_molecule",
+        lambda eid, _cwd: (
+            (parent_data, [coordinator], []) if eid == "epic-1" else (nested_data, [], [])
+        ),
+    )
+    monkeypatch.setattr(
+        plan,
+        "_check_swarm",
+        lambda eid, _cwd: [f"no bd swarm for {eid}"] if eid == "epic-1.1" else [],
+    )
+    monkeypatch.setattr(
+        plan,
+        "_check_kickoff_state",
+        lambda eid, _cwd: [f"kickoff state unset on {eid}"] if eid == "epic-1.1" else [],
+    )
+    monkeypatch.setattr(
+        plan,
+        "_check_kickoff_gates",
+        lambda eid, _issues, _cwd: [f"root {eid}.1: no kickoff gate"] if eid == "epic-1.1" else [],
+    )
+
+    problems = plan.verify_epic("epic-1", plan.config.load(), hive.main)
+
+    assert "no bd swarm for epic-1.1" in problems
+    assert "kickoff state unset on epic-1.1" in problems
+    assert "root epic-1.1.1: no kickoff gate" in problems
+
+
 def test_verify_duplicate_complexity_labels_exit_nonzero(hive, monkeypatch):
     children = [
         _child(
