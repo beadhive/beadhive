@@ -465,6 +465,9 @@ def test_approve_leaves_a_nested_epics_kickoff_gate_open(hive, monkeypatch):
         ],
     )
     _patch(monkeypatch, fake)
+    # This fixture models only the parent and its gate list; container validation is covered by
+    # the dedicated real workstream regression below.
+    monkeypatch.setattr(plan, "_check_coordinator_children", lambda *_args: [])
 
     approved = _runner.invoke(app, ["plan", "approve", "epic-1", "--hive", "myrepo"])
 
@@ -550,3 +553,56 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     started = _runner.invoke(app, ["work", "start", epic, "--as", "disp/tester", "--hive", "mr"])
     assert started.exit_code == 0, started.output
     assert f"started {epic}" in started.output
+
+
+@pytest.mark.integration
+@skip_if_no_bd
+def test_real_workstream_verifies_and_starts_without_parent_gate_on_child_epic(world):
+    """A nested epic keeps its own gate; approving its parent neither needs nor resolves it."""
+    from harness.beads import bd as hbd
+    from harness.hive import make_hive
+
+    hive = make_hive(world)
+    main = hive.main
+
+    def _create(*args):
+        result = hbd("create", *args, "--silent", cwd=main, capture=True)
+        return (result.stdout or "").strip().splitlines()[-1].strip()
+
+    workstream = _create("workstream", "--type=epic", "-l", "complexity:MEDIUM")
+    nested = _create("coordinator", "--type=epic", "-l", "complexity:MEDIUM")
+    leaf = _create("nested leaf", "--acceptance", "done", "-l", "complexity:MEDIUM")
+    hbd("dep", "add", nested, workstream, "-t", "parent-child", cwd=main, capture=True)
+    hbd("dep", "add", leaf, nested, "-t", "parent-child", cwd=main, capture=True)
+
+    repaired_nested = _runner.invoke(app, ["plan", "repair", nested, "--hive", "mr"])
+    assert repaired_nested.exit_code == 0, repaired_nested.output
+    repaired_parent = _runner.invoke(app, ["plan", "repair", workstream, "--hive", "mr"])
+    assert repaired_parent.exit_code == 0, repaired_parent.output
+    assert "kickoff gate" not in repaired_parent.output
+
+    approved_parent = _runner.invoke(app, ["plan", "approve", workstream, "--hive", "mr"])
+    assert approved_parent.exit_code == 0, approved_parent.output
+    assert "0 gate(s) resolved" in approved_parent.output
+    assert _runner.invoke(app, ["plan", "verify", workstream, "--hive", "mr"]).exit_code == 0
+    assert (
+        _runner.invoke(
+            app, ["work", "start", workstream, "--as", "disp/workstream", "--hive", "mr"]
+        ).exit_code
+        == 0
+    )
+
+    # The child remains independently pending until *its* anchored approval.
+    assert (
+        _runner.invoke(
+            app, ["work", "start", nested, "--as", "disp/nested", "--hive", "mr"]
+        ).exit_code
+        != 0
+    )
+    assert _runner.invoke(app, ["plan", "approve", nested, "--hive", "mr"]).exit_code == 0
+    assert (
+        _runner.invoke(
+            app, ["work", "start", nested, "--as", "disp/nested", "--hive", "mr"]
+        ).exit_code
+        == 0
+    )

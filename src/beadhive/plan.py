@@ -708,9 +708,11 @@ def _render_from_epic(epic_id: str, cwd) -> None:
 
 
 def _spec_from_filed(epic_data: dict, issues: list[dict]) -> dict:
-    """Reconstruct a molecule spec dict from a filed epic so molecule.validate_spec can run its
-    structural checks (epic + title, unique handles, per-issue title/acceptance, deps → real
-    handles, acyclic DAG). Dimension/identity LABELS are verified separately by _check_child_labels.
+    """Reconstruct a molecule spec dict from a filed epic for structural validation.
+
+    A child epic is a coordinator container, not leaf work.  It still participates in the
+    parent's dependency graph, but its own acceptance belongs to its child molecule, so supply a
+    structural placeholder here and verify its container conventions separately.
     """
     epic = {
         "title": epic_data.get("title") or "",
@@ -729,7 +731,9 @@ def _spec_from_filed(epic_data: dict, issues: list[dict]) -> dict:
                 "type": i["type"],
                 "description": i.get("description") or "",
                 "design": i.get("design") or "",
-                "acceptance": i["acceptance"],
+                "acceptance": i["acceptance"]
+                if i.get("type") != "epic"
+                else "coordinator container",
                 "deps": i["deps"],
                 **{
                     field: values[0]
@@ -812,7 +816,11 @@ def _ungated_roots(epic_id: str, issues: list[dict], cwd) -> list[str] | None:
     Shared by `_check_kickoff_gates` (verify) and plan_repair (backfill) so both sides apply the
     same root filter — a naive "gate every childless child" would over-gate origin reports or
     under-gate genuine roots."""
-    roots = [r for r in _roots(issues) if not (r.get("satisfied_deps") or [])]
+    # A child epic owns its own root gates.  It is a coordinator container, not an entry-point
+    # leaf of this parent molecule, so never demand a second parent-named kickoff gate for it.
+    roots = [
+        r for r in _roots(issues) if r.get("type") != "epic" and not (r.get("satisfied_deps") or [])
+    ]
     if not roots:
         return []
     gates = _gate_list(cwd, all_gates=True)
@@ -852,12 +860,12 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
         for field in ("provider", "org", "repo"):
             if not validate._label_val(labels, f"{field}:"):
                 problems.append(f"{cid}: missing identity label '{field}:'")
-        # bh-l9s8.2: the inverse assertion — origin:/intake:/kickoff: are intake-item / epic
-        # state, never work-child state; carried here they misroute the child (or hide it from
-        # the sibling set once an origin: label lands).
-        offending = sorted(
-            lbl for lbl in labels if lbl.startswith(("origin:", "intake:", "kickoff:"))
-        )
+        # bh-l9s8.2: state labels do not belong on leaf work.  A nested epic is a coordinator
+        # container in its own right, however, so its kickoff state is required and valid.
+        state_prefixes = ("origin:", "intake:")
+        if issue.get("type") != "epic":
+            state_prefixes += ("kickoff:",)
+        offending = sorted(lbl for lbl in labels if lbl.startswith(state_prefixes))
         if offending:
             problems.append(
                 f"{cid}: work children must not carry state labels ({', '.join(offending)}) — "
@@ -875,6 +883,30 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
                 problems.append(
                     f"{cid}: {dim} '{val}' not in closed set {{{', '.join(sorted(allowed))}}}"
                 )
+    return problems
+
+
+def _check_coordinator_children(issues: list[dict], cwd) -> list[str]:
+    """Verify nested epic children as independent coordinator containers.
+
+    Parent verification deliberately does not borrow a nested epic's kickoff gate or demand an
+    acceptance criterion from the container record.  Each nested epic must instead retain the
+    same swarm, kickoff state, and anchored root-gate contract as a top-level molecule.
+    """
+    problems: list[str] = []
+    for issue in issues:
+        if issue.get("type") != "epic":
+            continue
+        cid = issue["handle"]
+        nested = _epic_molecule(cid, cwd)
+        if nested is None:
+            problems.append(f"{cid}: could not retrieve nested epic or its children")
+            continue
+        nested_data, nested_issues, _origin_reports = nested
+        problems += _check_epic_type(nested_data, cid)
+        problems += _check_swarm(cid, cwd)
+        problems += _check_kickoff_state(cid, cwd)
+        problems += _check_kickoff_gates(cid, nested_issues, cwd)
     return problems
 
 
@@ -924,6 +956,7 @@ def _verify_loaded(
     problems += _check_kickoff_gates(epic_id, issues, cwd)
     problems += _check_kickoff_state(epic_id, cwd)
     problems += _check_child_labels(issues, cfg)
+    problems += _check_coordinator_children(issues, cwd)
     return problems
 
 
