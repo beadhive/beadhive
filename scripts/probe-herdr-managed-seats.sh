@@ -23,6 +23,7 @@ cleanup_workspace() {
 }
 trap cleanup_workspace EXIT
 
+failed=0
 for harness in claude codex; do
   for seat in developer dispatcher planner; do
     target="proof-${harness}-${seat}"
@@ -44,6 +45,7 @@ for harness in claude codex; do
       echo "ROW FAIL harness=$harness seat=$seat stage=startup" >&2
       herdr --session "$session" agent read "$target" --source visible --lines 40 || true
       herdr --session "$session" pane close "$pane" || true
+      failed=1
       continue
     fi
     herdr --session "$session" agent prompt "$target" \
@@ -54,6 +56,7 @@ for harness in claude codex; do
       echo "ROW PASS harness=$harness seat=$seat cwd=$proof_cwd target=$target"
     else
       echo "ROW FAIL harness=$harness seat=$seat stage=observation" >&2
+      failed=1
     fi
     herdr --session "$session" pane close "$pane"
     remaining=$(herdr --session "$session" agent list)
@@ -63,3 +66,5 @@ for harness in claude codex; do
     }
   done
 done
+
+exit "$failed"

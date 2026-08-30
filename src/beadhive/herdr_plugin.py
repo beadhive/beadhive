@@ -2147,6 +2147,19 @@ def _launch_cmd(
     entry = resolution.entry
     resolved_hive = _hive_id(entry)
     resolved_kind = _launch_kind(kind, cfg, entry)
+    planner_checkout: Path | None = None
+    if exact_profile is not None and exact_profile.launch_target == "planner_session":
+        assert session_checkout is not None
+        planner_checkout = session_checkout.resolve()
+        if not planner_checkout.is_dir():
+            _launch_fail("checkout", "planner session checkout does not exist")
+        top = run.run(
+            ["git", "-C", str(planner_checkout), "rev-parse", "--show-toplevel"],
+            check=False,
+            capture=True,
+        )
+        if top.returncode != 0 or Path(str(top.stdout).strip()).resolve() != planner_checkout:
+            _launch_fail("checkout", "planner session checkout is not its exact git top-level")
     if exact_profile is not None and resolved_kind != exact_profile.harness:
         _launch_fail("profile", "resolved Herdr kind conflicts with profile harness")
     integrated, integration_detail = _integration_ready(resolved_kind)
@@ -2195,22 +2208,14 @@ def _launch_cmd(
     _launch_lease(cfg, entry, resolved_hive, adopt_expired)
     try:
         if exact_profile is not None and exact_profile.launch_target == "planner_session":
-            assert session_checkout is not None
-            checkout = session_checkout.resolve()
-            if not checkout.is_dir():
-                _launch_fail("checkout", "planner session checkout does not exist")
-            top = run.run(
-                ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"], capture=True
-            )
-            if top.returncode != 0 or Path(str(top.stdout).strip()).resolve() != checkout:
-                _launch_fail("checkout", "planner session checkout is not its exact git top-level")
+            assert planner_checkout is not None
             claim = work.ClaimResult(
                 entry=entry,
-                main=checkout,
+                main=planner_checkout,
                 bead={},
                 actor=as_ or "planner",
                 disposition="reattached",
-                worktree=checkout,
+                worktree=planner_checkout,
                 identity={},
             )
         elif exact_profile is not None and exact_profile.launch_target == "dispatcher_epic":

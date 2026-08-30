@@ -2834,6 +2834,57 @@ def test_typed_planner_launch_requires_explicit_checkout_and_never_claims_bead(
     assert seen == [checkout.resolve()]
 
 
+def test_invalid_planner_checkout_refuses_before_lease_work_or_herdr_mutation(
+    tmp_path, monkeypatch
+):
+    entry, _claim = _launch_fixture(monkeypatch, tmp_path)
+    repo = tmp_path / "planner-repo"
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    nested = repo / "nested"
+    nested.mkdir()
+    non_git = tmp_path / "not-git"
+    non_git.mkdir()
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(registry, "resolve_hive", lambda *_args: entry)
+    mutations = []
+    monkeypatch.setattr(herdr_plugin, "_launch_lease", lambda *_args: mutations.append("lease"))
+    monkeypatch.setattr(
+        herdr_plugin, "_prepare_selected_session", lambda: mutations.append("herdr") or ({}, "")
+    )
+    monkeypatch.setattr(work, "_claim_single_bead", lambda *_args: mutations.append("work"))
+    monkeypatch.setattr(
+        herdr_plugin, "_command", lambda *_args: mutations.append("herdr") or _result()
+    )
+    profile = _exact_launch_profile(
+        pane_id="w1:p7",
+        managed_bead=False,
+        bead=None,
+        initial_seat="planner",
+        launch_target="planner_session",
+        session_checkout_id="planning-invalid",
+    )
+
+    for checkout in (missing, nested, non_git):
+        result = runner.invoke(
+            app,
+            [
+                "plugin",
+                "herdr",
+                "launch",
+                "--hive",
+                "github/acme/widgets",
+                "--profile-json",
+                profile,
+                "--session-checkout",
+                str(checkout),
+                "--adopt-expired",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "stage=checkout" in result.output
+        assert mutations == []
+
+
 def test_duplicate_start_race_closes_loser_and_refuses_stale_winner_metadata(tmp_path, monkeypatch):
     _entry, claim = _launch_fixture(monkeypatch, tmp_path)
     profile_json = _exact_launch_profile(
