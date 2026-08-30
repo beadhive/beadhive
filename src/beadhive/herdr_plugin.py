@@ -1739,6 +1739,67 @@ def _validate_managed_generation(target: str, profile, resolved) -> None:
         )
 
 
+def _recover_managed_generation(profile, resolved, snapshot: dict, after_pane_id: str):
+    """Plan the one allowed transition after authoritative Herdr Agent loss.
+
+    A stopped/crashed Herdr server owns the provider process, so absence is not work
+    completion.  Recovery preserves the exact launch authority and worktree binding while
+    advancing the lifecycle generation and targeting a newly-created pane.  Repeating the
+    same recovery request may adopt only the already-live successor generation.
+    """
+    from .herdr_launch_profile import (
+        HerdrPaneCreateTarget,
+        launch_spec_digest,
+        resolve_herdr_launch_profile,
+    )
+
+    if profile.launch_id is None or profile.operation_id is None:
+        raise RuntimeError("managed recovery requires launch_id and operation_id")
+    revision = snapshot.get("revision")
+    if not isinstance(revision, str) or not revision:
+        raise RuntimeError("recovery observation has no authoritative Herdr revision")
+    next_generation = profile.generation + 1
+    recovered = profile.model_copy(
+        update={
+            "space_revision": revision,
+            "pane_id": None,
+            "pane_create": HerdrPaneCreateTarget(
+                herdr_session=profile.herdr_session,
+                space_id=profile.space_id,
+                after_pane_id=after_pane_id,
+                direction=(profile.pane_create.direction if profile.pane_create else "right"),
+                focus=(profile.pane_create.focus if profile.pane_create else False),
+            ),
+            "generation": next_generation,
+            "operation_id": f"{profile.operation_id}:recovery:{next_generation}",
+        }
+    )
+    recovered_resolved, _ = resolve_herdr_launch_profile(recovered)
+    target = _launch_target(f"{profile.bead}-{profile.launch_id}")
+    matches = [
+        record
+        for record in _snapshot_agent_records(snapshot)
+        if _agent_identity(record)[0] == target
+    ]
+    if not matches:
+        return recovered, recovered_resolved
+    if len(matches) != 1:
+        raise RuntimeError("recovery target is ambiguous; no generation was advanced")
+    expected = {
+        _TOKEN_LAUNCH_ID: recovered.launch_id,
+        _TOKEN_OPERATION_ID: recovered.operation_id,
+        _TOKEN_GENERATION: str(recovered.generation),
+        _TOKEN_LAUNCH_SPEC: launch_spec_digest(recovered_resolved),
+        _TOKEN_SEAT_CONTRACT: recovered_resolved.seat_contract_digest,
+    }
+    tokens = _metadata_tokens(matches[0])
+    if any(tokens.get(key) != value for key, value in expected.items()):
+        raise RuntimeError(
+            "previous or conflicting managed generation is still live; recovery refused"
+        )
+    return recovered, recovered_resolved
+
+
 @dataclass(frozen=True)
 class _LaunchResult:
     disposition: str
@@ -1976,6 +2037,14 @@ def _launch_cmd(
         "--profile-json",
         help="versioned HerdrAgentLaunchProfile JSON; exact targeting is mandatory when set",
     ),
+    recover_after_pane: str | None = typer.Option(
+        None,
+        "--recover-after-pane",
+        help=(
+            "after authoritative Herdr Agent loss, relaunch a fresh fenced generation "
+            "after this exact pane; requires --profile-json"
+        ),
+    ),
 ) -> None:
     """Launch the one-argument happy path.
 
@@ -2007,6 +2076,8 @@ def _launch_cmd(
 
     exact_profile = None
     launch_receipt_env = None
+    if recover_after_pane is not None and profile_json is None:
+        _launch_fail("profile", "--recover-after-pane requires --profile-json")
     if profile_json is not None:
         try:
             exact_profile = HerdrAgentLaunchProfile.model_validate_json(profile_json)
@@ -2058,6 +2129,17 @@ def _launch_cmd(
             "session",
             session_detail,
         )
+    if exact_profile is not None and recover_after_pane is not None:
+        try:
+            exact_profile, resolved_profile = _recover_managed_generation(
+                exact_profile, resolved_profile, _snapshot, recover_after_pane
+            )
+            validate_herdr_observation(exact_profile, _snapshot)
+        except (RuntimeError, ValueError) as exc:
+            _launch_fail("recovery", str(exc))
+        direction = exact_profile.pane_create.direction
+        focus = exact_profile.pane_create.focus
+        launch_receipt_env = AgentLaunchReceipt.from_resolved(resolved_profile).model_dump_json()
     if exact_profile is not None:
         try:
             validate_herdr_observation(exact_profile, _snapshot)

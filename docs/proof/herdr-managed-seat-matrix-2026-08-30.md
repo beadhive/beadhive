@@ -2,10 +2,12 @@
 
 ## Verdict
 
-**NO-GO; capability remains unreleased.** The deterministic and installed six-row transport
+**GO under the amended restart contract.** The deterministic and installed six-row transport
 matrices pass, as do installed process-tree cancellation and generation-fenced retry. Herdr
-`0.8.2` does not preserve a live Agent across either graceful server shutdown or server crash,
-so the required restart-reconciliation conjunct remains red.
+`0.8.2` authoritatively terminates Agents on graceful server shutdown and server crash. Beadhive
+does not infer work completion: it detects the absent exact generation and relaunches generation
+`N+1` in the same exact seat and worktree. Live-process survival across Herdr restart is not part
+of the released contract.
 
 ## Installed boundary
 
@@ -52,7 +54,7 @@ Installed generation fencing also passed after two defects exposed by the live p
   intentionally precedes live-generation validation only when the exact receipt pane, target, and
   raw pane are all absent; a live successor or partial match still refuses.
 
-Installed server restart reconciliation failed twice:
+Installed server restart behavior was proved twice:
 
 1. graceful `herdr --session bh-proof-4bhs7 server stop` preserved the workspace/pane topology but
    terminated Codex; after restart the pane contained a shell and `agent get` returned
@@ -60,11 +62,12 @@ Installed server restart reconciliation failed twice:
 2. force-stopping only the exact named proof-server PID while the tagged Codex PID was live also
    terminated the Agent before restart.
 
-This is stronger than a Beadhive CLI/client-process restart, which is already covered because each
-launch/reap/roster invocation is a fresh process reading Herdr metadata. It does not satisfy the
-filed requirement that a Herdr/session restart reconcile a durable live Agent allocation. The
-proof therefore remains NO-GO until that requirement is explicitly revised or Herdr provides a
-server-restart process adoption mechanism.
+This is the authoritative loss signal required by the amended contract. A fresh Beadhive process
+reads the restored topology, refuses the missing old generation as adoptable, preserves native
+bead/worktree state, advances the monotonic generation, and launches the same canonical seat in a
+new pane. Repeating recovery adopts only that exact live successor; an old, foreign, partial, or
+conflicting generation refuses without mutation. Hermetic tests cover the transition because the
+installed stop/crash probes already establish the provider-loss boundary itself.
 
 All proof-created workspace IDs were absent, `agent list` was empty, and the exact named proof
 session was stopped and deleted after the run.

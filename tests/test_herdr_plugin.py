@@ -3515,9 +3515,7 @@ def test_generation_fenced_receipt_reap_is_idempotent_after_exact_pane_disappear
     target = "bh-widget-1"
     digest = "sha256:" + "8" * 64
     current = [_roster_snapshot(target, cwd, state="done")]
-    current[0]["panes"][0]["tokens"].update(
-        {"bh_generation": "8", "bh_launch_spec_digest": digest}
-    )
+    current[0]["panes"][0]["tokens"].update({"bh_generation": "8", "bh_launch_spec_digest": digest})
     _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
     monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
     monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
@@ -3802,6 +3800,20 @@ def test_launch_help_leads_with_one_argument_path_and_documents_boundaries():
         assert option in result.output
     assert "active foreign host lease" in compact
     assert "never creates or removes a worktree" in compact
+
+
+def test_launch_recovery_requires_exact_prior_profile_before_any_mutation(monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("invalid recovery input must not probe Herdr or mutate lifecycle")
+
+    monkeypatch.setattr(herdr_plugin, "_has_cli", boom)
+    result = runner.invoke(
+        app,
+        ["plugin", "herdr", "launch", "widget-1", "--recover-after-pane", "pane-2"],
+    )
+
+    assert result.exit_code == 1
+    assert "--recover-after-pane requires --profile-json" in result.output
 
 
 @pytest.mark.parametrize(

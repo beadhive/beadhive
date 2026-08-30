@@ -104,3 +104,50 @@ def test_generation_fenced_reap_is_idempotent_and_cannot_stop_successor(monkeypa
     assert not herdr_plugin._generation_reap_matches("agent-1", "pane-1", 7, "sha256:" + "7" * 64)
     monkeypatch.setattr(herdr_plugin, "_snapshot_agent_records", lambda _snapshot: [])
     assert not herdr_plugin._generation_reap_matches("agent-1", "pane-1", 8, "sha256:" + "8" * 64)
+
+
+def test_server_loss_recovery_advances_generation_without_completing_work(monkeypatch):
+    profile = _managed_profile()
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    snapshot = {
+        "session": "proof-session",
+        "revision": "after-server-restart",
+        "spaces": [{"space_id": "space-1"}],
+        "panes": [{"pane_id": "anchor-2", "space_id": "space-1"}],
+    }
+    monkeypatch.setattr(herdr_plugin, "_snapshot_agent_records", lambda _snapshot: [])
+
+    recovered, recovered_resolved = herdr_plugin._recover_managed_generation(
+        profile, resolved, snapshot, "anchor-2"
+    )
+
+    assert recovered.generation == 9
+    assert recovered.pane_id is None
+    assert recovered.pane_create.after_pane_id == "anchor-2"
+    assert recovered.initial_seat == profile.initial_seat
+    assert recovered.bead == profile.bead
+    assert recovered.operation_id == "operation-1:recovery:9"
+    assert recovered_resolved.seat_contract_digest == resolved.seat_contract_digest
+
+
+def test_server_loss_recovery_refuses_previous_live_generation(monkeypatch):
+    profile = _managed_profile()
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    snapshot = {"revision": "after-server-restart"}
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_snapshot_agent_records",
+        lambda _snapshot: [{"name": herdr_plugin._launch_target("bh-proof.1-launch-1")}],
+    )
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_metadata_tokens",
+        lambda _record: {
+            "bh_launch_id": "launch-1",
+            "bh_operation_id": "operation-1",
+            "bh_generation": "8",
+        },
+    )
+
+    with pytest.raises(RuntimeError, match="previous or conflicting"):
+        herdr_plugin._recover_managed_generation(profile, resolved, snapshot, "anchor-2")
