@@ -1944,6 +1944,7 @@ def _launch_cmd(
     from pydantic import ValidationError
 
     from . import jsonout, registry
+    from .agent_launch_profile import AgentLaunchReceipt
     from .herdr_launch_profile import (
         HerdrAgentLaunchProfile,
         build_herdr_launch_receipt,
@@ -1958,6 +1959,7 @@ def _launch_cmd(
     work = importlib.import_module(".work", __package__)
 
     exact_profile = None
+    launch_receipt_env = None
     if profile_json is not None:
         try:
             exact_profile = HerdrAgentLaunchProfile.model_validate_json(profile_json)
@@ -1971,6 +1973,7 @@ def _launch_cmd(
         if exact_profile.pane_create is not None:
             direction = exact_profile.pane_create.direction
             focus = exact_profile.pane_create.focus
+        launch_receipt_env = AgentLaunchReceipt.from_resolved(resolved_profile).model_dump_json()
 
     if direction not in {"right", "down"}:
         _launch_fail("input", "--direction must be `right` or `down`")
@@ -2084,6 +2087,16 @@ def _launch_cmd(
             direction,
             "--cwd",
             str(claim.worktree),
+            *(
+                (
+                    "--env",
+                    f"BH_AGENT_LAUNCH_RECEIPT={launch_receipt_env}",
+                    "--env",
+                    f"BH_ROLE={resolved_profile.current_seat}",
+                )
+                if exact_profile is not None
+                else ()
+            ),
             "--focus" if focus else "--no-focus",
         )
         if split is None or split.returncode != 0:
@@ -2095,7 +2108,12 @@ def _launch_cmd(
         except typer.Exit:
             _launch_fail("pane", "response missing pane_id", claim=claim, target=target)
 
-        start = _command("agent", "start", target, "--kind", resolved_kind, "--pane", pane)
+        start_args = ["agent", "start", target, "--kind", resolved_kind, "--pane", pane]
+        if exact_profile is not None:
+            # Herdr selects and owns argv[0]. Only the allowlisted trailing provider arguments
+            # cross this boundary, as discrete argv values after its explicit separator.
+            start_args.extend(("--", *resolved_profile.argv[1:]))
+        start = _command(*start_args)
         if start is None or start.returncode != 0:
             detail = _output(start) or "agent start unavailable"
             duplicate = any(word in detail.lower() for word in ("duplicate", "already", "unique"))
@@ -2165,6 +2183,7 @@ def _launch_cmd(
                 resolved_profile,
                 exact_profile,
                 pane_id=result.pane,
+                agent_target=result.target,
                 observation=post_operation,
             ).model_dump(mode="json")
         except ValueError as exc:

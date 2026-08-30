@@ -131,7 +131,7 @@ def test_extended_receipt_preserves_strict_base_and_exact_correlation():
     profile = HerdrAgentLaunchProfile(**_base())
     resolved, _ = resolve_herdr_launch_profile(profile)
     receipt = build_herdr_launch_receipt(
-        resolved, profile, pane_id="pane-2", observation=_snapshot()
+        resolved, profile, pane_id="pane-2", agent_target="bh-bh-123", observation=_snapshot()
     )
     assert parse_herdr_launch_receipt(receipt.model_dump_json()) == receipt
     assert receipt.core.managed_bead is True
@@ -144,7 +144,7 @@ def test_extended_receipt_additive_evolution_and_conflicts_fail_closed():
     profile = HerdrAgentLaunchProfile(**_base())
     resolved, _ = resolve_herdr_launch_profile(profile)
     receipt = build_herdr_launch_receipt(
-        resolved, profile, pane_id="pane-2", observation=_snapshot()
+        resolved, profile, pane_id="pane-2", agent_target="bh-bh-123", observation=_snapshot()
     )
     payload = receipt.model_dump()
     with pytest.raises(ValidationError):
@@ -154,14 +154,24 @@ def test_extended_receipt_additive_evolution_and_conflicts_fail_closed():
             {**payload, "core": {**payload["core"], "bead": "not exact"}}
         )
     with pytest.raises(ValueError, match="pane conflicts"):
-        build_herdr_launch_receipt(resolved, profile, pane_id="pane-other", observation=_snapshot())
+        build_herdr_launch_receipt(
+            resolved,
+            profile,
+            pane_id="pane-other",
+            agent_target="bh-bh-123",
+            observation=_snapshot(),
+        )
 
 
 def test_receipt_consumer_accepts_authoritative_reuse_and_create_observations():
     reuse_profile = HerdrAgentLaunchProfile(**_base())
     reuse_resolved, _ = resolve_herdr_launch_profile(reuse_profile)
     reuse = build_herdr_launch_receipt(
-        reuse_resolved, reuse_profile, pane_id="pane-2", observation=_snapshot()
+        reuse_resolved,
+        reuse_profile,
+        pane_id="pane-2",
+        agent_target="bh-bh-123",
+        observation=_snapshot(),
     )
     assert consume_herdr_launch_receipt(reuse.model_dump(), _snapshot()) == reuse
 
@@ -186,6 +196,7 @@ def test_receipt_consumer_accepts_authoritative_reuse_and_create_observations():
         create_resolved,
         create_profile,
         pane_id="pane-3",
+        agent_target="bh-bh-123",
         observation=post_create,
     )
     assert consume_herdr_launch_receipt(created.model_dump_json(), post_create) == created
@@ -221,7 +232,7 @@ def test_receipt_consumer_fails_closed_on_every_correlation_mismatch(snapshot, m
     profile = HerdrAgentLaunchProfile(**_base())
     resolved, _ = resolve_herdr_launch_profile(profile)
     receipt = build_herdr_launch_receipt(
-        resolved, profile, pane_id="pane-2", observation=_snapshot()
+        resolved, profile, pane_id="pane-2", agent_target="bh-bh-123", observation=_snapshot()
     )
     with pytest.raises(ValueError, match=message):
         consume_herdr_launch_receipt(receipt.model_dump(), snapshot)
@@ -231,7 +242,7 @@ def test_shape_valid_but_manually_staled_receipt_is_rejected_by_observation_cons
     profile = HerdrAgentLaunchProfile(**_base())
     resolved, _ = resolve_herdr_launch_profile(profile)
     receipt = build_herdr_launch_receipt(
-        resolved, profile, pane_id="pane-2", observation=_snapshot()
+        resolved, profile, pane_id="pane-2", agent_target="bh-bh-123", observation=_snapshot()
     )
     mutated = {**receipt.model_dump(), "space_revision": "stale-revision"}
     assert parse_herdr_launch_receipt(mutated).space_revision == "stale-revision"

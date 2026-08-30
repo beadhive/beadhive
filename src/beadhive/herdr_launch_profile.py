@@ -7,6 +7,8 @@ targeting contract without making either concept part of the core API.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
@@ -81,6 +83,9 @@ class HerdrAgentLaunchReceipt(BaseModel):
     space_id: ExactHerdrIdentity
     space_revision: ExactHerdrIdentity
     pane_id: ExactHerdrIdentity
+    agent_target: ExactHerdrIdentity
+    agent_session: ExactHerdrIdentity
+    launch_spec_digest: Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
 
 
 def build_herdr_launch_receipt(
@@ -88,6 +93,7 @@ def build_herdr_launch_receipt(
     profile: HerdrAgentLaunchProfile,
     *,
     pane_id: str,
+    agent_target: str,
     observation: dict,
 ) -> HerdrAgentLaunchReceipt:
     """Bind redacted core facts to observed Herdr identity, not requested labels."""
@@ -102,12 +108,19 @@ def build_herdr_launch_receipt(
     validate_herdr_result_observation(profile, pane_id=pane_id, snapshot=observation)
     observed_session = observation.get("session", observation.get("session_name"))
     observed_revision = observation.get("revision")
+    launch_payload = resolved.model_dump(mode="json")
+    launch_digest = hashlib.sha256(
+        json.dumps(launch_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     return HerdrAgentLaunchReceipt(
         core=core,
         herdr_session=observed_session,
         space_id=profile.space_id,
         space_revision=observed_revision,
         pane_id=pane_id,
+        agent_target=agent_target,
+        agent_session=observed_session,
+        launch_spec_digest=f"sha256:{launch_digest}",
     )
 
 

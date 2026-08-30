@@ -2585,11 +2585,31 @@ def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch
     assert receipt["space_revision"] == "r2" and receipt["pane_id"] == "w1:p2"
     assert receipt["core"]["model"] == "gpt-5.6"
     assert receipt["core"]["effort"] == "high"
+    assert receipt["agent_target"] == "bh-widget-1"
+    assert receipt["agent_session"] == "default"
+    assert receipt["launch_spec_digest"].startswith("sha256:")
     assert "argv" not in json.dumps(receipt)
+    assert "developer_instructions" not in json.dumps(receipt)
     assert consume_herdr_launch_receipt(receipt, post_create).pane_id == "w1:p2"
     split = next(call for call in calls if call[:2] == ("pane", "split"))
     assert split[split.index("--pane") + 1] == "w1:p1"
     assert split[split.index("--cwd") + 1] == str(claim.worktree)
+    env_values = [split[index + 1] for index, value in enumerate(split) if value == "--env"]
+    assert any(value.startswith("BH_AGENT_LAUNCH_RECEIPT={") for value in env_values)
+    assert "BH_ROLE=developer" in env_values
+    start = next(call for call in calls if call[:2] == ("agent", "start"))
+    assert start[:8] == (
+        "agent",
+        "start",
+        "bh-widget-1",
+        "--kind",
+        "codex",
+        "--pane",
+        "w1:p2",
+        "--",
+    )
+    assert start[8:11] == ("--model", "gpt-5.6", "--config")
+    assert not any(value in {"sh", "bash", "-c"} for value in start)
 
 
 def test_launch_exact_profile_reuses_only_correlated_pane(tmp_path, monkeypatch):
