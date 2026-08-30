@@ -2197,8 +2197,8 @@ def _launch_cmd(
         if exact_profile is not None and exact_profile.launch_target == "planner_session":
             assert session_checkout is not None
             checkout = session_checkout.resolve()
-            if not checkout.is_dir() or not (checkout / ".git").exists():
-                _launch_fail("checkout", "planner session checkout is not an existing git worktree")
+            if not checkout.is_dir():
+                _launch_fail("checkout", "planner session checkout does not exist")
             top = run.run(
                 ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"], capture=True
             )
