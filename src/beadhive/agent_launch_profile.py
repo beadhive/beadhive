@@ -7,11 +7,14 @@ construction deliberately know nothing about those hosts.
 
 from __future__ import annotations
 
+import json
 import os
 from enum import StrEnum
 from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, StrictBool, StringConstraints, model_validator
+
+from .seat_contracts import SeatContract, seat_contract
 
 ProfileVersion = Literal["1"]
 ReceiptVersion = Literal["1"]
@@ -116,6 +119,8 @@ class ResolvedAgentLaunchProfile(BaseModel):
     harness: Harness
     model: str | None
     effort: str | None
+    seat_contract_version: str
+    seat_contract_digest: str
     argv: tuple[str, ...]
 
 
@@ -140,6 +145,8 @@ class AgentLaunchReceipt(BaseModel):
     harness: Harness
     model: NonEmptyString | None = None
     effort: NonEmptyString | None = None
+    seat_contract_version: NonEmptyString
+    seat_contract_digest: Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
 
     @model_validator(mode="after")
     def validate_receipt_policy(self) -> AgentLaunchReceipt:
@@ -153,6 +160,11 @@ class AgentLaunchReceipt(BaseModel):
             model=self.model,
             effort=self.effort,
         )
+        contract = seat_contract(self.current_seat)
+        if self.seat_contract_version != contract.version:
+            raise ValueError("seat contract version conflicts with canonical policy")
+        if self.seat_contract_digest != contract.digest:
+            raise ValueError("seat contract digest conflicts with canonical policy")
         if self.current_seat not in profile.available_seats:
             raise ValueError("current_seat must be present in available_seats")
         if bead_policy_for_seat(self.current_seat) is BeadPolicy.REQUIRED and not self.managed_bead:
@@ -174,6 +186,8 @@ class AgentLaunchReceipt(BaseModel):
             harness=resolved.harness,
             model=resolved.model,
             effort=resolved.effort,
+            seat_contract_version=resolved.seat_contract_version,
+            seat_contract_digest=resolved.seat_contract_digest,
         )
 
 
@@ -207,7 +221,9 @@ class HarnessArgvAdapter:
     harness: ClassVar[Harness]
     efforts: ClassVar[frozenset[str]] = frozenset()
 
-    def build(self, *, seat: str, model: str | None, effort: str | None) -> tuple[str, ...]:
+    def build(
+        self, *, contract: SeatContract, model: str | None, effort: str | None
+    ) -> tuple[str, ...]:
         raise NotImplementedError
 
     def normalize(self, value: str | None, *, field: str) -> str | None:
@@ -232,12 +248,15 @@ class CodexArgvAdapter(HarnessArgvAdapter):
     harness = Harness.CODEX
     efforts = frozenset({"low", "medium", "high", "xhigh", "max", "ultra"})
 
-    def build(self, *, seat: str, model: str | None, effort: str | None) -> tuple[str, ...]:
+    def build(
+        self, *, contract: SeatContract, model: str | None, effort: str | None
+    ) -> tuple[str, ...]:
         argv = ["codex"]
         if model:
             argv.extend(("--model", model))
         if effort:
             argv.extend(("--config", f'model_reasoning_effort="{effort}"'))
+        argv.extend(("--config", f"developer_instructions={json.dumps(contract.instructions)}"))
         return tuple(argv)
 
 
@@ -245,8 +264,10 @@ class ClaudeArgvAdapter(HarnessArgvAdapter):
     harness = Harness.CLAUDE
     efforts = frozenset({"low", "medium", "high"})
 
-    def build(self, *, seat: str, model: str | None, effort: str | None) -> tuple[str, ...]:
-        argv = ["claude", "--agent", seat]
+    def build(
+        self, *, contract: SeatContract, model: str | None, effort: str | None
+    ) -> tuple[str, ...]:
+        argv = ["claude", "--agent", f"bh:{contract.seat}"]
         if model:
             argv.extend(("--model", model))
         if effort:
@@ -257,8 +278,10 @@ class ClaudeArgvAdapter(HarnessArgvAdapter):
 class OpenCodeArgvAdapter(HarnessArgvAdapter):
     harness = Harness.OPENCODE
 
-    def build(self, *, seat: str, model: str | None, effort: str | None) -> tuple[str, ...]:
-        argv = ["opencode", "--agent", seat]
+    def build(
+        self, *, contract: SeatContract, model: str | None, effort: str | None
+    ) -> tuple[str, ...]:
+        argv = ["opencode", "--agent", contract.seat]
         if model:
             argv.extend(("--model", model))
         return tuple(argv)
@@ -279,6 +302,7 @@ def resolve_agent_launch_profile(
     if seat not in profile.available_seats:
         raise ValueError(f"seat {seat!r} is not authorized by available_seats")
     adapter = HARNESS_ADAPTERS[Harness(profile.harness)]
+    contract = seat_contract(seat)
     model = adapter.normalize(profile.model, field="model")
     effort = adapter.normalize_effort(profile.effort)
     return ResolvedAgentLaunchProfile(
@@ -291,5 +315,7 @@ def resolve_agent_launch_profile(
         harness=profile.harness,
         model=model,
         effort=effort,
-        argv=adapter.build(seat=seat, model=model, effort=effort),
+        seat_contract_version=contract.version,
+        seat_contract_digest=contract.digest,
+        argv=adapter.build(contract=contract, model=model, effort=effort),
     )

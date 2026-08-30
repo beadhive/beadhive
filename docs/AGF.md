@@ -85,6 +85,13 @@ mid-execution blocker or discovery re-enters planning through the same door. The
 no new bead types**. See [PLANNING-PLANE.md — Spike loop](PLANNING-PLANE.md#spike-loop) for
 the bead conventions.
 
+Herdr-managed persistent seats are an explicit launch surface, not a replacement lifecycle.
+Herdr owns the live Claude/Codex process; Beadhive owns the bead, branch, seat contract, and
+worktree. A Beadhive client restart may adopt only an exact live matching generation. A Herdr
+server/session exit terminates Agents without completing work; recovery advances the fenced
+generation and relaunches the same exact seat/worktree. Native Task/collaboration children remain
+unmanaged.
+
 **Two gates, by design:**
 
 - **Plan approval** — `bh plan file <spec>` compiles the spec into beads and opens the

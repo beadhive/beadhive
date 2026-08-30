@@ -1099,7 +1099,7 @@ def test_spawn_retries_after_first_run_dialog_and_refuses_unreadable_prompt(tmp_
     assert "did not reach an idle agent prompt" in result.output
     assert any("send-keys" in call and "esc" in call for call in calls)
     assert sum("prompt" in call for call in calls) == 2
-    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2"] in calls
 
 
 def test_spawn_closes_new_pane_when_setup_fails(tmp_path, monkeypatch):
@@ -1128,7 +1128,7 @@ def test_spawn_closes_new_pane_when_setup_fails(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert "pane rename failed" in result.output
-    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2"] in calls
 
 
 def test_spawn_closes_pane_when_agent_start_fails(tmp_path, monkeypatch):
@@ -1161,7 +1161,7 @@ def test_spawn_closes_pane_when_agent_start_fails(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert "agent start failed" in result.output
-    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2"] in calls
 
 
 @pytest.mark.parametrize(("kind", "state"), [("codex", "done"), ("claude", "blocked")])
@@ -1220,7 +1220,7 @@ def test_spawn_refuses_terminal_or_blocked_startup_and_closes_exact_pane(
     assert receipt["pane"] == "w1:p2"
     assert receipt["cleanup"] == {"attempted": True, "succeeded": True, "detail": ""}
     assert receipt["retained_resources"] == [{"kind": "worktree", "path": str(worktree_path)}]
-    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2"] in calls
 
 
 def test_spawn_cleanup_failure_retains_exact_pane_receipt(tmp_path, monkeypatch):
@@ -2240,7 +2240,7 @@ def test_reap_accepts_owned_metadata_on_an_agent_wrapper(tmp_path, monkeypatch):
     result = runner.invoke(app, ["plugin", "herdr", "reap", target])
 
     assert result.exit_code == 0, result.output
-    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+    assert ("pane", "close", "w1:p2") in calls
 
 
 def test_watch_waits_for_blocked_and_translates_timeout(monkeypatch):
@@ -2504,22 +2504,22 @@ def test_launch_profile_stale_observation_precedes_claim(tmp_path, monkeypatch):
     assert "revision changed" in result.output
 
 
-def _exact_launch_profile(*, pane_id=None, create=None):
-    return json.dumps(
-        {
-            "managed_bead": True,
-            "bead": "widget-1",
-            "initial_seat": "developer",
-            "harness": "codex",
-            "model": "gpt-5.6",
-            "effort": "high",
-            "herdr_session": "default",
-            "space_id": "w1",
-            "space_revision": "r1",
-            "pane_id": pane_id,
-            "pane_create": create,
-        }
-    )
+def _exact_launch_profile(*, pane_id=None, create=None, **changes):
+    payload = {
+        "managed_bead": True,
+        "bead": "widget-1",
+        "initial_seat": "developer",
+        "harness": "codex",
+        "model": "gpt-5.6",
+        "effort": "high",
+        "herdr_session": "default",
+        "space_id": "w1",
+        "space_revision": "r1",
+        "pane_id": pane_id,
+        "pane_create": create,
+    }
+    payload.update(changes)
+    return json.dumps(payload)
 
 
 def _exact_snapshot(*, revision="r1"):
@@ -2534,10 +2534,54 @@ def _exact_snapshot(*, revision="r1"):
     }
 
 
+def _exact_result_snapshot(snapshot, *, profile_json, worktree, target, pane):
+    from beadhive.herdr_launch_profile import (
+        HerdrAgentLaunchProfile,
+        launch_spec_digest,
+        resolve_herdr_launch_profile,
+    )
+
+    profile = HerdrAgentLaunchProfile.model_validate_json(profile_json)
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    tokens = {
+        "bh_generation": str(profile.generation),
+        "bh_launch_spec_digest": launch_spec_digest(resolved),
+        "bh_seat_contract_digest": resolved.seat_contract_digest,
+    }
+    if profile.launch_id:
+        tokens.update({"bh_launch_id": profile.launch_id, "bh_operation_id": profile.operation_id})
+    pane_record = next(item for item in snapshot["panes"] if item["pane_id"] == pane)
+    pane_record.update({"tab_id": "w1:t1", "tokens": tokens})
+    snapshot["tabs"] = [{"tab_id": "w1:t1", "space_id": "w1"}]
+    snapshot["agents"] = [
+        {
+            "name": target,
+            "pane_id": pane,
+            "agent_session_id": "agent-session-1",
+            "cwd": str(worktree),
+        }
+    ]
+    return snapshot
+
+
 def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch):
     _entry, claim = _launch_fixture(monkeypatch, tmp_path)
+    create = {
+        "herdr_session": "default",
+        "space_id": "w1",
+        "after_pane_id": "w1:p1",
+        "direction": "down",
+    }
+    profile_json = _exact_launch_profile(create=create)
     post_create = _exact_snapshot(revision="r2")
     post_create["panes"].append({"pane_id": "w1:p2", "space_id": "w1"})
+    _exact_result_snapshot(
+        post_create,
+        profile_json=profile_json,
+        worktree=claim.worktree,
+        target="bh-widget-1",
+        pane="w1:p2",
+    )
     snapshots = iter([_exact_snapshot(), _exact_snapshot(), post_create])
     monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
@@ -2558,12 +2602,6 @@ def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch
         return _result()
 
     monkeypatch.setattr(herdr_plugin, "_command", command)
-    create = {
-        "herdr_session": "default",
-        "space_id": "w1",
-        "after_pane_id": "w1:p1",
-        "direction": "down",
-    }
     result = runner.invoke(
         app,
         [
@@ -2572,7 +2610,7 @@ def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch
             "launch",
             "widget-1",
             "--profile-json",
-            _exact_launch_profile(create=create),
+            profile_json,
             "--json",
         ],
     )
@@ -2585,16 +2623,318 @@ def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch
     assert receipt["space_revision"] == "r2" and receipt["pane_id"] == "w1:p2"
     assert receipt["core"]["model"] == "gpt-5.6"
     assert receipt["core"]["effort"] == "high"
+    assert receipt["agent_target"] == "bh-widget-1"
+    assert receipt["agent_session"] == "agent-session-1"
+    assert receipt["tab_id"] == "w1:t1"
+    assert receipt["worktree_binding_digest"].startswith("sha256:")
+    assert receipt["seat_contract_digest"] == receipt["core"]["seat_contract_digest"]
+    assert receipt["launch_spec_digest"].startswith("sha256:")
     assert "argv" not in json.dumps(receipt)
+    assert "developer_instructions" not in json.dumps(receipt)
     assert consume_herdr_launch_receipt(receipt, post_create).pane_id == "w1:p2"
     split = next(call for call in calls if call[:2] == ("pane", "split"))
     assert split[split.index("--pane") + 1] == "w1:p1"
     assert split[split.index("--cwd") + 1] == str(claim.worktree)
+    env_values = [split[index + 1] for index, value in enumerate(split) if value == "--env"]
+    assert any(value.startswith("BH_AGENT_LAUNCH_RECEIPT={") for value in env_values)
+    assert "BH_ROLE=developer" in env_values
+    start = next(call for call in calls if call[:2] == ("agent", "start"))
+    assert start[:8] == (
+        "agent",
+        "start",
+        "bh-widget-1",
+        "--kind",
+        "codex",
+        "--pane",
+        "w1:p2",
+        "--",
+    )
+    assert start[8:11] == ("--model", "gpt-5.6", "--config")
+    assert not any(value in {"sh", "bash", "-c"} for value in start)
+
+
+def test_launch_identity_creates_distinct_generation_tagged_agent(tmp_path, monkeypatch):
+    _entry, claim = _launch_fixture(monkeypatch, tmp_path)
+    profile_json = _exact_launch_profile(
+        create={
+            "herdr_session": "default",
+            "space_id": "w1",
+            "after_pane_id": "w1:p1",
+        },
+        launch_id="launch-a",
+        operation_id="operation-1",
+        generation=7,
+    )
+    post_create = _exact_snapshot(revision="r2")
+    post_create["panes"].append({"pane_id": "w1:p2", "space_id": "w1"})
+    _exact_result_snapshot(
+        post_create,
+        profile_json=profile_json,
+        worktree=claim.worktree,
+        target="bh-widget-1-launch-a",
+        pane="w1:p2",
+    )
+    snapshots = iter([_exact_snapshot(), _exact_snapshot(), post_create])
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_launch_warm", lambda _target: (True, ""))
+    monkeypatch.setattr(herdr_plugin, "_workspace", lambda *_args: ("w1", "w1:p1"))
+    calls = []
+
+    def command(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("pane", "split"):
+            return _result(stdout="w1:p2")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "widget-1",
+            "--profile-json",
+            profile_json,
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["target"] == "bh-widget-1-launch-a"
+    assert payload["agent_launch_receipt"]["generation"] == 7
+    metadata = next(call for call in calls if call[:2] == ("pane", "report-metadata"))
+    assert "bh_launch_id=launch-a" in metadata
+    assert "bh_operation_id=operation-1" in metadata
+    assert "bh_generation=7" in metadata
+    assert any(str(value).startswith("bh_launch_spec_digest=sha256:") for value in metadata)
+
+
+def test_reuse_refuses_stale_generation_and_conflicting_operation(monkeypatch):
+    from beadhive.herdr_launch_profile import HerdrAgentLaunchProfile, resolve_herdr_launch_profile
+
+    profile = HerdrAgentLaunchProfile.model_validate_json(
+        _exact_launch_profile(
+            pane_id="w1:p7",
+            launch_id="launch-a",
+            operation_id="operation-1",
+            generation=7,
+        )
+    )
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: {"revision": "r2"})
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_snapshot_agent_records",
+        lambda _snapshot: [{"name": "bh-widget-1-launch-a", "state": "idle"}],
+    )
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_metadata_tokens",
+        lambda _record: {
+            "bh_launch_id": "launch-a",
+            "bh_operation_id": "other-operation",
+            "bh_generation": "6",
+            "bh_launch_spec_digest": "wrong",
+            "bh_seat_contract_digest": resolved.seat_contract_digest,
+        },
+    )
+    with pytest.raises(RuntimeError, match="operation/profile/generation") as error:
+        herdr_plugin._validate_managed_generation("bh-widget-1-launch-a", profile, resolved)
+    assert "bh_operation_id" in str(error.value)
+    assert "bh_generation" in str(error.value)
+
+
+def test_typed_dispatcher_launch_uses_native_epic_start_not_leaf_claim(tmp_path, monkeypatch):
+    _launch_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: _exact_snapshot())
+    monkeypatch.setattr(
+        work,
+        "_claim_single_bead",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("dispatcher must not leaf-claim")),
+    )
+    events = []
+
+    def start(epic, actor, hive):
+        events.append((epic, actor, hive))
+        raise RuntimeError("native epic start fence")
+
+    monkeypatch.setattr(work, "start", start)
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "widget-1",
+            "--as",
+            "disp/test",
+            "--profile-json",
+            _exact_launch_profile(
+                pane_id="w1:p7", initial_seat="dispatcher", launch_target="dispatcher_epic"
+            ),
+        ],
+    )
+    assert result.exit_code == 1
+    assert events == [("widget-1", "disp/test", "github/acme/widgets")]
+    assert "native epic start fence" in result.output
+
+
+def test_typed_planner_launch_requires_explicit_checkout_and_never_claims_bead(
+    tmp_path, monkeypatch
+):
+    entry, _claim = _launch_fixture(monkeypatch, tmp_path)
+    checkout = tmp_path / "planner-session"
+    subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+    monkeypatch.setattr(registry, "resolve_hive", lambda *_args: entry)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: _exact_snapshot())
+    monkeypatch.setattr(
+        work,
+        "_claim_single_bead",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("planner must not claim a bead")),
+    )
+    seen = []
+
+    def strict(_target, _hive, cwd):
+        seen.append(cwd)
+        raise RuntimeError("checkout prepared")
+
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", strict)
+    profile = _exact_launch_profile(
+        pane_id="w1:p7",
+        managed_bead=False,
+        bead=None,
+        initial_seat="planner",
+        launch_target="planner_session",
+        session_checkout_id="planning-7",
+    )
+    missing = runner.invoke(
+        app,
+        ["plugin", "herdr", "launch", "--hive", "github/acme/widgets", "--profile-json", profile],
+    )
+    assert missing.exit_code == 1
+    assert "requires --session-checkout" in missing.output
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "--hive",
+            "github/acme/widgets",
+            "--profile-json",
+            profile,
+            "--session-checkout",
+            str(checkout),
+        ],
+    )
+    assert result.exit_code == 1
+    assert "checkout prepared" in result.output
+    assert seen == [checkout.resolve()]
+
+
+def test_invalid_planner_checkout_refuses_before_lease_work_or_herdr_mutation(
+    tmp_path, monkeypatch
+):
+    entry, _claim = _launch_fixture(monkeypatch, tmp_path)
+    repo = tmp_path / "planner-repo"
+    subprocess.run(["git", "init", str(repo)], check=True, capture_output=True)
+    nested = repo / "nested"
+    nested.mkdir()
+    non_git = tmp_path / "not-git"
+    non_git.mkdir()
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(registry, "resolve_hive", lambda *_args: entry)
+    mutations = []
+    monkeypatch.setattr(herdr_plugin, "_launch_lease", lambda *_args: mutations.append("lease"))
+    monkeypatch.setattr(
+        herdr_plugin, "_prepare_selected_session", lambda: mutations.append("herdr") or ({}, "")
+    )
+    monkeypatch.setattr(work, "_claim_single_bead", lambda *_args: mutations.append("work"))
+    monkeypatch.setattr(
+        herdr_plugin, "_command", lambda *_args: mutations.append("herdr") or _result()
+    )
+    profile = _exact_launch_profile(
+        pane_id="w1:p7",
+        managed_bead=False,
+        bead=None,
+        initial_seat="planner",
+        launch_target="planner_session",
+        session_checkout_id="planning-invalid",
+    )
+
+    for checkout in (missing, nested, non_git):
+        result = runner.invoke(
+            app,
+            [
+                "plugin",
+                "herdr",
+                "launch",
+                "--hive",
+                "github/acme/widgets",
+                "--profile-json",
+                profile,
+                "--session-checkout",
+                str(checkout),
+                "--adopt-expired",
+            ],
+        )
+        assert result.exit_code == 1
+        assert "stage=checkout" in result.output
+        assert mutations == []
+
+
+def test_duplicate_start_race_closes_loser_and_refuses_stale_winner_metadata(tmp_path, monkeypatch):
+    _entry, claim = _launch_fixture(monkeypatch, tmp_path)
+    profile_json = _exact_launch_profile(
+        create={"herdr_session": "default", "space_id": "w1", "after_pane_id": "w1:p1"},
+        launch_id="launch-a",
+        operation_id="operation-1",
+        generation=7,
+    )
+    winner = _exact_result_snapshot(
+        _exact_snapshot(revision="r2"),
+        profile_json=profile_json,
+        worktree=claim.worktree,
+        target="bh-widget-1-launch-a",
+        pane="w1:p7",
+    )
+    winner["panes"][1]["tokens"]["bh_generation"] = "6"
+    snapshots = iter([_exact_snapshot(), _exact_snapshot(), winner])
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
+    targets = iter([None, ("w1", "w1:p7")])
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: next(targets))
+    closed = []
+    monkeypatch.setattr(herdr_plugin, "_close_pane", closed.append)
+
+    def command(*args, **_kwargs):
+        if args[:2] == ("pane", "split"):
+            return _result(stdout="w1:p2")
+        if args[:2] == ("agent", "start"):
+            return _result(1, stderr="duplicate target")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    result = runner.invoke(
+        app, ["plugin", "herdr", "launch", "widget-1", "--profile-json", profile_json]
+    )
+    assert result.exit_code == 1
+    assert "bh_generation" in result.output
+    assert closed == ["w1:p2"]
 
 
 def test_launch_exact_profile_reuses_only_correlated_pane(tmp_path, monkeypatch):
-    _launch_fixture(monkeypatch, tmp_path, disposition="reattached")
-    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: _exact_snapshot())
+    _entry, claim = _launch_fixture(monkeypatch, tmp_path, disposition="reattached")
+    profile_json = _exact_launch_profile(pane_id="w1:p7")
+    snapshot = _exact_result_snapshot(
+        _exact_snapshot(),
+        profile_json=profile_json,
+        worktree=claim.worktree,
+        target="bh-widget-1",
+        pane="w1:p7",
+    )
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: snapshot)
     monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: ("w1", "w1:p7"))
     monkeypatch.setattr(
         herdr_plugin,
@@ -2614,7 +2954,7 @@ def test_launch_exact_profile_reuses_only_correlated_pane(tmp_path, monkeypatch)
             "launch",
             "widget-1",
             "--profile-json",
-            _exact_launch_profile(pane_id="w1:p7"),
+            profile_json,
             "--json",
         ],
     )
@@ -2626,8 +2966,7 @@ def test_launch_exact_profile_reuses_only_correlated_pane(tmp_path, monkeypatch)
     assert payload["agent_launch_receipt"]["pane_id"] == "w1:p7"
     assert payload["agent_launch_receipt"]["core"]["model"] == "gpt-5.6"
     assert (
-        consume_herdr_launch_receipt(payload["agent_launch_receipt"], _exact_snapshot()).pane_id
-        == "w1:p7"
+        consume_herdr_launch_receipt(payload["agent_launch_receipt"], snapshot).pane_id == "w1:p7"
     )
 
 
@@ -2746,10 +3085,18 @@ def test_launch_exact_create_post_observation_fails_closed_and_cleans_up(
 def test_launch_exact_reuse_post_observation_wrong_pane_fails_without_destructive_cleanup(
     tmp_path, monkeypatch
 ):
-    _entry, _claim = _launch_fixture(monkeypatch, tmp_path, disposition="reattached")
+    _entry, claim = _launch_fixture(monkeypatch, tmp_path, disposition="reattached")
+    profile_json = _exact_launch_profile(pane_id="w1:p7")
     wrong_post = _exact_snapshot(revision="r2")
     wrong_post["panes"] = [{"pane_id": "w1:p1", "space_id": "w1"}]
-    snapshots = iter([_exact_snapshot(), _exact_snapshot(), wrong_post])
+    exact = _exact_result_snapshot(
+        _exact_snapshot(),
+        profile_json=profile_json,
+        worktree=claim.worktree,
+        target="bh-widget-1",
+        pane="w1:p7",
+    )
+    snapshots = iter([exact, exact, exact, wrong_post])
     monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
     monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: ("w1", "w1:p7"))
     closed = []
@@ -2767,7 +3114,7 @@ def test_launch_exact_reuse_post_observation_wrong_pane_fails_without_destructiv
             "launch",
             "widget-1",
             "--profile-json",
-            _exact_launch_profile(pane_id="w1:p7"),
+            profile_json,
             "--json",
         ],
     )
@@ -3057,7 +3404,7 @@ def test_collapsed_batch_spawn_ps_dispatch_and_cleanup_keep_child_identity_and_s
     assert json.loads(dispatched.stdout)["session"] == "batch-session"
     assert reaped.exit_code == 0, reaped.output
     assert json.loads(reaped.stdout)["session"] == "batch-session"
-    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+    assert ("pane", "close", "w1:p2") in calls
 
 
 @pytest.mark.parametrize(
@@ -3325,7 +3672,7 @@ def test_reap_accepts_encoded_target_when_current_roster_proves_ownership(tmp_pa
     receipt = json.loads(result.stdout)
     assert receipt["disposition"] == "reaped"
     assert receipt["source_revision"].startswith("sha256:")
-    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+    assert ("pane", "close", "w1:p2") in calls
 
 
 @pytest.mark.parametrize("state", ["blocked", "done"])
@@ -3352,7 +3699,7 @@ def test_spawn_receipt_reaps_plugin_owned_blocked_or_terminal_pane(tmp_path, mon
     receipt = json.loads(result.stdout)
     assert receipt["disposition"] == "reaped"
     assert receipt["pane"] == "w1:p2"
-    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+    assert ("pane", "close", "w1:p2") in calls
 
 
 def test_receipt_reap_is_idempotent_after_exact_pane_disappears(tmp_path, monkeypatch):
@@ -3381,9 +3728,69 @@ def test_receipt_reap_is_idempotent_after_exact_pane_disappears(tmp_path, monkey
     assert first.exit_code == second.exit_code == 0
     assert json.loads(first.stdout)["disposition"] == "reaped"
     assert json.loads(second.stdout)["disposition"] == "already_reaped"
-    assert [call for call in calls if call[:2] == ("pane", "close")] == [
-        ("pane", "close", "w1:p2", "--no-focus")
+    assert [call for call in calls if call[:2] == ("pane", "close")] == [("pane", "close", "w1:p2")]
+
+
+def test_roster_accepts_generation_tagged_launch_target(tmp_path, monkeypatch):
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    bead = "widget-1"
+    launch_id = "launch-a"
+    target = herdr_plugin._launch_target(f"{bead}-{launch_id}")
+    snapshot = _roster_snapshot(target, cwd, bead=bead)
+    snapshot["panes"][0]["tokens"]["bh_launch_id"] = launch_id
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, bead)
+
+    roster = herdr_plugin._roster_payload(snapshot, {"managed_repos": []})
+
+    assert roster["agents"][0]["target"] == target
+    assert roster["agents"][0]["ownership"]["state"] == "owned"
+
+
+def test_generation_fenced_receipt_reap_is_idempotent_after_exact_pane_disappears(
+    tmp_path, monkeypatch
+):
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    target = "bh-widget-1"
+    digest = "sha256:" + "8" * 64
+    current = [_roster_snapshot(target, cwd, state="done")]
+    current[0]["panes"][0]["tokens"].update({"bh_generation": "8", "bh_launch_spec_digest": digest})
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: current[0])
+    calls = []
+
+    def command(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("pane", "close"):
+            current[0] = {"agents": [], "panes": [], "workspaces": []}
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    argv = [
+        "plugin",
+        "herdr",
+        "reap",
+        target,
+        "--pane",
+        "w1:p2",
+        "--generation",
+        "8",
+        "--launch-spec-digest",
+        digest,
+        "--json",
     ]
+    first = runner.invoke(app, argv)
+    second = runner.invoke(app, argv)
+
+    assert first.exit_code == second.exit_code == 0
+    assert json.loads(first.stdout)["disposition"] == "reaped"
+    assert json.loads(second.stdout)["disposition"] == "already_reaped"
+    assert [call for call in calls if call[:2] == ("pane", "close")] == [("pane", "close", "w1:p2")]
 
 
 def test_receipt_reap_preserves_unrelated_pane_at_expected_locator(tmp_path, monkeypatch):
@@ -3635,6 +4042,20 @@ def test_launch_help_leads_with_one_argument_path_and_documents_boundaries():
         assert option in result.output
     assert "active foreign host lease" in compact
     assert "never creates or removes a worktree" in compact
+
+
+def test_launch_recovery_requires_exact_prior_profile_before_any_mutation(monkeypatch):
+    def boom(*args, **kwargs):
+        raise AssertionError("invalid recovery input must not probe Herdr or mutate lifecycle")
+
+    monkeypatch.setattr(herdr_plugin, "_has_cli", boom)
+    result = runner.invoke(
+        app,
+        ["plugin", "herdr", "launch", "widget-1", "--recover-after-pane", "pane-2"],
+    )
+
+    assert result.exit_code == 1
+    assert "--recover-after-pane requires --profile-json" in result.output
 
 
 @pytest.mark.parametrize(

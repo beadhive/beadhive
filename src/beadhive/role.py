@@ -228,10 +228,14 @@ def resolve_launch_profile(
 
 
 def _profile_harness_argv(resolved: ResolvedAgentLaunchProfile) -> list[str]:
-    """Apply the native launcher's Claude plugin/local-override compatibility to core argv."""
+    """Return the authoritative provider-native projection resolved by core."""
 
     argv = list(resolved.argv)
-    if resolved.harness == "claude":
+    if resolved.harness == "claude" and resolved.current_seat not in {
+        "developer",
+        "dispatcher",
+        "planner",
+    }:
         argv[2] = _resolve_agent_arg(resolved.current_seat, _plugin_name())
     return argv
 

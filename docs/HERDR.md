@@ -168,6 +168,20 @@ also closes only that new pane; the successful native claim and worktree are ret
 error prints status, attach, and retry guidance. No path invokes `herdr worktree create`, `open`,
 or `remove`.
 
+Exact managed profiles provide canonical developer, dispatcher, and planner seat authority for
+both Claude and Codex. After a Beadhive/plugin/client restart, `launch` adopts only an exact
+still-live Agent whose worktree, seat/profile digests, operation, and lifecycle generation match.
+A Herdr server/session stop or crash instead terminates its Agents and never completes Beadhive
+work. After the server returns, pass the prior `--profile-json` with
+`--recover-after-pane PANE_ID`: Beadhive proves the old exact generation is absent, preserves the
+claimed worktree, advances the generation, and relaunches the same seat. A live old, foreign,
+partial, ambiguous, or conflicting generation refuses without mutation.
+
+Native Claude Task and Codex collaboration children remain unmanaged and are outside managed
+receipts and cleanup fences. Disable or roll back by ceasing managed launches or unlinking the
+optional Herdr package; beads, branches, and managed worktrees remain intact. No upstream Herdr
+patch is required.
+
 For an agent, consume the returned target rather than predicting its encoded name:
 
 ```bash
