@@ -46,7 +46,8 @@ def test_extension_inherits_core_validation_and_resolves_core_policy():
     profile = HerdrAgentLaunchProfile(**_base())
     resolved, exact = resolve_herdr_launch_profile(profile)
     assert isinstance(profile, AgentLaunchProfile)
-    assert resolved.argv == ("codex",)
+    assert resolved.argv[:2] == ("codex", "--config")
+    assert resolved.argv[2].startswith("developer_instructions=")
     assert exact is profile
     with pytest.raises(ValidationError, match="requires a managed bead"):
         HerdrAgentLaunchProfile(**_base(managed_bead=False, bead=None))

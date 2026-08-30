@@ -1617,6 +1617,8 @@ def test_generic_profile_switch_reaches_native_backend(monkeypatch):
     assert mock_run.call_args.kwargs["env"]["BH_ROLE"] == "reviewer"
     receipt = json.loads(mock_run.call_args.kwargs["env"]["BH_AGENT_LAUNCH_RECEIPT"])
     assert set(receipt.pop("available_seats")) == {"developer", "reviewer"}
+    assert receipt.pop("seat_contract_version") == "1"
+    assert receipt.pop("seat_contract_digest").startswith("sha256:")
     assert receipt == {
         "receipt_type": "beadhive.agent-launch",
         "version": "1",

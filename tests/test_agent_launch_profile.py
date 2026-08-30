@@ -131,7 +131,52 @@ def test_codex_adapter_normalizes_only_allowlisted_switches():
         "gpt-5.6",
         "--config",
         'model_reasoning_effort="high"',
+        "--config",
+        "developer_instructions="
+        '"You are the Beadhive developer seat. Implement only the assigned bead in its managed '
+        "worktree, validate it, and submit it for review. Never approve or merge your own work.\"",
     )
+    assert resolved.seat_contract_version == "1"
+    assert resolved.seat_contract_digest.startswith("sha256:")
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex"])
+@pytest.mark.parametrize("seat", ["developer", "dispatcher", "planner"])
+def test_managed_seat_matrix_has_exact_provider_authority(harness, seat):
+    profile = AgentLaunchProfile(
+        managed_bead=seat != "planner",
+        bead="bh-123" if seat != "planner" else None,
+        initial_seat=seat,
+        harness=harness,
+        model="model-1",
+        effort="low",
+    )
+    resolved = resolve_agent_launch_profile(profile)
+    assert resolved.seat_contract_version == "1"
+    assert len(resolved.seat_contract_digest) == len("sha256:") + 64
+    if harness == "claude":
+        assert resolved.argv[:3] == ("claude", "--agent", f"bh:{seat}")
+    else:
+        instruction = resolved.argv[resolved.argv.index("--config", 5) + 1]
+        assert instruction.startswith('developer_instructions="You are the Beadhive ')
+        assert f"{seat} seat" in instruction
+
+
+def test_receipt_rejects_conflicting_contract_evidence():
+    receipt = AgentLaunchReceipt.from_resolved(
+        resolve_agent_launch_profile(
+            AgentLaunchProfile(
+                managed_bead=True,
+                bead="bh-123",
+                initial_seat="developer",
+                harness="codex",
+            )
+        )
+    )
+    with pytest.raises(ValidationError, match="contract digest"):
+        AgentLaunchReceipt.model_validate(
+            {**receipt.model_dump(), "seat_contract_digest": "sha256:" + "0" * 64}
+        )
 
 
 def test_another_harness_and_refused_capability():
@@ -141,7 +186,7 @@ def test_another_harness_and_refused_capability():
     assert resolve_agent_launch_profile(profile).argv == (
         "claude",
         "--agent",
-        "analyst",
+        "bh:analyst",
         "--model",
         "sonnet",
         "--effort",
@@ -223,6 +268,8 @@ def test_versioned_core_receipt_is_redacted_and_round_trips():
     assert parse_agent_launch_receipt(payload) == receipt
     assert receipt.version == "1" and receipt.current_seat == "reviewer"
     assert "argv" not in payload and "herdr" not in payload.lower()
+    assert "instructions" not in payload
+    assert receipt.seat_contract_digest == resolved.seat_contract_digest
 
 
 def test_base_receipt_consumers_fail_closed_on_extensions_and_additive_fields():
