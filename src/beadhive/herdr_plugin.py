@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import importlib
 import inspect
+import io
 import json
 import os
 import platform
@@ -24,6 +25,7 @@ import subprocess
 import sys
 import tomllib
 import uuid
+from contextlib import redirect_stdout
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -66,6 +68,7 @@ _METADATA_SOURCE = "beadhive"
 _TOKEN_OWNER = "bh_owner"
 _TOKEN_HIVE = "bh_hive_id"
 _TOKEN_BEAD = "bh_bead_id"
+_TOKEN_SESSION_CHECKOUT = "bh_session_checkout_id"
 _TOKEN_TARGET = "bh_target"
 _TOKEN_SCHEMA = "bh_schema"
 _HERDR_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
@@ -1153,9 +1156,10 @@ def _tag_ownership(
     workspace: str,
     pane: str,
     hive: str,
-    bead: str,
+    bead: str | None,
     target: str,
     *,
+    session_checkout_id: str | None = None,
     launch_tokens: dict[str, str] | None = None,
 ) -> None:
     """Persist explicit live correlation in Herdr-owned presentation metadata.
@@ -1180,6 +1184,11 @@ def _tag_ownership(
     extra_tokens: list[str] = []
     for key, value in sorted((launch_tokens or {}).items()):
         extra_tokens.extend(("--token", f"{key}={value}"))
+    scope_tokens: list[str] = []
+    if bead is not None:
+        scope_tokens.extend(("--token", f"{_TOKEN_BEAD}={bead}"))
+    if session_checkout_id is not None:
+        scope_tokens.extend(("--token", f"{_TOKEN_SESSION_CHECKOUT}={session_checkout_id}"))
     pane_result = _command(
         "pane",
         "report-metadata",
@@ -1190,8 +1199,7 @@ def _tag_ownership(
         f"{_TOKEN_OWNER}={_OWNERSHIP_MARKER}",
         "--token",
         f"{_TOKEN_HIVE}={hive}",
-        "--token",
-        f"{_TOKEN_BEAD}={bead}",
+        *scope_tokens,
         "--token",
         f"{_TOKEN_TARGET}={target}",
         "--token",
@@ -1709,8 +1717,6 @@ def _strict_live_target(target: str, hive: str, cwd: Path) -> tuple[str, str] | 
 def _validate_managed_generation(target: str, profile, resolved) -> None:
     """Fence reuse to the exact launch operation, profile, and generation metadata."""
 
-    if profile.launch_id is None:
-        return
     snapshot = _session_snapshot()
     if snapshot is None:
         raise RuntimeError("selected Herdr session became unavailable during generation fence")
@@ -1724,12 +1730,13 @@ def _validate_managed_generation(target: str, profile, resolved) -> None:
     from .herdr_launch_profile import launch_spec_digest
 
     expected = {
-        _TOKEN_LAUNCH_ID: profile.launch_id,
-        _TOKEN_OPERATION_ID: profile.operation_id,
         _TOKEN_GENERATION: str(profile.generation),
         _TOKEN_LAUNCH_SPEC: launch_spec_digest(resolved),
         _TOKEN_SEAT_CONTRACT: resolved.seat_contract_digest,
     }
+    if profile.launch_id is not None:
+        expected[_TOKEN_LAUNCH_ID] = profile.launch_id
+        expected[_TOKEN_OPERATION_ID] = profile.operation_id
     tokens = _metadata_tokens(matches[0])
     conflicts = [key for key, value in expected.items() if tokens.get(key) != value]
     if conflicts:
@@ -1804,7 +1811,7 @@ def _recover_managed_generation(profile, resolved, snapshot: dict, after_pane_id
 class _LaunchResult:
     disposition: str
     hive: str
-    bead: str
+    bead: str | None
     kind: str
     worktree: Path
     workspace: str
@@ -2003,7 +2010,9 @@ def _adopt_expired_lease(cfg, entry: dict):
 )
 @_session_scoped
 def _launch_cmd(
-    bead: str = typer.Argument(..., metavar="BEAD_ID", help="exact Beads issue ID"),
+    bead: str | None = typer.Argument(
+        None, metavar="BEAD_ID", help="exact Beads issue ID (omitted for planner_session)"
+    ),
     hive: str = typer.Option(
         "", "--hive", help="explicit registered hive when exact bead lookup is ambiguous"
     ),
@@ -2045,6 +2054,11 @@ def _launch_cmd(
             "after this exact pane; requires --profile-json"
         ),
     ),
+    session_checkout: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--session-checkout",
+        help="explicit existing git checkout for a beadless planner_session profile",
+    ),
 ) -> None:
     """Launch the one-argument happy path.
 
@@ -2084,8 +2098,16 @@ def _launch_cmd(
             resolved_profile, _ = resolve_herdr_launch_profile(exact_profile)
         except (TypeError, ValueError, ValidationError) as exc:
             _launch_fail("profile", f"invalid HerdrAgentLaunchProfile: {exc}")
-        if not resolved_profile.managed_bead or resolved_profile.bead != bead:
-            _launch_fail("profile", "launch bead must equal the exact managed profile bead")
+        if resolved_profile.managed_bead:
+            if not bead or resolved_profile.bead != bead:
+                _launch_fail("profile", "launch bead must equal the exact managed profile bead")
+            if session_checkout is not None:
+                _launch_fail("profile", "managed bead launch cannot use --session-checkout")
+        elif exact_profile.launch_target == "planner_session":
+            if bead is not None:
+                _launch_fail("profile", "planner_session is beadless; omit BEAD_ID")
+            if session_checkout is None:
+                _launch_fail("profile", "planner_session requires --session-checkout")
         if exact_profile.herdr_session != _active_session().name:
             _launch_fail("profile", "profile belongs to a different selected Herdr session")
         if exact_profile.pane_create is not None:
@@ -2099,7 +2121,18 @@ def _launch_cmd(
         _launch_fail("cli", "herdr CLI is not on PATH; install Herdr and retry")
 
     cfg = config.load()
-    resolution = registry.resolve_bead_hive(cfg, bead, hive=hive)
+    if exact_profile is not None and exact_profile.launch_target == "planner_session":
+        if not hive:
+            _launch_fail("checkout", "planner_session requires an explicit --hive")
+        try:
+            planner_entry = registry.resolve_hive(cfg, hive)
+        except typer.Exit:
+            _launch_fail("checkout", f"hive {hive!r} is not registered")
+        resolution = registry.BeadHiveResolution("", planner_entry)
+    else:
+        if not bead:
+            _launch_fail("bead", "BEAD_ID is required unless launching planner_session")
+        resolution = registry.resolve_bead_hive(cfg, bead, hive=hive)
     if resolution.ambiguous:
         candidates = ", ".join(_hive_id(entry) for entry in resolution.candidates)
         _launch_fail(
@@ -2161,16 +2194,57 @@ def _launch_cmd(
 
     _launch_lease(cfg, entry, resolved_hive, adopt_expired)
     try:
-        claim = work._claim_single_bead(cfg, resolved_hive, bead, as_)
+        if exact_profile is not None and exact_profile.launch_target == "planner_session":
+            assert session_checkout is not None
+            checkout = session_checkout.resolve()
+            if not checkout.is_dir() or not (checkout / ".git").exists():
+                _launch_fail("checkout", "planner session checkout is not an existing git worktree")
+            top = run.run(
+                ["git", "-C", str(checkout), "rev-parse", "--show-toplevel"], capture=True
+            )
+            if top.returncode != 0 or Path(str(top.stdout).strip()).resolve() != checkout:
+                _launch_fail("checkout", "planner session checkout is not its exact git top-level")
+            claim = work.ClaimResult(
+                entry=entry,
+                main=checkout,
+                bead={},
+                actor=as_ or "planner",
+                disposition="reattached",
+                worktree=checkout,
+                identity={},
+            )
+        elif exact_profile is not None and exact_profile.launch_target == "dispatcher_epic":
+            assert bead is not None
+            with redirect_stdout(io.StringIO()):
+                work.start(bead, as_, resolved_hive)
+            _entry, main, target_path, branch = worktree.locate(
+                cfg, resolved_hive, bead, kind="epic"
+            )
+            claim = work.ClaimResult(
+                entry=entry,
+                main=main,
+                bead=bd.show(bead, main) or {},
+                actor=as_,
+                disposition="claimed",
+                worktree=target_path,
+                identity={},
+                branch=branch,
+            )
+        else:
+            assert bead is not None
+            claim = work._claim_single_bead(cfg, resolved_hive, bead, as_)
     except Exception as exc:  # noqa: BLE001 - lifecycle core maps typed refusals to Typer exits
-        detail = "native bh work claim refused the bead"
+        detail = "native Beadhive lifecycle refused the launch target"
         if not isinstance(exc, typer.Exit) and str(exc):
             detail = str(exc)
-        _launch_fail("claim", f"{detail}; inspect with `bh work issue {bead} --json`")
+        _launch_fail("claim", f"{detail}; inspect the exact lifecycle target")
 
     target_identity = (
-        f"{bead}-{exact_profile.launch_id}" if exact_profile and exact_profile.launch_id else bead
+        f"{bead or exact_profile.session_checkout_id}-{exact_profile.launch_id}"
+        if exact_profile and exact_profile.launch_id
+        else (bead or exact_profile.session_checkout_id)
     )
+    assert target_identity is not None
     target = _launch_target(target_identity)
     try:
         existing = _strict_live_target(target, resolved_hive, claim.worktree)
@@ -2262,6 +2336,11 @@ def _launch_cmd(
                     winner = None
             if winner is not None and winner[1] != pane:
                 _close_pane(pane)
+                if exact_profile is not None:
+                    try:
+                        _validate_managed_generation(target, exact_profile, resolved_profile)
+                    except RuntimeError as exc:
+                        _launch_fail("reuse", str(exc), claim=claim, target=target)
                 result = _LaunchResult(
                     "reused",
                     resolved_hive,
@@ -2304,6 +2383,12 @@ def _launch_cmd(
                     resolved_hive,
                     bead,
                     target,
+                    session_checkout_id=(
+                        exact_profile.session_checkout_id
+                        if exact_profile is not None
+                        and exact_profile.launch_target == "planner_session"
+                        else None
+                    ),
                     launch_tokens=launch_tokens,
                 )
             except typer.Exit:
@@ -2341,6 +2426,7 @@ def _launch_cmd(
                 pane_id=result.pane,
                 agent_target=result.target,
                 observation=post_operation,
+                worktree=claim.worktree,
             ).model_dump(mode="json")
         except ValueError as exc:
             if result.disposition == "created":

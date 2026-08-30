@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, PositiveInt, StringConstraints, model_validator
@@ -105,10 +106,13 @@ class HerdrAgentLaunchReceipt(BaseModel):
     herdr_session: ExactHerdrIdentity
     space_id: ExactHerdrIdentity
     space_revision: ExactHerdrIdentity
+    tab_id: ExactHerdrIdentity
     pane_id: ExactHerdrIdentity
     agent_target: ExactHerdrIdentity
     agent_session: ExactHerdrIdentity
+    worktree_binding_digest: Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
     launch_spec_digest: Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
+    seat_contract_digest: Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
     generation: PositiveInt
     launch_id: ExactHerdrIdentity | None = None
     operation_id: ExactHerdrIdentity | None = None
@@ -124,12 +128,20 @@ def launch_spec_digest(resolved: ResolvedAgentLaunchProfile) -> str:
     return f"sha256:{digest}"
 
 
+def worktree_binding_digest(worktree: str | Path) -> str:
+    """Return a portable binding for an exact local checkout without exposing its path."""
+
+    canonical = str(Path(worktree).resolve())
+    return f"sha256:{hashlib.sha256(canonical.encode()).hexdigest()}"
+
+
 def build_herdr_launch_receipt(
     resolved: ResolvedAgentLaunchProfile,
     profile: HerdrAgentLaunchProfile,
     *,
     pane_id: str,
     agent_target: str,
+    worktree: str | Path,
     observation: dict,
 ) -> HerdrAgentLaunchReceipt:
     """Bind redacted core facts to observed Herdr identity, not requested labels."""
@@ -141,7 +153,14 @@ def build_herdr_launch_receipt(
         raise ValueError("resolved launch conflicts with Herdr profile policy")
     if profile.pane_id is not None and pane_id != profile.pane_id:
         raise ValueError("resolved pane conflicts with exact Herdr reuse target")
-    validate_herdr_result_observation(profile, pane_id=pane_id, snapshot=observation)
+    observed = validate_herdr_result_observation(
+        profile,
+        resolved,
+        pane_id=pane_id,
+        agent_target=agent_target,
+        worktree=worktree,
+        snapshot=observation,
+    )
     observed_session = observation.get("session", observation.get("session_name"))
     observed_revision = observation.get("revision")
     return HerdrAgentLaunchReceipt(
@@ -149,10 +168,13 @@ def build_herdr_launch_receipt(
         herdr_session=observed_session,
         space_id=profile.space_id,
         space_revision=observed_revision,
+        tab_id=observed["tab_id"],
         pane_id=pane_id,
         agent_target=agent_target,
-        agent_session=observed_session,
+        agent_session=observed["agent_session"],
+        worktree_binding_digest=worktree_binding_digest(worktree),
         launch_spec_digest=launch_spec_digest(resolved),
+        seat_contract_digest=resolved.seat_contract_digest,
         generation=profile.generation,
         launch_id=profile.launch_id,
         operation_id=profile.operation_id,
@@ -160,8 +182,14 @@ def build_herdr_launch_receipt(
 
 
 def validate_herdr_result_observation(
-    profile: HerdrAgentLaunchProfile, *, pane_id: str, snapshot: dict
-) -> None:
+    profile: HerdrAgentLaunchProfile,
+    resolved: ResolvedAgentLaunchProfile,
+    *,
+    pane_id: str,
+    agent_target: str,
+    worktree: str | Path,
+    snapshot: dict,
+) -> dict[str, str]:
     """Correlate one actual launch result against a fresh complete observation.
 
     Unlike the pre-mutation fence, the resulting Space revision may legitimately
@@ -202,6 +230,70 @@ def validate_herdr_result_observation(
     pane_space = pane_matches[0].get("space_id", pane_matches[0].get("workspace_id"))
     if pane_space != profile.space_id:
         raise ValueError("result Herdr pane belongs to a different Space")
+    tab_id = pane_matches[0].get("tab_id")
+    if not isinstance(tab_id, str) or not tab_id:
+        raise ValueError("result Herdr pane has no observed tab identity")
+    tabs = snapshot.get("tabs")
+    if (
+        not isinstance(tabs, list)
+        or len(
+            [
+                item
+                for item in tabs
+                if isinstance(item, dict) and item.get("tab_id", item.get("id")) == tab_id
+            ]
+        )
+        != 1
+    ):
+        raise ValueError("result Herdr tab correlation is missing or ambiguous")
+
+    agents = snapshot.get("agents")
+    if not isinstance(agents, list):
+        raise ValueError("result observation does not contain a complete Agent inventory")
+    agent_matches = []
+    for item in agents:
+        if not isinstance(item, dict):
+            continue
+        record = {**item, **(item.get("agent") if isinstance(item.get("agent"), dict) else {})}
+        target = record.get("name", record.get("agent_name", record.get("target")))
+        record_pane = record.get("pane_id")
+        if record_pane is None and isinstance(record.get("pane"), dict):
+            record_pane = record["pane"].get("pane_id", record["pane"].get("id"))
+        if target == agent_target and record_pane == pane_id:
+            agent_matches.append(record)
+    if len(agent_matches) != 1:
+        raise ValueError("result Herdr Agent correlation is missing or ambiguous")
+    agent = agent_matches[0]
+    agent_session = agent.get(
+        "agent_session_id", agent.get("agent_session", agent.get("session_id"))
+    )
+    if not isinstance(agent_session, str) or not agent_session:
+        raise ValueError("result Herdr Agent has no observed Agent session identity")
+    cwd = agent.get("cwd", agent.get("working_directory", agent.get("current_dir")))
+    if not isinstance(cwd, str) or worktree_binding_digest(cwd) != worktree_binding_digest(
+        worktree
+    ):
+        raise ValueError("result Herdr Agent worktree binding conflicts with checkout")
+    tokens: dict[str, str] = {}
+    for source in (pane_matches[0], agent):
+        raw = source.get("tokens")
+        if isinstance(raw, dict):
+            tokens.update({str(key): str(value) for key, value in raw.items()})
+    expected = {
+        "bh_generation": str(profile.generation),
+        "bh_launch_spec_digest": launch_spec_digest(resolved),
+        "bh_seat_contract_digest": resolved.seat_contract_digest,
+    }
+    if profile.launch_id is not None:
+        expected["bh_launch_id"] = profile.launch_id
+        expected["bh_operation_id"] = profile.operation_id or ""
+    conflicts = [key for key, value in expected.items() if tokens.get(key) != value]
+    if conflicts:
+        raise ValueError(
+            "result Herdr Agent conflicts with requested operation/profile/generation: "
+            + ", ".join(conflicts)
+        )
+    return {"tab_id": tab_id, "agent_session": agent_session}
 
 
 def parse_herdr_launch_receipt(payload: str | bytes | dict) -> HerdrAgentLaunchReceipt:
@@ -249,6 +341,61 @@ def validate_herdr_receipt_observation(receipt: HerdrAgentLaunchReceipt, snapsho
     pane_space = pane_matches[0].get("space_id", pane_matches[0].get("workspace_id"))
     if pane_space != receipt.space_id:
         raise ValueError("receipt Herdr pane belongs to a different Space")
+    if pane_matches[0].get("tab_id") != receipt.tab_id:
+        raise ValueError("receipt Herdr tab correlation is stale")
+    tabs = snapshot.get("tabs")
+    if (
+        not isinstance(tabs, list)
+        or len(
+            [
+                item
+                for item in tabs
+                if isinstance(item, dict) and item.get("tab_id", item.get("id")) == receipt.tab_id
+            ]
+        )
+        != 1
+    ):
+        raise ValueError("receipt Herdr tab correlation is missing or ambiguous")
+    agents = snapshot.get("agents")
+    if not isinstance(agents, list):
+        raise ValueError("observation does not contain a complete Agent inventory")
+    matches = []
+    for item in agents:
+        if not isinstance(item, dict):
+            continue
+        record = {**item, **(item.get("agent") if isinstance(item.get("agent"), dict) else {})}
+        target = record.get("name", record.get("agent_name", record.get("target")))
+        record_pane = record.get("pane_id")
+        if record_pane is None and isinstance(record.get("pane"), dict):
+            record_pane = record["pane"].get("pane_id", record["pane"].get("id"))
+        if target == receipt.agent_target and record_pane == receipt.pane_id:
+            matches.append(record)
+    if len(matches) != 1:
+        raise ValueError("receipt Herdr Agent correlation is missing or ambiguous")
+    agent = matches[0]
+    observed_agent_session = agent.get(
+        "agent_session_id", agent.get("agent_session", agent.get("session_id"))
+    )
+    if observed_agent_session != receipt.agent_session:
+        raise ValueError("receipt Herdr Agent session correlation is stale")
+    cwd = agent.get("cwd", agent.get("working_directory", agent.get("current_dir")))
+    if not isinstance(cwd, str) or worktree_binding_digest(cwd) != receipt.worktree_binding_digest:
+        raise ValueError("receipt worktree binding is stale")
+    tokens: dict[str, str] = {}
+    for source in (pane_matches[0], agent):
+        raw = source.get("tokens")
+        if isinstance(raw, dict):
+            tokens.update({str(key): str(value) for key, value in raw.items()})
+    expected = {
+        "bh_generation": str(receipt.generation),
+        "bh_launch_spec_digest": receipt.launch_spec_digest,
+        "bh_seat_contract_digest": receipt.seat_contract_digest,
+    }
+    if receipt.launch_id is not None:
+        expected["bh_launch_id"] = receipt.launch_id
+        expected["bh_operation_id"] = receipt.operation_id or ""
+    if any(tokens.get(key) != value for key, value in expected.items()):
+        raise ValueError("receipt Herdr Agent launch metadata is stale")
 
 
 def consume_herdr_launch_receipt(
