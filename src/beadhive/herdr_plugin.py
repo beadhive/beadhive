@@ -1325,7 +1325,9 @@ def _roster_agent(
             if inventory_branch is not None:
                 branch = inventory_branch
             worktree_state = "available" if exists else "missing"
-            exact_target = target == _launch_target(bead)
+            launch_id = tokens.get(_TOKEN_LAUNCH_ID)
+            target_identity = f"{bead}-{launch_id}" if launch_id else bead
+            exact_target = target == _launch_target(target_identity)
             exact_metadata_target = association == "legacy" or tokens.get(_TOKEN_TARGET) == target
             unique = (
                 target_count.get(target, 0) == 1
@@ -3093,6 +3095,21 @@ def _reap_cmd(
         typer.echo("✗ herdr: server=down (start herdr before reaping an agent)", err=True)
         raise typer.Exit(1)
     receipt_proof = _receipt_reap_proof(target, pane) if pane else None
+    if receipt_proof is not None and receipt_proof.disposition == "already_reaped":
+        if as_json:
+            _emit_lifecycle(
+                "reap",
+                "already_reaped",
+                operation_id=op_id,
+                target=target,
+                pane=pane,
+                source_revision=receipt_proof.source_revision,
+                capabilities=["status", "ps"],
+                resulting_state="absent",
+            )
+            return
+        typer.echo(f"herdr target={target} already reaped pane={pane}")
+        return
     if generation is not None and not _generation_reap_matches(
         target, pane, generation, launch_spec_digest
     ):
@@ -3109,21 +3126,6 @@ def _reap_cmd(
             )
         typer.echo("✗ herdr: refusing stale or conflicting managed generation", err=True)
         raise typer.Exit(1)
-    if receipt_proof is not None and receipt_proof.disposition == "already_reaped":
-        if as_json:
-            _emit_lifecycle(
-                "reap",
-                "already_reaped",
-                operation_id=op_id,
-                target=target,
-                pane=pane,
-                source_revision=receipt_proof.source_revision,
-                capabilities=["status", "ps"],
-                resulting_state="absent",
-            )
-            return
-        typer.echo(f"herdr target={target} already reaped pane={pane}")
-        return
     proof = (
         (pane, receipt_proof.source_revision)
         if receipt_proof is not None

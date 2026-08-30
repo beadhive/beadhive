@@ -3489,6 +3489,70 @@ def test_receipt_reap_is_idempotent_after_exact_pane_disappears(tmp_path, monkey
     assert [call for call in calls if call[:2] == ("pane", "close")] == [("pane", "close", "w1:p2")]
 
 
+def test_roster_accepts_generation_tagged_launch_target(tmp_path, monkeypatch):
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    bead = "widget-1"
+    launch_id = "launch-a"
+    target = herdr_plugin._launch_target(f"{bead}-{launch_id}")
+    snapshot = _roster_snapshot(target, cwd, bead=bead)
+    snapshot["panes"][0]["tokens"]["bh_launch_id"] = launch_id
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, bead)
+
+    roster = herdr_plugin._roster_payload(snapshot, {"managed_repos": []})
+
+    assert roster["agents"][0]["target"] == target
+    assert roster["agents"][0]["ownership"]["state"] == "owned"
+
+
+def test_generation_fenced_receipt_reap_is_idempotent_after_exact_pane_disappears(
+    tmp_path, monkeypatch
+):
+    cwd = tmp_path / "widget-1"
+    cwd.mkdir()
+    (cwd / ".git").write_text("gitdir: elsewhere\n")
+    target = "bh-widget-1"
+    digest = "sha256:" + "8" * 64
+    current = [_roster_snapshot(target, cwd, state="done")]
+    current[0]["panes"][0]["tokens"].update(
+        {"bh_generation": "8", "bh_launch_spec_digest": digest}
+    )
+    _mock_roster_worktree(monkeypatch, tmp_path, cwd, "widget-1")
+    monkeypatch.setattr(herdr_plugin, "server_up", lambda: True)
+    monkeypatch.setattr(herdr_plugin.config, "load", lambda: {"managed_repos": []})
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: current[0])
+    calls = []
+
+    def command(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("pane", "close"):
+            current[0] = {"agents": [], "panes": [], "workspaces": []}
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    argv = [
+        "plugin",
+        "herdr",
+        "reap",
+        target,
+        "--pane",
+        "w1:p2",
+        "--generation",
+        "8",
+        "--launch-spec-digest",
+        digest,
+        "--json",
+    ]
+    first = runner.invoke(app, argv)
+    second = runner.invoke(app, argv)
+
+    assert first.exit_code == second.exit_code == 0
+    assert json.loads(first.stdout)["disposition"] == "reaped"
+    assert json.loads(second.stdout)["disposition"] == "already_reaped"
+    assert [call for call in calls if call[:2] == ("pane", "close")] == [("pane", "close", "w1:p2")]
+
+
 def test_receipt_reap_preserves_unrelated_pane_at_expected_locator(tmp_path, monkeypatch):
     cwd = tmp_path / "widget-1"
     cwd.mkdir()

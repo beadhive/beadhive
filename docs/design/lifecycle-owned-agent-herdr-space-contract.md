@@ -3,41 +3,35 @@
 > Status: **NO-GO, refreshed** (2026-08-30). This decision incorporates the `bh-4bhs7.4`
 > managed-seat proof run in addition to spike epic `bh-2m1yw`.
 > Core launch transactions, worktree-scoped Herdr allocation/recovery, and authoritative teardown
-> are feasible. The required Claude-and-Codex managed transport is not yet proved, so no product
-> implementation molecule is authorized or filed.
+> are feasible, and the required Claude-and-Codex managed transport is now proved. Installed Herdr
+> `0.8.2` does not preserve a live Agent across server restart, so the filed lifecycle matrix remains
+> incomplete and no product implementation molecule is authorized or filed.
 
 ## Decision
 
 The overall implementation verdict is **NO-GO**.
 
-The exact-seat implementation now supplies canonical Claude and Codex authority, but the release
-gate remains conjunctive. The refreshed installed matrix completed only the Codex developer row;
-see [`herdr-managed-seat-matrix-2026-08-30.md`](../proof/herdr-managed-seat-matrix-2026-08-30.md).
-The other five rows, full descendant cancellation, and restart recovery remain unproved, so the
-capability is still unreleased.
+The exact-seat implementation now supplies canonical Claude and Codex authority, and all six
+installed transport rows plus both provider process-tree cancellation shapes pass; see
+[`herdr-managed-seat-matrix-2026-08-30.md`](../proof/herdr-managed-seat-matrix-2026-08-30.md).
+The release gate remains conjunctive because Herdr server restart terminates rather than adopts the
+live Agent. The capability is therefore still unreleased.
 
-Three of the four spike boundaries are implementation-ready: the Herdr-independent core launch
-transaction is GO, exact-worktree Herdr Space allocation and recovery is GO, and authoritative
-completion plus safe exact teardown is GO. The transport spike is NO-GO. Its failure is at the
-authority boundary, not at receipt propagation or workspace selection:
+The transport authority boundary is now GO: Claude uses the exact scoped `--agent` seat, Codex uses
+provider-native developer instructions, and receipts plus `BH_ROLE` remain evidence rather than
+authority. Herdr launches and reaps both provider process trees. Two limits remain explicit:
 
-1. Codex accepts model, reasoning effort, cwd, and `BH_AGENT_LAUNCH_RECEIPT`, but the current
-   launcher supplies no provider-native developer, dispatcher, or planner instructions. A receipt
-   and `BH_ROLE` are evidence and attribution; neither may become seat authority.
-2. Claude exposes the intended scoped `--agent` transport and the beadless planner was exercised,
-   but disclosure-approved external developer and dispatcher executions were not completed. The
-   argv shape is plausible evidence, not an empirical lifecycle proof.
-3. Native Claude Task and Codex collaboration children expose neither the complete launch inputs
-   nor a launcher-owned lifecycle handle. They cannot be intercepted with the same guarantees.
+1. native Claude Task and Codex collaboration children expose neither the complete launch inputs
+   nor a launcher-owned lifecycle handle, so they remain unmanaged; and
+2. installed Herdr `0.8.2` preserves topology but not the live provider process across either
+   graceful server stop or server crash.
 
-The third finding does not independently block a managed implementation: native fanout may remain
-explicitly unmanaged. The first two findings do block the promised supported transport matrix,
-which requires exact launcher-owned Claude and Codex seats rather than a Claude-only subset or
-seat claims inferred from receipts.
+The first limit is accepted policy and does not independently block managed external Agents. The
+second directly fails the filed restart-reconciliation acceptance criterion.
 
 Do **not** run `bh:replan` on `bh-2m1yw` yet. Do not file the coordinated core or Herdr-plugin
-implementation molecules until the transport prerequisites below land and this decision is
-revisited with their evidence.
+implementation molecules until the remaining restart requirement is decided and this decision is
+revisited with that evidence.
 
 ## Accepted architecture, held pending transport proof
 
@@ -135,28 +129,26 @@ not required to lift this NO-GO if it remains explicitly unsupported.
 | Contract | Verdict | Evidence | Required before implementation filing |
 | --- | --- | --- | --- |
 | Core prepare/commit/abort and all workspace kinds | GO | 48 focused tests; strict profile, worktree, parent, batch/epic, and private-path probes | Preserve the five provisional schema semantics and add conformance fixtures during replan. |
-| Claude managed external transport | NO-GO | Planner invocation and receipt observed; developer/dispatcher argv only | Approved hermetic developer and dispatcher executions proving exact scoped agent, cwd, profile/receipt, completion handle, and cancellation/reap. |
-| Codex managed external transport | NO-GO | Model, effort, cwd, and receipt observed; exact seat rejected | Provider-native allowlisted seat-instruction transport plus developer, dispatcher, and beadless planner execution proofs. |
+| Claude managed external transport | GO | Hermetic plus installed developer/dispatcher/planner executions proved exact scoped seat, cwd, receipt, identity, and Herdr-owned cancellation | Preserve plugin-scoped `--agent` projection and disclosure-approved installed probes. |
+| Codex managed external transport | GO | Hermetic plus installed developer/dispatcher/planner executions proved developer-level seat authority, cwd, receipt, identity, and Herdr-owned cancellation | Preserve allowlisted `developer_instructions` projection and disclosure-approved installed probes. |
 | Native child interception | NO-GO as managed; accepted unmanaged | Callable surfaces lack the required controls/handle | No proof required while policy stays unmanaged; a future managed claim requires all four controls. |
-| Herdr Space/tab allocation and recovery | GO | Herdr 0.8.2 live probe plus 8 recovery cases | Preserve worktree Space, named Agent tab, local intent/lock/generation, exact rereads, and foreign-content refusal. |
+| Herdr Space/tab allocation and recovery | NO-GO for live Agent restart; topology-only recovery GO | Exact installed server stop and crash probes preserved/restored topology but terminated the live Agent; six-row launch and process-tree cancellation passed | Either explicitly revise the release contract to require Beadhive/client-process restart only, or obtain a Herdr server-restart process-adoption mechanism. |
 | Authoritative completion and safe teardown | GO | 343 focused tests plus the frozen saga scenario matrix | Preserve authoritative producers, post-stop final lease verification, exact close, and one-target safe cleanup. |
 
 ## Deferred prerequisites and re-entry gate
 
-No existing backlog bead was found for either blocking transport item. Planning must first create
-and land narrowly scoped deferred proof work for:
+The provider transport prerequisites are now proved by `bh-4bhs7.4`; all six external seat rows
+pass. One lifecycle prerequisite remains: installed Herdr `0.8.2` terminates the managed Agent on
+both graceful server shutdown and server crash. Planning must not treat topology restoration as
+live-process adoption. Re-entry requires one explicit decision:
 
-1. a Codex seat-authority capability, using an allowlisted generated instruction/profile artifact
-   or another provider-native mechanism that bakes the developer, dispatcher, and planner duties
-   independently of environment receipt contents;
-2. a Codex empirical matrix exercising all three seats with exact cwd, model, effort, redacted
-   receipt observation, launcher-owned completion, and cancellation/reap;
-3. disclosure-approved hermetic Claude developer and dispatcher probes exercising the scoped
-   `--agent` load, exact worktree, redacted receipt, lifecycle handle, and cancellation/reap; and
-4. a refreshed cross-provider transport decision showing both external harnesses meet the same
-   authority and lifecycle threshold while native routes remain explicitly unmanaged.
+1. retain the filed server-restart requirement and add/prove a Herdr process-adoption capability;
+   or
+2. explicitly narrow the requirement to Beadhive/plugin/client-process restart, documenting that
+   Herdr server exit is an authoritative Agent termination boundary rather than a recoverable
+   control-plane restart.
 
-Only after those proofs land with GO verdicts should the planning seat run `bh:replan` on epic
+Only after the remaining decision lands with a GO verdict should the planning seat run `bh:replan` on epic
 `bh-2m1yw`. That replan must file two coordinated implementation molecules: one for core
 workspace/launch/completion/teardown schemas and ledgers, and one for the Herdr plugin's
 Space/tab allocation, recovery, generation-fenced stop/close, and conformance adapter. The core
