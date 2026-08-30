@@ -2504,9 +2504,8 @@ def test_launch_profile_stale_observation_precedes_claim(tmp_path, monkeypatch):
     assert "revision changed" in result.output
 
 
-def _exact_launch_profile(*, pane_id=None, create=None):
-    return json.dumps(
-        {
+def _exact_launch_profile(*, pane_id=None, create=None, **changes):
+    payload = {
             "managed_bead": True,
             "bead": "widget-1",
             "initial_seat": "developer",
@@ -2519,7 +2518,8 @@ def _exact_launch_profile(*, pane_id=None, create=None):
             "pane_id": pane_id,
             "pane_create": create,
         }
-    )
+    payload.update(changes)
+    return json.dumps(payload)
 
 
 def _exact_snapshot(*, revision="r1"):
@@ -2610,6 +2610,93 @@ def test_launch_exact_profile_creates_only_in_proven_space(tmp_path, monkeypatch
     )
     assert start[8:11] == ("--model", "gpt-5.6", "--config")
     assert not any(value in {"sh", "bash", "-c"} for value in start)
+
+
+def test_launch_identity_creates_distinct_generation_tagged_agent(tmp_path, monkeypatch):
+    _launch_fixture(monkeypatch, tmp_path)
+    post_create = _exact_snapshot(revision="r2")
+    post_create["panes"].append({"pane_id": "w1:p2", "space_id": "w1"})
+    snapshots = iter([_exact_snapshot(), _exact_snapshot(), post_create])
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_launch_warm", lambda _target: (True, ""))
+    monkeypatch.setattr(herdr_plugin, "_workspace", lambda *_args: ("w1", "w1:p1"))
+    calls = []
+
+    def command(*args, **_kwargs):
+        calls.append(args)
+        if args[:2] == ("pane", "split"):
+            return _result(stdout="w1:p2")
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "widget-1",
+            "--profile-json",
+            _exact_launch_profile(
+                create={
+                    "herdr_session": "default",
+                    "space_id": "w1",
+                    "after_pane_id": "w1:p1",
+                },
+                launch_id="launch-a",
+                operation_id="operation-1",
+                generation=7,
+            ),
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.stdout)
+    assert payload["target"] == "bh-widget-1-launch-a"
+    assert payload["agent_launch_receipt"]["generation"] == 7
+    metadata = next(call for call in calls if call[:2] == ("pane", "report-metadata"))
+    assert "bh_launch_id=launch-a" in metadata
+    assert "bh_operation_id=operation-1" in metadata
+    assert "bh_generation=7" in metadata
+    assert any(str(value).startswith("bh_launch_spec_digest=sha256:") for value in metadata)
+
+
+def test_reuse_refuses_stale_generation_and_conflicting_operation(monkeypatch):
+    from beadhive.herdr_launch_profile import HerdrAgentLaunchProfile, resolve_herdr_launch_profile
+
+    profile = HerdrAgentLaunchProfile.model_validate_json(
+        _exact_launch_profile(
+            pane_id="w1:p7",
+            launch_id="launch-a",
+            operation_id="operation-1",
+            generation=7,
+        )
+    )
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    monkeypatch.setattr(herdr_plugin, "_session_snapshot", lambda: {"revision": "r2"})
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_snapshot_agent_records",
+        lambda _snapshot: [{"name": "bh-widget-1-launch-a", "state": "idle"}],
+    )
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_metadata_tokens",
+        lambda _record: {
+            "bh_launch_id": "launch-a",
+            "bh_operation_id": "other-operation",
+            "bh_generation": "6",
+            "bh_launch_spec_digest": "wrong",
+            "bh_seat_contract_digest": resolved.seat_contract_digest,
+        },
+    )
+    with pytest.raises(RuntimeError, match="operation/profile/generation") as error:
+        herdr_plugin._validate_managed_generation(
+            "bh-widget-1-launch-a", profile, resolved
+        )
+    assert "bh_operation_id" in str(error.value)
+    assert "bh_generation" in str(error.value)
 
 
 def test_launch_exact_profile_reuses_only_correlated_pane(tmp_path, monkeypatch):

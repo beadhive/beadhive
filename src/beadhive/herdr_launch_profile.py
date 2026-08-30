@@ -11,7 +11,7 @@ import hashlib
 import json
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, StringConstraints, model_validator
+from pydantic import BaseModel, ConfigDict, PositiveInt, StringConstraints, model_validator
 
 from .agent_launch_profile import (
     AgentLaunchProfile,
@@ -57,6 +57,11 @@ class HerdrAgentLaunchProfile(AgentLaunchProfile):
     space_revision: ExactHerdrIdentity
     pane_id: ExactHerdrIdentity | None = None
     pane_create: HerdrPaneCreateTarget | None = None
+    launch_id: ExactHerdrIdentity | None = None
+    operation_id: ExactHerdrIdentity | None = None
+    generation: PositiveInt = 1
+    launch_target: Literal["developer_leaf", "dispatcher_epic", "planner_session"] | None = None
+    session_checkout_id: ExactHerdrIdentity | None = None
 
     @model_validator(mode="after")
     def validate_exact_target(self) -> HerdrAgentLaunchProfile:
@@ -68,6 +73,24 @@ class HerdrAgentLaunchProfile(AgentLaunchProfile):
                 raise ValueError("pane_create belongs to a different Herdr session")
             if create.space_id != self.space_id:
                 raise ValueError("pane_create belongs to a different Herdr Space")
+        if (self.launch_id is None) != (self.operation_id is None):
+            raise ValueError("launch_id and operation_id must be supplied together")
+        expected_target = {
+            "developer": "developer_leaf",
+            "dispatcher": "dispatcher_epic",
+            "planner": "planner_session",
+        }.get(self.initial_seat)
+        if expected_target is None:
+            raise ValueError("Herdr managed launch supports developer, dispatcher, or planner")
+        if self.launch_target is None:
+            object.__setattr__(self, "launch_target", expected_target)
+        elif self.launch_target != expected_target:
+            raise ValueError("seat conflicts with typed Herdr launch target")
+        if self.launch_target == "planner_session":
+            if self.managed_bead or not self.session_checkout_id:
+                raise ValueError("planner launch requires a beadless explicit session checkout")
+        elif self.session_checkout_id is not None:
+            raise ValueError("session checkout is reserved for beadless planner launch")
         return self
 
 
@@ -86,6 +109,19 @@ class HerdrAgentLaunchReceipt(BaseModel):
     agent_target: ExactHerdrIdentity
     agent_session: ExactHerdrIdentity
     launch_spec_digest: Annotated[str, StringConstraints(pattern=r"^sha256:[0-9a-f]{64}$")]
+    generation: PositiveInt
+    launch_id: ExactHerdrIdentity | None = None
+    operation_id: ExactHerdrIdentity | None = None
+
+
+def launch_spec_digest(resolved: ResolvedAgentLaunchProfile) -> str:
+    """Digest the complete local launch specification without exposing it portably."""
+
+    payload = resolved.model_dump(mode="json")
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return f"sha256:{digest}"
 
 
 def build_herdr_launch_receipt(
@@ -108,10 +144,6 @@ def build_herdr_launch_receipt(
     validate_herdr_result_observation(profile, pane_id=pane_id, snapshot=observation)
     observed_session = observation.get("session", observation.get("session_name"))
     observed_revision = observation.get("revision")
-    launch_payload = resolved.model_dump(mode="json")
-    launch_digest = hashlib.sha256(
-        json.dumps(launch_payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     return HerdrAgentLaunchReceipt(
         core=core,
         herdr_session=observed_session,
@@ -120,7 +152,10 @@ def build_herdr_launch_receipt(
         pane_id=pane_id,
         agent_target=agent_target,
         agent_session=observed_session,
-        launch_spec_digest=f"sha256:{launch_digest}",
+        launch_spec_digest=launch_spec_digest(resolved),
+        generation=profile.generation,
+        launch_id=profile.launch_id,
+        operation_id=profile.operation_id,
     )
 
 

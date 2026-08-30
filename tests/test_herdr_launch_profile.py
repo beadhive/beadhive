@@ -63,6 +63,49 @@ def test_target_requires_exactly_one_complete_alternative():
         HerdrAgentLaunchProfile(**_base(pane_create=create))
 
 
+def test_typed_managed_seat_targets_fail_closed():
+    assert HerdrAgentLaunchProfile(**_base()).launch_target == "developer_leaf"
+    dispatcher = HerdrAgentLaunchProfile(
+        **_base(initial_seat="dispatcher", launch_target="dispatcher_epic")
+    )
+    assert dispatcher.managed_bead is True
+    planner = HerdrAgentLaunchProfile(
+        **_base(
+            managed_bead=False,
+            bead=None,
+            initial_seat="planner",
+            launch_target="planner_session",
+            session_checkout_id="session-planning-7",
+        )
+    )
+    assert planner.launch_target == "planner_session"
+    with pytest.raises(ValidationError, match="seat conflicts"):
+        HerdrAgentLaunchProfile(**_base(launch_target="dispatcher_epic"))
+    with pytest.raises(ValidationError, match="explicit session checkout"):
+        HerdrAgentLaunchProfile(
+            **_base(managed_bead=False, bead=None, initial_seat="planner")
+        )
+
+
+def test_operation_and_generation_are_exact_receipt_fences():
+    with pytest.raises(ValidationError, match="supplied together"):
+        HerdrAgentLaunchProfile(**_base(launch_id="launch-a"))
+    profile = HerdrAgentLaunchProfile(
+        **_base(launch_id="launch-a", operation_id="operation-1", generation=7)
+    )
+    resolved, _ = resolve_herdr_launch_profile(profile)
+    receipt = build_herdr_launch_receipt(
+        resolved,
+        profile,
+        pane_id="pane-2",
+        agent_target="bh-launch-a",
+        observation=_snapshot(),
+    )
+    assert receipt.generation == 7
+    assert receipt.launch_id == "launch-a"
+    assert receipt.operation_id == "operation-1"
+
+
 @pytest.mark.parametrize(
     "create, message",
     [

@@ -1149,7 +1149,15 @@ def _metadata_tokens(record: dict) -> dict[str, str]:
     return tokens
 
 
-def _tag_ownership(workspace: str, pane: str, hive: str, bead: str, target: str) -> None:
+def _tag_ownership(
+    workspace: str,
+    pane: str,
+    hive: str,
+    bead: str,
+    target: str,
+    *,
+    launch_tokens: dict[str, str] | None = None,
+) -> None:
     """Persist explicit live correlation in Herdr-owned presentation metadata.
 
     The target remains opaque and length-bounded.  These tokens are the reversible association;
@@ -1169,6 +1177,9 @@ def _tag_ownership(workspace: str, pane: str, hive: str, bead: str, target: str)
         f"{_TOKEN_SCHEMA}={_ROSTER_SCHEMA}",
     )
     _require(workspace_result, "workspace ownership metadata")
+    extra_tokens: list[str] = []
+    for key, value in sorted((launch_tokens or {}).items()):
+        extra_tokens.extend(("--token", f"{key}={value}"))
     pane_result = _command(
         "pane",
         "report-metadata",
@@ -1185,6 +1196,7 @@ def _tag_ownership(workspace: str, pane: str, hive: str, bead: str, target: str)
         f"{_TOKEN_TARGET}={target}",
         "--token",
         f"{_TOKEN_SCHEMA}={_ROSTER_SCHEMA}",
+        *extra_tokens,
     )
     _require(pane_result, "pane ownership metadata")
 
@@ -1692,6 +1704,39 @@ def _strict_live_target(target: str, hive: str, cwd: Path) -> tuple[str, str] | 
     return workspace_id, pane_id
 
 
+def _validate_managed_generation(target: str, profile, resolved) -> None:
+    """Fence reuse to the exact launch operation, profile, and generation metadata."""
+
+    if profile.launch_id is None:
+        return
+    snapshot = _session_snapshot()
+    if snapshot is None:
+        raise RuntimeError("selected Herdr session became unavailable during generation fence")
+    matches = [
+        record
+        for record in _snapshot_agent_records(snapshot)
+        if _agent_identity(record)[0] == target
+    ]
+    if len(matches) != 1:
+        raise RuntimeError("managed Agent generation correlation is missing or ambiguous")
+    from .herdr_launch_profile import launch_spec_digest
+
+    expected = {
+        _TOKEN_LAUNCH_ID: profile.launch_id,
+        _TOKEN_OPERATION_ID: profile.operation_id,
+        _TOKEN_GENERATION: str(profile.generation),
+        _TOKEN_LAUNCH_SPEC: launch_spec_digest(resolved),
+        _TOKEN_SEAT_CONTRACT: resolved.seat_contract_digest,
+    }
+    tokens = _metadata_tokens(matches[0])
+    conflicts = [key for key, value in expected.items() if tokens.get(key) != value]
+    if conflicts:
+        raise RuntimeError(
+            "managed Agent conflicts with requested operation/profile/generation: "
+            + ", ".join(conflicts)
+        )
+
+
 @dataclass(frozen=True)
 class _LaunchResult:
     disposition: str
@@ -2039,7 +2084,10 @@ def _launch_cmd(
             detail = str(exc)
         _launch_fail("claim", f"{detail}; inspect with `bh work issue {bead} --json`")
 
-    target = _launch_target(bead)
+    target_identity = (
+        f"{bead}-{exact_profile.launch_id}" if exact_profile and exact_profile.launch_id else bead
+    )
+    target = _launch_target(target_identity)
     try:
         existing = _strict_live_target(target, resolved_hive, claim.worktree)
     except RuntimeError as exc:
@@ -2051,6 +2099,11 @@ def _launch_cmd(
                 "exact profile pane does not contain the correlated live agent",
                 claim=claim,
             )
+    if existing is not None and exact_profile is not None:
+        try:
+            _validate_managed_generation(target, exact_profile, resolved_profile)
+        except RuntimeError as exc:
+            _launch_fail("reuse", str(exc), claim=claim, target=target)
     if existing is not None:
         result = _LaunchResult(
             "reused",
@@ -2149,7 +2202,26 @@ def _launch_cmd(
                     target=target,
                 )
             try:
-                _tag_ownership(workspace, pane, resolved_hive, bead, target)
+                launch_tokens = None
+                if exact_profile is not None:
+                    from .herdr_launch_profile import launch_spec_digest
+
+                    launch_tokens = {
+                        _TOKEN_GENERATION: str(exact_profile.generation),
+                        _TOKEN_LAUNCH_SPEC: launch_spec_digest(resolved_profile),
+                        _TOKEN_SEAT_CONTRACT: resolved_profile.seat_contract_digest,
+                    }
+                    if exact_profile.launch_id is not None:
+                        launch_tokens[_TOKEN_LAUNCH_ID] = exact_profile.launch_id
+                        launch_tokens[_TOKEN_OPERATION_ID] = exact_profile.operation_id or ""
+                _tag_ownership(
+                    workspace,
+                    pane,
+                    resolved_hive,
+                    bead,
+                    target,
+                    launch_tokens=launch_tokens,
+                )
             except typer.Exit:
                 _close_pane(pane)
                 _launch_fail(
@@ -2290,6 +2362,11 @@ def _resolve_kind(explicit: str | None, cfg, entry) -> str:
 _BEAD_RE = re.compile(r"^bh-(?P<bead>bh-[A-Za-z0-9]+(?:\.[A-Za-z0-9]+)*)$")
 _LEGACY_TARGET_RE = re.compile(r"^bh-(?P<bead>[a-z][A-Za-z0-9-]*(?:\.[A-Za-z0-9]+)*)$")
 _LIVE_AGENT_STATES = frozenset({"idle", "working", "blocked"})
+_TOKEN_LAUNCH_ID = "bh_launch_id"
+_TOKEN_OPERATION_ID = "bh_operation_id"
+_TOKEN_GENERATION = "bh_generation"
+_TOKEN_LAUNCH_SPEC = "bh_launch_spec_digest"
+_TOKEN_SEAT_CONTRACT = "bh_seat_contract_digest"
 
 
 def _record_pane_id(record: dict) -> str | None:
