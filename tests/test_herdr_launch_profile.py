@@ -82,9 +82,7 @@ def test_typed_managed_seat_targets_fail_closed():
     with pytest.raises(ValidationError, match="seat conflicts"):
         HerdrAgentLaunchProfile(**_base(launch_target="dispatcher_epic"))
     with pytest.raises(ValidationError, match="explicit session checkout"):
-        HerdrAgentLaunchProfile(
-            **_base(managed_bead=False, bead=None, initial_seat="planner")
-        )
+        HerdrAgentLaunchProfile(**_base(managed_bead=False, bead=None, initial_seat="planner"))
 
 
 def test_operation_and_generation_are_exact_receipt_fences():

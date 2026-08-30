@@ -134,7 +134,7 @@ def test_codex_adapter_normalizes_only_allowlisted_switches():
         "--config",
         "developer_instructions="
         '"You are the Beadhive developer seat. Implement only the assigned bead in its managed '
-        "worktree, validate it, and submit it for review. Never approve or merge your own work.\"",
+        'worktree, validate it, and submit it for review. Never approve or merge your own work."',
     )
     assert resolved.seat_contract_version == "1"
     assert resolved.seat_contract_digest.startswith("sha256:")

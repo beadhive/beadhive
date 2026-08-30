@@ -29,13 +29,22 @@ The Codex trust prompt was confirmed interactively inside the isolated proof ses
 persisting user configuration; the subsequent provider response independently named its baked
 seat and observed the redacted environment value.
 
+A follow-up attempt to run all six rows independently from the already-managed batch worktree was
+denied at the execution boundary: external Claude/Codex processes could disclose private checkout
+contents or configuration to provider destinations without explicit operator authorization. The
+denial explicitly prohibited indirect execution or a workaround. The disclosure-safe opt-in runner
+is [`scripts/probe-herdr-managed-seats.sh`](../../scripts/probe-herdr-managed-seats.sh); it requires
+a non-default isolated session and an operator-approved exact Git checkout. No denied row is
+counted as empirical support.
+
 ## Cancellation and recovery accounting
 
 Closing the exact Codex pane terminated its Herdr allocation; the immediate authoritative
 `agent list` returned an empty array. Hermetic tests cover generation/digest mismatch refusal and
 receipt scrubbing. A full process-tree descendant probe and stopped-session restart adoption have
-not passed against all six installed rows. Therefore cancellation/recovery support is not claimed.
+not passed against all six installed rows. Hermetic exact-metadata tests do prove restart adoption,
+idempotent absence, and stale-generation refusal. Therefore installed cancellation/recovery
+support is not claimed.
 
 Native Claude Task and Codex collaboration children remain unmanaged. Neither is adopted into
 the managed receipt, generation ledger, or cleanup boundary.
-

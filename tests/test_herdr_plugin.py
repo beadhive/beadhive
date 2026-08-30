@@ -2506,18 +2506,18 @@ def test_launch_profile_stale_observation_precedes_claim(tmp_path, monkeypatch):
 
 def _exact_launch_profile(*, pane_id=None, create=None, **changes):
     payload = {
-            "managed_bead": True,
-            "bead": "widget-1",
-            "initial_seat": "developer",
-            "harness": "codex",
-            "model": "gpt-5.6",
-            "effort": "high",
-            "herdr_session": "default",
-            "space_id": "w1",
-            "space_revision": "r1",
-            "pane_id": pane_id,
-            "pane_create": create,
-        }
+        "managed_bead": True,
+        "bead": "widget-1",
+        "initial_seat": "developer",
+        "harness": "codex",
+        "model": "gpt-5.6",
+        "effort": "high",
+        "herdr_session": "default",
+        "space_id": "w1",
+        "space_revision": "r1",
+        "pane_id": pane_id,
+        "pane_create": create,
+    }
     payload.update(changes)
     return json.dumps(payload)
 
@@ -2692,9 +2692,7 @@ def test_reuse_refuses_stale_generation_and_conflicting_operation(monkeypatch):
         },
     )
     with pytest.raises(RuntimeError, match="operation/profile/generation") as error:
-        herdr_plugin._validate_managed_generation(
-            "bh-widget-1-launch-a", profile, resolved
-        )
+        herdr_plugin._validate_managed_generation("bh-widget-1-launch-a", profile, resolved)
     assert "bh_operation_id" in str(error.value)
     assert "bh_generation" in str(error.value)
 
@@ -3488,9 +3486,7 @@ def test_receipt_reap_is_idempotent_after_exact_pane_disappears(tmp_path, monkey
     assert first.exit_code == second.exit_code == 0
     assert json.loads(first.stdout)["disposition"] == "reaped"
     assert json.loads(second.stdout)["disposition"] == "already_reaped"
-    assert [call for call in calls if call[:2] == ("pane", "close")] == [
-        ("pane", "close", "w1:p2")
-    ]
+    assert [call for call in calls if call[:2] == ("pane", "close")] == [("pane", "close", "w1:p2")]
 
 
 def test_receipt_reap_preserves_unrelated_pane_at_expected_locator(tmp_path, monkeypatch):

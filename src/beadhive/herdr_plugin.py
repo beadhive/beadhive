@@ -2680,6 +2680,28 @@ def _receipt_reap_proof(target: str, expected_pane: str) -> _ReceiptReapProof | 
     return _ReceiptReapProof("present", revision, state)
 
 
+def _generation_reap_matches(
+    target: str, pane: str, generation: int, launch_spec_digest: str
+) -> bool:
+    """Authorize cleanup only for the exact live generation recorded in Herdr metadata."""
+
+    snapshot = _session_snapshot()
+    if snapshot is None:
+        return False
+    matches = [
+        record
+        for record in _snapshot_agent_records(snapshot)
+        if _agent_identity(record)[0] == target and _record_pane_id(record) == pane
+    ]
+    if len(matches) != 1:
+        return False
+    tokens = _metadata_tokens(matches[0])
+    return (
+        tokens.get(_TOKEN_GENERATION) == str(generation)
+        and tokens.get(_TOKEN_LAUNCH_SPEC) == launch_spec_digest
+    )
+
+
 @cli.command(
     "add",
     help="explicitly link or install the external Beadhive package in Herdr's user registry.",
@@ -3026,6 +3048,12 @@ def _reap_cmd(
     ),
     as_json: bool = typer.Option(False, "--json", help="emit a versioned lifecycle receipt"),
     operation_id: str = typer.Option("", "--operation-id", help="caller correlation ID"),
+    generation: int | None = typer.Option(
+        None, "--generation", min=1, help="exact managed launch generation fence"
+    ),
+    launch_spec_digest: str = typer.Option(
+        "", "--launch-spec-digest", help="exact sha256 launch specification fence"
+    ),
 ) -> None:
     """Best-effort close of one live, bh-reserved spawned pane.
 
@@ -3047,6 +3075,10 @@ def _reap_cmd(
                 target=target,
             )
         raise typer.BadParameter(str(exc), param_hint="--operation-id") from exc
+    if (generation is None) != (not launch_spec_digest):
+        raise typer.BadParameter("--generation and --launch-spec-digest must be supplied together")
+    if launch_spec_digest and not re.fullmatch(r"sha256:[0-9a-f]{64}", launch_spec_digest):
+        raise typer.BadParameter("--launch-spec-digest must be an exact sha256 digest")
     if not server_up():
         if as_json:
             _lifecycle_failure(
@@ -3061,6 +3093,22 @@ def _reap_cmd(
         typer.echo("✗ herdr: server=down (start herdr before reaping an agent)", err=True)
         raise typer.Exit(1)
     receipt_proof = _receipt_reap_proof(target, pane) if pane else None
+    if generation is not None and not _generation_reap_matches(
+        target, pane, generation, launch_spec_digest
+    ):
+        if as_json:
+            _lifecycle_failure(
+                "reap",
+                operation_id=op_id,
+                code="stale_generation",
+                message="The requested generation does not own the exact live Agent.",
+                disposition="refused",
+                target=target,
+                pane=pane or None,
+                retained_resources=[{"kind": "target", "id": target}],
+            )
+        typer.echo("✗ herdr: refusing stale or conflicting managed generation", err=True)
+        raise typer.Exit(1)
     if receipt_proof is not None and receipt_proof.disposition == "already_reaped":
         if as_json:
             _emit_lifecycle(
