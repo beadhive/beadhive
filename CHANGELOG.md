@@ -13,6 +13,20 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## Unreleased
+
+### Feat
+
+- **herdr**: launch canonical Claude and Codex developer, dispatcher, and planner seats through
+  Herdr with exact environment/profile receipts, generation-fenced cancellation, exact-live
+  client restart adoption, and fresh-generation relaunch after authoritative Herdr server loss
+
+### Rollback
+
+- No schema migration or upstream Herdr patch is required. Existing beads and worktrees are
+  unchanged. To roll back, stop using exact managed launch profiles or unlink the optional Herdr
+  package; retained work can continue through native `bh work`.
+
 ## v0.15.1 (2026-08-25)
 
 ### Fix
