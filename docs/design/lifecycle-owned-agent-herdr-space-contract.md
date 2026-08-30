@@ -1,6 +1,7 @@
 # Lifecycle-owned Agent and Herdr Space implementation decision
 
-> Status: **NO-GO** (2026-08-30). This decision synthesizes spike epic `bh-2m1yw`.
+> Status: **NO-GO, refreshed** (2026-08-30). This decision incorporates the `bh-4bhs7.4`
+> managed-seat proof run in addition to spike epic `bh-2m1yw`.
 > Core launch transactions, worktree-scoped Herdr allocation/recovery, and authoritative teardown
 > are feasible. The required Claude-and-Codex managed transport is not yet proved, so no product
 > implementation molecule is authorized or filed.
@@ -8,6 +9,12 @@
 ## Decision
 
 The overall implementation verdict is **NO-GO**.
+
+The exact-seat implementation now supplies canonical Claude and Codex authority, but the release
+gate remains conjunctive. The refreshed installed matrix completed only the Codex developer row;
+see [`herdr-managed-seat-matrix-2026-08-30.md`](../proof/herdr-managed-seat-matrix-2026-08-30.md).
+The other five rows, full descendant cancellation, and restart recovery remain unproved, so the
+capability is still unreleased.
 
 Three of the four spike boundaries are implementation-ready: the Herdr-independent core launch
 transaction is GO, exact-worktree Herdr Space allocation and recovery is GO, and authoritative

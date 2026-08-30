@@ -955,7 +955,7 @@ def _managed_worktree(hive: str, bead: str, cfg=None) -> tuple[dict, Path]:
 
 def _close_pane(pane: str) -> None:
     """Best-effort cleanup for a failed spawn; never mask the original failure."""
-    _command("pane", "close", pane, "--no-focus")
+    _command("pane", "close", pane)
 
 
 def _hive_id(entry: dict) -> str:
@@ -3101,7 +3101,7 @@ def _reap_cmd(
         typer.echo(f"✗ herdr: refusing unmanaged or ambiguous target {target!r}", err=True)
         raise typer.Exit(1)
     pane, source_revision = proof
-    closed = _command("pane", "close", pane, "--no-focus")
+    closed = _command("pane", "close", pane)
     if closed is None or closed.returncode != 0:
         if as_json:
             _lifecycle_failure(
@@ -3269,7 +3269,7 @@ def _spawn_cmd(
         cleanup_succeeded = False
         cleanup_detail = ""
         if pane and created_pane:
-            cleanup = _command("pane", "close", pane, "--no-focus")
+            cleanup = _command("pane", "close", pane)
             cleanup_succeeded = cleanup is not None and cleanup.returncode == 0
             cleanup_detail = _output(cleanup) if cleanup is not None else "Herdr unavailable"
         retained = [{"kind": "worktree", "path": str(locals()["cwd"])}] if "cwd" in locals() else []

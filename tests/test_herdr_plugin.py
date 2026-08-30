@@ -1099,7 +1099,7 @@ def test_spawn_retries_after_first_run_dialog_and_refuses_unreadable_prompt(tmp_
     assert "did not reach an idle agent prompt" in result.output
     assert any("send-keys" in call and "esc" in call for call in calls)
     assert sum("prompt" in call for call in calls) == 2
-    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2"] in calls
 
 
 def test_spawn_closes_new_pane_when_setup_fails(tmp_path, monkeypatch):
@@ -1128,7 +1128,7 @@ def test_spawn_closes_new_pane_when_setup_fails(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert "pane rename failed" in result.output
-    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2"] in calls
 
 
 def test_spawn_closes_pane_when_agent_start_fails(tmp_path, monkeypatch):
@@ -1161,7 +1161,7 @@ def test_spawn_closes_pane_when_agent_start_fails(tmp_path, monkeypatch):
 
     assert result.exit_code == 1
     assert "agent start failed" in result.output
-    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2"] in calls
 
 
 @pytest.mark.parametrize(("kind", "state"), [("codex", "done"), ("claude", "blocked")])
@@ -1220,7 +1220,7 @@ def test_spawn_refuses_terminal_or_blocked_startup_and_closes_exact_pane(
     assert receipt["pane"] == "w1:p2"
     assert receipt["cleanup"] == {"attempted": True, "succeeded": True, "detail": ""}
     assert receipt["retained_resources"] == [{"kind": "worktree", "path": str(worktree_path)}]
-    assert ["herdr", "--session", "default", "pane", "close", "w1:p2", "--no-focus"] in calls
+    assert ["herdr", "--session", "default", "pane", "close", "w1:p2"] in calls
 
 
 def test_spawn_cleanup_failure_retains_exact_pane_receipt(tmp_path, monkeypatch):
@@ -2240,7 +2240,7 @@ def test_reap_accepts_owned_metadata_on_an_agent_wrapper(tmp_path, monkeypatch):
     result = runner.invoke(app, ["plugin", "herdr", "reap", target])
 
     assert result.exit_code == 0, result.output
-    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+    assert ("pane", "close", "w1:p2") in calls
 
 
 def test_watch_waits_for_blocked_and_translates_timeout(monkeypatch):
@@ -3164,7 +3164,7 @@ def test_collapsed_batch_spawn_ps_dispatch_and_cleanup_keep_child_identity_and_s
     assert json.loads(dispatched.stdout)["session"] == "batch-session"
     assert reaped.exit_code == 0, reaped.output
     assert json.loads(reaped.stdout)["session"] == "batch-session"
-    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+    assert ("pane", "close", "w1:p2") in calls
 
 
 @pytest.mark.parametrize(
@@ -3432,7 +3432,7 @@ def test_reap_accepts_encoded_target_when_current_roster_proves_ownership(tmp_pa
     receipt = json.loads(result.stdout)
     assert receipt["disposition"] == "reaped"
     assert receipt["source_revision"].startswith("sha256:")
-    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+    assert ("pane", "close", "w1:p2") in calls
 
 
 @pytest.mark.parametrize("state", ["blocked", "done"])
@@ -3459,7 +3459,7 @@ def test_spawn_receipt_reaps_plugin_owned_blocked_or_terminal_pane(tmp_path, mon
     receipt = json.loads(result.stdout)
     assert receipt["disposition"] == "reaped"
     assert receipt["pane"] == "w1:p2"
-    assert ("pane", "close", "w1:p2", "--no-focus") in calls
+    assert ("pane", "close", "w1:p2") in calls
 
 
 def test_receipt_reap_is_idempotent_after_exact_pane_disappears(tmp_path, monkeypatch):
@@ -3489,7 +3489,7 @@ def test_receipt_reap_is_idempotent_after_exact_pane_disappears(tmp_path, monkey
     assert json.loads(first.stdout)["disposition"] == "reaped"
     assert json.loads(second.stdout)["disposition"] == "already_reaped"
     assert [call for call in calls if call[:2] == ("pane", "close")] == [
-        ("pane", "close", "w1:p2", "--no-focus")
+        ("pane", "close", "w1:p2")
     ]
 
 
