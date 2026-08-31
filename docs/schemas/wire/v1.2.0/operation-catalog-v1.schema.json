@@ -219,6 +219,12 @@
       "anyOf": [{"required": ["tool"]}, {"required": ["resource"]}],
       "properties": {
         "allowlisted": {"const": true},
+        "composes": {
+          "items": {"pattern": "^[a-z0-9-]+(?:\\.[a-z0-9-]+)*$", "type": "string"},
+          "minItems": 1,
+          "type": "array",
+          "uniqueItems": true
+        },
         "divergence": {"minLength": 1, "type": "string"},
         "granularity": {"$ref": "#/$defs/Granularity"},
         "interactivity": {"$ref": "#/$defs/Interactivity"},

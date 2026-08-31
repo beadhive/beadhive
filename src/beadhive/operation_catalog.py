@@ -510,6 +510,13 @@ _MCP_COARSE_GRAINED = {
     "hive.onboard": "one MCP call composes clone, initialization, registration, and hub sync",
     "toolchain.exec": "one MCP call carries an opaque downstream argv vector",
 }
+# A composite is a deliberately hand-authored MCP handler which coordinates multiple canonical
+# operations.  Keep this separate from merely coarse batch/opaque tools: those still implement one
+# operation, whereas these entries sanction a wider agent-facing unit over catalog operations.
+# Every component is validated in ``operations()`` so a rename cannot leave a dangling composite.
+_MCP_COMPOSITES = {
+    "hive.onboard": ("hive.init", "sync"),
+}
 _SECRET_PATHS = {"dep auth", "harness auth"}
 _HQ_READS = {"hq intake", "hq status"}
 _OVERRIDE_NAMES = {"force", "yes", "skip_check"}
@@ -863,6 +870,8 @@ def operations() -> tuple[OperationSpec, ...]:
             if tool_spec:
                 mcp_projection["tool"] = tool_spec[0]
                 mcp_projection["tool_parameters"] = list(tool_spec[1])
+                if name in _MCP_COMPOSITES:
+                    mcp_projection["composes"] = list(_MCP_COMPOSITES[name])
             if resource_spec:
                 mcp_projection["resource"] = resource_spec[0]
                 mcp_projection["resource_parameters"] = list(resource_spec[1])
@@ -894,7 +903,146 @@ def operations() -> tuple[OperationSpec, ...]:
                 alias_of=_SEMANTIC_ALIASES.get(name),
             )
         )
+    operation_names = {operation.name for operation in result}
+    for composite, components in _MCP_COMPOSITES.items():
+        if composite not in _MCP_TOOLS:
+            raise ValueError(f"MCP composite {composite!r} is not an allowlisted tool")
+        missing = set(components) - operation_names
+        if missing:
+            raise ValueError(
+                f"MCP composite {composite!r} references unknown operations: {sorted(missing)}"
+            )
     return tuple(result)
+
+
+class MCPProjectionError(ValueError):
+    """The requested operation is not safe and declared for the requested MCP surface."""
+
+
+def _validated_mcp_projection(operation: OperationSpec) -> dict[str, Any]:
+    """Return one operation's MCP projection after enforcing the catalog safety policy.
+
+    This is the transport generator's only catalog entry point.  It intentionally checks positive
+    permission instead of deriving exposure from all non-privileged operations: absence from the
+    MCP projection is denial.  The repeated constraint checks make a malformed/monkeypatched
+    catalog fail closed before FastMCP registers a callable.
+    """
+    name = operation.name
+    projection = operation.surfaces.get("mcp")
+    if not projection or projection.get("allowlisted") is not True:
+        raise MCPProjectionError(f"operation {name!r} is not allowlisted for MCP")
+    unsafe_constraints = [
+        key for key in ("hq_write", "secret_material", "interactive") if operation.constraints[key]
+    ]
+    if operation.privilege == "privileged" or unsafe_constraints:
+        detail = ", ".join(unsafe_constraints) or operation.privilege
+        raise MCPProjectionError(f"operation {name!r} is privileged for MCP: {detail}")
+    parameter_privilege = {
+        parameter.name: parameter.privilege for parameter in operation.parameters
+    }
+    projected_parameters = set(projection.get("tool_parameters", ())) | set(
+        projection.get("resource_parameters", ())
+    )
+    privileged_parameters = sorted(
+        parameter
+        for parameter in projected_parameters
+        if parameter_privilege.get(parameter) == "privileged-override"
+        or parameter in operation.constraints["override_parameters"]
+    )
+    if privileged_parameters:
+        raise MCPProjectionError(
+            f"operation {name!r} projects privileged MCP parameters: {privileged_parameters}"
+        )
+    return projection
+
+
+def _allowlisted_mcp_operation(name: str) -> tuple[OperationSpec, dict[str, Any]]:
+    operation = next((row for row in operations() if row.name == name), None)
+    if operation is None:
+        raise MCPProjectionError(f"unknown catalog operation {name!r}")
+    return operation, _validated_mcp_projection(operation)
+
+
+def _tool_projection(operation: OperationSpec, projection: dict[str, Any]):
+    tool_name = projection.get("tool")
+    if not tool_name:
+        raise MCPProjectionError(f"operation {operation.name!r} has no MCP tool projection")
+    if operation.kind != "action" and not projection.get("divergence"):
+        raise MCPProjectionError(
+            f"read operation {operation.name!r} needs a declared tool divergence"
+        )
+    return str(tool_name), tuple(projection.get("tool_parameters", ()))
+
+
+def _resource_projection(operation: OperationSpec, projection: dict[str, Any]):
+    uri = projection.get("resource")
+    if not uri:
+        raise MCPProjectionError(f"operation {operation.name!r} has no MCP resource projection")
+    if operation.kind != "read-resource":
+        raise MCPProjectionError(f"action {operation.name!r} cannot project as an MCP resource")
+    return str(uri), tuple(projection.get("resource_parameters", ()))
+
+
+def mcp_tool_projection(name: str) -> tuple[str, tuple[str, ...]]:
+    """Return the catalog-generated ``(tool name, public parameters)`` for an operation."""
+    operation, projection = _allowlisted_mcp_operation(name)
+    return _tool_projection(operation, projection)
+
+
+def mcp_resource_projection(name: str) -> tuple[str, tuple[str, ...]]:
+    """Return the catalog-generated ``(resource URI template, parameters)`` for an operation."""
+    operation, projection = _allowlisted_mcp_operation(name)
+    return _resource_projection(operation, projection)
+
+
+def mcp_tool_projections() -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Materialize the deterministic safe MCP tool inventory from one catalog snapshot."""
+    result = {}
+    for operation in operations():
+        projection = operation.surfaces.get("mcp")
+        if projection and projection.get("tool"):
+            result[operation.name] = _tool_projection(
+                operation, _validated_mcp_projection(operation)
+            )
+    return result
+
+
+def mcp_resource_projections() -> dict[str, tuple[str, tuple[str, ...]]]:
+    """Materialize the deterministic safe MCP resource inventory from one catalog snapshot."""
+    result = {}
+    for operation in operations():
+        projection = operation.surfaces.get("mcp")
+        if projection and projection.get("resource"):
+            result[operation.name] = _resource_projection(
+                operation, _validated_mcp_projection(operation)
+            )
+    return result
+
+
+def mcp_tool_operations() -> tuple[str, ...]:
+    """Return the deterministic operation inventory the FastMCP tool generator must bind."""
+    return tuple(mcp_tool_projections())
+
+
+def mcp_resource_operations() -> tuple[str, ...]:
+    """Return the deterministic operation inventory the FastMCP resource generator must bind."""
+    return tuple(mcp_resource_projections())
+
+
+def mcp_notification_uris(name: str, **parameters: Any) -> tuple[str, ...]:
+    """Generate one tool's completed-mutation resource notifications from the catalog.
+
+    URI templates stay in the declarative projection; handlers supply only runtime values such as
+    the config key.  An unbound template is an adapter error, never a partially formatted URI.
+    """
+    _operation, projection = _allowlisted_mcp_operation(name)
+    uris = projection["progress"]["notification_uris"]
+    try:
+        return tuple(uri.format(**parameters) for uri in uris)
+    except KeyError as exc:
+        raise MCPProjectionError(
+            f"notification for {name!r} needs parameter {exc.args[0]!r}"
+        ) from exc
 
 
 def document() -> dict[str, Any]:
