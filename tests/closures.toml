@@ -43,7 +43,7 @@ tests = [
   "tests/unit/kernel/plugins/test_discovery.py",
 ]
 shared_contracts = ["contracts"]
-shared_contract_tests = ["tests/contracts/test_plugin_discovery_contract.py"]
+shared_contract_tests = ["tests/contracts/test_plugin_discovery_contract.py", "tests/contracts/test_sample_plugin_authoring.py"]
 reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_plugins.py"]
 

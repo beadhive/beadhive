@@ -256,6 +256,9 @@ runtime domain dispatcher queried from arbitrary modules.
 
 ### `kernel/plugins`
 
+Plugin authors use [PluginManifest v1 authoring and isolation](PLUGIN-AUTHORING.md) for the
+checked artifact, typed capability, lifecycle, redaction, testing, and deprecation contract.
+
 Separates plugin declaration, capability implementation, lifecycle subscription, and transport
 presentation. It owns:
 
