@@ -526,6 +526,11 @@ surface and is not silently changed by schema generation.
 
 ## Testing architecture
 
+The supported commands and checked impact registry are documented in
+[Module-local test closures](TEST-CLOSURES.md). Their direct, shared-contract, and
+reverse-dependent selections are advisory while the full submit and land gates remain
+authoritative.
+
 The current root `tests/conftest.py` contains many autouse fixtures that initialize config,
 identity, storage, validation, telemetry, and runtime concerns. That prevents a plugin test from
 proving independence from core infrastructure.

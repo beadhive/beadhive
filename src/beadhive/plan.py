@@ -20,7 +20,7 @@ from pathlib import Path
 
 import typer
 
-from . import adopt, bd, complexity, config, guard, molecule, otel, registry, state, validate
+from . import adopt, bd, complexity, config, guard, molecule, registry, state, validate
 from .identity import resolve_actor, workspace_identity
 
 app = typer.Typer(no_args_is_help=True, help="Plan a molecule → swarm (planning plane).")
@@ -708,9 +708,11 @@ def _render_from_epic(epic_id: str, cwd) -> None:
 
 
 def _spec_from_filed(epic_data: dict, issues: list[dict]) -> dict:
-    """Reconstruct a molecule spec dict from a filed epic so molecule.validate_spec can run its
-    structural checks (epic + title, unique handles, per-issue title/acceptance, deps → real
-    handles, acyclic DAG). Dimension/identity LABELS are verified separately by _check_child_labels.
+    """Reconstruct a molecule spec dict from a filed epic for structural validation.
+
+    A child epic is a coordinator container, not leaf work.  It still participates in the
+    parent's dependency graph, but its own acceptance belongs to its child molecule, so supply a
+    structural placeholder here and verify its container conventions separately.
     """
     epic = {
         "title": epic_data.get("title") or "",
@@ -729,7 +731,9 @@ def _spec_from_filed(epic_data: dict, issues: list[dict]) -> dict:
                 "type": i["type"],
                 "description": i.get("description") or "",
                 "design": i.get("design") or "",
-                "acceptance": i["acceptance"],
+                "acceptance": i["acceptance"]
+                if i.get("type") != "epic"
+                else "coordinator container",
                 "deps": i["deps"],
                 **{
                     field: values[0]
@@ -812,7 +816,11 @@ def _ungated_roots(epic_id: str, issues: list[dict], cwd) -> list[str] | None:
     Shared by `_check_kickoff_gates` (verify) and plan_repair (backfill) so both sides apply the
     same root filter — a naive "gate every childless child" would over-gate origin reports or
     under-gate genuine roots."""
-    roots = [r for r in _roots(issues) if not (r.get("satisfied_deps") or [])]
+    # A child epic owns its own root gates.  It is a coordinator container, not an entry-point
+    # leaf of this parent molecule, so never demand a second parent-named kickoff gate for it.
+    roots = [
+        r for r in _roots(issues) if r.get("type") != "epic" and not (r.get("satisfied_deps") or [])
+    ]
     if not roots:
         return []
     gates = _gate_list(cwd, all_gates=True)
@@ -852,12 +860,12 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
         for field in ("provider", "org", "repo"):
             if not validate._label_val(labels, f"{field}:"):
                 problems.append(f"{cid}: missing identity label '{field}:'")
-        # bh-l9s8.2: the inverse assertion — origin:/intake:/kickoff: are intake-item / epic
-        # state, never work-child state; carried here they misroute the child (or hide it from
-        # the sibling set once an origin: label lands).
-        offending = sorted(
-            lbl for lbl in labels if lbl.startswith(("origin:", "intake:", "kickoff:"))
-        )
+        # bh-l9s8.2: state labels do not belong on leaf work.  A nested epic is a coordinator
+        # container in its own right, however, so its kickoff state is required and valid.
+        state_prefixes = ("origin:", "intake:")
+        if issue.get("type") != "epic":
+            state_prefixes += ("kickoff:",)
+        offending = sorted(lbl for lbl in labels if lbl.startswith(state_prefixes))
         if offending:
             problems.append(
                 f"{cid}: work children must not carry state labels ({', '.join(offending)}) — "
@@ -875,6 +883,30 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
                 problems.append(
                     f"{cid}: {dim} '{val}' not in closed set {{{', '.join(sorted(allowed))}}}"
                 )
+    return problems
+
+
+def _check_coordinator_children(issues: list[dict], cwd) -> list[str]:
+    """Verify nested epic children as independent coordinator containers.
+
+    Parent verification deliberately does not borrow a nested epic's kickoff gate or demand an
+    acceptance criterion from the container record.  Each nested epic must instead retain the
+    same swarm, kickoff state, and anchored root-gate contract as a top-level molecule.
+    """
+    problems: list[str] = []
+    for issue in issues:
+        if issue.get("type") != "epic":
+            continue
+        cid = issue["handle"]
+        nested = _epic_molecule(cid, cwd)
+        if nested is None:
+            problems.append(f"{cid}: could not retrieve nested epic or its children")
+            continue
+        nested_data, nested_issues, _origin_reports = nested
+        problems += _check_epic_type(nested_data, cid)
+        problems += _check_swarm(cid, cwd)
+        problems += _check_kickoff_state(cid, cwd)
+        problems += _check_kickoff_gates(cid, nested_issues, cwd)
     return problems
 
 
@@ -924,6 +956,7 @@ def _verify_loaded(
     problems += _check_kickoff_gates(epic_id, issues, cwd)
     problems += _check_kickoff_state(epic_id, cwd)
     problems += _check_child_labels(issues, cfg)
+    problems += _check_coordinator_children(issues, cwd)
     return problems
 
 
@@ -955,8 +988,6 @@ def enforce_epic_conventions(epic_id: str, cfg, cwd, *, action: str) -> None:
 # ---- verbs ------------------------------------------------------------------
 
 
-@app.command("file")
-@otel.trace_verb("plan.file")
 def file(
     spec: str = typer.Argument(..., metavar="<spec>", help="molecule spec YAML"),
     dry_run: bool = typer.Option(False, "--dry-run", help="preview only; create nothing"),
@@ -1010,8 +1041,6 @@ def file(
         _save_spec(data, save)
 
 
-@app.command("adopt")
-@otel.trace_verb("plan.adopt")
 def adopt_cmd(
     beads: list[str] = _ADOPT_BEADS,
     out: str = typer.Option(
@@ -1059,8 +1088,6 @@ def adopt_cmd(
         molecule._yaml.dump(frame, sys.stdout)
 
 
-@app.command("check")
-@otel.trace_verb("plan.check")
 def check(
     ref: str = typer.Argument(..., metavar="<spec|epic>", help="spec YAML path OR filed epic id"),
     as_json: bool = typer.Option(
@@ -1128,8 +1155,6 @@ def check(
     typer.echo("✓ valid")
 
 
-@app.command("verify")
-@otel.trace_verb("plan.verify")
 def verify(
     epic: str = typer.Argument(..., metavar="<epic>", help="filed epic id to verify"),
     hive: str = _HIVE,
@@ -1165,8 +1190,6 @@ def verify(
     typer.echo(f"✓ verified {epic}: molecule conventions satisfied{stub_note}")
 
 
-@app.command("approve")
-@otel.trace_verb("plan.approve")
 def approve(
     epic: str = typer.Argument(..., metavar="<epic>", help="epic id whose kickoff to approve"),
     hive: str = _HIVE,
@@ -1229,8 +1252,6 @@ def approve(
     typer.echo(f"✓ approved {epic}: {len(open_gates)} gate(s) resolved, kickoff=approved")
 
 
-@app.command("show")
-@otel.trace_verb("plan.show")
 def show(
     ref: str = typer.Argument(..., metavar="<ref>", help="spec file path OR filed epic id"),
     hive: str = _HIVE,
@@ -1259,8 +1280,6 @@ def show(
         _render_from_epic(ref, cwd)
 
 
-@app.command("status")
-@otel.trace_verb("plan.status")
 def status(
     epic: str | None = typer.Argument(
         None, metavar="[<epic>]", help="epic id (omit for all swarms)"
@@ -1317,6 +1336,30 @@ def status(
 # plan_repair imports `plan` function-locally only, so this bottom import is cycle-safe in
 # either import order; it lives in its own module to respect plan.py's size budget (bh-62rm).
 
-from . import plan_repair as _plan_repair  # noqa: E402
+from . import plan_repair as _plan_repair  # noqa: E402, I001
+from .cli_projection import (  # noqa: E402, I001
+    generated_callbacks as _generated_cli_callbacks,
+    project_cli_group as _project_cli_group,
+)
 
-app.command("repair")(_plan_repair.repair)
+CLI_HANDLERS = {
+    "plan.file": file,
+    "plan.adopt": adopt_cmd,
+    "plan.check": check,
+    "plan.verify": verify,
+    "plan.approve": approve,
+    "plan.show": show,
+    "plan.status": status,
+    "plan.repair": _plan_repair.repair,
+}
+CLI_PROJECTION = _project_cli_group(app, "plan", CLI_HANDLERS)
+_CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)
+
+file = _CLI_CALLBACKS["plan.file"]
+adopt_cmd = _CLI_CALLBACKS["plan.adopt"]
+check = _CLI_CALLBACKS["plan.check"]
+verify = _CLI_CALLBACKS["plan.verify"]
+approve = _CLI_CALLBACKS["plan.approve"]
+show = _CLI_CALLBACKS["plan.show"]
+status = _CLI_CALLBACKS["plan.status"]
+_plan_repair.repair = _CLI_CALLBACKS["plan.repair"]

@@ -51,7 +51,7 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check test
+check: lint lint-md license-check architecture-check wire-schema-compat test
 
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
 #
@@ -119,7 +119,17 @@ check: lint lint-md license-check test
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check (test FAST) test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md license-check architecture-check wire-schema-compat (test FAST) test-integration-land demo-local-loop demo-live-ingress
+
+# Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
+architecture-check:
+    uv run python scripts/check_import_boundaries.py
+
+# Compare the candidate wire release with the target branch and validate its shared fixtures.
+# CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
+# reject same-major wire breaks and in-place edits to already-published releases
+wire-schema-compat:
+    uv run python scripts/check_wire_schema_compat.py
 
 # MANUAL ONLY — the release browser matrix belongs to beadhive-ui because that repository owns
 # Chromium, the product bundle, and the browser adapters. Core delegates instead of copying the
@@ -512,6 +522,35 @@ test_timeout_seconds := env_var_or_default("BH_TEST_TIMEOUT_SECONDS", "900")
 test set=FAST:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
+
+# Advisory module/plugin closures. These commands never replace `just check` or `just check-all`;
+# the checked impact map adds shared-contract and reverse-dependent selectors to each direct set.
+test-closure closure:
+    ./scripts/hermetic.sh uv run python scripts/test_closures.py run {{quote(closure)}}
+
+test-closure-check:
+    uv run python scripts/test_closures.py check
+
+test-kernel:
+    just test-closure kernel
+
+test-module module:
+    just test-closure {{quote("module." + module)}}
+
+test-adapters:
+    just test-closure adapters
+
+test-plugin plugin:
+    just test-closure {{quote("plugin." + plugin)}}
+
+test-contracts:
+    just test-closure contracts
+
+test-integration:
+    just test-closure integration
+
+test-system-smoke:
+    just test-closure system-smoke
 
 # QUARANTINE (bh-4kq1b, tracking bh-tfapu): the LAND gate's integration pass, minus one test.
 #

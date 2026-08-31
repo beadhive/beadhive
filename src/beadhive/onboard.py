@@ -41,8 +41,8 @@ from typing import Any, NamedTuple
 import typer
 
 from . import bd as bd_mod
+from . import jsonout, registry, safety, store_locator
 from . import plugins as _plugins
-from . import registry, safety, store_locator
 from .storage_migrate import SHARED_SERVER_CONFIG_KEY, SHARED_SERVER_FLAG
 from .storage_migrate import origin_has_dolt_data as _probe_origin_has_dolt_data
 
@@ -170,7 +170,6 @@ class Ctx:
     # `--hub-sync`, the pre-bh-d5jhc.1 behavior); False = skip the hub step entirely (`hive
     # init`'s default, or explicit `--no-hub-sync`).
     hub_sync: bool | None = False
-
     # ---- derived once by _ensure_derived, read by checks + actions ----
     existing: Any = None
     upstream: str = ""
@@ -315,21 +314,83 @@ def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] =
     return plan
 
 
-def _render(plan: OnboardPlan) -> None:
-    """Print the preflight results + executed steps (tests assert on the plan, not this)."""
+def _summary_text(plan: OnboardPlan) -> str:
+    """Return the exact final plan summary historically printed by :func:`_render`."""
     tag = "DRY-RUN " if plan.dry_run else ""
-    typer.echo(f"{tag}onboard {plan.target}")
+    lines = [f"{tag}onboard {plan.target}"]
     for res in plan.checks:
         # Render the check id (targetable by --skip-check) + human label + detail.
         detail = f"  {res.detail}" if res.detail else ""
-        typer.echo(f"  {res.glyph} {res.id} ({res.label}){detail}")
+        lines.append(f"  {res.glyph} {res.id} ({res.label}){detail}")
     for sid in plan.steps_run:
         verb = "would run" if plan.dry_run else "ran"
-        typer.echo(f"  {_GLYPH_INFO} {verb} {sid}")
+        lines.append(f"  {_GLYPH_INFO} {verb} {sid}")
     for warning in plan.warnings:
         # Fenced step failures: summarized here so they survive the step-by-step scroll,
         # but never fail the onboard (exit stays 0 for this class of failure).
-        typer.echo(f"  ⚠ {warning}")
+        lines.append(f"  ⚠ {warning}")
+    return "\n".join(lines) + "\n"
+
+
+def onboard_payload(
+    plan: OnboardPlan | None,
+    *,
+    text: str | None = None,
+    exit_code: int = 0,
+    hive: str = "",
+    target: str = "",
+    dry_run: bool = False,
+) -> dict:
+    """Build the versioned onboarding result consumed by both CLI renderings.
+
+    The normal completed path derives every structured field from ``OnboardPlan``.  ``plan`` may
+    be absent only when input validation fails before a plan can be built; identity and target
+    remain explicit in that error envelope.  ``text`` is bh's own complete transcript in JSON
+    mode and the exact historical summary in human mode.
+    """
+    if plan is not None:
+        hive = plan.hive
+        target = plan.target
+        dry_run = plan.dry_run
+    checks = plan.checks if plan is not None else []
+    return jsonout.envelope(
+        "hive onboard",
+        jsonout.HIVE_ONBOARD_SCHEMA,
+        {
+            "success": exit_code == 0,
+            "exit_code": exit_code,
+            "hive": hive,
+            "target": target,
+            "dry_run": dry_run,
+            "cloned": plan.cloned if plan is not None else False,
+            "checks": [
+                {
+                    "id": result.id,
+                    "label": result.label,
+                    "ok": result.ok,
+                    "detail": result.detail,
+                    "overridable": result.overridable,
+                    "skipped": result.skipped,
+                    "text": (
+                        f"  {result.glyph} {result.id} ({result.label})"
+                        f"{'  ' + result.detail if result.detail else ''}"
+                    ),
+                }
+                for result in checks
+            ],
+            "steps": list(plan.steps_run) if plan is not None else [],
+            "registered": plan.registered if plan is not None else False,
+            "installers": list(plan.installers_run) if plan is not None else [],
+            "hub_synced": plan.hub_synced if plan is not None else False,
+            "warnings": list(plan.warnings) if plan is not None else [],
+            "text": _summary_text(plan) if text is None and plan is not None else (text or ""),
+        },
+    )
+
+
+def _render(plan: OnboardPlan, *, text: str | None = None) -> None:
+    """Print the human text from the same pure payload builder used by ``--json``."""
+    typer.echo(onboard_payload(plan, text=text)["text"], nl=False)
 
 
 # ===========================================================================

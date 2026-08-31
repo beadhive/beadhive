@@ -1,0 +1,179 @@
+[registry]
+schema_version = 1
+full_gate = "just check"
+release_gate = "just check-all"
+expected_modules = ["agents", "config", "hives", "planning", "state", "work", "worktrees"]
+
+[[closures]]
+id = "kernel"
+kind = "kernel"
+status = "present"
+owner_path = "src/beadhive/operation_catalog.py"
+source_paths = ["src/beadhive/operation_catalog.py", "src/beadhive/testing/**/*.py"]
+tests = ["tests/test_operation_catalog.py", "tests/unit/test_pure_module_independence.py"]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+reverse_dependencies = ["adapters"]
+reverse_dependency_tests = ["tests/test_cli_projection.py", "tests/test_mcp_catalog_projection.py"]
+
+[[closures]]
+id = "module.agents"
+kind = "module"
+status = "absent"
+owner_path = "src/beadhive/modules/agents"
+source_paths = ["src/beadhive/modules/agents/**/*.py"]
+
+[[closures]]
+id = "module.config"
+kind = "module"
+status = "absent"
+owner_path = "src/beadhive/modules/config"
+source_paths = ["src/beadhive/modules/config/**/*.py"]
+
+[[closures]]
+id = "module.hives"
+kind = "module"
+status = "absent"
+owner_path = "src/beadhive/modules/hives"
+source_paths = ["src/beadhive/modules/hives/**/*.py"]
+
+[[closures]]
+id = "module.planning"
+kind = "module"
+status = "absent"
+owner_path = "src/beadhive/modules/planning"
+source_paths = ["src/beadhive/modules/planning/**/*.py"]
+
+[[closures]]
+id = "module.state"
+kind = "module"
+status = "absent"
+owner_path = "src/beadhive/modules/state"
+source_paths = ["src/beadhive/modules/state/**/*.py"]
+
+[[closures]]
+id = "module.work"
+kind = "module"
+status = "absent"
+owner_path = "src/beadhive/modules/work"
+source_paths = ["src/beadhive/modules/work/**/*.py"]
+
+[[closures]]
+id = "module.worktrees"
+kind = "module"
+status = "absent"
+owner_path = "src/beadhive/modules/worktrees"
+source_paths = ["src/beadhive/modules/worktrees/**/*.py"]
+
+[[closures]]
+id = "adapters"
+kind = "adapter"
+status = "present"
+owner_path = "src/beadhive/state_stream_polling.py"
+source_paths = ["src/beadhive/cli.py", "src/beadhive/mcp.py", "src/beadhive/state_stream_polling.py"]
+tests = ["tests/test_cli.py", "tests/test_mcp.py", "tests/test_state_stream_polling.py", "tests/unit/testing/test_real_adapter_conformance_example.py"]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/test_state_stream.py", "tests/unit/testing/test_conformance_testkit.py"]
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_help_hygiene.py", "tests/test_stream_cli.py"]
+
+[[closures]]
+id = "plugin.herdr"
+kind = "plugin"
+status = "present"
+owner_path = "src/beadhive/herdr_plugin.py"
+source_paths = ["src/beadhive/herdr_plugin.py"]
+tests = ["tests/test_herdr_plugin.py"]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
+
+[[closures]]
+id = "plugin.hitch"
+kind = "plugin"
+status = "present"
+owner_path = "src/beadhive/hitch_plugin.py"
+source_paths = ["src/beadhive/hitch_plugin.py"]
+tests = ["tests/test_hitch_plugin.py"]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
+
+[[closures]]
+id = "plugin.observaloop"
+kind = "plugin"
+status = "present"
+owner_path = "src/beadhive/observaloop.py"
+source_paths = ["src/beadhive/observaloop.py"]
+tests = ["tests/test_observaloop.py"]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
+
+[[closures]]
+id = "plugin.orca"
+kind = "plugin"
+status = "present"
+owner_path = "src/beadhive/orca.py"
+source_paths = ["src/beadhive/orca.py"]
+tests = ["tests/test_orca.py"]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
+
+[[closures]]
+id = "plugin.repowise"
+kind = "plugin"
+status = "present"
+owner_path = "src/beadhive/repowise_plugin.py"
+source_paths = ["src/beadhive/repowise_plugin.py"]
+tests = ["tests/test_repowise_plugin.py"]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
+
+[[closures]]
+id = "contracts"
+kind = "contract"
+status = "present"
+owner_path = "src/beadhive/testing"
+source_paths = ["src/beadhive/testing/**/*.py", "src/beadhive/state_stream.py", "docs/schemas/**/*.json"]
+tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/test_state_stream.py", "tests/test_operation_catalog.py", "tests/test_config_schema_drift.py", "tests/test_report_channel.py"]
+shared_contracts = []
+shared_contract_tests = []
+reverse_dependencies = ["adapters", "plugin.herdr", "plugin.hitch", "plugin.observaloop", "plugin.orca", "plugin.repowise"]
+reverse_dependency_tests = ["tests/test_state_stream_polling.py", "tests/unit/testing/test_real_adapter_conformance_example.py", "tests/test_cli_projection.py", "tests/test_mcp_catalog_projection.py", "tests/test_plugins.py"]
+
+[[closures]]
+id = "integration"
+kind = "integration"
+status = "present"
+owner_path = "tests"
+source_paths = ["tests/**/*_int.py", "tests/**/*_integration.py"]
+pytest_args = [
+  "-n", "auto", "-m", "integration",
+  "--deselect", "tests/test_host_fence_int.py::test_the_located_transport_repo_is_the_one_that_pushes[embedded]",
+  "--deselect", "tests/test_host_fence_int.py::test_the_located_transport_repo_is_the_one_that_pushes[shared-server]",
+]
+tests = ["tests"]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+reverse_dependencies = []
+reverse_dependency_tests = []
+
+[[closures]]
+id = "system-smoke"
+kind = "system"
+status = "present"
+owner_path = "tests"
+source_paths = ["src/beadhive/cli.py", "src/beadhive/mcp.py", "src/beadhive/stream_cli.py"]
+tests = ["tests/test_help_hygiene.py::test_subcommand_help_stdout_has_no_stale_schema_warning", "tests/test_mcp.py::test_in_memory_lists_exactly_the_selected_tools", "tests/test_stream_cli.py::test_cli_emits_snapshot_then_delta_as_stdout_only_ndjson"]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+reverse_dependencies = []
+reverse_dependency_tests = []
