@@ -6,10 +6,12 @@ policy → bd init/materialize → register → declared installers → footprin
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import re
 import shutil
+import tempfile
 import tomllib
 from pathlib import Path
 
@@ -1213,7 +1215,7 @@ def rm(hive_id, *, dry_run: bool = False, confirm: bool = False) -> None:
     registry.unregister(provider, org, repo)
 
 
-def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:
+def _run_onboard(ctx, dry_run: bool, skip_check: str):
     """Build the onboarding DAG for ``ctx`` and run the two-phase executor.
 
     Shared tail of ``onboard``/``init``: assemble the steps, parse ``--skip-check`` into ids,
@@ -1222,9 +1224,37 @@ def _run_onboard(ctx, dry_run: bool, skip_check: str) -> None:
 
     ctx.steps = _ob.build_steps(ctx)
     skips = [s.strip() for s in skip_check.split(",") if s.strip()] if skip_check else []
-    _ob.run_onboard(ctx, dry_run=dry_run, skip_checks=skips)
+    plan = _ob.run_onboard(ctx, dry_run=dry_run, skip_checks=skips)
     if not dry_run:
         typer.echo(f"✓ hive '{ctx.prefix}' ready ({ctx.kind}).")
+    return plan
+
+
+@contextlib.contextmanager
+def _capture_onboard_transcript(output: list[str]):
+    """Capture Python and inherited-fd output as one ordered JSON transcript.
+
+    Onboarding deliberately lets subprocesses such as ``bd init`` inherit stdout/stderr so their
+    exact diagnostics stream to a human.  Redirecting only ``sys.stdout`` would miss those bytes
+    and corrupt the JSON document.  In machine mode both process descriptors temporarily point at
+    the same line-buffered temporary stream; they are restored before :func:`jsonout.emit` runs.
+    """
+    with tempfile.TemporaryFile(mode="w+", encoding="utf-8", buffering=1) as transcript:
+        saved_stdout = os.dup(1)
+        saved_stderr = os.dup(2)
+        try:
+            os.dup2(transcript.fileno(), 1)
+            os.dup2(transcript.fileno(), 2)
+            with contextlib.redirect_stdout(transcript), contextlib.redirect_stderr(transcript):
+                yield
+        finally:
+            transcript.flush()
+            os.dup2(saved_stdout, 1)
+            os.dup2(saved_stderr, 2)
+            os.close(saved_stdout)
+            os.close(saved_stderr)
+            transcript.seek(0)
+            output.append(transcript.read())
 
 
 def onboard(
@@ -1246,6 +1276,7 @@ def onboard(
     dry_run=False,
     skip_check="",
     hub_sync=None,
+    as_json=False,
 ):
     """End-to-end onboard a hive from a local folder or a remote repo — a thin wrapper that builds
     the onboarding ``Ctx`` and calls ``onboard.run_onboard``.
@@ -1260,35 +1291,65 @@ def onboard(
     (unset, default) syncs THIS hive synchronously and backgrounds the fleet-wide aggregation
     walk; ``True`` waits for the full fleet-wide sync synchronously; ``False`` skips the hub step
     entirely. See ``onboard.Ctx.hub_sync`` / ``onboard._act_hub_sync``."""
+    from . import jsonout
     from . import onboard as _ob
 
-    provider, org, repo = _parse_triplet(hive_id)
-    target = Path(workspace_root()) / provider / org / repo
-    ctx = _ob.Ctx(
-        hive=f"{provider}/{org}/{repo}",
-        target=str(target),
-        provider=provider,
-        org=org,
-        repo=repo,
-        clone_url=clone_url,
-        cwd=str(target),
-        cfg=config.load(),
-        furnish=furnish,
-        claude=claude,
-        skills=skills,
-        observaloop=observaloop,
-        agents=agents,
-        opencode=opencode,
-        codex=codex,
-        global_grant=global_grant,
-        plugins=plugins or [],
-        force=force,
-        yes=yes,
-        kind=kind,
-        prefix=prefix,
-        hub_sync=hub_sync,
+    transcript: list[str] = []
+    ctx = None
+    plan = None
+    target = None
+    exit_code = 0
+    capture = _capture_onboard_transcript(transcript) if as_json else contextlib.nullcontext()
+    with capture:
+        try:
+            provider, org, repo = _parse_triplet(hive_id)
+            target = Path(workspace_root()) / provider / org / repo
+            ctx = _ob.Ctx(
+                hive=f"{provider}/{org}/{repo}",
+                target=str(target),
+                provider=provider,
+                org=org,
+                repo=repo,
+                clone_url=clone_url,
+                cwd=str(target),
+                cfg=config.load(),
+                furnish=furnish,
+                claude=claude,
+                skills=skills,
+                observaloop=observaloop,
+                agents=agents,
+                opencode=opencode,
+                codex=codex,
+                global_grant=global_grant,
+                plugins=plugins or [],
+                force=force,
+                yes=yes,
+                kind=kind,
+                prefix=prefix,
+                hub_sync=hub_sync,
+            )
+            plan = _run_onboard(ctx, dry_run, skip_check)
+        except typer.Exit as exc:
+            if not as_json:
+                raise
+            exit_code = int(exc.exit_code or 0)
+
+    if not as_json:
+        return None
+    plan = plan or (ctx.plan if ctx is not None else None)
+    jsonout.emit(
+        _ob.onboard_payload(
+            plan,
+            text=transcript[0],
+            exit_code=exit_code,
+            hive=ctx.hive if ctx is not None else str(hive_id),
+            target=str(target) if target is not None else "",
+            dry_run=dry_run,
+        )
     )
-    _run_onboard(ctx, dry_run, skip_check)
+    if exit_code:
+        raise typer.Exit(exit_code)
+    return None
 
 
 # ---- discover: registerable repos (hive list --available) --------------------
