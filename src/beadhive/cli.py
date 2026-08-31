@@ -130,8 +130,8 @@ hive_app.add_typer(contrib_profile_app, name="contrib-profile")
 
 # Mount each registered plugin's own Typer sub-app: `bh plugin <name> …` (e.g.
 # `bh plugin orca sync`). Generic — new integrations appear here just by joining the registry.
-for _plugin in plugins.registry():
-    plugin_app.add_typer(_plugin.cli, name=_plugin.name)
+for _mount in plugins.cli_mounts():
+    plugin_app.add_typer(_mount.app, name=_mount.plugin_id)
 
 # git-workspace is a required dep (deps.py, required=ALWAYS), not an optional plugin — it has
 # no `enabled` flag to loop over, so it is not in plugins.registry() (bh-hsus.4). It is however

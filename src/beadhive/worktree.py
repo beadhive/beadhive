@@ -467,18 +467,16 @@ def _consult_wt_create(
     "not handled" — the native `git worktree add` runs instead. A ``typer.Exit`` raised by the
     hook is the plugin's own hard-fail policy and PROPAGATES; any other exception is best-effort
     (warn + fall through to native), mirroring retire.py's plugin-notify fence."""
-    for p in plugins.registry():
-        if p.wt_create is None or not p.enabled(cfg, entry):
-            continue
+    request = plugins.WorktreeCreateRequest(main, branch, target, start_point)
+    for port in plugins.worktree_create_ports(cfg, entry):
         try:
-            result = p.wt_create(
-                cfg, entry, main=main, branch=branch, target=target, start_point=start_point
-            )
+            result = port.create(cfg, entry, request)
         except typer.Exit:
             raise
         except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts create
             typer.echo(
-                f"⚠ plugin {p.name} wt_create failed, falling back to native: {exc}", err=True
+                f"⚠ plugin {port.plugin_id} wt_create failed, falling back to native: {exc}",
+                err=True,
             )
             continue
         if result is not None:
@@ -495,17 +493,14 @@ def _notify_wt_create(
     deliberately best-effort: one failed observer must not prevent either creation or a later
     observer from running.
     """
-    for p in plugins.registry():
-        callback = getattr(p, hook)
-        if callback is None or not p.enabled(cfg, entry):
-            continue
-        try:
-            kwargs = {"main": main, "branch": branch, "target": target}
-            if hook == "wt_creating":
-                kwargs["start_point"] = start_point
-            callback(cfg, entry, **kwargs)
-        except Exception as exc:  # noqa: BLE001 - observers never abort worktree creation
-            typer.echo(f"⚠ plugin {p.name} {hook} failed, continuing: {exc}", err=True)
+    request = plugins.WorktreeCreateRequest(main, branch, target, start_point)
+    for observer in plugins.worktree_observers(hook, cfg, entry):
+        report = observer.deliver(cfg, entry, request)
+        if not plugins.delivery_succeeded(report):
+            error = report.deliveries[-1].attempts[-1].error
+            typer.echo(
+                f"⚠ plugin {observer.plugin_id} {hook} failed, continuing: {error}", err=True
+            )
 
 
 def _consult_wt_remove(
@@ -516,18 +511,16 @@ def _consult_wt_remove(
     "not handled" — the native `git worktree remove` runs instead. Same propagation contract as
     ``_consult_wt_create``: a ``typer.Exit`` PROPAGATES, any other exception warns and falls
     through to native."""
-    for p in plugins.registry():
-        if p.wt_remove is None or not p.enabled(cfg, entry):
-            continue
+    request = plugins.WorktreeRemoveRequest(main, target, force, keep_branch)
+    for port in plugins.worktree_remove_ports(cfg, entry):
         try:
-            result = p.wt_remove(
-                cfg, entry, main=main, target=target, force=force, keep_branch=keep_branch
-            )
+            result = port.remove(cfg, entry, request)
         except typer.Exit:
             raise
         except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts remove
             typer.echo(
-                f"⚠ plugin {p.name} wt_remove failed, falling back to native: {exc}", err=True
+                f"⚠ plugin {port.plugin_id} wt_remove failed, falling back to native: {exc}",
+                err=True,
             )
             continue
         if result:
@@ -559,7 +552,7 @@ def _do_add(
         delegated_target = _consult_wt_create(
             cfg, entry, main=main, branch=br, target=target, start_point=start_point
         )
-    elif any(p.wt_create is not None and p.enabled(cfg, entry) for p in plugins.registry()):
+    elif plugins.worktree_create_ports(cfg, entry):
         typer.echo(
             "⚠ worktree attach stays native (delegation only covers new-branch create)", err=True
         )

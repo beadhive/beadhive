@@ -9,9 +9,13 @@ Covers:
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 import typer
 
 from beadhive import plugins
+from beadhive.kernel.lifecycle import DeliveryStatus
 
 
 def test_registry_is_a_list():
@@ -64,6 +68,53 @@ def test_plugin_is_frozen():
     except Exception:
         return
     raise AssertionError("Plugin should be frozen (immutable)")
+
+
+def test_compatibility_facade_projects_cli_and_typed_lifecycle(monkeypatch):
+    called: list[object] = []
+    plugin = _mk("sample", lambda ctx: called.append(ctx))
+    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
+
+    assert [(mount.plugin_id, mount.app) for mount in plugins.cli_mounts()] == [
+        ("sample", plugin.cli)
+    ]
+    (participant,) = plugins.onboard_participants()
+    context = type("Ctx", (), {"hive": "github/acme/repo"})()
+    report = participant.deliver(context)
+
+    assert called == [context]
+    assert report.event_id == "hive.onboarding"
+    assert report.deliveries[0].status is DeliveryStatus.SUCCEEDED
+
+
+def test_runtime_callers_do_not_inspect_nullable_plugin_callbacks():
+    forbidden = {
+        "on_onboard",
+        "on_retire",
+        "readiness",
+        "wt_create",
+        "wt_remove",
+        "wt_creating",
+        "wt_created",
+    }
+    root = Path(__file__).parents[1]
+    callers = ("cli.py", "hive_ready.py", "onboard.py", "retire.py", "worktree.py")
+    found: dict[str, set[str]] = {}
+    for filename in callers:
+        tree = ast.parse((root / "src" / "beadhive" / filename).read_text(encoding="utf-8"))
+        attrs = {
+            node.attr
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute) and node.attr in forbidden
+            and not (
+                node.attr == "readiness"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "gitworkspace_plugin"
+            )
+        }
+        if attrs:
+            found[filename] = attrs
+    assert found == {}
 
 
 # ---- worktree create/remove hooks --------------------------------------------
