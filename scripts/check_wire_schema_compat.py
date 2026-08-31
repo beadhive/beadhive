@@ -4,6 +4,8 @@
 The candidate is the working tree. The baseline is the merge base with the CI target branch
 (`BH_WIRE_SCHEMA_BASE_REF`, default `main`). Published release directories present at the base
 are immutable; a new release is compared with the base's latest release when both share a major.
+JSON Schema artifacts use full schema compatibility; operation-catalog data uses append-only
+semantic compatibility after validation against its separately manifested schema.
 """
 
 from __future__ import annotations
@@ -21,6 +23,11 @@ from jsonschema import Draft202012Validator
 
 WIRE_INDEX = Path("docs/schemas/wire/index.json")
 SEMVER = re.compile(r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$")
+SCHEMA_ARTIFACT_PREFIX = "urn:beadhive:wire-schema:"
+OPERATION_CATALOG_ARTIFACT_ID = "urn:beadhive:wire-catalog:operations:1"
+OPERATION_CATALOG_SCHEMA_ID = "urn:beadhive:wire-schema:operation-catalog:1"
+JSON_SCHEMA_ARTIFACT = "json-schema"
+CATALOG_DATA_ARTIFACT = "operation-catalog-data"
 
 
 class Reader(Protocol):
@@ -55,7 +62,14 @@ class Artifact:
     artifact_id: str
     contract_version: int
     path: Path
-    schema: dict[str, Any]
+    document: dict[str, Any]
+    artifact_type: str
+
+    @property
+    def schema(self) -> dict[str, Any]:
+        if self.artifact_type != JSON_SCHEMA_ARTIFACT:
+            raise TypeError(f"{self.artifact_id} is {self.artifact_type}, not JSON Schema")
+        return self.document
 
 
 @dataclass(frozen=True)
@@ -78,6 +92,14 @@ def _load_json(reader: Reader, path: Path) -> Any:
         return json.loads(reader.read(path))
     except (OSError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
         raise ValueError(f"cannot load {path}: {exc}") from exc
+
+
+def _artifact_type(artifact_id: str) -> str:
+    if artifact_id.startswith(SCHEMA_ARTIFACT_PREFIX):
+        return JSON_SCHEMA_ARTIFACT
+    if artifact_id == OPERATION_CATALOG_ARTIFACT_ID:
+        return CATALOG_DATA_ARTIFACT
+    raise ValueError(f"unsupported artifact id/type: {artifact_id!r}")
 
 
 def load_repository(reader: Reader) -> RepositoryRelease:
@@ -115,9 +137,11 @@ def load_repository(reader: Reader) -> RepositoryRelease:
         for item in manifest_artifacts:
             artifact_id = str(item.get("id", ""))
             artifact_path = release_dir / str(item.get("path", ""))
-            schema = _load_json(reader, artifact_path)
-            Draft202012Validator.check_schema(schema)
-            if schema.get("$id") != artifact_id:
+            document = _load_json(reader, artifact_path)
+            artifact_type = _artifact_type(artifact_id)
+            if artifact_type == JSON_SCHEMA_ARTIFACT:
+                Draft202012Validator.check_schema(document)
+            if document.get("$id") != artifact_id:
                 raise ValueError(f"{artifact_path}: $id does not match manifest id")
             if artifact_id in artifacts:
                 raise ValueError(f"{manifest_path}: duplicate artifact id {artifact_id}")
@@ -128,8 +152,35 @@ def load_repository(reader: Reader) -> RepositoryRelease:
                 raise ValueError(
                     f"{manifest_path}: {artifact_id} contract_version must match release major"
                 )
-            artifacts[artifact_id] = Artifact(artifact_id, contract_version, artifact_path, schema)
+            artifacts[artifact_id] = Artifact(
+                artifact_id,
+                contract_version,
+                artifact_path,
+                document,
+                artifact_type,
+            )
             files.append(artifact_path)
+
+        for artifact in artifacts.values():
+            if artifact.artifact_type != CATALOG_DATA_ARTIFACT:
+                continue
+            catalog_schema = artifacts.get(OPERATION_CATALOG_SCHEMA_ID)
+            if catalog_schema is None or catalog_schema.artifact_type != JSON_SCHEMA_ARTIFACT:
+                raise ValueError(
+                    f"{artifact.path}: catalog data requires schema artifact "
+                    f"{OPERATION_CATALOG_SCHEMA_ID}"
+                )
+            validation_errors = sorted(
+                Draft202012Validator(catalog_schema.schema).iter_errors(artifact.document),
+                key=lambda error: tuple(str(part) for part in error.absolute_path),
+            )
+            if validation_errors:
+                error = validation_errors[0]
+                location = "$" + "".join(
+                    f"[{part}]" if isinstance(part, int) else f".{part}"
+                    for part in error.absolute_path
+                )
+                raise ValueError(f"{artifact.path} {location}: {error.message}")
 
         fixture_path = release_dir / str(manifest.get("conformance_fixtures", ""))
         fixtures = _load_json(reader, fixture_path)
@@ -167,6 +218,10 @@ def _validate_fixtures(
         artifact_id = str(case.get("artifact_id", ""))
         if artifact_id not in artifacts:
             raise ValueError(f"{fixture_path}: {name} references unknown artifact {artifact_id}")
+        if artifacts[artifact_id].artifact_type != JSON_SCHEMA_ARTIFACT:
+            raise ValueError(
+                f"{fixture_path}: {name} references data artifact {artifact_id} as a schema"
+            )
         errors = list(
             Draft202012Validator(artifacts[artifact_id].schema).iter_errors(case.get("input"))
         )
@@ -541,6 +596,141 @@ def _semver_tuple(value: str) -> tuple[int, int, int]:
     return tuple(int(part) for part in match.groups())
 
 
+def _compare_catalog_value(old: Any, new: Any, path: str, errors: list[str]) -> None:
+    """Fail closed on a published catalog value while retaining an exact JSON path."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        for key in sorted(set(old) - set(new)):
+            errors.append(f"{path}.{key}: field was removed")
+        for key in sorted(set(new) - set(old)):
+            errors.append(f"{path}.{key}: field was added to a published shape")
+        for key in sorted(set(old) & set(new)):
+            _compare_catalog_value(old[key], new[key], f"{path}.{key}", errors)
+        return
+    if isinstance(old, list) and isinstance(new, list):
+        if len(old) != len(new):
+            errors.append(f"{path}: list length changed from {len(old)} to {len(new)}")
+        for index, (old_item, new_item) in enumerate(zip(old, new, strict=False)):
+            _compare_catalog_value(old_item, new_item, f"{path}[{index}]", errors)
+        return
+    if type(old) is not type(new):
+        errors.append(
+            f"{path}: value type changed from {type(old).__name__} to {type(new).__name__}"
+        )
+    elif old != new:
+        errors.append(f"{path}: value changed from {old!r} to {new!r}")
+
+
+def _catalog_operations(
+    document: dict[str, Any], side: str, errors: list[str]
+) -> dict[str, dict[str, Any]]:
+    operations = document.get("operations")
+    if not isinstance(operations, list):
+        errors.append("$.operations: must be an array")
+        return {}
+    indexed: dict[str, dict[str, Any]] = {}
+    for index, operation in enumerate(operations):
+        if not isinstance(operation, dict) or not isinstance(operation.get("name"), str):
+            errors.append(f"$.operations[{index}]: operation must carry a string name")
+            continue
+        name = operation["name"]
+        if name in indexed:
+            errors.append(
+                f"$.operations[{index}].name: duplicate canonical operation identity "
+                f"{name!r} in {side} catalog"
+            )
+            continue
+        indexed[name] = operation
+    return indexed
+
+
+def _catalog_projection_uniqueness(
+    operations: dict[str, dict[str, Any]], errors: list[str]
+) -> None:
+    seen: dict[tuple[str, str], str] = {}
+
+    def remember(kind: str, value: Any, path: str) -> None:
+        if not isinstance(value, str):
+            return
+        key = (kind, value)
+        if prior := seen.get(key):
+            errors.append(
+                f"{path}: duplicate {kind} projection {value!r}; first declared at {prior}"
+            )
+        else:
+            seen[key] = path
+
+    for name, operation in operations.items():
+        surfaces = operation.get("surfaces", {})
+        if not isinstance(surfaces, dict):
+            continue
+        cli = surfaces.get("cli")
+        if isinstance(cli, dict):
+            remember("CLI path", cli.get("path"), f"$.operations[name={name!r}].surfaces.cli.path")
+            aliases = cli.get("aliases", [])
+            if isinstance(aliases, list):
+                for index, alias in enumerate(aliases):
+                    if isinstance(alias, dict):
+                        remember(
+                            "CLI path",
+                            alias.get("path"),
+                            f"$.operations[name={name!r}].surfaces.cli.aliases[{index}].path",
+                        )
+        mcp = surfaces.get("mcp")
+        if isinstance(mcp, dict):
+            remember("MCP tool", mcp.get("tool"), f"$.operations[name={name!r}].surfaces.mcp.tool")
+            remember(
+                "MCP resource",
+                mcp.get("resource"),
+                f"$.operations[name={name!r}].surfaces.mcp.resource",
+            )
+
+
+def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
+    """Return append-only, same-major compatibility failures for catalog data.
+
+    Existing operation declarations and global projection policy are immutable within a major.
+    A uniquely named, schema-valid operation may be appended because old readers ignore it.
+    """
+    errors: list[str] = []
+    old_keys = set(old) - {"operations", "catalog_version"}
+    new_keys = set(new) - {"operations", "catalog_version"}
+    for key in sorted(old_keys - new_keys):
+        errors.append(f"$.{key}: top-level field was removed")
+    for key in sorted(new_keys - old_keys):
+        errors.append(f"$.{key}: top-level field was added to the published catalog shape")
+    for key in sorted(old_keys & new_keys):
+        _compare_catalog_value(old[key], new[key], f"$.{key}", errors)
+
+    old_version = str(old.get("catalog_version", ""))
+    new_version = str(new.get("catalog_version", ""))
+    try:
+        old_semver = _semver_tuple(old_version)
+        new_semver = _semver_tuple(new_version)
+        if old_semver[0] != new_semver[0] or new_semver < old_semver:
+            errors.append(
+                "$.catalog_version: same-major catalog version must not change major or move "
+                f"backwards ({old_version!r} -> {new_version!r})"
+            )
+    except ValueError:
+        errors.append(
+            f"$.catalog_version: invalid semantic version change {old_version!r} -> {new_version!r}"
+        )
+
+    old_operations = _catalog_operations(old, "baseline", errors)
+    new_operations = _catalog_operations(new, "candidate", errors)
+    _catalog_projection_uniqueness(new_operations, errors)
+    for name in sorted(set(old_operations) - set(new_operations)):
+        errors.append(f"$.operations[name={name!r}]: canonical operation was removed")
+    for name in sorted(set(old_operations) & set(new_operations)):
+        _compare_catalog_value(
+            old_operations[name],
+            new_operations[name],
+            f"$.operations[name={name!r}]",
+            errors,
+        )
+    return errors
+
+
 def compare_releases(old: Release, new: Release) -> list[str]:
     if old.major != new.major:
         return []
@@ -552,9 +742,20 @@ def compare_releases(old: Release, new: Release) -> list[str]:
             continue
         if old_artifact.contract_version != new_artifact.contract_version:
             errors.append(f"{artifact_id}: contract_version changed within the same release major")
+        if old_artifact.artifact_type != new_artifact.artifact_type:
+            errors.append(
+                f"{artifact_id}: artifact type changed from {old_artifact.artifact_type} "
+                f"to {new_artifact.artifact_type}"
+            )
+            continue
+        comparator = (
+            catalog_compatibility_errors
+            if old_artifact.artifact_type == CATALOG_DATA_ARTIFACT
+            else compatibility_errors
+        )
         errors.extend(
             f"{artifact_id} {error}"
-            for error in compatibility_errors(old_artifact.schema, new_artifact.schema)
+            for error in comparator(old_artifact.document, new_artifact.document)
         )
     return errors
 
