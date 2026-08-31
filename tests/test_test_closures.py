@@ -37,8 +37,8 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert registry.full_gate == "just check"
     assert registry.release_gate == "just check-all"
     assert len(registry.closures) == 20
-    assert sum(closure.status == "present" for closure in registry.closures) == 13
-    assert sum(closure.status == "absent" for closure in registry.closures) == 7
+    assert sum(closure.status == "present" for closure in registry.closures) == 14
+    assert sum(closure.status == "absent" for closure in registry.closures) == 6
 
 
 def test_impact_selection_unions_direct_shared_contract_and_reverse_dependency_tests():

@@ -45,11 +45,15 @@ def test_authoritative_owner_matrix_resolves_to_current_implementation_modules()
     """A move must preserve these owners through facades or migrate this matrix deliberately."""
 
     owners = {
-        "seat contracts": (SeatContract, seat_contract, "beadhive.seat_contracts"),
+        "seat contracts": (
+            SeatContract,
+            seat_contract,
+            "beadhive.modules.agents.domain.seat",
+        ),
         "generic profiles": (
             AgentLaunchProfile,
             resolve_agent_launch_profile,
-            "beadhive.agent_launch_profile",
+            "beadhive.modules.agents.domain.profile",
         ),
         "Herdr profiles": (
             HerdrAgentLaunchProfile,
@@ -61,7 +65,11 @@ def test_authoritative_owner_matrix_resolves_to_current_implementation_modules()
             herdr_plugin._launch_fail,
             "beadhive.herdr_plugin",
         ),
-        "receipts": (AgentLaunchReceipt, HerdrAgentLaunchReceipt, "beadhive.agent_launch_profile"),
+        "receipts": (
+            AgentLaunchReceipt,
+            HerdrAgentLaunchReceipt,
+            "beadhive.modules.agents.domain.profile",
+        ),
         "generations": (
             herdr_plugin._validate_managed_generation,
             herdr_plugin._recover_managed_generation,
@@ -109,8 +117,8 @@ def test_authoritative_owner_matrix_resolves_to_current_implementation_modules()
 
 def test_legacy_public_imports_and_model_field_order_are_frozen():
     public_symbols = {
-        "beadhive.seat_contracts": (SeatContract, seat_contract),
-        "beadhive.agent_launch_profile": (
+        "beadhive.modules.agents.domain.seat": (SeatContract, seat_contract),
+        "beadhive.modules.agents.domain.profile": (
             BeadPolicy,
             Harness,
             AgentLaunchProfile,
