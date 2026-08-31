@@ -51,7 +51,7 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check wire-schema-compat test
+check: lint lint-md license-check architecture-check wire-schema-compat test
 
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
 #
@@ -119,7 +119,11 @@ check: lint lint-md license-check wire-schema-compat test
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check wire-schema-compat (test FAST) test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md license-check architecture-check wire-schema-compat (test FAST) test-integration-land demo-local-loop demo-live-ingress
+
+# Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
+architecture-check:
+    uv run python scripts/check_import_boundaries.py
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
