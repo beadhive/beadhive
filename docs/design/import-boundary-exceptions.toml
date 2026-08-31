@@ -850,3 +850,48 @@ test_closure = "just check"
 introduced_commit = "712ac29580d1f1873380bdfad80c35e067c33721"
 last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
 expiry_trigger = "Completion of the worktree capability migration and removal of every inventoried consumer."
+
+[[facade]]
+id = "facade-config-partition"
+status = "active"
+facade_path = "src/beadhive/config_partition.py"
+preserved_symbols = ["FLEET", "HOST", "HOST_PREFIXES", "FLEET_PREFIXES", "FLEET_HOST_OVERRIDE_ALLOWLIST", "FLEET_KEYS", "HOST_KEYS", "_prefix_match_len", "partition_of", "is_host_overridable", "schema_leaf_paths"]
+target_owner_package = "modules/config/application/partition"
+successor = "bh-18hud.5"
+reason = "Preserve fleet/host policy imports and the supported allowlist monkeypatch seam while canonical policy moves inward."
+consumer_inventory = { production = "config persistence, split migration, config CLI", tests = "tests/test_config_partition.py; tests/test_config_fleet_merge.py; tests/test_config_scope.py", docs = "configuration ownership ADR and this ledger", external = "existing beadhive.config_partition imports; not separately enumerable" }
+executable_test = "tests/test_config_partition.py; tests/test_config_fleet_merge.py"
+test_closure = "module.config; just check"
+introduced_commit = "bh-18hud.3"
+last_verified_commit = "bh-18hud.3"
+expiry_trigger = "bh-18hud.5 empties the caller and patch ledger and bh-18hud.6 proves the replacement closure."
+
+[[facade]]
+id = "facade-config-store"
+status = "active"
+facade_path = "src/beadhive/config_store.py"
+preserved_symbols = ["yaml", "yaml_lock", "mutation", "load_path", "leaf_paths", "fleet_override_violations", "deep_merge", "load", "key_provenance", "atomic_dump", "save_host", "save_fleet", "guard_hq_registry_controller", "reject_fleet_overrides", "reject_fleet_override_for_key", "reconcile_host_after_fleet", "load_reconciling"]
+target_owner_package = "modules/config/adapters/yaml_store and modules/config/application/resolution"
+successor = "bh-18hud.5"
+reason = "Preserve collaborator lookup, parser patch points, raw YAML behavior, and result/error shapes while the real persistence implementation moves behind document ports."
+consumer_inventory = { production = "beadhive.config facade storage, scope editing, reconciliation", tests = "tests/test_config_boundaries.py; tests/test_structural_facade_contracts.py; tests/contracts/test_config_resolution_compatibility.py", docs = "configuration ownership ADR and this ledger", external = "supported config facade monkeypatch seams; not separately enumerable" }
+executable_test = "tests/test_config_boundaries.py; tests/contracts/test_config_resolution_compatibility.py"
+test_closure = "module.config; just check"
+introduced_commit = "bh-18hud.3"
+last_verified_commit = "bh-18hud.3"
+expiry_trigger = "bh-18hud.5 migrates callers and patch points and bh-18hud.6 proves no facade dependency remains."
+
+[[facade]]
+id = "facade-config-policy"
+status = "active"
+facade_path = "src/beadhive/config_policy.py"
+preserved_symbols = ["HIVE_KEY_MIGRATIONS", "LEGACY_KEY_REMOVALS", "migrate_hive_keys_if_needed", "warn_stale_schema_version_if_needed", "hq_has_remote", "warn_missing_fleet_config_if_needed"]
+target_owner_package = "modules/config/application/migrations"
+successor = "bh-18hud.5"
+reason = "Preserve migration and warning patch points while versioned migration behavior depends inward on document ports."
+consumer_inventory = { production = "beadhive.config migration and CLI startup warnings", tests = "tests/test_config.py; tests/test_config_validate_cli.py; tests/contracts/test_config_resolution_compatibility.py", docs = "configuration ownership ADR and this ledger", external = "existing beadhive.config_policy imports; not separately enumerable" }
+executable_test = "tests/test_config.py; tests/contracts/test_config_resolution_compatibility.py"
+test_closure = "module.config; just check"
+introduced_commit = "bh-18hud.3"
+last_verified_commit = "bh-18hud.3"
+expiry_trigger = "bh-18hud.5 migrates warning/migration callers and bh-18hud.6 proves the replacement closure."
