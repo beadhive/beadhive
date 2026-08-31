@@ -146,14 +146,12 @@ def _plugin_checks(cfg, entry) -> list[Check]:
     is hardcoded here. Disabled plugins are N/A (never live-probed, mirroring the observaloop
     convention); enabled plugins run their live ``readiness`` probe for an ok/missing state."""
     checks: list[Check] = []
-    for p in plugins.registry():
-        if p.readiness is None:
+    for port in plugins.readiness_ports(cfg, entry):
+        if not port.enabled():
+            checks.append(Check(port.plugin_id, False, "na", "disabled"))
             continue
-        if not p.enabled(cfg, entry):
-            checks.append(Check(p.name, False, "na", "disabled"))
-            continue
-        state, detail = p.readiness(cfg, entry) or ("off", "unknown")
-        checks.append(Check(p.name, False, state, detail))
+        state, detail = port.probe(cfg, entry) or ("off", "unknown")
+        checks.append(Check(port.plugin_id, False, state, detail))
     return checks
 
 

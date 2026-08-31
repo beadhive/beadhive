@@ -351,18 +351,16 @@ def _teardown_and_dispose(
     # so this only reminds; it never mutates any plugin's state. Loops the registry generically
     # so no integration is hardcoded here. Dry-run previews but does NOT record (mutation
     # contract). Runs for BOTH scopes: THIS host's clone is disappearing either way.
-    for p in plugins.registry():
-        if p.on_retire is None or not p.enabled(cfg, entry):
-            continue
+    for observer in plugins.retire_observers(cfg, entry):
         if dry_run:
-            typer.echo(f"  plugin {p.name}: would notify of retire (manual removal)")
+            typer.echo(f"  plugin {observer.plugin_id}: would notify of retire (manual removal)")
             continue
-        try:
-            p.on_retire(str(clone_path), cfg, entry)
-        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts retire
-            typer.echo(f"  plugin {p.name}: notify failed ({exc})", err=True)
+        report = observer.deliver(str(clone_path), cfg, entry)
+        if not plugins.delivery_succeeded(report):
+            error = report.deliveries[-1].attempts[-1].error
+            typer.echo(f"  plugin {observer.plugin_id}: notify failed ({error})", err=True)
             continue
-        plan.plugins_notified.append(p.name)
+        plan.plugins_notified.append(observer.plugin_id)
 
     if dry_run:
         typer.echo("✓ dry-run complete — nothing changed")

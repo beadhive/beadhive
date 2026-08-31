@@ -1,6 +1,7 @@
 """Declarative plugin discovery and typed composition-time capability binding."""
 
 from .binding import bind_application_port
+from .builtins import BUILTIN_PLUGIN_IDS, builtin_manifest_documents, builtin_manifest_source
 from .contracts import (
     CapabilityBindingError,
     CapabilityKey,
@@ -38,6 +39,7 @@ from .discovery import (
 
 __all__ = [
     "BuiltInManifestSource",
+    "BUILTIN_PLUGIN_IDS",
     "CapabilityBindingError",
     "CapabilityKey",
     "CapabilityRef",
@@ -66,6 +68,8 @@ __all__ = [
     "Version",
     "VersionRange",
     "bind_application_port",
+    "builtin_manifest_documents",
+    "builtin_manifest_source",
     "discover_plugins",
     "parse_kernel_config",
 ]

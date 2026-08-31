@@ -1292,7 +1292,7 @@ def _do_observaloop(ctx: Ctx) -> None:
 
 
 def _plugin_step(p) -> Step:
-    """A GENERIC onboard step for a plugin's ``on_onboard`` hook — fenced warn-and-continue,
+    """A generic typed lifecycle participant — fenced warn-and-continue,
     recording ``plan.installers_run`` on success (mirrors ``_do_observaloop``'s fence).
 
     Enabled when the plugin was forced on via ``--plugin <name>`` (``ctx.plugins``) OR the
@@ -1300,24 +1300,25 @@ def _plugin_step(p) -> Step:
     ``onboard_requires_opt_in`` so runtime availability can never trigger code installation."""
 
     def action(ctx: Ctx) -> None:
-        try:
-            p.on_onboard(ctx)
-        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts onboard
-            typer.echo(f"• plugin {p.name}: skipped ({exc}) — onboarding continues.", err=True)
+        report = p.deliver(ctx)
+        if not report.deliveries:
+            return
+        if not _plugins.delivery_succeeded(report):
+            error = report.deliveries[-1].attempts[-1].error
+            typer.echo(
+                f"• plugin {p.plugin_id}: skipped ({error}) — onboarding continues.", err=True
+            )
             return
         if ctx.plan is not None:
-            ctx.plan.installers_run.append(f"plugin-{p.name}")
+            ctx.plan.installers_run.append(f"plugin-{p.plugin_id}")
 
     return Step(
-        f"plugin-{p.name}",
-        f"plugin {p.name}",
+        f"plugin-{p.plugin_id}",
+        f"plugin {p.plugin_id}",
         action,
         requires=["register"],
         mutates=True,
-        enabled=lambda c, _p=p: (
-            _p.name in c.plugins
-            or (not _p.onboard_requires_opt_in and _p.enabled(c.cfg, c.existing))
-        ),
+        enabled=lambda c: p.enabled(forced=p.plugin_id in c.plugins),
     )
 
 
@@ -1606,7 +1607,20 @@ def build_steps(ctx: Ctx) -> list[Step]:
 
     # Generic plugin steps: one per registered plugin that declares an on_onboard hook. When
     # the registry is empty, no plugin step is built (integrations are not hardcoded here).
-    plugin_steps = [_plugin_step(p) for p in _plugins.registry() if p.on_onboard is not None]
+    plugin_entry = (
+        registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo)
+        if ctx.cfg is not None
+        else None
+    )
+    plugin_composition = _plugins.action_composition(
+        ctx.cfg,
+        plugin_entry,
+        force_enabled=frozenset(ctx.plugins),
+    )
+    plugin_steps = [
+        _plugin_step(participant)
+        for participant in _plugins.onboard_participants(plugin_composition)
+    ]
 
     return [
         resolve,

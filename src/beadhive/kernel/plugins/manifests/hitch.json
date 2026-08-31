@@ -1,0 +1,27 @@
+{
+  "capabilities": {"provides": [{"api_version": 1, "id": "agent.runtime"}]},
+  "compatibility": {
+    "beadhive": {"maximum_exclusive": "1.0.0", "minimum_inclusive": "0.15.0"},
+    "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}
+  },
+  "configuration": {"legacy_namespaces": ["hitch"], "namespace": "plugins.hitch", "schema_artifact": "urn:beadhive:wire-schema:plugin-config:hitch:1"},
+  "lifecycle": {"subscriptions": [{
+    "compensation": {"action_id": null, "mode": "none"},
+    "criticality": "best-effort",
+    "event": "host.readiness",
+    "id": "hitch.probe-readiness",
+    "idempotency": "not-applicable",
+    "order": 100,
+    "retry": {"backoff_seconds": 0, "max_attempts": 1},
+    "timeout_seconds": 30
+  }]},
+  "manifest_version": 1,
+  "plugin_id": "hitch",
+  "plugin_version": "1.0.0",
+  "presentation": {"cli": [{"capability_id": "agent.runtime", "command": "plugin hitch"}]},
+  "security": {
+    "credentials": [],
+    "executables": [{"name": "hitch", "required": false, "version": {"maximum_exclusive": "999.0.0", "minimum_inclusive": "0.0.0"}}],
+    "permissions": [{"id": "process.agent.launch", "purpose": "launch an isolated optional agent runtime", "required": true}]
+  }
+}

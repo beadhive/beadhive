@@ -68,6 +68,15 @@ def test_no_plugin_step_when_registry_empty(world, monkeypatch):
     assert not any(s.id.startswith("plugin-") for s in ctx.steps)
 
 
+def test_build_steps_without_config_preserves_planning_compatibility(monkeypatch):
+    _stub(monkeypatch, [])
+
+    steps = onboard.build_steps(onboard.Ctx(hive="github/o/r", target="/x", furnish=False))
+
+    assert steps
+    assert not any(step.id.startswith("plugin-") for step in steps)
+
+
 def test_plugin_step_present_and_flag_enables_it(world, monkeypatch):
     _stub(monkeypatch, [_mk_plugin(enabled=False, hook=lambda c: None)])
     ctx = _ctx(world, _make_repo(world), plugins=["orca"])
@@ -142,3 +151,40 @@ def test_disabled_plugin_hook_never_runs(world, monkeypatch):
 
     assert calls == []
     assert "plugin-orca" not in plan.steps_run
+
+
+def test_onboard_uses_one_plugin_snapshot_from_build_through_delivery(world, monkeypatch):
+    predicate_calls: list[bool] = []
+    source_calls: list[bool] = []
+    hook_calls: list[object] = []
+    original_source = plugins.builtin_manifest_source
+
+    def enabled(_cfg, _entry):
+        predicate_calls.append(True)
+        return len(predicate_calls) == 1
+
+    def source():
+        source_calls.append(True)
+        if len(source_calls) > 1:
+            raise AssertionError("manifest source was re-evaluated within one onboard action")
+        return original_source()
+
+    plugin = plugins.Plugin(
+        name="orca",
+        cli=typer.Typer(),
+        enabled=enabled,
+        on_onboard=lambda ctx: hook_calls.append(ctx),
+    )
+    _stub(monkeypatch, [plugin])
+    monkeypatch.setattr(plugins, "builtin_manifest_source", source)
+    ctx = _ctx(world, _make_repo(world))
+    step = next(step for step in ctx.steps if step.id == "plugin-orca")
+
+    assert step.enabled(ctx) is True
+    assert step.enabled(ctx) is True
+    plan = onboard.run_onboard(ctx)
+
+    assert hook_calls == [ctx]
+    assert "plugin-orca" in plan.installers_run
+    assert predicate_calls == [True]
+    assert source_calls == [True]

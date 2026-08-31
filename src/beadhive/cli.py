@@ -128,10 +128,21 @@ app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
 app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
 hive_app.add_typer(contrib_profile_app, name="contrib-profile")
 
-# Mount each registered plugin's own Typer sub-app: `bh plugin <name> …` (e.g.
-# `bh plugin orca sync`). Generic — new integrations appear here just by joining the registry.
-for _plugin in plugins.registry():
-    plugin_app.add_typer(_plugin.cli, name=_plugin.name)
+
+def _plugin_config_snapshot() -> dict:
+    """Load optional-plugin policy once; a pre-setup host retains the legacy CLI inventory."""
+
+    try:
+        return config.load()
+    except FileNotFoundError:
+        return {}
+
+
+# Mount each selected plugin's own Typer sub-app: `bh plugin <name> …` (e.g.
+# `bh plugin orca sync`).  The outer adapter snapshots canonical policy once; static registry
+# inventory alone cannot make a disabled command executable.
+for _mount in plugins.cli_mounts(_plugin_config_snapshot(), None):
+    plugin_app.add_typer(_mount.app, name=_mount.plugin_id)
 
 # git-workspace is a required dep (deps.py, required=ALWAYS), not an optional plugin — it has
 # no `enabled` flag to loop over, so it is not in plugins.registry() (bh-hsus.4). It is however
