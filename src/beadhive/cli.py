@@ -2178,9 +2178,9 @@ def hive_migrate(
     "migrate-storage",
     help="move a hive off bd's legacy embedded Dolt engine onto the fleet's shared-server mode: "
     "per hive, back up (verified) -> migrate -> verify -> report; fleet-wide (no HIVE_ID), "
-    "resumable and per-hive isolated, Factory HQ migrated last. NOT `hive migrate` (that's the "
-    "ws->bh rename) — this is a Dolt storage-mode move. Idempotent; --dry-run reports sizes and "
-    "target paths and changes nothing; a real run needs --confirm.",
+    "resumable and per-hive isolated, Factory HQ migrated last. NOT `hive migrate` (that is the "
+    "legacy command-name migration) — this is a Dolt storage-mode move. Idempotent; --dry-run "
+    "reports sizes and target paths and changes nothing; a real run needs --confirm.",
 )
 def hive_migrate_storage(
     hive_id: str = typer.Argument(
@@ -3101,9 +3101,9 @@ def config_validate(
         "to the current schema (no auto-write).",
     ),
 ):
-    """Run the schema validator over the resolved config: print problems + the ws→bh rename
-    table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0. When the
-    config is stale (missing/old schema_version or a renamed key), append a paste-ready
+    """Run the schema validator over the resolved config: print problems plus the legacy-name
+    migration table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0.
+    When the config is stale (missing/old schema_version or a renamed key), append a paste-ready
     agentic-update offer. `--fix` prints just that prompt. A missing config file prints
     `bh config init` guidance rather than a traceback."""
     from . import config_validate as cv
@@ -3269,11 +3269,11 @@ def mcp_install(
         help="Claude Code MCP scope. Use 'user' (default) for all projects, 'local' for CWD only.",
     ),
 ):
-    """Register the ws MCP server with Claude Code at the given scope.
+    """Register the bh MCP server with Claude Code at the given scope.
 
     Equivalent to running manually:
 
-        claude mcp add ws --scope user -- ws mcp serve
+        claude mcp add bh --scope user -- bh mcp serve
 
     Exits with an error and prints the manual command when the `claude` binary is not on PATH.
     """

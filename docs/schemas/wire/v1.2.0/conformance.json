@@ -1,0 +1,94 @@
+{
+  "format_version": 1,
+  "release_version": "1.2.0",
+  "cases": [
+    {
+      "name": "factory-snapshot-valid",
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "schema_valid": true,
+      "decoder_result": {"ok": true},
+      "input": {
+        "schemaVersion": 1,
+        "hives": [
+          {"prefix": "bh", "provider": "github", "org": "beadhive", "repo": "beadhive", "kind": "org-native"}
+        ],
+        "worktrees": [],
+        "edges": [],
+        "workspaceRoot": null,
+        "generatedAt": 1756591200,
+        "coverage": {
+          "hives": {"state": "complete", "requested": 1, "returned": 1, "fromCache": 0, "detail": null},
+          "worktrees": {"state": "unavailable", "requested": null, "returned": null, "fromCache": 0, "detail": "not exposed"},
+          "hubIssues": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubDeps": {"state": "partial", "requested": 2, "returned": 1, "fromCache": 1, "detail": "one source unavailable"}
+        }
+      }
+    },
+    {
+      "name": "factory-snapshot-version-mismatch-wins",
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "schema_valid": false,
+      "decoder_result": {"ok": false, "reason": "schema-mismatch", "expected": 1, "received": 2},
+      "input": {"schemaVersion": 2, "hives": "hostile", "coverage": false}
+    },
+    {
+      "name": "factory-snapshot-unknown-member-is-ignored",
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "schema_valid": true,
+      "decoder_result": {"ok": true},
+      "input": {
+        "schemaVersion": 1,
+        "hives": [],
+        "worktrees": [],
+        "edges": [],
+        "workspaceRoot": null,
+        "generatedAt": 0,
+        "coverage": {
+          "hives": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "worktrees": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubIssues": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubDeps": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null}
+        },
+        "futureOptionalField": {"oldConsumers": "ignore this"}
+      }
+    },
+    {
+      "name": "factory-snapshot-closed-union-rejects-unknown",
+      "artifact_id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "schema_valid": false,
+      "decoder_result": {"ok": false, "reason": "invalid"},
+      "input": {
+        "schemaVersion": 1,
+        "hives": [],
+        "worktrees": [],
+        "edges": [{"from": "bh", "to": "external", "kind": "future-kind", "details": []}],
+        "workspaceRoot": null,
+        "generatedAt": 0,
+        "coverage": {
+          "hives": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "worktrees": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubIssues": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null},
+          "hubDeps": {"state": "complete", "requested": 0, "returned": 0, "fromCache": 0, "detail": null}
+        }
+      }
+    },
+    {
+      "name": "bead-node-open-status-allows-unknown",
+      "artifact_id": "urn:beadhive:wire-schema:factory.bead-node:1",
+      "schema_valid": true,
+      "decoder_result": {"ok": true},
+      "input": {
+        "id": "bh-123", "title": "Example", "description": "", "molType": null,
+        "status": "future-state", "issueType": "feature", "priority": 2, "labels": [],
+        "assignee": null, "createdAt": 1, "startedAt": null, "closedAt": null
+      }
+    },
+    {
+      "name": "bead-node-invalid",
+      "artifact_id": "urn:beadhive:wire-schema:factory.bead-node:1",
+      "schema_valid": false,
+      "decoder_result": {"ok": false, "reason": "invalid"},
+      "input": {"id": "bh-123"}
+    }
+  ]
+}

@@ -1,0 +1,283 @@
+{
+  "$id": "urn:beadhive:wire-schema:operation-catalog:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "$id": {"const": "urn:beadhive:wire-catalog:operations:1"},
+    "artifact_id": {"const": "urn:beadhive:wire-catalog:operations:1"},
+    "catalog_version": {"type": "string"},
+    "cli_parents": {
+      "items": {"$ref": "#/$defs/CliParent"},
+      "type": "array"
+    },
+    "exclusions": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {"minLength": 1, "type": "string"},
+          "reason": {"minLength": 1, "type": "string"},
+          "surface": {"enum": ["cli", "mcp"]}
+        },
+        "required": ["surface", "name", "reason"],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "format_version": {"const": 1},
+    "operations": {
+      "items": {"$ref": "#/$defs/Operation"},
+      "type": "array"
+    },
+    "policy": {"type": "object"}
+  },
+  "required": [
+    "format_version",
+    "catalog_version",
+    "$id",
+    "artifact_id",
+    "policy",
+    "cli_parents",
+    "operations",
+    "exclusions"
+  ],
+  "title": "Beadhive operation catalog v1",
+  "type": "object",
+  "$defs": {
+    "Granularity": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["fine", "coarse", "divergent"]},
+        "reason": {"type": ["string", "null"]}
+      },
+      "required": ["mode", "reason"],
+      "allOf": [
+        {
+          "if": {"properties": {"mode": {"const": "fine"}}},
+          "then": {"properties": {"reason": {"type": "null"}}},
+          "else": {"properties": {"reason": {"minLength": 1, "type": "string"}}}
+        }
+      ],
+      "type": "object"
+    },
+    "Interactivity": {
+      "additionalProperties": false,
+      "properties": {
+        "guard_conditions": {"items": {"minLength": 1, "type": "string"}, "type": "array"},
+        "guard_parameters": {"items": {"minLength": 1, "type": "string"}, "type": "array"},
+        "mode": {"enum": ["none", "guarded-prompt"]},
+        "prompt_seams": {"items": {"minLength": 1, "type": "string"}, "type": "array"},
+        "reason": {"type": ["string", "null"]}
+      },
+      "required": [
+        "mode",
+        "guard_parameters",
+        "guard_conditions",
+        "prompt_seams",
+        "reason"
+      ],
+      "allOf": [
+        {
+          "if": {"properties": {"mode": {"const": "none"}}},
+          "then": {
+            "properties": {
+              "guard_conditions": {"maxItems": 0},
+              "guard_parameters": {"maxItems": 0},
+              "prompt_seams": {"maxItems": 0},
+              "reason": {"type": "null"}
+            }
+          },
+          "else": {
+            "anyOf": [
+              {"properties": {"guard_parameters": {"minItems": 1}}},
+              {"properties": {"guard_conditions": {"minItems": 1}}}
+            ],
+            "properties": {
+              "prompt_seams": {"minItems": 1},
+              "reason": {"minLength": 1, "type": "string"}
+            }
+          }
+        }
+      ],
+      "type": "object"
+    },
+    "Progress": {
+      "additionalProperties": false,
+      "properties": {
+        "mode": {"enum": ["stdout", "structured", "none", "notifications"]},
+        "notification_uris": {"items": {"pattern": "^beadhive://", "type": "string"}, "type": "array"},
+        "reason": {"minLength": 1, "type": "string"}
+      },
+      "required": ["mode", "notification_uris", "reason"],
+      "allOf": [
+        {
+          "if": {"properties": {"mode": {"const": "notifications"}}},
+          "then": {"properties": {"notification_uris": {"minItems": 1}}},
+          "else": {"properties": {"notification_uris": {"maxItems": 0}}}
+        }
+      ],
+      "type": "object"
+    },
+    "CliAlias": {
+      "additionalProperties": false,
+      "properties": {
+        "declared_hidden": {"type": "boolean"},
+        "divergence": {"minLength": 1, "type": "string"},
+        "effective_hidden": {"type": "boolean"},
+        "granularity": {"$ref": "#/$defs/Granularity"},
+        "interactivity": {"$ref": "#/$defs/Interactivity"},
+        "parameter_defaults": {"type": "object"},
+        "parameter_map": {"additionalProperties": {"type": "string"}, "type": "object"},
+        "parameters": {"items": {"type": "string"}, "type": "array"},
+        "path": {"minLength": 1, "type": "string"},
+        "progress": {"$ref": "#/$defs/Progress"}
+      },
+      "required": [
+        "path",
+        "parameters",
+        "parameter_map",
+        "parameter_defaults",
+        "declared_hidden",
+        "effective_hidden",
+        "divergence",
+        "granularity",
+        "progress",
+        "interactivity"
+      ],
+      "type": "object"
+    },
+    "CliParent": {
+      "additionalProperties": false,
+      "properties": {
+        "alias_of": {"type": ["string", "null"]},
+        "declared_hidden": {"type": "boolean"},
+        "divergence": {"type": ["string", "null"]},
+        "effective_hidden": {"type": "boolean"},
+        "effective_panel": {"type": ["string", "null"]},
+        "panel": {"type": ["string", "null"]},
+        "path": {"minLength": 1, "type": "string"}
+      },
+      "required": [
+        "path",
+        "declared_hidden",
+        "effective_hidden",
+        "panel",
+        "effective_panel",
+        "alias_of",
+        "divergence"
+      ],
+      "type": "object"
+    },
+    "CliProjection": {
+      "additionalProperties": false,
+      "properties": {
+        "aliases": {"items": {"$ref": "#/$defs/CliAlias"}, "type": "array"},
+        "declared_hidden": {"type": "boolean"},
+        "effective_hidden": {"type": "boolean"},
+        "granularity": {"$ref": "#/$defs/Granularity"},
+        "interactivity": {"$ref": "#/$defs/Interactivity"},
+        "parameter_map": {"additionalProperties": {"type": "string"}, "type": "object"},
+        "parameters": {"items": {"type": "string"}, "type": "array"},
+        "passthrough": {
+          "additionalProperties": false,
+          "properties": {
+            "allow_extra_args": {"const": true},
+            "ignore_unknown_options": {"const": true},
+            "mode": {"const": "opaque-argv"}
+          },
+          "required": ["mode", "allow_extra_args", "ignore_unknown_options"],
+          "type": "object"
+        },
+        "path": {"minLength": 1, "type": "string"},
+        "progress": {"$ref": "#/$defs/Progress"}
+      },
+      "required": [
+        "path",
+        "aliases",
+        "parameters",
+        "parameter_map",
+        "declared_hidden",
+        "effective_hidden",
+        "granularity",
+        "progress",
+        "interactivity"
+      ],
+      "type": "object"
+    },
+    "Constraints": {
+      "additionalProperties": false,
+      "properties": {
+        "hq_write": {"type": "boolean"},
+        "interactive": {"type": "boolean"},
+        "override_parameters": {"items": {"type": "string"}, "type": "array"},
+        "secret_material": {"type": "boolean"}
+      },
+      "required": ["interactive", "hq_write", "secret_material", "override_parameters"],
+      "type": "object"
+    },
+    "McpProjection": {
+      "additionalProperties": false,
+      "anyOf": [{"required": ["tool"]}, {"required": ["resource"]}],
+      "properties": {
+        "allowlisted": {"const": true},
+        "divergence": {"minLength": 1, "type": "string"},
+        "granularity": {"$ref": "#/$defs/Granularity"},
+        "interactivity": {"$ref": "#/$defs/Interactivity"},
+        "progress": {"$ref": "#/$defs/Progress"},
+        "resource": {"pattern": "^beadhive://", "type": "string"},
+        "resource_parameters": {"items": {"type": "string"}, "type": "array"},
+        "tool": {"pattern": "^[a-z][a-z0-9_]*$", "type": "string"},
+        "tool_parameters": {"items": {"type": "string"}, "type": "array"}
+      },
+      "required": ["allowlisted", "granularity", "progress", "interactivity"],
+      "type": "object"
+    },
+    "Operation": {
+      "additionalProperties": false,
+      "properties": {
+        "alias_of": {"type": ["string", "null"]},
+        "constraints": {"$ref": "#/$defs/Constraints"},
+        "kind": {"enum": ["action", "read-resource"]},
+        "name": {"pattern": "^[a-z0-9-]+(?:\\.[a-z0-9-]+)*$", "type": "string"},
+        "parameters": {
+          "items": {"$ref": "#/$defs/Parameter"},
+          "type": "array"
+        },
+        "privilege": {
+          "enum": ["unprivileged-read", "ordinary-mutation", "privileged"]
+        },
+        "result_schema": {"pattern": "^urn:beadhive:wire-schema:", "type": "string"},
+        "surfaces": {
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "cli": {"$ref": "#/$defs/CliProjection"},
+            "mcp": {"$ref": "#/$defs/McpProjection"}
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "parameters",
+        "result_schema",
+        "kind",
+        "privilege",
+        "constraints",
+        "surfaces",
+        "alias_of"
+      ],
+      "type": "object"
+    },
+    "Parameter": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {"minLength": 1, "type": "string"},
+        "privilege": {"enum": ["inherited", "privileged-override"]},
+        "required": {"type": "boolean"},
+        "schema": {"type": "object"}
+      },
+      "required": ["name", "schema", "required", "privilege"],
+      "type": "object"
+    }
+  }
+}
