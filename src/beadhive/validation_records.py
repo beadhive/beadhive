@@ -16,7 +16,7 @@ import signal
 from pathlib import Path
 from typing import Literal
 
-from . import host, observaloop_env, private_paths
+from . import host, private_paths
 
 Lifecycle = Literal["running", "completed", "abandoned"]
 Verdict = Literal["green", "red", "none"]
@@ -85,6 +85,12 @@ def artifact_paths(hive: str | Path, run_id: str, configured: object = None) -> 
     # The default lives in the primary checkout so artifact retention survives
     # verify-worktree removal; keep that private root out of ordinary git status.
     if not (os.environ.get("BH_VALIDATION_ARTIFACT_ROOT") or configured):
+        # Lazy adapter edge: importing observaloop_env pulls the worktree facade, converge,
+        # triage_store, and validation_ledger back into this module.  At module import time that
+        # forms a cycle before the verdict predicates below exist.  Artifact allocation is the
+        # only path that needs the git-exclude adapter, so bind it at the effect boundary.
+        from . import observaloop_env
+
         observaloop_env._git_exclude(Path(hive), ".bh/")
     return {
         "directory": str(directory),
