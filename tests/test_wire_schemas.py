@@ -17,7 +17,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
-WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.3.0"
+WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.4.0"
 _SPEC = importlib.util.spec_from_file_location(
     "check_wire_schema_compat", ROOT / "scripts" / "check_wire_schema_compat.py"
 )
@@ -41,12 +41,13 @@ def test_release_manifest_schemas_and_conformance_fixtures_are_valid() -> None:
     fixtures = json.loads((WIRE / "conformance.json").read_text())
     cases = {case["name"]: case for case in fixtures["cases"]}
 
-    assert release.version == "1.3.0"
+    assert release.version == "1.4.0"
     assert set(release.artifacts) == {
         "urn:beadhive:wire-schema:bh.hive-onboard:1",
         "urn:beadhive:wire-schema:bh.hive-ready:1",
         "urn:beadhive:wire-schema:bh.hive-status:1",
         "urn:beadhive:wire-schema:bh.hive-survey:1",
+        "urn:beadhive:wire-schema:config:1",
         "urn:beadhive:wire-schema:factory.bead-node:1",
         "urn:beadhive:wire-schema:factory.hive-info:1",
         "urn:beadhive:wire-schema:factory.snapshot:1",
@@ -453,7 +454,7 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
     _git(repo, "config", "user.email", "wire-gate@example.invalid")
     if mutation in {"allof-changed-def", "dynamicref-changed-def"}:
         baseline_schema_path = (
-            repo / "docs" / "schemas" / "wire" / "v1.3.0" / "factory-snapshot-v1.schema.json"
+            repo / "docs" / "schemas" / "wire" / "v1.4.0" / "factory-snapshot-v1.schema.json"
         )
         baseline_schema = json.loads(baseline_schema_path.read_text())
         baseline_schema["$defs"]["CompatGuard"] = {
@@ -471,18 +472,18 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
     _git(repo, "switch", "-qc", "candidate")
 
     wire = repo / "docs" / "schemas" / "wire"
-    candidate_release = wire / "v1.3.1"
-    shutil.copytree(wire / "v1.3.0", candidate_release)
-    _rewrite_json(candidate_release / "release.json", release_version="1.3.1")
-    fixtures = _rewrite_json(candidate_release / "conformance.json", release_version="1.3.1")
+    candidate_release = wire / "v1.4.1"
+    shutil.copytree(wire / "v1.4.0", candidate_release)
+    _rewrite_json(candidate_release / "release.json", release_version="1.4.1")
+    fixtures = _rewrite_json(candidate_release / "conformance.json", release_version="1.4.1")
     artifact_id = "urn:beadhive:wire-schema:factory.snapshot:1"
     for case in fixtures["cases"]:
         if case["artifact_id"] == artifact_id:
             case["schema_valid"] = False
     (candidate_release / "conformance.json").write_text(json.dumps(fixtures, indent=2) + "\n")
     index = json.loads((wire / "index.json").read_text())
-    index["latest"] = "1.3.1"
-    index["releases"].append({"version": "1.3.1", "major": 1, "manifest": "v1.3.1/release.json"})
+    index["latest"] = "1.4.1"
+    index["releases"].append({"version": "1.4.1", "major": 1, "manifest": "v1.4.1/release.json"})
     (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")
 
     schema_path = candidate_release / "factory-snapshot-v1.schema.json"
@@ -536,16 +537,16 @@ def _catalog_gate_candidate(tmp_path: Path, mutation: str) -> tuple[Path, str, s
     _git(repo, "config", "user.name", "Catalog Gate Test")
     _git(repo, "config", "user.email", "catalog-gate@example.invalid")
     _git(repo, "add", ".")
-    _git(repo, "commit", "-qm", "immutable v1.3 baseline")
+    _git(repo, "commit", "-qm", "immutable v1.4 baseline")
     _git(repo, "branch", "baseline")
 
-    candidate_release = wire / "v1.3.1"
-    shutil.copytree(wire / "v1.3.0", candidate_release)
-    _rewrite_json(candidate_release / "release.json", release_version="1.3.1")
-    _rewrite_json(candidate_release / "conformance.json", release_version="1.3.1")
+    candidate_release = wire / "v1.4.1"
+    shutil.copytree(wire / "v1.4.0", candidate_release)
+    _rewrite_json(candidate_release / "release.json", release_version="1.4.1")
+    _rewrite_json(candidate_release / "conformance.json", release_version="1.4.1")
     index = json.loads((wire / "index.json").read_text())
-    index["latest"] = "1.3.1"
-    index["releases"].append({"version": "1.3.1", "major": 1, "manifest": "v1.3.1/release.json"})
+    index["latest"] = "1.4.1"
+    index["releases"].append({"version": "1.4.1", "major": 1, "manifest": "v1.4.1/release.json"})
     (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")
 
     catalog_path = candidate_release / "operation-catalog-v1.json"
@@ -596,7 +597,7 @@ def test_actual_gate_cli_allows_additive_catalog_operation(tmp_path: Path) -> No
 
     assert baseline != _git(repo, "rev-parse", "HEAD").stdout.strip()
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "wire-schema-compat: 1.3.0 -> 1.3.1 is fully compatible" in result.stdout
+    assert "wire-schema-compat: 1.4.0 -> 1.4.1 is fully compatible" in result.stdout
 
 
 @pytest.mark.parametrize(

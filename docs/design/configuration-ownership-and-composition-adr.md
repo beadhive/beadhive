@@ -228,6 +228,14 @@ derive a competing list. Its exact regression proofs must include the currently 
 `git_workspace`, `orca`, and `hitch` sections plus accepted aliases and the existing unknown-write
 warning.
 
+Implementation reconciliation (`bh-18hud.2`): the owner remained unlanded, so the operator
+authorized this bead to integrate its contract. `beadhive.modules.config.contracts.known_sections`
+now derives the inventory from canonical model field and alias metadata, with `beads` retained as
+the explicit compatibility section. Contract tests cover `git_workspace`, `orca`, `hitch`, the
+`work.validate` field alias, the `beads` compatibility section, and unknown-section warn-and-write
+behavior. `bh-1h9h` remains open until this independently reviewed change merges; it is then closed
+as satisfied by the merged implementation rather than by a competing derivation.
+
 The remaining implementation is deliberately split:
 
 - `bh-18hud.2` owns models, defaults/aliases, official JSON Schema, deterministic artifact

@@ -17,6 +17,7 @@ from . import config_edit as _config_edit
 from . import config_paths as _config_paths
 from . import config_policy as _config_policy
 from . import config_store as _config_store
+from .modules.config.contracts import known_sections as _known_sections
 
 BINARY_NAME = "beadhive"
 BINARY_ALIAS = "bh"
@@ -44,36 +45,9 @@ class ConfigError(ValueError):
     """The host/fleet layers cannot be resolved into one effective view."""
 
 
-# Schema ownership intentionally remains where bh-1h9h left it. This extraction
-# moves mechanics only and neither derives nor expands the known-section policy.
-KNOWN_SECTIONS = frozenset(
-    {
-        "delimiter",
-        "providers",
-        "orgs",
-        "exclude",
-        "dimensions",
-        "dolt",
-        "beads",
-        "work",
-        "hq",
-        "release",
-        "managed_repos",
-        "log",
-        "otel",
-        "observaloop",
-        "repowise",
-        "worktrees",
-        "archive",
-        "backup",
-        "metadata",
-        "passthrough",
-        "claude",
-        "harness",
-        "hitch",
-        "herdr",
-    }
-)
+# Forward the schema-derived inventory owned by the canonical contracts. ``beads`` remains an
+# explicit compatibility alias there until the backend abstraction gains a typed section.
+KNOWN_SECTIONS = _known_sections()
 
 
 def _facade():
