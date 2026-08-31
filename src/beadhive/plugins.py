@@ -13,24 +13,32 @@ adapter from the manifest/bootstrap composition layer rather than importing this
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, TypeVar, cast
 
 import typer
 
 from .kernel.lifecycle import (
     EVENTS_BY_ID,
-    Criticality,
-    DeliveryPolicy,
     DeliveryReport,
     DeliveryStatus,
     HiveLifecycleContext,
+    HostLifecycleContext,
     LifecycleDispatcher,
     LifecycleEvent,
     SubscriberBinding,
     WorktreeLifecycleContext,
+)
+from .kernel.plugins import (
+    DiscoveryResult,
+    LifecycleSubscriptionDeclaration,
+    PluginKernelConfig,
+    builtin_manifest_source,
+    discover_plugins,
+    parse_kernel_config,
 )
 
 
@@ -80,6 +88,125 @@ def registry() -> list[Plugin]:
 
 
 @dataclass(frozen=True)
+class _CompatibilityComposition:
+    """One validated manifest/enablement snapshot for all legacy projections."""
+
+    result: DiscoveryResult
+    declarations: tuple[Plugin, ...]
+
+    @property
+    def selected_plugin_ids(self) -> frozenset[str]:
+        return frozenset(selection.plugin_id for selection in self.result.capabilities)
+
+    def declaration(self, plugin_id: str) -> Plugin | None:
+        return next(
+            (plugin for plugin in self.declarations if plugin.name == plugin_id),
+            None,
+        )
+
+    def subscription(
+        self,
+        plugin_id: str,
+        event_id: str,
+    ) -> LifecycleSubscriptionDeclaration:
+        discovered = next(
+            plugin for plugin in self.result.plugins if plugin.manifest.plugin_id == plugin_id
+        )
+        matches = tuple(
+            subscription
+            for subscription in discovered.manifest.lifecycle_subscriptions
+            if subscription.event == event_id
+        )
+        if len(matches) != 1:
+            raise ValueError(
+                f"plugin {plugin_id!r} must declare exactly one {event_id!r} subscription"
+            )
+        return matches[0]
+
+
+def _kernel_policy(cfg: Any) -> PluginKernelConfig:
+    if isinstance(cfg, PluginKernelConfig):
+        return parse_kernel_config(cfg)
+    if isinstance(cfg, Mapping):
+        value = cfg.get("plugin_kernel", {})
+        return parse_kernel_config(cast(Mapping[str, object], value))
+    return parse_kernel_config(None)
+
+
+def _compose(
+    cfg: Any,
+    entry: Any,
+    *,
+    force_enabled: frozenset[str] = frozenset(),
+    honor_legacy_enablement: bool = True,
+    host_executables: Mapping[str, str] | None = None,
+) -> _CompatibilityComposition:
+    """Validate policy first, then build one immutable built-in composition snapshot."""
+
+    try:
+        policy = _kernel_policy(cfg)
+    except (TypeError, ValueError):
+        raw = cfg.get("plugin_kernel", {}) if isinstance(cfg, Mapping) else cfg
+        return _CompatibilityComposition(
+            discover_plugins(
+                [],
+                config=raw,
+                beadhive_version="0.15.1",
+                kernel_version="1.0.0",
+                host_executables=host_executables,
+            ),
+            (),
+        )
+
+    declarations = tuple(registry())
+    enabled = dict(policy.enabled)
+    for plugin in declarations:
+        legacy_enabled = (
+            True
+            if not honor_legacy_enablement or plugin.name in force_enabled
+            else bool(plugin.enabled(cfg, entry))
+        )
+        enabled[plugin.name] = legacy_enabled and policy.enabled.get(plugin.name, True)
+    merged_policy = PluginKernelConfig(
+        enabled=MappingProxyType(enabled),
+        capability_owners=policy.capability_owners,
+        allow_external_entry_points=policy.allow_external_entry_points,
+    )
+    return _CompatibilityComposition(
+        discover_plugins(
+            [builtin_manifest_source()],
+            config=merged_policy,
+            beadhive_version="0.15.1",
+            kernel_version="1.0.0",
+            host_executables=host_executables,
+        ),
+        declarations,
+    )
+
+
+def action_composition(
+    cfg: Any,
+    entry: Any,
+    *,
+    force_enabled: frozenset[str] = frozenset(),
+) -> _CompatibilityComposition:
+    """Capture one immutable compatibility composition for a complete host action."""
+
+    return _compose(cfg, entry, force_enabled=force_enabled)
+
+
+def discover_builtin_registry(
+    cfg: Any,
+    entry: Any,
+    *,
+    host_executables: dict[str, str] | None = None,
+) -> DiscoveryResult:
+    """Translate legacy enablement into the kernel's deterministic manifest composition."""
+
+    return _compose(cfg, entry, host_executables=host_executables).result
+
+
+@dataclass(frozen=True)
 class CliMount:
     """Transport-only projection; it is never part of ``PluginManifest``."""
 
@@ -87,11 +214,33 @@ class CliMount:
     app: typer.Typer
 
 
-def cli_mounts() -> tuple[CliMount, ...]:
-    return tuple(CliMount(plugin.name, plugin.cli) for plugin in registry())
+def cli_mounts(cfg: Any = None, entry: Any = None) -> tuple[CliMount, ...]:
+    composition = _compose(cfg, entry, honor_legacy_enablement=False)
+    return tuple(
+        CliMount(plugin.name, plugin.cli)
+        for plugin in composition.declarations
+        if plugin.name in composition.selected_plugin_ids
+    )
 
 
 ContextT = TypeVar("ContextT")
+
+
+def _manifest_binding(
+    composition: _CompatibilityComposition,
+    plugin_id: str,
+    event_id: str,
+    subscriber: Callable[[ContextT], Any],
+) -> SubscriberBinding[ContextT]:
+    declaration = composition.subscription(plugin_id, event_id)
+    event = cast(LifecycleEvent[ContextT], EVENTS_BY_ID[declaration.event])
+    return SubscriberBinding(
+        plugin_id,
+        declaration.subscription_id,
+        event,
+        subscriber,
+        declaration.policy,
+    )
 
 
 def _dispatch(binding: SubscriberBinding[ContextT], context: ContextT) -> DeliveryReport:
@@ -108,24 +257,46 @@ def _dispatch(binding: SubscriberBinding[ContextT], context: ContextT) -> Delive
 class OnboardParticipant:
     plugin_id: str
     consent_only: bool
-    _enabled: Callable[[Any, Any], bool]
     _callback: Callable[[Any], None]
+    _selected: bool | None = None
+    _declaration: LifecycleSubscriptionDeclaration | None = None
 
-    def enabled(self, cfg: Any, entry: Any) -> bool:
-        return bool(self._enabled(cfg, entry))
+    def resolve(self, cfg: Any, entry: Any, *, forced: bool = False) -> OnboardParticipant:
+        composition = _compose(
+            cfg,
+            entry,
+            force_enabled=frozenset({self.plugin_id}) if forced else frozenset(),
+        )
+        selected = self.plugin_id in composition.selected_plugin_ids
+        return OnboardParticipant(
+            self.plugin_id,
+            self.consent_only,
+            self._callback,
+            selected,
+            composition.subscription(self.plugin_id, "hive.onboarding") if selected else None,
+        )
+
+    def enabled(self, *, forced: bool = False) -> bool:
+        if self._selected is None:
+            raise RuntimeError("onboard participant must be resolved for one action")
+        return self._selected and (forced or not self.consent_only)
 
     def deliver(self, ctx: Any) -> DeliveryReport:
-        event = cast(LifecycleEvent[HiveLifecycleContext], EVENTS_BY_ID["hive.onboarding"])
+        event_id = "hive.onboarding"
+        if not self._selected:
+            return DeliveryReport(event_id, ())
+        assert self._declaration is not None
 
         async def subscriber(_context: HiveLifecycleContext) -> None:
             self._callback(ctx)
 
+        event = cast(LifecycleEvent[HiveLifecycleContext], EVENTS_BY_ID[self._declaration.event])
         binding = SubscriberBinding(
-            plugin_id=self.plugin_id,
-            subscription_id=f"{self.plugin_id}.legacy-onboard",
-            event=event,
-            subscriber=subscriber,
-            policy=DeliveryPolicy(criticality=Criticality.BEST_EFFORT),
+            self.plugin_id,
+            self._declaration.subscription_id,
+            event,
+            subscriber,
+            self._declaration.policy,
         )
         context = HiveLifecycleContext(
             hive_id=str(getattr(ctx, "hive", self.plugin_id)),
@@ -134,15 +305,24 @@ class OnboardParticipant:
         return _dispatch(binding, context)
 
 
-def onboard_participants() -> tuple[OnboardParticipant, ...]:
+def onboard_participants(
+    composition: _CompatibilityComposition | None = None,
+) -> tuple[OnboardParticipant, ...]:
+    resolved = composition is not None
+    composition = composition or _compose(None, None, honor_legacy_enablement=False)
     return tuple(
         OnboardParticipant(
             plugin.name,
             plugin.onboard_requires_opt_in,
-            plugin.enabled,
             plugin.on_onboard,
+            plugin.name in composition.selected_plugin_ids if resolved else None,
+            (
+                composition.subscription(plugin.name, "hive.onboarding")
+                if resolved and plugin.name in composition.selected_plugin_ids
+                else None
+            ),
         )
-        for plugin in registry()
+        for plugin in composition.declarations
         if plugin.on_onboard is not None
     )
 
@@ -150,20 +330,21 @@ def onboard_participants() -> tuple[OnboardParticipant, ...]:
 @dataclass(frozen=True)
 class RetireObserver:
     plugin_id: str
+    _declaration: LifecycleSubscriptionDeclaration
     _callback: Callable[[Path | str, Any, Any], None]
 
     def deliver(self, clone_path: Path | str, cfg: Any, entry: Any) -> DeliveryReport:
-        event = cast(LifecycleEvent[HiveLifecycleContext], EVENTS_BY_ID["hive.retiring"])
+        event = cast(LifecycleEvent[HiveLifecycleContext], EVENTS_BY_ID[self._declaration.event])
 
         async def subscriber(_context: HiveLifecycleContext) -> None:
             self._callback(clone_path, cfg, entry)
 
         binding = SubscriberBinding(
-            plugin_id=self.plugin_id,
-            subscription_id=f"{self.plugin_id}.legacy-retire",
-            event=event,
-            subscriber=subscriber,
-            policy=DeliveryPolicy(criticality=Criticality.BEST_EFFORT),
+            self.plugin_id,
+            self._declaration.subscription_id,
+            event,
+            subscriber,
+            self._declaration.policy,
         )
         return _dispatch(
             binding,
@@ -175,30 +356,74 @@ class RetireObserver:
 
 
 def retire_observers(cfg: Any, entry: Any) -> tuple[RetireObserver, ...]:
+    composition = _compose(cfg, entry)
     return tuple(
-        RetireObserver(plugin.name, plugin.on_retire)
-        for plugin in registry()
-        if plugin.on_retire is not None and plugin.enabled(cfg, entry)
+        RetireObserver(
+            plugin.name,
+            composition.subscription(plugin.name, "hive.retiring"),
+            plugin.on_retire,
+        )
+        for plugin in composition.declarations
+        if plugin.name in composition.selected_plugin_ids and plugin.on_retire is not None
     )
 
 
 @dataclass(frozen=True)
 class ReadinessPort:
     plugin_id: str
-    _enabled: Callable[[Any, Any], bool]
     _probe: Callable[[Any, Any], tuple[str, str] | None]
+    _selected: bool
+    _declaration: LifecycleSubscriptionDeclaration | None
 
-    def enabled(self, cfg: Any, entry: Any) -> bool:
-        return bool(self._enabled(cfg, entry))
+    def enabled(self) -> bool:
+        return self._selected
 
     def probe(self, cfg: Any, entry: Any) -> tuple[str, str] | None:
-        return self._probe(cfg, entry)
+        if not self._selected:
+            return None
+        assert self._declaration is not None
+        result: list[tuple[str, str] | None] = []
+
+        async def subscriber(_context: HostLifecycleContext) -> None:
+            result.append(self._probe(cfg, entry))
+
+        event = cast(LifecycleEvent[HostLifecycleContext], EVENTS_BY_ID[self._declaration.event])
+        binding = SubscriberBinding(
+            self.plugin_id,
+            self._declaration.subscription_id,
+            event,
+            subscriber,
+            self._declaration.policy,
+        )
+        report = _dispatch(
+            binding,
+            HostLifecycleContext(
+                host_id=str(entry.get("prefix", self.plugin_id))
+                if isinstance(entry, Mapping)
+                else self.plugin_id,
+                correlation_id=f"readiness:{self.plugin_id}",
+            ),
+        )
+        if not delivery_succeeded(report):
+            error = report.deliveries[-1].attempts[-1].error
+            return "off", f"readiness probe failed ({error})"
+        return result[0]
 
 
-def readiness_ports() -> tuple[ReadinessPort, ...]:
+def readiness_ports(cfg: Any = None, entry: Any = None) -> tuple[ReadinessPort, ...]:
+    composition = _compose(cfg, entry)
     return tuple(
-        ReadinessPort(plugin.name, plugin.enabled, plugin.readiness)
-        for plugin in registry()
+        ReadinessPort(
+            plugin.name,
+            plugin.readiness,
+            plugin.name in composition.selected_plugin_ids,
+            (
+                composition.subscription(plugin.name, "host.readiness")
+                if plugin.name in composition.selected_plugin_ids
+                else None
+            ),
+        )
+        for plugin in composition.declarations
         if plugin.readiness is not None
     )
 
@@ -253,19 +478,26 @@ class WorktreeRemovePort:
         )
 
 
-def worktree_create_ports(cfg: Any, entry: Any) -> tuple[WorktreeCreatePort, ...]:
+def worktree_create_ports(
+    cfg: Any,
+    entry: Any,
+    *,
+    composition: _CompatibilityComposition | None = None,
+) -> tuple[WorktreeCreatePort, ...]:
+    composition = composition or _compose(cfg, entry)
     return tuple(
         WorktreeCreatePort(plugin.name, plugin.wt_create)
-        for plugin in registry()
-        if plugin.wt_create is not None and plugin.enabled(cfg, entry)
+        for plugin in composition.declarations
+        if plugin.name in composition.selected_plugin_ids and plugin.wt_create is not None
     )
 
 
 def worktree_remove_ports(cfg: Any, entry: Any) -> tuple[WorktreeRemovePort, ...]:
+    composition = _compose(cfg, entry)
     return tuple(
         WorktreeRemovePort(plugin.name, plugin.wt_remove)
-        for plugin in registry()
-        if plugin.wt_remove is not None and plugin.enabled(cfg, entry)
+        for plugin in composition.declarations
+        if plugin.name in composition.selected_plugin_ids and plugin.wt_remove is not None
     )
 
 
@@ -273,6 +505,7 @@ def worktree_remove_ports(cfg: Any, entry: Any) -> tuple[WorktreeRemovePort, ...
 class WorktreeObserver:
     plugin_id: str
     event: LifecycleEvent[WorktreeLifecycleContext]
+    declaration: LifecycleSubscriptionDeclaration
     _callback: Callable[..., None]
 
     def deliver(
@@ -292,11 +525,11 @@ class WorktreeObserver:
             self._callback(cfg, entry, **kwargs)
 
         binding = SubscriberBinding(
-            plugin_id=self.plugin_id,
-            subscription_id=f"{self.plugin_id}.legacy-{self.event.phase.value}",
-            event=self.event,
-            subscriber=subscriber,
-            policy=DeliveryPolicy(criticality=Criticality.BEST_EFFORT),
+            self.plugin_id,
+            self.declaration.subscription_id,
+            self.event,
+            subscriber,
+            self.declaration.policy,
         )
         context = WorktreeLifecycleContext(
             hive_id=str(entry.get("prefix", self.plugin_id)),
@@ -306,14 +539,28 @@ class WorktreeObserver:
         return _dispatch(binding, context)
 
 
-def worktree_observers(hook: str, cfg: Any, entry: Any) -> tuple[WorktreeObserver, ...]:
+def worktree_observers(
+    hook: str,
+    cfg: Any,
+    entry: Any,
+    *,
+    composition: _CompatibilityComposition | None = None,
+) -> tuple[WorktreeObserver, ...]:
     event_id = {"wt_creating": "worktree.creating", "wt_created": "worktree.created"}[hook]
     event = cast(LifecycleEvent[WorktreeLifecycleContext], EVENTS_BY_ID[event_id])
+    composition = composition or _compose(cfg, entry)
     observers: list[WorktreeObserver] = []
-    for plugin in registry():
+    for plugin in composition.declarations:
         callback = getattr(plugin, hook)
-        if callback is not None and plugin.enabled(cfg, entry):
-            observers.append(WorktreeObserver(plugin.name, event, callback))
+        if callback is not None and plugin.name in composition.selected_plugin_ids:
+            observers.append(
+                WorktreeObserver(
+                    plugin.name,
+                    event,
+                    composition.subscription(plugin.name, event_id),
+                    callback,
+                )
+            )
     return tuple(observers)
 
 

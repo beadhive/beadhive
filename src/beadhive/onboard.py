@@ -1301,6 +1301,8 @@ def _plugin_step(p) -> Step:
 
     def action(ctx: Ctx) -> None:
         report = p.deliver(ctx)
+        if not report.deliveries:
+            return
         if not _plugins.delivery_succeeded(report):
             error = report.deliveries[-1].attempts[-1].error
             typer.echo(
@@ -1316,9 +1318,7 @@ def _plugin_step(p) -> Step:
         action,
         requires=["register"],
         mutates=True,
-        enabled=lambda c, _p=p: (
-            _p.plugin_id in c.plugins or (not _p.consent_only and _p.enabled(c.cfg, c.existing))
-        ),
+        enabled=lambda c: p.enabled(forced=p.plugin_id in c.plugins),
     )
 
 
@@ -1607,7 +1607,20 @@ def build_steps(ctx: Ctx) -> list[Step]:
 
     # Generic plugin steps: one per registered plugin that declares an on_onboard hook. When
     # the registry is empty, no plugin step is built (integrations are not hardcoded here).
-    plugin_steps = [_plugin_step(participant) for participant in _plugins.onboard_participants()]
+    plugin_entry = (
+        registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo)
+        if ctx.cfg is not None
+        else None
+    )
+    plugin_composition = _plugins.action_composition(
+        ctx.cfg,
+        plugin_entry,
+        force_enabled=frozenset(ctx.plugins),
+    )
+    plugin_steps = [
+        _plugin_step(participant)
+        for participant in _plugins.onboard_participants(plugin_composition)
+    ]
 
     return [
         resolve,

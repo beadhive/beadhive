@@ -37,15 +37,15 @@ id = "kernel.plugins"
 kind = "kernel"
 status = "present"
 owner_path = "src/beadhive/kernel/plugins"
-source_paths = ["src/beadhive/kernel/plugins/**/*.py"]
+source_paths = ["src/beadhive/kernel/plugins/**/*.py", "src/beadhive/kernel/plugins/manifests/*.json"]
 tests = [
   "tests/unit/kernel/plugins/test_binding.py",
   "tests/unit/kernel/plugins/test_discovery.py",
 ]
 shared_contracts = ["contracts"]
 shared_contract_tests = ["tests/contracts/test_plugin_discovery_contract.py"]
-reverse_dependencies = []
-reverse_dependency_tests = []
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_plugins.py"]
 
 [[closures]]
 id = "module.agents"
@@ -113,10 +113,10 @@ id = "plugin.herdr"
 kind = "plugin"
 status = "present"
 owner_path = "src/beadhive/herdr_plugin.py"
-source_paths = ["src/beadhive/herdr_plugin.py"]
+source_paths = ["src/beadhive/herdr_plugin.py", "src/beadhive/kernel/plugins/manifests/herdr.json"]
 tests = ["tests/test_herdr_plugin.py"]
 shared_contracts = ["contracts"]
-shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/contracts/test_builtin_plugin_manifests.py"]
 reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
 
@@ -125,10 +125,10 @@ id = "plugin.hitch"
 kind = "plugin"
 status = "present"
 owner_path = "src/beadhive/hitch_plugin.py"
-source_paths = ["src/beadhive/hitch_plugin.py"]
+source_paths = ["src/beadhive/hitch_plugin.py", "src/beadhive/kernel/plugins/manifests/hitch.json"]
 tests = ["tests/test_hitch_plugin.py"]
 shared_contracts = ["contracts"]
-shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/contracts/test_builtin_plugin_manifests.py"]
 reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
 
@@ -137,10 +137,10 @@ id = "plugin.observaloop"
 kind = "plugin"
 status = "present"
 owner_path = "src/beadhive/observaloop.py"
-source_paths = ["src/beadhive/observaloop.py"]
+source_paths = ["src/beadhive/observaloop.py", "src/beadhive/kernel/plugins/manifests/observaloop.json"]
 tests = ["tests/test_observaloop.py"]
 shared_contracts = ["contracts"]
-shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/contracts/test_builtin_plugin_manifests.py"]
 reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
 
@@ -149,10 +149,10 @@ id = "plugin.orca"
 kind = "plugin"
 status = "present"
 owner_path = "src/beadhive/orca.py"
-source_paths = ["src/beadhive/orca.py"]
+source_paths = ["src/beadhive/orca.py", "src/beadhive/kernel/plugins/manifests/orca.json"]
 tests = ["tests/test_orca.py"]
 shared_contracts = ["contracts"]
-shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/contracts/test_builtin_plugin_manifests.py"]
 reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
 
@@ -161,10 +161,10 @@ id = "plugin.repowise"
 kind = "plugin"
 status = "present"
 owner_path = "src/beadhive/repowise_plugin.py"
-source_paths = ["src/beadhive/repowise_plugin.py"]
+source_paths = ["src/beadhive/repowise_plugin.py", "src/beadhive/kernel/plugins/manifests/repowise.json"]
 tests = ["tests/test_repowise_plugin.py"]
 shared_contracts = ["contracts"]
-shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/contracts/test_builtin_plugin_manifests.py"]
 reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
 

@@ -1,0 +1,23 @@
+{
+  "capabilities": {"provides": [{"api_version": 1, "id": "analysis.repository"}]},
+  "compatibility": {
+    "beadhive": {"maximum_exclusive": "1.0.0", "minimum_inclusive": "0.15.0"},
+    "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}
+  },
+  "configuration": {"legacy_namespaces": ["repowise"], "namespace": "plugins.repowise", "schema_artifact": "urn:beadhive:wire-schema:plugin-config:repowise:1"},
+  "lifecycle": {"subscriptions": [
+    {"compensation": {"action_id": null, "mode": "none"}, "criticality": "best-effort", "event": "host.readiness", "id": "repowise.probe-readiness", "idempotency": "not-applicable", "order": 100, "retry": {"backoff_seconds": 0, "max_attempts": 1}, "timeout_seconds": 30},
+    {"compensation": {"action_id": null, "mode": "none"}, "criticality": "best-effort", "event": "hive.onboarding", "id": "repowise.index-hive", "idempotency": "required", "order": 100, "retry": {"backoff_seconds": 0, "max_attempts": 1}, "timeout_seconds": 30},
+    {"compensation": {"action_id": null, "mode": "none"}, "criticality": "best-effort", "event": "worktree.creating", "id": "repowise.refresh-base", "idempotency": "required", "order": 100, "retry": {"backoff_seconds": 0, "max_attempts": 1}, "timeout_seconds": 30},
+    {"compensation": {"action_id": null, "mode": "none"}, "criticality": "best-effort", "event": "worktree.created", "id": "repowise.seed-worktree", "idempotency": "required", "order": 100, "retry": {"backoff_seconds": 0, "max_attempts": 1}, "timeout_seconds": 30}
+  ]},
+  "manifest_version": 1,
+  "plugin_id": "repowise",
+  "plugin_version": "1.0.0",
+  "presentation": {"cli": [{"capability_id": "analysis.repository", "command": "plugin repowise"}]},
+  "security": {
+    "credentials": [{"id": "repowise-api", "purpose": "authenticate optional remote analysis", "required": false, "sources": [{"kind": "environment-variable", "name": "REPOWISE_API_TOKEN"}]}],
+    "executables": [{"name": "repowise", "required": false, "version": {"maximum_exclusive": "999.0.0", "minimum_inclusive": "0.0.0"}}],
+    "permissions": [{"id": "filesystem.workspace.read", "purpose": "analyze repository sources", "required": true}]
+  }
+}
