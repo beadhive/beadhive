@@ -11,7 +11,9 @@ with `BH_WIRE_SCHEMA_BASE_REF`) and enforces both directions of compatibility. O
 properties may be added; removing or retyping properties, changing requiredness, or changing the
 members of an enum marked `x-beadhive-closed-union` is rejected within a major.
 
-The v1 command schemas describe the JSON that is already emitted by `bh hive status --json` and
-`bh hive survey --json`. They intentionally do not redesign those emitters. The control-plane
-schemas preserve the current `@beadhive/factory-contract` field spellings and publish shared
-version-first decoder fixtures in `conformance.json`.
+The v1 command schemas describe the JSON emitted by `bh hive status --json`,
+`bh hive survey --json`, `bh hive onboard --json`, and `bh hive ready --json`. They intentionally
+do not redesign the established status/survey emitters. The lifecycle schemas preserve bh's own
+human text alongside structured state. The control-plane schemas preserve the current
+`@beadhive/factory-contract` field spellings and publish shared version-first decoder fixtures in
+`conformance.json`.

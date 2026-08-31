@@ -19,6 +19,7 @@ from . import (
     gitworkspace_plugin,
     hive,
     hive_schema,
+    jsonout,
     observaloop,
     otel,
     plugins,
@@ -517,28 +518,40 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     return checks
 
 
-def _line(c: Check) -> None:
+def _line_text(c: Check) -> str:
     detail = f"  {c.detail}" if c.detail else ""
-    typer.echo(f"  {_GLYPH[c.state]} {c.label:<18}{detail}")
+    return f"  {_GLYPH[c.state]} {c.label:<18}{detail}"
 
 
-def _render_verbose(checks: list[Check]) -> None:
-    typer.echo("# Required")
-    for c in (c for c in checks if c.required):
-        _line(c)
-    typer.echo("\n# Optional")
-    for c in (c for c in checks if not c.required):
-        _line(c)
-    typer.echo("")
+def _verbose_text(checks: list[Check]) -> str:
+    required = ["# Required", *(_line_text(c) for c in checks if c.required)]
+    optional = ["# Optional", *(_line_text(c) for c in checks if not c.required)]
+    return "\n".join(required) + "\n\n" + "\n".join(optional) + "\n\n"
 
 
-def run_check(verbose: bool = False, cwd=None) -> None:
-    """Scan the current hive and exit 0 (ready) / 1 (a required check failed)."""
+def ready_payload(verbose: bool = False, cwd=None) -> dict:
+    """Build the versioned readiness result consumed by both CLI renderings.
+
+    ``text`` is bh's exact human rendering, including its final newline.  Check rows carry the
+    same rendered text alongside their typed fields so consumers can present bh's wording rather
+    than reconstructing prose from state codes.
+    """
     cfg = config.load()
     ident = workspace_identity(cwd)
     if ident is None:
-        typer.echo("✗ not in a git repo under $GIT_WORKSPACE — not an AGF hive.", err=True)
-        raise typer.Exit(1)
+        text = "✗ not in a git repo under $GIT_WORKSPACE — not an AGF hive.\n"
+        return jsonout.envelope(
+            "hive ready",
+            jsonout.HIVE_READY_SCHEMA,
+            {
+                "ready": False,
+                "exit_code": 1,
+                "hive": None,
+                "checks": [],
+                "text": text,
+                "stream": "stderr",
+            },
+        )
     provider, org, repo = ident
     entry = registry.find_entry(cfg, provider, org, repo)
     root = _repo_root(cwd)
@@ -546,12 +559,40 @@ def run_check(verbose: bool = False, cwd=None) -> None:
 
     checks = scan(cfg, ident, entry, root)
     failed = sum(1 for c in checks if c.required and c.state != "ok")
-
-    if verbose:
-        _render_verbose(checks)
+    text = _verbose_text(checks) if verbose else ""
     if failed:
         tail = "" if verbose else " (run -v for the breakdown)"
-        typer.echo(f"✗ hive '{label}' not ready for AGF — {failed} required check(s) failed{tail}")
-        raise typer.Exit(1)
-    typer.echo(f"✓ hive '{label}' ready for AGF.")
-    raise typer.Exit(0)
+        text += f"✗ hive '{label}' not ready for AGF — {failed} required check(s) failed{tail}\n"
+    else:
+        text += f"✓ hive '{label}' ready for AGF.\n"
+    return jsonout.envelope(
+        "hive ready",
+        jsonout.HIVE_READY_SCHEMA,
+        {
+            "ready": failed == 0,
+            "exit_code": 1 if failed else 0,
+            "hive": label,
+            "checks": [
+                {
+                    "label": c.label,
+                    "required": c.required,
+                    "state": c.state,
+                    "detail": c.detail,
+                    "text": _line_text(c),
+                }
+                for c in checks
+            ],
+            "text": text,
+            "stream": "stdout",
+        },
+    )
+
+
+def run_check(verbose: bool = False, cwd=None, *, as_json: bool = False) -> None:
+    """Scan the current hive and exit 0 (ready) / 1 (a required check failed)."""
+    payload = ready_payload(verbose, cwd)
+    if as_json:
+        jsonout.emit(payload)
+    else:
+        typer.echo(payload["text"], nl=False, err=payload["stream"] == "stderr")
+    raise typer.Exit(payload["exit_code"])

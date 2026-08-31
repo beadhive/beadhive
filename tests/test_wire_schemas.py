@@ -16,7 +16,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
-WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.0.0"
+WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.1.0"
 _SPEC = importlib.util.spec_from_file_location(
     "check_wire_schema_compat", ROOT / "scripts" / "check_wire_schema_compat.py"
 )
@@ -39,8 +39,10 @@ def test_release_manifest_schemas_and_conformance_fixtures_are_valid() -> None:
     fixtures = json.loads((WIRE / "conformance.json").read_text())
     cases = {case["name"]: case for case in fixtures["cases"]}
 
-    assert release.version == "1.0.0"
+    assert release.version == "1.1.0"
     assert set(release.artifacts) == {
+        "urn:beadhive:wire-schema:bh.hive-onboard:1",
+        "urn:beadhive:wire-schema:bh.hive-ready:1",
         "urn:beadhive:wire-schema:bh.hive-status:1",
         "urn:beadhive:wire-schema:bh.hive-survey:1",
         "urn:beadhive:wire-schema:factory.bead-node:1",
@@ -341,7 +343,7 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
     _git(repo, "config", "user.email", "wire-gate@example.invalid")
     if mutation in {"allof-changed-def", "dynamicref-changed-def"}:
         baseline_schema_path = (
-            repo / "docs" / "schemas" / "wire" / "v1.0.0" / "factory-snapshot-v1.schema.json"
+            repo / "docs" / "schemas" / "wire" / "v1.1.0" / "factory-snapshot-v1.schema.json"
         )
         baseline_schema = json.loads(baseline_schema_path.read_text())
         baseline_schema["$defs"]["CompatGuard"] = {
@@ -359,18 +361,18 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
     _git(repo, "switch", "-qc", "candidate")
 
     wire = repo / "docs" / "schemas" / "wire"
-    candidate_release = wire / "v1.0.1"
-    shutil.copytree(wire / "v1.0.0", candidate_release)
-    _rewrite_json(candidate_release / "release.json", release_version="1.0.1")
-    fixtures = _rewrite_json(candidate_release / "conformance.json", release_version="1.0.1")
+    candidate_release = wire / "v1.1.1"
+    shutil.copytree(wire / "v1.1.0", candidate_release)
+    _rewrite_json(candidate_release / "release.json", release_version="1.1.1")
+    fixtures = _rewrite_json(candidate_release / "conformance.json", release_version="1.1.1")
     artifact_id = "urn:beadhive:wire-schema:factory.snapshot:1"
     for case in fixtures["cases"]:
         if case["artifact_id"] == artifact_id:
             case["schema_valid"] = False
     (candidate_release / "conformance.json").write_text(json.dumps(fixtures, indent=2) + "\n")
     index = json.loads((wire / "index.json").read_text())
-    index["latest"] = "1.0.1"
-    index["releases"].append({"version": "1.0.1", "major": 1, "manifest": "v1.0.1/release.json"})
+    index["latest"] = "1.1.1"
+    index["releases"].append({"version": "1.1.1", "major": 1, "manifest": "v1.1.1/release.json"})
     (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")
 
     schema_path = candidate_release / "factory-snapshot-v1.schema.json"

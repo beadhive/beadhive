@@ -2068,6 +2068,11 @@ def hive_onboard(
         "synchronously); --hub-sync waits for the full fleet-wide sync to complete; --no-hub-sync "
         "skips the hub entirely",
     ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="emit the versioned onboarding result as JSON (bh progress is carried in text)",
+    ),
 ):
     from . import hive
 
@@ -2093,6 +2098,7 @@ def hive_onboard(
         dry_run=dry_run,
         skip_check=skip_check,
         hub_sync=hub_sync,
+        as_json=as_json,
     )
 
 
@@ -2254,10 +2260,13 @@ def hive_ready(
     verbose: bool = typer.Option(
         False, "-v", "--verbose", help="show the per-line-item breakdown (required + optional)"
     ),
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the versioned readiness result as JSON"
+    ),
 ):
     from . import hive_ready as ready
 
-    ready.run_check(verbose)
+    ready.run_check(verbose, as_json=as_json)
 
 
 @hive_app.command("context", hidden=True)
