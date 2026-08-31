@@ -523,6 +523,35 @@ test set=FAST:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
+# Advisory module/plugin closures. These commands never replace `just check` or `just check-all`;
+# the checked impact map adds shared-contract and reverse-dependent selectors to each direct set.
+test-closure closure:
+    ./scripts/hermetic.sh uv run python scripts/test_closures.py run {{quote(closure)}}
+
+test-closure-check:
+    uv run python scripts/test_closures.py check
+
+test-kernel:
+    just test-closure kernel
+
+test-module module:
+    just test-closure {{quote("module." + module)}}
+
+test-adapters:
+    just test-closure adapters
+
+test-plugin plugin:
+    just test-closure {{quote("plugin." + plugin)}}
+
+test-contracts:
+    just test-closure contracts
+
+test-integration:
+    just test-closure integration
+
+test-system-smoke:
+    just test-closure system-smoke
+
 # QUARANTINE (bh-4kq1b, tracking bh-tfapu): the LAND gate's integration pass, minus one test.
 #
 # `test_host_fence_int.py::test_the_located_transport_repo_is_the_one_that_pushes` is a known
