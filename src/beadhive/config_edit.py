@@ -178,6 +178,11 @@ def _set_in(api, dotted: str, raw: str, as_json: bool, cfg, *, persist: bool, sc
             return {"ok": False, "problems": problems, "old": None, "new": None}
     if persist:
         cfg = api.load_fleet() if scope == api.SCOPE_FLEET else api.load_host()
+        try:
+            api._assert_mutable_schema_version(cfg, scope)
+        except api.ConfigError as exc:
+            problems.append(api._problem("error", str(exc)))
+            return {"ok": False, "problems": problems, "old": None, "new": None}
     node = cfg
     for index, part in enumerate(parts[:-1]):
         child = node.get(part)
@@ -212,6 +217,15 @@ def _unset_in(api, dotted: str, cfg, *, persist: bool, scope: str) -> dict:
     parts = api._split_key(dotted)
     if persist:
         cfg = api.load_fleet() if scope == api.SCOPE_FLEET else api.load_host()
+        try:
+            api._assert_mutable_schema_version(cfg, scope)
+        except api.ConfigError as exc:
+            return {
+                "ok": False,
+                "problems": [api._problem("error", str(exc))],
+                "old": None,
+                "new": None,
+            }
     chain = [cfg]
     node = cfg
     for part in parts[:-1]:

@@ -104,7 +104,10 @@ The current compatibility surfaces deliberately have different jobs and must not
 - a schema version newer than `SCHEMA_VERSION` is an error at every boundary that claims a typed,
   validated view. Such a document may be loaded only as an opaque round-trip document; it is not
   resolved, migrated, composed, or mutated by the new module. The existing proof is
-  `test_config_validate.py::test_newer_schema_version_is_an_error`.
+  `test_config_validate.py::test_newer_schema_version_is_an_error`. The boundary validates the
+  raw YAML value before Pydantic coercion: only an actual integer is a valid version shape
+  (`bool`, float, string, null, sequence, and mapping values refuse), and a valid integer newer
+  than the supported version refuses as future.
 
 Load and validation therefore remain separate ports. Unknown core keys never become active typed
 settings merely because the round-trip store retained them. A failed validation or migration
@@ -235,6 +238,15 @@ the explicit compatibility section. Contract tests cover `git_workspace`, `orca`
 `work.validate` field alias, the `beads` compatibility section, and unknown-section warn-and-write
 behavior. `bh-1h9h` remains open until this independently reviewed change merges; it is then closed
 as satisfied by the merged implementation rather than by a competing derivation.
+
+Implementation note (`bh-18hud.3`): `beadhive.modules.config.api` is the bounded resolution and
+persistence surface. Its pure resolver accepts explicit fleet, host, hive, environment, and
+runtime inputs and returns the canonical typed model plus value-free provenance. Document
+load/save/edit protocols live under `modules.config.domain`; the round-trip YAML adapter owns
+operation-scoped parsers, thread/process transaction locks, mode-preserving fsync/replace writes,
+and interruption cleanup. The versioned migration service depends only on document ports. The
+three legacy collaborator modules remain patch-compatible facades recorded in the import-boundary
+ledger until `bh-18hud.5` and `bh-18hud.6` satisfy their removal gates.
 
 The remaining implementation is deliberately split:
 
