@@ -13,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+from copy import deepcopy
 from pathlib import Path
 
 from click import Context
@@ -599,11 +600,22 @@ def test_v12_passes_the_real_compatibility_cli_against_an_isolated_v11_base(
     scripts.mkdir()
     shutil.copy2(ROOT / "scripts" / "check_wire_schema_compat.py", scripts)
 
-    candidate_index = (wire / "index.json").read_bytes()
+    repository_index = json.loads((wire / "index.json").read_text())
+    candidate_index = {
+        **repository_index,
+        "latest": "1.2.0",
+        "releases": [
+            row
+            for row in repository_index["releases"]
+            if row["version"] in {"1.0.0", "1.1.0", "1.2.0"}
+        ],
+    }
     candidate_v12 = tmp_path / "candidate-v1.2.0"
     shutil.copytree(wire / "v1.2.0", candidate_v12)
-    shutil.rmtree(wire / "v1.2.0")
-    baseline_index = json.loads(candidate_index)
+    for row in repository_index["releases"]:
+        if row["version"] not in {"1.0.0", "1.1.0"}:
+            shutil.rmtree(wire / Path(row["manifest"]).parent)
+    baseline_index = deepcopy(candidate_index)
     baseline_index["latest"] = "1.1.0"
     baseline_index["releases"] = [
         row for row in baseline_index["releases"] if row["version"] != "1.2.0"
@@ -617,7 +629,7 @@ def test_v12_passes_the_real_compatibility_cli_against_an_isolated_v11_base(
     subprocess.run(["git", "commit", "-qm", "v1.1 integration base"], cwd=repo, check=True)
     subprocess.run(["git", "branch", "integration-base"], cwd=repo, check=True)
 
-    (wire / "index.json").write_bytes(candidate_index)
+    (wire / "index.json").write_text(json.dumps(candidate_index, indent=2) + "\n")
     shutil.copytree(candidate_v12, wire / "v1.2.0")
     env = {**os.environ, "BH_WIRE_SCHEMA_BASE_REF": "integration-base"}
     result = subprocess.run(
