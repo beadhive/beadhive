@@ -2080,6 +2080,7 @@
         },
         "mcp": {
           "allowlisted": true,
+          "divergence": "doctor is the established singleton diagnostic resource",
           "granularity": {
             "mode": "fine",
             "reason": null
@@ -11654,12 +11655,10 @@
             "prompt_seams": [],
             "reason": null
           },
-          "parameter_map": {
-            "issue_type": "type_"
-          },
+          "parameter_map": {},
           "parameters": [
             "bead",
-            "issue_type",
+            "type_",
             "priority",
             "as_",
             "hive"
@@ -13739,13 +13738,11 @@
             "prompt_seams": [],
             "reason": null
           },
-          "parameter_map": {
-            "json_out": "as_json"
-          },
+          "parameter_map": {},
           "parameters": [
             "bead",
             "view",
-            "json_out",
+            "as_json",
             "hive"
           ],
           "path": "work show",

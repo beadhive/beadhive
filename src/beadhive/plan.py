@@ -20,7 +20,7 @@ from pathlib import Path
 
 import typer
 
-from . import adopt, bd, complexity, config, guard, molecule, otel, registry, state, validate
+from . import adopt, bd, complexity, config, guard, molecule, registry, state, validate
 from .identity import resolve_actor, workspace_identity
 
 app = typer.Typer(no_args_is_help=True, help="Plan a molecule → swarm (planning plane).")
@@ -988,8 +988,6 @@ def enforce_epic_conventions(epic_id: str, cfg, cwd, *, action: str) -> None:
 # ---- verbs ------------------------------------------------------------------
 
 
-@app.command("file")
-@otel.trace_verb("plan.file")
 def file(
     spec: str = typer.Argument(..., metavar="<spec>", help="molecule spec YAML"),
     dry_run: bool = typer.Option(False, "--dry-run", help="preview only; create nothing"),
@@ -1043,8 +1041,6 @@ def file(
         _save_spec(data, save)
 
 
-@app.command("adopt")
-@otel.trace_verb("plan.adopt")
 def adopt_cmd(
     beads: list[str] = _ADOPT_BEADS,
     out: str = typer.Option(
@@ -1092,8 +1088,6 @@ def adopt_cmd(
         molecule._yaml.dump(frame, sys.stdout)
 
 
-@app.command("check")
-@otel.trace_verb("plan.check")
 def check(
     ref: str = typer.Argument(..., metavar="<spec|epic>", help="spec YAML path OR filed epic id"),
     as_json: bool = typer.Option(
@@ -1161,8 +1155,6 @@ def check(
     typer.echo("✓ valid")
 
 
-@app.command("verify")
-@otel.trace_verb("plan.verify")
 def verify(
     epic: str = typer.Argument(..., metavar="<epic>", help="filed epic id to verify"),
     hive: str = _HIVE,
@@ -1198,8 +1190,6 @@ def verify(
     typer.echo(f"✓ verified {epic}: molecule conventions satisfied{stub_note}")
 
 
-@app.command("approve")
-@otel.trace_verb("plan.approve")
 def approve(
     epic: str = typer.Argument(..., metavar="<epic>", help="epic id whose kickoff to approve"),
     hive: str = _HIVE,
@@ -1262,8 +1252,6 @@ def approve(
     typer.echo(f"✓ approved {epic}: {len(open_gates)} gate(s) resolved, kickoff=approved")
 
 
-@app.command("show")
-@otel.trace_verb("plan.show")
 def show(
     ref: str = typer.Argument(..., metavar="<ref>", help="spec file path OR filed epic id"),
     hive: str = _HIVE,
@@ -1292,8 +1280,6 @@ def show(
         _render_from_epic(ref, cwd)
 
 
-@app.command("status")
-@otel.trace_verb("plan.status")
 def status(
     epic: str | None = typer.Argument(
         None, metavar="[<epic>]", help="epic id (omit for all swarms)"
@@ -1350,6 +1336,30 @@ def status(
 # plan_repair imports `plan` function-locally only, so this bottom import is cycle-safe in
 # either import order; it lives in its own module to respect plan.py's size budget (bh-62rm).
 
-from . import plan_repair as _plan_repair  # noqa: E402
+from . import plan_repair as _plan_repair  # noqa: E402, I001
+from .cli_projection import (  # noqa: E402, I001
+    generated_callbacks as _generated_cli_callbacks,
+    project_cli_group as _project_cli_group,
+)
 
-app.command("repair")(_plan_repair.repair)
+CLI_HANDLERS = {
+    "plan.file": file,
+    "plan.adopt": adopt_cmd,
+    "plan.check": check,
+    "plan.verify": verify,
+    "plan.approve": approve,
+    "plan.show": show,
+    "plan.status": status,
+    "plan.repair": _plan_repair.repair,
+}
+CLI_PROJECTION = _project_cli_group(app, "plan", CLI_HANDLERS)
+_CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)
+
+file = _CLI_CALLBACKS["plan.file"]
+adopt_cmd = _CLI_CALLBACKS["plan.adopt"]
+check = _CLI_CALLBACKS["plan.check"]
+verify = _CLI_CALLBACKS["plan.verify"]
+approve = _CLI_CALLBACKS["plan.approve"]
+show = _CLI_CALLBACKS["plan.show"]
+status = _CLI_CALLBACKS["plan.status"]
+_plan_repair.repair = _CLI_CALLBACKS["plan.repair"]

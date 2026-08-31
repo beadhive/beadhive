@@ -207,7 +207,7 @@ toolchain exec|hive:string:o
 toolchain list|hive:string:o,as_json:boolean:o
 toolchain show|name:string:r,hive:string:o,as_json:boolean:o
 work abandon|bead:string:r,hive:string:o,rm:boolean:o
-work accept|bead:string:r,issue_type:string:o,priority:string:o,as_:string:o,hive:string:o
+work accept|bead:string:r,type_:string:o,priority:string:o,as_:string:o,hive:string:o
 work approve|bead:string:r,as_:string:o,hive:string:o
 work artifacts-uploaded|run_id:string:r,hive:string:o
 work assign|bead:string:r,to:string:r,as_:string:o,hive:string:o,preview:boolean:o,as_json:boolean:o
@@ -232,7 +232,7 @@ work reroute|bead:string:r,to:string:o,super_:string:o,as_:string:o,hive:string:
 work resume|bead:string:r,as_:string:o,hive:string:o
 work review|bead:string:r,run_validate:boolean:o,demo:boolean:o,fresh:boolean:o,view:array:o,hive:string:o
 work schedule|epic:string:r,hive:string:o,as_json:boolean:o
-work show|bead:string:r,view:array:o,json_out:boolean:o,hive:string:o
+work show|bead:string:r,view:array:o,as_json:boolean:o,hive:string:o
 work start|epic:string:r,as_:string:o,hive:string:o
 work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o
 worktree add|hive:string:o,bead:string:o,branch:string:o,dry_run:boolean:o,as_json:boolean:o
@@ -404,8 +404,6 @@ _CLI_PARAMETER_MAP = {
     "plugin hitch up": {"explain": "dry_run"},
     "report": {"report_type": "type_", "as_actor": "as_"},
     "role": {"explain": "dry_run"},
-    "work accept": {"issue_type": "type_"},
-    "work show": {"json_out": "as_json"},
 }
 
 _PASSTHROUGH_PATHS = {
@@ -520,6 +518,7 @@ _MCP_RESOURCE_DIVERGENCE = {
     "alerts.show": "alerts is the established singleton collection resource",
     "config.get": "a dotted config key is addressed directly under the config resource",
     "config.show": "the root config resource is the established collection representation",
+    "doctor": "doctor is the established singleton diagnostic resource",
     "label.validate": "the resource names the validation result rather than the CLI verb",
     "work.intake-dupes": "the cheap duplicate view is nested under the intake collection",
     "plan.status": "the established template identifies a plan directly by reference",
