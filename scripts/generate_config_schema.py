@@ -8,6 +8,7 @@ from pathlib import Path
 
 from beadhive.modules.config.application.schema_artifacts import (
     generate_config_json_schema_bytes,
+    plugin_fragment_artifacts,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -18,12 +19,27 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true", help="refuse checked-artifact drift")
     args = parser.parse_args()
-    expected = generate_config_json_schema_bytes()
+    artifacts = [(ARTIFACT, generate_config_json_schema_bytes())]
+    artifacts.extend(
+        (
+            ROOT
+            / "docs/schemas/wire/v1.4.0"
+            / f"plugin-config-{fragment.plugin_id}-v1.schema.json",
+            payload,
+        )
+        for fragment, payload in plugin_fragment_artifacts()
+    )
     if args.check:
-        if not ARTIFACT.is_file() or ARTIFACT.read_bytes() != expected:
-            parser.error(f"{ARTIFACT.relative_to(ROOT)} is stale; regenerate it")
+        stale = [
+            path.relative_to(ROOT)
+            for path, expected in artifacts
+            if not path.is_file() or path.read_bytes() != expected
+        ]
+        if stale:
+            parser.error(f"checked config artifacts are stale: {', '.join(map(str, stale))}")
         return 0
-    ARTIFACT.write_bytes(expected)
+    for path, expected in artifacts:
+        path.write_bytes(expected)
     return 0
 
 

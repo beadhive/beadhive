@@ -6,6 +6,12 @@ import json
 from typing import Any
 
 from ..contracts import SCHEMA_VERSION, BeadhiveConfig, iter_schema_fields
+from .plugin_fragments import (
+    PluginConfigFragment,
+    builtin_plugin_fragments,
+    compose_config_json_schema,
+    fragment_schema_bytes,
+)
 
 CONFIG_SCHEMA_ARTIFACT_ID = "urn:beadhive:wire-schema:config:1"
 CONFIG_SCHEMA_ARTIFACT_VERSION = SCHEMA_VERSION
@@ -17,6 +23,7 @@ def generate_config_json_schema() -> dict[str, Any]:
     """Return the official schema without reading configuration or touching external state."""
 
     schema = BeadhiveConfig.model_json_schema(by_alias=True, mode="validation")
+    schema = compose_config_json_schema(schema)
     schema["$id"] = CONFIG_SCHEMA_ARTIFACT_ID
     schema["$schema"] = JSON_SCHEMA_DRAFT
     schema["version"] = CONFIG_SCHEMA_ARTIFACT_VERSION
@@ -35,6 +42,14 @@ def generate_config_json_schema_bytes() -> bytes:
         )
         + "\n"
     ).encode()
+
+
+def plugin_fragment_artifacts() -> tuple[tuple[PluginConfigFragment, bytes], ...]:
+    """Published fragment inventory in deterministic namespace order."""
+
+    return tuple(
+        (fragment, fragment_schema_bytes(fragment)) for fragment in builtin_plugin_fragments()
+    )
 
 
 def legacy_schema_rows() -> list[dict[str, str]]:
@@ -59,4 +74,5 @@ __all__ = (
     "generate_config_json_schema",
     "generate_config_json_schema_bytes",
     "legacy_schema_rows",
+    "plugin_fragment_artifacts",
 )

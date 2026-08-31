@@ -65,6 +65,7 @@ tests = [
   "tests/unit/modules/config/test_migrations.py",
   "tests/unit/modules/config/test_resolution.py",
   "tests/unit/modules/config/test_schema_artifacts.py",
+  "tests/unit/modules/config/test_plugin_fragments.py",
   "tests/unit/modules/config/test_yaml_store.py",
 ]
 shared_contracts = ["contracts"]

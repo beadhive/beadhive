@@ -1710,6 +1710,203 @@
     "passthrough": {
       "$ref": "#/$defs/PassthroughConfig"
     },
+    "plugins": {
+      "additionalProperties": true,
+      "description": "Plugin-owned configuration fragments retained independently of activation.",
+      "properties": {
+        "herdr": {
+          "$id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Optional Herdr agent-pane defaults.\n\nHerdr, rather than Beadhive, owns the installed agent-kind vocabulary.  This\nschema consequently validates only that an operator supplied a non-empty\nstring; the Herdr launch boundary checks it against the live supported list.",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Preferred Herdr agent kind (for example claude or codex). The installed Herdr CLI validates supported values when a pane is launched.",
+              "title": "Kind"
+            }
+          },
+          "title": "HerdrConfig",
+          "type": "object",
+          "version": 1
+        },
+        "hitch": {
+          "$id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Optional integration with agent-hitch (docs/design/managed-harness-config-adr.md,\nAmendment 2) — resolves a seat's Hitch Pack profile into a Config Directory and launches a\nharness against it via `bh plugin hitch up <target> <profile>`.\n\nNo AND-gate on another plugin (unlike orca, which requires git-workspace because it\nregisters git-workspace's own clones): hitch shares no data or state with git-workspace /\norca / observaloop, so it is independently enable-able.",
+          "properties": {
+            "command": {
+              "default": "hitch",
+              "description": "Override the hitch CLI command/path.",
+              "title": "Command",
+              "type": "string"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Enable the hitch launch integration.",
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "repo": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Path to the agent-hitch checkout providing profiles/local.yaml + catalogs/local.yaml + packs/. Required to actually launch.",
+              "title": "Repo"
+            },
+            "root": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Persistent Config Directory root (ephemeral=false only); default ~/.beadhive/hitch.",
+              "title": "Root"
+            }
+          },
+          "title": "HitchConfig",
+          "type": "object",
+          "version": 1
+        },
+        "observaloop": {
+          "$id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Observaloop integration — telemetry routing + per-hive profile management. Requires\notel.enabled: true; no-op otherwise.",
+          "properties": {
+            "command": {
+              "default": "observaloop",
+              "description": "Override the observaloop CLI command.",
+              "title": "Command",
+              "type": "string"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Enable observaloop routing (requires otel.enabled).",
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "per_worktree_container": {
+              "default": false,
+              "description": "Reserved for Mode-2 (one container per worktree); not yet active.",
+              "title": "Per Worktree Container",
+              "type": "boolean"
+            },
+            "profile": {
+              "default": "",
+              "description": "Observaloop profile stamped onto the Resource (BH_OBSERVALOOP_PROFILE wins).",
+              "title": "Profile",
+              "type": "string"
+            }
+          },
+          "title": "ObservaloopConfig",
+          "type": "object",
+          "version": 1
+        },
+        "orca": {
+          "$defs": {
+            "OrcaWorktreesConfig": {
+              "additionalProperties": false,
+              "description": "``orca.worktrees`` in its expanded (mapping) form.",
+              "properties": {
+                "enabled": {
+                  "default": false,
+                  "description": "Whether orca worktree delegation is flagged on.",
+                  "title": "Enabled",
+                  "type": "boolean"
+                },
+                "fallback": {
+                  "default": false,
+                  "description": "Whether orca falls back gracefully when its runtime is down.",
+                  "title": "Fallback",
+                  "type": "boolean"
+                }
+              },
+              "title": "OrcaWorktreesConfig",
+              "type": "object"
+            }
+          },
+          "$id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "orca — repo registry integration (first plugin).",
+          "properties": {
+            "data_path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Path to orca's on-disk state (orca-data.json).",
+              "title": "Data Path"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Whether orca (repo registry integration) is on.",
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "worktrees": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "$ref": "#/$defs/OrcaWorktreesConfig"
+                }
+              ],
+              "default": false,
+              "description": "Bare bool, or {enabled, fallback} for the expanded form.",
+              "title": "Worktrees"
+            }
+          },
+          "title": "OrcaConfig",
+          "type": "object",
+          "version": 1
+        },
+        "repowise": {
+          "$id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "repowise — optional local codebase index integration.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Enable the repowise index integration.",
+              "title": "Enabled",
+              "type": "boolean"
+            }
+          },
+          "title": "RepowiseConfig",
+          "type": "object",
+          "version": 1
+        }
+      },
+      "type": "object"
+    },
     "providers": {
       "description": "Recognized provider labels (git-workspace auth/fetch mechanisms).",
       "items": {
