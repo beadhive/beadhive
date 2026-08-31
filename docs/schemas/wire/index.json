@@ -1,0 +1,11 @@
+{
+  "format_version": 1,
+  "latest": "1.0.0",
+  "releases": [
+    {
+      "version": "1.0.0",
+      "major": 1,
+      "manifest": "v1.0.0/release.json"
+    }
+  ]
+}
