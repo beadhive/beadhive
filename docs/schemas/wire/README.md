@@ -17,3 +17,13 @@ do not redesign the established status/survey emitters. The lifecycle schemas pr
 human text alongside structured state. The control-plane schemas preserve the current
 `@beadhive/factory-contract` field spellings and publish shared version-first decoder fixtures in
 `conformance.json`.
+
+Release 1.2.0 introduces `operation-catalog-v1.json`, generated from
+`beadhive.operation_catalog`, the authoritative declaration beside the application/core layer.
+The catalog instance (`urn:beadhive:wire-catalog:operations:1`) and its validation schema
+(`urn:beadhive:wire-schema:operation-catalog:1`) are distinct manifest artifacts. The declaration
+records operation shape and projection policy only: it contains no handler references and is never
+a runtime service locator. Every CLI/MCP projection declares its granularity, progress transport,
+and interactivity policy; prompt-capable CLI projections name both the live prompt seam and their
+non-interactive guard, while MCP projections never prompt. Re-render it with
+`uv run python scripts/render_operation_catalog.py`; catalog drift is checked in tests.
