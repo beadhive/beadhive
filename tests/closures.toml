@@ -33,6 +33,21 @@ reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_host_daemon.py"]
 
 [[closures]]
+id = "kernel.plugins"
+kind = "kernel"
+status = "present"
+owner_path = "src/beadhive/kernel/plugins"
+source_paths = ["src/beadhive/kernel/plugins/**/*.py"]
+tests = [
+  "tests/unit/kernel/plugins/test_binding.py",
+  "tests/unit/kernel/plugins/test_discovery.py",
+]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/contracts/test_plugin_discovery_contract.py"]
+reverse_dependencies = []
+reverse_dependency_tests = []
+
+[[closures]]
 id = "module.agents"
 kind = "module"
 status = "absent"
