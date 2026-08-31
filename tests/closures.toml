@@ -17,6 +17,22 @@ reverse_dependencies = ["adapters"]
 reverse_dependency_tests = ["tests/test_cli_projection.py", "tests/test_mcp_catalog_projection.py"]
 
 [[closures]]
+id = "kernel.lifecycle"
+kind = "kernel"
+status = "present"
+owner_path = "src/beadhive/kernel/lifecycle"
+source_paths = ["src/beadhive/kernel/lifecycle/**/*.py"]
+tests = [
+  "tests/unit/kernel/lifecycle/test_contracts.py",
+  "tests/unit/kernel/lifecycle/test_dispatcher.py",
+  "tests/unit/kernel/lifecycle/test_independence.py",
+]
+shared_contracts = []
+shared_contract_tests = []
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_host_daemon.py"]
+
+[[closures]]
 id = "module.agents"
 kind = "module"
 status = "absent"
