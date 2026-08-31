@@ -1,0 +1,1 @@
+"""Pure configuration application services."""

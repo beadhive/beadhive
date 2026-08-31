@@ -6,7 +6,7 @@
 # just a label edit).
 
 # Config schema version this file was written for (see BeadhiveConfig / SCHEMA_VERSION in
-# src/beadhive/config_schema.py). Only a breaking change (rename/removal/type change) bumps
+# src/beadhive/modules/config/contracts.py). Only a breaking change (rename/removal/type change) bumps
 # this; don't hand-edit it down.
 schema_version: 1
 

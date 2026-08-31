@@ -57,9 +57,17 @@ source_paths = ["src/beadhive/modules/agents/**/*.py"]
 [[closures]]
 id = "module.config"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/config"
 source_paths = ["src/beadhive/modules/config/**/*.py"]
+tests = [
+  "tests/unit/modules/config/test_config_contracts.py",
+  "tests/unit/modules/config/test_schema_artifacts.py",
+]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/contracts/test_config_contract_compatibility.py"]
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_config_schema.py", "tests/test_config_validate.py", "tests/test_config_dotted.py"]
 
 [[closures]]
 id = "module.hives"

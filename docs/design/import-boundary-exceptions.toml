@@ -757,6 +757,55 @@ introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
 last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
 expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
 
+[[boundary_exception]]
+id = "boundary-config-complexity-tier"
+status = "active"
+importer = "beadhive.modules.config.contracts"
+importer_path = "src/beadhive/modules/config/contracts.py"
+imported_module = "beadhive.complexity"
+symbol = "beadhive.complexity.ComplexityTier"
+target_owner_package = "shared complexity contracts"
+successor = "bh-inqwc"
+reason = "RoutingTierConfig preserves the existing public ComplexityTier identity while configuration contracts move inward; duplicating the enum would split serialized and runtime type identity."
+consumer_inventory = { production = "RoutingTierConfig validation and serialization", tests = "tests/unit/modules/config/test_config_contracts.py; tests/test_config_routing.py", docs = "configuration ownership ADR and this ledger", external = "existing config_schema consumers receive the same forwarded type identity" }
+executable_test = "tests/test_config_routing.py; tests/test_import_boundaries.py"
+test_closure = "module.config; just architecture-check; just check"
+introduced_commit = "bh-18hud.2"
+last_verified_commit = "bh-18hud.2"
+expiry_trigger = "Move ComplexityTier to an inward shared contract and forward beadhive.complexity without changing its public identity."
+
+[[boundary_exception]]
+id = "boundary-config-complexity-names"
+status = "active"
+importer = "beadhive.modules.config.contracts"
+importer_path = "src/beadhive/modules/config/contracts.py"
+imported_module = "beadhive.complexity"
+symbol = "beadhive.complexity.tier_names"
+target_owner_package = "shared complexity contracts"
+successor = "bh-inqwc"
+reason = "RoutingTierConfig preserves the established validation diagnostic from the canonical complexity vocabulary rather than restating its ordered names."
+consumer_inventory = { production = "RoutingTierConfig validation diagnostics", tests = "tests/unit/modules/config/test_config_contracts.py; tests/test_config_routing.py", docs = "configuration ownership ADR and this ledger", external = "existing config_schema consumers receive unchanged diagnostics" }
+executable_test = "tests/test_config_routing.py; tests/test_import_boundaries.py"
+test_closure = "module.config; just architecture-check; just check"
+introduced_commit = "bh-18hud.2"
+last_verified_commit = "bh-18hud.2"
+expiry_trigger = "Move tier_names with ComplexityTier to an inward shared contract and forward beadhive.complexity."
+
+[[facade]]
+id = "facade-config-schema"
+status = "active"
+facade_path = "src/beadhive/config_schema.py"
+preserved_symbols = ["AlertsConfig", "ArchiveConfig", "BackupConfig", "BeadhiveConfig", "ClaudeConfig", "ConflictConfig", "CONFIG_SECTION_COMPATIBILITY_ALIASES", "DevIdentity", "DimensionConfig", "DispatchConfig", "DoltConfig", "ExcludeConfig", "GenaiConfig", "GitWorkspaceConfig", "HerdrConfig", "HitchConfig", "HostConfig", "HostDispatchConfig", "HostLeaseConfig", "HqConfig", "IdentityConfig", "LogConfig", "ManagedRepoEntry", "MetadataConfig", "ObservaloopConfig", "OrcaConfig", "OrcaWorktreesConfig", "OrgEntry", "OtelConfig", "PassthroughConfig", "ReleaseConfig", "RepowiseConfig", "RoutingConfig", "RoutingTierConfig", "SCHEMA_VERSION", "SUBSET_PLACEHOLDER", "SchemaField", "WorkConfig", "WorktreeInitRule", "WorktreesConfig", "field_default", "iter_schema_fields", "known_keys", "known_sections", "literal_choices", "suggest_key", "_DEFAULT_WORKTREE_INIT"]
+target_owner_package = "modules/config/contracts"
+successor = "bh-18hud.5"
+reason = "Preserve public typed-setting imports and the characterized private default patch seam while callers migrate to the canonical contract module."
+consumer_inventory = { production = "config validation, routing, partition, editing, CLI and typed settings callers", tests = "tests/contracts/test_config_contract_compatibility.py plus config reverse-dependent closure", docs = "configuration ownership ADR migration ledger", external = "existing beadhive.config_schema consumers; not separately enumerable" }
+executable_test = "tests/contracts/test_config_contract_compatibility.py"
+test_closure = "module.config; just check"
+introduced_commit = "bh-18hud.2"
+last_verified_commit = "bh-18hud.2"
+expiry_trigger = "bh-18hud.5 produces an empty caller and monkeypatch ledger and bh-18hud.6 proves the replacement closure."
+
 [[facade]]
 id = "facade-work"
 status = "active"
@@ -801,5 +850,3 @@ test_closure = "just check"
 introduced_commit = "712ac29580d1f1873380bdfad80c35e067c33721"
 last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
 expiry_trigger = "Completion of the worktree capability migration and removal of every inventoried consumer."
-
-
