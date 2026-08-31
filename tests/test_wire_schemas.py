@@ -26,6 +26,7 @@ sys.modules[_SPEC.name] = _COMPAT
 _SPEC.loader.exec_module(_COMPAT)
 FilesystemReader = _COMPAT.FilesystemReader
 compatibility_errors = _COMPAT.compatibility_errors
+catalog_compatibility_errors = _COMPAT.catalog_compatibility_errors
 compare_releases = _COMPAT.compare_releases
 load_repository = _COMPAT.load_repository
 
@@ -52,6 +53,14 @@ def test_release_manifest_schemas_and_conformance_fixtures_are_valid() -> None:
         "urn:beadhive:wire-schema:operation-catalog:1",
         "urn:beadhive:wire-catalog:operations:1",
     }
+    assert release.artifacts["urn:beadhive:wire-schema:operation-catalog:1"].artifact_type == (
+        "json-schema"
+    )
+    assert release.artifacts["urn:beadhive:wire-catalog:operations:1"].artifact_type == (
+        "operation-catalog-data"
+    )
+    with pytest.raises(TypeError, match="not JSON Schema"):
+        _ = release.artifacts["urn:beadhive:wire-catalog:operations:1"].schema
     mismatch = cases["factory-snapshot-version-mismatch-wins"]
     assert mismatch["input"]["schemaVersion"] == 2
     assert mismatch["input"]["hives"] == "hostile"
@@ -98,6 +107,87 @@ def test_command_schemas_accept_the_existing_emitted_shapes() -> None:
 
     Draft202012Validator(_schema("bh-hive-status-v1.schema.json")).validate(status)
     Draft202012Validator(_schema("bh-hive-survey-v1.schema.json")).validate(survey)
+
+
+def _catalog() -> dict:
+    return _schema("operation-catalog-v1.json")
+
+
+def _operation(catalog: dict, name: str) -> dict:
+    return next(operation for operation in catalog["operations"] if operation["name"] == name)
+
+
+def test_catalog_compatibility_allows_a_unique_additive_operation() -> None:
+    old = _catalog()
+    candidate = deepcopy(old)
+    candidate["catalog_version"] = "1.1.0"
+    added = deepcopy(_operation(candidate, "probe.health"))
+    added["name"] = "probe.version"
+    added["surfaces"]["mcp"]["resource"] = "beadhive://probe/version"
+    candidate["operations"].append(added)
+
+    assert catalog_compatibility_errors(old, candidate) == []
+
+
+def test_catalog_compatibility_rejects_duplicate_operation_and_projection_identities() -> None:
+    old = _catalog()
+    duplicate_operation = deepcopy(old)
+    duplicate_operation["operations"].append(deepcopy(_operation(old, "probe.health")))
+    assert any(
+        "duplicate canonical operation identity 'probe.health'" in error
+        for error in catalog_compatibility_errors(old, duplicate_operation)
+    )
+
+    duplicate_projection = deepcopy(old)
+    added = deepcopy(_operation(duplicate_projection, "probe.health"))
+    added["name"] = "probe.version"
+    duplicate_projection["operations"].append(added)
+    assert any(
+        "duplicate MCP resource projection 'beadhive://probe/health'" in error
+        for error in catalog_compatibility_errors(old, duplicate_projection)
+    )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "diagnostic"),
+    [
+        ("remove", "$.operations[name='probe.health']: canonical operation was removed"),
+        ("identity", "$.operations[name='probe.health']: canonical operation was removed"),
+        (
+            "signature",
+            "$.operations[name='config.set'].parameters[0].schema.type: value changed",
+        ),
+        (
+            "result",
+            "$.operations[name='probe.health'].result_schema: value changed",
+        ),
+        (
+            "projection",
+            "$.operations[name='probe.health'].surfaces.mcp.resource: value changed",
+        ),
+        ("policy", "$.policy.catalog_role: value changed"),
+    ],
+)
+def test_catalog_compatibility_rejects_existing_contract_changes(
+    mutation: str, diagnostic: str
+) -> None:
+    old = _catalog()
+    candidate = deepcopy(old)
+    probe = _operation(candidate, "probe.health")
+    if mutation == "remove":
+        candidate["operations"].remove(probe)
+    elif mutation == "identity":
+        probe["name"] = "probe.status"
+    elif mutation == "signature":
+        _operation(candidate, "config.set")["parameters"][0]["schema"]["type"] = "integer"
+    elif mutation == "result":
+        probe["result_schema"] = "urn:beadhive:wire-schema:bh.hive-status:1"
+    elif mutation == "projection":
+        probe["surfaces"]["mcp"]["resource"] = "beadhive://probe/status"
+    else:
+        candidate["policy"]["catalog_role"] = "runtime dispatcher"
+
+    assert any(diagnostic in error for error in catalog_compatibility_errors(old, candidate))
 
 
 def test_hive_info_preserves_triplet_identity_without_a_derived_id() -> None:
@@ -196,7 +286,7 @@ def test_same_major_release_gate_rejects_not_constraint_mutation() -> None:
     )
     Draft202012Validator(old_artifact.schema).validate(valid_payload)
     assert list(Draft202012Validator(candidate_schema).iter_errors(valid_payload))
-    candidate_artifact = replace(old_artifact, schema=candidate_schema)
+    candidate_artifact = replace(old_artifact, document=candidate_schema)
     candidate_artifacts = dict(release.artifacts)
     candidate_artifacts[artifact_id] = candidate_artifact
     candidate_release = replace(release, version="1.0.1", artifacts=candidate_artifacts)
@@ -414,6 +504,102 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
     )
     assert "initial release validated" not in result.stdout
     assert _git(repo, "rev-parse", "baseline").stdout != _git(repo, "rev-parse", "HEAD").stdout
+
+
+def _catalog_gate_candidate(tmp_path: Path, mutation: str) -> tuple[Path, str, str]:
+    repo = tmp_path / f"catalog-gate-{mutation}"
+    wire = repo / "docs" / "schemas" / "wire"
+    shutil.copytree(ROOT / "docs" / "schemas" / "wire", wire)
+    (repo / "scripts").mkdir()
+    shutil.copy2(
+        ROOT / "scripts" / "check_wire_schema_compat.py",
+        repo / "scripts" / "check_wire_schema_compat.py",
+    )
+    _git(repo, "init", "-q")
+    _git(repo, "config", "user.name", "Catalog Gate Test")
+    _git(repo, "config", "user.email", "catalog-gate@example.invalid")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "immutable v1.2 baseline")
+    _git(repo, "branch", "baseline")
+
+    candidate_release = wire / "v1.3.0"
+    shutil.copytree(wire / "v1.2.0", candidate_release)
+    _rewrite_json(candidate_release / "release.json", release_version="1.3.0")
+    _rewrite_json(candidate_release / "conformance.json", release_version="1.3.0")
+    index = json.loads((wire / "index.json").read_text())
+    index["latest"] = "1.3.0"
+    index["releases"].append({"version": "1.3.0", "major": 1, "manifest": "v1.3.0/release.json"})
+    (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")
+
+    catalog_path = candidate_release / "operation-catalog-v1.json"
+    catalog = json.loads(catalog_path.read_text())
+    catalog["catalog_version"] = "1.1.0"
+    probe = _operation(catalog, "probe.health")
+    if mutation == "add":
+        added = deepcopy(probe)
+        added["name"] = "probe.version"
+        added["surfaces"]["mcp"]["resource"] = "beadhive://probe/version"
+        catalog["operations"].append(added)
+        diagnostic = ""
+    elif mutation == "remove":
+        catalog["operations"].remove(probe)
+        diagnostic = "$.operations[name='probe.health']: canonical operation was removed"
+    elif mutation == "identity":
+        probe["name"] = "probe.status"
+        diagnostic = "$.operations[name='probe.health']: canonical operation was removed"
+    elif mutation == "signature":
+        _operation(catalog, "config.set")["parameters"][0]["schema"]["type"] = "integer"
+        diagnostic = "$.operations[name='config.set'].parameters[0].schema.type: value changed"
+    elif mutation == "result":
+        probe["result_schema"] = "urn:beadhive:wire-schema:bh.hive-status:1"
+        diagnostic = "$.operations[name='probe.health'].result_schema: value changed"
+    elif mutation == "projection":
+        probe["surfaces"]["mcp"]["resource"] = "beadhive://probe/status"
+        diagnostic = "$.operations[name='probe.health'].surfaces.mcp.resource: value changed"
+    else:
+        catalog["policy"]["catalog_role"] = "runtime dispatcher"
+        diagnostic = "$.policy.catalog_role: value changed"
+    catalog_path.write_text(json.dumps(catalog, indent=2) + "\n")
+
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", f"candidate catalog {mutation}")
+    return repo, _git(repo, "rev-parse", "baseline").stdout.strip(), diagnostic
+
+
+def test_actual_gate_cli_allows_additive_catalog_operation(tmp_path: Path) -> None:
+    repo, baseline, _diagnostic = _catalog_gate_candidate(tmp_path, "add")
+    result = subprocess.run(
+        [sys.executable, "scripts/check_wire_schema_compat.py"],
+        cwd=repo,
+        env={**os.environ, "BH_WIRE_SCHEMA_BASE_REF": "baseline"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert baseline != _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "wire-schema-compat: 1.2.0 -> 1.3.0 is fully compatible" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "mutation", ["remove", "identity", "signature", "result", "projection", "policy"]
+)
+def test_actual_gate_cli_rejects_breaking_catalog_changes(tmp_path: Path, mutation: str) -> None:
+    repo, baseline, diagnostic = _catalog_gate_candidate(tmp_path, mutation)
+    result = subprocess.run(
+        [sys.executable, "scripts/check_wire_schema_compat.py"],
+        cwd=repo,
+        env={**os.environ, "BH_WIRE_SCHEMA_BASE_REF": "baseline"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert baseline != _git(repo, "rev-parse", "HEAD").stdout.strip()
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "urn:beadhive:wire-catalog:operations:1" in result.stderr
+    assert diagnostic in result.stderr
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
