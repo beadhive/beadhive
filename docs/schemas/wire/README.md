@@ -27,3 +27,10 @@ a runtime service locator. Every CLI/MCP projection declares its granularity, pr
 and interactivity policy; prompt-capable CLI projections name both the live prompt seam and their
 non-interactive guard, while MCP projections never prompt. Re-render it with
 `uv run python scripts/render_operation_catalog.py`; catalog drift is checked in tests.
+
+Release 1.3.0 introduces `plugin-manifest-v1.schema.json`, the language-neutral contract for
+declarative plugin identity, compatibility, capability ownership, lifecycle observation,
+configuration ownership, CLI presentation, and security prerequisites. Plugin manifests declare
+credential references and executable requirements, never credential values or executable command
+lines. The policy and discovery semantics are ratified in the
+[Plugin kernel v1 ADR](../../design/plugin-kernel-v1-adr.md).

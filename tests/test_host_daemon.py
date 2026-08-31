@@ -191,6 +191,23 @@ def test_outer_lifespan_orders_startup_and_bounded_drain_and_closes_admission():
     assert all(result.status == "completed" for result in runtime.shutdown_results)
 
 
+def test_daemon_phase_order_maps_to_the_shared_host_lifecycle_without_reordering():
+    from beadhive.kernel.lifecycle import HostLifecyclePhase
+
+    assert [phase.value for phase in host_daemon.StartupPhase] == [10, 20, 30]
+    assert {phase.lifecycle_phase for phase in host_daemon.StartupPhase} == {
+        HostLifecyclePhase.STARTUP
+    }
+    assert [phase.lifecycle_phase for phase in host_daemon.ShutdownPhase] == [
+        HostLifecyclePhase.DRAIN,
+        HostLifecyclePhase.DRAIN,
+        HostLifecyclePhase.SHUTDOWN,
+        HostLifecyclePhase.SHUTDOWN,
+        HostLifecyclePhase.SHUTDOWN,
+        HostLifecyclePhase.TELEMETRY_FLUSH,
+    ]
+
+
 def test_one_shutdown_deadline_cancels_a_slow_owner_and_skips_later_work():
     runtime = host_daemon.DaemonRuntime(shutdown_budget=0.02)
     later_called = False

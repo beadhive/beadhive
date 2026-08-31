@@ -42,6 +42,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import config
 from . import host as host_identity
+from .kernel.lifecycle import HostLifecyclePhase
 
 CONTRACT_VERSION = "bh.host-daemon/v1"
 DEFAULT_HOST = "127.0.0.1"
@@ -68,6 +69,11 @@ class StartupPhase(IntEnum):
     SECURITY = 20
     RESOURCES = 30
 
+    @property
+    def lifecycle_phase(self) -> HostLifecyclePhase:
+        """Map daemon-specific startup detail into the shared host lifecycle."""
+        return HostLifecyclePhase.STARTUP
+
 
 class ShutdownPhase(IntEnum):
     """Ordered daemon drain phases from the accepted host-daemon ADR."""
@@ -78,6 +84,15 @@ class ShutdownPhase(IntEnum):
     CANCEL_PROCESSES = 40
     CLOSE_RESOURCES = 50
     FLUSH_TELEMETRY = 60
+
+    @property
+    def lifecycle_phase(self) -> HostLifecyclePhase:
+        """Map existing drain order into the shared model without changing its values."""
+        if self <= ShutdownPhase.DRAIN_IN_FLIGHT:
+            return HostLifecyclePhase.DRAIN
+        if self is ShutdownPhase.FLUSH_TELEMETRY:
+            return HostLifecyclePhase.TELEMETRY_FLUSH
+        return HostLifecyclePhase.SHUTDOWN
 
 
 AsyncCallback = Callable[[], Awaitable[None]]

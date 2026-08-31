@@ -2547,8 +2547,12 @@ def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch)
 def _fake_plugin(
     name, *, enabled=True, wt_create=None, wt_remove=None, wt_creating=None, wt_created=None
 ):
+    # Runtime projections are manifest-authoritative.  Use the built-in IDs that actually
+    # declare the exercised capability/event while retaining ``name`` only as a case label.
+    del name
+    plugin_id = "repowise" if wt_creating is not None or wt_created is not None else "orca"
     return plugins.Plugin(
-        name=name,
+        name=plugin_id,
         cli=typer.Typer(),
         enabled=lambda cfg, entry: enabled,
         wt_create=wt_create,
@@ -2618,7 +2622,7 @@ def test_consult_wt_create_other_exception_warns_and_falls_through(monkeypatch, 
         {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
     )
     assert result == Path("/ok")  # fell through to the next plugin
-    assert "boom" in capsys.readouterr().err
+    assert "kaboom" in capsys.readouterr().err
 
 
 def test_notify_wt_created_continues_after_a_raising_plugin(monkeypatch, capsys):
@@ -2640,7 +2644,7 @@ def test_notify_wt_created_continues_after_a_raising_plugin(monkeypatch, capsys)
     )
 
     assert called == [{"main": Path("/main"), "branch": "b", "target": Path("/target")}]
-    assert "boom" in capsys.readouterr().err
+    assert "kaboom" in capsys.readouterr().err
 
 
 def test_consult_wt_remove_false_when_no_plugin_defines_hook(monkeypatch):
@@ -2756,6 +2760,59 @@ def test_do_add_notifies_before_and_after_native_create(tmp_path, monkeypatch):
         ),
         ("after", {"main": repo, "branch": branch, "target": target}),
     ]
+
+
+def test_do_add_uses_one_plugin_snapshot_across_every_create_phase(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    target = worktree.wt_dir(entry, "snapshot-1")
+    branch = "wt/bead/issue/snapshot-1"
+    predicate_calls: list[str] = []
+    source_calls: list[bool] = []
+    phase_calls: list[str] = []
+    original_source = plugins.builtin_manifest_source
+
+    def source():
+        source_calls.append(True)
+        if len(source_calls) > 1:
+            raise AssertionError("manifest source was re-evaluated within one create action")
+        return original_source()
+
+    def mutable_enabled(plugin_id):
+        def enabled(_cfg, _entry):
+            predicate_calls.append(plugin_id)
+            return predicate_calls.count(plugin_id) == 1
+
+        return enabled
+
+    def create(_cfg, _entry, **_kwargs):
+        phase_calls.append("create")
+        target.mkdir(parents=True)
+        return target
+
+    def before(_cfg, _entry, **_kwargs):
+        phase_calls.append("before")
+
+    def after(_cfg, _entry, **_kwargs):
+        phase_calls.append("after")
+
+    orca = _fake_plugin("orca", wt_create=create)
+    repowise = _fake_plugin("repowise", wt_creating=before, wt_created=after)
+    orca = plugins.Plugin(
+        **{**orca.__dict__, "enabled": mutable_enabled("orca")},
+    )
+    repowise = plugins.Plugin(
+        **{**repowise.__dict__, "enabled": mutable_enabled("repowise")},
+    )
+    monkeypatch.setattr(plugins, "registry", lambda: [orca, repowise])
+    monkeypatch.setattr(plugins, "builtin_manifest_source", source)
+    monkeypatch.setattr(worktree, "run_init", lambda *_args: None)
+    monkeypatch.setattr(worktree, "provision_observaloop", lambda *_args: None)
+
+    worktree._do_add(cfg, entry, repo, branch, target, new_branch=True)
+
+    assert phase_calls == ["before", "create", "after"]
+    assert predicate_calls == ["orca", "repowise"]
+    assert source_calls == [True]
 
 
 def test_do_add_new_branch_falls_through_to_native_when_hook_returns_none(tmp_path, monkeypatch):
