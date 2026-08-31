@@ -314,15 +314,11 @@ _forward_ready_plain = work_reads.forward_ready_plain
 _emit_start_gated_ready = work_reads.emit_start_gated_ready
 
 
-@app.command("brief")
-@otel.trace_verb("work.brief")
 def brief(bead: str = _BEAD, hive: str = _HIVE):
     """Print the bead's requirements/goals and validation command. Read-only."""
     return work_reads.brief(bead, hive)
 
 
-@app.command("readiness")
-@otel.trace_verb("work.readiness")
 def readiness(
     molecule: str = typer.Argument(
         ..., metavar="<molecule-id>", help="persistent or wisp molecule"
@@ -334,22 +330,16 @@ def readiness(
     return work_reads.readiness(molecule, hive, as_json)
 
 
-@app.command("ready", context_settings=_READ_CTX)
-@otel.trace_verb("work.ready")
 def ready(ctx: typer.Context, hive: str = _HIVE):
     """List ready work, preserving bd streams, ordering, and truncation signals."""
     return work_reads.ready(ctx, hive)
 
 
-@app.command("issue", context_settings=_READ_CTX)
-@otel.trace_verb("work.issue")
 def issue(ctx: typer.Context, bead: str = _BEAD, hive: str = _HIVE):
     """Show a single issue's fields through the stable first-class read."""
     return work_reads.issue(ctx, bead, hive)
 
 
-@app.command("list", context_settings=_READ_CTX)
-@otel.trace_verb("work.list")
 def list_(ctx: typer.Context, hive: str = _HIVE):
     """List or filter issues through the stable first-class read."""
     return work_reads.list_(ctx, hive)
@@ -371,8 +361,6 @@ _NO_DUPES = typer.Option(False, "--no-dupes", help="skip the bd find-duplicates 
 _render_disposition = work_intake.render_disposition
 
 
-@app.command("intake")
-@otel.trace_verb("work.intake")
 def intake_cmd(
     hive: str = _HIVE,
     source: str = _SOURCE,
@@ -383,8 +371,6 @@ def intake_cmd(
     return work_intake.intake(hive, source, as_json, no_dupes)
 
 
-@app.command("accept")
-@otel.trace_verb("work.accept")
 def accept_cmd(
     bead: str = _BEAD,
     issue_type: str = typer.Option("", "--type", "-t", help="set the accepted type (type-aware)"),
@@ -396,8 +382,6 @@ def accept_cmd(
     return work_intake.accept(bead, issue_type, priority, as_, hive)
 
 
-@app.command("reject")
-@otel.trace_verb("work.reject")
 def reject_cmd(
     bead: str = _BEAD,
     reason: str = typer.Option(..., "--reason", help="reporter-visible reason (recorded on close)"),
@@ -408,8 +392,6 @@ def reject_cmd(
     return work_intake.reject(bead, reason, as_, hive)
 
 
-@app.command("reroute")
-@otel.trace_verb("work.reroute")
 def reroute_cmd(
     bead: str = _BEAD,
     to: str = typer.Option("", "--to", help="re-file the report into this hive"),
@@ -421,15 +403,11 @@ def reroute_cmd(
     return work_intake.reroute(bead, to, super_, as_, hive)
 
 
-@app.command("promote")
-@otel.trace_verb("work.promote")
 def promote_cmd(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Promote an intake report to the planner."""
     return work_intake.promote(bead, as_, hive)
 
 
-@app.command("assign")
-@otel.trace_verb("work.assign")
 def assign(
     bead: str = _BEAD,
     to: str = typer.Option(..., "--to", help="dev/<name> to assign + provision for"),
@@ -477,8 +455,6 @@ def _issue_claim(cfg, entry, bead, actor, target, hive="") -> None:
     )
 
 
-@app.command("claim")
-@otel.trace_verb("work.claim")
 def claim(
     bead: str = _BEAD_OPT,
     as_: str = _AS,
@@ -671,8 +647,6 @@ def _provision_claim(cfg, hive, main, bead, actor):
     )
 
 
-@app.command("next")
-@otel.trace_verb("work.next")
 def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False, epic: _NextEpic = ""):
     """Atomically take the next ready bead: pick, claim, re-verify — retrying the next candidate
     when another worker won the race. The safe entry point for an unattended driver.
@@ -756,8 +730,6 @@ _LoopBamlRequired = Annotated[
 ]
 
 
-@app.command("loop")
-@otel.trace_verb("work.loop")
 def loop(
     epic: str = typer.Argument(..., help="the epic whose molecule this loop drives"),
     as_: str = _AS,
@@ -815,8 +787,6 @@ def loop(
     )
 
 
-@app.command("check")
-@otel.trace_verb("work.check")
 def check(bead: str = _BEAD, hive: str = _HIVE):
     """Run the hive's validation command against the worktree; propagate its exit code.
 
@@ -830,8 +800,6 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     return work_submission.impl_check(sys.modules[__name__], bead, hive)
 
 
-@app.command("artifacts-uploaded")
-@otel.trace_verb("work.artifacts-uploaded")
 def artifacts_uploaded(
     run_id: str = typer.Argument(..., metavar="<run-id>", help="uploaded validation run id"),
     hive: str = _HIVE,
@@ -956,8 +924,6 @@ def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
     return work_dispatch.impl__apply_start_gating(sys.modules[__name__], payload, beads, cfg, entry)
 
 
-@app.command("schedule")
-@otel.trace_verb("work.schedule")
 def schedule(
     epic: str = typer.Argument(..., metavar="<epic>", help="molecule epic id"),
     hive: str = _HIVE,
@@ -977,8 +943,6 @@ def _guard_fork_remote(entry, remote) -> None:
     return work_submission.impl__guard_fork_remote(sys.modules[__name__], entry, remote)
 
 
-@app.command("submit")
-@otel.trace_verb("work.submit")
 def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str = _GROUP):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
@@ -1092,8 +1056,6 @@ def _guard_self_review(cfg, entry, data, actor, bead) -> None:
     )
 
 
-@app.command("approve")
-@otel.trace_verb("work.approve")
 def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Reviewer/coordinator: resolve a submitted bead's HUMAN review gate through the bh
     convention layer — the first-class approve step that replaces the gated
@@ -1163,8 +1125,6 @@ def _clear_stale_review_state(bead, data, main, actor) -> None:
     )
 
 
-@app.command("bounce")
-@otel.trace_verb("work.bounce")
 def bounce(bead: str = _BEAD, message: str = _BOUNCE_MSG, as_: str = _AS, hive: str = _HIVE):
     """Reviewer: bounce a submitted bead back for changes. Resolves every OPEN review gate (so no
     orphan is left blocking a later merge while `approve` says "no open review gate"), then sets
@@ -1350,8 +1310,6 @@ def _merge_molecule(cfg, epic, hive):
     return work_merge.impl__merge_molecule(sys.modules[__name__], cfg, epic, hive)
 
 
-@app.command("start")
-@otel.trace_verb("work.start")
 def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Dispatcher entrypoint: take the seat on a kicked-off epic. Epic-only alias of `claim` —
     guards the bead is an epic, planning-approved (`bh plan approve`), and that you act as a
@@ -1395,8 +1353,6 @@ def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     )
 
 
-@app.command("finish")
-@otel.trace_verb("work.finish")
 def finish(epic: str = _BEAD, hive: str = _HIVE):
     """Coordinator/merger wrap-up: land a whole assembled molecule. Epic-only alias of
     `merge --molecule` — guards the bead is an epic, then validates the assembled `mol/<epic>`,
@@ -1405,8 +1361,6 @@ def finish(epic: str = _BEAD, hive: str = _HIVE):
     return work_merge.impl_finish(sys.modules[__name__], epic, hive)
 
 
-@app.command("land")
-@otel.trace_verb("work.land")
 def land(bead: str = _BEAD, hive: str = _HIVE):
     """Complete a `work.landing: pr` landing after GitHub merges the PR: confirm a MERGED PR
     with head `wt/bead/<type>/<id>` (`gh pr list --state merged --head …`), resolve the gh:pr
@@ -1460,8 +1414,6 @@ def _close_land_origin_reports(bead, main) -> None:
     return work_merge.impl__close_land_origin_reports(sys.modules[__name__], bead, main)
 
 
-@app.command("merge")
-@otel.trace_verb("work.merge")
 def merge(
     bead: str = _BEAD_OPT,
     hive: str = _HIVE,
@@ -1599,8 +1551,6 @@ def _merge_bead(cfg, bead, hive, rm):
     return work_merge.impl__merge_bead(sys.modules[__name__], cfg, bead, hive, rm)
 
 
-@app.command("resume")
-@otel.trace_verb("work.resume")
 def resume(
     bead: str = _BEAD,
     as_: str = _AS,
@@ -1674,8 +1624,6 @@ def _claim_residue(data) -> str:
     return "; ".join(residue)
 
 
-@app.command("abandon")
-@otel.trace_verb("work.abandon")
 def abandon(
     bead: str = _BEAD,
     hive: str = _HIVE,
@@ -1728,8 +1676,8 @@ def abandon(
 # command names stay `ws work show` / `ws work review`. Re-bound here (show = …) so existing
 # callers/tests that invoke `work.show(...)` / `work.review(...)` keep working.
 
-show = app.command("show")(otel.trace_verb("work.show")(work_show.show))
-review = app.command("review")(otel.trace_verb("work.review")(work_show.review))
+show = work_show.show
+review = work_show.review
 
 
 # ---- refine (squash local checkpoint noise) ---------------------------------
@@ -1806,8 +1754,6 @@ def _apply_refine_rebase(entry, target, branch, base, autosquash, rows, groups) 
     )
 
 
-@app.command("refine")
-@otel.trace_verb("work.refine")
 def refine(
     bead: str = _BEAD,
     plan: str = typer.Option("", "--plan", help="squash-plan JSON file or '-' for stdin"),
@@ -1822,3 +1768,83 @@ def refine(
     return work_refine.impl_refine(
         sys.modules[__name__], bead, plan, autosquash, since, dry_run, hive
     )
+
+
+# ---- catalog-derived Typer projection ---------------------------------------
+#
+# Values are the behavior sources and keys are canonical operation identities.  The projection
+# layer derives the shipping verb, hidden state, passthrough settings, and trace wrapper from the
+# catalog, and refuses import if this map misses or invents a catalog-covered work operation.
+
+from .cli_projection import (  # noqa: E402, I001
+    bind_handler as _bind_cli_handler,
+    generated_callbacks as _generated_cli_callbacks,
+    project_cli_group as _project_cli_group,
+)
+
+CLI_HANDLERS = {
+    "work.brief": brief,
+    "work.readiness": readiness,
+    "work.ready": ready,
+    "work.issue": issue,
+    "work.list": list_,
+    "work.intake": intake_cmd,
+    "work.accept": _bind_cli_handler(accept_cmd, type_="issue_type"),
+    "work.reject": reject_cmd,
+    "work.reroute": reroute_cmd,
+    "work.promote": promote_cmd,
+    "work.assign": assign,
+    "work.claim": claim,
+    "work.next": next_,
+    "work.loop": loop,
+    "work.check": check,
+    "work.artifacts-uploaded": artifacts_uploaded,
+    "work.schedule": schedule,
+    "work.submit": submit,
+    "work.approve": approve,
+    "work.bounce": bounce,
+    "work.start": start,
+    "work.finish": finish,
+    "work.land": land,
+    "work.merge": merge,
+    "work.resume": resume,
+    "work.abandon": abandon,
+    "work.show": _bind_cli_handler(show, as_json="json_out"),
+    "work.review": review,
+    "work.refine": refine,
+}
+CLI_PROJECTION = _project_cli_group(app, "work", CLI_HANDLERS)
+_CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)
+
+# Preserve the historical public Python surface: these names were trace-decorated before catalog
+# generation, and direct internal/test callers rely on that span just as CLI callers do.  The raw
+# behavior sources remain held by CLI_HANDLERS for deterministic regeneration.
+brief = _CLI_CALLBACKS["work.brief"]
+readiness = _CLI_CALLBACKS["work.readiness"]
+ready = _CLI_CALLBACKS["work.ready"]
+issue = _CLI_CALLBACKS["work.issue"]
+list_ = _CLI_CALLBACKS["work.list"]
+intake_cmd = _CLI_CALLBACKS["work.intake"]
+accept_cmd = _CLI_CALLBACKS["work.accept"]
+reject_cmd = _CLI_CALLBACKS["work.reject"]
+reroute_cmd = _CLI_CALLBACKS["work.reroute"]
+promote_cmd = _CLI_CALLBACKS["work.promote"]
+assign = _CLI_CALLBACKS["work.assign"]
+claim = _CLI_CALLBACKS["work.claim"]
+next_ = _CLI_CALLBACKS["work.next"]
+loop = _CLI_CALLBACKS["work.loop"]
+check = _CLI_CALLBACKS["work.check"]
+artifacts_uploaded = _CLI_CALLBACKS["work.artifacts-uploaded"]
+schedule = _CLI_CALLBACKS["work.schedule"]
+submit = _CLI_CALLBACKS["work.submit"]
+approve = _CLI_CALLBACKS["work.approve"]
+bounce = _CLI_CALLBACKS["work.bounce"]
+start = _CLI_CALLBACKS["work.start"]
+finish = _CLI_CALLBACKS["work.finish"]
+land = _CLI_CALLBACKS["work.land"]
+merge = _CLI_CALLBACKS["work.merge"]
+resume = _CLI_CALLBACKS["work.resume"]
+abandon = _CLI_CALLBACKS["work.abandon"]
+show = _CLI_CALLBACKS["work.show"]
+review = _CLI_CALLBACKS["work.review"]
+refine = _CLI_CALLBACKS["work.refine"]

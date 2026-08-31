@@ -30,7 +30,7 @@ from dataclasses import dataclass, field
 
 import typer
 
-from . import bd, config, otel, registry, validate
+from . import bd, config, registry, validate
 from .identity import resolve_actor, workspace_identity
 
 _HIVE = typer.Option("", "--hive", help="target hive (default: cwd's hive)")
@@ -128,7 +128,6 @@ def repair_epic(epic_id: str, cfg, cwd, actor: str) -> RepairResult:
     return RepairResult(fixes=fixes, problems=plan.verify_epic(epic_id, cfg, cwd))
 
 
-@otel.trace_verb("plan.repair")
 def repair(
     epic: str = typer.Argument(..., metavar="<epic>", help="filed epic id to repair"),
     hive: str = _HIVE,
