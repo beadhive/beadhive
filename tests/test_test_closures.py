@@ -36,8 +36,8 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert test_closures.validate_registry(registry) == ()
     assert registry.full_gate == "just check"
     assert registry.release_gate == "just check-all"
-    assert len(registry.closures) == 19
-    assert sum(closure.status == "present" for closure in registry.closures) == 12
+    assert len(registry.closures) == 20
+    assert sum(closure.status == "present" for closure in registry.closures) == 13
     assert sum(closure.status == "absent" for closure in registry.closures) == 7
 
 

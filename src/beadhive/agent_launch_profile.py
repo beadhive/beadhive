@@ -204,11 +204,17 @@ def agent_launch_receipt_from_env(
 ) -> AgentLaunchReceipt | None:
     """Classify the current harness from explicit core receipt evidence.
 
-    Absence means unmanaged.  A present but invalid value is an error, never an
-    unmanaged fallback, so injected or stale evidence fails closed.
+    Native Claude Task and Codex collaboration child markers are an explicit
+    unmanaged boundary.  Those children may inherit a parent's environment, but
+    inherited receipt evidence must not grant lifecycle or teardown authority.
+
+    Otherwise, absence means unmanaged.  A present but invalid value is an error,
+    never an unmanaged fallback, so injected or stale evidence fails closed.
     """
 
     source = os.environ if env is None else env
+    if "CLAUDE_TASK_ID" in source or "CODEX_THREAD_ID" in source:
+        return None
     payload = source.get("BH_AGENT_LAUNCH_RECEIPT")
     if payload is None:
         return None
