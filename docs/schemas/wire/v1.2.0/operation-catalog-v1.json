@@ -3956,6 +3956,10 @@
         },
         "mcp": {
           "allowlisted": true,
+          "composes": [
+            "hive.init",
+            "sync"
+          ],
           "granularity": {
             "mode": "coarse",
             "reason": "one MCP call composes clone, initialization, registration, and hub sync"

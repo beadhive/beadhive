@@ -74,6 +74,7 @@ from . import (
     hub,
     log,
     molecule,
+    operation_catalog,
     otel,
     plan,
     registry,
@@ -231,9 +232,42 @@ def _measured(fn, *, span_name, record, name, expected_exc, mapper, register):
     return register(_wrapper)
 
 
-def _measured_tool(mcp, fn):
-    """Register *fn* as an ``mcp.tool`` wrapped in the shared measured envelope. Tool name is
-    ``fn.__name__``; a genuine error is observed (log + span ERROR + counter) and mapped to a clean
+def _project_tool_signature(fn, parameter_names: tuple[str, ...]) -> inspect.Signature:
+    """Project a handler signature to the catalog's public parameters plus internal Context.
+
+    Types, defaults, and behavior remain on the application handler.  The catalog decides which
+    of those parameters cross the MCP boundary and in what order.  A missing catalog parameter or
+    omitted required handler parameter fails startup instead of publishing an undialable schema.
+    """
+    signature = inspect.signature(fn)
+    parameters = signature.parameters
+    missing = [name for name in parameter_names if name not in parameters]
+    if missing:
+        raise operation_catalog.MCPProjectionError(
+            f"handler {fn.__name__!r} lacks catalog MCP parameters: {missing}"
+        )
+    internal = [parameter for parameter in parameters.values() if parameter.name == "ctx"]
+    unprojected_required = [
+        parameter.name
+        for parameter in parameters.values()
+        if parameter.name not in parameter_names
+        and parameter.name != "ctx"
+        and parameter.default is inspect.Parameter.empty
+    ]
+    if unprojected_required:
+        raise operation_catalog.MCPProjectionError(
+            f"handler {fn.__name__!r} has required parameters absent from MCP: "
+            f"{unprojected_required}"
+        )
+    projected = [parameters[name] for name in parameter_names]
+    return signature.replace(parameters=[*projected, *internal])
+
+
+def _measured_tool(mcp, operation_name, fn, *, projection=None):
+    """Register *fn* through one catalog-allowlisted MCP tool projection.
+
+    The catalog generates the public tool name and parameter signature; *fn* remains the behavior
+    source. A genuine error is observed (log + span ERROR + counter) and mapped to a clean
     ``ToolError`` so the client never sees a traceback. An async *fn* keeps an async wrapper (the
     notify is awaited inside the same envelope).
 
@@ -242,11 +276,18 @@ def _measured_tool(mcp, fn):
     `plan.file_molecule`'s `bd.json` calls and got the None that means "no such bead". There is no
     tool-side equivalent of ``beadhive://doctor``'s exemption: no tool exists to diagnose a broken
     seat, so strictness is unconditional here and a tool added later inherits it."""
-    tool_name = fn.__name__
+    tool_name, parameter_names = projection or operation_catalog.mcp_tool_projection(operation_name)
+    projected_signature = _project_tool_signature(fn, parameter_names)
 
     def _mapper(exc):
         _observe_mcp_error(tool_name, exc)
         return ToolError(f"{tool_name} failed: {type(exc).__name__}: {exc}")
+
+    def _register(wrapper):
+        wrapper.__signature__ = projected_signature
+        wrapper.bh_catalog_operation = operation_name
+        wrapper.bh_catalog_parameters = parameter_names
+        return mcp.tool(name=tool_name)(wrapper)
 
     return _measured(
         _strict_bd_reads(fn),
@@ -255,7 +296,7 @@ def _measured_tool(mcp, fn):
         name=tool_name,
         expected_exc=ToolError,
         mapper=_mapper,
-        register=mcp.tool,
+        register=_register,
     )
 
 
@@ -299,9 +340,10 @@ def _strict_bd_reads(fn):
     return _strict
 
 
-def _measured_resource(mcp, uri, **kw):
-    """Return a decorator registering *fn* as an ``mcp.resource(uri)`` wrapped in the shared
-    measured envelope. Defaults ``mime_type="application/json"`` + read-only / idempotent
+def _measured_resource(mcp, operation_name, *, projection=None, **kw):
+    """Register *fn* through a catalog resource projection and the shared measured envelope.
+
+    Defaults ``mime_type="application/json"`` + read-only / idempotent
     annotations; a genuine error maps to a clean ``ResourceError``; the metric is tagged with the
     URI (distinct
     ``bh.mcp.resource`` namespace). Resource handlers stay sync.
@@ -310,16 +352,24 @@ def _measured_resource(mcp, uri, **kw):
     agent as an error naming the binary rather than an empty-but-plausible payload. ``strict_bd``
     opts one resource out of that, for the only case where raising is the wrong answer — see
     ``beadhive://doctor``."""
+    uri, parameter_names = projection or operation_catalog.mcp_resource_projection(operation_name)
     kw.setdefault("mime_type", "application/json")
     kw.setdefault("annotations", {"readOnlyHint": True, "idempotentHint": True})
     strict_bd = kw.pop("strict_bd", True)
 
     def _decorator(fn):
         resource_name = fn.__name__
+        projected_signature = _project_tool_signature(fn, parameter_names)
 
         def _mapper(exc):
             _observe_mcp_error(resource_name, exc)
             return ResourceError(f"{resource_name} failed: {type(exc).__name__}: {exc}")
+
+        def _register(wrapper):
+            wrapper.__signature__ = projected_signature
+            wrapper.bh_catalog_operation = operation_name
+            wrapper.bh_catalog_parameters = parameter_names
+            return mcp.resource(uri, **kw)(wrapper)
 
         return _measured(
             _strict_bd_reads(fn) if strict_bd else fn,
@@ -328,7 +378,7 @@ def _measured_resource(mcp, uri, **kw):
             name=uri,
             expected_exc=ResourceError,
             mapper=_mapper,
-            register=lambda w: mcp.resource(uri, **kw)(w),
+            register=_register,
         )
 
     return _decorator
@@ -354,8 +404,17 @@ async def _notify_updated(ctx, uris) -> None:
         )
 
 
-_ALERTS_URI = "beadhive://alerts"
+_ALERTS_URI = operation_catalog.mcp_resource_projection("alerts.show")[0]
 _alerts_fingerprint: str | None = None
+
+
+def _mutation_notification_uris(operation_name: str, **parameters) -> tuple[str, ...]:
+    """Generate unconditional invalidations; alerts retain their change-only behavior below."""
+    return tuple(
+        uri
+        for uri in operation_catalog.mcp_notification_uris(operation_name, **parameters)
+        if uri != _ALERTS_URI
+    )
 
 
 def _observe_alerts(rows: list[dict] | None = None) -> bool:
@@ -513,35 +572,84 @@ def build_server():
     _warm_serve_path_imports()
 
     mcp = FastMCP(config.BINARY_ALIAS)
+    tool_handlers = {}
+    resource_handlers = {}
 
-    def _tool(fn):
-        return _measured_tool(mcp, fn)
+    def _tool(operation_name):
+        def _bind(fn):
+            if operation_name in tool_handlers:
+                raise operation_catalog.MCPProjectionError(
+                    f"duplicate MCP tool handler for {operation_name!r}"
+                )
+            tool_handlers[operation_name] = fn
+            return fn
 
-    def _resource(uri, **kw):
-        return _measured_resource(mcp, uri, **kw)
+        return _bind
+
+    def _resource(operation_name, **kw):
+        def _bind(fn):
+            if operation_name in resource_handlers:
+                raise operation_catalog.MCPProjectionError(
+                    f"duplicate MCP resource handler for {operation_name!r}"
+                )
+            resource_handlers[operation_name] = (fn, kw)
+            return fn
+
+        return _bind
 
     _register_config_probes(mcp, _tool, _resource)
     _register_plan_tools(mcp, _tool, _resource)
     _register_hive_tools(mcp, _tool, _resource)
     _register_read_resources(mcp, _tool, _resource)
     _register_toolchain_surface(mcp, _tool, _resource)
+
+    tool_projections = operation_catalog.mcp_tool_projections()
+    resource_projections = operation_catalog.mcp_resource_projections()
+    tool_operations = tuple(tool_projections)
+    resource_operations = tuple(resource_projections)
+    missing_tools = set(tool_operations) - set(tool_handlers)
+    missing_resources = set(resource_operations) - set(resource_handlers)
+    stale_tools = set(tool_handlers) - set(tool_operations)
+    stale_resources = set(resource_handlers) - set(resource_operations)
+    if missing_tools or missing_resources or stale_tools or stale_resources:
+        raise operation_catalog.MCPProjectionError(
+            "MCP catalog/handler bindings differ: "
+            f"missing tools={sorted(missing_tools)}, "
+            f"missing resources={sorted(missing_resources)}, "
+            f"stale tools={sorted(stale_tools)}, stale resources={sorted(stale_resources)}"
+        )
+    for operation_name in tool_operations:
+        _measured_tool(
+            mcp,
+            operation_name,
+            tool_handlers[operation_name],
+            projection=tool_projections[operation_name],
+        )
+    for operation_name in resource_operations:
+        fn, kw = resource_handlers[operation_name]
+        _measured_resource(
+            mcp,
+            operation_name,
+            projection=resource_projections[operation_name],
+            **kw,
+        )(fn)
     return mcp
 
 
 def _register_config_probes(mcp, tool, resource):
     """Config / probe / doctor read-only resources."""
 
-    @resource("beadhive://probe/health")
+    @resource("probe.health")
     def probe_health():
         """Probe resource: returns service health. Proves registration; exercised in tests."""
         return {"status": "ok", "service": "bh"}
 
-    @resource("beadhive://config")
+    @resource("config.show")
     def config_resource():
         """Config resource: returns the resolved config dict via config.load()."""
         return config.load()
 
-    @resource("beadhive://config/{key}")
+    @resource("config.get")
     def config_key_resource(key: str):
         """Config key resource: returns the value of a dotted config key via config.get_value().
 
@@ -551,7 +659,7 @@ def _register_config_probes(mcp, tool, resource):
         return config.get_value(key)
 
     # ---- doctor plane: structured workspace diagnostics ----------------------
-    @resource("beadhive://doctor", strict_bd=False)
+    @resource("doctor", strict_bd=False)
     def doctor_resource():
         """Resource: structured `bh doctor` diagnostics (same data the text render consumes).
 
@@ -576,7 +684,7 @@ def _register_config_probes(mcp, tool, resource):
         """
         return doctor.doctor_payload()
 
-    @resource(_ALERTS_URI)
+    @resource("alerts.show")
     def alerts_resource():
         """Resource: active normalized alerts for harness steering.
 
@@ -591,7 +699,7 @@ def _register_config_probes(mcp, tool, resource):
 def _register_plan_tools(mcp, tool, resource):
     """Planning + work tools: plan_check / plan_file / work_refine / bd_create."""
 
-    @tool
+    @tool("plan.check")
     def plan_check(spec: dict) -> dict:
         """Validate a molecule spec passed as a structured object (no temp YAML file).
 
@@ -613,7 +721,7 @@ def _register_plan_tools(mcp, tool, resource):
             **summary,
         }
 
-    @tool
+    @tool("plan.file")
     async def plan_file(
         spec: dict, hive: str = "", dry_run: bool = False, ctx: Context = None
     ) -> dict:
@@ -643,7 +751,7 @@ def _register_plan_tools(mcp, tool, resource):
             result = plan.file_molecule(spec, cwd, resolve_actor("", "", cwd=cwd), cfg)
         except plan.PlanError as exc:
             raise ToolError(str(exc)) from exc
-        await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://plan/list"])
+        await _notify_updated(ctx, _mutation_notification_uris("plan.file"))
         await _notify_alerts_if_changed(ctx)
         return {
             "epic_id": result.epic_id,
@@ -652,7 +760,7 @@ def _register_plan_tools(mcp, tool, resource):
             "complexity": [decision.as_dict() for decision in decisions],
         }
 
-    @tool
+    @tool("work.refine")
     def work_refine(
         bead: str,
         squash_plan: dict | None = None,
@@ -705,7 +813,7 @@ def _register_plan_tools(mcp, tool, resource):
             "log": result.log,
         }
 
-    @tool
+    @tool("bd.create")
     async def bd_create(issues: list[dict], hive: str = "", ctx: Context = None) -> dict:
         """Batch-create beads from structured items (identity triplet auto-applied).
 
@@ -722,7 +830,7 @@ def _register_plan_tools(mcp, tool, resource):
         created, failures = bd.create_items(issues, cwd)
         if failures:
             raise ToolError("bd_create failed for: " + "; ".join(failures))
-        await _notify_updated(ctx, ["beadhive://work/ready", "beadhive://work/intake"])
+        await _notify_updated(ctx, _mutation_notification_uris("bd.create"))
         await _notify_alerts_if_changed(ctx)
         return {"created": created, "count": len(created)}
 
@@ -730,7 +838,7 @@ def _register_plan_tools(mcp, tool, resource):
 def _register_hive_tools(mcp, tool, resource):
     """Hive lifecycle tools + hive status/survey resources."""
 
-    @tool
+    @tool("hive.list")
     def hive_list() -> dict:
         """List discoverable-but-unregistered repos under the known providers/orgs.
 
@@ -742,7 +850,7 @@ def _register_hive_tools(mcp, tool, resource):
         """
         return hive.available(config.load())
 
-    @resource("beadhive://hive/list")
+    @resource("hive.list")
     def hive_list_resource():
         """Resource: discoverable-but-unregistered repos (same payload as hive_list tool).
 
@@ -752,7 +860,7 @@ def _register_hive_tools(mcp, tool, resource):
         """
         return hive.available(config.load())
 
-    @tool
+    @tool("config.set")
     async def config_set(
         key: str,
         value: str | int | float | bool | list | dict,
@@ -780,11 +888,11 @@ def _register_hive_tools(mcp, tool, resource):
             raw, as_json = json.dumps(value), True
         result = config.set_value(key, raw, as_json=as_json)
         if result.get("ok"):
-            await _notify_updated(ctx, ["beadhive://config", f"beadhive://config/{key}"])
+            await _notify_updated(ctx, _mutation_notification_uris("config.set", key=key))
             await _notify_alerts_if_changed(ctx)
         return result
 
-    @tool
+    @tool("hive.add")
     async def hive_add(
         provider: str,
         org: str,
@@ -806,13 +914,11 @@ def _register_hive_tools(mcp, tool, resource):
         entry = registry.find_entry(config.load(), provider, org, repo)
         if entry is None:
             raise ToolError(f"hive_add: {provider}/{org}/{repo} was not registered")
-        await _notify_updated(
-            ctx, ["beadhive://hive/status", "beadhive://hive/list", "beadhive://hive/survey"]
-        )
+        await _notify_updated(ctx, _mutation_notification_uris("hive.add"))
         await _notify_alerts_if_changed(ctx)
         return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
 
-    @tool
+    @tool("hive.onboard")
     async def hive_onboard(
         provider: str,
         org: str,
@@ -852,9 +958,7 @@ def _register_hive_tools(mcp, tool, resource):
             observaloop=observaloop,
         )
         entry = registry.find_entry(config.load(), provider, org, repo)
-        await _notify_updated(
-            ctx, ["beadhive://hive/status", "beadhive://hive/list", "beadhive://hive/survey"]
-        )
+        await _notify_updated(ctx, _mutation_notification_uris("hive.onboard"))
         await _notify_alerts_if_changed(ctx)
         return {
             "cloned": not pre_exists,
@@ -864,7 +968,7 @@ def _register_hive_tools(mcp, tool, resource):
             "warnings": warnings,
         }
 
-    @tool
+    @tool("hive.status")
     def hive_status() -> dict:
         """Richer workspace status view — fleet health (backs `bh hive status`).
 
@@ -876,7 +980,7 @@ def _register_hive_tools(mcp, tool, resource):
         """
         return hive.status_payload(config.load())
 
-    @resource("beadhive://hive/status")
+    @resource("hive.status")
     def hive_status_resource():
         """Resource: richer workspace status view (same payload as hive_status tool).
 
@@ -887,7 +991,7 @@ def _register_hive_tools(mcp, tool, resource):
         """
         return hive.status_payload(config.load())
 
-    @resource("beadhive://hive/survey")
+    @resource("hive.survey")
     def hives_survey_resource():
         """Resource: fleet onboarding table, one row per on-disk repo.
 
@@ -901,7 +1005,7 @@ def _register_read_resources(mcp, tool, resource):
     """Read-only resources: labels / worktrees / work / plans / hq planes."""
     # ---- labels plane -----------------------------------------------------------
 
-    @resource("beadhive://label/validation")
+    @resource("label.validate")
     def labels_validation_resource():
         """Resource: label validation findings as structured data (labels plane).
 
@@ -925,7 +1029,7 @@ def _register_read_resources(mcp, tool, resource):
 
     # ---- worktrees plane --------------------------------------------------------
 
-    @resource("beadhive://worktree/list")
+    @resource("worktree.list")
     def worktrees_resource():
         """Resource: per-worktree classification status for all managed hives.
 
@@ -938,7 +1042,7 @@ def _register_read_resources(mcp, tool, resource):
 
     # ---- work plane -------------------------------------------------------------
 
-    @resource("beadhive://work/ready")
+    @resource("work.ready")
     def work_ready_resource():
         """Resource: ready (unblocked, dependency-ordered) beads for the current hive.
 
@@ -951,7 +1055,7 @@ def _register_read_resources(mcp, tool, resource):
         cwd = registry.hive_dir_for(cfg, hive="")
         return bd.json(["ready"], cwd, strict=True) or []
 
-    @resource("beadhive://work/intake")
+    @resource("work.intake")
     def work_intake_resource():
         """Resource: untriaged intake inbox payload (same as `bh work intake --json`).
 
@@ -962,7 +1066,7 @@ def _register_read_resources(mcp, tool, resource):
         cwd = registry.hive_dir_for(config.load(), "")
         return triage.intake_payload(cwd)
 
-    @resource("beadhive://work/intake/dupes")
+    @resource("work.intake-dupes")
     def work_intake_dupes_resource():
         """Resource: duplicate-pair candidates scoped to the current hive's intake queue.
 
@@ -979,7 +1083,7 @@ def _register_read_resources(mcp, tool, resource):
         ids = [r.get("id") for r in rows]
         return triage.dupes_touching(pairs, ids)
 
-    @resource("beadhive://work/issue/{id}")
+    @resource("work.issue")
     def work_issue_resource(id: str):
         """Resource: single-bead lookup by id (template resource).
 
@@ -990,7 +1094,7 @@ def _register_read_resources(mcp, tool, resource):
         cwd = registry.hive_dir_for(config.load(), hive="")
         return bd.show(id, cwd, strict=True)
 
-    @resource("beadhive://work/show/{id}")
+    @resource("work.show")
     def work_show_resource(id: str):
         """Resource: bead branch local history payload (template resource).
 
@@ -1006,7 +1110,7 @@ def _register_read_resources(mcp, tool, resource):
         entry, main, _target, branch = worktree.locate(cfg, "", id)
         return work_show.show_payload(cfg, entry, id, branch, main)
 
-    @resource("beadhive://work/schedule/{epic}")
+    @resource("work.schedule")
     def work_schedule_resource(epic: str):
         """Resource: cost-model dispatch plan for a molecule (template resource).
 
@@ -1025,7 +1129,7 @@ def _register_read_resources(mcp, tool, resource):
 
     # ---- plans plane ---------------------------------------------------------
 
-    @resource("beadhive://plan/list")
+    @resource("plan.list")
     def plans_resource():
         """Resource: swarm list for the current hive (planning-plane molecule list).
 
@@ -1037,7 +1141,7 @@ def _register_read_resources(mcp, tool, resource):
         cwd = registry.hive_dir_for(config.load(), hive="")
         return bd.json(["swarm", "list"], cwd, strict=True)
 
-    @resource("beadhive://plan/{ref}")
+    @resource("plan.status")
     def plan_resource(ref: str):
         """Resource: single molecule status by swarm ref (template resource).
 
@@ -1051,7 +1155,7 @@ def _register_read_resources(mcp, tool, resource):
 
     # ---- hq plane ---------------------------------------------------------------
 
-    @resource("beadhive://hq/intake")
+    @resource("hq.intake")
     def hq_intake_resource():
         """Resource: fleet-wide untriaged intake inbox, aggregated across the hub.
 
@@ -1081,7 +1185,7 @@ def _register_toolchain_surface(mcp, tool, resource):
     rules) to the operator — bh never applies a template's suggestions automatically.
     """
 
-    @resource("beadhive://toolchain/list")
+    @resource("toolchain.list")
     def toolchain_list_resource():
         """Resource: declared toolchains + the effective template registry.
 
@@ -1093,7 +1197,7 @@ def _register_toolchain_surface(mcp, tool, resource):
         cfg = config.load()
         return toolchain.list_payload(cfg, registry.current_hive(cfg) or {})
 
-    @resource("beadhive://toolchain/show/{name}")
+    @resource("toolchain.show")
     def toolchain_show_resource(name: str):
         """Resource: one toolchain's entrypoint listing + suggestions (template resource).
 
@@ -1106,7 +1210,7 @@ def _register_toolchain_surface(mcp, tool, resource):
         cfg = config.load()
         return toolchain.show_payload(cfg, name, registry.hive_dir_for(cfg, hive=""))
 
-    @tool
+    @tool("toolchain.exec")
     def toolchain_exec(argv: list[str], hive: str = "") -> dict:
         """Invoke an entrypoint in the hive's main clone (backs `bh toolchain exec -- …`).
 
