@@ -3107,6 +3107,31 @@ def test_prune_classifies_hives_concurrently(monkeypatch):
     assert [status.hive for status in skipped] == ["first", "second"]
 
 
+def test_prune_lists_precious_base_safe_row_in_skipped_set(monkeypatch):
+    """The existing safe-only prune partition automatically withholds precious content."""
+    item = worktree.precious.PreciousFile(".env", 8, "precious", ".env")
+    status = wt_status.WtStatus(
+        hive="mr",
+        leaf="seat",
+        branch="wt/bead/issue/seat",
+        path="/wts/seat",
+        bead_id="seat",
+        classification=wt_status.WtClassification.SAFE,
+        merged=True,
+        dirty=False,
+        safe=False,
+        precious=(item,),
+    )
+    monkeypatch.setattr(worktree, "_classify_entry", lambda _entry, _rows, _cfg: [status])
+
+    safe, skipped = worktree._prune_classify(
+        {}, {"mr": {"prefix": "mr"}}, [("mr", "/wts/seat", "wt/bead/issue/seat")]
+    )
+
+    assert safe == []
+    assert skipped == [status]
+
+
 def test_status_rows_classifies_concurrently_but_returns_managed_order(monkeypatch):
     first_started = threading.Event()
     second_started = threading.Event()

@@ -38,6 +38,14 @@ def test_outward_adapter_preserves_dynamic_legacy_patch_points(monkeypatch):
     assert work_settings.load() is expected
 
 
+def test_worktree_safety_settings_are_exposed_by_the_narrow_work_port():
+    assert {
+        "precious_globs",
+        "junk_globs",
+        "precious_min_bytes",
+    } <= set(work_settings.allowed_names)
+
+
 def test_patching_a_consumer_port_replaces_the_legacy_facade_name(monkeypatch):
     def replacement():
         return {"patched": True}

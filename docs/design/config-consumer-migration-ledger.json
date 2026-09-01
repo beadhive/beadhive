@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 257,
+    "config_patch_point_count": 266,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -1237,6 +1237,13 @@
         "target": "beadhive.config.load"
       },
       {
+        "facade_target": "beadhive.config.layered",
+        "kind": "direct-facade",
+        "line": 202,
+        "path": "tests/test_precious.py",
+        "target": "beadhive.config.layered"
+      },
+      {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
         "line": 100,
@@ -1496,6 +1503,27 @@
         "target": "beadhive.worktree.config.integration_branch"
       },
       {
+        "facade_target": "beadhive.config.precious_globs",
+        "kind": "indirect-adapter",
+        "line": 159,
+        "path": "tests/test_structural_facade_contracts.py",
+        "target": "beadhive.worktree.config.precious_globs"
+      },
+      {
+        "facade_target": "beadhive.config.junk_globs",
+        "kind": "indirect-adapter",
+        "line": 160,
+        "path": "tests/test_structural_facade_contracts.py",
+        "target": "beadhive.worktree.config.junk_globs"
+      },
+      {
+        "facade_target": "beadhive.config.precious_min_bytes",
+        "kind": "indirect-adapter",
+        "line": 161,
+        "path": "tests/test_structural_facade_contracts.py",
+        "target": "beadhive.worktree.config.precious_min_bytes"
+      },
+      {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
         "line": 36,
@@ -1729,77 +1757,112 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3129,
+        "line": 3154,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3160,
+        "line": 3185,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3189,
+        "line": 3214,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3209,
+        "line": 3234,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3265,
+        "line": 3290,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3348,
+        "line": 3373,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3744,
+        "line": 3769,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3764,
+        "line": 3789,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3781,
+        "line": 3806,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3795,
+        "line": 3820,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 157,
+        "line": 159,
+        "path": "tests/test_worktree_inventory_boundaries.py",
+        "target": "beadhive.worktree.config.integration_branch"
+      },
+      {
+        "facade_target": "beadhive.config.precious_globs",
+        "kind": "indirect-adapter",
+        "line": 162,
+        "path": "tests/test_worktree_inventory_boundaries.py",
+        "target": "beadhive.worktree.config.precious_globs"
+      },
+      {
+        "facade_target": "beadhive.config.junk_globs",
+        "kind": "indirect-adapter",
+        "line": 163,
+        "path": "tests/test_worktree_inventory_boundaries.py",
+        "target": "beadhive.worktree.config.junk_globs"
+      },
+      {
+        "facade_target": "beadhive.config.precious_min_bytes",
+        "kind": "indirect-adapter",
+        "line": 164,
+        "path": "tests/test_worktree_inventory_boundaries.py",
+        "target": "beadhive.worktree.config.precious_min_bytes"
+      },
+      {
+        "facade_target": "beadhive.config.integration_branch",
+        "kind": "indirect-adapter",
+        "line": 250,
+        "path": "tests/test_worktree_inventory_boundaries.py",
+        "target": "beadhive.worktree.config.integration_branch"
+      },
+      {
+        "facade_target": "beadhive.config.integration_branch",
+        "kind": "indirect-adapter",
+        "line": 278,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.integration_branch"
       },
@@ -2275,7 +2338,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 138,
+    "test_config_importer_count": 139,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2391,6 +2454,7 @@
       "tests/test_otel_verify.py",
       "tests/test_plugin_cli.py",
       "tests/test_plugins.py",
+      "tests/test_precious.py",
       "tests/test_publish_boundary.py",
       "tests/test_registry.py",
       "tests/test_release_flow.py",
@@ -2416,7 +2480,7 @@
       "tests/unit/modules/config/test_consumer_settings.py",
       "tests/unit/test_pure_module_independence.py"
     ],
-    "test_config_schema_importer_count": 20,
+    "test_config_schema_importer_count": 21,
     "test_config_schema_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/test_attestation_provider.py",
@@ -2436,6 +2500,7 @@
       "tests/test_host_lease.py",
       "tests/test_mcp_work_schedule_resource.py",
       "tests/test_model_routing.py",
+      "tests/test_precious.py",
       "tests/test_runtime.py",
       "tests/test_schedule.py"
     ]

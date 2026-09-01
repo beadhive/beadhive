@@ -46,6 +46,7 @@ from . import (
     host,  # noqa: F401 - compatibility patch seam
     otel,
     plugins,
+    precious,  # noqa: F401 - compatibility patch seam
     registry,
     test_report,  # noqa: F401 - compatibility patch seam
     triage_store,  # noqa: F401 - compatibility patch seam
