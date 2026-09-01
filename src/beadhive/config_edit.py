@@ -9,15 +9,21 @@ from collections.abc import MutableMapping
 from pydantic import TypeAdapter
 from ruamel.yaml.comments import CommentedMap
 
+from .modules.config.contracts import (
+    SUBSET_PLACEHOLDER,
+    RoutingTierConfig,
+    field_default,
+    literal_choices,
+    suggest_key,
+)
+
 
 def problem(level: str, message: str) -> dict:
     return {"level": level, "message": message}
 
 
 def not_set_message(dotted: str) -> str:
-    from .modules.config import contracts as config_schema
-
-    suggestion = config_schema.suggest_key(dotted)
+    suggestion = suggest_key(dotted)
     message = f"{dotted} is not set"
     return f"{message} — did you mean '{suggestion}'?" if suggestion else message
 
@@ -45,8 +51,6 @@ def coerce_value(raw: str, as_json: bool = False):
 
 
 def validate(api, parts: list[str], value) -> list[dict]:
-    from .modules.config import contracts as config_schema
-
     problems: list[dict] = []
     dotted = ".".join(parts)
     literal_checked = False
@@ -65,27 +69,27 @@ def validate(api, parts: list[str], value) -> list[dict]:
             problem("error", f"archive.window_days must be a positive integer, got {value!r}")
         )
     if parts[-1] == "validate_subset" and value:
-        if config_schema.SUBSET_PLACEHOLDER not in str(value):
+        if SUBSET_PLACEHOLDER not in str(value):
             problems.append(
                 problem(
                     "error",
-                    f"{dotted} must contain the {config_schema.SUBSET_PLACEHOLDER} placeholder "
+                    f"{dotted} must contain the {SUBSET_PLACEHOLDER} placeholder "
                     f"(where bh substitutes the failing test names), got {value!r}",
                 )
             )
     if dotted == "work.routing.tiers":
         try:
-            TypeAdapter(list[config_schema.RoutingTierConfig]).validate_python(value)
+            TypeAdapter(list[RoutingTierConfig]).validate_python(value)
         except ValueError as exc:
             problems.append(problem("error", f"{dotted} is invalid: {exc}"))
     if not literal_checked:
-        choices = config_schema.literal_choices(dotted)
+        choices = literal_choices(dotted)
         if choices is not None and value not in choices:
             allowed = "|".join(str(choice) for choice in choices)
             problems.append(problem("error", f"{dotted} must be one of {allowed}, got {value!r}"))
     if parts[0] not in api.KNOWN_SECTIONS:
         message = f"unknown config section '{parts[0]}' — writing it anyway"
-        suggestion = config_schema.suggest_key(dotted)
+        suggestion = suggest_key(dotted)
         if suggestion:
             message += f" (did you mean '{suggestion}'?)"
         problems.append(problem("warning", message))
@@ -102,12 +106,10 @@ def descend(cfg, parts: list[str]):
 
 
 def literal_violations(api, cfg=None) -> list[dict]:
-    from .modules.config import contracts as config_schema
-
     cfg = cfg if cfg is not None else api.load()
     violations: list[dict] = []
     for dotted in api._leaf_paths(cfg):
-        choices = config_schema.literal_choices(dotted)
+        choices = literal_choices(dotted)
         if choices is None:
             continue
         found, value = api._descend(cfg, dotted.split("."))
@@ -117,7 +119,7 @@ def literal_violations(api, cfg=None) -> list[dict]:
                     "key": dotted,
                     "value": value,
                     "choices": choices,
-                    "default": config_schema.field_default(dotted),
+                    "default": field_default(dotted),
                 }
             )
     return violations

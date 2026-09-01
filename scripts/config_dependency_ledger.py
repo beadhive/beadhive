@@ -17,8 +17,7 @@ def _imports_name(tree: ast.AST, name: str) -> bool:
     absolute = f"beadhive.{name}"
     for node in ast.walk(tree):
         if isinstance(node, ast.Import) and any(
-            alias.name == absolute or alias.name.startswith(f"{absolute}.")
-            for alias in node.names
+            alias.name == absolute or alias.name.startswith(f"{absolute}.") for alias in node.names
         ):
             return True
         if not isinstance(node, ast.ImportFrom):

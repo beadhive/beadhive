@@ -46,9 +46,7 @@ class CapabilitySettings:
 
     def __getattr__(self, name: str) -> Any:
         if name not in self._names:
-            raise AttributeError(
-                f"{self._capability} configuration port does not expose {name!r}"
-            )
+            raise AttributeError(f"{self._capability} configuration port does not expose {name!r}")
         return self._source.get_value(name)
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -56,16 +54,12 @@ class CapabilitySettings:
             object.__setattr__(self, name, value)
             return
         if name not in self._names:
-            raise AttributeError(
-                f"{self._capability} configuration port does not expose {name!r}"
-            )
+            raise AttributeError(f"{self._capability} configuration port does not expose {name!r}")
         self._source.set_value(name, value)
 
     def __delattr__(self, name: str) -> None:
         if name not in self._names:
-            raise AttributeError(
-                f"{self._capability} configuration port does not expose {name!r}"
-            )
+            raise AttributeError(f"{self._capability} configuration port does not expose {name!r}")
         self._source.delete_value(name)
 
 
