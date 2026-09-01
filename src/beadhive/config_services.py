@@ -68,6 +68,20 @@ def managed_repos(cfg=None):
     return cfg.get("managed_repos", []) or []
 
 
+def managed_repo_path(root, entry) -> Path:
+    """Derive one managed repository's clone path below an arbitrary candidate root.
+
+    Keeping the root explicit lets identity's legacy guard inspect the legacy workspace
+    without recursively consulting the live workspace resolver.
+    """
+    return (
+        Path(root)
+        / str(entry.get("provider", ""))
+        / str(entry.get("org", ""))
+        / str(entry.get("repo", ""))
+    )
+
+
 # ---- hq (Factory HQ remote, bh-e0y8.1) --------------------------------------
 
 
@@ -787,6 +801,7 @@ __all__ = [
     "beads_engine",
     "worktrees_cfg",
     "managed_repos",
+    "managed_repo_path",
     "hq_cfg",
     "gh_login",
     "hq_remote",

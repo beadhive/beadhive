@@ -28,6 +28,11 @@ from pathlib import Path
 
 from .identity import workspace_root
 
+_SEED_TOML = (
+    "# seeded by `bh config init` — bh's internal workspace root.\n"
+    "# `bh hive onboard` (or `git workspace add`) appends [[provider]] blocks here.\n"
+)
+
 
 @dataclass(frozen=True)
 class RepoGroup:
@@ -92,6 +97,26 @@ def config_paths(cfg) -> list[Path]:
     from . import config  # lazy: config imports deps/schema, this module is a leaf reader
 
     return glob_configs(config.hq_dir())
+
+
+def is_seeded(root) -> bool:
+    """Whether an internal root already has a source workspace TOML (not its lockfile)."""
+    return bool(glob_configs(Path(root)))
+
+
+def ensure_seeded(root) -> bool:
+    """Idempotently create and minimally seed a bh-owned internal workspace root.
+
+    Existing ``workspace*.toml`` content is never rewritten. Returns whether the operation
+    created either the directory or its initial source file.
+    """
+    root = Path(root)
+    created = not root.is_dir()
+    root.mkdir(parents=True, exist_ok=True)
+    if is_seeded(root):
+        return created
+    (root / "workspace.toml").write_text(_SEED_TOML)
+    return True
 
 
 def _provider_entries(cfg):

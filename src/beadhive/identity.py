@@ -1,8 +1,9 @@
-"""Derive a repo's (provider, org, repo) identity from its git-workspace path.
+"""Resolve the clone root and derive repo identities from git-workspace paths.
 
-Shared by `issue create` (triplet labels) and `hive init` (registration). The
-workspace root is $GIT_WORKSPACE (default ~/workspace); a repo's path under it is
-<provider>/<org>/.../<repo>.
+``workspace_root`` is the single choke point for clone location. Resolution order is an
+explicit ``$GIT_WORKSPACE``, then ``git_workspace.mode``/``root`` configuration, then the
+bh-owned ``<BH_HOME>/ws`` default. A populated legacy ``~/workspace`` is retained when no
+explicit choice exists so an upgrade never silently relocates existing clones.
 """
 
 from __future__ import annotations
@@ -11,20 +12,89 @@ import os
 from functools import cache
 from pathlib import Path
 
+from .config_binding import FacadeBinding
 from .run import run
+
+_config = FacadeBinding(f"{__package__}.config")
+
+
+def _legacy_root() -> Path:
+    """The git-workspace default used before bh acquired an internal clone root."""
+    return Path.home() / "workspace"
+
+
+def _internal_root() -> Path:
+    """The bh-owned clone root, kept beside the managed worktree tree."""
+    return _config.home() / "ws"
+
+
+def _legacy_workspace_populated(root: Path) -> bool:
+    """Whether *root* contains a real clone or a registered clone rooted there.
+
+    Merely existing, or merely having registrations whose clones live elsewhere, is not
+    enough to pin a fresh installation to the legacy external workspace.
+    """
+    if root.is_dir() and any(root.glob("*/*/*/.git")):
+        return True
+
+    try:
+        cfg = _config.load()
+    except FileNotFoundError:
+        return False
+    return any(
+        (_config.managed_repo_path(root, entry) / ".git").is_dir()
+        for entry in _config.managed_repos(cfg)
+    )
 
 
 def workspace_root() -> str:
-    # A BLANK `GIT_WORKSPACE` is an empty shell variable, not an operator asking for the empty
-    # path — `.get(name, default)` returns "" for it, and `Path("").resolve()` is the CWD, so
-    # every reader downstream would silently take whichever directory bh happened to be run
-    # from. Blank is unset here, matching how `credentials._env_source` reads every other
-    # environment credential (bh-9qor).
-    root = os.environ.get("GIT_WORKSPACE", "").strip() or str(Path.home() / "workspace")
+    """Return the workspace root using env > config > guarded internal-default precedence."""
+    # Blank is unset, never the current working directory.
+    root = os.environ.get("GIT_WORKSPACE", "").strip()
+    if not root:
+        from pydantic import ValidationError
+
+        from .modules.config.contracts import GitWorkspaceConfig
+
+        try:
+            cfg = _config.load()
+        except FileNotFoundError:
+            cfg = {}
+        raw = cfg.get("git_workspace") or {}
+        try:
+            workspace = GitWorkspaceConfig(mode=raw.get("mode"), root=raw.get("root"))
+        except ValidationError as exc:
+            raise _config.ConfigError("; ".join(error["msg"] for error in exc.errors())) from exc
+
+        legacy = _legacy_root()
+        if workspace.root:
+            root = workspace.root
+        elif workspace.mode == "internal":
+            root = str(_internal_root())
+        elif workspace.mode == "external":
+            root = str(legacy)
+        elif _legacy_workspace_populated(legacy):
+            root = str(legacy)
+        else:
+            root = str(_internal_root())
     try:
         return str(Path(root).expanduser().resolve())
     except OSError:
         return os.path.expanduser(root)
+
+
+def workspace_mode(root: str | None = None) -> str:
+    """Classify the resolved root as bh-owned ``internal`` or operator-owned ``external``."""
+    candidate = Path(root if root is not None else workspace_root()).expanduser()
+    try:
+        candidate = candidate.resolve()
+    except OSError:
+        pass
+    try:
+        internal = _internal_root().resolve()
+    except OSError:
+        internal = _internal_root()
+    return "internal" if candidate == internal else "external"
 
 
 @cache

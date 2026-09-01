@@ -19,6 +19,10 @@ delimiter: ":"
 # on-disk folder — and the group's `path`, not its `provider`, is a hive's identity triplet
 # first segment (<group>/<account>/<repo>). Reads $GIT_WORKSPACE/workspace*.toml (or `path`).
 # git_workspace:
+#   # mode: external        # internal (default unless populated ~/workspace is found): bh owns
+#   #                       # <BH_HOME>/ws. external: use $GIT_WORKSPACE/root/~/workspace.
+#   # root: ~/workspace     # external-only; rejected with internal. Move $BH_HOME to relocate
+#   #                       # the internal ws root.
 #   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
 #   # hive_match: flexible  # how `bh -r <id> …` resolves a hive:
 #   #                       #   flexible (prefix→triplet→org/repo→repo) | prefix | triplet

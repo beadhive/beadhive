@@ -425,6 +425,15 @@ _PASSTHROUGH_PATHS = {
 # their own declaration because a generator must be able to render them without consulting the
 # target command.
 _CLI_PROMPT_POLICY: dict[str, dict[str, Any]] = {
+    "doctor": {
+        "guard_parameters": [],
+        "guard_conditions": ["stdin-not-tty", "mcp-uses-pure-doctor-payload"],
+        "prompt_seams": ["beadhive.doctor._offer_workspace_init:typer.confirm"],
+        "reason": (
+            "an unseeded internal workspace is offered only on a TTY; JSON and headless use "
+            "never prompt"
+        ),
+    },
     "dep install": {
         "guard_parameters": ["yes"],
         "guard_conditions": [],
@@ -889,7 +898,12 @@ def operations() -> tuple[OperationSpec, ...]:
                 kind=kind,
                 privilege=privilege,
                 constraints={
-                    "interactive": path in _CLI_PROMPT_POLICY,
+                    # Intrinsic operation constraint: an MCP-projected operation remains pure
+                    # only when its CLI adapter wraps a separately pure operation (doctor renders
+                    # doctor_payload first, while its resource calls doctor_payload directly).
+                    # All other prompt-capable operations stay intrinsically interactive so a
+                    # malformed MCP allowlist mutation continues to fail closed.
+                    "interactive": path in _CLI_PROMPT_POLICY and path != "doctor",
                     "hq_write": hq_write,
                     "secret_material": secret_material,
                     "override_parameters": [

@@ -16,7 +16,7 @@ from __future__ import annotations
 import typer
 
 from . import gitworkspace
-from .identity import workspace_root
+from .identity import workspace_mode, workspace_root
 
 cli = typer.Typer(no_args_is_help=True, help="git-workspace repo-group integration.")
 
@@ -47,17 +47,28 @@ def readiness(cfg, entry=None) -> tuple[str, str] | None:
     Not hive-specific — `entry` is accepted (mirrors the old `plugins.Plugin.readiness`
     signature `hive_ready.py` calls every check with) but unused; git-workspace readiness is a
     workspace-wide signal, not a per-hive one. Called directly by `hive_ready.py`, not through
-    a generic plugin loop — git-workspace has no `enabled` gate to loop over any more."""
-    import os
+    a generic plugin loop — git-workspace has no `enabled` gate to loop over any more.
 
-    if not os.environ.get("GIT_WORKSPACE"):
-        return ("warn", f"GIT_WORKSPACE not set — defaulting to {workspace_root()}")
-    sources = gitworkspace.config_paths(cfg)
-    if not sources:
-        return ("missing", f"no workspace*.toml found under {workspace_root()}")
+    Internal mode owns its root and therefore reports an unseeded root as actionable missing
+    setup. External mode retains the legacy stale-env warning and never writes to that root.
+    """
+    import os
     from pathlib import Path
 
-    lock = Path(workspace_root()) / "workspace-lock.toml"
+    root = Path(workspace_root())
+    if workspace_mode(str(root)) == "internal":
+        if not gitworkspace.is_seeded(root):
+            return (
+                "missing",
+                f"internal workspace root not created/seeded: {root}"
+                " — `bh doctor` offers to create it",
+            )
+    elif not os.environ.get("GIT_WORKSPACE"):
+        return ("warn", f"GIT_WORKSPACE not set — defaulting to {root}")
+    sources = gitworkspace.config_paths(cfg)
+    if not sources:
+        return ("missing", f"no workspace*.toml found under {root}")
+    lock = root / "workspace-lock.toml"
     if not lock.exists():
         return ("warn", "no workspace-lock.toml — run `git workspace update`")
     return ("ok", f"{len(gitworkspace.groups(cfg))} repo groups; lockfile present")

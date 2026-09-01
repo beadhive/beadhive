@@ -70,6 +70,66 @@ def test_section_lists_orphan(hive, fakebd, capsys):  # noqa: F811
     assert "delete manually" in out
 
 
+# ---- workspace root: ownership + seed state ---------------------------------
+
+
+def test_data_config_internal_seed_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "workspace_mode", lambda root: "internal")
+    assert doctor._data_config({}, tmp_path)["workspace_seeded"] is False
+    (tmp_path / "workspace.toml").write_text("")
+    assert doctor._data_config({}, tmp_path)["workspace_seeded"] is True
+
+
+def test_data_config_external_is_never_owned_for_seeding(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "workspace_mode", lambda root: "external")
+    data = doctor._data_config({}, tmp_path)
+    assert data["workspace_mode"] == "external"
+    assert data["workspace_seeded"] is True
+
+
+def _workspace_config_section(*, mode, seeded, root="/x/ws"):
+    return {
+        "config_path": "/x/config.yaml",
+        "workspace_root": root,
+        "workspace_mode": mode,
+        "workspace_seeded": seeded,
+        "git_workspace": {"enabled": False, "sources": []},
+    }
+
+
+def test_render_config_offers_internal_seed_but_not_external(capsys):
+    doctor._render_config(_workspace_config_section(mode="internal", seeded=False))
+    assert "missing or unseeded" in capsys.readouterr().out
+    doctor._render_config(_workspace_config_section(mode="external", seeded=False))
+    assert "missing or unseeded" not in capsys.readouterr().out
+
+
+def test_offer_workspace_init_noops_when_seeded_external_or_noninteractive(monkeypatch):
+    calls = []
+    monkeypatch.setattr(doctor.gitworkspace, "ensure_seeded", lambda root: calls.append(root))
+    doctor._offer_workspace_init(_workspace_config_section(mode="internal", seeded=True))
+    doctor._offer_workspace_init(_workspace_config_section(mode="external", seeded=False))
+    monkeypatch.setattr(doctor, "_is_interactive", lambda: False)
+    doctor._offer_workspace_init(_workspace_config_section(mode="internal", seeded=False))
+    assert calls == []
+
+
+def test_offer_workspace_init_requires_consent(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    monkeypatch.setattr(doctor, "_is_interactive", lambda: True)
+    monkeypatch.setattr(doctor.typer, "confirm", lambda *args, **kwargs: False)
+    doctor._offer_workspace_init(
+        _workspace_config_section(mode="internal", seeded=False, root=str(root))
+    )
+    assert not root.exists()
+
+    monkeypatch.setattr(doctor.typer, "confirm", lambda *args, **kwargs: True)
+    doctor._offer_workspace_init(
+        _workspace_config_section(mode="internal", seeded=False, root=str(root))
+    )
+    assert (root / "workspace.toml").is_file()
+
+
 # ---- stage 2 shape A: _bulk_epic_closed (bh-xi0m1) --------------------------
 
 

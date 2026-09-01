@@ -288,7 +288,7 @@ def test_every_projection_declares_granularity_progress_and_interactivity() -> N
         }
 
 
-def test_live_prompt_seams_are_guarded_and_never_project_to_mcp() -> None:
+def test_live_prompt_seams_are_guarded_and_mcp_projections_never_prompt() -> None:
     prompt_paths = {}
     seam_paths: dict[str, set[str]] = {}
     for path, (name, projection) in _projected_cli().items():
@@ -303,10 +303,18 @@ def test_live_prompt_seams_are_guarded_and_never_project_to_mcp() -> None:
             assert guard in projection["parameters"], (path, guard)
         for seam in policy["prompt_seams"]:
             seam_paths.setdefault(seam, set()).add(path)
-        assert "mcp" not in next(op for op in operations() if op.name == name).surfaces
+        operation = next(op for op in operations() if op.name == name)
+        if "mcp" in operation.surfaces:
+            assert path == "doctor"
+            assert "mcp-uses-pure-doctor-payload" in policy["guard_conditions"]
+            assert operation.surfaces["mcp"]["interactivity"]["mode"] == "none"
+            assert operation.surfaces["mcp"]["resource"] == "beadhive://doctor"
+        else:
+            assert "mcp" not in operation.surfaces
 
     assert set(prompt_paths) == {
         "dep install",
+        "doctor",
         "escalate",
         "harness install",
         "host provision",

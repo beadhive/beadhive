@@ -413,14 +413,14 @@
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2160,
+        "line": 2220,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2173,
+        "line": 2233,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
@@ -2275,7 +2275,7 @@
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       }
     ],
-    "test_config_importer_count": 136,
+    "test_config_importer_count": 138,
     "test_config_importers": [
       "tests/contracts/test_config_contract_compatibility.py",
       "tests/contracts/test_config_resolution_compatibility.py",
@@ -2298,6 +2298,7 @@
       "tests/test_config_harness.py",
       "tests/test_config_herdr.py",
       "tests/test_config_hq.py",
+      "tests/test_config_init_workspace.py",
       "tests/test_config_literal_range.py",
       "tests/test_config_observaloop.py",
       "tests/test_config_offer.py",
@@ -2410,6 +2411,7 @@
       "tests/test_work_reads.py",
       "tests/test_work_refine_int.py",
       "tests/test_workspace_config_inheritance.py",
+      "tests/test_workspace_root.py",
       "tests/test_worktree.py",
       "tests/unit/modules/config/test_consumer_settings.py",
       "tests/unit/test_pure_module_independence.py"
