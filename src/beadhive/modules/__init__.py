@@ -1,1 +1,1 @@
-"""Independently testable Beadhive capability modules."""
+"""Independently testable configuration and agent capability modules."""

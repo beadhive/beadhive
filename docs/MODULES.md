@@ -705,6 +705,10 @@ Use the merged launch work as the first complete vertical module:
 
 This epic depends on the plugin/lifecycle kernel and the shared testing harness.
 
+The measured reference-extraction proof, including independent closure counts, import/cycle
+evidence, statement coverage, recent defect characterization, and explicit non-claims, is
+published in `docs/proof/bh-5wuc0.6-agent-extraction.md`.
+
 ### Epic 5 — configuration module and plugin schema fragments
 
 Extract configuration models, resolution, validation, stores, and schema generation behind the

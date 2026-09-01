@@ -50,9 +50,18 @@ reverse_dependency_tests = ["tests/test_plugins.py"]
 [[closures]]
 id = "module.agents"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/agents"
 source_paths = ["src/beadhive/modules/agents/**/*.py"]
+tests = [
+  "tests/unit/modules/agents/test_agent_contracts.py",
+  "tests/unit/modules/agents/test_agent_services.py",
+  "tests/unit/modules/agents/test_agent_independence.py",
+]
+shared_contracts = ["contract.agent-launch"]
+shared_contract_tests = ["tests/contracts/test_agent_launch_compatibility.py"]
+reverse_dependencies = ["plugin.herdr", "system-smoke"]
+reverse_dependency_tests = ["tests/test_herdr_plugin.py", "tests/test_role.py"]
 
 [[closures]]
 id = "module.config"
@@ -194,10 +203,22 @@ id = "plugin.herdr"
 kind = "plugin"
 status = "present"
 owner_path = "src/beadhive/herdr_plugin.py"
-source_paths = ["src/beadhive/herdr_plugin.py", "src/beadhive/kernel/plugins/manifests/herdr.json"]
-tests = ["tests/test_herdr_plugin.py"]
-shared_contracts = ["contracts"]
-shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/contracts/test_builtin_plugin_manifests.py"]
+source_paths = [
+  "src/beadhive/integrations/herdr/**/*.py",
+  "src/beadhive/herdr_plugin.py",
+  "src/beadhive/herdr_views.py",
+  "src/beadhive/kernel/plugins/manifests/herdr.json",
+]
+tests = [
+  "tests/unit/integrations/test_herdr_adapter.py",
+  "tests/unit/integrations/test_herdr_agent_lifecycle_adapter.py",
+  "tests/unit/integrations/test_herdr_independence.py",
+  "tests/test_herdr_plugin.py",
+  "tests/test_herdr_presentation.py",
+  "tests/test_herdr_views.py",
+]
+shared_contracts = ["contracts", "contract.agent-launch"]
+shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/contracts/test_builtin_plugin_manifests.py", "tests/contracts/test_agent_launch_compatibility.py"]
 reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
 
@@ -248,6 +269,18 @@ shared_contracts = ["contracts"]
 shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/contracts/test_builtin_plugin_manifests.py"]
 reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_plugins.py", "tests/test_plugin_cli.py"]
+
+[[closures]]
+id = "contract.agent-launch"
+kind = "contract"
+status = "present"
+owner_path = "src/beadhive/modules/agents"
+source_paths = ["src/beadhive/modules/agents/**/*.py", "src/beadhive/seat_contracts.py", "src/beadhive/agent_launch_profile.py", "src/beadhive/herdr_launch_profile.py", "docs/design/agent-launch-boundary-characterization.md"]
+tests = ["tests/unit/modules/agents/test_agent_contracts.py", "tests/unit/modules/agents/test_agent_services.py", "tests/test_agent_launch_profile.py", "tests/test_herdr_launch_profile.py", "tests/test_herdr_managed_matrix.py", "tests/contracts/test_agent_launch_compatibility.py"]
+shared_contracts = []
+shared_contract_tests = []
+reverse_dependencies = ["plugin.herdr", "system-smoke"]
+reverse_dependency_tests = ["tests/test_herdr_plugin.py", "tests/test_role.py"]
 
 [[closures]]
 id = "contracts"

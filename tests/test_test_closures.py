@@ -36,9 +36,21 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert test_closures.validate_registry(registry) == ()
     assert registry.full_gate == "just check"
     assert registry.release_gate == "just check-all"
-    assert len(registry.closures) == 22
-    assert sum(closure.status == "present" for closure in registry.closures) == 16
-    assert sum(closure.status == "absent" for closure in registry.closures) == 6
+    assert len(registry.closures) == 23
+    assert sum(closure.status == "present" for closure in registry.closures) == 18
+    assert sum(closure.status == "absent" for closure in registry.closures) == 5
+
+
+def test_agents_and_config_closures_survive_workstream_composition():
+    closures = test_closures.load_registry().by_id()
+
+    assert closures["module.agents"].status == "present"
+    assert closures["module.agents"].owner_path == "src/beadhive/modules/agents"
+    assert closures["module.config"].status == "present"
+    assert closures["module.config"].owner_path == "src/beadhive/modules/config"
+    assert {"contract.agent-launch", "config.pure", "config.store", "config.fragments"} <= set(
+        closures
+    )
 
 
 def test_impact_selection_unions_direct_shared_contract_and_reverse_dependency_tests():
@@ -48,6 +60,17 @@ def test_impact_selection_unions_direct_shared_contract_and_reverse_dependency_t
     assert "tests/unit/testing/test_conformance_testkit.py" in closure.selectors
     assert "tests/test_cli_projection.py" in closure.selectors
     assert len(closure.selectors) == len(set(closure.selectors))
+
+
+def test_herdr_closure_owns_typed_integration_and_compatibility_surfaces():
+    closure = test_closures.load_registry().by_id()["plugin.herdr"]
+
+    assert closure.owner_path == "src/beadhive/herdr_plugin.py"
+    assert "src/beadhive/integrations/herdr/**/*.py" in closure.source_paths
+    assert "tests/unit/integrations/test_herdr_agent_lifecycle_adapter.py" in closure.tests
+    assert "tests/unit/integrations/test_herdr_independence.py" in closure.tests
+    assert "tests/test_herdr_plugin.py" in closure.tests
+    assert "tests/test_herdr_presentation.py" in closure.tests
 
 
 def test_marker_selected_closure_runs_supplemental_impact_tests_separately():
