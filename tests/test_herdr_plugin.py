@@ -430,6 +430,42 @@ def test_session_selection_defaults_and_resolves_current_only_inside_herdr(monke
         herdr_plugin._session_selection("not a session")
 
 
+@pytest.mark.parametrize(
+    "fact",
+    [
+        {"spaces": [{"id": "space-1"}]},
+        {"tabs": [{"id": "tab-1"}]},
+        {"panes": [{"id": "pane-1"}]},
+        {"agents": [{"name": "worker-1", "state": "idle"}]},
+        {"session": "default"},
+        {"session_name": "default"},
+        {"revision": "r1"},
+        {"version": 1},
+        {"identity": {"target": "worker-1"}},
+        {"ownership": {"bh_owner": "bh.plugin.herdr/v1"}},
+        {"generation": "generation-1"},
+    ],
+)
+def test_session_snapshot_rejects_unversioned_identity_facts(monkeypatch, fact):
+    payload = {"snapshot": fact}
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_command",
+        lambda *_args: _result(stdout=json.dumps(payload)),
+    )
+
+    assert herdr_plugin._session_snapshot() is None
+
+
+def test_session_snapshot_accepts_only_strict_neutral_unversioned_startup(monkeypatch):
+    payload = {"snapshot": {"workspaces": [], "layouts": [], "panes": []}}
+    monkeypatch.setattr(
+        herdr_plugin, "_command", lambda *_args: _result(stdout=json.dumps(payload))
+    )
+
+    assert herdr_plugin._session_snapshot() == payload["snapshot"]
+
+
 def test_status_current_targets_injected_session_and_reports_it(monkeypatch):
     monkeypatch.setenv("HERDR_ENV", "1")
     monkeypatch.setenv("HERDR_PANE_ID", "w7:p3")
@@ -526,7 +562,7 @@ def test_stopped_reserved_session_delete_success_recreates_exact_session(monkeyp
         if len(calls) == 3:
             return _result(stdout='{"deleted":"bh-supervisor"}')
         if len(calls) == 4:
-            return _result(stdout='{"snapshot":{"session":"bh-supervisor"}}')
+            return _result(stdout='{"snapshot":{"session":"bh-supervisor","revision":"r1"}}')
         raise AssertionError(argv)
 
     monkeypatch.setattr(herdr_plugin.run, "run", fake_run)
@@ -536,7 +572,7 @@ def test_stopped_reserved_session_delete_success_recreates_exact_session(monkeyp
     finally:
         herdr_plugin._SESSION_CONTEXT.reset(token)
 
-    assert snapshot == {"session": "bh-supervisor"}
+    assert snapshot == {"session": "bh-supervisor", "revision": "r1"}
     assert detail == ""
     assert calls == [
         ["herdr", "--session", "bh-supervisor", "api", "snapshot"],
@@ -977,7 +1013,8 @@ def test_spawn_reuses_snapshot_workspace_and_its_actual_pane(tmp_path, monkeypat
         if argv[-2:] == ["api", "snapshot"]:
             return _result(
                 stdout='{"id":"cli:api:snapshot","result":{"snapshot":'
-                '{"workspaces":[{"label":"bh:h","workspace_id":"w9"}],'
+                '{"session":"default","revision":"r1",'
+                '"workspaces":[{"label":"bh:h","workspace_id":"w9"}],'
                 '"layouts":[{"workspace_id":"w9","focused_pane_id":"w9:p7"}],'
                 '"panes":[{"workspace_id":"w9","pane_id":"w9:p7"}]},'
                 '"type":"session_snapshot"}}'

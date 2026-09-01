@@ -45,6 +45,22 @@ from . import (
     store_locator,
     worktree,
 )
+from .integrations.herdr.identity import (
+    collect_tokens,
+    validate_generation,
+    validate_live_identity,
+)
+from .integrations.herdr.identity import (
+    resolve_session as resolve_herdr_session,
+)
+from .integrations.herdr.topology import agent_records, join_snapshot_records, parse_snapshot
+from .integrations.herdr.transport import (
+    FailureCode,
+    HerdrClient,
+    decode_legacy,
+    decode_protocol,
+    invoke_command,
+)
 
 _DEFAULT_SESSION = "default"
 _RESERVED_RECOVERY_SESSION = "bh-supervisor"
@@ -121,50 +137,42 @@ def _active_session() -> _SessionSelection:
 
 def _current_session_name() -> str:
     """Resolve Herdr's injected caller session without consulting focused UI state."""
-    if os.environ.get("HERDR_ENV") != "1" or not os.environ.get("HERDR_PANE_ID", "").strip():
+    try:
+        return resolve_herdr_session("current", environment=os.environ).name
+    except ValueError as exc:
         raise ValueError(
             "--session current requires a Herdr-managed pane (HERDR_ENV=1 and "
             "HERDR_PANE_ID); pass an exact session name outside Herdr"
-        )
-    # Named sessions inject HERDR_SESSION.  The original/default session predates that variable,
-    # so its absence is an exact, documented compatibility spelling rather than a focused-session
-    # lookup.
-    return os.environ.get("HERDR_SESSION", "").strip() or "default"
+        ) from exc
 
 
 def _session_selection(value: str, *, source: str = "--session") -> _SessionSelection:
-    """Validate one selected spelling and resolve only Herdr's explicit pane sentinels."""
-    requested = value.strip()
-    if not requested:
-        raise ValueError(f"{source} must not be empty")
-    if requested.lower() in _CURRENT_SESSION_SENTINELS:
-        current = _current_session_name()
-        if (
-            current in {".", ".."}
-            or len(current.encode()) > _MAX_SESSION_NAME_BYTES
-            or _SESSION_NAME_RE.fullmatch(current) is None
-        ):
-            raise ValueError("Herdr injected an invalid current session name")
-        return _SessionSelection(current, requested, current=True)
-    if (
-        requested in {".", ".."}
-        or len(requested.encode()) > _MAX_SESSION_NAME_BYTES
-        or _SESSION_NAME_RE.fullmatch(requested) is None
-    ):
+    """Compatibility projection of the provider-neutral session selection."""
+    try:
+        selected = resolve_herdr_session(value, environment=os.environ)
+    except ValueError as exc:
+        message = str(exc)
+        if "session must not be empty" in message:
+            raise ValueError(f"{source} must not be empty") from exc
+        if "current Herdr session" in message:
+            raise ValueError(
+                f"{source} current requires a Herdr-managed pane (HERDR_ENV=1 and HERDR_PANE_ID)"
+            ) from exc
         raise ValueError(
             f"{source} must be a Herdr session name (ASCII letters, digits, dot, underscore, "
             "or dash; at most 128 bytes), or `current`/`active`"
-        )
-    return _SessionSelection(requested, requested)
+        ) from exc
+    return _SessionSelection(selected.name, selected.requested, current=selected.current)
 
 
 def _resolve_session(explicit: str | None) -> _SessionSelection:
     """Resolve flag > Beadhive environment override > normal default."""
     if explicit is not None:
         return _session_selection(explicit, source="--session")
-    if "BH_HERDR_SESSION" in os.environ:
-        return _session_selection(os.environ["BH_HERDR_SESSION"], source="BH_HERDR_SESSION")
-    return _session_selection(_DEFAULT_SESSION, source="default session")
+    return _session_selection(
+        os.environ.get("BH_HERDR_SESSION", _DEFAULT_SESSION),
+        source="BH_HERDR_SESSION" if "BH_HERDR_SESSION" in os.environ else "default session",
+    )
 
 
 def _session_scoped(fn):
@@ -300,18 +308,7 @@ def _has_cli() -> bool:
 
 def _invoke(argv: list[str], *, timeout: float | None = None):
     """Run a read-only herdr probe, returning ``None`` for every failure."""
-    try:
-        kwargs = {"check": False, "capture": True}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        return run.run(argv, **kwargs)
-    except subprocess.TimeoutExpired:
-        # Keep a bounded wait a clean, actionable CLI failure rather than leaking a traceback.
-        return subprocess.CompletedProcess(
-            argv, 124, stdout="", stderr=f"timed out after {timeout:g}s"
-        )
-    except Exception:  # noqa: BLE001 - server may be stopped or the process may fail
-        return None
+    return invoke_command(argv, runner=run.run, timeout=timeout)
 
 
 def server_up() -> bool:
@@ -638,10 +635,12 @@ def _session_socket_path() -> tuple[Path | None, str]:
     status = _invoke(["herdr", "--session", _active_session().name, "status", "--json"])
     if status is None or status.returncode != 0:
         return None, _output(status) if status is not None else "status unavailable"
-    try:
-        payload = json.loads(str(status.stdout or ""))
-    except (TypeError, ValueError):
+    decoded = decode_protocol(str(status.stdout or ""))
+    if not decoded.is_ok:
         return None, "status returned invalid JSON"
+    payload = decoded.value
+    if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+        payload = payload["result"]
     server = payload.get("server") if isinstance(payload, dict) else None
     path = server.get("socket") if isinstance(server, dict) else None
     if not isinstance(path, str) or not path:
@@ -672,35 +671,30 @@ def _prompt_over_socket(target: str, prompt: str, *, timeout_ms: int = 60_000):
             "wait": {"until": ["idle", "done", "blocked"], "timeout_ms": timeout_ms},
         },
     }
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-            client.settimeout((timeout_ms / 1000) + 5)
-            client.connect(str(path))
-            client.sendall((json.dumps(request, separators=(",", ":")) + "\n").encode())
-            with client.makefile("rb") as stream:
-                response = stream.readline(1024 * 1024 + 1)
-        if not response or len(response) > 1024 * 1024:
-            return subprocess.CompletedProcess(
-                argv, 1, stdout="", stderr="Herdr returned an empty or oversized response"
-            )
-        decoded = json.loads(response)
-    except TimeoutError:
-        return subprocess.CompletedProcess(
-            argv, 124, stdout="", stderr=f"timed out after {timeout_ms / 1000:g}s"
-        )
-    except (OSError, TypeError, ValueError) as exc:
-        return subprocess.CompletedProcess(
-            argv, 1, stdout="", stderr=f"local Herdr socket request failed: {exc}"
-        )
-    if not isinstance(decoded, dict) or decoded.get("id") != request["id"]:
-        return subprocess.CompletedProcess(
-            argv, 1, stdout="", stderr="Herdr returned a mismatched agent.prompt response"
-        )
-    if decoded.get("error") is not None:
-        return subprocess.CompletedProcess(
-            argv, 1, stdout="", stderr="Herdr refused the agent.prompt request"
-        )
-    result = decoded.get("result")
+    transport = HerdrClient(
+        session=_active_session().name,
+        socket_factory=socket.socket,
+    )
+    typed = transport.socket_request(
+        path,
+        "agent.prompt",
+        request["params"],
+        timeout=(timeout_ms / 1000) + 5,
+        request_id=request["id"],
+    )
+    if not typed.is_ok:
+        failure = typed.failure
+        if failure is not None and failure.code == FailureCode.CONFLICT:
+            message = "Herdr returned a mismatched agent.prompt response"
+        elif failure is not None and failure.code == FailureCode.RETRYABLE:
+            message = f"timed out after {timeout_ms / 1000:g}s"
+        elif failure is not None and failure.code == FailureCode.REFUSED:
+            message = "Herdr refused the agent.prompt request"
+        else:
+            message = "Herdr returned an empty or malformed response"
+        status = 124 if failure is not None and failure.code == FailureCode.RETRYABLE else 1
+        return subprocess.CompletedProcess(argv, status, stdout="", stderr=message)
+    result = typed.value
     if (
         not isinstance(result, dict)
         or result.get("type") != "agent_prompt"
@@ -709,7 +703,12 @@ def _prompt_over_socket(target: str, prompt: str, *, timeout_ms: int = 60_000):
         return subprocess.CompletedProcess(
             argv, 1, stdout="", stderr="Herdr returned an invalid agent.prompt response"
         )
-    return subprocess.CompletedProcess(argv, 0, stdout=json.dumps(decoded), stderr="")
+    return subprocess.CompletedProcess(
+        argv,
+        0,
+        stdout=json.dumps({"id": request["id"], "result": result}),
+        stderr="",
+    )
 
 
 def _prompt_input(
@@ -771,11 +770,7 @@ def _require(result, action: str):
 
 def _decoded(result):
     """Decode one Herdr JSON response, retaining legacy plain-text output."""
-    output = _output(result)
-    try:
-        return json.loads(output)
-    except (TypeError, ValueError):
-        return output
+    return decode_legacy(_output(result))
 
 
 def _response_error(action: str, field: str) -> None:
@@ -1018,7 +1013,36 @@ def _session_snapshot():
     data = _result_payload(_decoded(result))
     if isinstance(data, dict) and isinstance(data.get("snapshot"), dict):
         data = data["snapshot"]
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    versioned = isinstance(data.get("session", data.get("session_name")), str) and isinstance(
+        data.get("revision"), str
+    )
+    if not versioned and not _is_neutral_unversioned_startup(data):
+        return None
+    parsed = parse_snapshot(data)
+    if not parsed.is_ok:
+        # Older Herdr servers return an empty startup observation before they attach the
+        # authoritative session/revision.  It contains no identity-bearing topology to trust;
+        # retain that compatibility shape while rejecting every unversioned non-empty snapshot.
+        if (
+            parsed.failure is not None
+            and parsed.failure.message == "Herdr snapshot lacks session or revision"
+        ):
+            compatibility = dict(data)
+            compatibility.setdefault("session", _active_session().name)
+            compatibility.setdefault("revision", "unversioned")
+            checked = parse_snapshot(compatibility)
+            if checked.is_ok:
+                return data
+        return None
+    return parsed.value.raw
+
+
+def _is_neutral_unversioned_startup(data: dict) -> bool:
+    """Allow only canonical empty collection shells before Herdr supplies identity."""
+    empty_collections = {"spaces", "workspaces", "tabs", "panes", "agents", "layouts"}
+    return all(key in empty_collections and value in ([], {}) for key, value in data.items())
 
 
 def _session_states() -> tuple[dict[str, _SessionState] | None, str]:
@@ -1101,55 +1125,12 @@ def _prepare_selected_session() -> tuple[dict | None, str]:
 
 def _snapshot_agent_records(snapshot: dict) -> list[dict]:
     """Join snapshot agent, pane, and workspace facts for strict reuse proof."""
-    panes = {
-        str(item.get("pane_id") or item.get("id")): item
-        for item in snapshot.get("panes", [])
-        if isinstance(item, dict) and (item.get("pane_id") or item.get("id"))
-    }
-    workspaces = {
-        str(item.get("workspace_id") or item.get("id")): item
-        for item in snapshot.get("workspaces", [])
-        if isinstance(item, dict) and (item.get("workspace_id") or item.get("id"))
-    }
-    raw = snapshot.get("agents")
-    if not isinstance(raw, list):
-        raw = _agent_records(snapshot, unique_by_name=False)
-    records: list[dict] = []
-    for item in raw:
-        if not isinstance(item, dict):
-            continue
-        record = dict(item)
-        if isinstance(item.get("agent"), dict):
-            record.update(item["agent"])
-        pane_id = _record_pane_id(record)
-        pane = panes.get(pane_id or "", {})
-        workspace_id = record.get("workspace_id") or (
-            pane.get("workspace_id") if isinstance(pane, dict) else None
-        )
-        workspace = workspaces.get(str(workspace_id or ""), {})
-        if pane:
-            record["pane_record"] = pane
-        if workspace:
-            record["workspace_record"] = workspace
-        records.append(record)
-    return records
+    return join_snapshot_records(snapshot)
 
 
 def _metadata_tokens(record: dict) -> dict[str, str]:
     """Return Herdr's effective metadata tokens for a joined live record."""
-    tokens: dict[str, str] = {}
-    for source in (
-        record.get("workspace_record"),
-        record.get("pane_record"),
-        record.get("pane"),
-        record,
-    ):
-        if not isinstance(source, dict):
-            continue
-        raw = source.get("tokens")
-        if isinstance(raw, dict):
-            tokens.update({str(key): str(value) for key, value in raw.items() if value is not None})
-    return tokens
+    return collect_tokens(record)
 
 
 def _tag_ownership(
@@ -1675,43 +1656,19 @@ def _strict_live_target(target: str, hive: str, cwd: Path) -> tuple[str, str] | 
     if len(matches) != 1:
         raise RuntimeError(f"target {target!r} is ambiguous ({len(matches)} live records)")
     record = matches[0]
-    state = _agent_identity(record)[3].lower()
-    pane_id = _record_pane_id(record)
-    pane_record = record.get("pane_record")
-    pane_value = record.get("pane")
-    pane_name = None
-    if isinstance(pane_value, dict):
-        pane_name = _string_field(pane_value, "name", "label", "title", "pane_name")
-    if pane_name is None and isinstance(pane_record, dict):
-        pane_name = _string_field(pane_record, "name", "label", "title", "pane_name")
-    if pane_name is None:
-        pane_name = _string_field(record, "pane_name", "pane_label", "pane_title")
-    workspace_id = _snapshot_value(record, "workspace_id")
-    workspace_label = _snapshot_value(record, "workspace_label")
-    if workspace_label is None:
-        workspace = record.get("workspace_record")
-        if isinstance(workspace, dict):
-            workspace_label = _string_field(workspace, "label", "name")
-    working_dir = _snapshot_value(record, "cwd", "working_directory", "current_dir")
-    same_cwd = False
-    if working_dir:
-        try:
-            same_cwd = Path(working_dir).resolve() == cwd.resolve()
-        except OSError:
-            same_cwd = working_dir == str(cwd)
-    if (
-        state not in _LIVE_AGENT_STATES
-        or not pane_id
-        or pane_name != target
-        or workspace_label != f"bh:{hive}"
-        or not workspace_id
-        or not same_cwd
-    ):
+    proof = validate_live_identity(
+        record,
+        target=target,
+        hive=hive,
+        cwd=cwd,
+        live_states=set(_LIVE_AGENT_STATES),
+    )
+    if not proof.is_ok:
         raise RuntimeError(
             f"target {target!r} exists but does not prove the requested live pane, "
             "workspace, and worktree ownership"
         )
-    return workspace_id, pane_id
+    return proof.value
 
 
 def _validate_managed_generation(target: str, profile, resolved) -> None:
@@ -1737,9 +1694,11 @@ def _validate_managed_generation(target: str, profile, resolved) -> None:
     if profile.launch_id is not None:
         expected[_TOKEN_LAUNCH_ID] = profile.launch_id
         expected[_TOKEN_OPERATION_ID] = profile.operation_id
-    tokens = _metadata_tokens(matches[0])
-    conflicts = [key for key, value in expected.items() if tokens.get(key) != value]
-    if conflicts:
+    proof = validate_generation(_metadata_tokens(matches[0]), expected)
+    if not proof.is_ok:
+        conflicts = [
+            key for key, value in expected.items() if _metadata_tokens(matches[0]).get(key) != value
+        ]
         raise RuntimeError(
             "managed Agent conflicts with requested operation/profile/generation: "
             + ", ".join(conflicts)
@@ -2561,49 +2520,12 @@ def _record_pane_id(record: dict) -> str | None:
 def _agent_records(
     value, *, unique_by_name: bool = True, include_pane_claims: bool = False
 ) -> list[dict]:
-    """Extract agent-shaped records from herdr's versioned JSON responses.
-
-    ``ps`` requests the stable, deduplicated view.  ``reap`` intentionally
-    retains distinct raw records so it can refuse duplicate agent-to-pane claims.
-    A wrapper's sibling pane data is merged into its nested ``agent`` identity,
-    then that child is skipped while walking to avoid a second logical record.
-    """
-    records: list[dict] = []
-
-    def visit(item) -> None:
-        if isinstance(item, dict):
-            nested = item.get("agent")
-            candidate = dict(item)
-            if isinstance(nested, dict):
-                candidate.update(nested)
-            name = candidate.get("name") or candidate.get("agent_name") or candidate.get("target")
-            state = (
-                candidate.get("state")
-                or candidate.get("status")
-                or candidate.get("agent_status")
-                or candidate.get("lifecycle")
-                or candidate.get("lifecycle_state")
-            )
-            is_agent = isinstance(name, str) and isinstance(state, (str, int, float))
-            is_pane_claim = include_pane_claims and _record_pane_id(candidate) is not None
-            if is_agent or is_pane_claim:
-                records.append(candidate)
-            for key, child in item.items():
-                if key == "agent" and isinstance(nested, dict):
-                    continue
-                visit(child)
-        elif isinstance(item, list):
-            for child in item:
-                visit(child)
-
-    visit(value)
-    if not unique_by_name:
-        return records
-    unique: dict[str, dict] = {}
-    for record in records:
-        name = str(record.get("name") or record.get("agent_name") or record.get("target"))
-        unique.setdefault(name, record)
-    return list(unique.values())
+    """Compatibility forwarding facade for provider-neutral record extraction."""
+    return agent_records(
+        value,
+        unique_by_name=unique_by_name,
+        include_pane_claims=include_pane_claims,
+    )
 
 
 def _agent_identity(record: dict) -> tuple[str, str | None, str | None, str]:
@@ -2870,11 +2792,13 @@ def _generation_reap_matches(
     ]
     if len(matches) != 1:
         return False
-    tokens = _metadata_tokens(matches[0])
-    return (
-        tokens.get(_TOKEN_GENERATION) == str(generation)
-        and tokens.get(_TOKEN_LAUNCH_SPEC) == launch_spec_digest
-    )
+    return validate_generation(
+        _metadata_tokens(matches[0]),
+        {
+            _TOKEN_GENERATION: str(generation),
+            _TOKEN_LAUNCH_SPEC: launch_spec_digest,
+        },
+    ).is_ok
 
 
 @cli.command(
