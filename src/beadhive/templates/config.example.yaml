@@ -252,6 +252,31 @@ worktrees:
 #                                  # Needs a real gpg.ssh.allowedsignersfile: without one git
 #                                  # reports even a correctly signed commit as N and this gate
 #                                  # refuses everything. `bh host identity` wires that up.
+#   precious_globs:                # local-only content protected regardless of size; a per-hive
+#     - .env                       # list replaces this global list (it does not append)
+#     - .env.*
+#     - "*.db"
+#     - "*.sqlite*"
+#     - "*.duckdb"
+#     - dumps/**
+#     - data/**
+#     - "*.dump"
+#     - "*.sql"
+#     - downloads/**
+#     - outputs/**
+#     - "*.pem"
+#     - "*.key"
+#   junk_globs:                    # dropped before stat or directory traversal
+#     - node_modules/**
+#     - .venv/**
+#     - __pycache__/**
+#     - "*.pyc"
+#     - .pytest_cache/**
+#     - .ruff_cache/**
+#     - dist/**
+#     - build/**
+#     - .mypy_cache/**
+#   precious_min_bytes: 1048576   # unknown ignored/untracked paths at least this large need review
 #   dispatch:                      # How the dispatcher dispatches ready beads
 #     mode: fanout                 # fanout (one dev per bead) | collapsed (batch beads) | auto (choose by budget)
 #     max_depth: 2                 # Max nesting depth for sub-agent dispatch: 0 | 1 | 2
