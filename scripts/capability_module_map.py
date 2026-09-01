@@ -320,6 +320,7 @@ def _slice_metrics(
     name: str,
     paths: tuple[str, ...],
     all_paths: tuple[str, ...],
+    all_test_paths: tuple[str, ...],
     modules: dict[str, Path],
     edges: tuple[ImportEdge, ...],
     components: list[set[str]],
@@ -370,15 +371,28 @@ def _slice_metrics(
         "call_coupling": _call_coupling(all_paths, set(modules), selected),
         "owned_scc_intersections": sccs,
         "current_test_files": list(tests),
-        "dynamic_test_seams": _dynamic_test_seams(tests, selected),
+        "dynamic_test_scope": {
+            "python_files": len(all_test_paths),
+            "paths_ref": "repository.test_inventory.python_paths",
+        },
+        "dynamic_test_seams": _dynamic_test_seams(all_test_paths, selected),
     }
 
 
 def build_map() -> dict[str, Any]:
     all_paths = _revision_files("src/beadhive")
+    all_test_paths = _revision_files("tests")
     modules, edges, dynamic, components, cyclic = _materialized_import_graph()
     slices = {
-        name: _slice_metrics(name, paths, all_paths, modules, edges, components)
+        name: _slice_metrics(
+            name,
+            paths,
+            all_paths,
+            all_test_paths,
+            modules,
+            edges,
+            components,
+        )
         for name, paths in SLICES.items()
     }
     return {
@@ -389,7 +403,10 @@ def build_map() -> dict[str, Any]:
             "fan_in": "distinct source modules outside the slice with a static import into it",
             "call_coupling": "AST call sites resolved through explicit import aliases",
             "churn": f"git numstat at the measured revision since {CHURN_SINCE}",
-            "dynamic_test_seams": "AST patch/getattr/import calls in the selected legacy tests",
+            "dynamic_test_seams": (
+                "AST patch/getattr/import calls across every exact-revision Python test/support "
+                "file; current_test_files is the narrower legacy characterization closure"
+            ),
             "coverage": "recorded separately in the human evidence because it is executed data",
         },
         "repository": {
@@ -412,6 +429,10 @@ def build_map() -> dict[str, Any]:
             ],
             "cyclic_edges": len(cyclic),
             "cyclic_symbols": sum(len(edge.symbols) for edge in cyclic),
+            "test_inventory": {
+                "python_files": len(all_test_paths),
+                "python_paths": list(all_test_paths),
+            },
         },
         "slices": slices,
     }

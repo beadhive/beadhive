@@ -41,3 +41,33 @@ def test_capability_module_map_freezes_every_required_evidence_family() -> None:
         assert slice_evidence["current_test_files"]
         assert "inbound" in slice_evidence["call_coupling"]
         assert "outbound" in slice_evidence["call_coupling"]
+
+
+def test_dynamic_seams_cover_every_exact_revision_python_test_caller() -> None:
+    capability_module_map = _module()
+    artifact = json.loads(capability_module_map.DEFAULT_OUTPUT.read_text(encoding="utf-8"))
+    exact_test_paths = capability_module_map._revision_files("tests")
+
+    assert len(exact_test_paths) == 387
+    assert artifact["repository"]["test_inventory"] == {
+        "python_files": len(exact_test_paths),
+        "python_paths": list(exact_test_paths),
+    }
+    expected_seam_counts = {
+        "hives": 197,
+        "worktrees": 39,
+        "work": 57,
+        "planning": 8,
+        "state": 20,
+    }
+    assert len(artifact["slices"]["hives"]["dynamic_test_seams"]) == 197
+    assert len(artifact["slices"]["hives"]["dynamic_test_seams"]) != 77
+    for name, slice_evidence in artifact["slices"].items():
+        assert slice_evidence["dynamic_test_scope"] == {
+            "python_files": len(exact_test_paths),
+            "paths_ref": "repository.test_inventory.python_paths",
+        }
+        assert len(slice_evidence["dynamic_test_seams"]) == expected_seam_counts[name]
+        assert {row["path"] for row in slice_evidence["dynamic_test_seams"]} <= set(
+            exact_test_paths
+        )

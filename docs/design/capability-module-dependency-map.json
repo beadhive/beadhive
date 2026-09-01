@@ -3,7 +3,7 @@
     "call_coupling": "AST call sites resolved through explicit import aliases",
     "churn": "git numstat at the measured revision since 2026-06-03T00:00:00Z",
     "coverage": "recorded separately in the human evidence because it is executed data",
-    "dynamic_test_seams": "AST patch/getattr/import calls in the selected legacy tests",
+    "dynamic_test_seams": "AST patch/getattr/import calls across every exact-revision Python test/support file; current_test_files is the narrower legacy characterization closure",
     "fan_in": "distinct source modules outside the slice with a static import into it"
   },
   "measured_revision": "287061f089764dac29b5f584ebcdbb5f25f86c26",
@@ -132,7 +132,399 @@
         "beadhive.work",
         "beadhive.work_show"
       ]
-    ]
+    ],
+    "test_inventory": {
+      "python_files": 387,
+      "python_paths": [
+        "tests/conftest.py",
+        "tests/contracts/test_agent_launch_compatibility.py",
+        "tests/contracts/test_builtin_plugin_manifests.py",
+        "tests/contracts/test_config_contract_compatibility.py",
+        "tests/contracts/test_config_resolution_compatibility.py",
+        "tests/contracts/test_plugin_discovery_contract.py",
+        "tests/contracts/test_sample_plugin_authoring.py",
+        "tests/fixtures/stub_seat.py",
+        "tests/harness/__init__.py",
+        "tests/harness/beads.py",
+        "tests/harness/graph.py",
+        "tests/harness/history.py",
+        "tests/harness/hive.py",
+        "tests/harness/modalities.py",
+        "tests/harness/noisy.py",
+        "tests/harness/processes.py",
+        "tests/harness/render.py",
+        "tests/harness/sample_plugin_v1.py",
+        "tests/harness/validation_state.py",
+        "tests/harness/watchdog_diagnostics.py",
+        "tests/harness/world.py",
+        "tests/proof/generate_operator_sse_fixture.py",
+        "tests/spikes/test_bh_u562_3_unified_host_transport.py",
+        "tests/stateful_fixtures.py",
+        "tests/test_adopt.py",
+        "tests/test_agent_launch_profile.py",
+        "tests/test_agent_run_summary.py",
+        "tests/test_agent_run_summary_cli.py",
+        "tests/test_agent_run_summary_reader.py",
+        "tests/test_agf_modalities.py",
+        "tests/test_agf_remote_sandbox.py",
+        "tests/test_alerts.py",
+        "tests/test_always_run.py",
+        "tests/test_attestation_provider.py",
+        "tests/test_backfill_commit_linkage.py",
+        "tests/test_backup.py",
+        "tests/test_bd_create_json.py",
+        "tests/test_bd_json_seam.py",
+        "tests/test_bd_repo_sync_additive.py",
+        "tests/test_bead_hive_resolution.py",
+        "tests/test_bh.py",
+        "tests/test_bounded_child.py",
+        "tests/test_channels.py",
+        "tests/test_check_verify_env.py",
+        "tests/test_checkpoint.py",
+        "tests/test_child_env.py",
+        "tests/test_claim_authority.py",
+        "tests/test_claim_fence.py",
+        "tests/test_cli.py",
+        "tests/test_cli_projection.py",
+        "tests/test_complexity.py",
+        "tests/test_complexity_backfill.py",
+        "tests/test_complexity_routing_e2e.py",
+        "tests/test_component_licenses.py",
+        "tests/test_compose_container_mode.py",
+        "tests/test_compose_volumes.py",
+        "tests/test_config.py",
+        "tests/test_config_boundaries.py",
+        "tests/test_config_claude.py",
+        "tests/test_config_dotted.py",
+        "tests/test_config_fleet_merge.py",
+        "tests/test_config_harness.py",
+        "tests/test_config_herdr.py",
+        "tests/test_config_hq.py",
+        "tests/test_config_literal_range.py",
+        "tests/test_config_observaloop.py",
+        "tests/test_config_offer.py",
+        "tests/test_config_orca.py",
+        "tests/test_config_partition.py",
+        "tests/test_config_release.py",
+        "tests/test_config_repowise.py",
+        "tests/test_config_routing.py",
+        "tests/test_config_schema.py",
+        "tests/test_config_schema_drift.py",
+        "tests/test_config_scope.py",
+        "tests/test_config_split_migration.py",
+        "tests/test_config_validate.py",
+        "tests/test_config_validate_cli.py",
+        "tests/test_config_work.py",
+        "tests/test_config_worktrees.py",
+        "tests/test_conflict_estimator.py",
+        "tests/test_contributor.py",
+        "tests/test_converge.py",
+        "tests/test_coordination.py",
+        "tests/test_coordination_int.py",
+        "tests/test_credentials.py",
+        "tests/test_deep_nested_paths.py",
+        "tests/test_demo_live_ingress_matrix.py",
+        "tests/test_dep_cli.py",
+        "tests/test_dependency_policy.py",
+        "tests/test_deps_characterization.py",
+        "tests/test_devshell_only_deps.py",
+        "tests/test_dispatch_cli.py",
+        "tests/test_dispatch_hive_run.py",
+        "tests/test_dispatch_log.py",
+        "tests/test_dispatch_status.py",
+        "tests/test_dispatch_supervisor.py",
+        "tests/test_docs_role_vocabulary.py",
+        "tests/test_doctor.py",
+        "tests/test_doctor_channels.py",
+        "tests/test_doctor_dispatch.py",
+        "tests/test_doctor_schema_skew.py",
+        "tests/test_dolt_embedded_engine_int.py",
+        "tests/test_dolt_fix_advisory.py",
+        "tests/test_dolt_health.py",
+        "tests/test_dolt_health_int.py",
+        "tests/test_dolt_health_real_server_int.py",
+        "tests/test_dolt_server_slots.py",
+        "tests/test_dolt_server_sweep.py",
+        "tests/test_enforce_signing.py",
+        "tests/test_engine.py",
+        "tests/test_error_boundaries.py",
+        "tests/test_escalate.py",
+        "tests/test_fifo_reads_degrade.py",
+        "tests/test_flake_toolchain.py",
+        "tests/test_fleet.py",
+        "tests/test_gateway_read.py",
+        "tests/test_git_identity.py",
+        "tests/test_git_linkage.py",
+        "tests/test_gitauth.py",
+        "tests/test_gitref.py",
+        "tests/test_gitworkspace_groups.py",
+        "tests/test_gitworkspace_plugin.py",
+        "tests/test_guard.py",
+        "tests/test_guard_primary.py",
+        "tests/test_harness.py",
+        "tests/test_help_hygiene.py",
+        "tests/test_herdr_launch_profile.py",
+        "tests/test_herdr_managed_matrix.py",
+        "tests/test_herdr_plugin.py",
+        "tests/test_herdr_presentation.py",
+        "tests/test_herdr_views.py",
+        "tests/test_hermetic_fence.py",
+        "tests/test_hitch_plugin.py",
+        "tests/test_hive_add_rm.py",
+        "tests/test_hive_agents.py",
+        "tests/test_hive_agf_hint.py",
+        "tests/test_hive_archive.py",
+        "tests/test_hive_available.py",
+        "tests/test_hive_claude.py",
+        "tests/test_hive_codex.py",
+        "tests/test_hive_context.py",
+        "tests/test_hive_hook_pre_push.py",
+        "tests/test_hive_hook_push_main.py",
+        "tests/test_hive_identity_json.py",
+        "tests/test_hive_lifecycle_json.py",
+        "tests/test_hive_migrate.py",
+        "tests/test_hive_observaloop.py",
+        "tests/test_hive_onboard.py",
+        "tests/test_hive_opencode.py",
+        "tests/test_hive_plugin_installer.py",
+        "tests/test_hive_ready.py",
+        "tests/test_hive_ready_plugin.py",
+        "tests/test_hive_ready_schema_version.py",
+        "tests/test_hive_reclaim.py",
+        "tests/test_hive_reinit.py",
+        "tests/test_hive_repair.py",
+        "tests/test_hive_retire.py",
+        "tests/test_hive_schema.py",
+        "tests/test_hive_skills.py",
+        "tests/test_hive_survey.py",
+        "tests/test_hive_sync.py",
+        "tests/test_host.py",
+        "tests/test_host_adopt.py",
+        "tests/test_host_answers.py",
+        "tests/test_host_cli.py",
+        "tests/test_host_daemon.py",
+        "tests/test_host_fence.py",
+        "tests/test_host_fence_int.py",
+        "tests/test_host_lease.py",
+        "tests/test_host_lease_cli.py",
+        "tests/test_host_lease_renewal.py",
+        "tests/test_host_provision.py",
+        "tests/test_host_retire.py",
+        "tests/test_host_rm_cli.py",
+        "tests/test_hosts.py",
+        "tests/test_hq.py",
+        "tests/test_hq_backup_server_mode_int.py",
+        "tests/test_hq_clone.py",
+        "tests/test_hq_push.py",
+        "tests/test_hq_remote.py",
+        "tests/test_hq_remote_create.py",
+        "tests/test_hq_remote_prompt.py",
+        "tests/test_hq_restore.py",
+        "tests/test_hub.py",
+        "tests/test_hub_bulk.py",
+        "tests/test_hub_bulk_int.py",
+        "tests/test_hub_rebuild.py",
+        "tests/test_identity.py",
+        "tests/test_image_build.py",
+        "tests/test_image_cve_gate.py",
+        "tests/test_image_licenses.py",
+        "tests/test_image_release_drift.py",
+        "tests/test_import_boundaries.py",
+        "tests/test_install_md_upgrades.py",
+        "tests/test_install_plane.py",
+        "tests/test_live_ingress_fixtures.py",
+        "tests/test_local_build.py",
+        "tests/test_local_install.py",
+        "tests/test_localloop.py",
+        "tests/test_localloop_int.py",
+        "tests/test_log.py",
+        "tests/test_machine_json.py",
+        "tests/test_main_gate.py",
+        "tests/test_mcp.py",
+        "tests/test_mcp_alerts_resource.py",
+        "tests/test_mcp_call_every_tool.py",
+        "tests/test_mcp_catalog_projection.py",
+        "tests/test_mcp_doctor_resource.py",
+        "tests/test_mcp_hives_resources.py",
+        "tests/test_mcp_install.py",
+        "tests/test_mcp_labels_validation_resource.py",
+        "tests/test_mcp_notify.py",
+        "tests/test_mcp_plans_resources.py",
+        "tests/test_mcp_resource.py",
+        "tests/test_mcp_resources.py",
+        "tests/test_mcp_strict_bd_reads.py",
+        "tests/test_mcp_tool_span.py",
+        "tests/test_mcp_toolchain.py",
+        "tests/test_mcp_work_intake_dupes_resource.py",
+        "tests/test_mcp_work_issue_resource.py",
+        "tests/test_mcp_work_ready_resource.py",
+        "tests/test_mcp_work_schedule_resource.py",
+        "tests/test_mcp_work_show_resource.py",
+        "tests/test_merge_slot.py",
+        "tests/test_metadata.py",
+        "tests/test_metrics_verify.py",
+        "tests/test_model_routing.py",
+        "tests/test_molecule.py",
+        "tests/test_naming_conventions.py",
+        "tests/test_observaloop.py",
+        "tests/test_observaloop_cli.py",
+        "tests/test_observaloop_env.py",
+        "tests/test_onboard.py",
+        "tests/test_onboard_auto_export.py",
+        "tests/test_onboard_dag.py",
+        "tests/test_onboard_external.py",
+        "tests/test_onboard_gh2455.py",
+        "tests/test_onboard_plugin.py",
+        "tests/test_onboard_server_mode.py",
+        "tests/test_onboard_server_mode_int.py",
+        "tests/test_onboard_store_prefix.py",
+        "tests/test_operation_catalog.py",
+        "tests/test_operator_agents.py",
+        "tests/test_operator_api.py",
+        "tests/test_operator_feed.py",
+        "tests/test_operator_sources.py",
+        "tests/test_operator_sse.py",
+        "tests/test_operator_ui_release_docs.py",
+        "tests/test_operator_work_items.py",
+        "tests/test_orca.py",
+        "tests/test_osv_gate.py",
+        "tests/test_osv_license_gate.py",
+        "tests/test_otel.py",
+        "tests/test_otel_cli.py",
+        "tests/test_otel_cli_instrument.py",
+        "tests/test_otel_cli_span.py",
+        "tests/test_otel_flow.py",
+        "tests/test_otel_genai.py",
+        "tests/test_otel_instrument.py",
+        "tests/test_otel_lgtm.py",
+        "tests/test_otel_passthrough.py",
+        "tests/test_otel_verify.py",
+        "tests/test_plan.py",
+        "tests/test_plan_repair.py",
+        "tests/test_plugin_cli.py",
+        "tests/test_plugins.py",
+        "tests/test_prepush.py",
+        "tests/test_private_path_policy.py",
+        "tests/test_private_paths.py",
+        "tests/test_probe_herdr_managed_seats.py",
+        "tests/test_process_harness_policy.py",
+        "tests/test_prune_cadence_assets.py",
+        "tests/test_public_readers.py",
+        "tests/test_publish_boundary.py",
+        "tests/test_push_bump_gate.py",
+        "tests/test_readme_install_drift.py",
+        "tests/test_refine.py",
+        "tests/test_registry.py",
+        "tests/test_release_flow.py",
+        "tests/test_release_order.py",
+        "tests/test_release_recipe_probes.py",
+        "tests/test_release_reconcile.py",
+        "tests/test_remote_gateway.py",
+        "tests/test_remote_gateway_handoff.py",
+        "tests/test_remote_gateway_runtime.py",
+        "tests/test_report.py",
+        "tests/test_report_channel.py",
+        "tests/test_report_target.py",
+        "tests/test_repowise_init_flags.py",
+        "tests/test_repowise_plugin.py",
+        "tests/test_repowise_signal_audit.py",
+        "tests/test_retire.py",
+        "tests/test_role.py",
+        "tests/test_role_execution.py",
+        "tests/test_role_process.py",
+        "tests/test_run_journal.py",
+        "tests/test_run_journal_contract.py",
+        "tests/test_runtime.py",
+        "tests/test_safety.py",
+        "tests/test_schedule.py",
+        "tests/test_seatrun.py",
+        "tests/test_service_extraction.py",
+        "tests/test_setup.py",
+        "tests/test_setup_guide_asset.py",
+        "tests/test_setup_guide_cli.py",
+        "tests/test_setup_guide_steps.py",
+        "tests/test_setup_manifest.py",
+        "tests/test_setup_missing_remedy.py",
+        "tests/test_source_descriptors.py",
+        "tests/test_state_stream.py",
+        "tests/test_state_stream_epic_schedule.py",
+        "tests/test_state_stream_gate_projection.py",
+        "tests/test_state_stream_integration.py",
+        "tests/test_state_stream_polling.py",
+        "tests/test_state_stream_process.py",
+        "tests/test_storage_migrate.py",
+        "tests/test_storage_migrate_int.py",
+        "tests/test_store_locator.py",
+        "tests/test_stream_cli.py",
+        "tests/test_stream_contract.py",
+        "tests/test_stream_operator_contract.py",
+        "tests/test_structural_closeout.py",
+        "tests/test_structural_facade_contracts.py",
+        "tests/test_stub_seat.py",
+        "tests/test_sugar_verbs.py",
+        "tests/test_suite_hermeticity.py",
+        "tests/test_sync_remote.py",
+        "tests/test_test_closures.py",
+        "tests/test_test_watchdog.py",
+        "tests/test_toolchain.py",
+        "tests/test_toolchain_claims.py",
+        "tests/test_triage.py",
+        "tests/test_triage_store.py",
+        "tests/test_validate_probe.py",
+        "tests/test_validation_admission.py",
+        "tests/test_validation_concurrency_proof.py",
+        "tests/test_validation_ledger_cfg_threading.py",
+        "tests/test_validation_migration.py",
+        "tests/test_validation_records.py",
+        "tests/test_validation_records_standalone.py",
+        "tests/test_validation_submit_active.py",
+        "tests/test_verdict_index.py",
+        "tests/test_wire_schemas.py",
+        "tests/test_wisp_cleanup_guard.py",
+        "tests/test_work.py",
+        "tests/test_work_assignment_boundaries.py",
+        "tests/test_work_flow.py",
+        "tests/test_work_merge_boundaries.py",
+        "tests/test_work_next.py",
+        "tests/test_work_readiness_int.py",
+        "tests/test_work_reads.py",
+        "tests/test_work_refine_int.py",
+        "tests/test_work_submission_boundaries.py",
+        "tests/test_workspace_config_inheritance.py",
+        "tests/test_worktree.py",
+        "tests/test_worktree_boundaries.py",
+        "tests/test_worktree_inventory_boundaries.py",
+        "tests/test_worktree_inventory_json.py",
+        "tests/test_wt_status.py",
+        "tests/test_xdist_worker_cap.py",
+        "tests/unit/integrations/__init__.py",
+        "tests/unit/integrations/test_herdr_adapter.py",
+        "tests/unit/integrations/test_herdr_agent_lifecycle_adapter.py",
+        "tests/unit/integrations/test_herdr_independence.py",
+        "tests/unit/kernel/lifecycle/test_contracts.py",
+        "tests/unit/kernel/lifecycle/test_dispatcher.py",
+        "tests/unit/kernel/lifecycle/test_independence.py",
+        "tests/unit/kernel/plugins/test_binding.py",
+        "tests/unit/kernel/plugins/test_discovery.py",
+        "tests/unit/modules/agents/test_agent_contracts.py",
+        "tests/unit/modules/agents/test_agent_independence.py",
+        "tests/unit/modules/agents/test_agent_services.py",
+        "tests/unit/modules/config/test_config_contracts.py",
+        "tests/unit/modules/config/test_consumer_settings.py",
+        "tests/unit/modules/config/test_dependency_ledger.py",
+        "tests/unit/modules/config/test_migrations.py",
+        "tests/unit/modules/config/test_module_evidence.py",
+        "tests/unit/modules/config/test_plugin_fragments.py",
+        "tests/unit/modules/config/test_pure_independence.py",
+        "tests/unit/modules/config/test_resolution.py",
+        "tests/unit/modules/config/test_schema_artifacts.py",
+        "tests/unit/modules/config/test_structural_metrics.py",
+        "tests/unit/modules/config/test_yaml_store.py",
+        "tests/unit/test_pure_module_independence.py",
+        "tests/unit/testing/test_conformance_testkit.py",
+        "tests/unit/testing/test_real_adapter_conformance_example.py"
+      ]
+    }
   },
   "schema_version": 1,
   "scope": "bh-bptze.1 exact-tip pre-migration capability map",
@@ -1931,7 +2323,209 @@
         "tests/test_registry.py",
         "tests/test_retire.py"
       ],
+      "dynamic_test_scope": {
+        "paths_ref": "repository.test_inventory.python_paths",
+        "python_files": 387
+      },
       "dynamic_test_seams": [
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( hub.registry, \"hive_dir\", lambda e: cloned_path if e[\"repo\"] == \"cloned\" else tmp_path / \"nope\", )",
+          "line": 210,
+          "path": "tests/test_bh.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(hub.registry, \"hive_dir\", lambda e: good if e[\"repo\"] == \"good\" else bad)",
+          "line": 258,
+          "path": "tests/test_bh.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(checkpoint.registry, \"hive_dir_for\", lambda _cfg, _hive: Path(\"/hive\"))",
+          "line": 232,
+          "path": "tests/test_checkpoint.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(registry, \"hive_dir_for\", lambda _cfg, _hive: tmp_path / \"hive\")",
+          "line": 93,
+          "path": "tests/test_claim_fence.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(\"beadhive.hive.onboard\", _fake_onboard)",
+          "line": 130,
+          "path": "tests/test_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(\"beadhive.hive.onboard\", _fake_onboard)",
+          "line": 152,
+          "path": "tests/test_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(\"beadhive.hive.onboard\", _fake_onboard)",
+          "line": 196,
+          "path": "tests/test_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(\"beadhive.hive.init\", _fake_init)",
+          "line": 231,
+          "path": "tests/test_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(\"beadhive.hive.init\", lambda **kwargs: captured.update(kwargs))",
+          "line": 267,
+          "path": "tests/test_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(\"beadhive.hive.init\", lambda **kwargs: captured.update(kwargs))",
+          "line": 277,
+          "path": "tests/test_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(\"beadhive.hive.onboard\", lambda hive_id, **kwargs: captured.update(kwargs))",
+          "line": 294,
+          "path": "tests/test_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_cli.registry, \"hive_dir_for\", lambda cfg, hive: tmp_path)",
+          "line": 419,
+          "path": "tests/test_dispatch_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( host_cli.registry, \"entry_for_dir\", lambda cfg, cwd: {\"provider\": \"github\", \"org\": \"acme\", \"repo\": \"widgets\"}, )",
+          "line": 420,
+          "path": "tests/test_dispatch_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_cli.registry, \"hive_dir_for\", lambda cfg, hive: tmp_path)",
+          "line": 432,
+          "path": "tests/test_dispatch_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_cli.registry, \"entry_for_dir\", lambda cfg, cwd: entry)",
+          "line": 433,
+          "path": "tests/test_dispatch_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(doctor.hive, \"_is_plugin_installed\", lambda _plugin: True)",
+          "line": 1323,
+          "path": "tests/test_doctor.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(doctor.hive, \"_is_plugin_installed\", lambda _plugin: False)",
+          "line": 1336,
+          "path": "tests/test_doctor.py"
+        },
+        {
+          "call": "doctor._render_dispatch",
+          "expression": "doctor._render_dispatch( { \"relevant\": True, \"hives\": [ { \"hive\": \"acme/widgets\", \"dead\": True, \"lease_lost\": False, \"lease_expiring_soon\": False, \"stalled\": False, \"stale_seconds\": None, \"last_pass_at\": \"\", \"detail\": \"\", } ], } )",
+          "line": 141,
+          "path": "tests/test_doctor_dispatch.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree.registry, \"hive_dir\", lambda _e: work)",
+          "line": 59,
+          "path": "tests/test_enforce_signing.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.registry, \"hive_dir\", lambda e: hq_dir)",
+          "line": 95,
+          "path": "tests/test_escalate.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.registry, \"resolve_hive\", lambda cfg, hive: dict(_HQ_ENTRY))",
+          "line": 96,
+          "path": "tests/test_escalate.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.registry, \"hive_dir\", lambda e: hive_dir)",
+          "line": 379,
+          "path": "tests/test_escalate.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( report.registry, \"resolve_hive\", lambda cfg, hive: {\"provider\": \"github\", \"org\": \"acme\", \"repo\": \"wid\", \"prefix\": \"wid\"}, )",
+          "line": 380,
+          "path": "tests/test_escalate.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(registry, \"hive_dir_for\", lambda _cfg, _hive: tmp_path / \"hive\")",
+          "line": 77,
+          "path": "tests/test_guard_primary.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plan.registry, \"hive_dir_for\", lambda *_a: tmp_path)",
+          "line": 356,
+          "path": "tests/test_guard_primary.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plan.registry, \"hive_dir_for\", lambda *_a: tmp_path)",
+          "line": 370,
+          "path": "tests/test_guard_primary.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.sys, \"argv\", [\"bh\", \"hive\", \"--help\"])",
+          "line": 51,
+          "path": "tests/test_help_hygiene.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.sys, \"argv\", [\"bh\", \"hive\"])",
+          "line": 65,
+          "path": "tests/test_help_hygiene.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(sys, \"argv\", [\"bh\", \"hive\", \"ready\"])",
+          "line": 84,
+          "path": "tests/test_help_hygiene.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( backend, \"dolt_comparison\", lambda _hive, _entry: { \"hive\": HIVE, \"ahead\": 0, \"behind\": 0, \"sourceRevision\": \"dolt-r1\", \"coverage\": {\"state\": \"complete\", \"counts\": \"known\"}, }, )",
+          "line": 827,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_views.registry, \"hive_dir\", lambda _entry: Path(\"/managed/acme/widgets\") )",
+          "line": 870,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_views.hive_identity, \"identity_record\", lambda _entry: { \"canonical_id\": hive, \"provider\": \"github\", \"organization\": \"acme\", \"repository\": \"widgets\", \"prefix\": \"wdg\", \"affiliation\": \"maintainer\", }, )",
+          "line": 904,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( backend, \"dolt_comparison\", lambda _hive, _entry: { \"hive\": hive, \"ahead\": 0, \"behind\": 0, \"sourceRevision\": \"dolt-r1\", \"coverage\": {\"state\": \"complete\", \"counts\": \"known\"}, }, )",
+          "line": 933,
+          "path": "tests/test_herdr_views.py"
+        },
         {
           "call": "monkeypatch.setattr",
           "expression": "monkeypatch.setattr( hive, \"onboard\", lambda hive_id, **kwargs: onboard_args.update(hive_id=hive_id, **kwargs) )",
@@ -2384,15 +2978,537 @@
         },
         {
           "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(registry, \"hive_dir_for\", lambda _cfg, _hive: tmp_path / \"hive\")",
+          "line": 85,
+          "path": "tests/test_host_lease_renewal.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_provision.hive_sync, \"hive_sync\", lambda **k: calls.append(k) or [])",
+          "line": 457,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_provision.hive_sync, \"hive_sync\", lambda **k: [])",
+          "line": 467,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_provision.hive_sync, \"hive_sync\", lambda **k: [\"app\"])",
+          "line": 476,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( host_provision.hive_sync, \"hive_sync\", lambda **k: synced.append(k[\"hive_id\"]) or [] )",
+          "line": 511,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_provision.hive_sync, \"hive_sync\", lambda **k: [])",
+          "line": 533,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_provision.hive_sync, \"hive_sync\", lambda **k: [\"app: boom\"])",
+          "line": 548,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_provision.hive_sync, \"hive_sync\", lambda **k: [])",
+          "line": 560,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( host_provision.hive_sync, \"hive_sync\", lambda **k: synced.append(k[\"hive_id\"]) or [] )",
+          "line": 572,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( host_provision.hive_sync, \"hive_sync\", lambda **k: pytest.fail(\"nothing to sync\") )",
+          "line": 590,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( host_provision.hive_sync, \"hive_sync\", lambda **k: pytest.fail(\"dry run must not sync\") )",
+          "line": 605,
+          "path": "tests/test_host_provision.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(hub.registry, \"hive_dir\", lambda e: dirs[e[\"repo\"]])",
+          "line": 67,
+          "path": "tests/test_hub.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(hub.registry, \"hives\", lambda cfg: cfg.get(\"managed_repos\", []))",
+          "line": 769,
+          "path": "tests/test_hub.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(hub.registry, \"hive_dir\", lambda e: hives[e[\"prefix\"]])",
+          "line": 283,
+          "path": "tests/test_hub_bulk_int.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( hive_mod, \"onboard\", lambda hive_id, **kw: seen.update(hive_id=hive_id, **kw) )",
+          "line": 338,
+          "path": "tests/test_mcp.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(metadata.registry, \"effective_providers\", lambda cfg: [\"github\"])",
+          "line": 295,
+          "path": "tests/test_metadata.py"
+        },
+        {
+          "call": "_fake_dispatch",
+          "expression": "_fake_dispatch( monkeypatch, { \"profile_create\": {\"name\": \"hive\", \"otlp_grpc_port\": 4319}, \"profile_up\": {\"started\": True}, \"profile_down\": {\"stopped\": True}, }, )",
+          "line": 279,
+          "path": "tests/test_observaloop.py"
+        },
+        {
+          "call": "_fake_dispatch",
+          "expression": "_fake_dispatch( monkeypatch, { \"collector_get_config\": {\"profile\": \"hive\", \"config\": buf.getvalue()}, \"collector_set_config\": {\"applied\": True}, }, )",
+          "line": 556,
+          "path": "tests/test_observaloop.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
           "expression": "monkeypatch.setattr(onboard._plugins, \"registry\", lambda: plugin_list)",
           "line": 57,
           "path": "tests/test_onboard_plugin.py"
         },
         {
           "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(state_stream_polling.registry, \"hive_dir\", lambda _entry: hive_dir)",
+          "line": 318,
+          "path": "tests/test_operator_sse.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(state_stream_polling.registry, \"hive_dir\", lambda _entry: hive_dir)",
+          "line": 765,
+          "path": "tests/test_operator_sse.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 79,
+          "path": "tests/test_plugins.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: declarations)",
+          "line": 131,
+          "path": "tests/test_plugins.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 162,
+          "path": "tests/test_plugins.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( plugins, \"registry\", lambda: (_ for _ in ()).throw(AssertionError(\"legacy registry must not be read\")), )",
+          "line": 202,
+          "path": "tests/test_plugins.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 268,
+          "path": "tests/test_plugins.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 326,
+          "path": "tests/test_plugins.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.registry, \"resolve_hive\", lambda cfg, hive: dict(_ENTRY))",
+          "line": 98,
+          "path": "tests/test_report.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.registry, \"hive_dir\", lambda e: hive_dir)",
+          "line": 105,
+          "path": "tests/test_report.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.registry, \"resolve_hive\", lambda cfg, hive: dict(_ENTRY))",
+          "line": 220,
+          "path": "tests/test_report.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.registry, \"hive_dir\", lambda e: tmp_path / \"absent\")",
+          "line": 222,
+          "path": "tests/test_report.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(repowise_plugin.registry, \"hive_dir\", lambda value: clone)",
+          "line": 221,
+          "path": "tests/test_repowise_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
           "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [fake])",
           "line": 230,
           "path": "tests/test_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.registry, \"resolve_hive\", lambda cfg, hive_id: entry)",
+          "line": 830,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.registry, \"hive_dir\", lambda e: hive_root)",
+          "line": 831,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( cli.registry, \"resolve_bead_hive\", lambda cfg, bead, hive=\"\", **_kw: cli.registry.BeadHiveResolution(bead, entry, (entry,)), )",
+          "line": 844,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.registry, \"hive_key\", lambda e: f\"{e['org']}/{e['repo']}\")",
+          "line": 849,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( cli.registry, \"resolve_bead_hive\", lambda cfg, bead, hive=\"\", **_kw: cli.registry.BeadHiveResolution(bead, None), )",
+          "line": 882,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.registry, \"entry_for_dir\", lambda *_args: entry)",
+          "line": 1339,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( state_stream_polling.registry, \"resolve_hive\", lambda _cfg, slug: next(entry for entry in entries if entry[\"repo\"] == slug), )",
+          "line": 571,
+          "path": "tests/test_state_stream_integration.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( state_stream_polling.registry, \"hive_dir\", lambda entry: targets[entry[\"repo\"]], )",
+          "line": 576,
+          "path": "tests/test_state_stream_integration.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(state_stream_polling.registry, \"hive_dir\", lambda _entry: hive)",
+          "line": 85,
+          "path": "tests/test_state_stream_polling.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(state_stream_polling.registry, \"resolve_hive\", lambda _cfg, _slug: {})",
+          "line": 98,
+          "path": "tests/test_state_stream_process.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(state_stream_polling.registry, \"hive_dir\", lambda _entry: hive)",
+          "line": 99,
+          "path": "tests/test_state_stream_process.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(state_stream_polling.registry, \"resolve_hive\", lambda _cfg, _slug: {})",
+          "line": 140,
+          "path": "tests/test_state_stream_process.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(state_stream_polling.registry, \"hive_dir\", lambda _entry: hive)",
+          "line": 141,
+          "path": "tests/test_state_stream_process.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( storage_migrate, \"migrate_hive\", lambda entry, cfg, *, dry_run=False, actor=\"\", keep_pre_migrate=False: ( storage_migrate.HiveMigrationResult( hive_id=registry.hive_key(entry), hive_dir=tmp_path, status=\"would-migrate\" ) ), )",
+          "line": 956,
+          "path": "tests/test_storage_migrate.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(storage_migrate.registry, \"hive_dir\", lambda e: tmp_path / e[\"repo\"])",
+          "line": 1016,
+          "path": "tests/test_storage_migrate.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(storage_migrate.registry, \"hive_dir\", lambda e: hive)",
+          "line": 1098,
+          "path": "tests/test_storage_migrate.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(stream_cli.registry, \"resolve_hive\", lambda _cfg, value: entry)",
+          "line": 114,
+          "path": "tests/test_stream_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(stream_cli.registry, \"current_hive\", lambda _cfg: None)",
+          "line": 124,
+          "path": "tests/test_stream_cli.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( work.registry, \"hive_dir_for\", lambda cfg, hive: \"/facade/hive\" if cfg[\"sentinel\"] and hive == \"\" else None, )",
+          "line": 84,
+          "path": "tests/test_structural_facade_contracts.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree.registry, \"hive_key\", lambda entry: \"github/acme/repo\")",
+          "line": 142,
+          "path": "tests/test_structural_facade_contracts.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree_verify.registry, \"hive_dir\", lambda *_: \"/hive\")",
+          "line": 217,
+          "path": "tests/test_validation_admission.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree_verify.registry, \"hive_dir\", lambda *_: tmp_path)",
+          "line": 250,
+          "path": "tests/test_validation_admission.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree_verify.registry, \"hive_dir\", lambda *_: tmp_path)",
+          "line": 143,
+          "path": "tests/test_validation_submit_active.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [_fake_plugin(\"noop\")])",
+          "line": 2566,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 2576,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 2585,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [no_hook, first, second])",
+          "line": 2596,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [_fake_plugin(\"boom\", wt_create=boom)])",
+          "line": 2607,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [_fake_plugin(\"boom\", wt_create=boom), ok])",
+          "line": 2620,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( plugins, \"registry\", lambda: [_fake_plugin(\"boom\", wt_created=boom), _fake_plugin(\"ok\", wt_created=ok)], )",
+          "line": 2637,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [_fake_plugin(\"noop\")])",
+          "line": 2651,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 2660,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [first, second])",
+          "line": 2670,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [_fake_plugin(\"boom\", wt_remove=boom)])",
+          "line": 2681,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [_fake_plugin(\"boom\", wt_remove=boom)])",
+          "line": 2693,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 2727,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( plugins, \"registry\", lambda: [_fake_plugin(\"observer\", wt_creating=before, wt_created=after)], )",
+          "line": 2748,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [orca, repowise])",
+          "line": 2806,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 2824,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 2845,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 2863,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 2881,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [orca.PLUGIN])",
+          "line": 2904,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 2983,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 3021,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 3054,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 3241,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [orca.PLUGIN])",
+          "line": 3280,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [])",
+          "line": 3307,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plugins, \"registry\", lambda: [plugin])",
+          "line": 3330,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree.registry, \"hive_dir\", lambda e: Path(\"/x\"))",
+          "line": 3478,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree.registry, \"hive_dir\", lambda e: Path(\"/x\"))",
+          "line": 3511,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree.registry, \"hive_dir\", lambda e: Path(\"/x\"))",
+          "line": 3525,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree.registry, \"hive_dir\", lambda e: Path(\"/x\"))",
+          "line": 3540,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree.registry, \"hive_dir\", lambda e: tmp_path)",
+          "line": 3639,
+          "path": "tests/test_worktree.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree.registry, \"hive_key\", lambda _entry: \"github/acme/repo\")",
+          "line": 155,
+          "path": "tests/test_worktree_inventory_boundaries.py"
         }
       ],
       "fan_in": {
@@ -3964,7 +5080,60 @@
         "tests/test_triage.py",
         "tests/test_triage_store.py"
       ],
-      "dynamic_test_seams": [],
+      "dynamic_test_scope": {
+        "paths_ref": "repository.test_inventory.python_paths",
+        "python_files": 387
+      },
+      "dynamic_test_seams": [
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(mcp_mod.molecule, \"validate_spec\", _boom)",
+          "line": 323,
+          "path": "tests/test_error_boundaries.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(mcp_mod.molecule, \"validate_spec\", _boom)",
+          "line": 383,
+          "path": "tests/test_error_boundaries.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plan.molecule, \"load_spec\", lambda _s: {\"epic\": {}, \"issues\": []})",
+          "line": 357,
+          "path": "tests/test_guard_primary.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plan.molecule, \"validate_or_raise\", lambda *_a, **_k: None)",
+          "line": 358,
+          "path": "tests/test_guard_primary.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plan.molecule, \"load_spec\", lambda _s: {\"epic\": {}, \"issues\": []})",
+          "line": 371,
+          "path": "tests/test_guard_primary.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(plan.molecule, \"validate_or_raise\", lambda *_a, **_k: None)",
+          "line": 372,
+          "path": "tests/test_guard_primary.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(mcp_mod.molecule, \"validate_spec\", _capture)",
+          "line": 157,
+          "path": "tests/test_mcp_tool_span.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(mcp_mod.molecule, \"validate_spec\", _boom)",
+          "line": 180,
+          "path": "tests/test_mcp_tool_span.py"
+        }
+      ],
       "fan_in": {
         "distinct_external_importers": 10,
         "import_edges": 14,
@@ -5069,7 +6238,132 @@
         "tests/test_validation_records.py",
         "tests/test_validation_records_standalone.py"
       ],
-      "dynamic_test_seams": [],
+      "dynamic_test_scope": {
+        "paths_ref": "repository.test_inventory.python_paths",
+        "python_files": 387
+      },
+      "dynamic_test_seams": [
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( doctor, \"_data_seats\", lambda cfg, **kwargs: {\"state\": \"ok\", \"detail\": \"x: runnable\"} )",
+          "line": 1453,
+          "path": "tests/test_doctor.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin, \"_package_status\", lambda: ( {\"state\": \"registered\", \"plugin_id\": \"beadhive.herdr\"}, \"\", ), )",
+          "line": 353,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin, \"_package_status\", lambda: ({\"state\": \"absent\", \"plugin_id\": \"beadhive.herdr\"}, \"\"), )",
+          "line": 370,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin, \"_session_snapshot\", lambda: { \"agents\": [{\"name\": \"bh-bh-1\", \"state\": \"idle\", \"pane_id\": \"w1:p2\"}], \"panes\": [ { \"pane_id\": \"w1:p2\", \"workspace_id\": \"w1\", \"label\": \"bh-bh-1\", \"cwd\": \"/tmp/manual\", } ], \"workspaces\": [{\"workspace_id\": \"w1\", \"label\": \"manual\"}], }, )",
+          "line": 2050,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin, \"_session_snapshot\", lambda: { \"agents\": [ { \"agent\": {\"name\": target, \"state\": \"idle\"}, \"workspace_id\": \"w1\", \"workspace_label\": f\"bh:{hive}\", \"pane\": { \"id\": \"w1:p2\", \"label\": target, \"cwd\": str(cwd), \"tokens\": { \"bh_owner\": \"bh.plugin.herdr/v1\", \"bh_hive_id\": hive, \"bh_bead_id\": bead, \"bh_target\": target, \"bh_schema\": \"1\", }, }, } ], \"workspaces\": [{\"workspace_id\": \"w1\", \"label\": f\"bh:{hive}\"}], }, )",
+          "line": 2248,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin, \"_snapshot_agent_records\", lambda _snapshot: [{\"name\": \"bh-widget-1-launch-a\", \"state\": \"idle\"}], )",
+          "line": 2931,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( backend, \"dolt_comparison\", lambda _hive, _entry: { \"hive\": HIVE, \"ahead\": 0, \"behind\": 0, \"sourceRevision\": \"dolt-r1\", \"coverage\": {\"state\": \"complete\", \"counts\": \"known\"}, }, )",
+          "line": 827,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_views.worktree, \"inventory_snapshot_payload\", lambda **_kwargs: { \"source_revision\": \"inventory-r1\", \"coverage\": {\"state\": \"complete\"}, \"worktrees\": [], \"total\": 0, \"warnings\": [], }, )",
+          "line": 916,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( backend, \"dolt_comparison\", lambda _hive, _entry: { \"hive\": hive, \"ahead\": 0, \"behind\": 0, \"sourceRevision\": \"dolt-r1\", \"coverage\": {\"state\": \"complete\", \"counts\": \"known\"}, }, )",
+          "line": 933,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( hitch_plugin, \"seat_reports\", lambda c: [{\"seat\": \"developer\", \"state\": \"reduced\", \"detail\": \"does not support x\"}], )",
+          "line": 890,
+          "path": "tests/test_hitch_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( hitch_plugin, \"seat_reports\", lambda c: [{\"seat\": \"developer\", \"state\": \"blocked\", \"detail\": \"hitch missing\"}], )",
+          "line": 926,
+          "path": "tests/test_hitch_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree_verify.validation_ledger, \"tree_of\", lambda *a: \"tree\")",
+          "line": 218,
+          "path": "tests/test_validation_admission.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree_verify.validation_records, \"latest_run\", lambda *a, **k: None)",
+          "line": 219,
+          "path": "tests/test_validation_admission.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree_verify.validation_ledger, \"tree_of\", lambda *a: \"tree\")",
+          "line": 251,
+          "path": "tests/test_validation_admission.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree_verify.validation_records, \"latest_run\", lambda *a, **k: None)",
+          "line": 252,
+          "path": "tests/test_validation_admission.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree_verify.validation_ledger, \"tree_of\", lambda *a: \"tree\")",
+          "line": 144,
+          "path": "tests/test_validation_submit_active.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(worktree_verify.validation_ledger, \"cmd_hash\", lambda command: command)",
+          "line": 145,
+          "path": "tests/test_validation_submit_active.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( worktree_verify.validation_records, \"latest_run\", lambda *a, **k: dict(active), )",
+          "line": 146,
+          "path": "tests/test_validation_submit_active.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( worktree_verify.validation_records, \"read_run\", lambda _main, run_id: dict(active) if run_id == active[\"run_id\"] else None, )",
+          "line": 151,
+          "path": "tests/test_validation_submit_active.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( worktree_verify.validation_records, \"record_use\", lambda *a, **k: uses.append(k), )",
+          "line": 156,
+          "path": "tests/test_validation_submit_active.py"
+        }
+      ],
       "fan_in": {
         "distinct_external_importers": 29,
         "import_edges": 45,
@@ -6629,7 +7923,317 @@
         "tests/test_worktree_inventory_json.py",
         "tests/test_xdist_worker_cap.py"
       ],
+      "dynamic_test_scope": {
+        "paths_ref": "repository.test_inventory.python_paths",
+        "python_files": 387
+      },
       "dynamic_test_seams": [
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(bd.validate, \"has_violations\", lambda **k: False)",
+          "line": 1134,
+          "path": "tests/test_bh.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( config_partition, \"FLEET_HOST_OVERRIDE_ALLOWLIST\", frozenset({\"work.validate_cmd\"}) )",
+          "line": 187,
+          "path": "tests/test_config_fleet_merge.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( config_partition, \"FLEET_HOST_OVERRIDE_ALLOWLIST\", frozenset({\"work.validate_cmd\"}) )",
+          "line": 210,
+          "path": "tests/test_config_fleet_merge.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( config_partition, \"FLEET_HOST_OVERRIDE_ALLOWLIST\", frozenset({\"work.validate_cmd\"}) )",
+          "line": 282,
+          "path": "tests/test_config_scope.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( config_partition, \"FLEET_HOST_OVERRIDE_ALLOWLIST\", frozenset({\"work.validate_cmd\"}) )",
+          "line": 378,
+          "path": "tests/test_config_scope.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( doctor.worktree, \"managed\", lambda _cfg: [(\"one\", str(first), \"wt/one\"), (\"one\", str(second), \"wt/two\")], )",
+          "line": 1011,
+          "path": "tests/test_doctor.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(work.worktree, \"signature_status\", _never)",
+          "line": 228,
+          "path": "tests/test_enforce_signing.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( work.worktree, \"signature_status\", lambda *_a: [(\"bbb2222\", \"N\", \"feat: unsigned\")] )",
+          "line": 238,
+          "path": "tests/test_enforce_signing.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.sys, \"argv\", [\"bh\", \"work\", \"loop\", \"e1\"])",
+          "line": 192,
+          "path": "tests/test_error_boundaries.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.sys, \"argv\", [\"bh\", \"work\", \"loop\", \"e1\"])",
+          "line": 211,
+          "path": "tests/test_error_boundaries.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.validate, \"bead_violations\", lambda *a, **kw: [])",
+          "line": 89,
+          "path": "tests/test_escalate.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.validate, \"bead_violations\", lambda *a, **kw: [])",
+          "line": 376,
+          "path": "tests/test_escalate.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"locate\", lambda *_args: ({}, tmp_path, target, \"wt/bead/issue/bh-1\"), )",
+          "line": 833,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"current_branch\", lambda _target: \"wt/bead/issue/bh-1\" )",
+          "line": 848,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"bh\", str(cwd), branch)], )",
+          "line": 895,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"locate\", boom)",
+          "line": 1329,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"managed\", lambda _cfg: [])",
+          "line": 2049,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"bh\", str(cwd), branch)], )",
+          "line": 2243,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(work, \"_claim_single_bead\", lambda *_args: mutations.append(\"work\"))",
+          "line": 3058,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"locate\", locate)",
+          "line": 3515,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"current_branch\", lambda _path: branch)",
+          "line": 3516,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"widget\", str(batch), branch)] )",
+          "line": 3517,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"locate\", locate)",
+          "line": 3660,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"current_branch\", lambda _path: \"wt/batch/g\")",
+          "line": 3661,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"widget\", str(cwd), branch)] if cwd.is_dir() else [], )",
+          "line": 3675,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"managed\", lambda _cfg: [])",
+          "line": 4007,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"managed\", lambda _cfg: [])",
+          "line": 4066,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"widget\", str(cwd), \"wt/bead/issue/widget-1\")], )",
+          "line": 326,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"managed\", lambda _cfg: [])",
+          "line": 353,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"locate\", lambda *_args: ({}, tmp_path, expected, \"wt/bead/issue/widget-1\"), )",
+          "line": 389,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"widget\", str(expected), \"wt/bead/issue/widget-1\")], )",
+          "line": 394,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_views.worktree, \"inventory_snapshot_payload\", lambda **_kwargs: {\"worktrees\": [], \"total\": 0, \"warnings\": []}, )",
+          "line": 838,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_views.worktree, \"inventory_snapshot_payload\", lambda **_kwargs: { \"source_revision\": \"inventory-r1\", \"coverage\": {\"state\": \"complete\"}, \"worktrees\": [], \"total\": 0, \"warnings\": [], }, )",
+          "line": 916,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(retire.worktree, \"remove\", _fail_remove)",
+          "line": 409,
+          "path": "tests/test_hive_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_retire.worktree, \"managed\", lambda cfg: [(\"mr\", st.path, st.branch)])",
+          "line": 279,
+          "path": "tests/test_host_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_retire.worktree, \"_classify_entry\", lambda entry, rows, cfg: [st])",
+          "line": 280,
+          "path": "tests/test_host_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_retire.worktree, \"managed\", lambda cfg: [(\"mr\", st.path, st.branch)])",
+          "line": 314,
+          "path": "tests/test_host_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_retire.worktree, \"_classify_entry\", lambda entry, rows, cfg: [st])",
+          "line": 315,
+          "path": "tests/test_host_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.validate, \"bead_violations\", lambda *a, **k: [])",
+          "line": 100,
+          "path": "tests/test_report.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.validate, \"has_violations\", lambda *a, **k: False)",
+          "line": 221,
+          "path": "tests/test_report.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(report.validate, \"has_violations\", _boom)",
+          "line": 244,
+          "path": "tests/test_report.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( report.validate, \"bead_violations\", lambda *a, **k: [\"wid-intake\\tbad-origin:bogus\"] )",
+          "line": 259,
+          "path": "tests/test_report.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.work, \"claim\", lambda **kw: claim_calls.append(kw))",
+          "line": 852,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.work, \"claim\", lambda **call: claim_calls.append(call))",
+          "line": 961,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.work, \"claim\", lambda **kw: calls.append((\"claim\", kw)))",
+          "line": 1006,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.work, \"claim\", lambda **_kw: pytest.fail(\"listing claimed a bead\"))",
+          "line": 1028,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(cli.work, \"claim\", lambda *_a, **_kw: pytest.fail(\"explain claimed a bead\"))",
+          "line": 1458,
+          "path": "tests/test_role.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( work.worktree, \"locate\", lambda cfg, hive, bead: (None, Path(\".\"), Path(\".\"), \"wt/bead/x\") )",
+          "line": 102,
+          "path": "tests/test_service_extraction.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( work.worktree, \"locate\", lambda cfg, hive, bead: (None, tmp_path, missing, \"wt/bead/x\") )",
+          "line": 112,
+          "path": "tests/test_service_extraction.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( worktree_verify.validation_admission, \"identity_lock\", lambda *a, **k: contextlib.nullcontext(), )",
+          "line": 162,
+          "path": "tests/test_validation_submit_active.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( worktree_verify.validation_admission, \"host_slot\", lambda *a, **k: pytest.fail(\"a completed observed blocker must not consume a new slot\"), )",
+          "line": 167,
+          "path": "tests/test_validation_submit_active.py"
+        },
         {
           "call": "monkeypatch.setattr",
           "expression": "monkeypatch.setattr(work.worktree, \"ensure\", fail)",
@@ -6653,6 +8257,18 @@
           "expression": "monkeypatch.setattr( \"beadhive.worktree_inventory._inventory_observations\", lambda hive=\"\": seen.append(hive) or [observation], )",
           "line": 212,
           "path": "tests/test_worktree_inventory_json.py"
+        },
+        {
+          "call": "patch",
+          "expression": "patch(\"beadhive.worktree.integration_base\", return_value=integration)",
+          "line": 485,
+          "path": "tests/test_wt_status.py"
+        },
+        {
+          "call": "patch",
+          "expression": "patch(\"beadhive.worktree.integration_base\", return_value=integration)",
+          "line": 499,
+          "path": "tests/test_wt_status.py"
         }
       ],
       "fan_in": {
@@ -8438,7 +10054,221 @@
         "tests/test_worktree_inventory_json.py",
         "tests/test_wt_status.py"
       ],
+      "dynamic_test_scope": {
+        "paths_ref": "repository.test_inventory.python_paths",
+        "python_files": 387
+      },
       "dynamic_test_seams": [
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( doctor.worktree, \"managed\", lambda _cfg: [(\"one\", str(first), \"wt/one\"), (\"one\", str(second), \"wt/two\")], )",
+          "line": 1011,
+          "path": "tests/test_doctor.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(work.worktree, \"signature_status\", _never)",
+          "line": 228,
+          "path": "tests/test_enforce_signing.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( work.worktree, \"signature_status\", lambda *_a: [(\"bbb2222\", \"N\", \"feat: unsigned\")] )",
+          "line": 238,
+          "path": "tests/test_enforce_signing.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"locate\", lambda *_args: ({}, tmp_path, target, \"wt/bead/issue/bh-1\"), )",
+          "line": 833,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"current_branch\", lambda _target: \"wt/bead/issue/bh-1\" )",
+          "line": 848,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"bh\", str(cwd), branch)], )",
+          "line": 895,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"locate\", boom)",
+          "line": 1329,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"managed\", lambda _cfg: [])",
+          "line": 2049,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"bh\", str(cwd), branch)], )",
+          "line": 2243,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"locate\", locate)",
+          "line": 3515,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"current_branch\", lambda _path: branch)",
+          "line": 3516,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"widget\", str(batch), branch)] )",
+          "line": 3517,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"locate\", locate)",
+          "line": 3660,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"current_branch\", lambda _path: \"wt/batch/g\")",
+          "line": 3661,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"widget\", str(cwd), branch)] if cwd.is_dir() else [], )",
+          "line": 3675,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"managed\", lambda _cfg: [])",
+          "line": 4007,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"managed\", lambda _cfg: [])",
+          "line": 4066,
+          "path": "tests/test_herdr_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"widget\", str(cwd), \"wt/bead/issue/widget-1\")], )",
+          "line": 326,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(herdr_plugin.worktree, \"managed\", lambda _cfg: [])",
+          "line": 353,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"locate\", lambda *_args: ({}, tmp_path, expected, \"wt/bead/issue/widget-1\"), )",
+          "line": 389,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_plugin.worktree, \"managed\", lambda _cfg: [(\"widget\", str(expected), \"wt/bead/issue/widget-1\")], )",
+          "line": 394,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_views.worktree, \"inventory_snapshot_payload\", lambda **_kwargs: {\"worktrees\": [], \"total\": 0, \"warnings\": []}, )",
+          "line": 838,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( herdr_views.worktree, \"inventory_snapshot_payload\", lambda **_kwargs: { \"source_revision\": \"inventory-r1\", \"coverage\": {\"state\": \"complete\"}, \"worktrees\": [], \"total\": 0, \"warnings\": [], }, )",
+          "line": 916,
+          "path": "tests/test_herdr_views.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(retire.worktree, \"remove\", _fail_remove)",
+          "line": 409,
+          "path": "tests/test_hive_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_retire.worktree, \"managed\", lambda cfg: [(\"mr\", st.path, st.branch)])",
+          "line": 279,
+          "path": "tests/test_host_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_retire.worktree, \"_classify_entry\", lambda entry, rows, cfg: [st])",
+          "line": 280,
+          "path": "tests/test_host_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_retire.worktree, \"managed\", lambda cfg: [(\"mr\", st.path, st.branch)])",
+          "line": 314,
+          "path": "tests/test_host_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(host_retire.worktree, \"_classify_entry\", lambda entry, rows, cfg: [st])",
+          "line": 315,
+          "path": "tests/test_host_retire.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(repowise_plugin.gitworkspace, \"config_paths\", lambda cfg: [config_path])",
+          "line": 309,
+          "path": "tests/test_repowise_plugin.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( work.worktree, \"locate\", lambda cfg, hive, bead: (None, Path(\".\"), Path(\".\"), \"wt/bead/x\") )",
+          "line": 102,
+          "path": "tests/test_service_extraction.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( work.worktree, \"locate\", lambda cfg, hive, bead: (None, tmp_path, missing, \"wt/bead/x\") )",
+          "line": 112,
+          "path": "tests/test_service_extraction.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( worktree.wt_status, \"classify\", lambda **kwargs: captured.update(kwargs) or [\"classified\"], )",
+          "line": 170,
+          "path": "tests/test_structural_facade_contracts.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(work.worktree, \"ensure\", fail)",
+          "line": 667,
+          "path": "tests/test_work.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr(work.worktree, \"ensure\", fail_after_reassign)",
+          "line": 683,
+          "path": "tests/test_work.py"
+        },
+        {
+          "call": "monkeypatch.setattr",
+          "expression": "monkeypatch.setattr( work.worktree, \"ensure\", lambda *a, **k: (_ for _ in ()).throw(RuntimeError(\"boom\")) )",
+          "line": 488,
+          "path": "tests/test_work_next.py"
+        },
         {
           "call": "monkeypatch.setattr",
           "expression": "monkeypatch.setattr(worktree.wt_status, \"classify\", classify)",
