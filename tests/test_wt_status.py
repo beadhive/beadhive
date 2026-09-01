@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from beadhive.precious import PreciousFile
 from beadhive.worktree import bead_and_parent  # noqa: E402
 from beadhive.wt_status import WtClassification, classify  # noqa: E402
 
@@ -65,6 +66,7 @@ def _run(
     bead_close_reasons=None,
     bead_unknown_reasons=None,
     store_unreadable_reason="",
+    precious=(),
 ):
     """Run classify with one managed row and the given params; return the single WtStatus.
 
@@ -88,6 +90,7 @@ def _run(
         bead_close_reasons=bead_close_reasons or {},
         bead_unknown_reasons=bead_unknown_reasons or {},
         store_unreadable_reason=store_unreadable_reason,
+        precious_by_path={path: precious},
     )
     assert len(result) == 1
     return result[0]
@@ -103,6 +106,17 @@ def test_safe_requires_closed_merged_clean():
     st = _run(bead_status="closed", merged=True, dirty=False)
     assert st.classification == WtClassification.SAFE
     assert st.safe is True
+
+
+def test_precious_content_clears_safe_without_changing_base_classification():
+    """Precious content is an orthogonal overlay, not a lifecycle classification."""
+    item = PreciousFile(".env", 8, "precious", ".env")
+
+    st = _run(bead_status="closed", merged=True, dirty=False, precious=[item])
+
+    assert st.classification == WtClassification.SAFE
+    assert st.safe is False
+    assert st.precious == (item,)
 
 
 def test_dirty_is_never_safe():
@@ -448,6 +462,22 @@ def test_landed_rebased_is_safe_eligible():
     )
     assert st.safe is True
     assert st.classification == WtClassification.LANDED_REBASED
+
+
+def test_precious_content_also_clears_landed_rebased_safety():
+    """The overlay applies to both base classes that are otherwise reclaimable."""
+    item = PreciousFile("state.db", 2, "precious", "*.db")
+    st = _run(
+        bead_status="closed",
+        merged=False,
+        dirty=False,
+        is_landed_fn=_make_landed_fn(True),
+        precious=(item,),
+    )
+
+    assert st.classification == WtClassification.LANDED_REBASED
+    assert st.safe is False
+    assert st.precious == (item,)
 
 
 def test_dirty_landed_rebased_is_not_safe():

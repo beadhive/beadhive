@@ -156,6 +156,14 @@ def test_worktree_classifier_facade_forwards_payload_and_callback_patch_points(m
         ),
     )
     monkeypatch.setattr(worktree, "_wt_dirty", lambda path: path.endswith("dirty"))
+    monkeypatch.setattr(worktree.config, "precious_globs", lambda cfg, entry: [".env"])
+    monkeypatch.setattr(worktree.config, "junk_globs", lambda cfg, entry: ["build/**"])
+    monkeypatch.setattr(worktree.config, "precious_min_bytes", lambda cfg, entry: 1024)
+    monkeypatch.setattr(
+        worktree.precious,
+        "scan_precious",
+        lambda path, **kwargs: [(path, kwargs)],
+    )
     monkeypatch.setattr(worktree, "is_merged", lambda entry, branch, base: (branch, base))
     monkeypatch.setattr(
         worktree,
@@ -181,6 +189,18 @@ def test_worktree_classifier_facade_forwards_payload_and_callback_patch_points(m
     assert captured["meta_branches"] == meta.branches
     assert captured["bead_statuses"] == {"bh-contract": "closed"}
     assert captured["bead_close_reasons"] == {"bh-contract": "merged"}
+    assert captured["precious_by_path"] == {
+        "/worktrees/bh-contract": [
+            (
+                "/worktrees/bh-contract",
+                {
+                    "precious_globs": [".env"],
+                    "junk_globs": ["build/**"],
+                    "min_bytes": 1024,
+                },
+            )
+        ]
+    }
     assert captured["integration"] == "main"
     assert captured["is_merged_fn"](None, "topic", "main") == ("topic", "main")
     assert captured["parent_fn"](None, "/somewhere", "main") == ("bh-contract", "main")

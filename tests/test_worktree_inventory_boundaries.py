@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import subprocess
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -157,6 +159,16 @@ def test_classify_entry_partial_state_outcome_matrix(
     monkeypatch.setattr(worktree.config, "integration_branch", lambda cfg, _entry: "main")
     monkeypatch.setattr(worktree, "_bead_statuses_for_entry", lambda _entry, _rows: bead_state)
     monkeypatch.setattr(worktree, "_wt_dirty", lambda path: path in dirty_paths)
+    monkeypatch.setattr(worktree.config, "precious_globs", lambda _cfg, _entry: [".secret"])
+    monkeypatch.setattr(worktree.config, "junk_globs", lambda _cfg, _entry: ["cache/**"])
+    monkeypatch.setattr(worktree.config, "precious_min_bytes", lambda _cfg, _entry: 42)
+    scan_calls = []
+
+    def scan_precious(path, **kwargs):
+        scan_calls.append((path, kwargs))
+        return []
+
+    monkeypatch.setattr(worktree.precious, "scan_precious", scan_precious)
     monkeypatch.setattr(worktree, "is_merged", lambda _entry, branch, base: (branch, base))
     monkeypatch.setattr(
         worktree,
@@ -185,9 +197,106 @@ def test_classify_entry_partial_state_outcome_matrix(
     assert captured["bead_unknown_reasons"] == expected_unknown
     assert captured["store_unreadable_reason"] == expected_store_reason
     assert captured["dirty_by_path"] == {path: path in dirty_paths for _, path, _ in rows}
+    assert captured["precious_by_path"] == {path: [] for _, path, _ in rows}
+    assert scan_calls == [
+        (
+            path,
+            {
+                "precious_globs": [".secret"],
+                "junk_globs": ["cache/**"],
+                "min_bytes": 42,
+            },
+        )
+        for _, path, _ in rows
+    ]
     assert captured["merged_result"] == ("topic", "main")
     assert captured["parent_result"] == ("/wt/a", "main", "topic")
     assert captured["landed_result"] == ("topic", "main", "merged")
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def test_classify_entry_scans_real_configured_ignored_content(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / ".gitignore").write_text(".env\n")
+    _git(repo, "add", ".gitignore")
+    _git(
+        repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "test: ignore environment",
+    )
+    (repo / ".env").write_text("TOKEN=secret\n")
+    entry = {"prefix": "mr"}
+    rows = [("mr", str(repo), "wt/bead/issue/a")]
+    cfg = {
+        "work": {
+            "precious_globs": [".env"],
+            "junk_globs": [],
+            "precious_min_bytes": 1024,
+        }
+    }
+
+    monkeypatch.setattr(worktree.registry, "hive_key", lambda _entry: "github/acme/repo")
+    monkeypatch.setattr(metadata, "read_fleet", lambda _cfg, _keys, ttl: {})
+    monkeypatch.setattr(worktree.config, "integration_branch", lambda _cfg, _entry: "main")
+    monkeypatch.setattr(
+        worktree,
+        "_bead_statuses_for_entry",
+        lambda _entry, _rows: ({"a": "closed"}, {"a": "merged"}, {}, ""),
+    )
+    monkeypatch.setattr(worktree, "_wt_dirty", lambda _path: False)
+    monkeypatch.setattr(worktree, "is_merged", lambda _entry, _branch, _base: True)
+    monkeypatch.setattr(
+        worktree,
+        "bead_and_parent",
+        lambda _entry, _path, integration, branch="": ("a", integration),
+    )
+
+    [status] = worktree._classify_entry(entry, rows, cfg)
+
+    assert status.classification is wt_status.WtClassification.SAFE
+    assert status.safe is False
+    assert status.precious == (worktree.precious.PreciousFile(".env", 13, "precious", ".env"),)
+
+
+def test_classify_entry_propagates_precious_scan_failure_before_classification(monkeypatch):
+    entry = {"prefix": "mr"}
+    rows = [("mr", "/not-a-repository", "wt/bead/issue/a")]
+    error = subprocess.CalledProcessError(128, ["git", "status"])
+
+    monkeypatch.setattr(worktree.registry, "hive_key", lambda _entry: "github/acme/repo")
+    monkeypatch.setattr(metadata, "read_fleet", lambda _cfg, _keys, ttl: {})
+    monkeypatch.setattr(worktree.config, "integration_branch", lambda _cfg, _entry: "main")
+    monkeypatch.setattr(
+        worktree,
+        "_bead_statuses_for_entry",
+        lambda _entry, _rows: ({"a": "closed"}, {"a": "merged"}, {}, ""),
+    )
+    monkeypatch.setattr(worktree, "_wt_dirty", lambda _path: False)
+    monkeypatch.setattr(
+        worktree.precious, "scan_precious", lambda *_args, **_kwargs: (_ for _ in ()).throw(error)
+    )
+    monkeypatch.setattr(
+        worktree.wt_status,
+        "classify",
+        lambda **_kwargs: pytest.fail(
+            "classification must not run after an incomplete safety scan"
+        ),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        worktree._classify_entry(entry, rows, {})
+
+    assert caught.value is error
 
 
 def test_concurrent_classification_streams_completion_order_but_flattens_entry_order(monkeypatch):
