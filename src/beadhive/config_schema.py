@@ -50,6 +50,7 @@ from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from .complexity import ComplexityTier, tier_names
+from .precious import DEFAULT_JUNK_GLOBS, DEFAULT_PRECIOUS_GLOBS, DEFAULT_PRECIOUS_MIN_BYTES
 
 #: ISO-8601 duration parser for `WorkConfig.ledger_ttl` — pydantic's own, so `P1D` / `PT30M`
 #: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
@@ -549,6 +550,19 @@ class WorkConfig(_Section):
             "or U (file missing) and never G — measured, git 2.54 — so the gate refuses "
             "everything until that file is real."
         ),
+    )
+    precious_globs: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_PRECIOUS_GLOBS),
+        description="Local-only paths protected regardless of size (per-hive replaces global).",
+    )
+    junk_globs: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_JUNK_GLOBS),
+        description="Disposable paths excluded before stat/walk (per-hive replaces global).",
+    )
+    precious_min_bytes: int = Field(
+        DEFAULT_PRECIOUS_MIN_BYTES,
+        ge=0,
+        description="Review threshold in bytes for ignored/untracked paths outside the taxonomy.",
     )
     batch_max_size: int = Field(
         5, description="Max issues a planner-declared batch:<group> may hold as one unit."
