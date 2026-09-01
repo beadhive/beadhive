@@ -20,6 +20,8 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from .precious import PreciousFile
+
 
 class WtClassification(StrEnum):
     """Mutually exclusive classifications for a managed worktree."""
@@ -146,6 +148,14 @@ class WtStatus:
     exists).  ``worktree status`` silently defaulted for all three; saying which is bh-167s0's
     second acceptance criterion."""
 
+    precious: tuple[PreciousFile, ...] = ()
+    """Ignored or untracked local-only content that must survive removal.
+
+    This is orthogonal to :attr:`classification`: a closed, merged, tracked-clean worktree still
+    classifies ``SAFE``, but a non-empty tuple clears :attr:`safe` so unattended prune cannot
+    remove it.
+    """
+
     def as_dict(self) -> dict:
         """JSON-serializable dict with ``classification`` / ``underlying`` as strings and
         ``safe`` as a bool — suitable for ``--json`` emission."""
@@ -181,6 +191,7 @@ def classify(
     bead_close_reasons: dict[str, str] | None = None,
     bead_unknown_reasons: dict[str, str] | None = None,
     store_unreadable_reason: str = "",
+    precious_by_path: dict[str, list[PreciousFile] | tuple[PreciousFile, ...]] | None = None,
 ) -> list[WtStatus]:
     """Classify every managed worktree row for one hive.
 
@@ -230,6 +241,10 @@ def classify(
         Optional hive-wide reason, used for any unresolved bead with no per-bead entry — the
         common case, because when a store cannot be read NOTHING resolves and repeating the same
         sentence per bead says nothing extra.
+    precious_by_path:
+        Pre-computed local-only content per worktree path. Like ``dirty_by_path``, the caller
+        owns filesystem and git I/O; the classifier only applies the safety overlay. Omitted
+        paths have no detected precious content.
 
     Returns
     -------
@@ -238,6 +253,7 @@ def classify(
     """
     results: list[WtStatus] = []
     unknown_reasons = bead_unknown_reasons or {}
+    precious_paths = precious_by_path or {}
 
     for prefix, path, branch in managed_rows:
         leaf = Path(path).name
@@ -340,7 +356,9 @@ def classify(
         if dirty and not is_detached:
             underlying, cls = cls, WtClassification.DIRTY
 
-        safe = cls in (WtClassification.SAFE, WtClassification.LANDED_REBASED)
+        precious = tuple(precious_paths.get(path, ()))
+        base_safe = cls in (WtClassification.SAFE, WtClassification.LANDED_REBASED)
+        safe = base_safe and not precious
 
         results.append(
             WtStatus(
@@ -355,6 +373,7 @@ def classify(
                 safe=safe,
                 underlying=underlying,
                 unknown_reason=unknown_reason,
+                precious=precious,
             )
         )
 
