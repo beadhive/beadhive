@@ -383,6 +383,12 @@ registration. It declares outbound ports for registries, repository/workspace re
 dependency probes, and optional lifecycle subscribers. Plugin details do not appear in hive
 domain objects.
 
+The implemented public boundary is `beadhive.modules.hives.HiveLifecycleService`, with typed
+request/result contracts and `HiveRegistry`, `WorkspaceRealizer`, `DependencyProbe`, and
+`LifecyclePublisher` ports. Current CLI and MCP commands share the production composition in
+`beadhive.hive_services`; legacy imports and monkeypatch seams remain governed by
+`docs/design/hives-compatibility-removal-ledger.md`.
+
 ### `modules/work`
 
 Owns bead-workflow policy and use cases: assignment, claim, scheduling, validation, submission,
