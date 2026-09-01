@@ -50,6 +50,17 @@ def test_impact_selection_unions_direct_shared_contract_and_reverse_dependency_t
     assert len(closure.selectors) == len(set(closure.selectors))
 
 
+def test_herdr_closure_owns_typed_integration_and_compatibility_surfaces():
+    closure = test_closures.load_registry().by_id()["plugin.herdr"]
+
+    assert closure.owner_path == "src/beadhive/herdr_plugin.py"
+    assert "src/beadhive/integrations/herdr/**/*.py" in closure.source_paths
+    assert "tests/unit/integrations/test_herdr_agent_lifecycle_adapter.py" in closure.tests
+    assert "tests/unit/integrations/test_herdr_independence.py" in closure.tests
+    assert "tests/test_herdr_plugin.py" in closure.tests
+    assert "tests/test_herdr_presentation.py" in closure.tests
+
+
 def test_marker_selected_closure_runs_supplemental_impact_tests_separately():
     closure = test_closures.load_registry().by_id()["integration"]
 

@@ -122,8 +122,20 @@ id = "plugin.herdr"
 kind = "plugin"
 status = "present"
 owner_path = "src/beadhive/herdr_plugin.py"
-source_paths = ["src/beadhive/herdr_plugin.py", "src/beadhive/kernel/plugins/manifests/herdr.json"]
-tests = ["tests/test_herdr_plugin.py"]
+source_paths = [
+  "src/beadhive/integrations/herdr/**/*.py",
+  "src/beadhive/herdr_plugin.py",
+  "src/beadhive/herdr_views.py",
+  "src/beadhive/kernel/plugins/manifests/herdr.json",
+]
+tests = [
+  "tests/unit/integrations/test_herdr_adapter.py",
+  "tests/unit/integrations/test_herdr_agent_lifecycle_adapter.py",
+  "tests/unit/integrations/test_herdr_independence.py",
+  "tests/test_herdr_plugin.py",
+  "tests/test_herdr_presentation.py",
+  "tests/test_herdr_views.py",
+]
 shared_contracts = ["contracts", "contract.agent-launch"]
 shared_contract_tests = ["tests/unit/testing/test_conformance_testkit.py", "tests/contracts/test_builtin_plugin_manifests.py", "tests/contracts/test_agent_launch_compatibility.py"]
 reverse_dependencies = ["system-smoke"]
