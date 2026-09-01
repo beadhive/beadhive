@@ -277,42 +277,139 @@ def _test_inventory(slice_name: str) -> tuple[str, ...]:
     )
 
 
-def _dynamic_test_seams(paths: tuple[str, ...], selected: set[str]) -> list[dict[str, Any]]:
-    stems = {module.rsplit(".", 1)[-1] for module in selected}
+def _import_aliases(path: str, tree: ast.AST) -> dict[str, str]:
+    importer = _module(path)
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                aliases[alias.asname or alias.name.split(".")[0]] = alias.name
+        elif isinstance(node, ast.ImportFrom):
+            base = _resolve_from(
+                importer,
+                path.endswith("/__init__.py"),
+                node.level,
+                node.module,
+            )
+            for alias in node.names:
+                target = f"{base}.{alias.name}" if base else alias.name
+                aliases[alias.asname or alias.name] = target
+    return aliases
+
+
+@cache
+def _source_namespaces() -> dict[str, dict[str, str]]:
+    namespaces: dict[str, dict[str, str]] = {}
+    for path in _revision_files("src/beadhive"):
+        tree = ast.parse(_source(path), filename=path)
+        namespaces[_module(path)] = _import_aliases(path, tree)
+    return namespaces
+
+
+def _resolved_reference(
+    node: ast.AST,
+    aliases: dict[str, str],
+    namespaces: dict[str, dict[str, str]],
+) -> str | None:
+    parts = _call_name(node)
+    if not parts or parts[0] not in aliases:
+        return None
+    resolved = aliases[parts[0]]
+    for part in parts[1:]:
+        resolved = namespaces.get(resolved, {}).get(part, f"{resolved}.{part}")
+    return resolved
+
+
+def _string(node: ast.AST) -> str | None:
+    return node.value if isinstance(node, ast.Constant) and isinstance(node.value, str) else None
+
+
+def _selected_target(reference: str | None, selected: set[str]) -> tuple[str, str] | None:
+    if reference is None:
+        return None
+    candidates = [
+        module for module in selected if reference == module or reference.startswith(f"{module}.")
+    ]
+    if not candidates:
+        return None
+    module = max(candidates, key=len)
+    return module, reference.removeprefix(module).lstrip(".") or "<module>"
+
+
+def _dynamic_seams_in_source(
+    source: str,
+    path: str,
+    selected: set[str],
+    namespaces: dict[str, dict[str, str]],
+) -> list[dict[str, Any]]:
+    tree = ast.parse(source, filename=path)
+    aliases = _import_aliases(path, tree)
     records: list[dict[str, Any]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        raw_call = ".".join(_call_name(node.func))
+        resolved_call = _resolved_reference(node.func, aliases, namespaces)
+        operation = ""
+        reference: str | None = None
+        if raw_call in {"monkeypatch.setattr", "monkeypatch.delattr"} and node.args:
+            operation = raw_call
+            reference = _string(node.args[0]) or _resolved_reference(
+                node.args[0], aliases, namespaces
+            )
+            if _string(node.args[0]) is None and len(node.args) > 1:
+                attribute = _string(node.args[1])
+                reference = f"{reference}.{attribute}" if reference and attribute else None
+        elif resolved_call in {"unittest.mock.patch", "mock.patch"} and node.args:
+            operation = "patch"
+            reference = _string(node.args[0])
+        elif (
+            resolved_call in {"unittest.mock.patch.object", "mock.patch.object"}
+            or raw_call in {"mocker.patch.object"}
+        ) and len(node.args) > 1:
+            operation = "patch.object"
+            reference = _resolved_reference(node.args[0], aliases, namespaces)
+            attribute = _string(node.args[1])
+            reference = f"{reference}.{attribute}" if reference and attribute else None
+        elif raw_call == "mocker.patch" and node.args:
+            operation = "mocker.patch"
+            reference = _string(node.args[0])
+        elif raw_call == "getattr" and len(node.args) > 1:
+            operation = "getattr"
+            reference = _resolved_reference(node.args[0], aliases, namespaces)
+            attribute = _string(node.args[1])
+            reference = f"{reference}.{attribute}" if reference and attribute else None
+        elif resolved_call == "importlib.import_module" and node.args:
+            operation = "importlib.import_module"
+            reference = _string(node.args[0])
+        elif raw_call == "__import__" and node.args:
+            operation = "__import__"
+            reference = _string(node.args[0])
+        target = _selected_target(reference, selected)
+        if target is None:
+            continue
+        target_module, target_symbol = target
+        expression = ast.get_source_segment(source, node) or ""
+        records.append(
+            {
+                "path": path,
+                "line": node.lineno,
+                "call": raw_call,
+                "operation": operation,
+                "target_module": target_module,
+                "target_symbol": target_symbol,
+                "expression": " ".join(expression.split())[:500],
+            }
+        )
+    return records
+
+
+def _dynamic_test_seams(paths: tuple[str, ...], selected: set[str]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    namespaces = _source_namespaces()
     for path in paths:
         source = _source(path)
-        tree = ast.parse(source, filename=path)
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            call = ".".join(_call_name(node.func))
-            if not (
-                call.endswith("setattr")
-                or call.endswith("patch")
-                or call.endswith("patch.object")
-                or call.endswith("getattr")
-                or call.endswith("import_module")
-                or call == "__import__"
-            ):
-                continue
-            expression = ast.get_source_segment(source, node) or ""
-            if not any(
-                f"beadhive.{stem}" in expression
-                or f".{stem}" in expression
-                or f'"{stem}"' in expression
-                or f"'{stem}'" in expression
-                for stem in stems
-            ):
-                continue
-            records.append(
-                {
-                    "path": path,
-                    "line": node.lineno,
-                    "call": call,
-                    "expression": " ".join(expression.split())[:500],
-                }
-            )
+        records.extend(_dynamic_seams_in_source(source, path, selected, namespaces))
     return sorted(records, key=lambda row: (row["path"], row["line"], row["expression"]))
 
 
@@ -404,8 +501,9 @@ def build_map() -> dict[str, Any]:
             "call_coupling": "AST call sites resolved through explicit import aliases",
             "churn": f"git numstat at the measured revision since {CHURN_SINCE}",
             "dynamic_test_seams": (
-                "AST patch/getattr/import calls across every exact-revision Python test/support "
-                "file; current_test_files is the narrower legacy characterization closure"
+                "AST-semantically resolved monkeypatch/patch/getattr/import targets across every "
+                "exact-revision Python test/support file; current_test_files is the narrower "
+                "legacy characterization closure"
             ),
             "coverage": "recorded separately in the human evidence because it is executed data",
         },

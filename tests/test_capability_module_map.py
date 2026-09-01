@@ -54,13 +54,13 @@ def test_dynamic_seams_cover_every_exact_revision_python_test_caller() -> None:
         "python_paths": list(exact_test_paths),
     }
     expected_seam_counts = {
-        "hives": 197,
-        "worktrees": 39,
-        "work": 57,
-        "planning": 8,
-        "state": 20,
+        "hives": 364,
+        "worktrees": 165,
+        "work": 66,
+        "planning": 50,
+        "state": 22,
     }
-    assert len(artifact["slices"]["hives"]["dynamic_test_seams"]) == 197
+    assert len(artifact["slices"]["hives"]["dynamic_test_seams"]) == 364
     assert len(artifact["slices"]["hives"]["dynamic_test_seams"]) != 77
     for name, slice_evidence in artifact["slices"].items():
         assert slice_evidence["dynamic_test_scope"] == {
@@ -71,3 +71,83 @@ def test_dynamic_seams_cover_every_exact_revision_python_test_caller() -> None:
         assert {row["path"] for row in slice_evidence["dynamic_test_seams"]} <= set(
             exact_test_paths
         )
+
+
+def test_dynamic_seam_classifier_resolves_supported_module_and_symbol_targets() -> None:
+    capability_module_map = _module()
+    selected = {
+        capability_module_map._module(path)
+        for paths in capability_module_map.SLICES.values()
+        for path in paths
+    }
+    source = """
+import importlib
+from unittest.mock import patch
+from beadhive import hive, work, worktree
+
+monkeypatch.setattr(hive, "onboard", replacement)
+monkeypatch.delattr("beadhive.hive.init")
+with patch("beadhive.worktree.integration_base"):
+    pass
+
+@patch.object(work, "submit")
+def decorated():
+    pass
+
+getattr(worktree, "locate")
+importlib.import_module("beadhive.worktree")
+__import__("beadhive.work")
+"""
+
+    seams = capability_module_map._dynamic_seams_in_source(
+        source,
+        "tests/test_semantic_positive.py",
+        selected,
+        capability_module_map._source_namespaces(),
+    )
+
+    assert {(row["operation"], row["target_module"], row["target_symbol"]) for row in seams} == {
+        ("monkeypatch.setattr", "beadhive.hive", "onboard"),
+        ("monkeypatch.delattr", "beadhive.hive", "init"),
+        ("patch", "beadhive.worktree", "integration_base"),
+        ("patch.object", "beadhive.work", "submit"),
+        ("getattr", "beadhive.worktree", "locate"),
+        ("importlib.import_module", "beadhive.worktree", "<module>"),
+        ("__import__", "beadhive.work", "<module>"),
+    }
+
+
+def test_dynamic_seam_classifier_rejects_incidental_names_and_values() -> None:
+    capability_module_map = _module()
+    selected = {
+        capability_module_map._module(path)
+        for paths in capability_module_map.SLICES.values()
+        for path in paths
+    }
+    source = """
+import importlib
+from beadhive import cli, config_partition, doctor, plugins
+
+doctor._render_dispatch({"hives": []})
+_fake_dispatch(monkeypatch, {"profile": "hive", "config": "work"})
+monkeypatch.setattr(cli.sys, "argv", ["bh", "hive", "work"])
+monkeypatch.setattr(
+    config_partition,
+    "FLEET_HOST_OVERRIDE_ALLOWLIST",
+    frozenset({"work.validate_cmd"}),
+)
+monkeypatch.setattr(plugins, "registry", lambda: [])
+getattr(profile, "hive", None)
+importlib.import_module(profile_name)
+patcher.patch("profile.hive")
+"""
+
+    assert (
+        capability_module_map._dynamic_seams_in_source(
+            source,
+            "tests/test_semantic_negative.py",
+            selected,
+            capability_module_map._source_namespaces(),
+        )
+        == []
+    )
