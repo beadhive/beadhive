@@ -9,6 +9,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from beadhive.herdr_launch_profile import (
+    HerdrAgentLaunchProfile,
+    HerdrPaneCreateTarget,
+    resolve_herdr_launch_profile,
+)
 from beadhive.integrations.herdr import (
     HERDR_AGENT_SESSION,
     HERDR_AGENT_SESSION_KEY,
@@ -42,6 +47,7 @@ from beadhive.modules.agents import (
     PrepareLaunchService,
     RecoverLaunchRequest,
     RecoverLaunchService,
+    RecoveryResultV1,
     StoredOperation,
     TeardownLaunchRequest,
     TeardownLaunchService,
@@ -480,6 +486,85 @@ def test_production_resolver_rejects_cross_generation_receipt_before_source_acce
         herdr_application.production_runtime_for_receipt(receipt)
 
     assert calls == []
+
+
+def test_fresh_generation_recovery_crosses_bound_port_services_without_provider_fallback(
+    monkeypatch,
+) -> None:
+    profile = HerdrAgentLaunchProfile.model_validate(
+        {
+            "managed_bead": True,
+            "bead": "widget-1",
+            "initial_seat": "developer",
+            "harness": "codex",
+            "herdr_session": "session-a",
+            "space_id": "workspace-1",
+            "space_revision": "revision-1",
+            "pane_id": "pane-old",
+            "launch_id": "launch-a",
+            "operation_id": "operation-a",
+            "generation": 1,
+        }
+    )
+    resolved, _receipt = resolve_herdr_launch_profile(profile)
+    monkeypatch.setattr(herdr_application, "HerdrPaneCreateTarget", HerdrPaneCreateTarget)
+    monkeypatch.setattr(
+        herdr_application, "resolve_herdr_launch_profile", resolve_herdr_launch_profile
+    )
+    calls = []
+
+    class RecoveryPort:
+        def observe(self, receipt):
+            calls.append(("observe", receipt))
+            return AgentObservationV1(
+                launch_id=receipt.launch_id,
+                binding_digest=portable_digest(receipt.workspace_binding),
+                status="missing",
+                generation=receipt.generation,
+                allocation_id=receipt.allocation_id,
+            )
+
+        def recover(self, request):
+            calls.append(("recover", request))
+            return RecoveryResultV1(
+                launch_id=request.receipt.launch_id,
+                recover_operation_id=request.operation_id,
+                binding_digest=portable_digest(request.receipt.workspace_binding),
+                disposition="relaunched",
+                previous_generation=request.receipt.generation,
+                generation=(request.receipt.generation or 0) + 1,
+            )
+
+        def __getattr__(self, name):
+            raise AssertionError(f"unexpected direct provider fallback: {name}")
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("recovery must not call a provider source outside the bound port")
+
+    monkeypatch.setattr(herdr_application, "_session_snapshot_for", forbidden)
+    monkeypatch.setattr(herdr_application, "_invoke", forbidden)
+    monkeypatch.setattr(herdr_application, "_command", forbidden)
+    snapshot = {
+        "session": "session-a",
+        "revision": "revision-2",
+        "agents": [],
+        "panes": [{"pane_id": "pane-anchor", "workspace_id": "workspace-1"}],
+        "workspaces": [{"workspace_id": "workspace-1"}],
+    }
+
+    with herdr_application.agent_session_scope(RecoveryPort()):
+        recovered, _resolved = herdr_application._recover_profile_through_port(
+            profile,
+            resolved,
+            snapshot,
+            "pane-anchor",
+            hive_id="github/acme/widgets",
+        )
+
+    assert recovered.generation == 2
+    assert recovered.operation_id == "operation-a:recovery:2"
+    assert recovered.pane_id is None
+    assert [name for name, _value in calls] == ["observe", "recover"]
 
 
 def test_restart_resolver_rehydrates_local_capability_without_portable_authority() -> None:

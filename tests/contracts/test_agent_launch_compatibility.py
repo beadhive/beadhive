@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import inspect
 import json
+from dataclasses import fields
 from pathlib import Path
 
 import pytest
@@ -35,6 +37,13 @@ from beadhive.herdr_launch_profile import (
     validate_herdr_result_observation,
     worktree_binding_digest,
 )
+from beadhive.integrations.herdr import cli as herdr_cli
+from beadhive.integrations.herdr import cli_application as herdr_application
+from beadhive.integrations.herdr.agent_adapter import HerdrAgentAdapter
+from beadhive.integrations.herdr.application_contracts import (
+    ApplicationError,
+    ApplicationNotice,
+)
 from beadhive.operation_catalog import operations
 from beadhive.seat_contracts import SeatContract, seat_contract
 
@@ -63,7 +72,7 @@ def test_authoritative_owner_matrix_resolves_to_current_implementation_modules()
         "prepared launch": (
             herdr_plugin._launch_cmd,
             herdr_plugin._launch_fail,
-            "beadhive.herdr_plugin",
+            "beadhive.integrations.herdr.application_services",
         ),
         "receipts": (
             AgentLaunchReceipt,
@@ -73,24 +82,32 @@ def test_authoritative_owner_matrix_resolves_to_current_implementation_modules()
         "generations": (
             herdr_plugin._validate_managed_generation,
             herdr_plugin._recover_managed_generation,
-            "beadhive.herdr_plugin",
+            "beadhive.integrations.herdr.application_services",
         ),
         "adoption": (
             herdr_plugin._recover_managed_generation,
             herdr_plugin._strict_live_target,
-            "beadhive.herdr_plugin",
+            "beadhive.integrations.herdr.application_services",
         ),
-        "abort": (herdr_plugin._launch_fail, herdr_plugin._close_pane, "beadhive.herdr_plugin"),
+        "abort": (
+            herdr_plugin._launch_fail,
+            herdr_plugin._close_pane,
+            "beadhive.integrations.herdr.application_services",
+        ),
         "teardown": (
             herdr_plugin._reap_cmd,
             herdr_plugin._generation_reap_matches,
-            "beadhive.herdr_plugin",
+            "beadhive.integrations.herdr.application_services",
         ),
-        "CLI output": (herdr_plugin._launch_cmd, herdr_plugin._reap_cmd, "beadhive.herdr_plugin"),
+        "CLI output": (
+            herdr_plugin._launch_cmd,
+            herdr_plugin._reap_cmd,
+            "beadhive.integrations.herdr.application_services",
+        ),
         "error codes": (
             herdr_plugin._launch_fail,
             herdr_plugin._lifecycle_failure,
-            "beadhive.herdr_plugin",
+            "beadhive.integrations.herdr.application_services",
         ),
     }
 
@@ -283,6 +300,137 @@ def test_supported_monkeypatch_points_and_dynamic_callers_remain_addressable():
     assert "from .agent_launch_profile import (" in role_source
     assert "from .herdr_launch_profile import (" in plugin_source
     assert 'report["agent_launch_profile"]' in cli_source
+
+
+def test_herdr_presentation_is_a_thin_production_application_projection(monkeypatch):
+    """The supported CLI delegates; policy and provider composition are not presentation code."""
+
+    facade_path = ROOT / "src/beadhive/herdr_plugin.py"
+    facade = ast.parse(facade_path.read_text())
+    assert not [node for node in ast.walk(facade) if isinstance(node, ast.FunctionDef)]
+    assert not {"_launch_cmd", "_reap_cmd", "_spawn_cmd"} & {
+        node.id for node in ast.walk(facade) if isinstance(node, ast.Name)
+    }
+    assert herdr_application._launch_cmd.__module__ == (
+        "beadhive.integrations.herdr.application_services"
+    )
+    assert isinstance(herdr_cli.APPLICATION.agent_session, HerdrAgentAdapter)
+
+    projection = ast.parse((ROOT / "src/beadhive/integrations/herdr/cli.py").read_text())
+    application_paths = [
+        ROOT / "src/beadhive/integrations/herdr/application_contracts.py",
+        ROOT / "src/beadhive/integrations/herdr/application_runtime.py",
+        ROOT / "src/beadhive/integrations/herdr/application_services.py",
+    ]
+    application_trees = [ast.parse(path.read_text()) for path in application_paths]
+    assert not [
+        node
+        for node in ast.walk(projection)
+        if isinstance(node, ast.Attribute) and node.attr == "invoke"
+    ]
+    assert not [
+        node
+        for node in ast.walk(projection)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "callback"
+    ]
+    assert not [
+        node
+        for node in ast.walk(projection)
+        if isinstance(node, ast.Attribute) and node.attr == "registered_commands"
+    ]
+    assert not [
+        node
+        for tree in application_trees
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        and (
+            (
+                isinstance(node, ast.Import)
+                and any(alias.name.split(".")[0] in {"typer", "click"} for alias in node.names)
+            )
+            or (
+                isinstance(node, ast.ImportFrom)
+                and (node.module or "").split(".")[0] in {"typer", "click"}
+            )
+        )
+    ]
+    forbidden_application_names = {
+        "redirect_stdout",
+        "redirect_stderr",
+        "StringIO",
+    }
+    assert not [
+        node
+        for tree in application_trees
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Name) and node.id in forbidden_application_names
+    ]
+    assert [field.name for field in fields(herdr_cli.CliOutcome)] == [
+        "notices",
+        "payload",
+        "error",
+    ]
+
+    calls = []
+
+    class AttachUseCase:
+        def execute(self, request):
+            calls.append(request)
+            return herdr_cli.CliOutcome(notices=(ApplicationNotice("delegated"),))
+
+    class DelegatedApplication:
+        agent_session = object()
+        attach = AttachUseCase()
+
+    monkeypatch.setattr(herdr_cli, "APPLICATION", DelegatedApplication())
+    result = CliRunner().invoke(app, ["plugin", "herdr", "attach", "bh-delegated"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output == "delegated\n"
+    assert len(calls) == 1
+    assert calls[0].target == "bh-delegated"
+    assert calls[0].session is None
+    assert calls[0].as_json is False
+    assert calls[0].operation_id == ""
+
+
+def test_herdr_cli_alone_renders_semantic_json_and_control_outcomes(monkeypatch):
+    class AttachUseCase:
+        outcome = herdr_cli.CliOutcome(payload={"schema_version": 1, "status": "attached"})
+
+        def execute(self, _request):
+            return self.outcome
+
+    use_case = AttachUseCase()
+
+    class DelegatedApplication:
+        agent_session = object()
+        attach = use_case
+
+    monkeypatch.setattr(herdr_cli, "APPLICATION", DelegatedApplication())
+    result = CliRunner().invoke(
+        app,
+        ["plugin", "herdr", "attach", "bh-delegated", "--json"],
+    )
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {"schema_version": 1, "status": "attached"}
+
+    use_case.outcome = herdr_cli.CliOutcome(
+        error=ApplicationError("invalid_parameter", "bad target", 2, "TARGET")
+    )
+    result = CliRunner().invoke(app, ["plugin", "herdr", "attach", "bh-delegated"])
+    assert result.exit_code == 2
+    assert "bad target" in result.output
+
+    use_case.outcome = herdr_cli.CliOutcome(
+        notices=(ApplicationNotice("provider refused", severity="error"),),
+        error=ApplicationError("provider_refused", "provider refused", 1),
+    )
+    result = CliRunner().invoke(app, ["plugin", "herdr", "attach", "bh-delegated"])
+    assert result.exit_code == 1
+    assert result.output.count("provider refused") == 1
 
 
 @pytest.mark.parametrize(

@@ -16,6 +16,8 @@ from typer.testing import CliRunner
 from beadhive import guard, herdr_plugin, herdr_views, plugins, registry, work
 from beadhive.cli import app
 from beadhive.herdr_launch_profile import consume_herdr_launch_receipt
+from beadhive.integrations.herdr import application_runtime as herdr_runtime
+from beadhive.integrations.herdr import cli as herdr_cli
 
 runner = CliRunner()
 _LIFECYCLE_SCHEMA_PATH = (
@@ -913,14 +915,14 @@ def test_resolve_kind_uses_harness_then_claude_without_host_order(monkeypatch):
     assert herdr_plugin._resolve_kind(None, {"harness": "opencode"}, {}) == "claude"
 
 
-def test_resolve_kind_rejects_unsupported_config_with_remedy(monkeypatch, capsys):
+def test_resolve_kind_rejects_unsupported_config_with_remedy(monkeypatch):
     monkeypatch.setattr(herdr_plugin, "supported_kinds", lambda: ["claude", "future"])
 
-    with pytest.raises(typer.Exit) as exc_info:
+    with pytest.raises(herdr_runtime.Stop) as exc_info:
         herdr_plugin._resolve_kind(None, {"herdr": {"kind": "codex"}}, {})
 
-    assert exc_info.value.exit_code == 2
-    error = capsys.readouterr().err
+    assert exc_info.value.error.exit_code == 2
+    error = exc_info.value.error.detail
     assert "supported kinds: claude, future" in error
     assert "change herdr.kind or pass --kind" in error
 
@@ -2429,6 +2431,171 @@ def test_launch_fresh_bead_emits_exact_json_and_forwards_layout(tmp_path, monkey
     assert not any("worktree" in call for call in calls)
 
 
+def test_launch_crosses_bound_agent_session_commit_and_observe(tmp_path, monkeypatch):
+    """The production command must use the bound port, not a parallel provider fallback."""
+
+    _launch_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_workspace", lambda *_args: ("w1", "w1:p1"))
+    monkeypatch.setattr(herdr_plugin, "_launch_warm", lambda _target: (True, ""))
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_command",
+        lambda *args, **_kwargs: (
+            _result(stdout='{"pane":{"pane_id":"w1:p2"}}')
+            if args[:2] == ("pane", "split")
+            else _result()
+        ),
+    )
+    calls: list[str] = []
+    delegate = herdr_cli.APPLICATION.agent_session
+
+    class RecordingPort:
+        def commit(self, prepared, *, operation_id):
+            calls.append("commit")
+            return delegate.commit(prepared, operation_id=operation_id)
+
+        def observe(self, receipt):
+            calls.append("observe")
+            return delegate.observe(receipt)
+
+        def __getattr__(self, name):
+            return getattr(delegate, name)
+
+    monkeypatch.setattr(
+        herdr_cli,
+        "APPLICATION",
+        herdr_cli.HerdrCliApplication(RecordingPort()),
+    )
+    result = runner.invoke(app, ["plugin", "herdr", "launch", "widget-1", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == ["commit", "observe"]
+
+
+def test_launch_bound_port_failure_precedes_provider_effects(tmp_path, monkeypatch):
+    _launch_fixture(monkeypatch, tmp_path)
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_workspace", lambda *_args: ("w1", "w1:p1"))
+    provider_calls = []
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_command",
+        lambda *args, **_kwargs: provider_calls.append(args),
+    )
+
+    class RefusingPort:
+        def commit(self, _prepared, *, operation_id):
+            raise RuntimeError(f"bound-port-refused:{operation_id}")
+
+    monkeypatch.setattr(
+        herdr_cli,
+        "APPLICATION",
+        herdr_cli.HerdrCliApplication(RefusingPort()),
+    )
+    result = runner.invoke(app, ["plugin", "herdr", "launch", "widget-1", "--json"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RuntimeError)
+    assert "bound-port-refused" in str(result.exception)
+    assert provider_calls == []
+
+
+def test_launch_fresh_generation_uses_bound_recovery_before_provider_effects(tmp_path, monkeypatch):
+    _entry, claim = _launch_fixture(monkeypatch, tmp_path)
+    profile_json = _exact_launch_profile(
+        pane_id="w1:p7",
+        launch_id="launch-recovery",
+        operation_id="operation-recovery",
+        generation=1,
+    )
+    snapshot = _exact_snapshot(revision="r2")
+    recovered_payload = json.loads(profile_json)
+    recovered_payload.update(
+        {
+            "space_revision": "r2",
+            "pane_id": None,
+            "pane_create": {
+                "herdr_session": "default",
+                "space_id": "w1",
+                "after_pane_id": "w1:p1",
+                "direction": "right",
+                "focus": False,
+            },
+            "generation": 2,
+            "operation_id": "operation-recovery:recovery:2",
+        }
+    )
+    recovered_profile_json = json.dumps(recovered_payload)
+    post_create = _exact_snapshot(revision="r2")
+    post_create["panes"].append({"pane_id": "w1:p2", "space_id": "w1"})
+    _exact_result_snapshot(
+        post_create,
+        profile_json=recovered_profile_json,
+        worktree=claim.worktree,
+        target="bh-widget-1-launch-recovery",
+        pane="w1:p2",
+    )
+    snapshots = [snapshot, snapshot, post_create]
+    monkeypatch.setattr(
+        herdr_plugin,
+        "_session_snapshot",
+        lambda: snapshots.pop(0) if snapshots else post_create,
+    )
+    monkeypatch.setattr(herdr_plugin, "_strict_live_target", lambda *_args: None)
+    monkeypatch.setattr(herdr_plugin, "_workspace", lambda *_args: ("w1", "w1:p1"))
+    monkeypatch.setattr(herdr_plugin, "_launch_warm", lambda _target: (True, ""))
+    provider_effects = []
+
+    def command(*args, **_kwargs):
+        provider_effects.append(args)
+        if args[:2] == ("pane", "split"):
+            return _result(stdout='{"pane":{"pane_id":"w1:p2"}}')
+        return _result()
+
+    monkeypatch.setattr(herdr_plugin, "_command", command)
+    calls = []
+    delegate = herdr_cli.APPLICATION.agent_session
+
+    class RecordingPort:
+        def observe(self, receipt):
+            calls.append("observe")
+            return delegate.observe(receipt)
+
+        def recover(self, request):
+            calls.append("recover")
+            return delegate.recover(request)
+
+        def commit(self, prepared, *, operation_id):
+            calls.append("commit")
+            return delegate.commit(prepared, operation_id=operation_id)
+
+        def __getattr__(self, name):
+            return getattr(delegate, name)
+
+    monkeypatch.setattr(herdr_cli, "APPLICATION", herdr_cli.HerdrCliApplication(RecordingPort()))
+
+    result = runner.invoke(
+        app,
+        [
+            "plugin",
+            "herdr",
+            "launch",
+            "widget-1",
+            "--profile-json",
+            profile_json,
+            "--recover-after-pane",
+            "w1:p1",
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert calls[:2] == ["observe", "recover"]
+    assert calls.count("commit") == 1
+    assert provider_effects
+
+
 def test_launch_same_actor_returns_proven_live_agent_without_new_pane(tmp_path, monkeypatch):
     _entry, claim = _launch_fixture(monkeypatch, tmp_path, disposition="reattached")
     monkeypatch.setattr(
@@ -3494,7 +3661,7 @@ def test_batch_spawn_refuses_unproven_worktree_matches(
     monkeypatch.setattr(herdr_plugin.worktree, "current_branch", lambda _path: "wt/batch/g")
     monkeypatch.setattr(herdr_plugin.bd, "show", lambda *_args, **_kwargs: issue)
 
-    with pytest.raises(typer.Exit):
+    with pytest.raises(herdr_runtime.Stop):
         herdr_plugin._managed_worktree(requested_hive, child, {})
 
 
@@ -4034,7 +4201,7 @@ def test_launch_lease_adopts_only_expired_state_when_explicit(monkeypatch):
         lambda cfg, entry: adopted.append((cfg, entry)),
     )
 
-    with pytest.raises(typer.Exit):
+    with pytest.raises(herdr_runtime.Stop):
         herdr_plugin._launch_lease({}, {"prefix": "widget"}, "github/acme/widgets", False)
     assert adopted == []
 
@@ -4055,7 +4222,7 @@ def test_launch_lease_never_adopts_a_live_foreign_holder(monkeypatch):
         lambda *_args: (_ for _ in ()).throw(AssertionError("must not adopt")),
     )
 
-    with pytest.raises(typer.Exit):
+    with pytest.raises(herdr_runtime.Stop):
         herdr_plugin._launch_lease({}, {"prefix": "widget"}, "github/acme/widgets", True)
 
 

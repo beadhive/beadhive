@@ -1,13 +1,13 @@
 # Agent-launch boundary characterization
 
-Status: frozen pre-extraction compatibility contract
+Status: frozen compatibility contract, deliberately migrated by `bh-5wuc0.5`
 
 Evidence source revision: `5e4a76700e85b4bdda97640eeec5c2bbac632b46`
 
-This record freezes the launch slice delivered by `bh-4bhs7` before responsibility moves into
-`modules/agents` and `integrations/herdr`. It describes current authority, not the target package
-layout. A move may preserve these paths with compatibility facades or update this record and its
-executable contract deliberately; it must not silently change behavior.
+This record freezes the launch slice delivered by `bh-4bhs7` and records the deliberate ownership
+move into `modules/agents` and `integrations/herdr`. The original measurements remain tied to their
+named source revision. Current owners below are enforced by the executable compatibility contract;
+the import-compatible facade must not silently change behavior.
 
 ## Authority matrix
 
@@ -16,19 +16,20 @@ executable contract deliberately; it must not silently change behavior.
 | Seat contracts | `beadhive.seat_contracts` | `test_authoritative_owner_matrix_resolves_to_current_implementation_modules`; `test_six_row_authority_transport_is_exact_and_redacted` |
 | Generic profiles | `beadhive.agent_launch_profile` | `test_legacy_public_imports_and_model_field_order_are_frozen`; `test_managed_seat_matrix_has_exact_provider_authority` |
 | Herdr profiles | `beadhive.herdr_launch_profile` | `test_legacy_public_imports_and_model_field_order_are_frozen`; `test_operation_and_generation_are_exact_receipt_fences` |
-| Prepared launch | `beadhive.herdr_plugin._launch_cmd` pending extraction behind an `AgentLauncher` port | `test_launch_preflight_finishes_before_native_claim`; `test_launch_exact_create_race_fails_at_last_safe_point_without_mutation` |
+| Prepared launch | `beadhive.integrations.herdr.cli_application._launch_cmd`, reached through the typed CLI application seam | `test_launch_preflight_finishes_before_native_claim`; `test_launch_exact_create_race_fails_at_last_safe_point_without_mutation` |
 | Portable receipts | Generic core in `agent_launch_profile`; Herdr extension in `herdr_launch_profile` | `test_json_discriminators_redaction_and_checked_schema_boundary_are_frozen`; `test_extended_receipt_preserves_strict_base_and_exact_correlation` |
-| Generations | Herdr launch profile plus `herdr_plugin` generation fences | `test_reuse_refuses_stale_generation_and_conflicting_operation`; `test_stale_generation_cannot_authorize_successor_cleanup` |
-| Adoption/recovery | `herdr_plugin._recover_managed_generation`; durable core work state remains Beadhive-owned | `test_restart_reconciliation_adopts_only_exact_durable_generation`; `test_server_loss_recovery_advances_generation_without_completing_work` |
-| Abort/compensation | `herdr_plugin._launch_fail` and exact created-pane cleanup; native claim retention/release remains Beadhive work authority | `test_launch_warmup_failure_retains_claim_and_only_closes_created_pane`; `test_launch_startup_failure_closes_created_pane_and_keeps_native_resources` |
-| Teardown | `herdr_plugin._reap_cmd` plus exact receipt/generation/ownership proof | `test_generation_fenced_receipt_reap_is_idempotent_after_exact_pane_disappears`; `test_receipt_reap_preserves_unrelated_pane_at_expected_locator` |
-| CLI output | Typer functions in `herdr_plugin`; path/signature inventory in `operation_catalog` | `test_typer_paths_and_catalog_signatures_are_frozen`; `test_spawn_watch_and_reap_success_emit_json_dispositions` |
-| Error codes | `_launch_fail` stage output for `launch`; `_lifecycle_failure` and the lifecycle schema for other JSON commands | `test_watch_timeout_and_reap_refusal_emit_stable_json_errors`; `test_launch_startup_failure_closes_created_pane_and_keeps_native_resources` |
+| Generations | Herdr launch profile plus `integrations.herdr.cli_application` generation fences | `test_reuse_refuses_stale_generation_and_conflicting_operation`; `test_stale_generation_cannot_authorize_successor_cleanup` |
+| Adoption/recovery | `integrations.herdr.cli_application._recover_managed_generation`; durable core work state remains Beadhive-owned | `test_restart_reconciliation_adopts_only_exact_durable_generation`; `test_server_loss_recovery_advances_generation_without_completing_work` |
+| Abort/compensation | `integrations.herdr.cli_application._launch_fail` and exact created-pane cleanup; native claim retention/release remains Beadhive work authority | `test_launch_warmup_failure_retains_claim_and_only_closes_created_pane`; `test_launch_startup_failure_closes_created_pane_and_keeps_native_resources` |
+| Teardown | `integrations.herdr.cli_application._reap_cmd` plus exact receipt/generation/ownership proof | `test_generation_fenced_receipt_reap_is_idempotent_after_exact_pane_disappears`; `test_receipt_reap_preserves_unrelated_pane_at_expected_locator` |
+| CLI output | Thin Typer projection in `integrations.herdr.cli`; path/signature inventory in `operation_catalog` | `test_typer_paths_and_catalog_signatures_are_frozen`; `test_herdr_presentation_is_a_thin_production_application_projection` |
+| Error codes | Application-owned `_launch_fail` stage output for `launch`; `_lifecycle_failure` and the lifecycle schema for other JSON commands | `test_watch_timeout_and_reap_refusal_emit_stable_json_errors`; `test_launch_startup_failure_closes_created_pane_and_keeps_native_resources` |
 
 The target direction remains inward: callers depend on provider-neutral agent policy and ports;
-the Herdr adapter depends on those contracts; core never imports Herdr. The current combined
-orchestration inside `herdr_plugin.py` is characterized debt, not a claim that the adapter should
-permanently own core prepare/commit/abort policy.
+the Herdr adapter depends on those contracts; core never imports Herdr. The top-level
+`herdr_plugin.py` is now only the composition/import-compatibility facade. The retained application
+orchestration remains characterized debt, not permission for the provider adapter to own core
+prepare/commit/abort policy.
 
 ## Defect-path characterization
 
@@ -67,10 +68,14 @@ The Typer paths `plugin herdr launch`, `spawn`, and `reap`, including catalog pa
 remain stable. Existing tests patch these supported movement seams directly:
 `_session_snapshot`, `_snapshot_agent_records`, `_metadata_tokens`, `_launch_warm`, `_close_pane`,
 `_strict_live_target`, `_validate_managed_generation`, `_recover_managed_generation`, and
-`_generation_reap_matches`. `role.py` is the generic-profile caller, `herdr_plugin.py` uses
-function-local Herdr-profile imports, `cli.py` projects the resolved profile in role-explain JSON,
-and `operation_catalog.py` owns the declarative CLI inventory. These dynamic/import seams are
-tested by `test_supported_monkeypatch_points_and_dynamic_callers_remain_addressable`.
+`_generation_reap_matches`. `role.py` is the generic-profile caller, `herdr_plugin.py` composes
+the typed provider and preserves the historical import identity,
+`integrations/herdr/cli_application.py` owns the migrated application seams,
+`integrations/herdr/cli.py` projects them through Typer, root `cli.py` projects the resolved profile
+in role-explain JSON, and `operation_catalog.py` owns the declarative CLI inventory. These
+dynamic/import seams are tested by
+`test_supported_monkeypatch_points_and_dynamic_callers_remain_addressable` and
+`test_herdr_presentation_is_a_thin_production_application_projection`.
 
 Native Claude Task children and Codex collaboration children remain explicitly unmanaged. Their
 native correlation variables are an authority boundary, while `BH_ROLE` is context only. Even
@@ -127,7 +132,7 @@ not claim that a document can contain the digest of the later commit that contai
 
 ## Non-goals
 
-This characterization does not move source, publish schemas, create `modules/agents`, introduce a
-new launch port, change Herdr behavior, manage native in-process children, or broaden cleanup
-authority. Those transitions belong to dependent implementation beads and must compare their
-results with this baseline.
+The frozen baseline did not authorize behavior changes, native in-process child management, or
+broader cleanup authority. Later extraction beads may deliberately move owners and introduce typed
+ports only while comparing their results with this baseline and updating the executable owner
+matrix, as `bh-5wuc0.4` and `.5` do.
