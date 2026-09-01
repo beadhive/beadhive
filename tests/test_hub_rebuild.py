@@ -24,11 +24,13 @@ import json
 import os
 import shutil
 
+import pytest
+
 from beadhive import hub
 from beadhive.run import run
 from harness.beads import skip_if_no_bd
 
-pytestmark = skip_if_no_bd
+pytestmark = [skip_if_no_bd, pytest.mark.dolt_server]
 
 
 def _bd_env() -> dict:
@@ -39,7 +41,16 @@ def _bd_init(path, prefix: str):
     """``bd init`` via cwd (not -C): init IS what creates the .beads dir."""
     path.mkdir(parents=True, exist_ok=True)
     return run(
-        ["bd", "init", "--prefix", prefix, "--skip-agents", "--skip-hooks", "--quiet"],
+        [
+            "bd",
+            "init",
+            "--prefix",
+            prefix,
+            "--shared-server",
+            "--skip-agents",
+            "--skip-hooks",
+            "--quiet",
+        ],
         cwd=str(path),
         check=False,
         capture=True,
@@ -65,9 +76,8 @@ def _make_hive(root, prefix: str, titles):
 
 
 def _hydrate(hub_dir, hives):
-    """Stand the hub up prefix-less and hydrate it — `hub.ensure_store`'s bd-init (minus its
-    `--shared-server` flag, which this embedded test has no server for) plus the `repo add` +
-    `repo sync` pair `hub.sync()` runs."""
+    """Stand the hub up and hydrate it with the same shared-server mode that
+    `hub.ensure_store` uses, followed by the `repo add` + `repo sync` pair `hub.sync()` runs."""
     assert _bd_init(hub_dir, hub.HUB_PREFIX).returncode == 0, (
         f"bd refused the hub prefix {hub.HUB_PREFIX!r} — the sentinel must stay inside bd's "
         "own database-name alphabet"

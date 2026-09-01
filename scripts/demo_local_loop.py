@@ -586,10 +586,17 @@ def _bounded_bd_init(main: Path) -> None:
         except ProcessLookupError:
             pass
         try:
-            stdout, stderr = process.communicate(timeout=BD_INIT_DIAGNOSTIC_GRACE_SECONDS)
+            quit_stdout, quit_stderr = process.communicate(timeout=BD_INIT_DIAGNOSTIC_GRACE_SECONDS)
+            stdout = _timeout_output(quit_stdout) or stdout
+            stderr = _timeout_output(quit_stderr) or stderr
         except subprocess.TimeoutExpired as quit_timeout:
             stdout = _timeout_output(quit_timeout.stdout) or stdout
             stderr = _timeout_output(quit_timeout.stderr) or stderr
+        finally:
+            # The direct child can exit on SIGQUIT while one of its descendants ignores it.
+            # `communicate()` then returns early, but that is not evidence that its process
+            # group is empty.  The timeout contract is group cleanup, so always issue the hard
+            # group kill after the diagnostic window; a vanished group is harmless.
             try:
                 if grouped:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -597,20 +604,22 @@ def _bounded_bd_init(main: Path) -> None:
                     process.kill()
             except ProcessLookupError:
                 pass
+        try:
+            kill_stdout, kill_stderr = process.communicate(timeout=BD_INIT_KILL_DRAIN_SECONDS)
+            stdout = _timeout_output(kill_stdout) or stdout
+            stderr = _timeout_output(kill_stderr) or stderr
+        except subprocess.TimeoutExpired as kill_timeout:
+            # A descendant that escaped the process group can retain an inherited pipe even
+            # after the direct child is dead.  Never let that turn the final drain into the
+            # same forever-hang this helper exists to prevent: retain what was read, close
+            # our pipe ends, and bound the direct-child reap independently.
+            stdout = _timeout_output(kill_timeout.stdout) or stdout
+            stderr = _timeout_output(kill_timeout.stderr) or stderr
+            _close_process_pipes(process)
             try:
-                stdout, stderr = process.communicate(timeout=BD_INIT_KILL_DRAIN_SECONDS)
-            except subprocess.TimeoutExpired as kill_timeout:
-                # A descendant that escaped the process group can retain an inherited pipe even
-                # after the direct child is dead.  Never let that turn the final drain into the
-                # same forever-hang this helper exists to prevent: retain what was read, close
-                # our pipe ends, and bound the direct-child reap independently.
-                stdout = _timeout_output(kill_timeout.stdout) or stdout
-                stderr = _timeout_output(kill_timeout.stderr) or stderr
-                _close_process_pipes(process)
-                try:
-                    process.wait(timeout=BD_INIT_REAP_SECONDS)
-                except subprocess.TimeoutExpired:
-                    reaped = False
+                process.wait(timeout=BD_INIT_REAP_SECONDS)
+            except subprocess.TimeoutExpired:
+                reaped = False
         raise BdInitTimedOut(
             BD_INIT_TIMEOUT_SECONDS,
             stdout or "",

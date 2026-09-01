@@ -22,12 +22,14 @@ from __future__ import annotations
 import json
 import os
 
+import pytest
+
 from beadhive.run import run
 from harness.beads import skip_if_no_bd
 
 # Self-skips when bd is not installed; NOT @pytest.mark.integration so the test runs under
 # `just check` (marker "not integration") and provides an empirical result on every validate.
-pytestmark = skip_if_no_bd
+pytestmark = [skip_if_no_bd, pytest.mark.dolt_server]
 
 _BD_NI = {"BD_NON_INTERACTIVE": "1"}
 
@@ -45,7 +47,16 @@ def _bd_env() -> dict:
 def _bd_init(path, prefix: str):
     """``bd init`` via cwd (not -C): init IS what creates the .beads dir."""
     return run(
-        ["bd", "init", "--prefix", prefix, "--skip-agents", "--skip-hooks", "--quiet"],
+        [
+            "bd",
+            "init",
+            "--prefix",
+            prefix,
+            "--shared-server",
+            "--skip-agents",
+            "--skip-hooks",
+            "--quiet",
+        ],
         cwd=str(path),
         check=False,
         capture=True,
