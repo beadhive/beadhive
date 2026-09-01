@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from .complexity import ComplexityTier
-from .config_schema import RoutingTierConfig
+from .modules.config.contracts import RoutingTierConfig
 
 POLICIES = frozenset({"loose", "strict"})
 

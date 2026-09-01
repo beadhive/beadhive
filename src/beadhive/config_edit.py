@@ -15,7 +15,7 @@ def problem(level: str, message: str) -> dict:
 
 
 def not_set_message(dotted: str) -> str:
-    from . import config_schema
+    from .modules.config import contracts as config_schema
 
     suggestion = config_schema.suggest_key(dotted)
     message = f"{dotted} is not set"
@@ -45,7 +45,7 @@ def coerce_value(raw: str, as_json: bool = False):
 
 
 def validate(api, parts: list[str], value) -> list[dict]:
-    from . import config_schema
+    from .modules.config import contracts as config_schema
 
     problems: list[dict] = []
     dotted = ".".join(parts)
@@ -102,7 +102,7 @@ def descend(cfg, parts: list[str]):
 
 
 def literal_violations(api, cfg=None) -> list[dict]:
-    from . import config_schema
+    from .modules.config import contracts as config_schema
 
     cfg = cfg if cfg is not None else api.load()
     violations: list[dict] = []

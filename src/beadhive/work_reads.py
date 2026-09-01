@@ -13,8 +13,9 @@ import sys
 
 import typer
 
-from . import bd, config, otel, registry, release_order, work_guards, worktree
+from . import bd, otel, registry, release_order, work_guards, worktree
 from . import schedule as schedule_mod
+from .config_consumer_ports import work_settings as config
 
 READ_CTX = {"allow_extra_args": True, "ignore_unknown_options": True}
 READY_LIMIT_FLAGS = {"-n", "--limit"}

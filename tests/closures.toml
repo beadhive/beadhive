@@ -62,6 +62,8 @@ owner_path = "src/beadhive/modules/config"
 source_paths = ["src/beadhive/modules/config/**/*.py"]
 tests = [
   "tests/unit/modules/config/test_config_contracts.py",
+  "tests/unit/modules/config/test_consumer_settings.py",
+  "tests/unit/modules/config/test_dependency_ledger.py",
   "tests/unit/modules/config/test_migrations.py",
   "tests/unit/modules/config/test_resolution.py",
   "tests/unit/modules/config/test_schema_artifacts.py",

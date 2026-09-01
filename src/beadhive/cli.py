@@ -24,7 +24,6 @@ from . import (
     checkpoint,
     complexity_backfill,
     config,
-    config_schema,
     dep_cli,
     dolt,
     gitworkspace_plugin,
@@ -43,6 +42,7 @@ from . import (
     work,
 )
 from . import bd as bd_mod
+from .modules.config import contracts as config_schema
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")

@@ -13,7 +13,8 @@ from pathlib import Path
 
 import typer
 
-from . import config, ghpr, registry
+from . import ghpr, registry
+from .config_consumer_ports import work_settings as config
 from .run import retry_on_index_lock
 
 UPSTREAM_REMOTE = "upstream"

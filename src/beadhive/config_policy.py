@@ -49,7 +49,7 @@ def warn_stale_schema_version_if_needed(api) -> None:
         cfg = api.load()
     except FileNotFoundError:
         return
-    from .config_schema import SCHEMA_VERSION
+    from .modules.config.contracts import SCHEMA_VERSION
 
     found = cfg.get("schema_version")
     if isinstance(found, int) and found >= SCHEMA_VERSION:

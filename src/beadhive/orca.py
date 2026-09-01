@@ -37,7 +37,8 @@ from pathlib import Path
 
 import typer
 
-from . import config, plugins, run
+from . import plugins, run
+from .config_consumer_ports import plugin_settings as config
 from .identity import workspace_root
 
 
