@@ -29,6 +29,7 @@ from . import (
 )
 from .hive import _is_plugin_installed  # shared with the installer (defined in hive.py)
 from .identity import workspace_identity
+from .modules.hives import HiveDiagnostic, ReadinessCheck, ReadinessResult
 from .run import run
 
 # Same marker hive._ensure_agf_hint writes into AGENTS.md / CLAUDE.md.
@@ -527,28 +528,22 @@ def _verbose_text(checks: list[Check]) -> str:
     return "\n".join(required) + "\n\n" + "\n".join(optional) + "\n\n"
 
 
-def ready_payload(verbose: bool = False, cwd=None) -> dict:
-    """Build the versioned readiness result consumed by both CLI renderings.
+def probe_readiness(verbose: bool = False, cwd=None) -> ReadinessResult:
+    """Return transport-neutral readiness facts for the hives application service."""
 
-    ``text`` is bh's exact human rendering, including its final newline.  Check rows carry the
-    same rendered text alongside their typed fields so consumers can present bh's wording rather
-    than reconstructing prose from state codes.
-    """
     cfg = config.load()
     ident = workspace_identity(cwd)
     if ident is None:
-        text = "✗ not in a git repo under $GIT_WORKSPACE — not an AGF hive.\n"
-        return jsonout.envelope(
-            "hive ready",
-            jsonout.HIVE_READY_SCHEMA,
-            {
-                "ready": False,
-                "exit_code": 1,
-                "hive": None,
-                "checks": [],
-                "text": text,
-                "stream": "stderr",
-            },
+        return ReadinessResult(
+            False,
+            None,
+            diagnostics=(
+                HiveDiagnostic(
+                    "outside_workspace",
+                    "not in a git repo under $GIT_WORKSPACE — not an AGF hive",
+                    error=True,
+                ),
+            ),
         )
     provider, org, repo = ident
     entry = registry.find_entry(cfg, provider, org, repo)
@@ -557,40 +552,72 @@ def ready_payload(verbose: bool = False, cwd=None) -> dict:
 
     checks = scan(cfg, ident, entry, root)
     failed = sum(1 for c in checks if c.required and c.state != "ok")
-    text = _verbose_text(checks) if verbose else ""
-    if failed:
-        tail = "" if verbose else " (run -v for the breakdown)"
-        text += f"✗ hive '{label}' not ready for AGF — {failed} required check(s) failed{tail}\n"
+    return ReadinessResult(
+        failed == 0,
+        label,
+        tuple(ReadinessCheck(c.label, c.required, c.state, c.detail) for c in checks),
+    )
+
+
+def _readiness_payload(result: ReadinessResult, *, verbose: bool) -> dict:
+    """CLI-owned wire projection of a semantic readiness result."""
+
+    if result.hive is None:
+        text = "✗ not in a git repo under $GIT_WORKSPACE — not an AGF hive.\n"
+        stream = "stderr"
     else:
-        text += f"✓ hive '{label}' ready for AGF.\n"
+        failed = sum(1 for check in result.checks if check.required and check.state != "ok")
+        text = _verbose_text(list(result.checks)) if verbose else ""
+        if failed:
+            tail = "" if verbose else " (run -v for the breakdown)"
+            text += (
+                f"✗ hive '{result.hive}' not ready for AGF — "
+                f"{failed} required check(s) failed{tail}\n"
+            )
+        else:
+            text += f"✓ hive '{result.hive}' ready for AGF.\n"
+        stream = "stdout"
     return jsonout.envelope(
         "hive ready",
         jsonout.HIVE_READY_SCHEMA,
         {
-            "ready": failed == 0,
-            "exit_code": 1 if failed else 0,
-            "hive": label,
+            "ready": result.ready,
+            "exit_code": 0 if result.ready else 1,
+            "hive": result.hive,
             "checks": [
                 {
-                    "label": c.label,
-                    "required": c.required,
-                    "state": c.state,
-                    "detail": c.detail,
-                    "text": _line_text(c),
+                    "label": check.label,
+                    "required": check.required,
+                    "state": check.state,
+                    "detail": check.detail,
+                    "text": _line_text(check),
                 }
-                for c in checks
+                for check in result.checks
             ],
             "text": text,
-            "stream": "stdout",
+            "stream": stream,
         },
     )
 
 
+def ready_payload(verbose: bool = False, cwd=None) -> dict:
+    """Compatibility wire projection retained for direct callers."""
+
+    return _readiness_payload(probe_readiness(verbose, cwd), verbose=verbose)
+
+
 def run_check(verbose: bool = False, cwd=None, *, as_json: bool = False) -> None:
-    """Scan the current hive and exit 0 (ready) / 1 (a required check failed)."""
-    payload = ready_payload(verbose, cwd)
+    """Compatibility facade over the typed hives readiness use case."""
+    from . import hive_services
+    from .modules.hives import ReadinessRequest
+
+    result = hive_services.readiness_result(
+        ReadinessRequest(verbose=verbose, cwd=str(cwd) if cwd is not None else None),
+        probe=probe_readiness,
+    )
+    payload = _readiness_payload(result, verbose=verbose)
     if as_json:
-        jsonout.emit(payload)
+        jsonout.emit(dict(payload))
     else:
         typer.echo(payload["text"], nl=False, err=payload["stream"] == "stderr")
     raise typer.Exit(payload["exit_code"])

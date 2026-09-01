@@ -1257,6 +1257,64 @@ def _capture_onboard_transcript(output: list[str]):
             output.append(transcript.read())
 
 
+def execute_onboard(
+    hive_id,
+    clone_url="",
+    furnish=None,
+    claude=False,
+    skills=False,
+    observaloop=False,
+    agents=False,
+    opencode=False,
+    codex=False,
+    global_grant=False,
+    plugins=None,
+    force=False,
+    kind="",
+    prefix="",
+    yes=False,
+    dry_run=False,
+    skip_check="",
+    hub_sync=None,
+):
+    """Execute end-to-end onboarding and return its structured semantic plan.
+
+    This application-facing seam performs no final rendering and never raises ``typer.Exit`` for
+    a preflight refusal.  The retained :func:`onboard` facade owns those compatibility effects.
+    """
+    from . import onboard as _ob
+
+    provider, org, repo = _parse_triplet(hive_id)
+    target = Path(workspace_root()) / provider / org / repo
+    ctx = _ob.Ctx(
+        hive=f"{provider}/{org}/{repo}",
+        target=str(target),
+        provider=provider,
+        org=org,
+        repo=repo,
+        clone_url=clone_url,
+        cwd=str(target),
+        cfg=config.load(),
+        furnish=furnish,
+        claude=claude,
+        skills=skills,
+        observaloop=observaloop,
+        agents=agents,
+        opencode=opencode,
+        codex=codex,
+        global_grant=global_grant,
+        plugins=plugins or [],
+        force=force,
+        yes=yes,
+        kind=kind,
+        prefix=prefix,
+        hub_sync=hub_sync,
+    )
+    ctx.steps = _ob.build_steps(ctx)
+    skips = [item.strip() for item in skip_check.split(",") if item.strip()]
+    return _ob.execute_onboard(ctx, dry_run=dry_run, skip_checks=skips)
+
+
 def onboard(
     hive_id,
     clone_url="",
@@ -1278,19 +1336,7 @@ def onboard(
     hub_sync=None,
     as_json=False,
 ):
-    """End-to-end onboard a hive from a local folder or a remote repo — a thin wrapper that builds
-    the onboarding ``Ctx`` and calls ``onboard.run_onboard``.
-
-    Resolves target = workspace_root()/provider/org/repo. The two-phase runner clones it down
-    (when absent + --clone-url) inside its Phase-A preflight gate, runs the enabled steps in
-    topological order, and syncs the hub last. Threading cwd=target (not os.chdir) lets one verb
-    stand a hive up wherever it lives on disk. ``--dry-run`` lists every check id and mutates
-    nothing; ``--skip-check`` downgrades an overridable failure (e.g. dirty-tree) to a warning.
-
-    ``hub_sync`` (bh-d5jhc.1) is the tri-state ``--hub-sync``/``--no-hub-sync`` CLI pair: ``None``
-    (unset, default) syncs THIS hive synchronously and backgrounds the fleet-wide aggregation
-    walk; ``True`` waits for the full fleet-wide sync synchronously; ``False`` skips the hub step
-    entirely. See ``onboard.Ctx.hub_sync`` / ``onboard._act_hub_sync``."""
+    """Compatibility presentation facade around :func:`execute_onboard`."""
     from . import jsonout
     from . import onboard as _ob
 
@@ -1302,17 +1348,9 @@ def onboard(
     capture = _capture_onboard_transcript(transcript) if as_json else contextlib.nullcontext()
     with capture:
         try:
-            provider, org, repo = _parse_triplet(hive_id)
-            target = Path(workspace_root()) / provider / org / repo
-            ctx = _ob.Ctx(
-                hive=f"{provider}/{org}/{repo}",
-                target=str(target),
-                provider=provider,
-                org=org,
-                repo=repo,
+            plan = execute_onboard(
+                hive_id,
                 clone_url=clone_url,
-                cwd=str(target),
-                cfg=config.load(),
                 furnish=furnish,
                 claude=claude,
                 skills=skills,
@@ -1321,14 +1359,23 @@ def onboard(
                 opencode=opencode,
                 codex=codex,
                 global_grant=global_grant,
-                plugins=plugins or [],
+                plugins=plugins,
                 force=force,
-                yes=yes,
                 kind=kind,
                 prefix=prefix,
+                yes=yes,
+                dry_run=dry_run,
+                skip_check=skip_check,
                 hub_sync=hub_sync,
             )
-            plan = _run_onboard(ctx, dry_run, skip_check)
+            target = Path(plan.target)
+            ctx = type("OnboardIdentity", (), {"hive": plan.hive})()
+            if not plan.successful:
+                _ob._print_failures(plan.failures)
+                raise typer.Exit(1)
+            _ob._render(plan)
+            if not dry_run:
+                typer.echo(f"✓ hive '{plan.prefix}' ready ({plan.kind}).")
         except typer.Exit as exc:
             if not as_json:
                 raise

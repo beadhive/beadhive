@@ -154,9 +154,30 @@ reverse_dependency_tests = []
 [[closures]]
 id = "module.hives"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/hives"
 source_paths = ["src/beadhive/modules/hives/**/*.py"]
+tests = [
+  "tests/unit/modules/hives/test_hive_identity.py",
+  "tests/unit/modules/hives/test_hive_services.py",
+  "tests/unit/modules/hives/test_hive_independence.py",
+]
+shared_contracts = ["contracts", "kernel.lifecycle"]
+shared_contract_tests = [
+  "tests/contracts/test_hive_lifecycle_compatibility.py",
+  "tests/unit/kernel/lifecycle/test_dispatcher.py",
+]
+reverse_dependencies = ["adapters", "system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_hive_identity_json.py",
+  "tests/test_hive_lifecycle_json.py",
+  "tests/test_hive_ready.py",
+  "tests/test_hive_onboard.py",
+  "tests/test_hive_retire.py",
+  "tests/test_hive_reclaim.py",
+  "tests/test_mcp_hives_resources.py",
+  "tests/test_plugins.py",
+]
 
 [[closures]]
 id = "module.planning"

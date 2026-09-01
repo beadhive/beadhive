@@ -9,7 +9,6 @@ from beadhive.modules.hives import (
     HiveIdentityContractError,
     affiliation_for_kind,
     identity_record,
-    list_payload,
 )
 
 
@@ -21,34 +20,25 @@ def test_identity_rejects_paths_and_affiliation_is_policy_owned() -> None:
         HiveIdentity("github", "..", "api")
 
 
-def test_identity_page_is_bounded_sorted_and_cursor_stable() -> None:
-    entries = [
-        {"provider": "github", "org": "zed", "repo": "web", "prefix": "zed-web", "kind": "fork"},
+def test_identity_record_is_semantic_and_transport_neutral() -> None:
+    record = identity_record(
         {
             "provider": "github",
             "org": "acme",
             "repo": "api",
             "prefix": "acme-api",
             "kind": "org-native",
-        },
-    ]
-
-    first = list_payload(entries, limit=1, generated_at=7)
-    second = list_payload(entries, limit=1, cursor=first["page"]["next_cursor"], generated_at=8)
-
-    assert first["items"][0] == identity_record(entries[1])
-    assert first["items"][0]["affiliation"] == "maintainer"
-    assert second["items"][0]["canonical_id"] == "github/zed/web"
-    assert second["page"]["next_cursor"] is None
-
-
-def test_identity_cursor_fails_closed_when_registry_revision_changes() -> None:
-    first = list_payload(
-        [{"provider": "github", "org": "acme", "repo": "api", "prefix": "aa", "kind": "personal"}],
-        limit=1,
+        }
     )
-    cursor = first["page"]["next_cursor"]
-    assert cursor is None
 
-    with pytest.raises(HiveIdentityContractError, match="malformed"):
-        list_payload([], cursor="not-a-cursor")
+    assert record["canonical_id"] == "github/acme/api"
+    assert record["affiliation"] == "maintainer"
+    assert "schema_version" not in record
+    assert "command" not in record
+
+
+def test_identity_contract_error_retains_semantic_diagnostic() -> None:
+    error = HiveIdentityContractError("invalid_identity", "identity is invalid")
+
+    assert error.code == "invalid_identity"
+    assert str(error) == "identity is invalid"

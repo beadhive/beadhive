@@ -1,14 +1,9 @@
 """Hive domain contracts and pure identity policy."""
 
 from .identity import (
-    DEFAULT_LIMIT,
-    MAX_LIMIT,
-    SCHEMA_VERSION,
     HiveIdentityContractError,
     affiliation_for_kind,
     identity_record,
-    list_payload,
-    unavailable_payload,
 )
 from .models import (
     DiscoverHivesResult,
@@ -27,15 +22,13 @@ from .models import (
     ReadinessResult,
     RegisterHiveRequest,
     RegisterHiveResult,
+    RetireEvent,
     RetireHiveRequest,
     RetireHiveResult,
     RetireScope,
 )
 
 __all__ = [
-    "DEFAULT_LIMIT",
-    "MAX_LIMIT",
-    "SCHEMA_VERSION",
     "DiscoverHivesResult",
     "HiveDiagnostic",
     "HiveIdentity",
@@ -53,11 +46,10 @@ __all__ = [
     "ReadinessResult",
     "RegisterHiveRequest",
     "RegisterHiveResult",
+    "RetireEvent",
     "RetireHiveRequest",
     "RetireHiveResult",
     "RetireScope",
     "affiliation_for_kind",
     "identity_record",
-    "list_payload",
-    "unavailable_payload",
 ]

@@ -3,9 +3,6 @@
 from .application import HiveLifecycleService
 from .contracts import DependencyProbe, HiveRegistry, LifecyclePublisher, WorkspaceRealizer
 from .domain import (
-    DEFAULT_LIMIT,
-    MAX_LIMIT,
-    SCHEMA_VERSION,
     DiscoverHivesResult,
     HiveDiagnostic,
     HiveIdentity,
@@ -23,19 +20,15 @@ from .domain import (
     ReadinessResult,
     RegisterHiveRequest,
     RegisterHiveResult,
+    RetireEvent,
     RetireHiveRequest,
     RetireHiveResult,
     RetireScope,
     affiliation_for_kind,
     identity_record,
-    list_payload,
-    unavailable_payload,
 )
 
 __all__ = [
-    "DEFAULT_LIMIT",
-    "MAX_LIMIT",
-    "SCHEMA_VERSION",
     "DependencyProbe",
     "DiscoverHivesResult",
     "HiveDiagnostic",
@@ -57,12 +50,11 @@ __all__ = [
     "ReadinessResult",
     "RegisterHiveRequest",
     "RegisterHiveResult",
+    "RetireEvent",
     "RetireHiveRequest",
     "RetireHiveResult",
     "RetireScope",
     "WorkspaceRealizer",
     "affiliation_for_kind",
     "identity_record",
-    "list_payload",
-    "unavailable_payload",
 ]

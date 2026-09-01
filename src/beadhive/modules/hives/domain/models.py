@@ -74,9 +74,6 @@ class DiscoverHivesResult:
     candidates: tuple[str, ...]
     registered: tuple[str, ...]
 
-    def as_payload(self) -> dict[str, list[str]]:
-        return {"candidates": list(self.candidates), "registered": list(self.registered)}
-
 
 @dataclass(frozen=True, slots=True)
 class HiveListRequest:
@@ -226,6 +223,17 @@ class RetireHiveRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class RetireEvent:
+    code: str
+    facts: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
+    error: bool = False
+
+    def __post_init__(self) -> None:
+        _text(self.code, "retirement event code")
+        object.__setattr__(self, "facts", MappingProxyType(dict(self.facts)))
+
+
+@dataclass(frozen=True, slots=True)
 class RetireHiveResult:
     hive_id: str
     scope: RetireScope
@@ -236,5 +244,5 @@ class RetireHiveResult:
     purged: bool = False
     plugins_notified: tuple[str, ...] = ()
     successful: bool = True
-    diagnostics: tuple[HiveDiagnostic, ...] = ()
+    events: tuple[RetireEvent, ...] = ()
     details: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))

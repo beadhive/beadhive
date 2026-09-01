@@ -122,6 +122,16 @@ class OnboardPlan:
     installers_run: list[str] = field(default_factory=list)
     hub_synced: bool = False
     warnings: list[str] = field(default_factory=list)  # fenced step failures (non-fatal)
+    prefix: str = ""
+    kind: str = ""
+
+    @property
+    def failures(self) -> list[CheckResult]:
+        return [result for result in self.checks if not result.ok and not result.skipped]
+
+    @property
+    def successful(self) -> bool:
+        return not self.failures
 
 
 @dataclass
@@ -213,6 +223,10 @@ def _topo_order(steps: Sequence[Step]) -> list[Step]:
     return out
 
 
+class _OnboardRejected(Exception):
+    """Internal structured short-circuit after a failed preflight batch."""
+
+
 def _gate(batch: list[CheckResult], plan: OnboardPlan) -> None:
     """Record a preflight batch onto the plan and fast-fail as a group.
 
@@ -224,8 +238,7 @@ def _gate(batch: list[CheckResult], plan: OnboardPlan) -> None:
     failures = _record_batch(batch, plan)
     if not failures:
         return
-    _print_failures(failures)
-    raise typer.Exit(1)
+    raise _OnboardRejected
 
 
 def _record_batch(batch: list[CheckResult], plan: OnboardPlan) -> list[CheckResult]:
@@ -270,7 +283,9 @@ def _run_action(step: Step, ctx: Ctx, dry_run: bool) -> bool:
     return True
 
 
-def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] = ()) -> OnboardPlan:
+def execute_onboard(
+    ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] = ()
+) -> OnboardPlan:
     """Two-phase onboarding: batch preflight (fast-fail), then topological execute.
 
     Phase A evaluates every applicable check as a batch and refuses (printing ALL failures)
@@ -293,16 +308,21 @@ def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] =
     # ---- Phase A: preflight (batched, with the clone/acquire carve-out) ----
     batch: list[CheckResult] = []
     phase_b: list[Step] = []
-    for step in ordered:
-        _evaluate(step, ctx, skip, batch)
-        if step.preflight:
-            _gate(batch, plan)  # gate the pre-acquire batch before the acquire mutation
-            batch = []
-            if _run_action(step, ctx, dry_run):
-                ctx.cloned = True
-        else:
-            phase_b.append(step)
-    _gate(batch, plan)  # gate the repo-level batch before Phase B
+    try:
+        for step in ordered:
+            _evaluate(step, ctx, skip, batch)
+            if step.preflight:
+                _gate(batch, plan)  # gate the pre-acquire batch before the acquire mutation
+                batch = []
+                if _run_action(step, ctx, dry_run):
+                    ctx.cloned = True
+            else:
+                phase_b.append(step)
+        _gate(batch, plan)  # gate the repo-level batch before Phase B
+    except _OnboardRejected:
+        plan.prefix = ctx.prefix
+        plan.kind = ctx.kind
+        return plan
 
     plan.cloned = ctx.cloned
 
@@ -310,6 +330,18 @@ def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] =
     for step in phase_b:
         _run_action(step, ctx, dry_run)
 
+    plan.prefix = ctx.prefix
+    plan.kind = ctx.kind
+    return plan
+
+
+def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] = ()) -> OnboardPlan:
+    """Compatibility entry that renders and exits around structured execution."""
+
+    plan = execute_onboard(ctx, dry_run=dry_run, skip_checks=skip_checks)
+    if not plan.successful:
+        _print_failures(plan.failures)
+        raise typer.Exit(1)
     _render(plan)
     return plan
 

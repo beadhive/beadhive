@@ -126,10 +126,9 @@ def test_identity_is_canonical_and_service_registers_exact_identity() -> None:
 def test_query_use_cases_share_the_registry_port() -> None:
     service, _, _ = _service()
 
-    assert service.discover().as_payload() == {
-        "candidates": ["github/acme/new"],
-        "registered": ["github/acme/api"],
-    }
+    discovery = service.discover()
+    assert discovery.candidates == ("github/acme/new",)
+    assert discovery.registered == ("github/acme/api",)
     listed = service.list(HiveListRequest(available=True))
     assert listed.discovery.candidates == ("github/acme/new",)
     assert listed.page is not None and listed.page.source_revision == "sha256:test"
