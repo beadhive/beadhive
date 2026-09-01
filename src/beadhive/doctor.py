@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -51,7 +52,7 @@ from . import (
     validate_probe,
     worktree,
 )
-from .identity import workspace_root
+from .identity import workspace_mode, workspace_root
 from .run import run
 
 
@@ -101,16 +102,20 @@ def _scan(root: Path, providers):
 
 
 def _data_config(cfg, root) -> dict:
-    """Config section: config path, workspace root, git-workspace sources.
+    """Config section: root ownership, seed state, and git-workspace sources.
 
     `git_workspace.enabled` was a manual on/off flag; bh-hsus.4 deleted it (git-workspace is
     now a required dep, always active), so `"enabled"` here means "at least one
     `workspace*.toml` source resolved" rather than a config toggle — the JSON shape is
-    unchanged, only what the field measures is."""
+    unchanged, only what the field measures is. Seed state is actionable only for an internal
+    root; external roots remain operator-owned and are never offered for mutation."""
     sources = [str(p) for p in gitworkspace.config_paths(cfg)]
+    mode = workspace_mode(str(root))
     return {
         "config_path": str(config.config_path()),
         "workspace_root": str(root),
+        "workspace_mode": mode,
+        "workspace_seeded": mode != "internal" or gitworkspace.is_seeded(root),
         "git_workspace": {"enabled": bool(sources), "sources": sources},
     }
 
@@ -118,7 +123,11 @@ def _data_config(cfg, root) -> dict:
 def _render_config(d: dict) -> None:
     typer.echo("# Config")
     typer.echo(f"  config: {d['config_path']}")
-    typer.echo(f"  workspace root: {d['workspace_root']}")
+    typer.echo(f"  workspace root: {d['workspace_root']} ({d['workspace_mode']})")
+    if d["workspace_mode"] == "internal" and not d["workspace_seeded"]:
+        typer.echo(
+            "  ⚠ managed workspace root missing or unseeded — `bh doctor` offers to create it"
+        )
     if d["git_workspace"]["enabled"]:
         src = ", ".join(d["git_workspace"]["sources"])
         typer.echo(f"  git-workspace: {src}")
@@ -2601,6 +2610,26 @@ def _render_timings(timings: dict) -> None:
         typer.echo(f"  {total:>8.1f}  total")
 
 
+def _is_interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _offer_workspace_init(d: dict) -> None:
+    """Offer an explicit, interactive seed for an uninitialized bh-owned root."""
+    if d["workspace_mode"] != "internal" or d["workspace_seeded"]:
+        return
+    if not _is_interactive():
+        return
+    root = d["workspace_root"]
+    if not typer.confirm(
+        f"internal workspace root {root} is missing or unseeded — create it now?",
+        default=True,
+    ):
+        return
+    gitworkspace.ensure_seeded(Path(root))
+    typer.echo(f"  ✓ created {root}")
+
+
 def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     """Render the full `ws doctor` report from the structured payload.
 
@@ -2636,5 +2665,6 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_warnings(data["warnings"])
+    _offer_workspace_init(data["config"])
     if verbose:
         _render_timings(data["timings"])

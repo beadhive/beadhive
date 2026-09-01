@@ -73,10 +73,11 @@ def test_git_workspace_is_resolved_for_the_child_when_the_shell_has_none(monkeyp
     monkeypatch.delenv("GIT_WORKSPACE", raising=False)
     monkeypatch.setattr(run_mod, "_fill_github_token", lambda _env: None)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BH_HOME", str(tmp_path / ".beadhive"))
 
     env = run_mod.child_env()
 
-    assert env["GIT_WORKSPACE"] == str((tmp_path / "workspace").resolve())
+    assert env["GIT_WORKSPACE"] == str((tmp_path / ".beadhive" / "ws").resolve())
 
 
 def test_an_operator_set_git_workspace_wins(monkeypatch, tmp_path):
@@ -94,10 +95,11 @@ def test_a_blank_git_workspace_is_treated_as_unset(monkeypatch, tmp_path):
     """`GIT_WORKSPACE=` is an empty shell variable, not an operator asking for the empty path."""
     monkeypatch.setenv("GIT_WORKSPACE", "")
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BH_HOME", str(tmp_path / ".beadhive"))
 
     env = run_mod.child_env()
 
-    assert env["GIT_WORKSPACE"] == str((tmp_path / "workspace").resolve())
+    assert env["GIT_WORKSPACE"] == str((tmp_path / ".beadhive" / "ws").resolve())
 
 
 def test_an_explicit_base_env_is_gap_filled_not_bypassed(monkeypatch, tmp_path):
@@ -105,11 +107,12 @@ def test_an_explicit_base_env_is_gap_filled_not_bypassed(monkeypatch, tmp_path):
     caller that already builds an env (hub._bd_ni_env) silently opts out of the guarantee."""
     monkeypatch.delenv("GIT_WORKSPACE", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BH_HOME", str(tmp_path / ".beadhive"))
 
     env = run_mod.child_env({"BD_NON_INTERACTIVE": "1"})
 
     assert env["BD_NON_INTERACTIVE"] == "1"
-    assert env["GIT_WORKSPACE"] == str((tmp_path / "workspace").resolve())
+    assert env["GIT_WORKSPACE"] == str((tmp_path / ".beadhive" / "ws").resolve())
 
 
 def test_run_exact_env_reaches_real_child_without_gap_fill(monkeypatch):
@@ -294,11 +297,12 @@ def test_harness_env_is_a_caller_of_the_launcher(monkeypatch, tmp_path):
     the same constructed environment every other subprocess gets, plus BH_ROLE."""
     monkeypatch.delenv("GIT_WORKSPACE", raising=False)
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("BH_HOME", str(tmp_path / ".beadhive"))
 
     env = role.harness_env("developer")
 
     assert env["BH_ROLE"] == "developer"
-    assert env["GIT_WORKSPACE"] == str((tmp_path / "workspace").resolve())
+    assert env["GIT_WORKSPACE"] == str((tmp_path / ".beadhive" / "ws").resolve())
 
 
 def test_harness_env_carries_no_derived_token(monkeypatch, gh_authenticated):

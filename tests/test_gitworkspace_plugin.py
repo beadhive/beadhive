@@ -10,12 +10,23 @@ hermetic $GIT_WORKSPACE fixtures + the in-process Typer CliRunner (not the insta
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
 from typer.testing import CliRunner
 
-from beadhive import deps, gitworkspace_plugin, hive_ready, plugins
+from beadhive import deps, gitworkspace, gitworkspace_plugin, hive_ready, identity, plugins
 from beadhive.cli import app
 
 runner = CliRunner()
+
+
+@pytest.fixture
+def _isolated(tmp_path, monkeypatch):
+    monkeypatch.delenv("GIT_WORKSPACE", raising=False)
+    legacy = tmp_path / "home-workspace"
+    monkeypatch.setattr(identity, "_legacy_root", lambda: legacy)
+    return legacy
 
 
 # ---- git-workspace is a dep, not a plugin ---------------------------------------
@@ -35,8 +46,23 @@ def test_git_workspace_is_a_required_dep():
 # ---- readiness -----------------------------------------------------------------
 
 
-def test_readiness_warns_when_git_workspace_env_unset(monkeypatch):
-    monkeypatch.delenv("GIT_WORKSPACE", raising=False)
+def test_readiness_internal_mode_missing_when_root_unseeded(_isolated):
+    state, detail = gitworkspace_plugin.readiness({}, None)
+    assert state == "missing"
+    assert "GIT_WORKSPACE" not in detail
+    assert "bh doctor" in detail
+
+
+def test_readiness_internal_mode_ok_once_seeded_and_locked(_isolated):
+    root = Path(identity.workspace_root())
+    gitworkspace.ensure_seeded(root)
+    (root / "workspace-lock.toml").write_text("")
+    state, _detail = gitworkspace_plugin.readiness({}, None)
+    assert state == "ok"
+
+
+def test_readiness_external_mode_keeps_unset_env_warning(_isolated):
+    (_isolated / "github" / "acme" / "api" / ".git").mkdir(parents=True)
     state, detail = gitworkspace_plugin.readiness({}, None)
     assert state == "warn"
     assert "GIT_WORKSPACE" in detail
@@ -69,11 +95,10 @@ def test_readiness_ok_when_fully_set_up(tmp_path, monkeypatch):
     assert "1 repo groups" in detail
 
 
-def test_hive_ready_scan_includes_git_workspace_line(monkeypatch):
-    monkeypatch.delenv("GIT_WORKSPACE", raising=False)
+def test_hive_ready_scan_includes_git_workspace_line(_isolated):
     check = hive_ready._git_workspace_check({}, None)
     assert check.label == "git-workspace"
-    assert check.state == "warn"  # GIT_WORKSPACE unset in this hermetic test
+    assert check.state == "missing"
 
 
 # ---- bh plugin git-workspace groups -------------------------------------------

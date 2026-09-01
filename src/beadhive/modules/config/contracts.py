@@ -1023,9 +1023,28 @@ class ClaudeConfig(_Section):
 
 
 class GitWorkspaceConfig(_Section):
-    """git-workspace repo-group config. No `enabled` flag: git-workspace is a required dep
-    (bh-hsus.4 — `deps.py`, `required=ALWAYS`), not an optional integration, so bh always reads
-    whatever `workspace*.toml` it finds."""
+    """git-workspace repo-group config and workspace-root ownership policy.
+
+    There is no ``enabled`` flag: git-workspace is a required dependency. ``mode`` and
+    ``root`` instead decide whether bh owns the clone root or consumes an operator-owned
+    workspace. Root resolution itself remains centralized in :mod:`beadhive.identity`.
+    """
+
+    mode: Literal["internal", "external"] | None = Field(
+        None,
+        description=(
+            "internal: bh owns <bh home>/ws. external: use $GIT_WORKSPACE, an explicit root, "
+            "or the legacy ~/workspace. Unset preserves a populated legacy workspace and "
+            "otherwise defaults to internal."
+        ),
+    )
+    root: str | None = Field(
+        None,
+        description=(
+            "Explicit external workspace root. Rejected with mode: internal; relocate an "
+            "internal workspace by moving the complete bh home with $BH_HOME."
+        ),
+    )
 
     path: str | None = Field(
         None,
@@ -1038,6 +1057,16 @@ class GitWorkspaceConfig(_Section):
     hive_match: Literal["flexible", "prefix", "triplet"] = Field(
         "flexible", description="How `bh -r <id> ...` resolves a hive."
     )
+
+    @model_validator(mode="after")
+    def _root_is_external_only(self) -> GitWorkspaceConfig:
+        if self.mode == "internal" and self.root:
+            raise ValueError(
+                "git_workspace.root cannot be set with git_workspace.mode: internal; "
+                "remove root or use mode: external. To relocate the internal workspace, "
+                "set $BH_HOME."
+            )
+        return self
 
 
 class OrcaWorktreesConfig(_Section):

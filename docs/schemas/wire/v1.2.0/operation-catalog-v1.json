@@ -2059,11 +2059,16 @@
             "reason": null
           },
           "interactivity": {
-            "guard_conditions": [],
+            "guard_conditions": [
+              "stdin-not-tty",
+              "mcp-uses-pure-doctor-payload"
+            ],
             "guard_parameters": [],
-            "mode": "none",
-            "prompt_seams": [],
-            "reason": null
+            "mode": "guarded-prompt",
+            "prompt_seams": [
+              "beadhive.doctor._offer_workspace_init:typer.confirm"
+            ],
+            "reason": "an unseeded internal workspace is offered only on a TTY; JSON and headless use never prompt"
           },
           "parameter_map": {},
           "parameters": [
