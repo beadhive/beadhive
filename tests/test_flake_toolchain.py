@@ -22,13 +22,13 @@ from beadhive import deps
 FLAKE = Path(__file__).resolve().parent.parent / "flake.nix"
 
 #: dep name -> the nix attribute or override that supplies it. Hand-written on purpose: `bd`
-#: is a `beadsHead pkgs` override carrying its own rev/hash, not `pkgs.bd`, so no derivation
+#: is a `beadsRc pkgs` override carrying its own rev/hash, not `pkgs.bd`, so no derivation
 #: reproduces this map.
 NIX_ATTR: dict[str, str] = {
     "git-workspace": "pkgs.git-workspace",
     "gh": "pkgs.gh",
-    "bd": "(beadsHead pkgs)",
-    "dolt": "pkgs.dolt",
+    "bd": "(beadsRc pkgs)",
+    "dolt": "(dolt231 pkgs)",
     # `ps` (bh-x2yy0). Present in `toolchainFor` because it is a HOST requirement, and filtered
     # back out of `imageToolchainFor` for exactly git's reason: GPL, and the image's apt layer
     # already supplies it. See the delta comment block in flake.nix.

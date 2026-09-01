@@ -244,10 +244,9 @@ mode is the first storage mode that can be *down*
 
 ### 3. Prerequisites
 
-- **A `bd` build that supports shared-server mode**, which today means a HEAD build:
-  `brew unlink beads && brew install --HEAD beads` (this repo's `Brewfile` already pins
-  `brew "beads", args: ["HEAD"]`). The same build requirement as
-  [§11 below](#11-requirement-your-bd-build-must-embed-dolt--220) — dolt ≥ 2.2.0 — applies here
+- **Beads v1.3.0-rc.1 or newer**, which supports shared-server mode and embeds the Dolt
+  v2.2.0-era transport fix. The managed Nix path pins that RC exactly. The same build
+  requirement as [§11 below](#11-requirement-your-bd-build-must-embed-dolt--220) applies here
   for the same reason, and more sharply: migration moves whole stores.
 - **Free disk during the move, not after it.** Migration takes a verified Dolt-native backup
   *before* it touches anything, restores that into the server-side database, and moves the old
@@ -299,10 +298,12 @@ Two different one-way-ness questions get confused here, so state them separately
 - **Storage-mode migration is REVERSIBLE.** embedded → shared and back is `bd backup` /
   `bd backup restore`, full Dolt commit history preserved in both directions. The verb prints
   this before it does any real work.
-- **bd-binary schema migration is NOT.** A `bd` HEAD build applies one-way v53→v59 schema
-  upgrades on arrival, and reverting to an older `bd` after that is not a clean rollback. That
-  door is orthogonal to storage mode — it closed when you upgraded `bd`, not when you migrated
-  a store — but it is the one people actually mean when they ask "can I go back?".
+- **bd-binary schema migration is NOT.** Beads v1.3.0-rc.1 upgrades this hive's schema one way
+  from v62 through v66. Designate one migrator for each remote-backed store: it must run the RC
+  first, publish the resulting Dolt state, and every other host must update before opening that
+  store. Do not run any older Beads binary after the v62→v66 migration: releases through v1.2.2
+  understand only schema v53 and cannot safely reopen it. This is orthogonal to storage mode —
+  it closes when the designated migrator upgrades `bd`, not when it moves the store.
 
 ### 6. BEHAVIOR CHANGE: `backup.enabled` is set true on every migrated hive
 
@@ -681,10 +682,10 @@ data with `bd dolt pull`. On a `bd` whose embedded dolt predates **v2.2.0**, tha
 **indefinitely** on a large store — upstream [beads#4770](https://github.com/gastownhall/beads/issues/4770),
 a quadratic `git cat-file` read. Measured here: 170s then killed, versus 3.2s on a fixed build.
 
-**Every tagged `bd` release through v1.1.2 is affected.** v1.1.0, v1.1.1 and v1.1.2 all pin the
-same dolt commit (`1bf533220ab0`, dated 2026-06-05) — 168 commits behind dolt v2.2.0
-(2026-07-15). v1.1.2 shipped eleven days *after* the fix and did not pick it up. So a plain
-`brew install beads` today gives you an affected build.
+**Every tagged `bd` release through v1.2.2 is affected.** Those releases embed the pre-v2.2.0
+Dolt transport code. Beads v1.3.0-rc.1 is the first release candidate with the fixed
+v2.2.0-era dependency and is the Nix-pinned build. Do not substitute the ordinary stable
+package for it: it cannot open a schema migrated from v62 through v66.
 
 **Upgrading the standalone `dolt` CLI does not help.** dolt is statically compiled into `bd`
 (a ~137 MB binary) and the CLI is never spawned. Verified by upgrading dolt 2.1.10 → 2.2.2 and
@@ -693,8 +694,8 @@ retesting: still hung.
 Two escapes:
 
 ```sh
-# 1. a HEAD build, until a tagged release carries the fix
-brew unlink beads && brew install --HEAD beads
+# 1. Beads v1.3.0-rc.1 (the managed Nix path pins this release candidate)
+nix profile add github:beadhive/beadhive/latest#default
 
 # 2. run bd against an external dolt sql-server >= 2.2.0
 bd init --server --server-host 127.0.0.1 --server-port <port>

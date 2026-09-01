@@ -33,39 +33,45 @@
       # PROVEN STATE, do not assume beyond it: x86_64-linux (beadhive-factory, 2026-08-05 —
       # `bh setup check` 4/4) and aarch64-darwin (macOS 14.5 / Apple Silicon, 2026-08-06 —
       # `nix build .#default` cold in 130s: 155 paths substituted, ONE source build,
-      # `beadsHead`; zero Rust builds, `git-workspace` came from the cache). aarch64-linux
+      # `beadsRc`; zero Rust builds, `git-workspace` came from the cache). aarch64-linux
       # EVALUATES and nothing more — in scope for local-install and untested only because no
       # arm64 Linux host was available; treat a first run there as unproven.
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
 
-      # `beads` MUST be HEAD, not a tagged release. Every tag through v1.1.2 embeds a dolt
-      # older than v2.2.0, whose `bd dolt pull` hangs indefinitely on a large store (upstream
-      # beads#4770) — and bh's multi-host sync runs that pull. nixpkgs carries 1.0.3, which is
-      # two releases INSIDE that broken range, so the override is not optional.
+      # `beads` v1.3.0-rc.1 is explicitly pinned rather than taking nixpkgs' 1.0.3. Releases
+      # through v1.2.2 embed a dolt older than v2.2.0, whose `bd dolt pull` hangs indefinitely
+      # on a large store (upstream beads#4770) — and bh's multi-host sync runs that pull.
       #
-      # Verified on the built binary: go.mod pins dolt v0.40.5-0.20260715172757-a6690826d767,
-      # dated 2026-07-15 — the v2.2.0 era — so this source carries the fix.
+      # RC.1's go.mod pins dolt v0.40.5-0.20260715172757-a6690826d767, dated 2026-07-15 — the
+      # v2.2.0 era — so it carries the fix. Its schema migrations cover this hive's v62 store
+      # through v66.
       #
-      # doInstallCheck = false because nixpkgs' versionCheckHook asserts the `version` string
-      # appears in `bd version` output. A HEAD build reports the version baked into its source
-      # ("1.1.0 (dev)"), never the rev we label it with, so the check can only ever fail here.
-      #
-      # RETIREMENT: drop this whole override when a tagged release embeds dolt >= v2.2.0, or
-      # when bh-00cq lands and bd talks to an external dolt sql-server, which takes the embedded
-      # version out of bd's release cadence entirely. Then plain `pkgs.beads` will do.
-      beadsHead = pkgs: pkgs.beads.overrideAttrs (_: {
-        version = "HEAD-50763fc";
+      beadsRc = pkgs: pkgs.beads.overrideAttrs (_: {
+        version = "1.3.0-rc.1";
         src = pkgs.fetchFromGitHub {
           owner = "gastownhall";
           repo = "beads";
-          rev = "50763fcba7e87ae54e9e44ca75de1168f201f39b";
-          hash = "sha256-k6VsBQAxOfQWYXFctoJf2a3e/gCL0o4nyO+DKqAo6UI=";
+          rev = "9c6a69ec12350959ec8c495c74eeb02902d629b6";
+          hash = "sha256-C9qooToa+Z6PBnOMVixcIVNEnjkFVRhxXrcZh50tqYs=";
         };
-        vendorHash = "sha256-J5SiCzn79YoGYd9KYnVmtRqgKoS86mOy99DahJMbO20=";
+        vendorHash = "sha256-DFS9dSZX3v3q3Yk6+bfnoEN1uIULs2h8t/P9W2tk6l8=";
         doCheck = false;
-        doInstallCheck = false;
+      });
+
+      # Keep the standalone CLI on the last released 2.3.x version. It is useful for an
+      # operator-managed external server, but it does not determine the embedded Dolt used by
+      # bd. Use an explicit source pin instead of the moving nixpkgs package.
+      dolt231 = pkgs: pkgs.dolt.overrideAttrs (_: {
+        version = "2.3.1";
+        src = pkgs.fetchFromGitHub {
+          owner = "dolthub";
+          repo = "dolt";
+          rev = "v2.3.1";
+          hash = "sha256-KwN0na1G2M9hnPQqraRF8UhU8P3efv6DYXj3WEBCBDA=";
+        };
+        vendorHash = "sha256-28lZ8rL/X/Lgxi1kwg62Wk97M/lEFqhllUAmnq8v54c=";
       });
 
       # Exactly what `bh` requires unconditionally, plus what it shells out to at runtime.
@@ -76,7 +82,7 @@
       # this list works two ways — `builtins.fromJSON (builtins.readFile ./deps.json)` under
       # pure eval, or import-from-derivation — but both trade a hand-mirrored flake for a
       # hand-mirrored generated file plus a codegen step, and the name -> attribute map below
-      # stays manual regardless (bd is a HEAD override, not `pkgs.bd`; git, uv and just are not
+      # stays manual regardless (bd is a release-pinned override, not `pkgs.bd`; git, uv and just are not
       # deps.py rows at all). `tests/test_flake_toolchain.py` is the drift gate these comments
       # were only pretending to be.
       #
@@ -93,8 +99,8 @@
       # and adding it would make every `nix develop` here fail without `allowUnfree` — which
       # is the same "you accept those terms yourself" line `harness.py` already draws.
       toolchainFor = pkgs: [
-        (beadsHead pkgs)      # bd — deps.py, required always
-        pkgs.dolt             #      deps.py, required always
+        (beadsRc pkgs)        # bd — deps.py, required always
+        (dolt231 pkgs)        #      deps.py, required always
         pkgs.gh               #      deps.py, required always
         pkgs.git-workspace    #      deps.py, required always. 1.10.1 prebuilt — the mise/brew
                               #      routes both needed a Rust toolchain plus apt libssl-dev
@@ -191,7 +197,7 @@
     in {
       packages = forAll (system:
         let pkgs = pkgsFor system; in {
-          beads = beadsHead pkgs;
+          beads = beadsRc pkgs;
           default = pkgs.buildEnv {
             name = "beadhive-local-install-toolchain";
             paths = toolchainFor pkgs;
