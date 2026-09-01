@@ -24,7 +24,6 @@ from . import (
     checkpoint,
     complexity_backfill,
     config,
-    config_schema,
     dep_cli,
     dolt,
     gitworkspace_plugin,
@@ -43,6 +42,7 @@ from . import (
     work,
 )
 from . import bd as bd_mod
+from .modules.config import contracts as config_schema
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
@@ -3044,13 +3044,9 @@ def config_split(
 def config_schema_cmd(as_json: bool = typer.Option(False, "--json", help="machine payload")):
     fields = config_schema.iter_schema_fields()
     if as_json:
-        import json as json_mod
+        from .modules.config.application.schema_artifacts import legacy_schema_rows
 
-        rows = [
-            {"path": f.path, "type": f.type, "default": f.default, "description": f.description}
-            for f in fields
-        ]
-        typer.echo(json_mod.dumps(rows, indent=2))
+        typer.echo(json.dumps(legacy_schema_rows(), indent=2))
         return
     path_width = max(len(f.path) for f in fields)
     type_width = max(len(f.type) for f in fields)

@@ -36,9 +36,21 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert test_closures.validate_registry(registry) == ()
     assert registry.full_gate == "just check"
     assert registry.release_gate == "just check-all"
-    assert len(registry.closures) == 20
-    assert sum(closure.status == "present" for closure in registry.closures) == 14
-    assert sum(closure.status == "absent" for closure in registry.closures) == 6
+    assert len(registry.closures) == 23
+    assert sum(closure.status == "present" for closure in registry.closures) == 18
+    assert sum(closure.status == "absent" for closure in registry.closures) == 5
+
+
+def test_agents_and_config_closures_survive_workstream_composition():
+    closures = test_closures.load_registry().by_id()
+
+    assert closures["module.agents"].status == "present"
+    assert closures["module.agents"].owner_path == "src/beadhive/modules/agents"
+    assert closures["module.config"].status == "present"
+    assert closures["module.config"].owner_path == "src/beadhive/modules/config"
+    assert {"contract.agent-launch", "config.pure", "config.store", "config.fragments"} <= set(
+        closures
+    )
 
 
 def test_impact_selection_unions_direct_shared_contract_and_reverse_dependency_tests():
@@ -84,12 +96,12 @@ def test_new_registered_plugin_without_closure_fails_drift_check(tmp_path):
 
 
 def test_module_directory_cannot_remain_declared_absent(tmp_path):
-    (tmp_path / "src" / "beadhive" / "modules" / "config").mkdir(parents=True)
+    (tmp_path / "src" / "beadhive" / "modules" / "hives").mkdir(parents=True)
 
     errors = test_closures.validate_registry(test_closures.load_registry(), tmp_path)
 
-    assert "registered module 'config' is incorrectly declared absent" in errors
-    assert "module closure 'config' is absent but 'src/beadhive/modules/config' exists" in errors
+    assert "registered module 'hives' is incorrectly declared absent" in errors
+    assert "module closure 'hives' is absent but 'src/beadhive/modules/hives' exists" in errors
 
 
 def test_new_registered_module_without_closure_fails_drift_check(tmp_path):

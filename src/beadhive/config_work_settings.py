@@ -56,7 +56,7 @@ def routing_tiers(cfg, entry):
     omitted floor is ``SIMPLE`` and an omitted ceiling is ``REASONING``. Invalid hand-edited
     data degrades to no routes here; ``bh config validate`` remains the loud diagnostic gate.
     """
-    from .config_schema import RoutingTierConfig
+    from .modules.config.contracts import RoutingTierConfig
 
     raw = layered(cfg, entry, "work.routing", "tiers", []) or []
     try:

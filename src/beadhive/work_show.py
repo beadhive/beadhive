@@ -14,7 +14,8 @@ import json
 
 import typer
 
-from . import bd, config, work_group, work_logic, worktree
+from . import bd, work_group, work_logic, worktree
+from .config_consumer_ports import work_settings as config
 from .work_logic import flag_rows
 
 # ---- core payload (command + resource share the same producer) ---------------

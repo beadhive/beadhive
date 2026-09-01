@@ -21,7 +21,8 @@ from contextlib import contextmanager
 
 import typer
 
-from . import config, host, identity, otel, worktree
+from . import host, identity, otel, worktree
+from .config_consumer_ports import work_settings as config
 
 BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
 

@@ -21,7 +21,6 @@ from pathlib import Path
 import typer
 
 from . import (
-    config,
     converge,
     host,
     otel,
@@ -32,6 +31,7 @@ from . import (
     validation_ledger,
     validation_records,
 )
+from .config_consumer_ports import work_settings as config
 
 VERIFY_LEAF_PREFIX = "verify-"
 VERIFY_MARKER = ".bh-verify.json"  # legacy in-checkout marker; read-only since bh-odqgy

@@ -12,7 +12,8 @@ from pathlib import Path
 
 import typer
 
-from . import config, registry, wt_status
+from . import registry, wt_status
+from .config_consumer_ports import work_settings as config
 
 
 def _facade():

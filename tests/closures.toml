@@ -66,9 +66,90 @@ reverse_dependency_tests = ["tests/test_herdr_plugin.py", "tests/test_role.py"]
 [[closures]]
 id = "module.config"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/config"
 source_paths = ["src/beadhive/modules/config/**/*.py"]
+tests = [
+  "tests/unit/modules/config/test_config_contracts.py",
+  "tests/unit/modules/config/test_consumer_settings.py",
+  "tests/unit/modules/config/test_dependency_ledger.py",
+  "tests/unit/modules/config/test_migrations.py",
+  "tests/unit/modules/config/test_module_evidence.py",
+  "tests/unit/modules/config/test_resolution.py",
+  "tests/unit/modules/config/test_schema_artifacts.py",
+  "tests/unit/modules/config/test_structural_metrics.py",
+  "tests/unit/modules/config/test_plugin_fragments.py",
+  "tests/unit/modules/config/test_pure_independence.py",
+  "tests/unit/modules/config/test_yaml_store.py",
+]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/contracts/test_config_contract_compatibility.py", "tests/contracts/test_config_resolution_compatibility.py"]
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = ["tests/test_config_schema.py", "tests/test_config_validate.py", "tests/test_config_dotted.py", "tests/test_config_boundaries.py", "tests/test_config_fleet_merge.py", "tests/test_config_scope.py"]
+
+[[closures]]
+id = "config.pure"
+kind = "contract"
+status = "present"
+owner_path = "src/beadhive/modules/config/application/resolution.py"
+source_paths = [
+  "src/beadhive/modules/config/contracts.py",
+  "src/beadhive/modules/config/domain/**/*.py",
+  "src/beadhive/modules/config/application/resolution.py",
+  "src/beadhive/modules/config/application/migrations.py",
+]
+tests = [
+  "tests/unit/modules/config/test_config_contracts.py",
+  "tests/unit/modules/config/test_resolution.py",
+  "tests/unit/modules/config/test_migrations.py",
+  "tests/unit/modules/config/test_pure_independence.py",
+]
+shared_contracts = []
+shared_contract_tests = []
+reverse_dependencies = []
+reverse_dependency_tests = []
+
+[[closures]]
+id = "config.store"
+kind = "contract"
+status = "present"
+owner_path = "src/beadhive/modules/config/adapters/yaml_store.py"
+source_paths = [
+  "src/beadhive/modules/config/adapters/yaml_store.py",
+  "src/beadhive/modules/config/domain/ports.py",
+]
+tests = ["tests/unit/modules/config/test_yaml_store.py"]
+shared_contracts = []
+shared_contract_tests = []
+reverse_dependencies = ["system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_config_boundaries.py",
+  "tests/test_config_dotted.py",
+  "tests/test_config_fleet_merge.py",
+  "tests/test_config_scope.py",
+]
+
+[[closures]]
+id = "config.fragments"
+kind = "contract"
+status = "present"
+owner_path = "src/beadhive/modules/config/application/plugin_fragments.py"
+source_paths = [
+  "src/beadhive/modules/config/application/plugin_fragments.py",
+  "src/beadhive/modules/config/application/schema_artifacts.py",
+  "docs/schemas/config/**/*.json",
+]
+tests = [
+  "tests/unit/modules/config/test_plugin_fragments.py",
+  "tests/unit/modules/config/test_schema_artifacts.py",
+]
+shared_contracts = ["contracts"]
+shared_contract_tests = [
+  "tests/contracts/test_builtin_plugin_manifests.py",
+  "tests/contracts/test_config_contract_compatibility.py",
+]
+reverse_dependencies = []
+reverse_dependency_tests = []
 
 [[closures]]
 id = "module.hives"

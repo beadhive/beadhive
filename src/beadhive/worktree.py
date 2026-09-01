@@ -41,7 +41,6 @@ import typer
 
 from . import (
     bd,
-    config,
     converge,  # noqa: F401 - compatibility patch seam
     ghpr,  # noqa: F401 - compatibility patch seam
     host,  # noqa: F401 - compatibility patch seam
@@ -54,6 +53,7 @@ from . import (
     worktree_merge,
     wt_status,  # noqa: F401 - compatibility patch seam
 )  # noqa: F401 - compatibility patch seams retained on the facade
+from .config_consumer_ports import work_settings as config
 from .identity import workspace_identity
 from .run import missing_binary, retry_on_index_lock, run  # noqa: F401 - compatibility patch seams
 

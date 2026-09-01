@@ -17,7 +17,8 @@ from pathlib import Path
 import typer
 from ruamel.yaml import YAML
 
-from . import config, gitworkspace, plugins, registry, run
+from . import gitworkspace, plugins, registry, run
+from .config_consumer_ports import plugin_settings as config
 from .identity import workspace_root
 
 cli = typer.Typer(no_args_is_help=True, help="repowise local codebase-index integration.")

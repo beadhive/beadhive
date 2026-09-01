@@ -1,1 +1,1 @@
-"""Capability modules for Beadhive's modular application core."""
+"""Independently testable configuration and agent capability modules."""
