@@ -143,6 +143,7 @@ class CommitLaunchService:
                 profile_receipt=prepared.portable.profile_receipt,
                 workspace_binding=prepared.portable.workspace_binding,
                 adapter_kind=prepared.portable.adapter_kind,
+                adapter_receipt=adapter_result.portable_receipt,
                 allocation_id=adapter_result.allocation_id,
                 generation=adapter_result.generation,
             )

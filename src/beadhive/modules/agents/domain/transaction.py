@@ -207,6 +207,7 @@ class LaunchReceiptV1(_PortableModel):
     profile_receipt: AgentLaunchReceipt
     workspace_binding: WorkspaceBindingV1
     adapter_kind: str
+    adapter_receipt: dict[str, JsonValue] | None = None
     allocation_id: str | None = None
     generation: Generation | None = None
     state: Literal["committed"] = "committed"

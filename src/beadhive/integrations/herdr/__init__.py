@@ -5,6 +5,22 @@ Callers can use the typed client and parsers in isolation, while the legacy
 ``beadhive.herdr_plugin`` module remains the presentation/composition adapter.
 """
 
+from .agent_adapter import (
+    HERDR_AGENT_SESSION,
+    HERDR_AGENT_SESSION_KEY,
+    HerdrAgentAdapter,
+    HerdrAgentRuntime,
+    HerdrAgentSessionPort,
+    HerdrCommitCommand,
+    HerdrCommitEvidence,
+    HerdrLocalCapability,
+    HerdrObservationEvidence,
+    HerdrRecoveryEvidence,
+    HerdrRuntimeResolver,
+    HerdrTeardownEvidence,
+    herdr_agent_provider_binding,
+    herdr_bound_workspace,
+)
 from .identity import (
     IdentityExpectation,
     IdentityProof,
@@ -16,6 +32,7 @@ from .identity import (
     validate_identity,
     validate_live_identity,
 )
+from .production_runtime import HerdrProductionResolver, HerdrProductionRuntime
 from .topology import (
     AgentRecord,
     Coverage,
@@ -32,10 +49,24 @@ __all__ = [
     "AgentRecord",
     "Coverage",
     "FailureCode",
+    "HERDR_AGENT_SESSION",
+    "HERDR_AGENT_SESSION_KEY",
+    "HerdrAgentAdapter",
+    "HerdrAgentRuntime",
+    "HerdrAgentSessionPort",
+    "HerdrCommitCommand",
+    "HerdrCommitEvidence",
     "HerdrClient",
     "HerdrTransport",
     "HerdrFailure",
     "HerdrResult",
+    "HerdrLocalCapability",
+    "HerdrObservationEvidence",
+    "HerdrProductionResolver",
+    "HerdrProductionRuntime",
+    "HerdrRecoveryEvidence",
+    "HerdrRuntimeResolver",
+    "HerdrTeardownEvidence",
     "IdentityExpectation",
     "IdentityProof",
     "OwnershipMarker",
@@ -49,6 +80,8 @@ __all__ = [
     "collect_tokens",
     "parse_roster",
     "parse_snapshot",
+    "herdr_agent_provider_binding",
+    "herdr_bound_workspace",
     "resolve_session",
     "validate_identity",
     "validate_generation",
