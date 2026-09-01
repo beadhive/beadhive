@@ -59,6 +59,31 @@
       "path": "plugin-manifest-v1.schema.json"
     },
     {
+      "id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+      "contract_version": 1,
+      "path": "plugin-config-herdr-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+      "contract_version": 1,
+      "path": "plugin-config-hitch-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+      "contract_version": 1,
+      "path": "plugin-config-observaloop-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+      "contract_version": 1,
+      "path": "plugin-config-orca-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+      "contract_version": 1,
+      "path": "plugin-config-repowise-v1.schema.json"
+    },
+    {
       "id": "urn:beadhive:wire-catalog:operations:1",
       "contract_version": 1,
       "path": "operation-catalog-v1.json"

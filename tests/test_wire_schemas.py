@@ -53,6 +53,11 @@ def test_release_manifest_schemas_and_conformance_fixtures_are_valid() -> None:
         "urn:beadhive:wire-schema:factory.snapshot:1",
         "urn:beadhive:wire-schema:json-value:1",
         "urn:beadhive:wire-schema:operation-catalog:1",
+        "urn:beadhive:wire-schema:plugin-config:herdr:1",
+        "urn:beadhive:wire-schema:plugin-config:hitch:1",
+        "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+        "urn:beadhive:wire-schema:plugin-config:orca:1",
+        "urn:beadhive:wire-schema:plugin-config:repowise:1",
         "urn:beadhive:wire-schema:plugin-manifest:1",
         "urn:beadhive:wire-catalog:operations:1",
     }
