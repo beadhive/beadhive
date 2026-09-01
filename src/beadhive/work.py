@@ -37,7 +37,6 @@ from . import (
     adopt,  # noqa: F401 - injected merge collaborator
     bd,
     claim_authority,  # noqa: F401 - injected submission collaborator
-    config,
     converge,  # noqa: F401 - injected submission collaborator
     ghpr,  # noqa: F401 - injected merge collaborator
     git_linkage,  # noqa: F401 - injected merge collaborator
@@ -71,6 +70,7 @@ from . import (
 )
 from . import log as dispatch_log
 from . import schedule as schedule_mod  # noqa: F401 - injected lifecycle collaborator
+from .config_consumer_ports import work_settings as config
 from .run import missing_binary, run  # noqa: F401 - injected submission collaborator
 from .work_logic import (
     _MARKER,  # noqa: F401 - injected refine collaborator

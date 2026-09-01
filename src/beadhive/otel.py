@@ -30,7 +30,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from . import config
+from .config_consumer_ports import telemetry_settings as config
 
 _SERVICE_NAME = config.BINARY_ALIAS
 

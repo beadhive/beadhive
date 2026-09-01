@@ -95,7 +95,8 @@ from pathlib import Path
 
 import typer
 
-from . import config, otel, private_paths, registry, test_report, validation_records
+from . import otel, private_paths, registry, test_report, validation_records
+from .config_consumer_ports import work_settings as config
 from .run import missing_binary, run
 
 # Read-only compatibility input from 0.15.1. New writes never touch it: rows are imported once

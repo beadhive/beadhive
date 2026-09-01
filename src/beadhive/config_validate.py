@@ -19,7 +19,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from pydantic import ValidationError
 
 from .config import _problem
-from .config_schema import SCHEMA_VERSION, BeadhiveConfig
+from .modules.config.contracts import SCHEMA_VERSION, BeadhiveConfig
 
 # Structurally-renamed config keys pydantic now rejects (extra="forbid" → extra_forbidden):
 # old dotted key -> current dotted key. Source: docs/design/rig-to-hive-rename.md.
@@ -157,7 +157,7 @@ def validate_config(cfg) -> list[dict]:
                 elif removed_note:
                     problems.append(_problem("warning", f"`{dotted}` was removed — {removed_note}"))
                 else:
-                    from . import config_schema
+                    from .modules.config import contracts as config_schema
 
                     message = (
                         f"unknown config key `{dotted}` — not part of schema v{SCHEMA_VERSION}."

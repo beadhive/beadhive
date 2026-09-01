@@ -34,3 +34,9 @@ configuration ownership, CLI presentation, and security prerequisites. Plugin ma
 credential references and executable requirements, never credential values or executable command
 lines. The policy and discovery semantics are ratified in the
 [Plugin kernel v1 ADR](../../design/plugin-kernel-v1-adr.md).
+
+Release 1.4.0 registers `config-v1.schema.json`, deterministically generated from the canonical
+models in `beadhive.modules.config.contracts`. Generate it with
+`uv run python scripts/generate_config_schema.py`; check drift with the same command plus
+`--check`. The existing `bh config schema --json` list remains the explicitly versioned legacy
+row projection rather than changing shape in place.

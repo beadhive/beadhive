@@ -17,7 +17,8 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, jsonout, registry, wt_status
+from . import bd, jsonout, registry, wt_status
+from .config_consumer_ports import work_settings as config
 from .identity import workspace_identity
 
 

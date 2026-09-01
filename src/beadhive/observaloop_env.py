@@ -30,7 +30,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from . import config, worktree
+from . import worktree
+from .config_consumer_ports import plugin_settings as config
 
 # The bh-owned overlay locations inside a worktree.  The canonical path is checked first;
 # the old flat path remains a read-only compatibility input for the documented two-minor

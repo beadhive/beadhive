@@ -1,0 +1,1940 @@
+{
+  "$defs": {
+    "AlertsConfig": {
+      "additionalProperties": false,
+      "description": "Host-local disk-pressure policy for the agent-steering alert surface.",
+      "properties": {
+        "disk_free_floor_mb": {
+          "default": 10240,
+          "description": "Host free-disk floor in MB. Below this, `bh alerts show` asks an operator to dispatch cleanup. 0 disables this alert.",
+          "minimum": 0,
+          "title": "Disk Free Floor Mb",
+          "type": "integer"
+        },
+        "worktree_cap_mb": {
+          "default": 5120,
+          "description": "Per-hive managed-worktree footprint cap in MB. Above this, `bh alerts show` asks an operator to dispatch cleanup. 0 disables this alert.",
+          "minimum": 0,
+          "title": "Worktree Cap Mb",
+          "type": "integer"
+        }
+      },
+      "title": "AlertsConfig",
+      "type": "object"
+    },
+    "ArchiveConfig": {
+      "additionalProperties": false,
+      "description": "Soft-archive graveyard for retired hives.",
+      "properties": {
+        "dir": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Root directory for soft-archived clones.",
+          "title": "Dir"
+        },
+        "window_days": {
+          "default": 30,
+          "description": "Days an archived clone is kept before eligible for pruning.",
+          "title": "Window Days",
+          "type": "integer"
+        }
+      },
+      "title": "ArchiveConfig",
+      "type": "object"
+    },
+    "BackupConfig": {
+      "additionalProperties": false,
+      "description": "Retention policy for the four backup roots (``bh backup``, bh-cmqp.2 / bh-5009a — see\n``docs/design/backup-retention-boundary-adr.md`` for the boundary between them). Host-scoped:\nhow much of THIS host's disk each root may keep is a local tuning knob, not fleet policy.",
+      "properties": {
+        "hive_cap_mb": {
+          "default": 500,
+          "description": "Size threshold (MB) for <hive>/.beads/backup/ (bd's own Dolt-native backup) past which `bh backup reclaim --root hive` rotates it. Below the cap, reclaim is a no-op.",
+          "title": "Hive Cap Mb",
+          "type": "integer"
+        },
+        "hive_rotate_keep": {
+          "default": 3,
+          "description": "Rotated .beads/backup.<timestamp>/ generations kept after a `--root hive` reclaim (newest first).",
+          "title": "Hive Rotate Keep",
+          "type": "integer"
+        },
+        "hq_keep": {
+          "default": 3,
+          "description": "Dated sets kept under $BH_HOME/backups/hq/ (newest first); pruned automatically right after `bh hq init` takes and verifies a new one. Never clamped below 1 — a fresh backup is always left restorable.",
+          "title": "Hq Keep",
+          "type": "integer"
+        },
+        "migrate_keep": {
+          "default": 3,
+          "description": "Pre-migration backup sets kept PER HIVE under $BH_HOME/backups/migrate/ (newest first); pruned automatically right after `bh hive migrate-storage` verifies a new one.",
+          "title": "Migrate Keep",
+          "type": "integer"
+        },
+        "total_warn_mb": {
+          "default": 2048,
+          "description": "Total across every backup root past which `bh backup usage` warns. 0 disables the warning.",
+          "title": "Total Warn Mb",
+          "type": "integer"
+        }
+      },
+      "title": "BackupConfig",
+      "type": "object"
+    },
+    "ClaudeConfig": {
+      "additionalProperties": false,
+      "description": "Claude Code plugin distribution — how `bh hive init --claude` installs seat agents +\nrole skills.",
+      "properties": {
+        "marketplace": {
+          "default": ".",
+          "description": "Marketplace path/identifier for the bh plugin.",
+          "title": "Marketplace",
+          "type": "string"
+        },
+        "plugin": {
+          "default": "bh",
+          "description": "Name of the Claude Code plugin vending seat agents.",
+          "title": "Plugin",
+          "type": "string"
+        },
+        "scope": {
+          "default": "user",
+          "description": "Install scope for the bh plugin.",
+          "enum": [
+            "user",
+            "project"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "source": {
+          "default": "plugin",
+          "description": "plugin: install via the marketplace. copy: legacy copy-into-repo.",
+          "enum": [
+            "plugin",
+            "copy"
+          ],
+          "title": "Source",
+          "type": "string"
+        }
+      },
+      "title": "ClaudeConfig",
+      "type": "object"
+    },
+    "ComplexityTier": {
+      "description": "The durable capability vocabulary, ordered from least to most demanding.",
+      "enum": [
+        0,
+        1,
+        2,
+        3
+      ],
+      "title": "ComplexityTier",
+      "type": "integer"
+    },
+    "ConflictConfig": {
+      "additionalProperties": false,
+      "description": "Merge-conflict resolution policy (``work.conflict``).",
+      "properties": {
+        "union_globs": {
+          "description": "Globs naming append-only files eligible for union conflict resolution.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Union Globs",
+          "type": "array"
+        }
+      },
+      "title": "ConflictConfig",
+      "type": "object"
+    },
+    "DevIdentity": {
+      "additionalProperties": false,
+      "description": "One ``dev/<name>`` seat's identity overrides (``work.identity.devs[dev/<name>]``).",
+      "properties": {
+        "email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Author email override for this seat.",
+          "title": "Email"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "git user.name override for this seat.",
+          "title": "Name"
+        },
+        "sign": {
+          "default": false,
+          "description": "commit.gpgsign override for this seat.",
+          "title": "Sign",
+          "type": "boolean"
+        },
+        "signing_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SSH signing key override for this seat.",
+          "title": "Signing Key"
+        }
+      },
+      "title": "DevIdentity",
+      "type": "object"
+    },
+    "DimensionConfig": {
+      "additionalProperties": false,
+      "description": "One non-identity label dimension (``dimensions.<name>``).",
+      "properties": {
+        "description": {
+          "default": "",
+          "description": "Human-readable description of this dimension.",
+          "title": "Description",
+          "type": "string"
+        },
+        "values": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Closed set of valid values; omit for an open set (any value accepted); [] locks the dimension (closed but reserved).",
+          "title": "Values"
+        }
+      },
+      "title": "DimensionConfig",
+      "type": "object"
+    },
+    "DispatchConfig": {
+      "additionalProperties": false,
+      "description": "How the dispatcher dispatches ready beads (``work.dispatch``).",
+      "properties": {
+        "auto_budget": {
+          "default": 8,
+          "description": "Work budget (m-sized-beads) an auto-mode session may absorb.",
+          "title": "Auto Budget",
+          "type": "integer"
+        },
+        "envelope_grace": {
+          "default": 3.0,
+          "description": "Seconds the loop holds the child's stdout pipe after signalling it, waiting for the priced envelope BEFORE reaping the group (measured at ~0.63s, bh-a7so.7 §4).",
+          "title": "Envelope Grace",
+          "type": "number"
+        },
+        "max_action_retries": {
+          "default": 2,
+          "description": "Loop-breaker: escalate once a bead's own event record already shows N identical failed attempts of the same action (count DERIVED from event beads, never stored).",
+          "title": "Max Action Retries",
+          "type": "integer"
+        },
+        "max_beads_per_session": {
+          "default": 8,
+          "description": "Max beads a collapsed session may hold before fanning out.",
+          "title": "Max Beads Per Session",
+          "type": "integer"
+        },
+        "max_concurrency": {
+          "default": 2,
+          "description": "Max seat processes the local runtime keeps in flight at once. In-process cap, reset on restart by design; never persisted. This is the ONLY concurrency cap (`max_seats_in_flight` and its `dispatch_caps` decision core were a second, never-called implementation with the opposite zero-sentinel and are gone): values below 1 CLAMP TO 1, so there is no way to spell 'unlimited' and no way to accidentally spell 'never dispatch anything'.",
+          "title": "Max Concurrency",
+          "type": "integer"
+        },
+        "max_depth": {
+          "default": 2,
+          "description": "Max nesting depth for sub-agent dispatch: 0 (none) | 1 | 2.",
+          "enum": [
+            0,
+            1,
+            2
+          ],
+          "title": "Max Depth",
+          "type": "integer"
+        },
+        "max_run_seconds": {
+          "default": 1800.0,
+          "description": "Per-run wall-time cap: a seat still running after this is cancelled through the CANCEL ladder (docs/design/work-runtime-tiers-adr.md Amendment 2 §5). In-process, reset on restart. 0 disables the cap — the one place a 0 sentinel is used, and it means unlimited.",
+          "title": "Max Run Seconds",
+          "type": "number"
+        },
+        "mode": {
+          "default": "fanout",
+          "description": "fanout (one dev/bead) | collapsed (batch beads) | auto (choose by budget).",
+          "enum": [
+            "fanout",
+            "collapsed",
+            "auto"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "poll_interval": {
+          "default": 5.0,
+          "description": "Seconds the local runtime sleeps between poll passes. Gate latency is bounded by this (work-runtime-tiers-adr.md Limitation 1); a push doorbell is out of scope.",
+          "title": "Poll Interval",
+          "type": "number"
+        },
+        "review_mode": {
+          "default": "self",
+          "description": "Who reviews a dispatched bead: self (developer self-reviews) | fresh (separate reviewer) | paired (not yet wired; falls back to fresh).",
+          "enum": [
+            "self",
+            "fresh",
+            "paired"
+          ],
+          "title": "Review Mode",
+          "type": "string"
+        },
+        "reviewer_cross_seat": {
+          "default": "hard",
+          "description": "Self-approval policy: hard (default, bh-e5kv — block self-approval of a type:human review gate) | advise (warn, allow — explicit opt-out).",
+          "enum": [
+            "advise",
+            "hard"
+          ],
+          "title": "Reviewer Cross Seat",
+          "type": "string"
+        },
+        "seat_bundle": {
+          "default": "",
+          "description": "Seat bundle passed to every spawned seat as '--bundle <path>' — the seat's permission mode and tool roster. Empty (default) resolves to the bundle shipped with bh. '-' passes no bundle, leaving the seat default-closed (permission mode 'plan', every Bash call refused), which no write seat can complete an action under. A '--bundle' already present in seat_command wins over this. Not passed when 'bh work loop --seat-binary' substitutes a different binary.",
+          "title": "Seat Bundle",
+          "type": "string"
+        },
+        "seat_command": {
+          "default": "",
+          "description": "Command template the local runtime spawns for a seat, e.g. 'bh-{role}'. Empty (default) resolves to 'bh-{role}' on PATH. Shell-split, {role} substituted.",
+          "title": "Seat Command",
+          "type": "string"
+        },
+        "terminate_grace": {
+          "default": 5.0,
+          "description": "Seconds between the reaper's group SIGTERM and its SIGKILL. The loop polls until the group is actually gone rather than assuming either signal worked.",
+          "title": "Terminate Grace",
+          "type": "number"
+        }
+      },
+      "title": "DispatchConfig",
+      "type": "object"
+    },
+    "DoltConfig": {
+      "additionalProperties": false,
+      "description": "Optional Dolt SQL server backend (bh's own docker-compose-managed one — `dolt.py` /\ndocs/DOLT.md — NOT bd's shared `dolt sql-server`, which is a different subsystem).\n\nDeliberately still ONE field after `bh-areg.3` (store-engine liveness reporting): bd\nalready owns its own server's mode/endpoint declaration (`shared-server: true` /\n`BEADS_DOLT_SHARED_SERVER=1`, `BEADS_DOLT_SERVER_HOST`/`_PORT`, and the persisted\n`dolt_mode` in `.beads/metadata.json`) — a bh-side mirror here would be a second place to\ndeclare the same fact, with no mechanism keeping the two in sync. See\ndocs/design/dolt-store-engine-liveness-adr.md for the detection-over-configuration\nreasoning; `dolt_health.py` reads bd's own signals directly instead of adding keys here.",
+      "properties": {
+        "backend": {
+          "default": "docker",
+          "description": "Container runtime pre-step (none = no probe, external Dolt server).",
+          "enum": [
+            "colima",
+            "docker",
+            "podman",
+            "none"
+          ],
+          "title": "Backend",
+          "type": "string"
+        }
+      },
+      "title": "DoltConfig",
+      "type": "object"
+    },
+    "ExcludeConfig": {
+      "additionalProperties": false,
+      "description": "git-workspace repos bh ignores.",
+      "properties": {
+        "orgs": {
+          "description": "Org names label sync/hive init skip.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Orgs",
+          "type": "array"
+        },
+        "repos": {
+          "description": "Repos (\"<group>/<org>/<repo>\") label sync/hive init skip.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Repos",
+          "type": "array"
+        }
+      },
+      "title": "ExcludeConfig",
+      "type": "object"
+    },
+    "GenaiConfig": {
+      "additionalProperties": false,
+      "description": "EXPERIMENTAL agentic GenAI span attributes (``otel.genai``).",
+      "properties": {
+        "model": {
+          "default": "",
+          "description": "gen_ai.request.model for dispatcher->developer spans.",
+          "title": "Model",
+          "type": "string"
+        },
+        "system": {
+          "default": "",
+          "description": "gen_ai.system (the harness) for dispatch spans. Empty (default) defers to `harness_name()` at runtime, so a non-default harness attributes correctly.",
+          "title": "System",
+          "type": "string"
+        }
+      },
+      "title": "GenaiConfig",
+      "type": "object"
+    },
+    "GitWorkspaceConfig": {
+      "additionalProperties": false,
+      "description": "git-workspace repo-group config. No `enabled` flag: git-workspace is a required dep\n(bh-hsus.4 — `deps.py`, `required=ALWAYS`), not an optional integration, so bh always reads\nwhatever `workspace*.toml` it finds.",
+      "properties": {
+        "hive_match": {
+          "default": "flexible",
+          "description": "How `bh -r <id> ...` resolves a hive.",
+          "enum": [
+            "flexible",
+            "prefix",
+            "triplet"
+          ],
+          "title": "Hive Match",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit workspace*.toml path — the escape hatch, and it always wins. Unset, bh takes the first of $GIT_WORKSPACE/workspace*.toml (externally managed) then <hq_dir>/workspace*.toml (internally managed — inherited by cloning HQ).",
+          "title": "Path"
+        }
+      },
+      "title": "GitWorkspaceConfig",
+      "type": "object"
+    },
+    "HerdrConfig": {
+      "additionalProperties": false,
+      "description": "Optional Herdr agent-pane defaults.\n\nHerdr, rather than Beadhive, owns the installed agent-kind vocabulary.  This\nschema consequently validates only that an operator supplied a non-empty\nstring; the Herdr launch boundary checks it against the live supported list.",
+      "properties": {
+        "kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Preferred Herdr agent kind (for example claude or codex). The installed Herdr CLI validates supported values when a pane is launched.",
+          "title": "Kind"
+        }
+      },
+      "title": "HerdrConfig",
+      "type": "object"
+    },
+    "HitchConfig": {
+      "additionalProperties": false,
+      "description": "Optional integration with agent-hitch (docs/design/managed-harness-config-adr.md,\nAmendment 2) — resolves a seat's Hitch Pack profile into a Config Directory and launches a\nharness against it via `bh plugin hitch up <target> <profile>`.\n\nNo AND-gate on another plugin (unlike orca, which requires git-workspace because it\nregisters git-workspace's own clones): hitch shares no data or state with git-workspace /\norca / observaloop, so it is independently enable-able.",
+      "properties": {
+        "command": {
+          "default": "hitch",
+          "description": "Override the hitch CLI command/path.",
+          "title": "Command",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable the hitch launch integration.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Path to the agent-hitch checkout providing profiles/local.yaml + catalogs/local.yaml + packs/. Required to actually launch.",
+          "title": "Repo"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Persistent Config Directory root (ephemeral=false only); default ~/.beadhive/hitch.",
+          "title": "Root"
+        }
+      },
+      "title": "HitchConfig",
+      "type": "object"
+    },
+    "HostConfig": {
+      "additionalProperties": false,
+      "description": "Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.\n\nDistinct from ``hosts/<host_id>.yaml`` (the per-host manifest in HQ,\n:mod:`beadhive.hosts`): that file describes ONE machine; this section is the fleet-wide\npolicy every machine applies.",
+      "properties": {
+        "dispatch": {
+          "$ref": "#/$defs/HostDispatchConfig"
+        },
+        "lease": {
+          "$ref": "#/$defs/HostLeaseConfig"
+        }
+      },
+      "title": "HostConfig",
+      "type": "object"
+    },
+    "HostDispatchConfig": {
+      "additionalProperties": false,
+      "description": "Unattended-dispatch supervision (``host.dispatch``, bh-e7r9q.4/.5) — the backend that\nkeeps ``bh host dispatch run --hive <hive>`` alive across restarts/reboots, and the dumb\npicker it drives.\n\nPer-HOST, not fleet-scoped like ``host.lease``: which supervisor exists (systemd vs\nlaunchd vs a container's own restart policy) is a fact about THIS machine, not a shared\nfleet judgement.",
+      "properties": {
+        "backend": {
+          "default": "systemd",
+          "description": "Which supervisor backend installs/starts/persists the per-hive dispatch loop: 'systemd' (only one implemented — systemd --user template units, one instance per hive) | 'launchd' | 'container' (both known names, NOT implemented — see beadhive.dispatch_supervisor's module docstring for what each would need to supply).",
+          "title": "Backend",
+          "type": "string"
+        },
+        "max_epics_in_flight": {
+          "default": 3,
+          "description": "How many `bh work loop <epic>` child processes the hive-level picker (`bh host dispatch run`) runs at once. Deliberately dumb: kicked-off epics in `bd ready` order, bounded by this cap — NO cross-hive arbitration, NO budget reasoning (both belong to the director loop at the second-hive trigger, operator decision 2026-08-10). This is NOT the per-epic seat concurrency cap (`work.dispatch.max_concurrency`), which bounds seats WITHIN one epic's loop.",
+          "title": "Max Epics In Flight",
+          "type": "integer"
+        },
+        "poll_interval": {
+          "default": 10.0,
+          "description": "Seconds the hive-level picker sleeps between passes: lease check, reap finished `bh work loop` children, pick the next kicked-off ready epic if there is room.",
+          "title": "Poll Interval",
+          "type": "number"
+        },
+        "stale_after_seconds": {
+          "default": 900.0,
+          "description": "`bh doctor`'s dispatch section (bh-e7r9q.6) flags a RUNNING loop as stalled when no pass has been recorded in this many seconds (default 900 = 15 min — well over the default `poll_interval`, so this is a genuine stall signal, not poll jitter).",
+          "title": "Stale After Seconds",
+          "type": "number"
+        }
+      },
+      "title": "HostDispatchConfig",
+      "type": "object"
+    },
+    "HostLeaseConfig": {
+      "additionalProperties": false,
+      "description": "**Host-lease** timing (``host.lease``) — the TTL/renewal contract behind\n``refs/bh/lease/<prefix>`` in HQ (``docs/design/multi-host-model-adr.md``, Amendment 1\n§3; implemented in :mod:`beadhive.host_lease`).\n\n\"Host lease\" is host ↔ hive, deliberately distinct from ``bd``'s *worker* lease\n(worker ↔ issue: ``lease_expires_at``, ``bd heartbeat`` / ``bd reclaim``) — Amendment 1\n§5. Nothing here configures bd's.\n\nBoth keys are **fleet-scoped** (``config_partition.FLEET_PREFIXES``) on purpose: expiry is\na shared judgement. If two hosts disagreed about when a lease lapses, one would consider a\nhive free while the other still considered itself primary — the exact split-brain the\nfence exists to prevent. Per-host variation is expressed through the host's ``role``\n(``hosts/<host_id>.yaml``), which SCALES this baseline\n(:func:`beadhive.host_lease.ttl_for_role`) — never by per-host overrides of these keys.",
+      "properties": {
+        "renew_interval": {
+          "default": 300.0,
+          "description": "Seconds between host-lease renewals while a dispatcher has active workers (no daemon, no cron). ADR Amendment 1 §3 default: 300 (5 min). Must stay comfortably below `host.lease.ttl`.",
+          "title": "Renew Interval",
+          "type": "number"
+        },
+        "ttl": {
+          "default": 1800.0,
+          "description": "Seconds a host lease stays valid without renewal; past it another host may take the hive. ADR Amendment 1 §3 default: 1800 (30 min) — the `transient` baseline. An `executor` host scales it up for long stable tenure; a `viewer` never adopts at all.",
+          "title": "Ttl",
+          "type": "number"
+        }
+      },
+      "title": "HostLeaseConfig",
+      "type": "object"
+    },
+    "HqConfig": {
+      "additionalProperties": false,
+      "description": "Factory HQ remote (``hq``) — where the factory's central HQ store publishes to.",
+      "properties": {
+        "remote": {
+          "default": "",
+          "description": "HQ repo remote, `<owner>/beadhive-hq` form. Empty (default) derives `<owner>` from the logged-in `gh` identity at read time (`config.hq_remote`) — host identity, so the answer does not vary by which hive you invoke from; an explicit value here always overrides the derivation. `bh hq init`/`clone` confirm the result interactively unless `--auto` is passed.",
+          "title": "Remote",
+          "type": "string"
+        }
+      },
+      "title": "HqConfig",
+      "type": "object"
+    },
+    "IdentityConfig": {
+      "additionalProperties": false,
+      "description": "Agent identity stamped into each worktree at claim/assign (``work.identity``).",
+      "properties": {
+        "authority": {
+          "const": "local",
+          "default": "local",
+          "description": "Named ClaimAuthority `bh work claim`/`submit` use to mint + resolve the acting seat (claim_authority.py). `local` (default, only tier shipped today) is LOCAL-TRUST ONLY — no spoof resistance; see the module docstring for the anti-spoof tiers tracked in spike bh-zspz.",
+          "title": "Authority",
+          "type": "string"
+        },
+        "crews": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DevIdentity"
+          },
+          "description": "Deprecated alias of `devs` (devs wins on collision).",
+          "title": "Crews",
+          "type": "object"
+        },
+        "devs": {
+          "additionalProperties": {
+            "$ref": "#/$defs/DevIdentity"
+          },
+          "description": "Per-developer identity overrides keyed by dev/<name>, layered over the base.",
+          "title": "Devs",
+          "type": "object"
+        },
+        "email": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Stable author email (attribution).",
+          "title": "Email"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "agent",
+                "supervised"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "agent (stamp name/email/signing_key below) | supervised (inherit the human's existing git config unchanged). Defaults to agent when any field is set, else supervised.",
+          "title": "Mode"
+        },
+        "name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "git user.name + bd --actor.",
+          "title": "Name"
+        },
+        "sign": {
+          "default": false,
+          "description": "commit.gpgsign.",
+          "title": "Sign",
+          "type": "boolean"
+        },
+        "signing_key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "SSH signing key (path or literal).",
+          "title": "Signing Key"
+        }
+      },
+      "title": "IdentityConfig",
+      "type": "object"
+    },
+    "LogConfig": {
+      "additionalProperties": false,
+      "description": "Diagnostics logging (structlog dual-mode pipeline).",
+      "properties": {
+        "format": {
+          "default": "auto",
+          "description": "auto detects TTY (rich) vs non-interactive (json).",
+          "enum": [
+            "auto",
+            "rich",
+            "json"
+          ],
+          "title": "Format",
+          "type": "string"
+        },
+        "level": {
+          "default": "info",
+          "description": "Minimum level for diagnostics.",
+          "enum": [
+            "debug",
+            "info",
+            "warning",
+            "error",
+            "critical"
+          ],
+          "title": "Level",
+          "type": "string"
+        }
+      },
+      "title": "LogConfig",
+      "type": "object"
+    },
+    "ManagedRepoEntry": {
+      "additionalProperties": false,
+      "description": "One entry in ``managed_repos`` — a hive `bh hive init` maintains, with optional\nper-hive overrides of the sections above.",
+      "properties": {
+        "claude": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ClaudeConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive `claude` section override."
+        },
+        "contribution": {
+          "anyOf": [
+            {
+              "const": "pull",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Marks a hive as a Contribution-plane target. Today only `pull` (upstream is a read rail; nothing yet consumes it as a push/PR target).",
+          "title": "Contribution"
+        },
+        "furnish": {
+          "anyOf": [
+            {
+              "enum": [
+                "full",
+                "none"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Declared footprint: `full` (tracked scaffolding + scaffold commit) or `none` (zero-footprint: local-only .beads, nothing committed). Absent infers from `kind` — forks/external were never furnished, everything else was (registry.furnish_of).",
+          "title": "Furnish"
+        },
+        "harness": {
+          "anyOf": [
+            {
+              "enum": [
+                "claude",
+                "opencode"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive harness override (overrides top-level `harness`).",
+          "title": "Harness"
+        },
+        "herdr": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HerdrConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive `herdr` section override."
+        },
+        "hitch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/HitchConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive `hitch` section override."
+        },
+        "kind": {
+          "anyOf": [
+            {
+              "enum": [
+                "org-native",
+                "personal",
+                "prototype",
+                "fork",
+                "external",
+                "hq"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hive kind; forks also carry `upstream`. `hq` marks the Factory HQ singleton store (registry.HQ_KIND) — not a hive, and excluded from hive-level operations; it is written by `bh hq init`, not by `bh hive init`.",
+          "title": "Kind"
+        },
+        "observaloop": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObservaloopConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive `observaloop` section override."
+        },
+        "orca": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OrcaConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive `orca` section override."
+        },
+        "org": {
+          "default": "",
+          "description": "Org/account the repo belongs to.",
+          "title": "Org",
+          "type": "string"
+        },
+        "prefix": {
+          "default": "",
+          "description": "Short stable bead-id prefix for this hive.",
+          "title": "Prefix",
+          "type": "string"
+        },
+        "provider": {
+          "default": "",
+          "description": "Repo-group path (auth/fetch mechanism label).",
+          "title": "Provider",
+          "type": "string"
+        },
+        "release": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReleaseConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive `release` section override."
+        },
+        "repo": {
+          "default": "",
+          "description": "Repo name.",
+          "title": "Repo",
+          "type": "string"
+        },
+        "repowise": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RepowiseConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive `repowise` section override."
+        },
+        "toolchain": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive declared toolchain name(s) (overrides worktrees.toolchain).",
+          "title": "Toolchain"
+        },
+        "toolchains": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive toolchain registry overrides.",
+          "title": "Toolchains"
+        },
+        "upstream": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Upstream \"owner/name\" for a fork kind.",
+          "title": "Upstream"
+        },
+        "work": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-hive `work` section override."
+        },
+        "worktree_init": {
+          "description": "Extra init rules appended after the global ones.",
+          "items": {
+            "$ref": "#/$defs/WorktreeInitRule"
+          },
+          "title": "Worktree Init",
+          "type": "array"
+        }
+      },
+      "title": "ManagedRepoEntry",
+      "type": "object"
+    },
+    "MetadataConfig": {
+      "additionalProperties": false,
+      "description": "Workspace-metadata cache.",
+      "properties": {
+        "background_reload": {
+          "default": true,
+          "description": "Whether per-repo invalidation kicks a threaded background refresh.",
+          "title": "Background Reload",
+          "type": "boolean"
+        },
+        "ttl": {
+          "default": 300,
+          "description": "Coarse TTL backstop in seconds. 0=always-fresh, negative=never-expire.",
+          "title": "Ttl",
+          "type": "number"
+        }
+      },
+      "title": "MetadataConfig",
+      "type": "object"
+    },
+    "ObservaloopConfig": {
+      "additionalProperties": false,
+      "description": "Observaloop integration — telemetry routing + per-hive profile management. Requires\notel.enabled: true; no-op otherwise.",
+      "properties": {
+        "command": {
+          "default": "observaloop",
+          "description": "Override the observaloop CLI command.",
+          "title": "Command",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Enable observaloop routing (requires otel.enabled).",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "per_worktree_container": {
+          "default": false,
+          "description": "Reserved for Mode-2 (one container per worktree); not yet active.",
+          "title": "Per Worktree Container",
+          "type": "boolean"
+        },
+        "profile": {
+          "default": "",
+          "description": "Observaloop profile stamped onto the Resource (BH_OBSERVALOOP_PROFILE wins).",
+          "title": "Profile",
+          "type": "string"
+        }
+      },
+      "title": "ObservaloopConfig",
+      "type": "object"
+    },
+    "OrcaConfig": {
+      "additionalProperties": false,
+      "description": "orca — repo registry integration (first plugin).",
+      "properties": {
+        "data_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Path to orca's on-disk state (orca-data.json).",
+          "title": "Data Path"
+        },
+        "enabled": {
+          "default": false,
+          "description": "Whether orca (repo registry integration) is on.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "worktrees": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "$ref": "#/$defs/OrcaWorktreesConfig"
+            }
+          ],
+          "default": false,
+          "description": "Bare bool, or {enabled, fallback} for the expanded form.",
+          "title": "Worktrees"
+        }
+      },
+      "title": "OrcaConfig",
+      "type": "object"
+    },
+    "OrcaWorktreesConfig": {
+      "additionalProperties": false,
+      "description": "``orca.worktrees`` in its expanded (mapping) form.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Whether orca worktree delegation is flagged on.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "fallback": {
+          "default": false,
+          "description": "Whether orca falls back gracefully when its runtime is down.",
+          "title": "Fallback",
+          "type": "boolean"
+        }
+      },
+      "title": "OrcaWorktreesConfig",
+      "type": "object"
+    },
+    "OrgEntry": {
+      "additionalProperties": false,
+      "description": "One ``orgs.<name>`` entry — org-code policy.",
+      "properties": {
+        "code": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Short org code for the required-prefix policy.",
+          "title": "Code"
+        },
+        "policy": {
+          "anyOf": [
+            {
+              "enum": [
+                "required",
+                "personal"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "required: org-native repos must use <code>-<repo>; personal: a suggestion.",
+          "title": "Policy"
+        }
+      },
+      "title": "OrgEntry",
+      "type": "object"
+    },
+    "OtelConfig": {
+      "additionalProperties": false,
+      "description": "OpenTelemetry — enable + point at a collector. Disabled by default.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Whether to initialize the OTel SDK.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "endpoint": {
+          "default": "",
+          "description": "OTLP collector endpoint (OTEL_EXPORTER_OTLP_ENDPOINT env wins).",
+          "title": "Endpoint",
+          "type": "string"
+        },
+        "genai": {
+          "$ref": "#/$defs/GenaiConfig"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Headers threaded into every OTLP exporter constructor.",
+          "title": "Headers",
+          "type": "object"
+        },
+        "hive": {
+          "default": "",
+          "description": "Hive name stamped onto the Resource (`bh.hive`).",
+          "title": "Hive",
+          "type": "string"
+        },
+        "metrics_temporality": {
+          "default": "delta",
+          "description": "Preferred OTLP metric temporality.",
+          "enum": [
+            "delta",
+            "cumulative"
+          ],
+          "title": "Metrics Temporality",
+          "type": "string"
+        },
+        "protocol": {
+          "default": "grpc",
+          "description": "OTLP transport selecting the exporter class for every signal.",
+          "enum": [
+            "grpc",
+            "http/protobuf"
+          ],
+          "title": "Protocol",
+          "type": "string"
+        },
+        "role": {
+          "default": "",
+          "description": "`bh.role` stamped onto the Resource (the seat this process runs as).",
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "title": "OtelConfig",
+      "type": "object"
+    },
+    "PassthroughConfig": {
+      "additionalProperties": false,
+      "description": "Passthrough gating for the raw `bh bd` / `bh git` escape hatches.",
+      "properties": {
+        "bd_enabled": {
+          "default": false,
+          "description": "Whether the `bh bd` passthrough runs.",
+          "title": "Bd Enabled",
+          "type": "boolean"
+        },
+        "git_enabled": {
+          "default": true,
+          "description": "Whether the `bh git` passthrough runs.",
+          "title": "Git Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "PassthroughConfig",
+      "type": "object"
+    },
+    "ReleaseConfig": {
+      "additionalProperties": false,
+      "description": "Release-order planning policy (``release``) — advisory: consulted by the\ndispatcher's start-verdict and the merger's merge-order, never obeyed blindly.\nUnset (all default) falls back to today's FCFS behavior.",
+      "properties": {
+        "channel_stale_days": {
+          "default": 14,
+          "description": "Days the oldest unpromoted release may sit before `bh doctor` reports `stable` as stale; 0 disables. Default sits just above the widest gap between two consecutive beadhive releases (9.68 d over v0.1.0..v0.8.4) so it cannot fire on a quiet period. Reporting only — doctor never gates.",
+          "title": "Channel Stale Days",
+          "type": "integer"
+        },
+        "channel_stale_releases": {
+          "default": 0,
+          "description": "Releases `stable` may trail `latest` by before `bh doctor` reports it as stale. Default 0 (off): at beadhive's cadence three releases can land in 0.1 days, so a count threshold fires on every ordinary patch burst. Set >0 for a slow-cadence hive.",
+          "title": "Channel Stale Releases",
+          "type": "integer"
+        },
+        "conflict_estimator": {
+          "default": "file-overlap",
+          "description": "Named ConflictEstimator the start-verdict path consults; file-overlap is the bundled floor implementation.",
+          "title": "Conflict Estimator",
+          "type": "string"
+        },
+        "enforce_hold": {
+          "default": false,
+          "description": "When true, a release:breaking bead gets a release-hold: gate filed at planning time — a hard block, not just advisory ordering.",
+          "title": "Enforce Hold",
+          "type": "boolean"
+        },
+        "fix_churn_budget": {
+          "default": 3,
+          "description": "Max release:fix beads flushed ahead of features in the current patch window before further fixes yield to additive work.",
+          "title": "Fix Churn Budget",
+          "type": "integer"
+        },
+        "strategy": {
+          "default": "stable-versioning",
+          "description": "Named release strategy the scorer registry resolves (release_order.py); only stable-versioning ships today.",
+          "title": "Strategy",
+          "type": "string"
+        }
+      },
+      "title": "ReleaseConfig",
+      "type": "object"
+    },
+    "RepowiseConfig": {
+      "additionalProperties": false,
+      "description": "repowise — optional local codebase index integration.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Enable the repowise index integration.",
+          "title": "Enabled",
+          "type": "boolean"
+        }
+      },
+      "title": "RepowiseConfig",
+      "type": "object"
+    },
+    "RoutingConfig": {
+      "additionalProperties": false,
+      "description": "Complexity-to-model routing intent; selection behavior belongs to routing readers.",
+      "properties": {
+        "policy": {
+          "default": "loose",
+          "description": "Resolution policy when no configured interval matches: loose (default, permit the reader's fallback) or strict (require an explicit match).",
+          "enum": [
+            "loose",
+            "strict"
+          ],
+          "title": "Policy",
+          "type": "string"
+        },
+        "tiers": {
+          "description": "Ordered model routes with inclusive complexity floor/ceiling bounds.",
+          "items": {
+            "$ref": "#/$defs/RoutingTierConfig"
+          },
+          "title": "Tiers",
+          "type": "array"
+        }
+      },
+      "title": "RoutingConfig",
+      "type": "object"
+    },
+    "RoutingTierConfig": {
+      "additionalProperties": false,
+      "description": "One model route and the inclusive complexity interval it can serve.\n\nThe model identifier deliberately validates syntax, not a provider catalogue: providers and\nmodel releases change independently of Beadhive. Endpoint authentication and TLS policy do\nnot belong in this entry; ``endpoint`` only selects an HTTP(S) gateway or a named profile.",
+      "properties": {
+        "ceiling": {
+          "$ref": "#/$defs/ComplexityTier",
+          "default": 3,
+          "description": "Highest complexity tier served (inclusive); omitted means REASONING."
+        },
+        "endpoint": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional HTTP(S) gateway URL or endpoint-profile reference; omitted selects the configured role/harness default. Authentication and TLS policy are resolved outside this entry.",
+          "title": "Endpoint"
+        },
+        "floor": {
+          "$ref": "#/$defs/ComplexityTier",
+          "default": 0,
+          "description": "Lowest complexity tier served (inclusive); omitted means SIMPLE."
+        },
+        "model": {
+          "description": "Model identifier in provider/model-name form; provider and model names are not catalogue-validated.",
+          "title": "Model",
+          "type": "string"
+        }
+      },
+      "required": [
+        "model"
+      ],
+      "title": "RoutingTierConfig",
+      "type": "object"
+    },
+    "WorkConfig": {
+      "additionalProperties": false,
+      "description": "Integration-plane driver (`bh work`) settings — drives a bead assigned -> merged.",
+      "properties": {
+        "always_run": {
+          "default": "",
+          "description": "OPTIONAL command run before any recorded validation verdict is honored — the small set a TREE hash cannot vouch for, because it reads git METADATA rather than file content (`git describe`, commit counts, tag-derived versions). E.g. `./scripts/hermetic.sh uv run pytest -m always_run`. Spawned opaquely in the hive's own clone; bh never learns what it selects. Absent (the default) is fully supported: a hit is honored whole, exactly as before. A non-zero exit REFUSES the hit and seals the ledger for the rest of the process, so that failure can never become an attestation (attested-green ADR, git-metadata asterisk; bh-ehmd8). It is paid on every HIT, so keep it seconds, not minutes.",
+          "title": "Always Run",
+          "type": "string"
+        },
+        "batch_max_size": {
+          "default": 5,
+          "description": "Max issues a planner-declared batch:<group> may hold as one unit.",
+          "title": "Batch Max Size",
+          "type": "integer"
+        },
+        "conflict": {
+          "$ref": "#/$defs/ConflictConfig"
+        },
+        "demo_cmd": {
+          "default": "",
+          "description": "How `bh work review --demo` exercises the feature (default none).",
+          "title": "Demo Cmd",
+          "type": "string"
+        },
+        "dispatch": {
+          "$ref": "#/$defs/DispatchConfig"
+        },
+        "enforce_signing": {
+          "default": false,
+          "description": "When true, merge refuses a branch unless EVERY commit in the merge range carries a signature git verifies as TRUSTED (`git log --format=%G?` = G), names the offending commits, and does not merge. No grandfathering: commits made before the flag was turned on are refused like any other — re-sign them (rebase) or leave the flag off. Default false because turning it on for an unprepared fleet would block every merge. Verification needs `gpg.ssh.allowedsignersfile` pointing at a real file — bh keeps one in the HQ store and `bh host identity` enrolls this host + wires it up. WITHOUT a usable one git reports even a perfectly-signed commit as N (key unset) or U (file missing) and never G — measured, git 2.54 — so the gate refuses everything until that file is real.",
+          "title": "Enforce Signing",
+          "type": "boolean"
+        },
+        "identity": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IdentityConfig"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Agent identity profile; omit (or mode: supervised) to inherit git config."
+        },
+        "integration_branch": {
+          "default": "main",
+          "description": "Base the bead branch merges back to / is measured against.",
+          "title": "Integration Branch",
+          "type": "string"
+        },
+        "landing": {
+          "default": "local",
+          "description": "How merge/finish land on the shared integration branch: local (--no-ff merge) | pr (push + `gh pr create`; gh:pr gate + `bh work land` complete the close).",
+          "enum": [
+            "local",
+            "pr"
+          ],
+          "title": "Landing",
+          "type": "string"
+        },
+        "ledger_ttl": {
+          "default": "P1D",
+          "description": "How long a recorded validation verdict stays reusable, as an ISO-8601 duration (PT30M | PT4H | P1D). The verdict ledger keys on (tree hash, validate-cmd hash), so an aging entry is a claim about bytes that are still identical but were last proved green a while ago. Default P1D — exactly the 24h shipped since bh-dfx0. The realistic reuse window is minutes-to-hours: tune this DOWN, not up.",
+          "title": "Ledger Ttl",
+          "type": "string"
+        },
+        "max_commits": {
+          "default": 10,
+          "description": "submit rejects a branch with more commits than this over the base.",
+          "title": "Max Commits",
+          "type": "integer"
+        },
+        "push_remote": {
+          "default": "origin",
+          "description": "Remote branch pushes target (submit gh:* publish + landing: pr).",
+          "title": "Push Remote",
+          "type": "string"
+        },
+        "review_gate": {
+          "default": "human",
+          "description": "bd gate type opened at submit: human | timer | gh:run | gh:pr.",
+          "title": "Review Gate",
+          "type": "string"
+        },
+        "routing": {
+          "$ref": "#/$defs/RoutingConfig",
+          "description": "Complexity-tier model routing intent (selection is reader-owned)."
+        },
+        "runtime": {
+          "default": "local",
+          "description": "Which scheduler wakes a role binary for a ready bead: claude (today's Task-tool sub-agent fanout — documented, not a bh-owned implementation; harness-bound, cannot be the default) | local (poll loop + subprocess supervision, harness-agnostic default) | temporal (Temporal workers, fleet-scale). Mirrors the `beads.engine` seam in engine.py: a config key selects a thin implementation, not a plugin framework. See docs/WORK.md#runtime-tiers and docs/design/work-runtime-tiers-adr.md.",
+          "enum": [
+            "claude",
+            "local",
+            "temporal"
+          ],
+          "title": "Runtime",
+          "type": "string"
+        },
+        "validate": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Per-boundary validate_cmd overrides, keyed by phase (submit|merge|molecule|postland|union), falling back to validate_cmd. A `<phase>-main` key wins when the op targets the integration branch.",
+          "title": "Validate",
+          "type": "object"
+        },
+        "validate_cmd": {
+          "default": "just check",
+          "description": "Default validation command for any boundary without an override.",
+          "title": "Validate Cmd",
+          "type": "string"
+        },
+        "validate_subset": {
+          "default": "",
+          "description": "OPTIONAL template for re-running only NAMED tests, with one required {tests} placeholder — e.g. `./scripts/hermetic.sh uv run pytest -n auto --pyargs {tests}`. Absent (the default) is fully supported: no converge loop, every phase runs whole. DEVELOPER-LOOP ONLY — never consulted on a run that writes an attestation, because re-running only the failures until they pass is how a flaky suite gets laundered into green (attested-green ADR, settled decision 1). See converge.py.",
+          "title": "Validate Subset",
+          "type": "string"
+        },
+        "validation": {
+          "default": "relaxed",
+          "description": "Which merge boundaries re-test the tip: relaxed (submit + assembled-mol pre-land) | conservative (also after every per-bead merge AND post-land) | loose (skip pre-land).",
+          "enum": [
+            "relaxed",
+            "conservative",
+            "loose"
+          ],
+          "title": "Validation",
+          "type": "string"
+        },
+        "validation_artifact_root": {
+          "default": "",
+          "description": "Optional absolute root for durable per-run validation artifacts. BH_VALIDATION_ARTIFACT_ROOT takes precedence for CI upload staging.",
+          "title": "Validation Artifact Root",
+          "type": "string"
+        },
+        "validation_protocol": {
+          "default": "none",
+          "description": "Explicit opt-in typed runner result protocol. v1 exports BH_VALIDATION_RESULT_PATH; absent/invalid output remains ordinary process semantics.",
+          "enum": [
+            "none",
+            "beadhive-validation-result/v1"
+          ],
+          "title": "Validation Protocol",
+          "type": "string"
+        },
+        "validation_slots": {
+          "default": 1,
+          "description": "Host-wide concurrent validation capacity. One is the safe default; zero disables admission. BH_VALIDATION_SLOTS temporarily overrides this host-local value.",
+          "minimum": 0,
+          "title": "Validation Slots",
+          "type": "integer"
+        }
+      },
+      "title": "WorkConfig",
+      "type": "object"
+    },
+    "WorktreeInitRule": {
+      "additionalProperties": false,
+      "description": "One declarative post-create worktree rule (``worktrees.init`` / a hive's\n``worktree_init``).",
+      "properties": {
+        "if_exists": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Glob in the new worktree; rule only runs when it matches.",
+          "title": "If Exists"
+        },
+        "run": {
+          "description": "Shell command to run in the new worktree.",
+          "title": "Run",
+          "type": "string"
+        },
+        "verify": {
+          "default": false,
+          "description": "Also run this rule in the throwaway verify checkout before validate_cmd.",
+          "title": "Verify",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "run"
+      ],
+      "title": "WorktreeInitRule",
+      "type": "object"
+    },
+    "WorktreesConfig": {
+      "additionalProperties": false,
+      "description": "Managed worktrees — a shadow tree outside $GIT_WORKSPACE mirroring\n<group>/<org>/<repo>.",
+      "properties": {
+        "bead_branch": {
+          "default": "bead/{kind}/{id}",
+          "description": "Branch suffix template for a bead worktree ({kind}=epic|issue, {id}=bead id).",
+          "title": "Bead Branch",
+          "type": "string"
+        },
+        "ephemeral": {
+          "default": true,
+          "description": "True (default): worktrees live in an OS temp dir, session-scoped + disposable, no sandbox grant needed. False: persistent worktrees under `path`.",
+          "title": "Ephemeral",
+          "type": "boolean"
+        },
+        "init": {
+          "description": "Global post-create provisioning rules, run before a hive's worktree_init.",
+          "items": {
+            "$ref": "#/$defs/WorktreeInitRule"
+          },
+          "title": "Init",
+          "type": "array"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Persistent worktree root (ephemeral=false only); $BH_WORKTREES wins.",
+          "title": "Path"
+        },
+        "rmdir_empty": {
+          "default": true,
+          "description": "On rm/prune, remove now-empty triplet dirs up to (never including) root.",
+          "title": "Rmdir Empty",
+          "type": "boolean"
+        },
+        "session_branch": {
+          "default": "session/{ts}-{rand}",
+          "description": "Branch suffix template for an ad-hoc session worktree.",
+          "title": "Session Branch",
+          "type": "string"
+        },
+        "toolchain": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Declared toolchain name(s) this repo uses (knowledge-only; bh-d0kb).",
+          "title": "Toolchain"
+        },
+        "toolchains": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Per-name toolchain registry overrides (replaces, not merges, a template).",
+          "title": "Toolchains"
+        }
+      },
+      "title": "WorktreesConfig",
+      "type": "object"
+    }
+  },
+  "$id": "urn:beadhive:wire-schema:config:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The bh config schema: ~/.beadhive/config.yaml, validated + discoverable.\n\nA validation + schema layer only — the ~40 getters in :mod:`beadhive.config` keep reading\nthe ruamel ``CommentedMap`` directly and own the actual read/write path. This model is for\nchecking a loaded config's shape (bh-5cgm.2) and dumping it for discovery (bh-5cgm.4).",
+  "properties": {
+    "alerts": {
+      "$ref": "#/$defs/AlertsConfig"
+    },
+    "archive": {
+      "$ref": "#/$defs/ArchiveConfig"
+    },
+    "backup": {
+      "$ref": "#/$defs/BackupConfig"
+    },
+    "claude": {
+      "$ref": "#/$defs/ClaudeConfig"
+    },
+    "delimiter": {
+      "default": ":",
+      "description": "Label delimiter.",
+      "title": "Delimiter",
+      "type": "string"
+    },
+    "dimensions": {
+      "additionalProperties": {
+        "$ref": "#/$defs/DimensionConfig"
+      },
+      "description": "Non-identity label dimensions (orthogonal axes).",
+      "title": "Dimensions",
+      "type": "object"
+    },
+    "dolt": {
+      "$ref": "#/$defs/DoltConfig"
+    },
+    "exclude": {
+      "$ref": "#/$defs/ExcludeConfig"
+    },
+    "git_workspace": {
+      "$ref": "#/$defs/GitWorkspaceConfig"
+    },
+    "harness": {
+      "default": "claude",
+      "description": "Agent harness `bh role <seat>` execs: claude | opencode. BH_HARNESS wins.",
+      "enum": [
+        "claude",
+        "opencode"
+      ],
+      "title": "Harness",
+      "type": "string"
+    },
+    "herdr": {
+      "$ref": "#/$defs/HerdrConfig"
+    },
+    "hitch": {
+      "$ref": "#/$defs/HitchConfig"
+    },
+    "host": {
+      "$ref": "#/$defs/HostConfig"
+    },
+    "hq": {
+      "$ref": "#/$defs/HqConfig"
+    },
+    "log": {
+      "$ref": "#/$defs/LogConfig"
+    },
+    "managed_repos": {
+      "description": "Managed hives — maintained by `bh hive init`.",
+      "items": {
+        "$ref": "#/$defs/ManagedRepoEntry"
+      },
+      "title": "Managed Repos",
+      "type": "array"
+    },
+    "metadata": {
+      "$ref": "#/$defs/MetadataConfig"
+    },
+    "observaloop": {
+      "$ref": "#/$defs/ObservaloopConfig"
+    },
+    "orca": {
+      "$ref": "#/$defs/OrcaConfig"
+    },
+    "orgs": {
+      "additionalProperties": {
+        "$ref": "#/$defs/OrgEntry"
+      },
+      "description": "org (full name) -> {code, policy}.",
+      "title": "Orgs",
+      "type": "object"
+    },
+    "otel": {
+      "$ref": "#/$defs/OtelConfig"
+    },
+    "passthrough": {
+      "$ref": "#/$defs/PassthroughConfig"
+    },
+    "plugins": {
+      "additionalProperties": true,
+      "description": "Plugin-owned configuration fragments retained independently of activation.",
+      "properties": {
+        "herdr": {
+          "$id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Optional Herdr agent-pane defaults.\n\nHerdr, rather than Beadhive, owns the installed agent-kind vocabulary.  This\nschema consequently validates only that an operator supplied a non-empty\nstring; the Herdr launch boundary checks it against the live supported list.",
+          "properties": {
+            "kind": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Preferred Herdr agent kind (for example claude or codex). The installed Herdr CLI validates supported values when a pane is launched.",
+              "title": "Kind"
+            }
+          },
+          "title": "HerdrConfig",
+          "type": "object",
+          "version": 1
+        },
+        "hitch": {
+          "$id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Optional integration with agent-hitch (docs/design/managed-harness-config-adr.md,\nAmendment 2) — resolves a seat's Hitch Pack profile into a Config Directory and launches a\nharness against it via `bh plugin hitch up <target> <profile>`.\n\nNo AND-gate on another plugin (unlike orca, which requires git-workspace because it\nregisters git-workspace's own clones): hitch shares no data or state with git-workspace /\norca / observaloop, so it is independently enable-able.",
+          "properties": {
+            "command": {
+              "default": "hitch",
+              "description": "Override the hitch CLI command/path.",
+              "title": "Command",
+              "type": "string"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Enable the hitch launch integration.",
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "repo": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Path to the agent-hitch checkout providing profiles/local.yaml + catalogs/local.yaml + packs/. Required to actually launch.",
+              "title": "Repo"
+            },
+            "root": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Persistent Config Directory root (ephemeral=false only); default ~/.beadhive/hitch.",
+              "title": "Root"
+            }
+          },
+          "title": "HitchConfig",
+          "type": "object",
+          "version": 1
+        },
+        "observaloop": {
+          "$id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "Observaloop integration — telemetry routing + per-hive profile management. Requires\notel.enabled: true; no-op otherwise.",
+          "properties": {
+            "command": {
+              "default": "observaloop",
+              "description": "Override the observaloop CLI command.",
+              "title": "Command",
+              "type": "string"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Enable observaloop routing (requires otel.enabled).",
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "per_worktree_container": {
+              "default": false,
+              "description": "Reserved for Mode-2 (one container per worktree); not yet active.",
+              "title": "Per Worktree Container",
+              "type": "boolean"
+            },
+            "profile": {
+              "default": "",
+              "description": "Observaloop profile stamped onto the Resource (BH_OBSERVALOOP_PROFILE wins).",
+              "title": "Profile",
+              "type": "string"
+            }
+          },
+          "title": "ObservaloopConfig",
+          "type": "object",
+          "version": 1
+        },
+        "orca": {
+          "$defs": {
+            "OrcaWorktreesConfig": {
+              "additionalProperties": false,
+              "description": "``orca.worktrees`` in its expanded (mapping) form.",
+              "properties": {
+                "enabled": {
+                  "default": false,
+                  "description": "Whether orca worktree delegation is flagged on.",
+                  "title": "Enabled",
+                  "type": "boolean"
+                },
+                "fallback": {
+                  "default": false,
+                  "description": "Whether orca falls back gracefully when its runtime is down.",
+                  "title": "Fallback",
+                  "type": "boolean"
+                }
+              },
+              "title": "OrcaWorktreesConfig",
+              "type": "object"
+            }
+          },
+          "$id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "orca — repo registry integration (first plugin).",
+          "properties": {
+            "data_path": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "description": "Path to orca's on-disk state (orca-data.json).",
+              "title": "Data Path"
+            },
+            "enabled": {
+              "default": false,
+              "description": "Whether orca (repo registry integration) is on.",
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "worktrees": {
+              "anyOf": [
+                {
+                  "type": "boolean"
+                },
+                {
+                  "$ref": "#/$defs/OrcaWorktreesConfig"
+                }
+              ],
+              "default": false,
+              "description": "Bare bool, or {enabled, fallback} for the expanded form.",
+              "title": "Worktrees"
+            }
+          },
+          "title": "OrcaConfig",
+          "type": "object",
+          "version": 1
+        },
+        "repowise": {
+          "$id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+          "$schema": "https://json-schema.org/draft/2020-12/schema",
+          "additionalProperties": false,
+          "description": "repowise — optional local codebase index integration.",
+          "properties": {
+            "enabled": {
+              "default": false,
+              "description": "Enable the repowise index integration.",
+              "title": "Enabled",
+              "type": "boolean"
+            }
+          },
+          "title": "RepowiseConfig",
+          "type": "object",
+          "version": 1
+        }
+      },
+      "type": "object"
+    },
+    "providers": {
+      "description": "Recognized provider labels (git-workspace auth/fetch mechanisms).",
+      "items": {
+        "type": "string"
+      },
+      "title": "Providers",
+      "type": "array"
+    },
+    "release": {
+      "$ref": "#/$defs/ReleaseConfig"
+    },
+    "repowise": {
+      "$ref": "#/$defs/RepowiseConfig"
+    },
+    "schema_version": {
+      "default": 1,
+      "description": "Config schema version this file was written for.",
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "work": {
+      "$ref": "#/$defs/WorkConfig"
+    },
+    "worktrees": {
+      "$ref": "#/$defs/WorktreesConfig"
+    }
+  },
+  "title": "BeadhiveConfig",
+  "type": "object",
+  "version": 1
+}

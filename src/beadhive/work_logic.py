@@ -16,7 +16,8 @@ import shlex
 
 import typer
 
-from . import bd, config, identity, worktree
+from . import bd, identity, worktree
+from .config_consumer_ports import work_settings as config
 
 # Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
 _CONVENTIONAL = re.compile(

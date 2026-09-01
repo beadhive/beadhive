@@ -9,7 +9,8 @@ from __future__ import annotations
 
 import typer
 
-from . import config, log
+from . import log
+from .config_consumer_ports import work_settings as config
 
 DISP_PREFIX = "disp/"
 DEV_PREFIX = "dev/"

@@ -251,7 +251,7 @@ def _render_literal_value(dotted: str, cfg) -> str:
     outside its schema Literal's range (bh-aidze) — never rendered plainly as if it were in
     effect, the exact confusion that let `dolt.backend: shared-server` read as applied while
     doing nothing."""
-    from . import config_schema
+    from .modules.config import contracts as config_schema
 
     found, value = config._descend(cfg, dotted.split("."))
     declared = value if found else "(unset)"
