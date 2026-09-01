@@ -55,8 +55,8 @@ def test_dynamic_seams_cover_every_exact_revision_python_test_caller() -> None:
     }
     expected_seam_counts = {
         "hives": 364,
-        "worktrees": 165,
-        "work": 66,
+        "worktrees": 169,
+        "work": 72,
         "planning": 50,
         "state": 22,
     }
@@ -83,7 +83,7 @@ def test_dynamic_seam_classifier_resolves_supported_module_and_symbol_targets() 
     source = """
 import importlib
 from unittest.mock import patch
-from beadhive import hive, work, worktree
+from beadhive import hive, work, work_submission, worktree
 
 monkeypatch.setattr(hive, "onboard", replacement)
 monkeypatch.delattr("beadhive.hive.init")
@@ -95,6 +95,8 @@ def decorated():
     pass
 
 getattr(worktree, "locate")
+getattr(work, operation)
+getattr(work_submission, f"impl_{operation}")
 importlib.import_module("beadhive.worktree")
 __import__("beadhive.work")
 """
@@ -112,6 +114,8 @@ __import__("beadhive.work")
         ("patch", "beadhive.worktree", "integration_base"),
         ("patch.object", "beadhive.work", "submit"),
         ("getattr", "beadhive.worktree", "locate"),
+        ("getattr", "beadhive.work", "<dynamic:operation>"),
+        ("getattr", "beadhive.work_submission", "<dynamic:f'impl_{operation}'>"),
         ("importlib.import_module", "beadhive.worktree", "<module>"),
         ("__import__", "beadhive.work", "<module>"),
     }
@@ -126,7 +130,7 @@ def test_dynamic_seam_classifier_rejects_incidental_names_and_values() -> None:
     }
     source = """
 import importlib
-from beadhive import cli, config_partition, doctor, plugins
+from beadhive import cli, config_partition, doctor, plan, plugins
 
 doctor._render_dispatch({"hives": []})
 _fake_dispatch(monkeypatch, {"profile": "hive", "config": "work"})
@@ -140,6 +144,14 @@ monkeypatch.setattr(plugins, "registry", lambda: [])
 getattr(profile, "hive", None)
 importlib.import_module(profile_name)
 patcher.patch("profile.hive")
+
+def replacement_argument_is_not_a_target():
+    from beadhive import role_execution
+
+    def plan(*args):
+        return args
+
+    monkeypatch.setattr(role_execution, "resolve_headless_plan", plan)
 """
 
     assert (
@@ -151,3 +163,49 @@ patcher.patch("profile.hive")
         )
         == []
     )
+
+
+def test_dynamic_getattr_inventory_includes_the_ten_reported_facade_callers_once() -> None:
+    capability_module_map = _module()
+    artifact = json.loads(capability_module_map.DEFAULT_OUTPUT.read_text(encoding="utf-8"))
+    expected = {
+        "work": {
+            ("tests/test_structural_facade_contracts.py", 54, "beadhive.work"),
+            ("tests/test_structural_facade_contracts.py", 68, "beadhive.work"),
+            ("tests/test_work_assignment_boundaries.py", 56, "beadhive.work"),
+            ("tests/test_work_merge_boundaries.py", 72, "beadhive.work"),
+            ("tests/test_work_submission_boundaries.py", 41, "beadhive.work_submission"),
+            ("tests/test_work_submission_boundaries.py", 42, "beadhive.work"),
+        },
+        "worktrees": {
+            ("tests/test_worktree_boundaries.py", 84, "beadhive.worktree"),
+            ("tests/test_worktree_boundaries.py", 96, "beadhive.worktree"),
+            ("tests/test_worktree_inventory_boundaries.py", 73, "beadhive.worktree"),
+            ("tests/test_worktree_inventory_boundaries.py", 85, "beadhive.worktree"),
+        },
+    }
+
+    for slice_name, expected_rows in expected.items():
+        seams = artifact["slices"][slice_name]["dynamic_test_seams"]
+        for path, line, module in expected_rows:
+            matches = [
+                row
+                for row in seams
+                if (row["path"], row["line"], row["target_module"]) == (path, line, module)
+            ]
+            assert len(matches) == 1
+            assert matches[0]["operation"] == "getattr"
+            assert matches[0]["target_symbol"].startswith("<dynamic:")
+
+    for slice_evidence in artifact["slices"].values():
+        keys = [
+            (
+                row["path"],
+                row["line"],
+                row["operation"],
+                row["target_module"],
+                row["target_symbol"],
+            )
+            for row in slice_evidence["dynamic_test_seams"]
+        ]
+        assert len(keys) == len(set(keys))

@@ -85,7 +85,10 @@ scope, and the separately selected legacy characterization closure rather than o
 below. Dynamic seams are accepted only when AST import/name resolution identifies a supported
 monkeypatch, mock-patch, `getattr`, or import API target as a selected module and symbol. Ordinary
 calls ending in `dispatch`, CLI argv, profile/config values, and sibling attributes such as
-`plugins.registry` are not seams merely because their source text contains a module stem.
+`plugins.registry` are not seams merely because their source text contains a module stem. When a
+`getattr` object resolves to a selected module but its attribute expression is nonliteral, the
+inventory records an explicit `<dynamic:...>` symbol marker; replacement arguments are never
+treated as targets.
 
 Repo-wide results are 232 Python modules, 2,282 import edges, two nonliteral dynamic imports,
 six owned legacy SCCs containing 85 modules, 278 cyclic edges, and 308 imported symbols. SCC
@@ -110,7 +113,7 @@ files in the JSON collect 690 hives, 372 worktrees, 931 work, 231 planning, and 
 The sets overlap through compatibility and shared behavior, so their counts must not be summed.
 Those filename-selected sets describe current test closure only; they do not bound dynamic-caller
 discovery. The compatibility inventory independently scans all 387 Python files under `tests/`
-at the measured revision and finds 364 hives, 165 worktrees, 66 work, 50 planning, and 22 state
+at the measured revision and finds 364 hives, 169 worktrees, 72 work, 50 planning, and 22 state
 semantically resolved patch/getattr/import seams. These totals can exceed the older substring
 detector because imported aliases such as `registry` and collaborator attributes such as
 `doctor.worktree` now resolve to their actual module identities, while incidental strings and
@@ -123,7 +126,7 @@ non-integration selection: 7,436 passed, 12 skipped, and the existing config-fra
 warning in 269.12 seconds. At that snapshot, the then-current two evidence tests added two
 collected items relative to the untouched base gate; the coverage run observed one additional
 capability-conditioned skip and no failure. The later comprehensive-scope currentness and
-semantic-classifier tests are covered by focused and full R3 validation rather than retroactively
+semantic-classifier tests are covered by focused and full R4 validation rather than retroactively
 changing this snapshot.
 Coverage.py reports 38,592 of 43,477 repository statements covered (88.76417416105068%). The
 exact per-slice values below aggregate its file JSON against the checked source path lists.
@@ -180,7 +183,7 @@ scores guide the migration; they do not waive the explicit blockers in the overl
   filesystem cleanup, Git commands, and plugin callbacks.
 - Compatibility surface: `beadhive.worktree` tuple/payload contracts and its module-local
   collaborators; `gitworkspace`, `gitworkspace_plugin`, split `worktree_*` services,
-  `wt_status.WtStatus`, `WtClassification`, `classify`, PID probing, and 165 exact semantic test
+  `wt_status.WtStatus`, `WtClassification`, `classify`, PID probing, and 169 exact semantic test
   seams across the complete 387-file caller scope. Current selected closure: seven legacy files /
   372 tests. Expected isolated closure: pure
   binding/classification/lifecycle tests, one provisioner conformance suite for both adapters,
@@ -202,7 +205,7 @@ scores guide the migration; they do not waive the explicit blockers in the overl
   history/gate and compensation policy. Adapters own Dolt/beads writes, worktree/Git/process I/O,
   evidence persistence, notification delivery, and CLI/MCP rendering.
 - Compatibility surface: `beadhive.work` imports, text/JSON/gate behavior, `work_*` service patch
-  seams, `work_show` cycle, and 66 exact semantic seams across the complete 387-file caller scope.
+  seams, `work_show` cycle, and 72 exact semantic seams across the complete 387-file caller scope.
   Current selected closure: 26 legacy files / 931 tests. Expected isolated closure:
   command-service policy against fake ports, outbound adapter
   contracts, real lifecycle compatibility, shared gate/validation contracts, and planning/CLI/MCP

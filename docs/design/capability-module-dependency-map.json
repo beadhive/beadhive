@@ -3,7 +3,7 @@
     "call_coupling": "AST call sites resolved through explicit import aliases",
     "churn": "git numstat at the measured revision since 2026-06-03T00:00:00Z",
     "coverage": "recorded separately in the human evidence because it is executed data",
-    "dynamic_test_seams": "AST-semantically resolved monkeypatch/patch/getattr/import targets across every exact-revision Python test/support file; current_test_files is the narrower legacy characterization closure",
+    "dynamic_test_seams": "AST-semantically resolved monkeypatch/patch/getattr/import targets across every exact-revision Python test/support file, with explicit dynamic-symbol markers when a selected module resolves but the attribute expression is nonliteral; current_test_files is the narrower legacy characterization closure",
     "fan_in": "distinct source modules outside the slice with a static import into it"
   },
   "measured_revision": "287061f089764dac29b5f584ebcdbb5f25f86c26",
@@ -10980,6 +10980,24 @@
           "target_symbol": "claim"
         },
         {
+          "call": "getattr",
+          "expression": "getattr(work, historical_name)",
+          "line": 54,
+          "operation": "getattr",
+          "path": "tests/test_structural_facade_contracts.py",
+          "target_module": "beadhive.work",
+          "target_symbol": "<dynamic:historical_name>"
+        },
+        {
+          "call": "getattr",
+          "expression": "getattr(work, command_name)",
+          "line": 68,
+          "operation": "getattr",
+          "path": "tests/test_structural_facade_contracts.py",
+          "target_module": "beadhive.work",
+          "target_symbol": "<dynamic:command_name>"
+        },
+        {
           "call": "monkeypatch.setattr",
           "expression": "monkeypatch.setattr( validation_admission, \"identity_lock\", lambda *a, **k: validation_admission.contextlib.nullcontext(), )",
           "line": 220,
@@ -11061,6 +11079,24 @@
           "target_symbol": "run"
         },
         {
+          "call": "getattr",
+          "expression": "getattr(work, operation)",
+          "line": 56,
+          "operation": "getattr",
+          "path": "tests/test_work_assignment_boundaries.py",
+          "target_module": "beadhive.work",
+          "target_symbol": "<dynamic:operation>"
+        },
+        {
+          "call": "getattr",
+          "expression": "getattr(work, operation)",
+          "line": 72,
+          "operation": "getattr",
+          "path": "tests/test_work_merge_boundaries.py",
+          "target_module": "beadhive.work",
+          "target_symbol": "<dynamic:operation>"
+        },
+        {
           "call": "monkeypatch.setattr",
           "expression": "monkeypatch.setattr(work, \"_pull_state\", lambda *a, **k: None)",
           "line": 415,
@@ -11095,6 +11131,24 @@
           "path": "tests/test_work_reads.py",
           "target_module": "beadhive.work_logic",
           "target_symbol": "_bead_gates"
+        },
+        {
+          "call": "getattr",
+          "expression": "getattr(work_submission, f\"impl_{operation}\")",
+          "line": 41,
+          "operation": "getattr",
+          "path": "tests/test_work_submission_boundaries.py",
+          "target_module": "beadhive.work_submission",
+          "target_symbol": "<dynamic:f'impl_{operation}'>"
+        },
+        {
+          "call": "getattr",
+          "expression": "getattr(work, operation)",
+          "line": 42,
+          "operation": "getattr",
+          "path": "tests/test_work_submission_boundaries.py",
+          "target_module": "beadhive.work",
+          "target_symbol": "<dynamic:operation>"
         }
       ],
       "fan_in": {
@@ -14245,6 +14299,24 @@
           "target_symbol": "_classify_entry"
         },
         {
+          "call": "getattr",
+          "expression": "getattr(worktree, operation)",
+          "line": 84,
+          "operation": "getattr",
+          "path": "tests/test_worktree_boundaries.py",
+          "target_module": "beadhive.worktree",
+          "target_symbol": "<dynamic:operation>"
+        },
+        {
+          "call": "getattr",
+          "expression": "getattr(worktree, operation)",
+          "line": 96,
+          "operation": "getattr",
+          "path": "tests/test_worktree_boundaries.py",
+          "target_module": "beadhive.worktree",
+          "target_symbol": "<dynamic:operation>"
+        },
+        {
           "call": "monkeypatch.setattr",
           "expression": "monkeypatch.setattr( worktree, \"run\", lambda command, **kwargs: calls.append((command, kwargs)) or SimpleNamespace(returncode=0), )",
           "line": 124,
@@ -14261,6 +14333,24 @@
           "path": "tests/test_worktree_boundaries.py",
           "target_module": "beadhive.worktree",
           "target_symbol": "run"
+        },
+        {
+          "call": "getattr",
+          "expression": "getattr(worktree, operation)",
+          "line": 73,
+          "operation": "getattr",
+          "path": "tests/test_worktree_inventory_boundaries.py",
+          "target_module": "beadhive.worktree",
+          "target_symbol": "<dynamic:operation>"
+        },
+        {
+          "call": "getattr",
+          "expression": "getattr(worktree, operation)",
+          "line": 85,
+          "operation": "getattr",
+          "path": "tests/test_worktree_inventory_boundaries.py",
+          "target_module": "beadhive.worktree",
+          "target_symbol": "<dynamic:operation>"
         },
         {
           "call": "monkeypatch.setattr",

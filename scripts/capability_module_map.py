@@ -336,6 +336,25 @@ def _selected_target(reference: str | None, selected: set[str]) -> tuple[str, st
     return module, reference.removeprefix(module).lstrip(".") or "<module>"
 
 
+def _attribute_target(
+    object_node: ast.AST,
+    attribute_node: ast.AST,
+    aliases: dict[str, str],
+    namespaces: dict[str, dict[str, str]],
+    selected: set[str],
+) -> tuple[str, str] | None:
+    reference = _resolved_reference(object_node, aliases, namespaces)
+    attribute = _string(attribute_node)
+    if attribute is not None:
+        return _selected_target(f"{reference}.{attribute}" if reference else None, selected)
+    base = _selected_target(reference, selected)
+    if base is None:
+        return None
+    module, symbol = base
+    dynamic = f"<dynamic:{' '.join(ast.unparse(attribute_node).split())}>"
+    return module, dynamic if symbol == "<module>" else f"{symbol}.{dynamic}"
+
+
 def _dynamic_seams_in_source(
     source: str,
     path: str,
@@ -352,14 +371,14 @@ def _dynamic_seams_in_source(
         resolved_call = _resolved_reference(node.func, aliases, namespaces)
         operation = ""
         reference: str | None = None
+        target: tuple[str, str] | None = None
         if raw_call in {"monkeypatch.setattr", "monkeypatch.delattr"} and node.args:
             operation = raw_call
-            reference = _string(node.args[0]) or _resolved_reference(
-                node.args[0], aliases, namespaces
-            )
-            if _string(node.args[0]) is None and len(node.args) > 1:
-                attribute = _string(node.args[1])
-                reference = f"{reference}.{attribute}" if reference and attribute else None
+            reference = _string(node.args[0])
+            if reference is None and len(node.args) > 1:
+                target = _attribute_target(
+                    node.args[0], node.args[1], aliases, namespaces, selected
+                )
         elif resolved_call in {"unittest.mock.patch", "mock.patch"} and node.args:
             operation = "patch"
             reference = _string(node.args[0])
@@ -368,24 +387,20 @@ def _dynamic_seams_in_source(
             or raw_call in {"mocker.patch.object"}
         ) and len(node.args) > 1:
             operation = "patch.object"
-            reference = _resolved_reference(node.args[0], aliases, namespaces)
-            attribute = _string(node.args[1])
-            reference = f"{reference}.{attribute}" if reference and attribute else None
+            target = _attribute_target(node.args[0], node.args[1], aliases, namespaces, selected)
         elif raw_call == "mocker.patch" and node.args:
             operation = "mocker.patch"
             reference = _string(node.args[0])
         elif raw_call == "getattr" and len(node.args) > 1:
             operation = "getattr"
-            reference = _resolved_reference(node.args[0], aliases, namespaces)
-            attribute = _string(node.args[1])
-            reference = f"{reference}.{attribute}" if reference and attribute else None
+            target = _attribute_target(node.args[0], node.args[1], aliases, namespaces, selected)
         elif resolved_call == "importlib.import_module" and node.args:
             operation = "importlib.import_module"
             reference = _string(node.args[0])
         elif raw_call == "__import__" and node.args:
             operation = "__import__"
             reference = _string(node.args[0])
-        target = _selected_target(reference, selected)
+        target = target or _selected_target(reference, selected)
         if target is None:
             continue
         target_module, target_symbol = target
@@ -502,8 +517,9 @@ def build_map() -> dict[str, Any]:
             "churn": f"git numstat at the measured revision since {CHURN_SINCE}",
             "dynamic_test_seams": (
                 "AST-semantically resolved monkeypatch/patch/getattr/import targets across every "
-                "exact-revision Python test/support file; current_test_files is the narrower "
-                "legacy characterization closure"
+                "exact-revision Python test/support file, with explicit dynamic-symbol markers "
+                "when a selected module resolves but the attribute expression is nonliteral; "
+                "current_test_files is the narrower legacy characterization closure"
             ),
             "coverage": "recorded separately in the human evidence because it is executed data",
         },
