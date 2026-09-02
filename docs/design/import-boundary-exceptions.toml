@@ -1,6 +1,6 @@
 # Reviewed architecture-debt ledger. The checker rejects wildcard values and exact-edge drift.
 format_version = 1
-verified_commit = "9dc7c10549712c42b5a38b020dcb75c26e7652c1"
+verified_commit = "ad4077d7ee5ae40c966f089920ca794006538090"
 
 [cycle_snapshot]
 sha256 = "f60b8e61436c0a28909f9d20ce9c3d1e500fe6961c76c54caae1c1e9969f7b09"
