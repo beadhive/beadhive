@@ -1,13 +1,13 @@
 # Reviewed architecture-debt ledger. The checker rejects wildcard values and exact-edge drift.
 format_version = 1
-verified_commit = "4eb5bfeaab2f3bf9e11647baf07847c74640dc4d"
+verified_commit = "4457e9a5986035a86d2fee57a483e8ac11fae46a"
 
 [cycle_snapshot]
-sha256 = "373789df1b83343293959dda1645bc4d6bd3e0baf48268eb3089b55598703e7e"
+sha256 = "d8dd290357ee748d2955a2bf792ecd8d49f54afb5fc3278c700a7c81718a13b9"
 components = 5
-modules = 83
-edges = 276
-symbols = 306
+modules = 82
+edges = 272
+symbols = 298
 
 [[cycle_exception]]
 id = "cycle-edge-001"

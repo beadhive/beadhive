@@ -9,9 +9,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from . import config, dispatch_log, public_readers, registry, run_journal
-from .public_readers import AgentRunSnapshot, RunJournalFrame
-from .state_stream import ProviderSnapshot, StreamRequest, StreamScope
+from . import config, dispatch_log, public_readers, registry, run_journal, state_services
+from .modules.state import (
+    AgentRunSnapshot,
+    ProviderSnapshot,
+    RunJournalFrame,
+    StreamRequest,
+    StreamScope,
+)
 from .state_stream_polling import PollingStateStreamProvider
 from .state_stream_process import StreamProcessScope
 
@@ -141,6 +146,15 @@ class OperatorSources:
                 process_scope=self._process_scope,
             )
         self.provider = provider
+        self._projections = state_services.read_projection_service(
+            snapshot=self.provider.refresh,
+            agent_runs=lambda source, host_id, source_id: self._summary_reader(
+                Path(source), host_id, source_id
+            ),
+            run_journal=lambda source, run_id, host_id, source_id: self._journal_reader(
+                Path(source), run_id, host_id, source_id
+            ),
+        )
 
     def close(self) -> None:
         """Cancel production polling process trees; injected providers remain caller-owned."""
@@ -196,8 +210,8 @@ class OperatorSources:
 
         sink = self._dispatch_sink_for_entry(self.cfg, hive.entry)
         try:
-            runtime_state = self._summary_reader(
-                sink,
+            runtime_state = self._projections.agent_runs(
+                str(sink),
                 self.host_id,
                 f"beadhive.dispatch-summary:{self.host_id}:{hive.identity}",
             )
@@ -220,7 +234,7 @@ class OperatorSources:
 
         request = StreamRequest(StreamScope.HIVE, hive=hive.identity)
         try:
-            bead_state = self.provider.refresh(request)
+            bead_state = self._projections.snapshot(request)
         except Exception as exc:
             raise OperatorSourceError(
                 "snapshot_source_unavailable",
@@ -287,8 +301,8 @@ class OperatorSources:
 
     def read_run(self, hive: ExactHive, path: Path, run_id: str) -> RunJournalFrame:
         try:
-            frame = self._journal_reader(
-                path,
+            frame = self._projections.run_journal(
+                str(path),
                 run_id,
                 self.host_id,
                 f"beadhive.run-journal:{self.host_id}:{hive.identity}:{run_id}",
