@@ -17,7 +17,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, jsonout, registry, wt_status
+from . import bd, jsonout, precious, registry, wt_status
 from .config_consumer_ports import work_settings as config
 from .identity import workspace_identity
 
@@ -875,6 +875,18 @@ def impl__classify_entry(
         entry, rows
     )
     dirty_by_path = {path: _wt_dirty(path) for _, path, _ in rows}
+    precious_globs = config.precious_globs(cfg, entry)
+    junk_globs = config.junk_globs(cfg, entry)
+    precious_min_bytes = config.precious_min_bytes(cfg, entry)
+    precious_by_path = {
+        path: precious.scan_precious(
+            path,
+            precious_globs=precious_globs,
+            junk_globs=junk_globs,
+            min_bytes=precious_min_bytes,
+        )
+        for _, path, _ in rows
+    }
 
     # Closures capture the full entry so bead_and_parent / is_merged / is_landed receive
     # the correct provider/org/repo context; the classify signature's `entry` param is ignored.
@@ -893,6 +905,7 @@ def impl__classify_entry(
         meta_branches=meta_branches,
         bead_statuses=bead_statuses,
         dirty_by_path=dirty_by_path,
+        precious_by_path=precious_by_path,
         is_merged_fn=_merged_fn,
         parent_fn=_parent_fn,
         integration=integration,

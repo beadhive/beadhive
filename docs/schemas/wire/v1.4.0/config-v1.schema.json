@@ -1410,6 +1410,14 @@
           "title": "Integration Branch",
           "type": "string"
         },
+        "junk_globs": {
+          "description": "Disposable paths excluded before stat/walk (per-hive replaces global).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Junk Globs",
+          "type": "array"
+        },
         "landing": {
           "default": "local",
           "description": "How merge/finish land on the shared integration branch: local (--no-ff merge) | pr (push + `gh pr create`; gh:pr gate + `bh work land` complete the close).",
@@ -1430,6 +1438,21 @@
           "default": 10,
           "description": "submit rejects a branch with more commits than this over the base.",
           "title": "Max Commits",
+          "type": "integer"
+        },
+        "precious_globs": {
+          "description": "Local-only paths protected regardless of size (per-hive replaces global).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Precious Globs",
+          "type": "array"
+        },
+        "precious_min_bytes": {
+          "default": 1048576,
+          "description": "Review threshold in bytes for ignored/untracked paths outside the taxonomy.",
+          "minimum": 0,
+          "title": "Precious Min Bytes",
           "type": "integer"
         },
         "push_remote": {

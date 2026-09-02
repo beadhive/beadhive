@@ -70,6 +70,36 @@ SCHEMA_VERSION = 1
 # rather than hiding them in the legacy facade.
 CONFIG_SECTION_COMPATIBILITY_ALIASES = frozenset({"beads"})
 
+# Canonical worktree-safety taxonomy.  The scanner re-exports these names for compatibility,
+# while typed configuration and the generated schema own their defaults here.
+DEFAULT_PRECIOUS_GLOBS: tuple[str, ...] = (
+    ".env",
+    ".env.*",
+    "*.db",
+    "*.sqlite*",
+    "*.duckdb",
+    "dumps/**",
+    "data/**",
+    "*.dump",
+    "*.sql",
+    "downloads/**",
+    "outputs/**",
+    "*.pem",
+    "*.key",
+)
+DEFAULT_JUNK_GLOBS: tuple[str, ...] = (
+    "node_modules/**",
+    ".venv/**",
+    "__pycache__/**",
+    "*.pyc",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+    "dist/**",
+    "build/**",
+    ".mypy_cache/**",
+)
+DEFAULT_PRECIOUS_MIN_BYTES = 1024 * 1024
+
 
 class _Section(BaseModel):
     """Base for every nested config section: forbid unknown keys, same as the top level."""
@@ -554,6 +584,19 @@ class WorkConfig(_Section):
             "or U (file missing) and never G — measured, git 2.54 — so the gate refuses "
             "everything until that file is real."
         ),
+    )
+    precious_globs: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_PRECIOUS_GLOBS),
+        description="Local-only paths protected regardless of size (per-hive replaces global).",
+    )
+    junk_globs: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_JUNK_GLOBS),
+        description="Disposable paths excluded before stat/walk (per-hive replaces global).",
+    )
+    precious_min_bytes: int = Field(
+        DEFAULT_PRECIOUS_MIN_BYTES,
+        ge=0,
+        description="Review threshold in bytes for ignored/untracked paths outside the taxonomy.",
     )
     batch_max_size: int = Field(
         5, description="Max issues a planner-declared batch:<group> may hold as one unit."
@@ -1532,6 +1575,9 @@ __all__ = (
     "ClaudeConfig",
     "ConflictConfig",
     "CONFIG_SECTION_COMPATIBILITY_ALIASES",
+    "DEFAULT_JUNK_GLOBS",
+    "DEFAULT_PRECIOUS_GLOBS",
+    "DEFAULT_PRECIOUS_MIN_BYTES",
     "DevIdentity",
     "DimensionConfig",
     "DispatchConfig",
