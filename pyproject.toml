@@ -59,6 +59,7 @@ otel = [
 [project.scripts]
 bh = "beadhive.cli:main"
 bh-mcp = "beadhive.mcp:main"
+bh-host-daemon = "beadhive.host_daemon:main"
 beadhive-gateway = "beadhive.remote_gateway_runtime:main"
 
 [build-system]
