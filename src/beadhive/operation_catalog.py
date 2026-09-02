@@ -929,6 +929,7 @@ def operations() -> tuple[OperationSpec, ...]:
             )
         )
     operation_names = {operation.name for operation in result}
+    operations_by_name = {operation.name: operation for operation in result}
     for composite, components in _MCP_COMPOSITES.items():
         if composite not in _MCP_TOOLS:
             raise ValueError(f"MCP composite {composite!r} is not an allowlisted tool")
@@ -936,6 +937,17 @@ def operations() -> tuple[OperationSpec, ...]:
         if missing:
             raise ValueError(
                 f"MCP composite {composite!r} references unknown operations: {sorted(missing)}"
+            )
+        unsafe = []
+        for component in components:
+            operation = operations_by_name[component]
+            if operation.privilege == "privileged" or any(
+                operation.constraints[key] for key in ("hq_write", "secret_material", "interactive")
+            ):
+                unsafe.append(component)
+        if unsafe:
+            raise ValueError(
+                f"MCP composite {composite!r} bypasses component policy: {sorted(unsafe)}"
             )
     return tuple(result)
 
