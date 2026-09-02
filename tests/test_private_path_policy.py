@@ -408,6 +408,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hub.py", "_retire_legacy_hub", ".beads")
     | _owned("hub.py", "_adopt_cache_identity", ".beads")
     | _owned("hub.py", "_sync_hive", ".beads")
+    | _owned("hub.py", "local_checkout_source", ".beads")
     | _owned("hub.py", "sync", ".beads")
     | _owned("hub.py", "bounded_bd", ".beads")
     | _owned("localloop.py", "_default_instructions", ".beads")

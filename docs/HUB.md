@@ -65,6 +65,12 @@ Builds/refreshes the hub from `managed_repos`. For each hive:
   `bd bootstrap` (pulls `refs/dolt/data`) → just the beads data (~tens of MB/hive).
 - then `bd repo sync` hydrates the unified view.
 
+The source decision is also the cache-reclaim proof: once the registered local checkout contains
+`.beads/`, `bh sync` no longer reads that hive's minimal clone. `bh backup reclaim --root cache
+--dry-run` reports those caches as `SUPERSEDED` and separately reports `RETAINED` caches that are
+still the only local bead store; `--confirm` removes only the former. Unregistered, ambiguous, or
+symlinked cache paths remain `STALE` and are never removed.
+
 URLs for uncloned hives come from the git-workspace lock (exact; `gitworkspace.repo_urls`) or
 are derived for github/gitlab (`git@<host>:<org>/<repo>.git`); a hive with neither is skipped
 with a warning. Output summarizes `N cloned, M remote-cached, K skipped`.
