@@ -67,7 +67,13 @@ async def _list_resource_templates(server):
 
 def _bead(bead_id, *, labels=None, issue_type=None):
     """Minimal bead dict for schedule_payload() inputs."""
-    b = {"id": bead_id, "labels": list(labels or []), "dependencies": [], "status": "open"}
+    b = {
+        "id": bead_id,
+        "parent": FAKE_EPIC,
+        "labels": list(labels or []),
+        "dependencies": [],
+        "status": "open",
+    }
     if issue_type:
         b["issue_type"] = issue_type
     return b
@@ -169,6 +175,18 @@ def test_schedule_payload_excludes_closed_beads(monkeypatch):
     ]
     assert "mr-2" not in all_ids
     assert "mr-1" in all_ids
+
+
+def test_schedule_payload_excludes_a_detached_dotted_prefix_match(monkeypatch):
+    attached = _bead("mr-epic.1")
+    detached = {**_bead("mr-epic.2"), "parent": "mr-other"}
+    _patch_schedule_deps(monkeypatch, [detached, attached])
+
+    result = work_mod.schedule_payload(FAKE_EPIC, {}, FAKE_ENTRY, FAKE_MAIN)
+
+    scheduled = [row["id"] for row in result["singletons"]]
+    scheduled += [bead for group in result["groups"] for bead in group["ids"]]
+    assert scheduled == ["mr-epic.1"]
 
 
 # ---- release start-gating (bh-k2j8.6) ----------------------------------------
