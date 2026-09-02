@@ -27,6 +27,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .daemon_config import HostDaemonConfig
+from .daemon_contract import WIRE_SCHEMA_VERSION
 
 _SECURE_SCHEMES = frozenset({"https", "wss"})
 _ALLOWED_PREFLIGHT_METHODS = frozenset({"GET", "POST", "DELETE"})
@@ -544,11 +545,14 @@ def _error_headers(error: NetworkRejected) -> dict[str, str]:
 def _error_response(error: NetworkRejected) -> JSONResponse:
     return JSONResponse(
         {
+            "schemaVersion": WIRE_SCHEMA_VERSION,
             "error": {
                 "code": error.code.value,
                 "message": error.message,
                 "retryable": error.retryable,
-            }
+                "action": "retry" if error.retryable else None,
+                "requestId": None,
+            },
         },
         status_code=error.status_code,
         headers=_error_headers(error),

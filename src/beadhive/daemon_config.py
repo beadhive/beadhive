@@ -156,6 +156,9 @@ class DaemonSseConfig(_DaemonSection):
 class DaemonActivityConfig(_DaemonSection):
     max_body_bytes: int = Field(262_144, ge=1_024, le=16 * 1_048_576)
     max_records_per_read: int = Field(1_000, ge=1, le=100_000)
+    max_inventory_roots: int = Field(256, ge=1, le=100_000)
+    max_inventory_entries: int = Field(10_000, ge=1, le=1_000_000)
+    max_inventory_bytes: int = Field(64 * 1_048_576, ge=1_024, le=4 * 1_073_741_824)
     idempotency_retention_seconds: float = Field(604_800.0, gt=0, le=31_536_000)
 
 
@@ -191,6 +194,15 @@ class DaemonShutdownConfig(_DaemonSection):
 class DaemonStatusConfig(_DaemonSection):
     dependency_probe_timeout_seconds: float = Field(2.0, gt=0, le=30)
     dependency_probe_interval_seconds: float = Field(10.0, gt=0, le=300)
+    run_journal_stale_after_seconds: float = Field(
+        900.0,
+        gt=0,
+        le=604_800,
+        description=(
+            "Maximum age of the newest observed run journal before factory coverage and the "
+            "run-journals dependency become explicitly stale."
+        ),
+    )
 
 
 class HostDaemonConfig(_DaemonSection):

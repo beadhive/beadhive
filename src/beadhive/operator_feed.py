@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass, field
+from collections import OrderedDict
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from . import operator_contract
@@ -75,12 +78,16 @@ class _ActivityState:
     records: tuple[Mapping[str, Any], ...] = ()
     journal: RunJournalFrame | None = None
     initialized: bool = False
+    retained_bytes: int = 0
+    users: int = 0
 
 
 InstallObserver = Callable[[FeedInstall], None]
 ActivityObserver = Callable[[ActivityInstall], None]
 TransitionHandler = Callable[[FeedTransition], int]
 PulseHandler = Callable[[FeedPulse], int]
+DEFAULT_MAX_CACHED_ACTIVITY_RUNS = 64
+DEFAULT_MAX_CACHED_ACTIVITY_BYTES = 16 * 1_048_576
 
 
 class OperatorFeed:
@@ -89,6 +96,9 @@ class OperatorFeed:
     ``bh-76a7z.9`` extends this object by registering an install observer and maintaining
     replay/subscriber state from those transitions.  A REST handler never reads a provider and
     then obtains a cursor separately: :meth:`snapshot_with_cursor` is the sole boundary.
+
+    Run activity state is a bounded LRU. Eviction discards its producer epoch, so any old cursor
+    deterministically receives the existing explicit expiry response after source rehydration.
     """
 
     def __init__(
@@ -96,12 +106,19 @@ class OperatorFeed:
         sources: OperatorSources,
         *,
         now_millis: Callable[[], int] | None = None,
+        max_cached_activity_runs: int = DEFAULT_MAX_CACHED_ACTIVITY_RUNS,
+        max_cached_activity_bytes: int = DEFAULT_MAX_CACHED_ACTIVITY_BYTES,
     ) -> None:
+        if min(max_cached_activity_runs, max_cached_activity_bytes) < 1:
+            raise ValueError("activity cache bounds must be positive")
         self.sources = sources
         self._now_millis = now_millis or (lambda: time.time_ns() // 1_000_000)
         self._states_lock = threading.Lock()
         self._hives: dict[str, _HiveState] = {}
-        self._activities: dict[tuple[str, str], _ActivityState] = {}
+        self.max_cached_activity_runs = max_cached_activity_runs
+        self.max_cached_activity_bytes = max_cached_activity_bytes
+        self._cached_activity_bytes = 0
+        self._activities: OrderedDict[tuple[str, str], _ActivityState] = OrderedDict()
         self._observers_lock = threading.Lock()
         self._install_observers: list[InstallObserver] = []
         self._activity_observers: list[ActivityObserver] = []
@@ -111,9 +128,69 @@ class OperatorFeed:
         with self._states_lock:
             return self._hives.setdefault(hive_id, _HiveState())
 
-    def _activity_state(self, hive_id: str, run_id: str) -> _ActivityState:
+    def _evict_activity_states_locked(self, *, reserve_entries: int = 0) -> None:
+        while (
+            len(self._activities) + reserve_entries > self.max_cached_activity_runs
+            or self._cached_activity_bytes > self.max_cached_activity_bytes
+        ):
+            candidate = next(
+                ((key, state) for key, state in self._activities.items() if state.users == 0),
+                None,
+            )
+            if candidate is None:
+                return
+            key, state = candidate
+            del self._activities[key]
+            self._cached_activity_bytes -= state.retained_bytes
+
+    @contextmanager
+    def _locked_activity_state(self, hive_id: str, run_id: str) -> Iterator[_ActivityState]:
+        key = (hive_id, run_id)
         with self._states_lock:
-            return self._activities.setdefault((hive_id, run_id), _ActivityState())
+            state = self._activities.get(key)
+            if state is None:
+                self._evict_activity_states_locked(reserve_entries=1)
+                if len(self._activities) >= self.max_cached_activity_runs:
+                    raise OperatorSourceError(
+                        "activity_cache_saturated",
+                        "The bounded activity cache is busy; retry the exact run read.",
+                        status_code=503,
+                        retryable=True,
+                    )
+                state = _ActivityState()
+                self._activities[key] = state
+            else:
+                self._activities.move_to_end(key)
+            state.users += 1
+        state.lock.acquire()
+        try:
+            yield state
+        finally:
+            state.lock.release()
+            with self._states_lock:
+                state.users -= 1
+                if self._activities.get(key) is state:
+                    self._evict_activity_states_locked()
+
+    def _set_activity_retained_bytes(
+        self,
+        key: tuple[str, str],
+        state: _ActivityState,
+        records: tuple[Mapping[str, Any], ...],
+    ) -> None:
+        retained_bytes = 256 + sum(
+            len(json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            for record in records
+        )
+        with self._states_lock:
+            if self._activities.get(key) is state:
+                self._cached_activity_bytes += retained_bytes - state.retained_bytes
+            state.retained_bytes = retained_bytes
+
+    @property
+    def cached_activity_bytes(self) -> int:
+        with self._states_lock:
+            return self._cached_activity_bytes
 
     def register_install_observer(self, observer: InstallObserver) -> Callable[[], None]:
         """Observe installed transitions under the same lock used by snapshot reads."""
@@ -302,10 +379,10 @@ class OperatorFeed:
         *,
         after: tuple[str, int] | None = None,
     ) -> dict[str, object]:
-        hive, path = self.sources.locate_run(run_id)
-        state = self._activity_state(hive.identity, run_id)
-        with state.lock:
-            journal = self.sources.read_run(hive, path, run_id)
+        hive, source = self.sources.locate_run(run_id)
+        key = (hive.identity, run_id)
+        with self._locked_activity_state(hive.identity, run_id) as state:
+            journal = self.sources.read_run(hive, source, run_id)
             records = tuple(dict(record) for record in journal.records)
             changed = not state.initialized or records != state.records
             previous_records = state.records
@@ -313,8 +390,9 @@ class OperatorFeed:
                 state.producer_epoch = uuid.uuid4().hex
             if changed:
                 state.records = records
-                state.journal = journal
+                state.journal = replace(journal, records=records)
                 state.initialized = True
+                self._set_activity_retained_bytes(key, state, records)
                 self._notify_activity(
                     ActivityInstall(
                         run_id=run_id,
@@ -327,7 +405,7 @@ class OperatorFeed:
                 )
             else:
                 # Coverage/freshness may change without changing the append-only records.
-                state.journal = journal
+                state.journal = replace(journal, records=records)
 
             if after is None:
                 kind = "snapshot"
@@ -359,5 +437,5 @@ class OperatorFeed:
     def resolve_run(self, run_id: str) -> tuple[ExactHive, str]:
         """Expose exact run ownership without leaking its host-local path."""
 
-        hive, _path = self.sources.locate_run(run_id)
+        hive, _source = self.sources.locate_run(run_id)
         return hive, run_id
