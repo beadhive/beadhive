@@ -15,6 +15,13 @@ from typer.main import get_command
 from typer.testing import CliRunner
 
 from beadhive import cli, plan, work
+from beadhive.adapters.cli.declarations import (
+    PROJECTION_EXCLUSIONS,
+    TRANSPORT_MECHANICS,
+    command_declarations,
+    parent_declarations,
+)
+from beadhive.adapters.cli.tree import project_cli_tree
 from beadhive.cli_projection import (
     HAND_AUTHORED_CLI_GROUPS,
     MIGRATED_CLI_GROUPS,
@@ -64,9 +71,34 @@ def _handlers(group: str) -> dict[str, object]:
 
 def test_migration_inventory_names_every_catalog_group() -> None:
     validate_migration_inventory()
-    assert MIGRATED_CLI_GROUPS == ("plan", "work")
+    assert set(MIGRATED_CLI_GROUPS) == set(catalog_cli_groups())
+    assert HAND_AUTHORED_CLI_GROUPS == ()
     assert set(MIGRATED_CLI_GROUPS).isdisjoint(HAND_AUTHORED_CLI_GROUPS)
     assert set(MIGRATED_CLI_GROUPS) | set(HAND_AUTHORED_CLI_GROUPS) == set(catalog_cli_groups())
+
+
+def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
+    declarations = command_declarations()
+    parents = parent_declarations()
+    assert len(declarations) == 208
+    assert len(parents) == 36
+    assert cli.CLI_PROJECTION.paths == tuple(row.path for row in declarations)
+    assert cli.CLI_PROJECTION.operations == tuple(row.operation for row in declarations)
+    assert cli.CLI_PROJECTION.parents == tuple(row.path for row in parents)
+    assert cli.CLI_PROJECTION.transport_mechanics == ("<root>", "hive sync")
+    assert tuple(row.path for row in TRANSPORT_MECHANICS) == ("<root>", "hive sync")
+    assert PROJECTION_EXCLUSIONS == {}
+    assert cli.CLI_PROJECTION.exclusions == ()
+    assert cli.CLI_PROJECTION.unavailable_optional_plugins == ()
+
+    before = _click_inventory(cli.app)
+    before_infos = tuple(cli.app.registered_commands)
+    before_callbacks = tuple(info.callback for info in before_infos)
+    repeated = project_cli_tree(cli.app)
+    assert repeated == cli.CLI_PROJECTION
+    assert _click_inventory(cli.app) == before
+    assert tuple(cli.app.registered_commands) != before_infos
+    assert tuple(info.callback for info in cli.app.registered_commands) == before_callbacks
 
 
 def test_work_and_plan_are_complete_deterministic_regenerations() -> None:

@@ -20,6 +20,9 @@ from typer.testing import CliRunner
 
 from beadhive import cli as cli_module
 from beadhive import config, orca, plugins
+from beadhive.adapters.cli.declarations import command_declarations
+from beadhive.adapters.cli.tree import project_cli_tree
+from beadhive.cli_projection import CatalogProjectionError
 from beadhive.kernel.lifecycle import EVENTS_BY_ID, DeliveryStatus
 from beadhive.plugin_runtime_catalog import PLUGIN_RUNTIME_CATALOG, PLUGIN_RUNTIME_MODULES
 
@@ -297,6 +300,19 @@ def test_canonical_disablement_removes_optional_cli_commands_but_not_required_de
         scoped.setattr(config, "load", lambda: cfg)
         scoped.setattr(orca, "sync_repos", lambda *args, **kwargs: calls.append((args, kwargs)))
         disabled_cli = importlib.reload(cli_module)
+        disabled_plugin_ids = frozenset(("herdr", "hitch", "observaloop", "orca", "repowise"))
+        unavailable_prefixes = tuple(f"plugin {plugin_id} " for plugin_id in disabled_plugin_ids)
+        unavailable_paths = {
+            row.path for row in command_declarations() if row.path.startswith(unavailable_prefixes)
+        }
+        assert len(unavailable_paths) == 25
+        assert disabled_cli.CLI_PROJECTION.unavailable_optional_plugins == tuple(
+            sorted(disabled_plugin_ids)
+        )
+        assert unavailable_paths.isdisjoint(disabled_cli.CLI_PROJECTION.paths)
+        assert "plugin git-workspace groups" in disabled_cli.CLI_PROJECTION.paths
+        with pytest.raises(CatalogProjectionError, match="CLI handler inventory drift"):
+            project_cli_tree(disabled_cli.app)
         result = CliRunner().invoke(
             disabled_cli.app,
             ["plugin", "orca", "sync", "--dry-run"],
