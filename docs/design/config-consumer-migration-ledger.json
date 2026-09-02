@@ -1253,7 +1253,7 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 297,
+        "line": 300,
         "path": "tests/test_plugins.py",
         "target": "beadhive.config.load"
       },

@@ -43,13 +43,14 @@ from . import (
     work,
 )
 from . import bd as bd_mod
+from .adapters.cli.tree import project_cli_tree as _project_cli_tree
 from .modules.config import contracts as config_schema
+from .plugin_runtime_catalog import PLUGIN_RUNTIME_CATALOG
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
 
-# Help panels — the 6-panel scheme reflecting the plane model (see
-# docs/design/cli-mcp-naming-conventions-adr.md §5a), ordered by lifecycle.
+# Help panels — the plane model's 6-panel lifecycle ordering (naming-conventions ADR §5a).
 PLANNING_PANEL = "Planning plane"
 INTEGRATION_PANEL = "Integration plane"
 HIVE_PANEL = "Hive"
@@ -142,8 +143,23 @@ def _plugin_config_snapshot() -> dict:
 # Mount each selected plugin's own Typer sub-app: `bh plugin <name> …` (e.g.
 # `bh plugin orca sync`).  The outer adapter snapshots canonical policy once; static registry
 # inventory alone cannot make a disabled command executable.
-for _mount in plugins.cli_mounts(_plugin_config_snapshot(), None):
+_PLUGIN_CONFIG = _plugin_config_snapshot()
+_PLUGIN_MOUNTS = plugins.cli_mounts(_PLUGIN_CONFIG, None)
+for _mount in _PLUGIN_MOUNTS:
     plugin_app.add_typer(_mount.app, name=_mount.plugin_id)
+
+
+def _canonically_disabled_optional_plugins(cfg: dict) -> frozenset[str]:
+    """Return optional plugin ids explicitly disabled by canonical kernel policy."""
+
+    kernel = cfg.get("plugin_kernel", {})
+    enabled = kernel.get("enabled", {}) if isinstance(kernel, dict) else {}
+    return frozenset(
+        entry.plugin_id
+        for entry in PLUGIN_RUNTIME_CATALOG
+        if isinstance(enabled, dict) and enabled.get(entry.plugin_id) is False
+    )
+
 
 # git-workspace is a required dep (deps.py, required=ALWAYS), not an optional plugin — it has
 # no `enabled` flag to loop over, so it is not in plugins.registry() (bh-hsus.4). It is however
@@ -4126,6 +4142,15 @@ def backup_reclaim_cmd(
                 typer.echo(f"    {path}")
             if preview:
                 typer.echo("    (pass --confirm to remove them)")
+
+
+# Catalog declarations now own the assembled command/group identities.  The application modules
+# above supplied handlers and CLI presentation metadata; this composition step rebinds the
+# provisional Typer registrations in place so historical app identities remain compatible.
+CLI_PROJECTION = _project_cli_tree(
+    app,
+    unavailable_optional_plugins=_canonically_disabled_optional_plugins(_PLUGIN_CONFIG),
+)
 
 
 def _exception_group_leaves(exc: BaseException) -> list[BaseException]:
