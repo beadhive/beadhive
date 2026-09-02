@@ -115,8 +115,11 @@ managed_repos:
 ```
 
 `mise trust` as a per-worktree rule is the fix for the mise trust-hash collision across
-worktrees — each worktree is trusted explicitly on creation. Re-run the rules on an existing
-worktree with `bh wt init <path>`.
+worktrees — each worktree is trusted explicitly on creation. A successful seat-init pass records
+the ordered effective rule set in Git's worktree-local config. If `claim` re-attaches a checkout
+after that rule set changes (or a legacy checkout has no stamp while rules are configured), it
+warns without modifying the checkout and prints the remediation. Re-run and restamp the current
+rules explicitly with `bh wt init <path>`.
 
 ### Declared toolchains (`toolchain:`) — knowledge-only
 
