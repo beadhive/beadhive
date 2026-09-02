@@ -139,7 +139,7 @@ def _review_molecule_intent(cfg, entry, epic, main):
     work._print_brief(cfg, entry, epic, bd.show(epic, main))
     # --all so landed (closed) children show too — the reviewer judges the molecule against every
     # child's acceptance, not just the ones still in flight.
-    children = bd.json(["list", "--parent", epic, "--all"], main)
+    children = bd.children(epic, main, ["--all"])
     if not isinstance(children, list):
         typer.echo("\n⚠ could not list molecule children", err=True)
         return

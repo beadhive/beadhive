@@ -39,7 +39,9 @@ from beadhive import (
     validation_ledger,
     validation_records,
     work,
+    work_group,
     work_logic,
+    work_show,
     worktree,
 )
 from beadhive.run import run as real_run
@@ -4606,6 +4608,21 @@ def test_claim_collapse_synthesizes_batch_label_on_unbatched_children(hive, fake
     assert not _wt_of(hive, "mr-1.1").exists()  # collapsed: no per-bead worktrees
 
 
+def test_ready_children_excludes_a_detached_dotted_prefix_match(monkeypatch, tmp_path):
+    """Collapsed batches are built only from parent-edge members, not bd's wider id-prefix rows."""
+    rows = [
+        {"id": "mr-1.1", "parent": "mr-1", "status": "open"},
+        {"id": "mr-1.2", "parent": "mr-other", "status": "open"},
+    ]
+    monkeypatch.setattr(
+        bd_mod,
+        "_run",
+        lambda *_args, **_kwargs: _CP(0, json.dumps(rows), ""),
+    )
+
+    assert work_group.ready_children("mr-1", tmp_path) == ["mr-1.1"]
+
+
 def test_claim_collapse_lands_commits_on_batch_worktree_not_coordinator_seat(hive, fakebd):
     """Regression: with the coordinator SEAT worktree already provisioned on
     wt/bead/epic/<epic>, a collapsed claim must give the group its OWN wt/batch/<epic> worktree in
@@ -5059,6 +5076,43 @@ def test_review_molecule_aggregates_intent_and_change(hive, fakebd, capsys):
     assert "accept one" in out and "accept two" in out
     assert "## Change (wt/bead/epic/mr-1 vs main)" in out
     assert "change.txt" in out  # the child merges show up in the stat view
+
+
+def test_review_molecule_intent_excludes_a_detached_dotted_prefix_match(
+    monkeypatch, tmp_path, capsys
+):
+    rows = [
+        {
+            "id": "mr-1.1",
+            "parent": "mr-1",
+            "status": "open",
+            "issue_type": "task",
+            "title": "attached",
+            "acceptance_criteria": "keep me",
+        },
+        {
+            "id": "mr-1.2",
+            "parent": "mr-other",
+            "status": "open",
+            "issue_type": "task",
+            "title": "detached",
+            "acceptance_criteria": "do not review me",
+        },
+    ]
+    monkeypatch.setattr(
+        bd_mod,
+        "_run",
+        lambda *_args, **_kwargs: _CP(0, json.dumps(rows), ""),
+    )
+    monkeypatch.setattr(bd_mod, "show", lambda *_args: {"id": "mr-1", "title": "epic"})
+    monkeypatch.setattr(work, "_print_brief", lambda *_args: None)
+
+    work_show._review_molecule_intent({}, {}, "mr-1", tmp_path)
+
+    out = capsys.readouterr().out
+    assert "## Molecule children (1)" in out
+    assert "keep me" in out
+    assert "do not review me" not in out
 
 
 def test_review_bead_mode_shows_brief_and_change(hive, fakebd, capsys):

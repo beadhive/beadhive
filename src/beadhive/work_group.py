@@ -234,7 +234,7 @@ def ready_children(epic, main) -> list[str]:
     runnable-empty collapse rather than crashing."""
     from . import bd  # lazy: avoids a circular import at module level
 
-    kids = bd.json(["list", "--parent", epic], main)
+    kids = bd.children(epic, main)
     if not isinstance(kids, list):
         return []
     return [str(k["id"]) for k in kids if k.get("id") and str(k.get("status", "")) != "closed"]
