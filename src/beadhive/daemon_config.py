@@ -35,7 +35,16 @@ class DaemonAuthConfig(_DaemonSection):
             "Absolute owner-readable file containing verifier records; required when enabled."
         ),
     )
-    session_revalidation_seconds: float = Field(30.0, gt=0, le=300)
+    session_revalidation_seconds: float = Field(
+        30.0,
+        gt=0,
+        le=300,
+        description=(
+            "Maximum seconds a long-lived MCP, SSE, or terminal session may remain open after "
+            "its last successful credential check. The daemon session registry closes a session "
+            "at its next deadline when expiry, rotation, or revocation is observed."
+        ),
+    )
     token_rate_limit_per_minute: int = Field(600, ge=1, le=1_000_000)
 
 

@@ -49,6 +49,7 @@ class WireModel(BaseModel):
 
 
 class AuthScope(StrEnum):
+    MCP_CONTROL = "mcp:control"
     OPERATOR_READ = "operator:read"
     ACTIVITY_PUBLISH = "activity:publish"
     TERMINAL_ATTACH = "terminal:attach"
