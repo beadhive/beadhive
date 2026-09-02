@@ -256,6 +256,26 @@ def run_init(cfg, entry, path: Path, verify_only: bool = False):
     return _worktree_verify.impl_run_init(cfg, entry, path, verify_only)
 
 
+def _init_rules_fingerprint(cfg, entry) -> str:
+    """Compatibility facade for ``worktree_verify.impl__init_rules_fingerprint``."""
+    return _worktree_verify.impl__init_rules_fingerprint(cfg, entry)
+
+
+def _read_init_rules_fingerprint(path: Path) -> str | None:
+    """Compatibility facade for ``worktree_verify.impl__read_init_rules_fingerprint``."""
+    return _worktree_verify.impl__read_init_rules_fingerprint(path)
+
+
+def record_init_rules(cfg, entry, path: Path) -> bool:
+    """Compatibility facade for ``worktree_verify.impl_record_init_rules``."""
+    return _worktree_verify.impl_record_init_rules(cfg, entry, path)
+
+
+def warn_init_rules_drift(cfg, entry, path: Path) -> bool:
+    """Compatibility facade for ``worktree_verify.impl_warn_init_rules_drift``."""
+    return _worktree_verify.impl_warn_init_rules_drift(cfg, entry, path)
+
+
 def provision_observaloop(cfg, entry, target: Path) -> None:
     """Best-effort per-hive observaloop profile provisioning + worktree overlay, run on a TRUE
     worktree create (after ``run_init``, from ``_do_add`` — the chokepoint that ``clean_checkout``
@@ -587,7 +607,8 @@ def _do_add(
     _notify_wt_create("wt_created", cfg, entry, main=main, branch=br, target=target)
     elapsed = time.monotonic() - started
     _record_wt_op_duration("create", elapsed, "ok", hive=hive, leaf=target.name)
-    run_init(cfg, entry, target)
+    if run_init(cfg, entry, target):
+        record_init_rules(cfg, entry, target)
     provision_observaloop(cfg, entry, target)
     _record_wt_event("create", hive=hive, leaf=target.name)
 
@@ -893,6 +914,7 @@ def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
     if target.exists():
         if bead:  # only a single-bead child branch tracks a refreshable container tip
             _repoint_if_stale(cfg, entry, main, br, target, base_bead or bead)
+        warn_init_rules_drift(cfg, entry, target)
         return entry, target, br
     new_branch = not _branch_exists(main, br)
     start_point = ""
@@ -1349,7 +1371,8 @@ def init_existing(path):
         typer.echo(f"✗ no such path: {p}", err=True)
         raise typer.Exit(1)
     entry = _entry_for_path(cfg, p)
-    run_init(cfg, entry, p)
+    if run_init(cfg, entry, p):
+        record_init_rules(cfg, entry, p)
     typer.echo(f"✓ re-ran init for {p}")
 
 

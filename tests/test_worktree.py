@@ -296,6 +296,89 @@ def test_run_init_never_runs_toolchain_template_rules(tmp_path):
     assert not (tmp_path / "tc.marker").exists()
 
 
+def test_init_rule_fingerprint_is_mapping_order_independent_but_rule_order_sensitive():
+    first = {
+        "worktrees": {
+            "init": [
+                {"run": "echo first", "if_exists": "one"},
+                {"run": "echo second"},
+            ]
+        }
+    }
+    same = {
+        "worktrees": {
+            "init": [
+                {"if_exists": "one", "run": "echo first"},
+                {"run": "echo second"},
+            ]
+        }
+    }
+    reversed_rules = {"worktrees": {"init": list(reversed(first["worktrees"]["init"]))}}
+
+    assert worktree._init_rules_fingerprint(first, {}) == worktree._init_rules_fingerprint(same, {})
+    assert worktree._init_rules_fingerprint(first, {}) != worktree._init_rules_fingerprint(
+        reversed_rules, {}
+    )
+
+
+def test_ensure_warns_on_init_rule_drift_without_running_or_disturbing_wip(
+    tmp_path, monkeypatch, capsys
+):
+    cfg, _entry, _repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"init": [{"run": "touch first.marker"}]}
+    _, target, branch = worktree.ensure(cfg, "mr", "ag-epic.3")
+    (target / "wip.txt").write_text("in progress")
+    capsys.readouterr()
+
+    cfg["worktrees"]["init"] = [{"run": "touch changed.marker"}]
+    _, reused, reused_branch = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert reused == target and reused_branch == branch
+    assert (target / "wip.txt").read_text() == "in progress"
+    assert not (target / "changed.marker").exists(), "reuse only detects; it never runs rules"
+    err = capsys.readouterr().err
+    assert "worktree init rules changed" in err
+    assert f'bh wt init "{target}"' in err
+
+
+def test_explicit_init_refreshes_drift_stamp_and_failed_init_does_not(
+    tmp_path, monkeypatch, capsys
+):
+    cfg, _entry, _repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"init": [{"run": "touch first.marker"}]}
+    _, target, _branch = worktree.ensure(cfg, "mr", "ag-epic.3")
+    monkeypatch.setattr(config, "load", lambda: cfg)
+
+    cfg["worktrees"]["init"] = [{"run": "touch refreshed.marker"}]
+    worktree.init_existing(target)
+    assert (target / "refreshed.marker").exists()
+    capsys.readouterr()
+    worktree.ensure(cfg, "mr", "ag-epic.3")
+    assert "worktree init rules changed" not in capsys.readouterr().err
+
+    cfg["worktrees"]["init"] = [{"run": "false"}]
+    worktree.init_existing(target)
+    capsys.readouterr()
+    worktree.ensure(cfg, "mr", "ag-epic.3")
+    assert "worktree init rules changed" in capsys.readouterr().err
+
+
+def test_legacy_unstamped_worktree_warns_only_when_rules_are_configured(
+    tmp_path, monkeypatch, capsys
+):
+    cfg, _entry, _repo = _ensure_hive(tmp_path, monkeypatch)
+    _, target, _branch = worktree.ensure(cfg, "mr", "ag-epic.3")
+    _git("config", "--worktree", "--unset-all", "beadhive.initRulesFingerprint", cwd=target)
+
+    worktree.ensure(cfg, "mr", "ag-epic.3")
+    assert "worktree init rules changed" not in capsys.readouterr().err
+
+    cfg["worktrees"] = {"init": [{"run": "touch required.marker"}]}
+    worktree.ensure(cfg, "mr", "ag-epic.3")
+    assert "worktree init rules changed" in capsys.readouterr().err
+    assert not (target / "required.marker").exists()
+
+
 # ---- integration_base climb -------------------------------------------------
 
 

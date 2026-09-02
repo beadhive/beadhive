@@ -647,6 +647,30 @@ def test_claim_twice_reattaches(hive, fakebd):
     assert _wt(hive, "mr-1").exists()
 
 
+def test_claim_reattach_reports_init_rule_drift_without_running_new_rule(hive, fakebd, capsys):
+    fakebd.seed("mr-1", title="t")
+    work.claim(bead="mr-1", as_="", hive="myrepo")
+    wt = _wt(hive, "mr-1")
+    (wt / "wip.txt").write_text("in progress")
+    hive.cfg_path.write_text(
+        CONFIG_YAML
+        + """\
+worktrees:
+  init:
+    - {run: "touch changed.marker"}
+"""
+    )
+    capsys.readouterr()
+
+    work.claim(bead="mr-1", as_="", hive="myrepo")
+
+    assert (wt / "wip.txt").read_text() == "in progress"
+    assert not (wt / "changed.marker").exists()
+    err = capsys.readouterr().err
+    assert "worktree init rules changed" in err
+    assert f'bh wt init "{wt}"' in err
+
+
 def test_structured_claim_result_is_silent_and_distinguishes_reattach(hive, fakebd, capsys):
     """The composite-facing core returns the full envelope without the CLI brief/renderer."""
     fakebd.seed("mr-1", title="t")
