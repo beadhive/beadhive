@@ -3,11 +3,11 @@ format_version = 1
 verified_commit = "4eb5bfeaab2f3bf9e11647baf07847c74640dc4d"
 
 [cycle_snapshot]
-sha256 = "72a3b260f22b1694e06d9ef36f63f8ffc046d05d5f06b464d30480e377117d82"
-components = 6
-modules = 85
-edges = 278
-symbols = 308
+sha256 = "373789df1b83343293959dda1645bc4d6bd3e0baf48268eb3089b55598703e7e"
+components = 5
+modules = 83
+edges = 276
+symbols = 306
 
 [[cycle_exception]]
 id = "cycle-edge-001"
@@ -198,20 +198,20 @@ expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migratio
 
 [[cycle_exception]]
 id = "cycle-edge-012"
-status = "active"
+status = "removed"
 importer = "beadhive.plan_repair"
 importer_path = "src/beadhive/plan_repair.py"
 imported_module = "beadhive.plan"
 symbols = ["beadhive.plan"]
 target_owner_package = "src/beadhive (legacy flat package)"
-successor = "bh-inqwc"
-reason = "Exact feedback edge required by the frozen pre-module import graph."
+successor = "bh-bptze.5"
+reason = "Removed when planning repair moved behind the typed planning application boundary."
 consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
 executable_test = "tests/test_import_boundaries.py"
 test_closure = "just architecture-check; just check"
 introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
-last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
-expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+last_verified_commit = "5f0abfde3196381523faf216eb455607670bb43f"
+expiry_trigger = "Completed by bh-bptze.5; keep the compatibility facade one-way."
 
 [[cycle_exception]]
 id = "cycle-edge-013"

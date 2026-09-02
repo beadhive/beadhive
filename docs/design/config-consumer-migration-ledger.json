@@ -1909,7 +1909,7 @@
         "target": "beadhive.config.load"
       }
     ],
-    "production_config_importer_count": 75,
+    "production_config_importer_count": 74,
     "production_config_importers": [
       "src/beadhive/agent_run_summary_reader.py",
       "src/beadhive/alerts.py",
@@ -1964,7 +1964,6 @@
       "src/beadhive/operator_sources.py",
       "src/beadhive/operator_work_items.py",
       "src/beadhive/plan.py",
-      "src/beadhive/plan_repair.py",
       "src/beadhive/prepush.py",
       "src/beadhive/publish_export.py",
       "src/beadhive/registry.py",
@@ -2253,11 +2252,6 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/plan.py",
-        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
-      },
-      {
-        "owner": "bh-18hud.5 compatibility migration ledger",
-        "path": "src/beadhive/plan_repair.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {
