@@ -64,6 +64,7 @@ from . import (
     work_next,  # noqa: F401 - injected lifecycle collaborator
     work_reads,
     work_refine,
+    work_services,
     work_show,
     work_submission,
     worktree,
@@ -71,6 +72,7 @@ from . import (
 from . import log as dispatch_log
 from . import schedule as schedule_mod  # noqa: F401 - injected lifecycle collaborator
 from .config_consumer_ports import work_settings as config
+from .modules import work as work_capability
 from .run import missing_binary, run  # noqa: F401 - injected submission collaborator
 from .work_logic import (
     _MARKER,  # noqa: F401 - injected refine collaborator
@@ -429,7 +431,21 @@ def assign(
     `--preview` (read-only): print the worktree provisioning + `--to` identity this call would
     stamp, without touching `bd` or git — the machine-readable pre-flight for an external
     orchestrator (`--json` for the schema)."""
-    return work_assignment.impl_assign(sys.modules[__name__], bead, to, as_, hive, preview, as_json)
+    return (
+        work_services.work_lifecycle_service(
+            assign=lambda item: work_assignment.impl_assign(
+                sys.modules[__name__],
+                item.bead,
+                item.assignee,
+                item.actor,
+                item.hive,
+                item.preview,
+                as_json,
+            )
+        )
+        .assign(work_capability.AssignmentRequest(bead, to, as_, hive, preview))
+        .value
+    )
 
 
 def _claim_fence(cfg, hive) -> tuple[str, int]:
@@ -481,8 +497,21 @@ def claim(
     `--preview` (read-only, single bead only): print the worktree provisioning + identity this
     call would stamp, without touching `bd` or git — the machine-readable pre-flight for an
     external orchestrator (`--json` for the schema)."""
-    return work_assignment.impl_claim(
-        sys.modules[__name__], bead, as_, group, collapse, hive, preview, as_json
+    return (
+        work_services.work_lifecycle_service(
+            claim=lambda item: work_assignment.impl_claim(
+                sys.modules[__name__],
+                item.bead,
+                item.actor,
+                item.group,
+                item.collapse,
+                item.hive,
+                item.preview,
+                as_json,
+            )
+        )
+        .claim(work_capability.ClaimRequest(bead, as_, group, collapse, hive, preview))
+        .value
     )
 
 
@@ -800,7 +829,15 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     A green run against a CLEAN tree also seeds the verdict ledger `submit` reuses from
     (bh-i0p1.4), so the ordinary check-then-submit sequence pays for validation once, not
     twice — see `_record_check_verdict`."""
-    return work_submission.impl_check(sys.modules[__name__], bead, hive)
+    return (
+        work_services.work_lifecycle_service(
+            check=lambda item: work_submission.impl_check(
+                sys.modules[__name__], item.bead, item.hive
+            )
+        )
+        .check(work_capability.CheckRequest(bead, hive))
+        .value
+    )
 
 
 def artifacts_uploaded(
@@ -914,7 +951,15 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     raises ``ValueError`` when ``epic`` is not found in this hive so callers can map the
     error to the appropriate surface (``typer.Exit`` or MCP ``ResourceError``).
     """
-    return work_dispatch.impl_schedule_payload(sys.modules[__name__], epic, cfg, entry, main)
+    return (
+        work_services.work_lifecycle_service(
+            schedule=lambda item: work_dispatch.impl_schedule_payload(
+                sys.modules[__name__], item.epic, cfg, entry, main
+            )
+        )
+        .schedule(work_capability.ScheduleRequest(epic))
+        .plan
+    )
 
 
 def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
@@ -936,7 +981,16 @@ def schedule(
     (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
     wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
     `bh work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
-    return work_dispatch.impl_schedule(sys.modules[__name__], epic, hive, as_json)
+    return (
+        work_services.work_lifecycle_service(
+            schedule=lambda item: work_dispatch.impl_schedule(
+                sys.modules[__name__], item.epic, item.hive, as_json
+            )
+        )
+        .schedule(work_capability.ScheduleRequest(epic, hive))
+        .plan
+        or None
+    )
 
 
 def _guard_fork_remote(entry, remote) -> None:
@@ -954,7 +1008,15 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     With `--group <ids>`, submits a whole work-group from the shared `wt/batch/<group>` worktree:
     validate it once and open exactly ONE review gate whose reason names every member, so a single
     `approve` on any member clears it before `merge --group`."""
-    return work_submission.impl_submit(sys.modules[__name__], bead, as_, hive, group)
+    return (
+        work_services.work_lifecycle_service(
+            submit=lambda item: work_submission.impl_submit(
+                sys.modules[__name__], item.bead, item.actor, item.hive, item.group
+            )
+        )
+        .submit(work_capability.SubmissionRequest(bead, as_, hive, group))
+        .value
+    )
 
 
 def _record_submit_commits(bead, main, entry, branch, base) -> None:
@@ -1078,7 +1140,15 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     Release (bh-k2j8): an open `release-hold:` gate is the releaser's to clear — resolved here when
     run as a releaser (`--as releaser/<name>`) and refused for any other seat, so a release:breaking
     change can't be self-released into the wrong version window."""
-    return work_submission.impl_approve(sys.modules[__name__], bead, as_, hive)
+    return (
+        work_services.work_lifecycle_service(
+            approve=lambda item: work_submission.impl_approve(
+                sys.modules[__name__], item.bead, item.actor, item.hive
+            )
+        )
+        .approve(work_capability.ApprovalRequest(bead, as_, hive))
+        .value
+    )
 
 
 def _approve_security_gate(gates, bead, main, actor, open_review) -> bool:
@@ -1134,7 +1204,15 @@ def bounce(bead: str = _BEAD, message: str = _BOUNCE_MSG, as_: str = _AS, hive: 
     review=changes-requested. With no open gate it warns and still records the bounce. Points the
     developer at `bh work resume`. Batch behavior falls out free — the one batch gate names every
     member, so bouncing any member resolves it and blocks `merge --group` (bh-n5z3.6)."""
-    return work_submission.impl_bounce(sys.modules[__name__], bead, message, as_, hive)
+    return (
+        work_services.work_lifecycle_service(
+            bounce=lambda item: work_submission.impl_bounce(
+                sys.modules[__name__], item.bead, item.reason, item.actor, item.hive
+            )
+        )
+        .bounce(work_capability.BounceRequest(bead, message, as_, hive))
+        .value
+    )
 
 
 def _delete_branch(main, branch) -> None:
@@ -1439,7 +1517,20 @@ def merge(
     With `--group <ids>`, lands a whole work-group: validate the shared `wt/batch/<group>` branch
     once, merge it `--no-ff` into the members' molecule as ONE bubble (per-bead commits preserved
     inside, so it stays bisectable), then close every member — release the slot either way."""
-    return work_merge.impl_merge(sys.modules[__name__], bead, hive, rm, molecule, group)
+    return (
+        work_services.work_lifecycle_service(
+            merge=lambda item: work_merge.impl_merge(
+                sys.modules[__name__],
+                item.bead,
+                item.hive,
+                item.remove_worktree,
+                item.molecule,
+                item.group,
+            )
+        )
+        .merge(work_capability.MergeRequest(bead, hive, rm, molecule, group))
+        .value
+    )
 
 
 def _guard_bead_merge_gates(bead, main, landing_pr) -> None:
@@ -1554,7 +1645,7 @@ def _merge_bead(cfg, bead, hive, rm):
     return work_merge.impl__merge_bead(sys.modules[__name__], cfg, bead, hive, rm)
 
 
-def resume(
+def _legacy_resume(
     bead: str = _BEAD,
     as_: str = _AS,
     hive: str = _HIVE,
@@ -1606,6 +1697,28 @@ def resume(
     typer.echo(f"✓ resumed {bead} as {actor}; worktree {target}")
 
 
+def resume(
+    bead: str = _BEAD,
+    as_: str = _AS,
+    hive: str = _HIVE,
+):
+    """After review returns changes-requested, reattach and reassert the typed claim."""
+    # Keep the historical public-facade patch point discoverable here while the callback below
+    # routes through the typed service. The live call remains in `_legacy_resume`:
+    # `_issue_claim(cfg, entry, bead, actor, target, hive)`.
+    request = work_capability.ResumeRequest(bead, as_, hive)
+    return (
+        work_services.work_lifecycle_service(
+            resume=lambda item: _legacy_resume(item.bead, item.actor, item.hive)
+        )
+        .resume(request)
+        .value
+    )
+
+
+resume.__doc__ = _legacy_resume.__doc__
+
+
 def _claim_residue(data) -> str:
     """What of the claim SURVIVED the release write — "" when the bead is genuinely free.
 
@@ -1627,7 +1740,7 @@ def _claim_residue(data) -> str:
     return "; ".join(residue)
 
 
-def abandon(
+def _legacy_abandon(
     bead: str = _BEAD,
     hive: str = _HIVE,
     rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
@@ -1672,6 +1785,25 @@ def abandon(
         raise typer.Exit(1)
     otel.count_bead_transition("abandoned")  # bead id rides the span (set_bead), not the metric
     typer.echo(f"✓ abandoned {bead}" + ("; worktree removed" if rm else "; worktree kept"))
+
+
+def abandon(
+    bead: str = _BEAD,
+    hive: str = _HIVE,
+    rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
+):
+    """Release a claim through the typed lifecycle boundary."""
+    request = work_capability.AbandonRequest(bead, hive, rm)
+    return (
+        work_services.work_lifecycle_service(
+            abandon=lambda item: _legacy_abandon(item.bead, item.hive, item.remove_worktree)
+        )
+        .abandon(request)
+        .value
+    )
+
+
+abandon.__doc__ = _legacy_abandon.__doc__
 
 
 # ---- show / review (read-only render verbs; bodies live in work_show) -------
