@@ -156,7 +156,7 @@ Resources expose read-only state over MCP's resource subscription model. All res
 | `beadhive://hive/list` | Discoverable-but-unregistered repos; diffs git-workspace's tracked repos against registered hives. |
 | `beadhive://hive/survey` | Fleet onboarding table, one row per on-disk repo. |
 | `beadhive://label/validation` | Label validation findings: required_violations, per-issue problems, db_ok flag. |
-| `beadhive://worktree/list` | Worktree classification status for all managed hives (SAFE/ACTIVE/DIRTY/REVIEW/UNMERGED/LANDED_REBASED/DETACHED/MERGED_ORPHAN/ABANDONED). |
+| `beadhive://worktree/list` | Worktree classification status for all managed hives (SAFE/ACTIVE/DIRTY/REVIEW/UNMERGED/LANDED_REBASED/RETAINED/SUPERSEDED/STALE/DETACHED/MERGED_ORPHAN/ABANDONED). |
 | `beadhive://work/ready` | Ready (unblocked, dependency-ordered) beads for the current hive. |
 | `beadhive://work/intake` | Untriaged intake inbox: rows (open intake beads) and dupes (mechanical duplicate pairs). |
 | `beadhive://work/intake/dupes` | Duplicate-pair candidates for intake queue only; subset of mechanical-dedup pairs. |

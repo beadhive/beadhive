@@ -31,6 +31,7 @@ INVENTORY_OPERATIONS = (
     "_store_readable",
     "_probe_store",
     "_bead_statuses_for_entry",
+    "_bead_disposition_relations_for_entry",
     "_classify_entry",
     "_status_tags",
     "_render_status",
@@ -81,7 +82,7 @@ def test_inventory_and_cleanup_have_one_implementation_behind_the_facade(
 
 
 def test_related_policy_and_creation_boundaries_remain_owned_by_their_existing_modules():
-    for operation in ("add", "ensure", "mark_landed"):
+    for operation in ("add", "ensure", "mark_landed", "mark_abandoned"):
         assert getattr(worktree, operation).__module__ == "beadhive.worktree"
         assert not hasattr(worktree_inventory, operation)
         assert not hasattr(worktree_cleanup, operation)
@@ -156,6 +157,11 @@ def test_classify_entry_partial_state_outcome_matrix(
     monkeypatch.setattr(metadata, "read_fleet", lambda cfg, keys, ttl: metadata_rows)
     monkeypatch.setattr(worktree.config, "integration_branch", lambda cfg, _entry: "main")
     monkeypatch.setattr(worktree, "_bead_statuses_for_entry", lambda _entry, _rows: bead_state)
+    monkeypatch.setattr(
+        worktree,
+        "_bead_disposition_relations_for_entry",
+        lambda _entry, _reasons: {},
+    )
     monkeypatch.setattr(worktree, "_wt_dirty", lambda path: path in dirty_paths)
     monkeypatch.setattr(worktree, "is_merged", lambda _entry, branch, base: (branch, base))
     monkeypatch.setattr(
@@ -184,10 +190,52 @@ def test_classify_entry_partial_state_outcome_matrix(
     assert captured["bead_statuses"] == expected_statuses
     assert captured["bead_unknown_reasons"] == expected_unknown
     assert captured["store_unreadable_reason"] == expected_store_reason
+    assert captured["bead_disposition_relations"] == {}
     assert captured["dirty_by_path"] == {path: path in dirty_paths for _, path, _ in rows}
     assert captured["merged_result"] == ("topic", "main")
     assert captured["parent_result"] == ("/wt/a", "main", "topic")
     assert captured["landed_result"] == ("topic", "main", "merged")
+
+
+def test_disposition_relation_readback_normalizes_exact_storage_directions(monkeypatch):
+    entry = {"prefix": "mr"}
+    reasons = {
+        "old-retained": wt_status.format_disposition("retained", "pivot", "consumer"),
+        "old-superseded": wt_status.format_disposition("superseded", "superseded", "replacement"),
+    }
+    records = {
+        "old-retained": {"dependencies": [{"depends_on_id": "consumer", "type": "relates-to"}]},
+        "replacement": {
+            "dependencies": [{"depends_on_id": "old-superseded", "type": "supersedes"}]
+        },
+    }
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
+    monkeypatch.setattr(worktree.bd, "show", lambda bead, _main: records.get(bead))
+
+    result = worktree._bead_disposition_relations_for_entry(entry, reasons)
+
+    assert result == {
+        "old-retained": frozenset({("retained", "consumer")}),
+        "old-superseded": frozenset({("superseded", "replacement")}),
+    }
+
+
+def test_disposition_relation_readback_rejects_reversed_or_wrong_typed_edges(monkeypatch):
+    entry = {"prefix": "mr"}
+    reasons = {
+        "old-retained": wt_status.format_disposition("retained", "pivot", "consumer"),
+        "old-superseded": wt_status.format_disposition("superseded", "superseded", "replacement"),
+    }
+    records = {
+        "old-retained": {"dependencies": [{"depends_on_id": "consumer", "type": "supersedes"}]},
+        "replacement": {
+            "dependencies": [{"depends_on_id": "old-superseded", "type": "relates-to"}]
+        },
+    }
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
+    monkeypatch.setattr(worktree.bd, "show", lambda bead, _main: records.get(bead))
+
+    assert worktree._bead_disposition_relations_for_entry(entry, reasons) == {}
 
 
 def test_concurrent_classification_streams_completion_order_but_flattens_entry_order(monkeypatch):

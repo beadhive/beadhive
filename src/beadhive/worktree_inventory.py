@@ -92,6 +92,10 @@ def _bead_statuses_for_entry(*args, **kwargs):
     return _call_facade("_bead_statuses_for_entry", *args, **kwargs)
 
 
+def _bead_disposition_relations_for_entry(*args, **kwargs):
+    return _call_facade("_bead_disposition_relations_for_entry", *args, **kwargs)
+
+
 def _classify_entry(*args, **kwargs):
     return _call_facade("_classify_entry", *args, **kwargs)
 
@@ -852,6 +856,48 @@ def impl__bead_statuses_for_entry(
     return statuses, close_reasons, unknown_reasons, store_reason
 
 
+def impl__bead_disposition_relations_for_entry(
+    entry,
+    bead_close_reasons: dict[str, str],
+) -> dict[str, frozenset[tuple[str, str]]]:
+    """Read the graph edges promised by authoritative terminal-disposition records.
+
+    Storage uses Beads' existing relation vocabulary and direction: a retained bead points
+    *down* to its consumer via ``relates-to``; a replacement points *down* to the old bead via
+    ``supersedes``.  The pure classifier receives normalized ``(state, citing_bead)`` pairs and
+    therefore never needs a database dependency.
+    """
+    main = registry.hive_dir(entry)
+    result: dict[str, frozenset[tuple[str, str]]] = {}
+    for bead_id, close_reason in bead_close_reasons.items():
+        disposition = wt_status.parse_disposition(str(close_reason or ""))
+        if disposition is None or disposition.state == "stale":
+            continue
+        if disposition.state == "retained":
+            source_id, target_id, relation_type = (
+                bead_id,
+                disposition.citing_bead,
+                "relates-to",
+            )
+        else:
+            source_id, target_id, relation_type = (
+                disposition.citing_bead,
+                bead_id,
+                "supersedes",
+            )
+        source = bd.show(source_id, str(main)) or {}
+        dependencies = source.get("dependencies") or []
+        matched = any(
+            isinstance(dep, dict)
+            and str(dep.get("type") or dep.get("dependency_type") or "") == relation_type
+            and str(dep.get("depends_on_id") or dep.get("id") or "") == target_id
+            for dep in dependencies
+        )
+        if matched:
+            result[bead_id] = frozenset({(disposition.state, disposition.citing_bead)})
+    return result
+
+
 def impl__classify_entry(
     entry,
     rows: list[tuple[str, str, str]],
@@ -873,6 +919,7 @@ def impl__classify_entry(
     bead_statuses, bead_close_reasons, unknown_reasons, store_reason = _bead_statuses_for_entry(
         entry, rows
     )
+    disposition_relations = _bead_disposition_relations_for_entry(entry, bead_close_reasons)
     dirty_by_path = {path: _wt_dirty(path) for _, path, _ in rows}
 
     # Closures capture the full entry so bead_and_parent / is_merged / is_landed receive
@@ -899,6 +946,7 @@ def impl__classify_entry(
         bead_close_reasons=bead_close_reasons,
         bead_unknown_reasons=unknown_reasons,
         store_unreadable_reason=store_reason,
+        bead_disposition_relations=disposition_relations,
     )
 
 
@@ -920,6 +968,10 @@ def impl__status_tags(st) -> str:
         tags += f"  (under: {str(st.underlying).upper()})"
     if st.safe:
         tags += "  SAFE"
+    if getattr(st, "disposition_reason", ""):
+        tags += f"  reason={st.disposition_reason}"
+    if getattr(st, "citing_bead", ""):
+        tags += f"  citing={st.citing_bead}"
     return tags
 
 

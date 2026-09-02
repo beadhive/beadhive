@@ -1348,6 +1348,7 @@ def remove(hive, ref, force=False, as_json=False):
 
 
 _LANDED_REASONS = ("merged", "molecule landed")  # the close_reasons is_landed treats as landed
+_ABANDONED_REASONS = frozenset({"pivot", "superseded", "obsolete"})
 
 
 def mark_landed(hive: str, ref: str) -> None:
@@ -1384,6 +1385,149 @@ def mark_landed(hive: str, ref: str) -> None:
     typer.echo(
         f"✓ marked {bead} landed (close_reason: merged) — "
         f"`{config.BINARY_ALIAS} worktree prune` can now reap {branch}"
+    )
+
+
+def _has_disposition_edge(data: dict, target: str, relation_type: str) -> bool:
+    return any(
+        isinstance(dep, dict)
+        and str(dep.get("type") or dep.get("dependency_type") or "") == relation_type
+        and str(dep.get("depends_on_id") or dep.get("id") or "") == target
+        for dep in (data.get("dependencies") or [])
+    )
+
+
+def _has_any_edge(data: dict, target: str) -> bool:
+    return any(
+        isinstance(dep, dict) and str(dep.get("depends_on_id") or dep.get("id") or "") == target
+        for dep in (data.get("dependencies") or [])
+    )
+
+
+def _restore_closed_reason(bead: str, close_reason: str, main: Path) -> bool:
+    args = ["close", bead]
+    if close_reason:
+        args.extend(["--reason", close_reason])
+    return bd.run(args, main).returncode == 0
+
+
+def mark_abandoned(
+    hive: str,
+    ref: str,
+    reason: str,
+    *,
+    retained_for: str = "",
+    superseded_by: str = "",
+) -> None:
+    """Record an authoritative non-landing disposition and its queryable relation.
+
+    Mutation is ordered relation-first, close_reason-second.  A newly-created relation is
+    compensated if reopen/reclose fails; a previously closed bead is reclosed with its original
+    reason as part of that compensation.  Pre-existing relations are never removed.
+    """
+    if reason not in _ABANDONED_REASONS:
+        typer.echo(
+            f"✗ unsupported reason '{reason}' (choose pivot, superseded, or obsolete)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if retained_for and superseded_by:
+        typer.echo("✗ --retained-for and --superseded-by are mutually exclusive", err=True)
+        raise typer.Exit(2)
+    if superseded_by and reason != "superseded":
+        typer.echo("✗ --superseded-by requires --reason superseded", err=True)
+        raise typer.Exit(2)
+
+    cfg = config.load()
+    bead = (_bead_id_from_branch(ref) or "") if ref.startswith(WT_PREFIX) else ref
+    if not bead:
+        typer.echo(f"✗ cannot parse a bead id from {ref}", err=True)
+        raise typer.Exit(1)
+    entry, main, _target, branch = locate(cfg, hive, bead)
+    data = bd.show(bead, main)
+    if data is None:
+        typer.echo(f"✗ no such bead: {bead}", err=True)
+        raise typer.Exit(1)
+
+    if retained_for:
+        state, citing = "retained", retained_for
+        edge_source, edge_target, edge_type = bead, citing, "relates-to"
+    elif superseded_by:
+        state, citing = "superseded", superseded_by
+        edge_source, edge_target, edge_type = citing, bead, "supersedes"
+    else:
+        state, citing = "stale", ""
+        edge_source = edge_target = edge_type = ""
+
+    if citing:
+        if citing == bead:
+            typer.echo("✗ a terminal disposition cannot cite its own bead", err=True)
+            raise typer.Exit(2)
+        citing_data = bd.show(citing, main)
+        if citing_data is None:
+            typer.echo(f"✗ no such citing bead: {citing}", err=True)
+            raise typer.Exit(1)
+    else:
+        citing_data = {}
+
+    close_reason = wt_status.format_disposition(state, reason, citing)
+    edge_data = data if edge_source == bead else citing_data
+    edge_existed = bool(edge_type) and _has_disposition_edge(edge_data, edge_target, edge_type)
+    if edge_type and not edge_existed and _has_any_edge(edge_data, edge_target):
+        typer.echo(
+            f"✗ {edge_source} already has a different relation to {edge_target}; "
+            "refusing an ambiguous disposition edge",
+            err=True,
+        )
+        raise typer.Exit(1)
+    already_stamped = (
+        str(data.get("status") or "") == "closed"
+        and str(data.get("close_reason") or "") == close_reason
+    )
+    if already_stamped and (not edge_type or edge_existed):
+        typer.echo(f"• {bead} already records {state} ({reason}) — nothing to do")
+        return
+
+    edge_added = False
+    if edge_type and not edge_existed:
+        added = bd.run(["dep", "add", edge_source, edge_target, "-t", edge_type], main)
+        if added.returncode != 0:
+            typer.echo(f"✗ failed to record {edge_type} relation for {bead}", err=True)
+            raise typer.Exit(1)
+        edge_added = True
+
+    was_closed = str(data.get("status") or "") == "closed"
+    old_reason = str(data.get("close_reason") or "")
+    if not already_stamped:
+        if was_closed and bd.run(["reopen", bead], main).returncode != 0:
+            compensated = True
+            if edge_added:
+                compensated = (
+                    bd.run(["dep", "remove", edge_source, edge_target], main).returncode == 0
+                )
+            detail = "" if compensated else "; relation compensation also failed"
+            typer.echo(f"✗ cannot reopen {bead} to restamp its close_reason{detail}", err=True)
+            raise typer.Exit(1)
+        if bd.run(["close", bead, "--reason", close_reason], main).returncode != 0:
+            edge_restored = True
+            if edge_added:
+                edge_restored = (
+                    bd.run(["dep", "remove", edge_source, edge_target], main).returncode == 0
+                )
+            restored = not was_closed or _restore_closed_reason(bead, old_reason, main)
+            failures = []
+            if not edge_restored:
+                failures.append("relation compensation failed")
+            if not restored:
+                failures.append("original close_reason restoration failed")
+            detail = f"; {'; '.join(failures)}" if failures else ""
+            typer.echo(f"✗ failed to record terminal disposition for {bead}{detail}", err=True)
+            raise typer.Exit(1)
+
+    relation = f", citing {citing}" if citing else ""
+    typer.echo(
+        f"✓ marked {bead} {state} (reason: {reason}{relation}) — "
+        f"`{config.BINARY_ALIAS} worktree status` now explains {branch}"
     )
 
 
@@ -1469,6 +1613,13 @@ def _bead_statuses_for_entry(
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], str]:
     """Compatibility facade for ``worktree_inventory.impl__bead_statuses_for_entry``."""
     return _worktree_inventory.impl__bead_statuses_for_entry(entry, rows)
+
+
+def _bead_disposition_relations_for_entry(
+    entry, bead_close_reasons: dict[str, str]
+) -> dict[str, frozenset[tuple[str, str]]]:
+    """Compatibility facade for disposition-relation inventory readback."""
+    return _worktree_inventory.impl__bead_disposition_relations_for_entry(entry, bead_close_reasons)
 
 
 def _classify_entry(entry, rows: list[tuple[str, str, str]], cfg) -> list:
