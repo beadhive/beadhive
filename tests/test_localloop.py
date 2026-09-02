@@ -491,7 +491,14 @@ def test_a_bead_mismatch_is_a_failure_even_when_the_status_says_done():
 
 
 def _child(bead_id, **kw):
-    return {"id": bead_id, "status": "open", "issue_type": "task", "labels": [], **kw}
+    return {
+        "id": bead_id,
+        "parent": "epic-1",
+        "status": "open",
+        "issue_type": "task",
+        "labels": [],
+        **kw,
+    }
 
 
 def _ws(tmp_path, bead):
@@ -853,6 +860,22 @@ async def test_event_beads_are_read_with_all_because_they_are_created_closed(tmp
     assert fake.list_args, "the molecule must be re-derived from bd"
     assert all("--all" in args for args in fake.list_args)
     assert all("--include-infra" in args for args in fake.list_args)
+
+
+@async_test
+async def test_molecule_filters_detached_prefix_rows_but_keeps_historical_events(tmp_path, fakebd):
+    event = {"id": "b1.event", "issue_type": "event", "status": "closed"}
+    fakebd(
+        FakeBd(
+            children=[_child("b1"), _child("epic-1.detached", parent="elsewhere")],
+            events={"b1": [event]},
+        )
+    )
+
+    molecule = _loop(tmp_path).load_molecule(budget=1)
+
+    assert [row["id"] for row in molecule.beads] == ["b1"]
+    assert molecule.events == {"b1": [event]}
 
 
 # ---- dry-run: decide-only (bh-3xl60) --------------------------------------------------------

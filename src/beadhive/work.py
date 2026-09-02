@@ -579,7 +579,7 @@ def _next_seat_actor(actor: str, data) -> str | None:
 
 
 def _molecule_members(epic: str, main) -> set[str]:
-    """The ids `--epic <id>` admits: the epic itself plus what `bd list --parent <epic>` returns.
+    """The ids `--epic <id>` admits: the epic itself plus its edge-confirmed direct children.
 
     ONE LEVEL IS THE ANSWER, not a limitation to fix later (bh-sh6yt's third open question). Two
     reasons it has to be one level:

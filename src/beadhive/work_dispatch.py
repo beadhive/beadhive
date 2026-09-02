@@ -19,7 +19,7 @@ def impl__next_seat_actor(api, actor, data):
 
 
 def impl__molecule_members(api, epic, main):
-    rows = api.bd.json(["list", "--parent", epic, "--include-infra", "--all"], main) or []
+    rows = api.bd.children(epic, main, ["--include-infra", "--all"]) or []
     members = {str(r.get("id") or "") for r in rows if isinstance(r, dict)}
     members.add(epic)
     members.discard("")
@@ -273,7 +273,7 @@ def impl__merged_batch_groups(api, cfg, entry, main, beads):
 
 
 def impl_schedule_payload(api, epic, cfg, entry, main):
-    children = api.bd.json(["list", "--parent", epic], main)
+    children = api.bd.children(epic, main)
     if not isinstance(children, list):
         raise ValueError(f"cannot list children of {epic} — is it an epic in this hive?")
     beads = [c for c in children if str(c.get("status", "")) != "closed"]

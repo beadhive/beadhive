@@ -205,9 +205,8 @@ def impl_run_init(cfg, entry, path: Path, verify_only: bool = False):
         if cond and not any(path.glob(cond)):
             continue
         typer.echo(f"  → {cmd}")
-        try:
-            res = run(shlex.split(cmd), cwd=str(path), check=False)
-        except FileNotFoundError:
+        res = run(shlex.split(cmd), cwd=str(path), check=False)
+        if missing_binary(res):
             typer.echo(f"  ⚠ init: command not found: {cmd}", err=True)
             failed.append(cmd)
             continue
