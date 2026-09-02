@@ -70,6 +70,106 @@ def test_section_lists_orphan(hive, fakebd, capsys):  # noqa: F811
     assert "delete manually" in out
 
 
+# ---- workspace root: ownership + seed state ---------------------------------
+
+
+def test_data_config_internal_seed_state(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "workspace_mode", lambda root: "internal")
+    assert doctor._data_config({}, tmp_path)["workspace_seeded"] is False
+    (tmp_path / "workspace.toml").write_text("")
+    assert doctor._data_config({}, tmp_path)["workspace_seeded"] is True
+
+
+def test_data_config_external_is_never_owned_for_seeding(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor, "workspace_mode", lambda root: "external")
+    data = doctor._data_config({}, tmp_path)
+    assert data["workspace_mode"] == "external"
+    assert data["workspace_seeded"] is True
+
+
+def _workspace_config_section(*, mode, seeded, root="/x/ws"):
+    return {
+        "config_path": "/x/config.yaml",
+        "workspace_root": root,
+        "workspace_mode": mode,
+        "workspace_seeded": seeded,
+        "git_workspace": {"enabled": False, "sources": []},
+    }
+
+
+def test_render_config_offers_internal_seed_but_not_external(capsys):
+    doctor._render_config(_workspace_config_section(mode="internal", seeded=False))
+    assert "missing or unseeded" in capsys.readouterr().out
+    doctor._render_config(_workspace_config_section(mode="external", seeded=False))
+    assert "missing or unseeded" not in capsys.readouterr().out
+
+
+def test_offer_workspace_init_noops_when_seeded_external_or_noninteractive(monkeypatch):
+    calls = []
+    monkeypatch.setattr(doctor.gitworkspace, "ensure_seeded", lambda root: calls.append(root))
+    doctor._offer_workspace_init(_workspace_config_section(mode="internal", seeded=True))
+    doctor._offer_workspace_init(_workspace_config_section(mode="external", seeded=False))
+    monkeypatch.setattr(doctor, "_is_interactive", lambda: False)
+    doctor._offer_workspace_init(_workspace_config_section(mode="internal", seeded=False))
+    assert calls == []
+
+
+def test_offer_workspace_init_requires_consent(tmp_path, monkeypatch):
+    root = tmp_path / "ws"
+    monkeypatch.setattr(doctor, "_is_interactive", lambda: True)
+    monkeypatch.setattr(doctor.typer, "confirm", lambda *args, **kwargs: False)
+    doctor._offer_workspace_init(
+        _workspace_config_section(mode="internal", seeded=False, root=str(root))
+    )
+    assert not root.exists()
+
+    monkeypatch.setattr(doctor.typer, "confirm", lambda *args, **kwargs: True)
+    doctor._offer_workspace_init(
+        _workspace_config_section(mode="internal", seeded=False, root=str(root))
+    )
+    assert (root / "workspace.toml").is_file()
+
+
+def test_doctor_names_orphan_safety_ref(hive, fakebd):  # noqa: F811
+    branch = "wt/bead/issue/mr-gone"
+    _git("branch", branch, cwd=hive.main)
+    safety_ref = f"{branch}.refine-20260902T031122Z"
+    _git("branch", safety_ref, cwd=hive.main)
+
+    warnings = doctor._orphan_safety_ref_warnings(config.load())
+
+    assert len(warnings) == 1
+    assert safety_ref in warnings[0]
+    assert "mr-gone does not resolve" in warnings[0]
+    assert "not prune authority" in warnings[0]
+
+
+def test_doctor_does_not_call_a_resolvable_safety_ref_orphan(hive, fakebd):  # noqa: F811
+    fakebd.seed("mr-live", title="t")
+    branch = "wt/bead/issue/mr-live"
+    _git("branch", branch, cwd=hive.main)
+    _git("branch", f"{branch}.premerge-20260902T031123Z-abcd", cwd=hive.main)
+
+    assert doctor._orphan_safety_ref_warnings(config.load()) == []
+
+
+def test_doctor_resolves_many_safety_refs_with_one_bead_snapshot(hive, fakebd):  # noqa: F811
+    fakebd.seed("mr-live", title="t")
+    for bead_id in ("mr-live", "mr-gone"):
+        branch = f"wt/bead/issue/{bead_id}"
+        _git("branch", branch, cwd=hive.main)
+        for second in ("22", "23", "24"):
+            _git("branch", f"{branch}.refine-20260902T0311{second}Z", cwd=hive.main)
+    fakebd.calls.clear()
+
+    warnings = doctor._orphan_safety_ref_warnings(config.load())
+
+    bead_queries = [args for _actor, args in fakebd.calls if args[:1] in (["list"], ["show"])]
+    assert bead_queries == [["list", "--all", "--include-infra", "--limit", "0", "--json"]]
+    assert len(warnings) == 3
+    assert all("mr-gone" in warning for warning in warnings)
+
+
 # ---- stage 2 shape A: _bulk_epic_closed (bh-xi0m1) --------------------------
 
 

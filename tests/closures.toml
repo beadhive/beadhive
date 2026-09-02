@@ -154,37 +154,128 @@ reverse_dependency_tests = []
 [[closures]]
 id = "module.hives"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/hives"
 source_paths = ["src/beadhive/modules/hives/**/*.py"]
+tests = [
+  "tests/unit/modules/hives/test_hive_identity.py",
+  "tests/unit/modules/hives/test_hive_services.py",
+  "tests/unit/modules/hives/test_hive_independence.py",
+]
+shared_contracts = ["contracts", "kernel.lifecycle"]
+shared_contract_tests = [
+  "tests/contracts/test_hive_lifecycle_compatibility.py",
+  "tests/unit/kernel/lifecycle/test_dispatcher.py",
+]
+reverse_dependencies = ["adapters", "system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_hive_identity_json.py",
+  "tests/test_hive_lifecycle_json.py",
+  "tests/test_hive_ready.py",
+  "tests/test_hive_onboard.py",
+  "tests/test_hive_retire.py",
+  "tests/test_hive_reclaim.py",
+  "tests/test_mcp_hives_resources.py",
+  "tests/test_plugins.py",
+]
 
 [[closures]]
 id = "module.planning"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/planning"
 source_paths = ["src/beadhive/modules/planning/**/*.py"]
+tests = [
+  "tests/unit/modules/planning/test_planning_services.py",
+  "tests/unit/modules/planning/test_planning_independence.py",
+]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/contracts/test_planning_capability_adapters.py"]
+reverse_dependencies = ["adapters", "system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_plan.py",
+  "tests/test_plan_repair.py",
+  "tests/test_cli_projection.py",
+  "tests/test_mcp.py",
+  "tests/test_mcp_plans_resources.py",
+]
 
 [[closures]]
 id = "module.state"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/state"
 source_paths = ["src/beadhive/modules/state/**/*.py"]
+tests = [
+  "tests/unit/modules/state/test_state_services.py",
+  "tests/unit/modules/state/test_state_independence.py",
+]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/contracts/test_state_capability_adapters.py"]
+reverse_dependencies = ["adapters", "system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_agent_run_summary.py",
+  "tests/test_operator_api.py",
+  "tests/test_public_readers.py",
+  "tests/test_state_stream.py",
+  "tests/test_stream_cli.py",
+  "tests/test_validation_records.py",
+]
 
 [[closures]]
 id = "module.work"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/work"
 source_paths = ["src/beadhive/modules/work/**/*.py"]
+tests = [
+  "tests/unit/modules/work/test_work_lifecycle_services.py",
+  "tests/unit/modules/work/test_work_independence.py",
+]
+shared_contracts = ["contracts", "kernel.lifecycle"]
+shared_contract_tests = [
+  "tests/contracts/test_work_capability_adapters.py",
+  "tests/unit/kernel/lifecycle/test_contracts.py",
+]
+reverse_dependencies = ["adapters", "system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_mcp_work_schedule_resource.py",
+  "tests/test_work.py",
+  "tests/test_work_assignment_boundaries.py",
+  "tests/test_work_flow.py",
+  "tests/test_work_merge_boundaries.py",
+  "tests/test_work_reads.py",
+  "tests/test_work_submission_boundaries.py",
+]
 
 [[closures]]
 id = "module.worktrees"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/worktrees"
 source_paths = ["src/beadhive/modules/worktrees/**/*.py"]
+tests = [
+  "tests/unit/modules/worktrees/test_policy.py",
+  "tests/unit/modules/worktrees/test_services.py",
+  "tests/unit/modules/worktrees/test_adapters.py",
+  "tests/unit/modules/worktrees/test_worktrees_independence.py",
+]
+shared_contracts = ["contracts", "kernel.lifecycle"]
+shared_contract_tests = [
+  "tests/contracts/test_worktree_capability_compatibility.py",
+  "tests/unit/kernel/lifecycle/test_contracts.py",
+]
+reverse_dependencies = ["module.hives", "system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_config_worktrees.py",
+  "tests/test_workspace_config_inheritance.py",
+  "tests/test_worktree.py",
+  "tests/test_worktree_boundaries.py",
+  "tests/test_worktree_inventory_boundaries.py",
+  "tests/test_worktree_inventory_json.py",
+  "tests/test_wt_status.py",
+  "tests/test_mcp.py",
+]
 
 [[closures]]
 id = "adapters"

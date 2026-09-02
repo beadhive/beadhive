@@ -16,7 +16,8 @@ import signal
 from pathlib import Path
 from typing import Literal
 
-from . import host, private_paths
+from . import host, private_paths, state_services
+from .modules.state import ValidationQuery, ValidationRecord
 
 Lifecycle = Literal["running", "completed", "abandoned"]
 Verdict = Literal["green", "red", "none"]
@@ -38,6 +39,18 @@ def _atomic_json(path: Path, value: dict) -> None:
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     tmp.write_text(json.dumps(value, sort_keys=True) + "\n")
     os.replace(tmp, path)
+
+
+def _write_manifest(path: Path, value: dict) -> None:
+    """Persist one typed run fact through the state capability's storage port."""
+
+    def write(record: ValidationRecord) -> ValidationRecord:
+        _atomic_json(path, record.to_mapping())
+        return record
+
+    state_services.validation_record_service(write=write).write(
+        ValidationRecord.from_mapping(value)
+    )
 
 
 def _new_id(prefix: str) -> str:
@@ -177,7 +190,7 @@ def begin_run(
             "artifacts": artifacts,
         }
         try:
-            _atomic_json(directory / "manifest.json", manifest)
+            _write_manifest(directory / "manifest.json", manifest)
             # Derived, reconstructable pointer.  It contains identity only, never lifecycle truth.
             _atomic_json(root / "active" / f"{run_id}.json", {"schema": 1, "run_id": run_id})
         except OSError:
@@ -206,7 +219,7 @@ def mark_artifacts_uploaded(hive: str | Path, run_id: str) -> dict | None:
     current["artifacts_uploaded_at"] = _now()
     root = _validation_root(hive)
     try:
-        _atomic_json(root / "runs" / run_id / "manifest.json", current)
+        _write_manifest(root / "runs" / run_id / "manifest.json", current)
     except OSError:
         return None
     prune_artifacts(hive)
@@ -221,7 +234,7 @@ def attach_summary(hive: str | Path, run_id: str, summary: dict) -> dict | None:
         return None
     current["summary"] = summary
     try:
-        _atomic_json(root / "runs" / run_id / "manifest.json", current)
+        _write_manifest(root / "runs" / run_id / "manifest.json", current)
     except OSError:
         return None
     return current
@@ -276,7 +289,7 @@ def prune_artifacts(hive: str | Path) -> int:
         ):
             run["artifacts"] = {"pruned_at": _now()}
             try:
-                _atomic_json(runs_dir / run["run_id"] / "manifest.json", run)
+                _write_manifest(runs_dir / run["run_id"] / "manifest.json", run)
             except OSError:
                 continue
             shutil.rmtree(directory, ignore_errors=True)
@@ -346,7 +359,7 @@ def finish_run(
     if root is None:
         return None
     try:
-        _atomic_json(root / "runs" / run_id / "manifest.json", current)
+        _write_manifest(root / "runs" / run_id / "manifest.json", current)
         (root / "active" / f"{run_id}.json").unlink(missing_ok=True)
     except OSError:
         return None
@@ -402,7 +415,7 @@ def abandon_run(hive: str | Path, run_id: str, *, reason: str = "owner_dead") ->
     if root is None:
         return None
     try:
-        _atomic_json(root / "runs" / run_id / "manifest.json", current)
+        _write_manifest(root / "runs" / run_id / "manifest.json", current)
         (root / "active" / f"{run_id}.json").unlink(missing_ok=True)
     except OSError:
         return None
@@ -546,11 +559,18 @@ def matching_runs(hive: str | Path, *, tree: str, command_hash: str) -> list[dic
 
 def latest_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | None:
     """Newest execution fact for an exact identity, regardless of lifecycle/verdict."""
-    return max(
-        matching_runs(hive, tree=tree, command_hash=command_hash),
-        key=_run_order_key,
-        default=None,
-    )
+    query = ValidationQuery(tree, command_hash)
+
+    def latest(selected: ValidationQuery) -> ValidationRecord | None:
+        value = max(
+            matching_runs(hive, tree=selected.tree, command_hash=selected.command_hash),
+            key=_run_order_key,
+            default=None,
+        )
+        return ValidationRecord.from_mapping(value) if value is not None else None
+
+    record = state_services.validation_record_service(latest=latest).latest(query)
+    return record.to_mapping() if record is not None else None
 
 
 def running_runs(

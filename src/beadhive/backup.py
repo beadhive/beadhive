@@ -18,6 +18,10 @@ it, one function set per root:
   verified JSONL + Dolt-native pair taken before a storage-mode migration touches anything.
   Automatic keep-N prune per hive, same posture as HQ's: ``bh`` owns the write path.
 
+The adjacent ``bh backup reclaim --root cache`` surface is not a fifth backup root.  It reports
+minimal-clone caches through the shared ``RETAINED`` / ``SUPERSEDED`` / ``STALE`` lifecycle
+vocabulary and removes only ``SUPERSEDED`` entries proven unread by ``hub.sync``.
+
 bh-5009a: all four live under ONE root (``$BH_HOME/backups/``), addressed
 ``<category>/<provider>/<org>/<repo>/<instant>/`` with ONE time format
 (:data:`STAMP_FORMAT`) — the migrate root used to sit at ``~/.beadhive/storage-migrate-
@@ -44,9 +48,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from . import config
+from . import cache_store, config
 from .bd import err_line
 from .run import run
+from .wt_status import WtClassification
 
 BD_TIMEOUT = 120.0  # seconds — matches hq.py's own bd-call budget
 
@@ -229,6 +234,187 @@ def _dir_size(path: Path) -> int:
     except (OSError, PermissionError):
         pass
     return total
+
+
+@dataclass(frozen=True)
+class CacheEntryStatus:
+    """One minimal-clone cache entry classified with the shared lifecycle vocabulary."""
+
+    hive: str
+    path: Path
+    checkout: Path | None
+    size_bytes: int
+    classification: WtClassification
+    reason: str
+
+    @property
+    def safe(self) -> bool:
+        """Only an explicitly superseded cache entry is reclaimable."""
+        return self.classification is WtClassification.SUPERSEDED
+
+
+@dataclass
+class CacheReclaimResult:
+    """Read-back report for a cache reclaim preview or confirmed removal."""
+
+    entries: list[CacheEntryStatus] = field(default_factory=list)
+    removed: list[Path] = field(default_factory=list)
+    reclaimed_bytes: int = 0
+    dry_run: bool = True
+    errors: dict[Path, str] = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return not self.errors
+
+
+def _cache_entry_status(entry, *, known_size: int | None = None) -> CacheEntryStatus | None:
+    """Classify one registered hive's existing cache without mutating or hydrating it."""
+    from . import registry
+
+    path = cache_store.cache_path(config.cache_dir(), entry)
+    if not path.exists() and not path.is_symlink():
+        return None
+    hive = entry_slug(entry)
+    checkout = registry.hive_dir(entry)
+    size = (
+        0
+        if path.is_symlink() or not path.is_dir()
+        else (_dir_size(path) if known_size is None else known_size)
+    )
+    if path.is_symlink():
+        return CacheEntryStatus(
+            hive=hive,
+            path=path,
+            checkout=None,
+            size_bytes=size,
+            classification=WtClassification.STALE,
+            reason="cache entry is a symlink; its target is never reclaimed",
+        )
+    if not path.is_dir():
+        return CacheEntryStatus(
+            hive=hive,
+            path=path,
+            checkout=None,
+            size_bytes=size,
+            classification=WtClassification.STALE,
+            reason="cache entry is not a directory",
+        )
+    local = cache_store.local_checkout_source(checkout)
+    if local is not None:
+        return CacheEntryStatus(
+            hive=hive,
+            path=path,
+            checkout=local,
+            size_bytes=size,
+            classification=WtClassification.SUPERSEDED,
+            reason=f"local checkout has .beads: {local}",
+        )
+    return CacheEntryStatus(
+        hive=hive,
+        path=path,
+        checkout=checkout,
+        size_bytes=size,
+        classification=WtClassification.RETAINED,
+        reason=f"only local bead store; checkout has no .beads: {checkout}",
+    )
+
+
+def classify_cache_entries(cfg=None) -> list[CacheEntryStatus]:
+    """Classify every per-hive cache as ``SUPERSEDED``, ``RETAINED``, or ``STALE``.
+
+    ``SUPERSEDED`` is proven by :func:`cache_store.local_checkout_source`, the exact predicate
+    :func:`hub.sync` uses to stop reading a cache.  Registered entries without that proof are
+    ``RETAINED`` because the cache may be their only local bead store.  Unregistered or
+    ambiguous paths are ``STALE`` and remain conservative.
+    """
+    from . import registry
+
+    cfg = cfg if cfg is not None else config.load()
+    registered: dict[Path, list] = {}
+    for entry in registry.hives(cfg):
+        registered.setdefault(cache_store.cache_path(config.cache_dir(), entry), []).append(entry)
+
+    rows: list[CacheEntryStatus] = []
+    seen: set[Path] = set()
+    for path, entries in registered.items():
+        if not path.exists() and not path.is_symlink():
+            continue
+        seen.add(path)
+        if len(entries) == 1:
+            status = _cache_entry_status(entries[0])
+            if status is not None:
+                rows.append(status)
+            continue
+        rows.append(
+            CacheEntryStatus(
+                hive=" / ".join(sorted(entry_slug(entry) for entry in entries)),
+                path=path,
+                checkout=None,
+                size_bytes=0 if path.is_symlink() or not path.is_dir() else _dir_size(path),
+                classification=WtClassification.STALE,
+                reason="multiple registered hives claim this cache path",
+            )
+        )
+
+    cache_root = config.cache_dir()
+    if cache_root.is_dir():
+        for path in sorted(cache_root.glob("*/*/*")):
+            if path in seen or (not path.exists() and not path.is_symlink()):
+                continue
+            rows.append(
+                CacheEntryStatus(
+                    hive=str(path.relative_to(cache_root)),
+                    path=path,
+                    checkout=None,
+                    size_bytes=0 if path.is_symlink() or not path.is_dir() else _dir_size(path),
+                    classification=WtClassification.STALE,
+                    reason="cache path is not claimed by exactly one registered hive",
+                )
+            )
+    return sorted(rows, key=lambda row: (row.hive, str(row.path)))
+
+
+def reclaim_cache_entries(cfg=None, *, dry_run: bool = True) -> CacheReclaimResult:
+    """Preview or remove only caches currently superseded by a live ``.beads`` checkout.
+
+    A confirmed run reclassifies each candidate immediately before removal.  If the local
+    checkout disappeared, the cache becomes ``RETAINED`` and survives rather than relying on
+    a stale preview.  Symlink entries are never passed to ``rmtree``.
+    """
+    from . import registry
+
+    cfg = cfg if cfg is not None else config.load()
+    result = CacheReclaimResult(dry_run=dry_run)
+    for planned in classify_cache_entries(cfg):
+        current = planned
+        if planned.safe and not dry_run:
+            entries = [
+                entry
+                for entry in registry.hives(cfg)
+                if cache_store.cache_path(config.cache_dir(), entry) == planned.path
+            ]
+            current = (
+                _cache_entry_status(entries[0], known_size=planned.size_bytes)
+                if len(entries) == 1
+                else None
+            )
+            if current is None:
+                continue
+        result.entries.append(current)
+        if not current.safe:
+            continue
+        if dry_run:
+            result.reclaimed_bytes += current.size_bytes
+            continue
+        try:
+            shutil.rmtree(current.path)
+        except OSError as exc:
+            result.errors[current.path] = str(exc)
+            continue
+        result.removed.append(current.path)
+        result.reclaimed_bytes += current.size_bytes
+    return result
 
 
 @dataclass

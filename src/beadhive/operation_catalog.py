@@ -238,6 +238,7 @@ work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o
 worktree add|hive:string:o,bead:string:o,branch:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree init|path:string:r
 worktree list|as_json:boolean:o,hive:string:o,state:string:o,limit:integer:o,cursor:string:o
+worktree mark-abandoned|ref:string:r,reason:string:r,retained_for:string:o,superseded_by:string:o,hive:string:o
 worktree mark-landed|ref:string:r,hive:string:o
 worktree path|ref:string:o,bead:string:o,hive:string:o
 worktree prune|hive:string:o
@@ -385,7 +386,17 @@ _CLI_ALIAS_TARGETS: dict[str, tuple[str, dict[str, Any], str]] = {
     "host release": ("host.lease.release", {}, "hidden flat compatibility alias"),
     **{
         f"wt {verb}": (f"worktree.{verb}", {}, "hidden short group alias")
-        for verb in ("add", "init", "list", "mark-landed", "path", "prune", "rm", "status")
+        for verb in (
+            "add",
+            "init",
+            "list",
+            "mark-abandoned",
+            "mark-landed",
+            "path",
+            "prune",
+            "rm",
+            "status",
+        )
     },
 }
 
@@ -425,6 +436,15 @@ _PASSTHROUGH_PATHS = {
 # their own declaration because a generator must be able to render them without consulting the
 # target command.
 _CLI_PROMPT_POLICY: dict[str, dict[str, Any]] = {
+    "doctor": {
+        "guard_parameters": [],
+        "guard_conditions": ["stdin-not-tty", "mcp-uses-pure-doctor-payload"],
+        "prompt_seams": ["beadhive.doctor._offer_workspace_init:typer.confirm"],
+        "reason": (
+            "an unseeded internal workspace is offered only on a TTY; JSON and headless use "
+            "never prompt"
+        ),
+    },
     "dep install": {
         "guard_parameters": ["yes"],
         "guard_conditions": [],
@@ -889,7 +909,12 @@ def operations() -> tuple[OperationSpec, ...]:
                 kind=kind,
                 privilege=privilege,
                 constraints={
-                    "interactive": path in _CLI_PROMPT_POLICY,
+                    # Intrinsic operation constraint: an MCP-projected operation remains pure
+                    # only when its CLI adapter wraps a separately pure operation (doctor renders
+                    # doctor_payload first, while its resource calls doctor_payload directly).
+                    # All other prompt-capable operations stay intrinsically interactive so a
+                    # malformed MCP allowlist mutation continues to fail closed.
+                    "interactive": path in _CLI_PROMPT_POLICY and path != "doctor",
                     "hq_write": hq_write,
                     "secret_material": secret_material,
                     "override_parameters": [

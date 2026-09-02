@@ -383,12 +383,25 @@ registration. It declares outbound ports for registries, repository/workspace re
 dependency probes, and optional lifecycle subscribers. Plugin details do not appear in hive
 domain objects.
 
+The implemented public boundary is `beadhive.modules.hives.HiveLifecycleService`, with typed
+request/result contracts and `HiveRegistry`, `WorkspaceRealizer`, `DependencyProbe`, and
+`LifecyclePublisher` ports. Current CLI and MCP commands share the production composition in
+`beadhive.hive_services`; legacy imports and monkeypatch seams remain governed by
+`docs/design/hives-compatibility-removal-ledger.md`.
+
 ### `modules/work`
 
 Owns bead-workflow policy and use cases: assignment, claim, scheduling, validation, submission,
 review, approval, merge, resume, and abandonment. It depends on explicit ports for bead storage,
 worktrees, execution, validation evidence, and identity. Existing `beadhive.work` facade behavior
 and patch points remain stable until consumers migrate.
+
+The implemented public boundary is `beadhive.modules.work.WorkLifecycleService`, with immutable,
+command-specific request/result contracts and `BeadStore`, `WorktreeLifecyclePort`,
+`ExecutionPort`, `ValidationEvidenceStore`, `IdentityProvider`, and `WorkNotifier` ports. The
+uncached production composition in `beadhive.work_services` keeps the established facade patch
+points live; its claim/resume adapter continues through the adopted `modules/worktrees` lifecycle
+composition instead of introducing another Git or filesystem implementation.
 
 ### `modules/planning`
 
@@ -425,6 +438,12 @@ Owns durable validation records, state-stream contracts, activity/read projectio
 models shared by transports. It does not turn the command path into CQRS infrastructure: read
 projections are introduced only where existing consumers need replay, aggregation, or independent
 availability.
+
+The first extraction keeps filesystem, process, Dolt, and transport behavior in outer adapters.
+Immutable validation facts, stream/cursor policy, activity/query models, storage/clock/notification
+ports, and read-side application services live in `beadhive.modules.state`; compatibility facades
+preserve the released imports. Exact boundary and closure evidence is recorded in
+[`docs/proof/bh-bptze.6-state-module.md`](proof/bh-bptze.6-state-module.md).
 
 ### `adapters/cli`
 

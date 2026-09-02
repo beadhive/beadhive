@@ -27,6 +27,7 @@ import typer
 
 from beadhive import bd as bd_mod
 from beadhive import (
+    claim_authority,
     config,
     ghpr,
     git_linkage,
@@ -39,7 +40,9 @@ from beadhive import (
     validation_ledger,
     validation_records,
     work,
+    work_group,
     work_logic,
+    work_show,
     worktree,
 )
 from beadhive.run import run as real_run
@@ -152,6 +155,8 @@ class FakeBd:
         # existing test's `close` keeps its old always-succeeds behavior unless it opts in.
         self.close_actor_guard = set()  # ids where a non-forced close refuses on actor mismatch
         self.close_always_fails = set()  # ids where close NEVER succeeds, even with --force
+        self.close_failures = {}  # id -> number of upcoming close calls that fail
+        self.dep_add_fails = set()  # (source, target, type) tuples
 
     def seed(self, bead_id, **fields):
         self.beads[bead_id] = {"id": bead_id, "status": "open", "assignee": "", **fields}
@@ -213,6 +218,9 @@ class FakeBd:
             return _CP(0, "", "")
         if sub == "close":
             bead_id = args[1]
+            if self.close_failures.get(bead_id, 0):
+                self.close_failures[bead_id] -= 1
+                return _CP(1, "", f"cannot close {bead_id}: simulated transient failure")
             if bead_id in self.close_always_fails:
                 return _CP(1, "", f"cannot close {bead_id}: simulated permanent failure")
             bead = self.beads.setdefault(bead_id, {"id": bead_id})
@@ -248,6 +256,25 @@ class FakeBd:
                 lbl = args[args.index("--label") + 1]
                 rows = [b for b in rows if lbl in (b.get("labels") or [])]
             return _CP(0, json.dumps(rows), "")
+        if sub == "dep" and args[1:2] == ["add"]:
+            source, target = args[2], args[3]
+            relation_type = args[args.index("-t") + 1] if "-t" in args else "blocks"
+            if (source, target, relation_type) in self.dep_add_fails:
+                return _CP(1, "", "simulated dependency failure")
+            deps = self.beads.setdefault(source, {"id": source}).setdefault("dependencies", [])
+            edge = {"depends_on_id": target, "type": relation_type}
+            if edge not in deps:
+                deps.append(edge)
+            return _CP(0, "", "")
+        if sub == "dep" and args[1:2] == ["remove"]:
+            source, target = args[2], args[3]
+            bead = self.beads.setdefault(source, {"id": source})
+            bead["dependencies"] = [
+                dep
+                for dep in bead.get("dependencies", [])
+                if str(dep.get("depends_on_id") or "") != target
+            ]
+            return _CP(0, "", "")
         if sub == "label" and len(args) >= 4 and args[1] == "add":
             bead = self.beads.setdefault(args[2], {"id": args[2]})
             labels = list(bead.get("labels") or [])
@@ -623,6 +650,30 @@ def test_claim_twice_reattaches(hive, fakebd):
     assert _wt(hive, "mr-1").exists()
 
 
+def test_claim_reattach_reports_init_rule_drift_without_running_new_rule(hive, fakebd, capsys):
+    fakebd.seed("mr-1", title="t")
+    work.claim(bead="mr-1", as_="", hive="myrepo")
+    wt = _wt(hive, "mr-1")
+    (wt / "wip.txt").write_text("in progress")
+    hive.cfg_path.write_text(
+        CONFIG_YAML
+        + """\
+worktrees:
+  init:
+    - {run: "touch changed.marker"}
+"""
+    )
+    capsys.readouterr()
+
+    work.claim(bead="mr-1", as_="", hive="myrepo")
+
+    assert (wt / "wip.txt").read_text() == "in progress"
+    assert not (wt / "changed.marker").exists()
+    err = capsys.readouterr().err
+    assert "worktree init rules changed" in err
+    assert f'bh wt init "{wt}"' in err
+
+
 def test_structured_claim_result_is_silent_and_distinguishes_reattach(hive, fakebd, capsys):
     """The composite-facing core returns the full envelope without the CLI brief/renderer."""
     fakebd.seed("mr-1", title="t")
@@ -635,6 +686,103 @@ def test_structured_claim_result_is_silent_and_distinguishes_reattach(hive, fake
     second = work._claim_single_bead(config.load(), "myrepo", "mr-1", "")
     assert second.disposition == "reattached"
     assert second.bead["assignee"] == second.actor == first.actor
+
+
+def test_claim_reattaches_assembled_epic_and_reissues_missing_epoch_record(
+    hive, fakebd, monkeypatch
+):
+    """An assembled epic is already authorized work, not a fresh dispatch to revalidate.
+
+    This is the production recovery shape: the dispatcher still owns the in-progress epic,
+    every child is closed/merged, and the worktree-local claim record is absent.  Reattachment
+    must refresh identity and mint the live epoch without asking planning to rediscover work in
+    an intentionally empty active-child projection.
+    """
+    actor = "disp/lead"
+    fakebd.seed(
+        "mr-epic",
+        title="assembled",
+        issue_type="epic",
+        status="in_progress",
+        assignee=actor,
+    )
+    fakebd.seed(
+        "mr-epic.1",
+        title="done",
+        parent="mr-epic",
+        status="closed",
+        close_reason="merged",
+    )
+    cfg = config.load()
+    entry, target, branch = worktree.ensure(cfg, "myrepo", "mr-epic", kind="epic")
+    authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
+    assert authority.read(target) is None
+
+    def unexpected_fresh_dispatch(*_args, **_kwargs):
+        raise AssertionError("same-actor reattachment must not run fresh dispatch conventions")
+
+    monkeypatch.setattr(plan, "verify_epic", unexpected_fresh_dispatch)
+    monkeypatch.setattr(work, "_maybe_open_molecule", unexpected_fresh_dispatch)
+    monkeypatch.setattr(work, "_claim_fence", lambda *_args: ("host-current", 37))
+
+    result = work._claim_single_bead(cfg, "myrepo", "mr-epic", actor)
+
+    assert result.disposition == "reattached"
+    assert result.worktree == target
+    assert result.branch == branch
+    assert _cfg_get(target, "user.name") == actor
+    assert not fakebd.did("update", "mr-epic", "--claim")
+    record = authority.read(target)
+    assert record is not None
+    assert (record.bead, record.seat, record.host_id, record.epoch) == (
+        "mr-epic",
+        actor,
+        "host-current",
+        37,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "assignee", "actor"),
+    [
+        ("closed", "disp/lead", "disp/lead"),
+        ("in_progress", "disp/other", "disp/lead"),
+        ("in_progress", "dev/wrong-seat", "dev/wrong-seat"),
+    ],
+    ids=("closed", "other-actor", "wrong-seat"),
+)
+def test_claim_reattach_preserves_authorization_guards_before_dispatch_policy(
+    hive, fakebd, monkeypatch, status, assignee, actor
+):
+    fakebd.seed(
+        "mr-epic",
+        title="guarded",
+        issue_type="epic",
+        status=status,
+        assignee=assignee,
+    )
+
+    def unexpected_convention_check(*_args, **_kwargs):
+        raise AssertionError("authorization guards must refuse before dispatch policy")
+
+    monkeypatch.setattr(plan, "verify_epic", unexpected_convention_check)
+    with pytest.raises(typer.Exit):
+        work._claim_single_bead(config.load(), "myrepo", "mr-epic", actor)
+    assert not _wt(hive, "mr-epic").exists()
+    assert not fakebd.did("update", "mr-epic", "--claim")
+
+
+def test_fresh_claim_still_refuses_a_malformed_epic(hive, fakebd, monkeypatch):
+    fakebd.seed("mr-epic", title="fresh", issue_type="epic")
+    monkeypatch.setattr(plan, "verify_epic", _malformed("mr-epic: no active work issues"))
+
+    with pytest.raises(typer.Exit):
+        work._claim_single_bead(config.load(), "myrepo", "mr-epic", "disp/lead")
+
+    assert fakebd.beads["mr-epic"]["status"] == "open"
+    assert fakebd.beads["mr-epic"]["assignee"] == ""
+    assert not _wt(hive, "mr-epic").exists()
+    assert not fakebd.did("update", "mr-epic", "--claim")
 
 
 def test_structured_claim_rejects_a_lost_claim_after_provisioning(hive, fakebd, monkeypatch):
@@ -1148,6 +1296,59 @@ def test_submit_clean_local_gate_no_push(hive, fakebd):
     assert fakebd.did("gate", "create", "--blocks", "mr-4")
     assert not _remote_has(hive, "wt/bead/issue/mr-4")  # local gate → no push
     assert fakebd.did("dolt", "push")  # bh-dw3e.6: submit pushes bead STATE regardless of gate
+
+
+def test_submit_reaps_only_the_exact_branch_refine_backups(hive, fakebd):
+    fakebd.seed("mr-safety", title="t")
+    work.claim(bead="mr-safety", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-safety"), "feat: the change")
+    branch = "wt/bead/issue/mr-safety"
+    owned = f"{branch}.refine-20260902T031122Z"
+    foreign = f"{branch}.refine-latest"
+    _git("branch", owned, cwd=hive.main)
+    _git("branch", foreign, cwd=hive.main)
+
+    work.submit(bead="mr-safety", hive="myrepo")
+
+    assert not _git("branch", "--list", owned, cwd=hive.main).stdout.strip()
+    assert _git("branch", "--list", foreign, cwd=hive.main).stdout.strip()
+
+
+def test_submit_remote_push_warning_still_reaps_locally_accepted_refine_backup(
+    hive, fakebd, capsys
+):
+    fakebd.seed("mr-safety-push", title="t")
+    work.claim(bead="mr-safety-push", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-safety-push"), "feat: the change")
+    branch = "wt/bead/issue/mr-safety-push"
+    backup = f"{branch}.refine-20260902T031122Z"
+    _git("branch", backup, cwd=hive.main)
+    fakebd.dolt_push_rc = 1
+    fakebd.dolt_push_err = "Error: push to origin: connection refused"
+
+    work.submit(bead="mr-safety-push", hive="myrepo")
+
+    assert fakebd.states["mr-safety-push"]["review"] == "pending"
+    assert not _git("branch", "--list", backup, cwd=hive.main).stdout.strip()
+    assert "state push failed" in capsys.readouterr().err
+
+
+def test_submit_local_gate_failure_retains_refine_backup(hive, fakebd, monkeypatch):
+    fakebd.seed("mr-safety-gate", title="t")
+    work.claim(bead="mr-safety-gate", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-safety-gate"), "feat: the change")
+    branch = "wt/bead/issue/mr-safety-gate"
+    backup = f"{branch}.refine-20260902T031122Z"
+    _git("branch", backup, cwd=hive.main)
+
+    def fail_gate(*_args, **_kwargs):
+        raise typer.Exit(1)
+
+    monkeypatch.setattr(work, "_open_submit_gate", fail_gate)
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-safety-gate", hive="myrepo")
+
+    assert _git("branch", "--list", backup, cwd=hive.main).stdout.strip()
 
 
 def test_submit_ghpr_gate_pushes(hive, fakebd, monkeypatch):
@@ -2773,6 +2974,28 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     assert note_calls and "shared.txt" in " ".join(note_calls[0])
 
 
+def test_successful_merge_close_reaps_refine_and_premerge_backups(hive, fakebd):
+    fakebd.seed("mr-32", title="t")
+    work.claim(bead="mr-32", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-32"), "feat: the change")
+    branch = "wt/bead/issue/mr-32"
+    backups = [
+        f"{branch}.refine-20260902T031122Z",
+        f"{branch}.premerge-20260902T031123Z-abcd",
+    ]
+    for backup in backups:
+        _git("branch", backup, cwd=hive.main)
+    work.submit(bead="mr-32", hive="myrepo")
+    # Submit accepts/reaps refine, while premerge remains until merge acceptance.
+    assert not _git("branch", "--list", backups[0], cwd=hive.main).stdout.strip()
+    assert _git("branch", "--list", backups[1], cwd=hive.main).stdout.strip()
+    fakebd.approve("mr-32")
+
+    work.merge(bead="mr-32", hive="myrepo", rm=False, molecule=False)
+
+    assert all(not _git("branch", "--list", b, cwd=hive.main).stdout.strip() for b in backups)
+
+
 # ---- commit-flow metrics at the merge seam (hqfy.2) ------------------------
 
 
@@ -3492,6 +3715,103 @@ def test_mark_landed_noop_when_already_landed(hive, fakebd):
 
     assert fakebd.beads["mr-43"]["close_reason"] == "molecule landed"  # untouched
     assert not fakebd.did("close", "mr-43")
+
+
+# ---- worktree mark-abandoned: authoritative terminal disposition -----------
+
+
+def test_mark_abandoned_retained_writes_outgoing_relation_and_is_idempotent(hive, fakebd, capsys):
+    fakebd.seed("mr-old", title="old")
+    fakebd.seed("mr-port", title="port")
+
+    worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+    first_call_count = len(fakebd.calls)
+    worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["dependencies"] == [
+        {"depends_on_id": "mr-port", "type": "relates-to"}
+    ]
+    assert fakebd.beads["mr-old"]["close_reason"] == (
+        "bh:worktree-disposition:v1;state=retained;reason=pivot;citing=mr-port"
+    )
+    assert ["dep", "add", "mr-old", "mr-port", "-t", "relates-to"] in [
+        args for _actor, args in fakebd.calls
+    ]
+    assert ["dep", "add", "mr-port", "mr-old", "-t", "relates-to"] not in [
+        args for _actor, args in fakebd.calls
+    ]
+    repeat_calls = [args for _actor, args in fakebd.calls[first_call_count:]]
+    assert not [args for args in repeat_calls if args and args[0] in {"dep", "close", "reopen"}]
+    output = capsys.readouterr().out
+    assert "already exists" not in output
+    assert "nothing to do" in output
+
+
+def test_mark_abandoned_superseded_writes_incoming_relation_from_replacement(hive, fakebd):
+    fakebd.seed("mr-old", title="old")
+    fakebd.seed("mr-new", title="new")
+
+    worktree.mark_abandoned("myrepo", "mr-old", "superseded", superseded_by="mr-new")
+
+    assert fakebd.beads["mr-new"]["dependencies"] == [
+        {"depends_on_id": "mr-old", "type": "supersedes"}
+    ]
+    assert fakebd.beads["mr-old"]["close_reason"].endswith("citing=mr-new")
+
+
+def test_mark_abandoned_prevalidation_failure_makes_no_mutation(hive, fakebd):
+    fakebd.seed("mr-old", title="old")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-missing")
+
+    assert fakebd.beads["mr-old"]["status"] == "open"
+    assert not fakebd.did("dep", "add")
+    assert not fakebd.did("close", "mr-old")
+
+
+def test_mark_abandoned_relation_failure_happens_before_close_reason_mutation(hive, fakebd):
+    fakebd.seed("mr-old", title="old")
+    fakebd.seed("mr-port", title="port")
+    fakebd.dep_add_fails.add(("mr-old", "mr-port", "relates-to"))
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["status"] == "open"
+    assert "close_reason" not in fakebd.beads["mr-old"]
+
+
+def test_mark_abandoned_conflicting_edge_is_fail_closed_and_makes_no_mutation(hive, fakebd):
+    fakebd.seed(
+        "mr-old",
+        title="old",
+        dependencies=[{"depends_on_id": "mr-port", "type": "blocks"}],
+    )
+    fakebd.seed("mr-port", title="port")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["status"] == "open"
+    assert fakebd.beads["mr-old"]["dependencies"] == [
+        {"depends_on_id": "mr-port", "type": "blocks"}
+    ]
+    assert not fakebd.did("close", "mr-old")
+
+
+def test_mark_abandoned_reclose_failure_compensates_edge_and_original_reason(hive, fakebd):
+    fakebd.seed("mr-old", title="old", status="closed", close_reason="wontfix")
+    fakebd.seed("mr-port", title="port")
+    fakebd.close_failures["mr-old"] = 1
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["status"] == "closed"
+    assert fakebd.beads["mr-old"]["close_reason"] == "wontfix"
+    assert fakebd.beads["mr-old"].get("dependencies") == []
+    assert fakebd.did("dep", "remove", "mr-old", "mr-port")
 
 
 # ---- start / finish: epic-only aliases (kickoff + land) ---------------------
@@ -4606,6 +4926,21 @@ def test_claim_collapse_synthesizes_batch_label_on_unbatched_children(hive, fake
     assert not _wt_of(hive, "mr-1.1").exists()  # collapsed: no per-bead worktrees
 
 
+def test_ready_children_excludes_a_detached_dotted_prefix_match(monkeypatch, tmp_path):
+    """Collapsed batches are built only from parent-edge members, not bd's wider id-prefix rows."""
+    rows = [
+        {"id": "mr-1.1", "parent": "mr-1", "status": "open"},
+        {"id": "mr-1.2", "parent": "mr-other", "status": "open"},
+    ]
+    monkeypatch.setattr(
+        bd_mod,
+        "_run",
+        lambda *_args, **_kwargs: _CP(0, json.dumps(rows), ""),
+    )
+
+    assert work_group.ready_children("mr-1", tmp_path) == ["mr-1.1"]
+
+
 def test_claim_collapse_lands_commits_on_batch_worktree_not_coordinator_seat(hive, fakebd):
     """Regression: with the coordinator SEAT worktree already provisioned on
     wt/bead/epic/<epic>, a collapsed claim must give the group its OWN wt/batch/<epic> worktree in
@@ -5059,6 +5394,43 @@ def test_review_molecule_aggregates_intent_and_change(hive, fakebd, capsys):
     assert "accept one" in out and "accept two" in out
     assert "## Change (wt/bead/epic/mr-1 vs main)" in out
     assert "change.txt" in out  # the child merges show up in the stat view
+
+
+def test_review_molecule_intent_excludes_a_detached_dotted_prefix_match(
+    monkeypatch, tmp_path, capsys
+):
+    rows = [
+        {
+            "id": "mr-1.1",
+            "parent": "mr-1",
+            "status": "open",
+            "issue_type": "task",
+            "title": "attached",
+            "acceptance_criteria": "keep me",
+        },
+        {
+            "id": "mr-1.2",
+            "parent": "mr-other",
+            "status": "open",
+            "issue_type": "task",
+            "title": "detached",
+            "acceptance_criteria": "do not review me",
+        },
+    ]
+    monkeypatch.setattr(
+        bd_mod,
+        "_run",
+        lambda *_args, **_kwargs: _CP(0, json.dumps(rows), ""),
+    )
+    monkeypatch.setattr(bd_mod, "show", lambda *_args: {"id": "mr-1", "title": "epic"})
+    monkeypatch.setattr(work, "_print_brief", lambda *_args: None)
+
+    work_show._review_molecule_intent({}, {}, "mr-1", tmp_path)
+
+    out = capsys.readouterr().out
+    assert "## Molecule children (1)" in out
+    assert "keep me" in out
+    assert "do not review me" not in out
 
 
 def test_review_bead_mode_shows_brief_and_change(hive, fakebd, capsys):

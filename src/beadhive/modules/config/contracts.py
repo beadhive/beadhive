@@ -70,6 +70,36 @@ SCHEMA_VERSION = 1
 # rather than hiding them in the legacy facade.
 CONFIG_SECTION_COMPATIBILITY_ALIASES = frozenset({"beads"})
 
+# Canonical worktree-safety taxonomy.  The scanner re-exports these names for compatibility,
+# while typed configuration and the generated schema own their defaults here.
+DEFAULT_PRECIOUS_GLOBS: tuple[str, ...] = (
+    ".env",
+    ".env.*",
+    "*.db",
+    "*.sqlite*",
+    "*.duckdb",
+    "dumps/**",
+    "data/**",
+    "*.dump",
+    "*.sql",
+    "downloads/**",
+    "outputs/**",
+    "*.pem",
+    "*.key",
+)
+DEFAULT_JUNK_GLOBS: tuple[str, ...] = (
+    "node_modules/**",
+    ".venv/**",
+    "__pycache__/**",
+    "*.pyc",
+    ".pytest_cache/**",
+    ".ruff_cache/**",
+    "dist/**",
+    "build/**",
+    ".mypy_cache/**",
+)
+DEFAULT_PRECIOUS_MIN_BYTES = 1024 * 1024
+
 
 class _Section(BaseModel):
     """Base for every nested config section: forbid unknown keys, same as the top level."""
@@ -555,6 +585,19 @@ class WorkConfig(_Section):
             "everything until that file is real."
         ),
     )
+    precious_globs: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_PRECIOUS_GLOBS),
+        description="Local-only paths protected regardless of size (per-hive replaces global).",
+    )
+    junk_globs: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_JUNK_GLOBS),
+        description="Disposable paths excluded before stat/walk (per-hive replaces global).",
+    )
+    precious_min_bytes: int = Field(
+        DEFAULT_PRECIOUS_MIN_BYTES,
+        ge=0,
+        description="Review threshold in bytes for ignored/untracked paths outside the taxonomy.",
+    )
     batch_max_size: int = Field(
         5, description="Max issues a planner-declared batch:<group> may hold as one unit."
     )
@@ -1023,9 +1066,28 @@ class ClaudeConfig(_Section):
 
 
 class GitWorkspaceConfig(_Section):
-    """git-workspace repo-group config. No `enabled` flag: git-workspace is a required dep
-    (bh-hsus.4 — `deps.py`, `required=ALWAYS`), not an optional integration, so bh always reads
-    whatever `workspace*.toml` it finds."""
+    """git-workspace repo-group config and workspace-root ownership policy.
+
+    There is no ``enabled`` flag: git-workspace is a required dependency. ``mode`` and
+    ``root`` instead decide whether bh owns the clone root or consumes an operator-owned
+    workspace. Root resolution itself remains centralized in :mod:`beadhive.identity`.
+    """
+
+    mode: Literal["internal", "external"] | None = Field(
+        None,
+        description=(
+            "internal: bh owns <bh home>/ws. external: use $GIT_WORKSPACE, an explicit root, "
+            "or the legacy ~/workspace. Unset preserves a populated legacy workspace and "
+            "otherwise defaults to internal."
+        ),
+    )
+    root: str | None = Field(
+        None,
+        description=(
+            "Explicit external workspace root. Rejected with mode: internal; relocate an "
+            "internal workspace by moving the complete bh home with $BH_HOME."
+        ),
+    )
 
     path: str | None = Field(
         None,
@@ -1038,6 +1100,16 @@ class GitWorkspaceConfig(_Section):
     hive_match: Literal["flexible", "prefix", "triplet"] = Field(
         "flexible", description="How `bh -r <id> ...` resolves a hive."
     )
+
+    @model_validator(mode="after")
+    def _root_is_external_only(self) -> GitWorkspaceConfig:
+        if self.mode == "internal" and self.root:
+            raise ValueError(
+                "git_workspace.root cannot be set with git_workspace.mode: internal; "
+                "remove root or use mode: external. To relocate the internal workspace, "
+                "set $BH_HOME."
+            )
+        return self
 
 
 class OrcaWorktreesConfig(_Section):
@@ -1503,6 +1575,9 @@ __all__ = (
     "ClaudeConfig",
     "ConflictConfig",
     "CONFIG_SECTION_COMPATIBILITY_ALIASES",
+    "DEFAULT_JUNK_GLOBS",
+    "DEFAULT_PRECIOUS_GLOBS",
+    "DEFAULT_PRECIOUS_MIN_BYTES",
     "DevIdentity",
     "DimensionConfig",
     "DispatchConfig",

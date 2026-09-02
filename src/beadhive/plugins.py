@@ -1,13 +1,13 @@
 """Compatibility facade between legacy integrations and the typed plugin kernel.
 
-``Plugin`` and ``registry()`` remain import-compatible while callers migrate.  Optional
+``Plugin`` and ``registry()`` remain import-compatible while callers migrate. Optional
 callbacks are inspected only here and projected as non-optional lifecycle participants or
 capability ports.  Core callers therefore depend on kernel-owned event contracts and named
 ports instead of reaching into a nullable callback bag.
 
-The imports inside :func:`registry` are the one temporary cycle-breaking exception.  Owner:
-``bh-qw9oi.6``'s compatibility ledger.  Removal trigger: every built-in constructs its runtime
-adapter from the manifest/bootstrap composition layer rather than importing this facade.
+The ordered runtime catalog keeps this facade from statically importing the five built-in
+implementations. Removal trigger: every built-in constructs its runtime adapter from the
+manifest/bootstrap composition layer rather than importing this facade.
 """
 
 from __future__ import annotations
@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from importlib import import_module
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, TypeVar, cast
@@ -40,6 +41,7 @@ from .kernel.plugins import (
     discover_plugins,
     parse_kernel_config,
 )
+from .plugin_runtime_catalog import PLUGIN_RUNTIME_MODULES
 
 
 @dataclass(frozen=True)
@@ -70,20 +72,8 @@ def registry() -> list[Plugin]:
     plugin-shaped CLI is mounted explicitly by the transport layer.
     """
 
-    from . import (  # compatibility-facade exception; see module removal trigger
-        herdr_plugin,
-        hitch_plugin,
-        observaloop,
-        orca,
-        repowise_plugin,
-    )
-
     return [
-        orca.PLUGIN,
-        observaloop.PLUGIN,
-        hitch_plugin.PLUGIN,
-        herdr_plugin.PLUGIN,
-        repowise_plugin.PLUGIN,
+        cast(Plugin, import_module(module_name).PLUGIN) for module_name in PLUGIN_RUNTIME_MODULES
     ]
 
 

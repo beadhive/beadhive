@@ -12,13 +12,16 @@ from __future__ import annotations
 import ast
 import importlib
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
 from beadhive import cli as cli_module
 from beadhive import config, orca, plugins
 from beadhive.kernel.lifecycle import EVENTS_BY_ID, DeliveryStatus
+from beadhive.plugin_runtime_catalog import PLUGIN_RUNTIME_CATALOG, PLUGIN_RUNTIME_MODULES
 
 
 def test_registry_is_a_list():
@@ -28,7 +31,69 @@ def test_registry_is_a_list():
 
 def test_registry_is_import_safe_and_callable_twice():
     # Calling it must never raise, even before any plugin module is imported.
-    assert plugins.registry() == plugins.registry()
+    first = plugins.registry()
+    second = plugins.registry()
+
+    assert first == second
+    assert all(left is right for left, right in zip(first, second, strict=True))
+
+
+def test_runtime_catalog_preserves_registry_order_and_exact_plugin_objects():
+    assert tuple(entry.plugin_id for entry in PLUGIN_RUNTIME_CATALOG) == (
+        "orca",
+        "observaloop",
+        "hitch",
+        "herdr",
+        "repowise",
+    )
+    assert PLUGIN_RUNTIME_MODULES == tuple(entry.module for entry in PLUGIN_RUNTIME_CATALOG)
+    assert plugins.registry() == [
+        importlib.import_module(module_name).PLUGIN for module_name in PLUGIN_RUNTIME_MODULES
+    ]
+    assert all(
+        plugin is importlib.import_module(module_name).PLUGIN
+        for plugin, module_name in zip(plugins.registry(), PLUGIN_RUNTIME_MODULES, strict=True)
+    )
+
+
+def test_registry_observes_loader_refresh_without_adding_a_private_cache(monkeypatch):
+    modules = {
+        module_name: SimpleNamespace(PLUGIN=object()) for module_name in PLUGIN_RUNTIME_MODULES
+    }
+    calls: list[str] = []
+
+    def load(module_name: str):
+        calls.append(module_name)
+        return modules[module_name]
+
+    monkeypatch.setattr(plugins, "import_module", load)
+    first = plugins.registry()
+    refreshed = object()
+    modules[PLUGIN_RUNTIME_MODULES[0]] = SimpleNamespace(PLUGIN=refreshed)
+    second = plugins.registry()
+
+    assert calls == [*PLUGIN_RUNTIME_MODULES, *PLUGIN_RUNTIME_MODULES]
+    assert second[0] is refreshed
+    assert first[1:] == second[1:]
+
+
+def test_registry_preserves_runtime_import_failures_and_stops_in_order(monkeypatch):
+    calls: list[str] = []
+    failing_module = PLUGIN_RUNTIME_MODULES[2]
+
+    def load(module_name: str):
+        calls.append(module_name)
+        if module_name == failing_module:
+            raise ModuleNotFoundError("runtime plugin unavailable", name=module_name)
+        return SimpleNamespace(PLUGIN=object())
+
+    monkeypatch.setattr(plugins, "import_module", load)
+
+    with pytest.raises(ModuleNotFoundError, match="runtime plugin unavailable") as caught:
+        plugins.registry()
+
+    assert caught.value.name == failing_module
+    assert calls == list(PLUGIN_RUNTIME_MODULES[:3])
 
 
 def _mk(name: str, hook):

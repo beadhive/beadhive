@@ -70,7 +70,7 @@ from . import (
     bd,
     config,
     doctor,
-    hive,
+    hive_services,
     hub,
     log,
     molecule,
@@ -83,10 +83,19 @@ from . import (
     triage,
     validate,
     work,
+    work_services,
     work_show,
     worktree,
 )
 from .identity import resolve_actor, workspace_root
+from .modules.hives import (
+    HiveIdentity,
+    HiveListRequest,
+    HiveStatusRequest,
+    OnboardHiveRequest,
+    RegisterHiveRequest,
+)
+from .modules.work import ScheduleRequest
 
 
 def install_hint() -> str:
@@ -712,7 +721,7 @@ def _register_plan_tools(mcp, tool, resource):
         acceptance text starting 'STUB:' is visible debt (a warning, never an error).
         """
         decisions = plan.compile_complexity_labels(spec)
-        problems = molecule.validate_spec(spec, config.load())
+        problems = list(plan.validate_molecule(spec, config.load()).problems)
         summary = molecule.acceptance_summary(spec.get("issues"))
         return {
             "valid": not problems,
@@ -737,7 +746,9 @@ def _register_plan_tools(mcp, tool, resource):
         cwd = registry.hive_dir_for(cfg, hive)
         try:
             decisions = plan.compile_complexity_labels(spec)
-            molecule.validate_or_raise(spec, cfg)
+            validation = plan.validate_molecule(spec, cfg)
+            if not validation.valid:
+                raise molecule.MoleculeError(list(validation.problems))
         except molecule.MoleculeError as exc:
             raise ToolError("invalid molecule spec: " + "; ".join(exc.problems)) from exc
 
@@ -848,7 +859,11 @@ def _register_hive_tools(mcp, tool, resource):
         are repos you could `bh hive add`; `registered` are the hives already in the registry.
         Backs `bh hive list --available`.
         """
-        return hive.available(config.load())
+        result = hive_services.hive_lifecycle_service().list(HiveListRequest(available=True))
+        return {
+            "candidates": list(result.discovery.candidates),
+            "registered": list(result.discovery.registered),
+        }
 
     @resource("hive.list")
     def hive_list_resource():
@@ -858,7 +873,11 @@ def _register_hive_tools(mcp, tool, resource):
         lock-file diff against the registered hives, zero API calls. Dual-exposed so
         tool-only clients remain unaffected.
         """
-        return hive.available(config.load())
+        result = hive_services.hive_lifecycle_service().list(HiveListRequest(available=True))
+        return {
+            "candidates": list(result.discovery.candidates),
+            "registered": list(result.discovery.registered),
+        }
 
     @tool("config.set")
     async def config_set(
@@ -910,13 +929,21 @@ def _register_hive_tools(mcp, tool, resource):
         `resources/updated` for `beadhive://hive/status`, `beadhive://hive/list`, `beadhive://hive/survey`.
         """
         _require_triplet("hive_add", provider, org, repo)
-        hive.add(f"{provider}/{org}/{repo}", prefix=prefix, kind=kind, upstream=upstream)
-        entry = registry.find_entry(config.load(), provider, org, repo)
-        if entry is None:
-            raise ToolError(f"hive_add: {provider}/{org}/{repo} was not registered")
+        result = hive_services.hive_lifecycle_service().register(
+            RegisterHiveRequest(
+                HiveIdentity(provider, org, repo),
+                prefix=prefix,
+                kind=kind,
+                upstream=upstream,
+            )
+        )
         await _notify_updated(ctx, _mutation_notification_uris("hive.add"))
         await _notify_alerts_if_changed(ctx)
-        return {"prefix": str(entry["prefix"]), "kind": str(entry["kind"]), "registered": True}
+        return {
+            "prefix": result.prefix,
+            "kind": result.kind,
+            "registered": result.registered,
+        }
 
     @tool("hive.onboard")
     async def hive_onboard(
@@ -947,25 +974,26 @@ def _register_hive_tools(mcp, tool, resource):
             raise ToolError(
                 f"hive_onboard: {target} does not exist — pass clone_url to clone it down first"
             )
-        # The prefix-derivation warnings onboard would surface, computed read-only up front.
-        _, warnings = registry.derive_prefix(provider, org, repo, "", config.load())
-        hive.onboard(
-            f"{provider}/{org}/{repo}",
-            clone_url=clone_url,
-            furnish=furnish,
-            claude=claude,
-            skills=skills,
-            observaloop=observaloop,
+        result = hive_services.hive_lifecycle_service(
+            workspace_root_resolver=workspace_root
+        ).onboard(
+            OnboardHiveRequest(
+                HiveIdentity(provider, org, repo),
+                clone_url=clone_url,
+                furnish=furnish,
+                claude=claude,
+                skills=skills,
+                observaloop=observaloop,
+            )
         )
-        entry = registry.find_entry(config.load(), provider, org, repo)
         await _notify_updated(ctx, _mutation_notification_uris("hive.onboard"))
         await _notify_alerts_if_changed(ctx)
         return {
-            "cloned": not pre_exists,
-            "registered": entry is not None,
-            "prefix": str(entry["prefix"]) if entry else "",
-            "synced": True,
-            "warnings": warnings,
+            "cloned": result.cloned or not pre_exists,
+            "registered": result.registered,
+            "prefix": result.prefix,
+            "synced": result.synced,
+            "warnings": list(result.warnings),
         }
 
     @tool("hive.status")
@@ -978,7 +1006,13 @@ def _register_hive_tools(mcp, tool, resource):
         breaks the `<code>-` convention; `hives` are the registered hives. The structured superset
         of `hive_list` — call that for just the add candidates.
         """
-        return hive.status_payload(config.load())
+        result = hive_services.hive_lifecycle_service().status(HiveStatusRequest())
+        return {
+            "candidates": list(result.candidates),
+            "collisions": list(result.collisions),
+            "violations": list(result.violations),
+            "hives": list(result.hives),
+        }
 
     @resource("hive.status")
     def hive_status_resource():
@@ -989,7 +1023,13 @@ def _register_hive_tools(mcp, tool, resource):
         hive; violations are required-org hives whose prefix breaks the `<code>-` convention;
         hives are the registered hives. Dual-exposed so tool-only clients remain unaffected.
         """
-        return hive.status_payload(config.load())
+        result = hive_services.hive_lifecycle_service().status(HiveStatusRequest())
+        return {
+            "candidates": list(result.candidates),
+            "collisions": list(result.collisions),
+            "violations": list(result.violations),
+            "hives": list(result.hives),
+        }
 
     @resource("hive.survey")
     def hives_survey_resource():
@@ -1035,7 +1075,8 @@ def _register_read_resources(mcp, tool, resource):
 
         Returns the same ``WtStatus`` list that ``bh worktree status --json`` emits,
         via the Typer-free ``worktree.status_rows()`` core — SAFE / ACTIVE / DIRTY /
-        REVIEW / UNMERGED / LANDED_REBASED / DETACHED / MERGED_ORPHAN / ABANDONED.
+        REVIEW / UNMERGED / LANDED_REBASED / RETAINED / SUPERSEDED / STALE /
+        DETACHED / MERGED_ORPHAN / ABANDONED.
         Hub-scoped (all managed hives); zero mutation, read-only.
         """
         return [s.as_dict() for s in worktree.status_rows()]
@@ -1123,7 +1164,13 @@ def _register_read_resources(mcp, tool, resource):
         cfg = config.load()
         entry, main, _target, _branch = worktree.locate(cfg, "", epic)
         try:
-            return work.schedule_payload(epic, cfg, entry, main)
+            return (
+                work_services.work_lifecycle_service(
+                    schedule=lambda request: work.schedule_payload(request.epic, cfg, entry, main)
+                )
+                .schedule(ScheduleRequest(epic))
+                .plan
+            )
         except ValueError as exc:
             raise ResourceError(str(exc)) from exc
 

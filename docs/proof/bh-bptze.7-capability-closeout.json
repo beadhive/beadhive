@@ -1,0 +1,1167 @@
+{
+  "closure_registry": {
+    "absent": 0,
+    "full_gate": "just check",
+    "present": 23,
+    "release_gate": "just check-all"
+  },
+  "definitions": {
+    "churn": "Git numstat at each exact revision since 2026-06-03T00:00:00Z",
+    "complexity": "AST decision nodes: if/for/while/try/handler/if-expression/match/comprehension/bool-op",
+    "coverage": "non-integration statement coverage; no branch or per-test contexts",
+    "fan_in": "distinct source modules outside the selected slice with a static import into it",
+    "proof_commit": "The proof child changes only docs/scripts/tests; source metrics are pinned to its immutable parent source commit."
+  },
+  "exception_ledger": {
+    "active_boundary_exceptions": 2,
+    "active_cycle_exceptions": 38,
+    "active_facades": 7,
+    "architecture_check_errors": [],
+    "removed_cycle_audit_records": 6,
+    "removed_ids": [
+      "cycle-edge-012",
+      "cycle-edge-013",
+      "cycle-edge-014",
+      "cycle-edge-015",
+      "cycle-edge-016",
+      "cycle-edge-022"
+    ],
+    "resolved_entry_policy": "Resolved entries are excluded from active exceptions and retained with status=removed as immutable audit records.",
+    "verified_commit": "ad4077d7ee5ae40c966f089920ca794006538090"
+  },
+  "material_reduction": {
+    "historical_cyclic_edges": {
+      "after": 155,
+      "before": 288,
+      "delta": -133
+    },
+    "historical_cyclic_modules": {
+      "after": 59,
+      "before": 85,
+      "delta": -26
+    },
+    "historical_largest_scc": {
+      "after": 35,
+      "before": 65,
+      "delta": -30
+    },
+    "immediate_largest_scc": {
+      "after": 35,
+      "before": 64,
+      "delta": -29
+    }
+  },
+  "measured_at_utc": "2026-09-02T00:00:00Z",
+  "measured_source_revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+  "modules": {
+    "agents": {
+      "after": {
+        "churn": {
+          "additions": 1711,
+          "commits": 2,
+          "deletions": 0
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "coverage": {
+          "covered": 776,
+          "missing": 72,
+          "percent": 91.509433962264,
+          "statements": 848
+        },
+        "execution": {
+          "command": "time just test-module agents",
+          "passed": 292,
+          "pytest_seconds": 28.62,
+          "skipped": 0,
+          "wall_seconds": 31.35,
+          "warnings": 0
+        },
+        "fan_in": {
+          "distinct_external_importers": 5,
+          "import_edges": 9,
+          "imported_symbols": 63
+        },
+        "id": "module.agents",
+        "owner_path": "src/beadhive/modules/agents",
+        "reverse_dependencies": [
+          "plugin.herdr",
+          "system-smoke"
+        ],
+        "reverse_dependency_tests": [
+          "tests/test_herdr_plugin.py",
+          "tests/test_role.py"
+        ],
+        "revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+        "selector_counts": {
+          "direct": 3,
+          "reverse_dependent": 2,
+          "shared_contract": 1
+        },
+        "shape": {
+          "classes": 54,
+          "decision_nodes": 167,
+          "functions": 76,
+          "nonblank_lines": 1454,
+          "physical_lines": 1711,
+          "python_files": 9
+        },
+        "shared_contract_tests": [
+          "tests/contracts/test_agent_launch_compatibility.py"
+        ],
+        "shared_contracts": [
+          "contract.agent-launch"
+        ],
+        "source_paths": [
+          "src/beadhive/modules/agents/**/*.py"
+        ],
+        "status": "present",
+        "tests": [
+          "tests/unit/modules/agents/test_agent_contracts.py",
+          "tests/unit/modules/agents/test_agent_services.py",
+          "tests/unit/modules/agents/test_agent_independence.py"
+        ]
+      },
+      "before": {
+        "churn": {
+          "additions": 5181,
+          "commits": 49,
+          "deletions": 485
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "execution_and_coverage": {
+          "covered": null,
+          "note": "The source records rounded combined coverage only; no ratio is invented.",
+          "passed": 322,
+          "percent": 82.0,
+          "provenance": "docs/design/agent-launch-boundary-characterization.md",
+          "pytest_seconds": 14.28,
+          "skipped": 0,
+          "statements": null,
+          "wall_seconds": 15.455
+        },
+        "fan_in": {
+          "distinct_external_importers": 3,
+          "import_edges": 3,
+          "imported_symbols": 6
+        },
+        "revision": "5e4a76700e85b4bdda97640eeec5c2bbac632b46",
+        "shape": {
+          "classes": 21,
+          "decision_nodes": 1043,
+          "functions": 124,
+          "nonblank_lines": 4267,
+          "physical_lines": 4690,
+          "python_files": 4
+        },
+        "source_paths": [
+          "src/beadhive/seat_contracts.py",
+          "src/beadhive/agent_launch_profile.py",
+          "src/beadhive/herdr_launch_profile.py",
+          "src/beadhive/herdr_plugin.py"
+        ]
+      }
+    },
+    "config": {
+      "after": {
+        "churn": {
+          "additions": 2865,
+          "commits": 7,
+          "deletions": 9
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "coverage": {
+          "covered": 1033,
+          "missing": 39,
+          "percent": 96.361940298507,
+          "statements": 1072
+        },
+        "execution": {
+          "command": "time just test-module config",
+          "passed": 282,
+          "pytest_seconds": 49.3,
+          "skipped": 0,
+          "wall_seconds": 51.495,
+          "warnings": 1
+        },
+        "fan_in": {
+          "distinct_external_importers": 15,
+          "import_edges": 22,
+          "imported_symbols": 38
+        },
+        "id": "module.config",
+        "owner_path": "src/beadhive/modules/config",
+        "reverse_dependencies": [
+          "system-smoke"
+        ],
+        "reverse_dependency_tests": [
+          "tests/test_config_schema.py",
+          "tests/test_config_validate.py",
+          "tests/test_config_dotted.py",
+          "tests/test_config_boundaries.py",
+          "tests/test_config_fleet_merge.py",
+          "tests/test_config_scope.py"
+        ],
+        "revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+        "selector_counts": {
+          "direct": 11,
+          "reverse_dependent": 6,
+          "shared_contract": 2
+        },
+        "shape": {
+          "classes": 66,
+          "decision_nodes": 217,
+          "functions": 91,
+          "nonblank_lines": 2460,
+          "physical_lines": 2931,
+          "python_files": 15
+        },
+        "shared_contract_tests": [
+          "tests/contracts/test_config_contract_compatibility.py",
+          "tests/contracts/test_config_resolution_compatibility.py"
+        ],
+        "shared_contracts": [
+          "contracts"
+        ],
+        "source_paths": [
+          "src/beadhive/modules/config/**/*.py"
+        ],
+        "status": "present",
+        "tests": [
+          "tests/unit/modules/config/test_config_contracts.py",
+          "tests/unit/modules/config/test_consumer_settings.py",
+          "tests/unit/modules/config/test_dependency_ledger.py",
+          "tests/unit/modules/config/test_migrations.py",
+          "tests/unit/modules/config/test_module_evidence.py",
+          "tests/unit/modules/config/test_resolution.py",
+          "tests/unit/modules/config/test_schema_artifacts.py",
+          "tests/unit/modules/config/test_structural_metrics.py",
+          "tests/unit/modules/config/test_plugin_fragments.py",
+          "tests/unit/modules/config/test_pure_independence.py",
+          "tests/unit/modules/config/test_yaml_store.py"
+        ]
+      },
+      "before": {
+        "churn": {
+          "additions": 2790,
+          "commits": 3,
+          "deletions": 0
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "execution_and_coverage": {
+          "covered": 964,
+          "passed": 102,
+          "percent": 91.029272898961,
+          "provenance": "docs/design/config-module-evidence.json#unit_coverage",
+          "pytest_seconds": 36.79,
+          "skipped": 0,
+          "statements": 1059,
+          "wall_seconds": 38.36
+        },
+        "fan_in": {
+          "distinct_external_importers": 6,
+          "import_edges": 11,
+          "imported_symbols": 16
+        },
+        "revision": "5e47c61107a67a26676fc5890a89f0fd0b715c78",
+        "shape": {
+          "classes": 64,
+          "decision_nodes": 211,
+          "functions": 81,
+          "nonblank_lines": 2342,
+          "physical_lines": 2790,
+          "python_files": 14
+        },
+        "source_paths": [
+          "src/beadhive/modules/config/__init__.py",
+          "src/beadhive/modules/config/adapters/__init__.py",
+          "src/beadhive/modules/config/adapters/environment.py",
+          "src/beadhive/modules/config/adapters/yaml_store.py",
+          "src/beadhive/modules/config/api.py",
+          "src/beadhive/modules/config/application/__init__.py",
+          "src/beadhive/modules/config/application/migrations.py",
+          "src/beadhive/modules/config/application/partition.py",
+          "src/beadhive/modules/config/application/plugin_fragments.py",
+          "src/beadhive/modules/config/application/resolution.py",
+          "src/beadhive/modules/config/application/schema_artifacts.py",
+          "src/beadhive/modules/config/contracts.py",
+          "src/beadhive/modules/config/domain/__init__.py",
+          "src/beadhive/modules/config/domain/ports.py"
+        ]
+      }
+    },
+    "hives": {
+      "after": {
+        "churn": {
+          "additions": 733,
+          "commits": 2,
+          "deletions": 178
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "coverage": {
+          "covered": 276,
+          "missing": 9,
+          "percent": 96.842105263158,
+          "statements": 285
+        },
+        "execution": {
+          "command": "time just test-module hives",
+          "passed": 159,
+          "pytest_seconds": 30.15,
+          "skipped": 0,
+          "wall_seconds": 35.169,
+          "warnings": 0
+        },
+        "fan_in": {
+          "distinct_external_importers": 6,
+          "import_edges": 7,
+          "imported_symbols": 39
+        },
+        "id": "module.hives",
+        "owner_path": "src/beadhive/modules/hives",
+        "reverse_dependencies": [
+          "adapters",
+          "system-smoke"
+        ],
+        "reverse_dependency_tests": [
+          "tests/test_hive_identity_json.py",
+          "tests/test_hive_lifecycle_json.py",
+          "tests/test_hive_ready.py",
+          "tests/test_hive_onboard.py",
+          "tests/test_hive_retire.py",
+          "tests/test_hive_reclaim.py",
+          "tests/test_mcp_hives_resources.py",
+          "tests/test_plugins.py"
+        ],
+        "revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+        "selector_counts": {
+          "direct": 3,
+          "reverse_dependent": 8,
+          "shared_contract": 2
+        },
+        "shape": {
+          "classes": 26,
+          "decision_nodes": 27,
+          "functions": 30,
+          "nonblank_lines": 452,
+          "physical_lines": 555,
+          "python_files": 8
+        },
+        "shared_contract_tests": [
+          "tests/contracts/test_hive_lifecycle_compatibility.py",
+          "tests/unit/kernel/lifecycle/test_dispatcher.py"
+        ],
+        "shared_contracts": [
+          "contracts",
+          "kernel.lifecycle"
+        ],
+        "source_paths": [
+          "src/beadhive/modules/hives/**/*.py"
+        ],
+        "status": "present",
+        "tests": [
+          "tests/unit/modules/hives/test_hive_identity.py",
+          "tests/unit/modules/hives/test_hive_services.py",
+          "tests/unit/modules/hives/test_hive_independence.py"
+        ]
+      },
+      "before": {
+        "churn": {
+          "additions": 6537,
+          "commits": 76,
+          "deletions": 1187
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "execution_and_coverage": {
+          "collected": 690,
+          "covered": 2097,
+          "note": "The historical evidence recorded collection and coverage, not per-slice timing.",
+          "percent": 93.867502238138,
+          "provenance": "docs/design/capability-module-boundaries.md",
+          "pytest_seconds": null,
+          "statements": 2234,
+          "wall_seconds": null
+        },
+        "fan_in": {
+          "distinct_external_importers": 60,
+          "import_edges": 70,
+          "imported_symbols": 73
+        },
+        "revision": "287061f089764dac29b5f584ebcdbb5f25f86c26",
+        "shape": {
+          "classes": 10,
+          "decision_nodes": 755,
+          "functions": 226,
+          "nonblank_lines": 4570,
+          "physical_lines": 5351,
+          "python_files": 6
+        },
+        "source_paths": [
+          "src/beadhive/hive.py",
+          "src/beadhive/hive_identity.py",
+          "src/beadhive/hive_ready.py",
+          "src/beadhive/onboard.py",
+          "src/beadhive/registry.py",
+          "src/beadhive/retire.py"
+        ]
+      }
+    },
+    "planning": {
+      "after": {
+        "churn": {
+          "additions": 358,
+          "commits": 1,
+          "deletions": 0
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "coverage": {
+          "covered": 152,
+          "missing": 8,
+          "percent": 95.0,
+          "statements": 160
+        },
+        "execution": {
+          "command": "time just test-module planning",
+          "passed": 173,
+          "pytest_seconds": 124.93,
+          "skipped": 0,
+          "wall_seconds": 127.998,
+          "warnings": 0
+        },
+        "fan_in": {
+          "distinct_external_importers": 2,
+          "import_edges": 2,
+          "imported_symbols": 21
+        },
+        "id": "module.planning",
+        "owner_path": "src/beadhive/modules/planning",
+        "reverse_dependencies": [
+          "adapters",
+          "system-smoke"
+        ],
+        "reverse_dependency_tests": [
+          "tests/test_plan.py",
+          "tests/test_plan_repair.py",
+          "tests/test_cli_projection.py",
+          "tests/test_mcp.py",
+          "tests/test_mcp_plans_resources.py"
+        ],
+        "revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+        "selector_counts": {
+          "direct": 2,
+          "reverse_dependent": 5,
+          "shared_contract": 1
+        },
+        "shape": {
+          "classes": 18,
+          "decision_nodes": 26,
+          "functions": 20,
+          "nonblank_lines": 289,
+          "physical_lines": 358,
+          "python_files": 7
+        },
+        "shared_contract_tests": [
+          "tests/contracts/test_planning_capability_adapters.py"
+        ],
+        "shared_contracts": [
+          "contracts"
+        ],
+        "source_paths": [
+          "src/beadhive/modules/planning/**/*.py"
+        ],
+        "status": "present",
+        "tests": [
+          "tests/unit/modules/planning/test_planning_services.py",
+          "tests/unit/modules/planning/test_planning_independence.py"
+        ]
+      },
+      "before": {
+        "churn": {
+          "additions": 3459,
+          "commits": 39,
+          "deletions": 436
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "execution_and_coverage": {
+          "collected": 231,
+          "covered": 1186,
+          "note": "The historical evidence recorded collection and coverage, not per-slice timing.",
+          "percent": 88.77245508982,
+          "provenance": "docs/design/capability-module-boundaries.md",
+          "pytest_seconds": null,
+          "statements": 1336,
+          "wall_seconds": null
+        },
+        "fan_in": {
+          "distinct_external_importers": 10,
+          "import_edges": 14,
+          "imported_symbols": 14
+        },
+        "revision": "287061f089764dac29b5f584ebcdbb5f25f86c26",
+        "shape": {
+          "classes": 4,
+          "decision_nodes": 532,
+          "functions": 116,
+          "nonblank_lines": 2557,
+          "physical_lines": 3023,
+          "python_files": 7
+        },
+        "source_paths": [
+          "src/beadhive/molecule.py",
+          "src/beadhive/plan.py",
+          "src/beadhive/plan_repair.py",
+          "src/beadhive/report.py",
+          "src/beadhive/report_target.py",
+          "src/beadhive/triage.py",
+          "src/beadhive/triage_store.py"
+        ]
+      }
+    },
+    "state": {
+      "after": {
+        "churn": {
+          "additions": 1263,
+          "commits": 1,
+          "deletions": 0
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "coverage": {
+          "covered": 535,
+          "missing": 19,
+          "percent": 96.570397111913,
+          "statements": 554
+        },
+        "execution": {
+          "command": "time just test-module state",
+          "passed": 88,
+          "pytest_seconds": 14.84,
+          "skipped": 0,
+          "wall_seconds": 17.102,
+          "warnings": 0
+        },
+        "fan_in": {
+          "distinct_external_importers": 10,
+          "import_edges": 10,
+          "imported_symbols": 60
+        },
+        "id": "module.state",
+        "owner_path": "src/beadhive/modules/state",
+        "reverse_dependencies": [
+          "adapters",
+          "system-smoke"
+        ],
+        "reverse_dependency_tests": [
+          "tests/test_agent_run_summary.py",
+          "tests/test_operator_api.py",
+          "tests/test_public_readers.py",
+          "tests/test_state_stream.py",
+          "tests/test_stream_cli.py",
+          "tests/test_validation_records.py"
+        ],
+        "revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+        "selector_counts": {
+          "direct": 2,
+          "reverse_dependent": 6,
+          "shared_contract": 1
+        },
+        "shape": {
+          "classes": 37,
+          "decision_nodes": 98,
+          "functions": 50,
+          "nonblank_lines": 1047,
+          "physical_lines": 1263,
+          "python_files": 10
+        },
+        "shared_contract_tests": [
+          "tests/contracts/test_state_capability_adapters.py"
+        ],
+        "shared_contracts": [
+          "contracts"
+        ],
+        "source_paths": [
+          "src/beadhive/modules/state/**/*.py"
+        ],
+        "status": "present",
+        "tests": [
+          "tests/unit/modules/state/test_state_services.py",
+          "tests/unit/modules/state/test_state_independence.py"
+        ]
+      },
+      "before": {
+        "churn": {
+          "additions": 5063,
+          "commits": 52,
+          "deletions": 327
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "execution_and_coverage": {
+          "collected": 109,
+          "covered": 1948,
+          "note": "The historical evidence recorded collection and coverage, not per-slice timing.",
+          "percent": 89.563218390805,
+          "provenance": "docs/design/capability-module-boundaries.md",
+          "pytest_seconds": null,
+          "statements": 2175,
+          "wall_seconds": null
+        },
+        "fan_in": {
+          "distinct_external_importers": 29,
+          "import_edges": 45,
+          "imported_symbols": 71
+        },
+        "revision": "287061f089764dac29b5f584ebcdbb5f25f86c26",
+        "shape": {
+          "classes": 48,
+          "decision_nodes": 763,
+          "functions": 168,
+          "nonblank_lines": 4106,
+          "physical_lines": 4736,
+          "python_files": 12
+        },
+        "source_paths": [
+          "src/beadhive/agent_run_summary.py",
+          "src/beadhive/agent_run_summary_reader.py",
+          "src/beadhive/public_readers.py",
+          "src/beadhive/run_journal.py",
+          "src/beadhive/state.py",
+          "src/beadhive/state_stream.py",
+          "src/beadhive/state_stream_epic_schedule.py",
+          "src/beadhive/state_stream_gate_projection.py",
+          "src/beadhive/state_stream_polling.py",
+          "src/beadhive/state_stream_process.py",
+          "src/beadhive/validation_ledger.py",
+          "src/beadhive/validation_records.py"
+        ]
+      }
+    },
+    "work": {
+      "after": {
+        "churn": {
+          "additions": 536,
+          "commits": 1,
+          "deletions": 0
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "coverage": {
+          "covered": 211,
+          "missing": 1,
+          "percent": 99.528301886792,
+          "statements": 212
+        },
+        "execution": {
+          "command": "time just test-module work",
+          "passed": 465,
+          "pytest_seconds": 224.07,
+          "skipped": 0,
+          "wall_seconds": 227.467,
+          "warnings": 0
+        },
+        "fan_in": {
+          "distinct_external_importers": 4,
+          "import_edges": 4,
+          "imported_symbols": 25
+        },
+        "id": "module.work",
+        "owner_path": "src/beadhive/modules/work",
+        "reverse_dependencies": [
+          "adapters",
+          "system-smoke"
+        ],
+        "reverse_dependency_tests": [
+          "tests/test_mcp_work_schedule_resource.py",
+          "tests/test_work.py",
+          "tests/test_work_assignment_boundaries.py",
+          "tests/test_work_flow.py",
+          "tests/test_work_merge_boundaries.py",
+          "tests/test_work_reads.py",
+          "tests/test_work_submission_boundaries.py"
+        ],
+        "revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+        "selector_counts": {
+          "direct": 2,
+          "reverse_dependent": 7,
+          "shared_contract": 2
+        },
+        "shape": {
+          "classes": 28,
+          "decision_nodes": 5,
+          "functions": 40,
+          "nonblank_lines": 421,
+          "physical_lines": 536,
+          "python_files": 7
+        },
+        "shared_contract_tests": [
+          "tests/contracts/test_work_capability_adapters.py",
+          "tests/unit/kernel/lifecycle/test_contracts.py"
+        ],
+        "shared_contracts": [
+          "contracts",
+          "kernel.lifecycle"
+        ],
+        "source_paths": [
+          "src/beadhive/modules/work/**/*.py"
+        ],
+        "status": "present",
+        "tests": [
+          "tests/unit/modules/work/test_work_lifecycle_services.py",
+          "tests/unit/modules/work/test_work_independence.py"
+        ]
+      },
+      "before": {
+        "churn": {
+          "additions": 11275,
+          "commits": 136,
+          "deletions": 4020
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "execution_and_coverage": {
+          "collected": 931,
+          "covered": 2759,
+          "note": "The historical evidence recorded collection and coverage, not per-slice timing.",
+          "percent": 86.137995629098,
+          "provenance": "docs/design/capability-module-boundaries.md",
+          "pytest_seconds": null,
+          "statements": 3203,
+          "wall_seconds": null
+        },
+        "fan_in": {
+          "distinct_external_importers": 10,
+          "import_edges": 13,
+          "imported_symbols": 13
+        },
+        "revision": "287061f089764dac29b5f584ebcdbb5f25f86c26",
+        "shape": {
+          "classes": 7,
+          "decision_nodes": 1080,
+          "functions": 356,
+          "nonblank_lines": 6251,
+          "physical_lines": 7255,
+          "python_files": 16
+        },
+        "source_paths": [
+          "src/beadhive/validate.py",
+          "src/beadhive/validation_admission.py",
+          "src/beadhive/work.py",
+          "src/beadhive/work_assignment.py",
+          "src/beadhive/work_dispatch.py",
+          "src/beadhive/work_group.py",
+          "src/beadhive/work_guards.py",
+          "src/beadhive/work_intake.py",
+          "src/beadhive/work_logic.py",
+          "src/beadhive/work_merge.py",
+          "src/beadhive/work_metrics.py",
+          "src/beadhive/work_next.py",
+          "src/beadhive/work_reads.py",
+          "src/beadhive/work_refine.py",
+          "src/beadhive/work_show.py",
+          "src/beadhive/work_submission.py"
+        ]
+      }
+    },
+    "worktrees": {
+      "after": {
+        "churn": {
+          "additions": 573,
+          "commits": 1,
+          "deletions": 0
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "coverage": {
+          "covered": 234,
+          "missing": 9,
+          "percent": 96.296296296296,
+          "statements": 243
+        },
+        "execution": {
+          "command": "time just test-module worktrees",
+          "passed": 449,
+          "pytest_seconds": 54.76,
+          "skipped": 0,
+          "wall_seconds": 57.824,
+          "warnings": 0
+        },
+        "fan_in": {
+          "distinct_external_importers": 3,
+          "import_edges": 3,
+          "imported_symbols": 17
+        },
+        "id": "module.worktrees",
+        "owner_path": "src/beadhive/modules/worktrees",
+        "reverse_dependencies": [
+          "module.hives",
+          "system-smoke"
+        ],
+        "reverse_dependency_tests": [
+          "tests/test_config_worktrees.py",
+          "tests/test_workspace_config_inheritance.py",
+          "tests/test_worktree.py",
+          "tests/test_worktree_boundaries.py",
+          "tests/test_worktree_inventory_boundaries.py",
+          "tests/test_worktree_inventory_json.py",
+          "tests/test_wt_status.py",
+          "tests/test_mcp.py"
+        ],
+        "revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+        "selector_counts": {
+          "direct": 4,
+          "reverse_dependent": 8,
+          "shared_contract": 2
+        },
+        "shape": {
+          "classes": 17,
+          "decision_nodes": 29,
+          "functions": 45,
+          "nonblank_lines": 451,
+          "physical_lines": 573,
+          "python_files": 11
+        },
+        "shared_contract_tests": [
+          "tests/contracts/test_worktree_capability_compatibility.py",
+          "tests/unit/kernel/lifecycle/test_contracts.py"
+        ],
+        "shared_contracts": [
+          "contracts",
+          "kernel.lifecycle"
+        ],
+        "source_paths": [
+          "src/beadhive/modules/worktrees/**/*.py"
+        ],
+        "status": "present",
+        "tests": [
+          "tests/unit/modules/worktrees/test_policy.py",
+          "tests/unit/modules/worktrees/test_services.py",
+          "tests/unit/modules/worktrees/test_adapters.py",
+          "tests/unit/modules/worktrees/test_worktrees_independence.py"
+        ]
+      },
+      "before": {
+        "churn": {
+          "additions": 8483,
+          "commits": 89,
+          "deletions": 2561
+        },
+        "churn_since": "2026-06-03T00:00:00Z",
+        "execution_and_coverage": {
+          "collected": 372,
+          "covered": 2141,
+          "note": "The historical evidence recorded collection and coverage, not per-slice timing.",
+          "percent": 85.811623246493,
+          "provenance": "docs/design/capability-module-boundaries.md",
+          "pytest_seconds": null,
+          "statements": 2495,
+          "wall_seconds": null
+        },
+        "fan_in": {
+          "distinct_external_importers": 27,
+          "import_edges": 30,
+          "imported_symbols": 31
+        },
+        "revision": "287061f089764dac29b5f584ebcdbb5f25f86c26",
+        "shape": {
+          "classes": 3,
+          "decision_nodes": 785,
+          "functions": 378,
+          "nonblank_lines": 4887,
+          "physical_lines": 5922,
+          "python_files": 9
+        },
+        "source_paths": [
+          "src/beadhive/gitworkspace.py",
+          "src/beadhive/gitworkspace_plugin.py",
+          "src/beadhive/worktree.py",
+          "src/beadhive/worktree_cleanup.py",
+          "src/beadhive/worktree_git.py",
+          "src/beadhive/worktree_inventory.py",
+          "src/beadhive/worktree_merge.py",
+          "src/beadhive/worktree_verify.py",
+          "src/beadhive/wt_status.py"
+        ]
+      }
+    }
+  },
+  "repository_execution": {
+    "after": {
+      "command": "time env COVERAGE_FILE=/tmp/bh-bptze-7.coverage just cov",
+      "covered": 40679,
+      "missing": 5147,
+      "passed": 7645,
+      "percent": 88.76838475974338,
+      "pytest_seconds": 304.25,
+      "revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+      "selected": 7657,
+      "skipped": 12,
+      "statements": 45826,
+      "wall_seconds": 307.011,
+      "warnings": 1
+    },
+    "before": {
+      "command": "COVERAGE_FILE=/tmp/bh-bptze-1.coverage just cov",
+      "covered": 38592,
+      "note": "The historical source records pytest timing but not shell wall timing.",
+      "passed": 7436,
+      "percent": 88.76417416105068,
+      "pytest_seconds": 269.12,
+      "revision": "287061f089764dac29b5f584ebcdbb5f25f86c26",
+      "selected": 7448,
+      "skipped": 12,
+      "statements": 43477,
+      "wall_seconds": null
+    }
+  },
+  "repository_history": [
+    {
+      "cyclic_edges": 288,
+      "cyclic_modules": 85,
+      "cyclic_symbols": 318,
+      "edges": 2029,
+      "label": "modular foundation",
+      "largest_scc": 65,
+      "modules": 182,
+      "provenance": "docs/proof/bh-inqwc.6-modular-baseline.md",
+      "revision": "adf182bc4fc9c628a23b9b76c55f5291ec337b7a",
+      "scc_count": 6
+    },
+    {
+      "cyclic_edges": 278,
+      "cyclic_modules": 85,
+      "cyclic_symbols": 308,
+      "edges": 2282,
+      "label": "capability pre-migration",
+      "largest_scc": 65,
+      "modules": 232,
+      "provenance": "docs/design/capability-module-dependency-map.json",
+      "revision": "287061f089764dac29b5f584ebcdbb5f25f86c26",
+      "scc_count": 6
+    },
+    {
+      "cyclic_edges": 272,
+      "cyclic_modules": 82,
+      "cyclic_symbols": 298,
+      "edges": 2463,
+      "label": "pre-runtime-registry cut",
+      "largest_scc": 64,
+      "modules": 281,
+      "provenance": "docs/proof/bh-bptze.14-plugin-runtime-registry.md and exact AST rerun",
+      "revision": "9dc7c10549712c42b5a38b020dcb75c26e7652c1",
+      "scc_count": 5
+    },
+    {
+      "cycle_digest": "f60b8e61436c0a28909f9d20ce9c3d1e500fe6961c76c54caae1c1e9969f7b09",
+      "cycles": [
+        {
+          "active_exception_ids": [
+            "cycle-edge-001",
+            "cycle-edge-002",
+            "cycle-edge-003",
+            "cycle-edge-005",
+            "cycle-edge-008",
+            "cycle-edge-017",
+            "cycle-edge-018",
+            "cycle-edge-019",
+            "cycle-edge-020",
+            "cycle-edge-021",
+            "cycle-edge-023",
+            "cycle-edge-024",
+            "cycle-edge-025",
+            "cycle-edge-027",
+            "cycle-edge-028",
+            "cycle-edge-029",
+            "cycle-edge-030",
+            "cycle-edge-031",
+            "cycle-edge-032",
+            "cycle-edge-038",
+            "cycle-edge-039",
+            "cycle-edge-040",
+            "cycle-edge-041",
+            "cycle-edge-042",
+            "cycle-edge-043",
+            "cycle-edge-044"
+          ],
+          "edges": 123,
+          "followup": "bh-8kn42 raw-bd seam, then a separately planned consumer-zero cycle cut",
+          "members": [
+            "beadhive.bd",
+            "beadhive.compose",
+            "beadhive.config",
+            "beadhive.converge",
+            "beadhive.credentials",
+            "beadhive.deps",
+            "beadhive.dolt_health",
+            "beadhive.engine",
+            "beadhive.fleet",
+            "beadhive.ghpr",
+            "beadhive.gitref",
+            "beadhive.gitworkspace",
+            "beadhive.guard",
+            "beadhive.host",
+            "beadhive.host_lease",
+            "beadhive.hosts",
+            "beadhive.identity",
+            "beadhive.log",
+            "beadhive.metadata",
+            "beadhive.observaloop",
+            "beadhive.observaloop_env",
+            "beadhive.otel",
+            "beadhive.private_paths",
+            "beadhive.registry",
+            "beadhive.repowise_plugin",
+            "beadhive.route",
+            "beadhive.run",
+            "beadhive.safety",
+            "beadhive.setup",
+            "beadhive.triage_store",
+            "beadhive.validate",
+            "beadhive.validation_ledger",
+            "beadhive.validation_records",
+            "beadhive.worktree",
+            "beadhive.worktree_merge"
+          ],
+          "owner": "legacy core and capability-compatibility maintainers",
+          "rationale": "The remaining flat-package composition and compatibility facades cannot be deleted by this acceptance-only bead; all 24 retained feedback exceptions are exact.",
+          "size": 35,
+          "symbols": 133
+        },
+        {
+          "active_exception_ids": [
+            "cycle-edge-006",
+            "cycle-edge-007",
+            "cycle-edge-011"
+          ],
+          "edges": 12,
+          "followup": "consume module contracts while retiring host transport feedback edges",
+          "members": [
+            "beadhive.alerts",
+            "beadhive.doctor",
+            "beadhive.host_cli",
+            "beadhive.host_daemon",
+            "beadhive.host_provision",
+            "beadhive.host_retire",
+            "beadhive.mcp",
+            "beadhive.operator_sse"
+          ],
+          "owner": "bh-q0lol unified-host-daemon owners",
+          "rationale": "Transport composition remains outward and is owned by the active host-daemon work.",
+          "size": 8,
+          "symbols": 15
+        },
+        {
+          "active_exception_ids": [
+            "cycle-edge-009",
+            "cycle-edge-010",
+            "cycle-edge-034",
+            "cycle-edge-035"
+          ],
+          "edges": 10,
+          "followup": "bh-8kn42 raw-bd seam, followed by storage-adapter consumer-zero cleanup",
+          "members": [
+            "beadhive.backup",
+            "beadhive.hive",
+            "beadhive.hq",
+            "beadhive.hub",
+            "beadhive.onboard",
+            "beadhive.storage_migrate"
+          ],
+          "owner": "hive/storage adapter maintainers",
+          "rationale": "Backup, hub, HQ, hive, onboarding, and migration still share durable-store composition.",
+          "size": 6,
+          "symbols": 13
+        },
+        {
+          "active_exception_ids": [
+            "cycle-edge-004"
+          ],
+          "edges": 2,
+          "followup": "retire cycle-edge-004 only after the documented facade consumer-zero gate",
+          "members": [
+            "beadhive.herdr_plugin",
+            "beadhive.herdr_views"
+          ],
+          "owner": "bh-5wuc0 Herdr compatibility maintainers",
+          "rationale": "The public Herdr patch/import surface remains an explicit compatibility contract.",
+          "size": 2,
+          "symbols": 2
+        },
+        {
+          "active_exception_ids": [
+            "cycle-edge-026"
+          ],
+          "edges": 2,
+          "followup": "separate runtime policy from the local-loop adapter before cycle-edge-026 expires",
+          "members": [
+            "beadhive.localloop",
+            "beadhive.runtime"
+          ],
+          "owner": "local runtime maintainers",
+          "rationale": "The runtime tier facade still delegates to the local execution loop.",
+          "size": 2,
+          "symbols": 3
+        },
+        {
+          "active_exception_ids": [
+            "cycle-edge-036"
+          ],
+          "edges": 2,
+          "followup": "move report projection behind the planning read port before cycle-edge-036 expires",
+          "members": [
+            "beadhive.report",
+            "beadhive.triage"
+          ],
+          "owner": "planning/report compatibility maintainers",
+          "rationale": "Report and triage retain a two-way compatibility seam outside the pure planning module.",
+          "size": 2,
+          "symbols": 2
+        },
+        {
+          "active_exception_ids": [
+            "cycle-edge-033"
+          ],
+          "edges": 2,
+          "followup": "inject the epic-schedule projection into polling before cycle-edge-033 expires",
+          "members": [
+            "beadhive.state_stream_epic_schedule",
+            "beadhive.state_stream_polling"
+          ],
+          "owner": "state adapter maintainers",
+          "rationale": "The pure state module is inward; only the legacy polling/schedule adapters remain cyclic.",
+          "size": 2,
+          "symbols": 2
+        },
+        {
+          "active_exception_ids": [
+            "cycle-edge-037"
+          ],
+          "edges": 2,
+          "followup": "move review presentation behind a work read port before cycle-edge-037 expires",
+          "members": [
+            "beadhive.work",
+            "beadhive.work_show"
+          ],
+          "owner": "work compatibility maintainers",
+          "rationale": "The public work facade and review projection retain one checked feedback edge.",
+          "size": 2,
+          "symbols": 2
+        }
+      ],
+      "cyclic_edges": 155,
+      "cyclic_modules": 59,
+      "cyclic_symbols": 172,
+      "import_edges": 2460,
+      "label": "closeout source",
+      "nonliteral_dynamic_sites": 3,
+      "python_modules": 281,
+      "revision": "ad4077d7ee5ae40c966f089920ca794006538090",
+      "scc_count": 8,
+      "scc_sizes": [
+        35,
+        8,
+        6,
+        2,
+        2,
+        2,
+        2,
+        2
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "scope": "bh-bptze.7 capability-boundary acceptance closeout"
+}

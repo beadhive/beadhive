@@ -37,17 +37,27 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert registry.full_gate == "just check"
     assert registry.release_gate == "just check-all"
     assert len(registry.closures) == 23
-    assert sum(closure.status == "present" for closure in registry.closures) == 18
-    assert sum(closure.status == "absent" for closure in registry.closures) == 5
+    assert sum(closure.status == "present" for closure in registry.closures) == 23
+    assert sum(closure.status == "absent" for closure in registry.closures) == 0
 
 
-def test_agents_and_config_closures_survive_workstream_composition():
+def test_capability_module_closures_survive_workstream_composition():
     closures = test_closures.load_registry().by_id()
 
     assert closures["module.agents"].status == "present"
     assert closures["module.agents"].owner_path == "src/beadhive/modules/agents"
     assert closures["module.config"].status == "present"
     assert closures["module.config"].owner_path == "src/beadhive/modules/config"
+    assert closures["module.hives"].status == "present"
+    assert closures["module.hives"].owner_path == "src/beadhive/modules/hives"
+    assert closures["module.worktrees"].status == "present"
+    assert closures["module.worktrees"].owner_path == "src/beadhive/modules/worktrees"
+    assert closures["module.work"].status == "present"
+    assert closures["module.work"].owner_path == "src/beadhive/modules/work"
+    assert closures["module.planning"].status == "present"
+    assert closures["module.planning"].owner_path == "src/beadhive/modules/planning"
+    assert closures["module.state"].status == "present"
+    assert closures["module.state"].owner_path == "src/beadhive/modules/state"
     assert {"contract.agent-launch", "config.pure", "config.store", "config.fragments"} <= set(
         closures
     )
@@ -96,12 +106,15 @@ def test_new_registered_plugin_without_closure_fails_drift_check(tmp_path):
 
 
 def test_module_directory_cannot_remain_declared_absent(tmp_path):
-    (tmp_path / "src" / "beadhive" / "modules" / "hives").mkdir(parents=True)
+    (tmp_path / "src" / "beadhive" / "modules" / "planning").mkdir(parents=True)
+    registry = _replace_closure(test_closures.load_registry(), "module.planning", status="absent")
 
-    errors = test_closures.validate_registry(test_closures.load_registry(), tmp_path)
+    errors = test_closures.validate_registry(registry, tmp_path)
 
-    assert "registered module 'hives' is incorrectly declared absent" in errors
-    assert "module closure 'hives' is absent but 'src/beadhive/modules/hives' exists" in errors
+    assert "registered module 'planning' is incorrectly declared absent" in errors
+    assert (
+        "module closure 'planning' is absent but 'src/beadhive/modules/planning' exists" in errors
+    )
 
 
 def test_new_registered_module_without_closure_fails_drift_check(tmp_path):

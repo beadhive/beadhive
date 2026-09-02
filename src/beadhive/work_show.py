@@ -139,7 +139,7 @@ def _review_molecule_intent(cfg, entry, epic, main):
     work._print_brief(cfg, entry, epic, bd.show(epic, main))
     # --all so landed (closed) children show too — the reviewer judges the molecule against every
     # child's acceptance, not just the ones still in flight.
-    children = bd.json(["list", "--parent", epic, "--all"], main)
+    children = bd.children(epic, main, ["--all"])
     if not isinstance(children, list):
         typer.echo("\n⚠ could not list molecule children", err=True)
         return
@@ -180,7 +180,7 @@ def show(
     _render_gates(bead, main)  # gates exist independent of local history — render either way
 
 
-def review(
+def _legacy_review(
     bead: str = _BEAD,
     run_validate: bool = typer.Option(False, "--run", help="run validate_cmd from clean checkout"),
     demo: bool = typer.Option(False, "--demo", help="run demo_cmd from a clean checkout"),
@@ -272,3 +272,38 @@ def review(
             typer.echo(f"— demo exit {worktree.clean_checkout(entry, branch, cmd)}")
         else:
             typer.echo("\n## Demo\n  no demo_cmd configured (set work.demo_cmd)")
+
+
+def review(
+    bead: str = _BEAD,
+    run_validate: bool = typer.Option(False, "--run", help="run validate_cmd from clean checkout"),
+    demo: bool = typer.Option(False, "--demo", help="run demo_cmd from a clean checkout"),
+    fresh: bool = typer.Option(
+        True,
+        "--fresh/--no-fresh",
+        help="run validation fresh (default); --no-fresh may reuse an exact recorded verdict",
+    ),
+    view: list[str] = _VIEW,
+    hive: str = _HIVE,
+):
+    """Assemble review evidence through the typed work lifecycle boundary."""
+    from . import work_services
+    from .modules.work import ReviewRequest
+
+    return (
+        work_services.work_lifecycle_service(
+            review=lambda item: _legacy_review(
+                item.bead,
+                item.run_validation,
+                item.run_demo,
+                item.fresh,
+                list(item.views),
+                item.hive,
+            )
+        )
+        .review(ReviewRequest(bead, hive, run_validate, demo, fresh, tuple(view)))
+        .value
+    )
+
+
+review.__doc__ = _legacy_review.__doc__

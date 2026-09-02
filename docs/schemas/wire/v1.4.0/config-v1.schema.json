@@ -414,7 +414,7 @@
     },
     "GitWorkspaceConfig": {
       "additionalProperties": false,
-      "description": "git-workspace repo-group config. No `enabled` flag: git-workspace is a required dep\n(bh-hsus.4 — `deps.py`, `required=ALWAYS`), not an optional integration, so bh always reads\nwhatever `workspace*.toml` it finds.",
+      "description": "git-workspace repo-group config and workspace-root ownership policy.\n\nThere is no ``enabled`` flag: git-workspace is a required dependency. ``mode`` and\n``root`` instead decide whether bh owns the clone root or consumes an operator-owned\nworkspace. Root resolution itself remains centralized in :mod:`beadhive.identity`.",
       "properties": {
         "hive_match": {
           "default": "flexible",
@@ -426,6 +426,23 @@
           ],
           "title": "Hive Match",
           "type": "string"
+        },
+        "mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "internal",
+                "external"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "internal: bh owns <bh home>/ws. external: use $GIT_WORKSPACE, an explicit root, or the legacy ~/workspace. Unset preserves a populated legacy workspace and otherwise defaults to internal.",
+          "title": "Mode"
         },
         "path": {
           "anyOf": [
@@ -439,6 +456,19 @@
           "default": null,
           "description": "Explicit workspace*.toml path — the escape hatch, and it always wins. Unset, bh takes the first of $GIT_WORKSPACE/workspace*.toml (externally managed) then <hq_dir>/workspace*.toml (internally managed — inherited by cloning HQ).",
           "title": "Path"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Explicit external workspace root. Rejected with mode: internal; relocate an internal workspace by moving the complete bh home with $BH_HOME.",
+          "title": "Root"
         }
       },
       "title": "GitWorkspaceConfig",
@@ -1380,6 +1410,14 @@
           "title": "Integration Branch",
           "type": "string"
         },
+        "junk_globs": {
+          "description": "Disposable paths excluded before stat/walk (per-hive replaces global).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Junk Globs",
+          "type": "array"
+        },
         "landing": {
           "default": "local",
           "description": "How merge/finish land on the shared integration branch: local (--no-ff merge) | pr (push + `gh pr create`; gh:pr gate + `bh work land` complete the close).",
@@ -1400,6 +1438,21 @@
           "default": 10,
           "description": "submit rejects a branch with more commits than this over the base.",
           "title": "Max Commits",
+          "type": "integer"
+        },
+        "precious_globs": {
+          "description": "Local-only paths protected regardless of size (per-hive replaces global).",
+          "items": {
+            "type": "string"
+          },
+          "title": "Precious Globs",
+          "type": "array"
+        },
+        "precious_min_bytes": {
+          "default": 1048576,
+          "description": "Review threshold in bytes for ignored/untracked paths outside the taxonomy.",
+          "minimum": 0,
+          "title": "Precious Min Bytes",
           "type": "integer"
         },
         "push_remote": {

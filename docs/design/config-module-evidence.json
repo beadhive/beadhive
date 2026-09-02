@@ -9,7 +9,7 @@
   },
   "fan_in": {
     "production_config_importers_before": 95,
-    "production_config_importers_after": 75,
+    "production_config_importers_after": 74,
     "production_config_schema_importers_before": 8,
     "production_config_schema_importers_after": 0,
     "remaining_dependency_owner": "bh-18hud.5 compatibility migration ledger",
@@ -18,8 +18,8 @@
   "static_test_blast_radius": {
     "historical_documented_files": 129,
     "exact_ast_files_at_baseline": 135,
-    "exact_ast_files_after": 136,
-    "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the candidate adds one owned facade/ledger contract test and does not claim a smaller dynamic closure from static imports alone.",
+    "exact_ast_files_after": 139,
+    "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate added one owned facade/ledger contract test, bh-bptze.10 added two workspace-root compatibility tests, and bh-bptze.11 adds one precious-worktree configuration contract suite. This static count does not claim a smaller dynamic closure.",
     "owner": "configuration compatibility suite and bh-18hud.5 migration ledger"
   },
   "import_graph": {
