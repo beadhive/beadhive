@@ -203,9 +203,24 @@ reverse_dependency_tests = [
 [[closures]]
 id = "module.state"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/state"
 source_paths = ["src/beadhive/modules/state/**/*.py"]
+tests = [
+  "tests/unit/modules/state/test_state_services.py",
+  "tests/unit/modules/state/test_state_independence.py",
+]
+shared_contracts = ["contracts"]
+shared_contract_tests = ["tests/contracts/test_state_capability_adapters.py"]
+reverse_dependencies = ["adapters", "system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_agent_run_summary.py",
+  "tests/test_operator_api.py",
+  "tests/test_public_readers.py",
+  "tests/test_state_stream.py",
+  "tests/test_stream_cli.py",
+  "tests/test_validation_records.py",
+]
 
 [[closures]]
 id = "module.work"

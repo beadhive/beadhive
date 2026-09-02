@@ -17,8 +17,8 @@ from typing import TextIO
 
 import typer
 
-from . import config, registry
-from .state_stream import StreamFrame, StreamRequest, StreamScope, frame_payload, stream_frames
+from . import config, registry, state_services
+from .modules.state import StreamFrame, StreamRequest, StreamScope, frame_payload, stream_frames
 from .state_stream_polling import get_polling_provider
 from .state_stream_process import StreamProcessScope
 
@@ -101,7 +101,10 @@ def command(
     try:
         with StreamProcessScope() as processes:
             provider = get_polling_provider(cfg, process_scope=processes)
-            emit_ndjson(stream_frames(provider, request))
+            projections = state_services.read_projection_service(
+                frames=lambda selected: stream_frames(provider, selected)
+            )
+            emit_ndjson(projections.frames(request))
     except BrokenPipeError:
         # A consumer such as ``head`` closing stdout is normal stream completion.  Catch only at
         # the command boundary so the process scope first sees the exception and reaps every

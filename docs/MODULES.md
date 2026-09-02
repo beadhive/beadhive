@@ -439,6 +439,12 @@ models shared by transports. It does not turn the command path into CQRS infrast
 projections are introduced only where existing consumers need replay, aggregation, or independent
 availability.
 
+The first extraction keeps filesystem, process, Dolt, and transport behavior in outer adapters.
+Immutable validation facts, stream/cursor policy, activity/query models, storage/clock/notification
+ports, and read-side application services live in `beadhive.modules.state`; compatibility facades
+preserve the released imports. Exact boundary and closure evidence is recorded in
+[`docs/proof/bh-bptze.6-state-module.md`](proof/bh-bptze.6-state-module.md).
+
 ### `adapters/cli`
 
 Projects eligible operations into Typer groups and commands. It owns command paths, aliases,

@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from . import operator_contract
+from .modules.state import RunJournalFrame
 from .operator_sources import ExactHive, OperatorSourceError, OperatorSources
-from .public_readers import RunJournalFrame
 
 
 @dataclass(frozen=True)
