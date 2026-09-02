@@ -396,6 +396,13 @@ review, approval, merge, resume, and abandonment. It depends on explicit ports f
 worktrees, execution, validation evidence, and identity. Existing `beadhive.work` facade behavior
 and patch points remain stable until consumers migrate.
 
+The implemented public boundary is `beadhive.modules.work.WorkLifecycleService`, with immutable,
+command-specific request/result contracts and `BeadStore`, `WorktreeLifecyclePort`,
+`ExecutionPort`, `ValidationEvidenceStore`, `IdentityProvider`, and `WorkNotifier` ports. The
+uncached production composition in `beadhive.work_services` keeps the established facade patch
+points live; its claim/resume adapter continues through the adopted `modules/worktrees` lifecycle
+composition instead of introducing another Git or filesystem implementation.
+
 ### `modules/planning`
 
 Owns molecule validation, decomposition contracts, dependency-DAG policy, filing, kickoff gates,
