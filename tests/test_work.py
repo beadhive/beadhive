@@ -27,6 +27,7 @@ import typer
 
 from beadhive import bd as bd_mod
 from beadhive import (
+    claim_authority,
     config,
     ghpr,
     git_linkage,
@@ -685,6 +686,103 @@ def test_structured_claim_result_is_silent_and_distinguishes_reattach(hive, fake
     second = work._claim_single_bead(config.load(), "myrepo", "mr-1", "")
     assert second.disposition == "reattached"
     assert second.bead["assignee"] == second.actor == first.actor
+
+
+def test_claim_reattaches_assembled_epic_and_reissues_missing_epoch_record(
+    hive, fakebd, monkeypatch
+):
+    """An assembled epic is already authorized work, not a fresh dispatch to revalidate.
+
+    This is the production recovery shape: the dispatcher still owns the in-progress epic,
+    every child is closed/merged, and the worktree-local claim record is absent.  Reattachment
+    must refresh identity and mint the live epoch without asking planning to rediscover work in
+    an intentionally empty active-child projection.
+    """
+    actor = "disp/lead"
+    fakebd.seed(
+        "mr-epic",
+        title="assembled",
+        issue_type="epic",
+        status="in_progress",
+        assignee=actor,
+    )
+    fakebd.seed(
+        "mr-epic.1",
+        title="done",
+        parent="mr-epic",
+        status="closed",
+        close_reason="merged",
+    )
+    cfg = config.load()
+    entry, target, branch = worktree.ensure(cfg, "myrepo", "mr-epic", kind="epic")
+    authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
+    assert authority.read(target) is None
+
+    def unexpected_fresh_dispatch(*_args, **_kwargs):
+        raise AssertionError("same-actor reattachment must not run fresh dispatch conventions")
+
+    monkeypatch.setattr(plan, "verify_epic", unexpected_fresh_dispatch)
+    monkeypatch.setattr(work, "_maybe_open_molecule", unexpected_fresh_dispatch)
+    monkeypatch.setattr(work, "_claim_fence", lambda *_args: ("host-current", 37))
+
+    result = work._claim_single_bead(cfg, "myrepo", "mr-epic", actor)
+
+    assert result.disposition == "reattached"
+    assert result.worktree == target
+    assert result.branch == branch
+    assert _cfg_get(target, "user.name") == actor
+    assert not fakebd.did("update", "mr-epic", "--claim")
+    record = authority.read(target)
+    assert record is not None
+    assert (record.bead, record.seat, record.host_id, record.epoch) == (
+        "mr-epic",
+        actor,
+        "host-current",
+        37,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "assignee", "actor"),
+    [
+        ("closed", "disp/lead", "disp/lead"),
+        ("in_progress", "disp/other", "disp/lead"),
+        ("in_progress", "dev/wrong-seat", "dev/wrong-seat"),
+    ],
+    ids=("closed", "other-actor", "wrong-seat"),
+)
+def test_claim_reattach_preserves_authorization_guards_before_dispatch_policy(
+    hive, fakebd, monkeypatch, status, assignee, actor
+):
+    fakebd.seed(
+        "mr-epic",
+        title="guarded",
+        issue_type="epic",
+        status=status,
+        assignee=assignee,
+    )
+
+    def unexpected_convention_check(*_args, **_kwargs):
+        raise AssertionError("authorization guards must refuse before dispatch policy")
+
+    monkeypatch.setattr(plan, "verify_epic", unexpected_convention_check)
+    with pytest.raises(typer.Exit):
+        work._claim_single_bead(config.load(), "myrepo", "mr-epic", actor)
+    assert not _wt(hive, "mr-epic").exists()
+    assert not fakebd.did("update", "mr-epic", "--claim")
+
+
+def test_fresh_claim_still_refuses_a_malformed_epic(hive, fakebd, monkeypatch):
+    fakebd.seed("mr-epic", title="fresh", issue_type="epic")
+    monkeypatch.setattr(plan, "verify_epic", _malformed("mr-epic: no active work issues"))
+
+    with pytest.raises(typer.Exit):
+        work._claim_single_bead(config.load(), "myrepo", "mr-epic", "disp/lead")
+
+    assert fakebd.beads["mr-epic"]["status"] == "open"
+    assert fakebd.beads["mr-epic"]["assignee"] == ""
+    assert not _wt(hive, "mr-epic").exists()
+    assert not fakebd.did("update", "mr-epic", "--claim")
 
 
 def test_structured_claim_rejects_a_lost_claim_after_provisioning(hive, fakebd, monkeypatch):

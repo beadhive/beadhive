@@ -92,3 +92,18 @@ def test_existing_policy_modules_remain_the_executable_decision_owners():
     assert "api.schedule_mod.plan_schedule" in inspect.getsource(
         work_dispatch.impl_schedule_payload
     )
+
+
+def test_claim_authorization_precedes_ownership_and_only_fresh_claims_dispatch():
+    source = inspect.getsource(work_assignment.impl__claim_single_bead)
+    open_guard = source.index("api._guard_open(data, bead)")
+    owner_guard = source.index("api._guard_not_other(data, actor, bead)")
+    seat_guard = source.index("api._guard_seat(data, actor, bead")
+    ownership = source.index("already_held = api.work_next.claim_won(data, actor)")
+    fresh = source.index("if not already_held:")
+    conventions = source.index('api._guard_conventions(cfg, data, bead, main, action="dispatch")')
+    open_molecule = source.index("api._maybe_open_molecule(cfg, hive, bead, main)")
+    claim_write = source.index('api.bd.run(["update", bead, "--claim"]')
+
+    assert open_guard < owner_guard < seat_guard < ownership < fresh
+    assert fresh < conventions < open_molecule < claim_write

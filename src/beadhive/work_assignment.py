@@ -132,10 +132,10 @@ def impl__claim_single_bead(api, cfg, hive, bead, as_):
     api._guard_open(data, bead)
     api._guard_not_other(data, actor, bead)
     api._guard_seat(data, actor, bead, verb="claimed by")
-    api._guard_conventions(cfg, data, bead, main, action="dispatch")
-    api._maybe_open_molecule(cfg, hive, bead, main)
     already_held = api.work_next.claim_won(data, actor)
     if not already_held:
+        api._guard_conventions(cfg, data, bead, main, action="dispatch")
+        api._maybe_open_molecule(cfg, hive, bead, main)
         res = api.bd.run(["update", bead, "--claim"], main, actor=actor)
         if res.returncode != 0:
             raise api.typer.Exit(res.returncode)
