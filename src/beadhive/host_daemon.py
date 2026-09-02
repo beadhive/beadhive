@@ -17,21 +17,24 @@ from __future__ import annotations
 import asyncio
 import getpass
 import hashlib
+import hmac
 import inspect
 import ipaddress
 import json
 import os
 import platform
+import secrets
 import subprocess
+import sys
 import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from enum import IntEnum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from starlette.applications import Starlette
 from starlette.middleware import Middleware
@@ -42,11 +45,15 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import config
 from . import host as host_identity
+from .daemon_contract import CONTRACT_VERSION
 
-CONTRACT_VERSION = "bh.host-daemon/v1"
+if TYPE_CHECKING:
+    from .daemon_config import HostDaemonConfig
+
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8420
-DEFAULT_SHUTDOWN_BUDGET = 10.0
+DEFAULT_PORT = 8737
+DEFAULT_SHUTDOWN_BUDGET = 30.0
+_CONTROL_KEY_BYTES = 32
 
 
 class DaemonError(RuntimeError):
@@ -170,13 +177,21 @@ class DaemonRuntime:
     async def shutdown(
         self, extra_callbacks: Sequence[_RegisteredCallback] = ()
     ) -> tuple[CallbackResult, ...]:
-        """Drain in documented order, sharing one finite deadline across every callback."""
+        """Drain under one deadline, then propagate the first observed task cancellation.
+
+        ``CancelledError`` is a ``BaseException``.  Treating it like an ordinary callback error
+        would be wrong, but propagating it immediately would strand the remaining component
+        contexts and leave their async generators for event-loop finalization.  Record it,
+        continue bounded cleanup in this task/context, publish every deterministic outcome, and
+        only then preserve cancellation semantics by re-raising the first cancellation.
+        """
         self.begin_shutdown()
         deadline = time.monotonic() + self.shutdown_budget
         callbacks = sorted(
             (*self._drain, *extra_callbacks), key=lambda item: (item.phase, item.order)
         )
         results: list[CallbackResult] = []
+        pending_cancellation: asyncio.CancelledError | None = None
 
         for index, item in enumerate(callbacks):
             remaining = deadline - time.monotonic()
@@ -199,6 +214,18 @@ class DaemonRuntime:
                 # make an otherwise-correct composed lifespan fail during token reset.
                 async with asyncio.timeout(remaining):
                     await item.callback()
+            except asyncio.CancelledError as exc:
+                if pending_cancellation is None:
+                    pending_cancellation = exc
+                results.append(
+                    CallbackResult(
+                        name=item.name,
+                        phase=item.phase.name.lower(),
+                        status="cancelled",
+                        duration_seconds=time.monotonic() - started,
+                        error="CancelledError",
+                    )
+                )
             except TimeoutError:
                 results.append(
                     CallbackResult(
@@ -229,6 +256,8 @@ class DaemonRuntime:
                 )
 
         self.shutdown_results = tuple(results)
+        if pending_cancellation is not None:
+            raise pending_cancellation
         return self.shutdown_results
 
 
@@ -281,10 +310,18 @@ class ControlRecord:
     listener_host: str
     listener_port: int
     started_at: str
+    authentication: str = ""
 
     @classmethod
-    def create(cls, key: DaemonKey, *, listener_host: str, listener_port: int) -> ControlRecord:
-        return cls(
+    def create(
+        cls,
+        key: DaemonKey,
+        *,
+        listener_host: str,
+        listener_port: int,
+        verification_key: bytes,
+    ) -> ControlRecord:
+        record = cls(
             contract=CONTRACT_VERSION,
             account_id=key.account_id,
             bh_home=key.bh_home,
@@ -295,7 +332,9 @@ class ControlRecord:
             listener_host=listener_host,
             listener_port=listener_port,
             started_at=datetime.now(UTC).isoformat(),
+            authentication="",
         )
+        return record.authenticated(verification_key)
 
     @classmethod
     def from_dict(cls, value: dict[str, Any]) -> ControlRecord:
@@ -310,9 +349,34 @@ class ControlRecord:
             listener_host=str(value["listener_host"]),
             listener_port=int(value["listener_port"]),
             started_at=str(value["started_at"]),
+            authentication=str(value["authentication"]),
         )
         uuid.UUID(record.instance_id)
+        if len(record.authentication) != hashlib.sha256().digest_size * 2:
+            raise ValueError("control record authentication has the wrong size")
         return record
+
+    def authenticated(self, verification_key: bytes) -> ControlRecord:
+        """Return a record carrying an HMAC over its canonical public fields."""
+        if len(verification_key) != _CONTROL_KEY_BYTES:
+            raise ValueError("daemon control verification key has the wrong size")
+        return replace(
+            self,
+            authentication=hmac.new(
+                verification_key, self._authentication_payload(), hashlib.sha256
+            ).hexdigest(),
+        )
+
+    def verify(self, verification_key: bytes) -> bool:
+        expected = hmac.new(
+            verification_key, self._authentication_payload(), hashlib.sha256
+        ).hexdigest()
+        return hmac.compare_digest(self.authentication, expected)
+
+    def _authentication_payload(self) -> bytes:
+        values = asdict(self)
+        values.pop("authentication")
+        return json.dumps(values, sort_keys=True, separators=(",", ":")).encode()
 
     def matches(self, key: DaemonKey) -> bool:
         return (
@@ -371,12 +435,17 @@ def _process_start_token(pid: int) -> str:
     return "unavailable"
 
 
-def _read_control(path: Path) -> tuple[ControlRecord | None, str]:
+def _read_control(
+    path: Path, verification_key: bytes | None = None
+) -> tuple[ControlRecord | None, str]:
     try:
         value = json.loads(path.read_text())
         if not isinstance(value, dict):
             raise ValueError("control record root is not an object")
-        return ControlRecord.from_dict(value), ""
+        record = ControlRecord.from_dict(value)
+        if verification_key is not None and not record.verify(verification_key):
+            raise ValueError("control record authentication failed")
+        return record, ""
     except FileNotFoundError:
         return None, "missing control record"
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
@@ -404,11 +473,20 @@ def _lock_held(path: Path) -> bool:
 class DaemonSingleton:
     """An owned flock plus incarnation-scoped control record."""
 
-    def __init__(self, *, key: DaemonKey, paths: DaemonPaths, fd: int, record: ControlRecord):
+    def __init__(
+        self,
+        *,
+        key: DaemonKey,
+        paths: DaemonPaths,
+        fd: int,
+        record: ControlRecord,
+        verification_key: bytes,
+    ):
         self.key = key
         self.paths = paths
         self.fd = fd
         self.record = record
+        self.verification_key = verification_key
         self._released = False
 
     @classmethod
@@ -427,27 +505,39 @@ class DaemonSingleton:
         if hasattr(os, "O_NOFOLLOW"):
             flags |= os.O_NOFOLLOW
         fd = os.open(paths.lock, flags, 0o600)
+        os.fchmod(fd, 0o600)
         os.set_inheritable(fd, False)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
             os.close(fd)
-            record, problem = _read_control(paths.control)
+            record, problem = _read_verified_control(paths)
             owner = f"pid {record.pid}, instance {record.instance_id}" if record else problem
             raise AlreadyRunningError(
                 f"host daemon singleton is already held for this account/BH_HOME/host_id ({owner})"
             ) from exc
 
         try:
+            verification_key = secrets.token_bytes(_CONTROL_KEY_BYTES)
+            _write_verification_key(fd, verification_key)
             record = ControlRecord.create(
-                key, listener_host=listener_host, listener_port=listener_port
+                key,
+                listener_host=listener_host,
+                listener_port=listener_port,
+                verification_key=verification_key,
             )
             _write_control(paths.control, record)
         except Exception:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
             raise
-        return cls(key=key, paths=paths, fd=fd, record=record)
+        return cls(
+            key=key,
+            paths=paths,
+            fd=fd,
+            record=record,
+            verification_key=verification_key,
+        )
 
     def release(self) -> None:
         """Remove only this incarnation's record, then release its lock; idempotent."""
@@ -456,7 +546,7 @@ class DaemonSingleton:
         import fcntl
 
         try:
-            current, _problem = _read_control(self.paths.control)
+            current, _problem = _read_control(self.paths.control, self.verification_key)
             if current is not None and current.instance_id == self.record.instance_id:
                 self.paths.control.unlink(missing_ok=True)
         finally:
@@ -492,12 +582,41 @@ def _write_control(path: Path, record: ControlRecord) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _write_verification_key(fd: int, verification_key: bytes) -> None:
+    if len(verification_key) != _CONTROL_KEY_BYTES:
+        raise ValueError("daemon control verification key has the wrong size")
+    os.lseek(fd, 0, os.SEEK_SET)
+    os.ftruncate(fd, 0)
+    written = os.write(fd, verification_key)
+    if written != len(verification_key):  # pragma: no cover - defensive short-write guard
+        raise OSError("short write while installing daemon control verification key")
+    os.fsync(fd)
+
+
+def _read_verification_key(path: Path) -> bytes | None:
+    try:
+        verification_key = path.read_bytes()
+    except OSError:
+        return None
+    return verification_key if len(verification_key) == _CONTROL_KEY_BYTES else None
+
+
+def _read_verified_control(paths: DaemonPaths) -> tuple[ControlRecord | None, str]:
+    verification_key = _read_verification_key(paths.lock)
+    if verification_key is not None:
+        return _read_control(paths.control, verification_key)
+    record, problem = _read_control(paths.control)
+    if record is None:
+        return None, problem
+    return None, "invalid control record: verification key is missing or invalid"
+
+
 def daemon_status(key: DaemonKey | None = None) -> DaemonStatus:
     """Verify local singleton ownership and process incarnation without probing the port."""
     expected = key or DaemonKey.current()
     paths = DaemonPaths.for_key(expected)
-    record, problem = _read_control(paths.control)
     held = _lock_held(paths.lock)
+    record, problem = _read_verified_control(paths)
 
     if not held:
         if record is None and problem == "missing control record":
@@ -740,12 +859,39 @@ def validate_listener(listener_host: str, listener_port: int) -> None:
 
 def serve(
     *,
-    listener_host: str = DEFAULT_HOST,
-    listener_port: int = DEFAULT_PORT,
-    shutdown_budget: float = DEFAULT_SHUTDOWN_BUDGET,
+    settings: HostDaemonConfig | None = None,
+    listener_host: str | None = None,
+    listener_port: int | None = None,
+    shutdown_budget: float | None = None,
 ) -> None:
-    """Run the installed phase-one daemon, acquiring its singleton before Uvicorn can bind."""
-    validate_listener(listener_host, listener_port)
+    """Run the configured daemon, acquiring its singleton before Uvicorn can bind."""
+    from .daemon_config import HostDaemonConfig, validate_for_listener_startup
+
+    raw_config: dict[str, Any] | None = None
+    if settings is None:
+        from .config_schema import BeadhiveConfig
+
+        raw_config = config.load()
+        settings = BeadhiveConfig.model_validate(raw_config).host.daemon
+    if not isinstance(settings, HostDaemonConfig):
+        raise TypeError("settings must be a HostDaemonConfig")
+
+    if listener_host is not None or listener_port is not None:
+        effective = settings.model_dump()
+        if listener_host is not None:
+            effective["bind"] = listener_host
+        if listener_port is not None:
+            effective["port"] = listener_port
+        settings = HostDaemonConfig.model_validate(effective)
+    validate_for_listener_startup(settings)
+
+    listener_host = settings.bind
+    listener_port = settings.port
+    shutdown_budget = (
+        settings.shutdown.graceful_seconds if shutdown_budget is None else shutdown_budget
+    )
+    if not 0 < shutdown_budget < float("inf"):
+        raise ListenerConfigurationError("shutdown budget must be finite and greater than zero")
     key = DaemonKey.current()
     singleton = DaemonSingleton.acquire(
         key, listener_host=listener_host, listener_port=listener_port
@@ -761,15 +907,35 @@ def serve(
             listener_host=listener_host,
             listener_port=listener_port,
             allowed_origin=os.environ.get("BH_OPERATOR_UI_ORIGIN") or None,
+            cfg=raw_config,
         )
+        uvicorn_options: dict[str, Any] = {
+            "host": listener_host,
+            "port": listener_port,
+            "log_level": "info",
+            "limit_concurrency": settings.http.max_connections,
+            "timeout_graceful_shutdown": shutdown_budget,
+            "proxy_headers": settings.proxy.tls_terminating,
+        }
+        if settings.proxy.tls_terminating:
+            uvicorn_options["forwarded_allow_ips"] = ",".join(settings.proxy.trusted_addresses)
+        if settings.tls.enabled:
+            uvicorn_options["ssl_certfile"] = str(settings.tls.certificate_file)
+            uvicorn_options["ssl_keyfile"] = str(settings.tls.private_key_file)
         uvicorn.run(
             application,
-            host=listener_host,
-            port=listener_port,
-            log_level="info",
-            timeout_graceful_shutdown=shutdown_budget,
+            **uvicorn_options,
         )
     finally:
         # Outer lifespan normally completes first.  This idempotent fallback also covers bind,
         # import, startup, and signal failures before/around lifespan entry.
         singleton.release()
+
+
+def main() -> None:
+    """Installed ``bh-host-daemon`` entry point, intentionally independent of Typer/stdio MCP."""
+    try:
+        serve()
+    except (DaemonError, FileNotFoundError, KeyError, ValueError) as exc:
+        print(f"\u2717 {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc

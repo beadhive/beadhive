@@ -118,7 +118,7 @@ app.add_typer(dispatch_app, name="dispatch")
 # Starlette/Uvicorn merely because this command group is registered.
 daemon_app = typer.Typer(
     no_args_is_help=True,
-    help="the singleton Beadhive host daemon (phase one: loopback and read-only)",
+    help="the explicitly configured singleton Beadhive host daemon",
 )
 app.add_typer(daemon_app, name="daemon")
 
@@ -157,15 +157,19 @@ _DISPATCH_LOGS_LINES = typer.Option(
 # ---- `bh host daemon` ---------------------------------------------------------
 
 
-@daemon_app.command("serve", help="run the foreground phase-one host daemon")
+@daemon_app.command("serve", help="run the configured foreground host daemon")
 def daemon_serve(
-    listener_host: str = typer.Option("127.0.0.1", "--host", help="literal loopback address"),
-    listener_port: int = typer.Option(8420, "--port", help="listener TCP port"),
-    shutdown_budget: float = typer.Option(
-        10.0,
+    listener_host: str | None = typer.Option(
+        None, "--host", help="override configured literal listener address"
+    ),
+    listener_port: int | None = typer.Option(
+        None, "--port", help="override configured listener TCP port"
+    ),
+    shutdown_budget: float | None = typer.Option(
+        None,
         "--shutdown-budget",
         min=0.001,
-        help="finite total graceful-shutdown budget in seconds",
+        help="override configured finite graceful-shutdown budget in seconds",
     ),
 ) -> None:
     from . import host_daemon
