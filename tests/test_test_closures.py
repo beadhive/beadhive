@@ -37,8 +37,8 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert registry.full_gate == "just check"
     assert registry.release_gate == "just check-all"
     assert len(registry.closures) == 23
-    assert sum(closure.status == "present" for closure in registry.closures) == 21
-    assert sum(closure.status == "absent" for closure in registry.closures) == 2
+    assert sum(closure.status == "present" for closure in registry.closures) == 22
+    assert sum(closure.status == "absent" for closure in registry.closures) == 1
 
 
 def test_capability_module_closures_survive_workstream_composition():
@@ -54,6 +54,8 @@ def test_capability_module_closures_survive_workstream_composition():
     assert closures["module.worktrees"].owner_path == "src/beadhive/modules/worktrees"
     assert closures["module.work"].status == "present"
     assert closures["module.work"].owner_path == "src/beadhive/modules/work"
+    assert closures["module.planning"].status == "present"
+    assert closures["module.planning"].owner_path == "src/beadhive/modules/planning"
     assert {"contract.agent-launch", "config.pure", "config.store", "config.fragments"} <= set(
         closures
     )
@@ -103,8 +105,9 @@ def test_new_registered_plugin_without_closure_fails_drift_check(tmp_path):
 
 def test_module_directory_cannot_remain_declared_absent(tmp_path):
     (tmp_path / "src" / "beadhive" / "modules" / "planning").mkdir(parents=True)
+    registry = _replace_closure(test_closures.load_registry(), "module.planning", status="absent")
 
-    errors = test_closures.validate_registry(test_closures.load_registry(), tmp_path)
+    errors = test_closures.validate_registry(registry, tmp_path)
 
     assert "registered module 'planning' is incorrectly declared absent" in errors
     assert (
