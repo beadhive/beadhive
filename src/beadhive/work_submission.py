@@ -273,10 +273,25 @@ def impl_submit(api, bead, as_, hive, group):
     sha = api.worktree.head_sha(target)
     api._record_submit_commits(bead, main, entry, branch, base)
     gate, reuse = api._open_submit_gate(cfg, entry, bead, branch, main, sha)
+    # The gate + local review state above are submit's acceptance boundary. Reap before the
+    # best-effort remote state push so a remote warning cannot retain already-accepted backups.
+    _reap_accepted_safety_refs(api, entry, branch, labels=("refine",), boundary="submit")
     api._push_state(cfg, main, actor, f"submit {bead} @ {sha}")
     api.otel.count_bead_transition("review_pending", {"bh.review.gate": gate})
     verb = "reused open" if reuse else "opened"
     api.typer.echo(f"✓ submitted {bead} @ {sha} — {verb} {gate} review gate (worktree left intact)")
+
+
+def _reap_accepted_safety_refs(api, entry, branch, *, labels, boundary):
+    """Best-effort exact-ref cleanup after a lifecycle boundary has accepted the branch."""
+    reaped, failed = api.worktree.delete_safety_refs(entry, branch, labels=labels)
+    if reaped:
+        api.typer.echo(f"  reaped {len(reaped)} accepted safety ref(s) after {boundary}")
+    if failed:
+        api.typer.echo(
+            f"⚠ {boundary} succeeded but safety ref cleanup was refused for: " + ", ".join(failed),
+            err=True,
+        )
 
 
 def impl__record_submit_commits(api, bead, main, entry, branch, base):

@@ -122,6 +122,9 @@ class RefineResult:
     branch: str = ""  # applied: the refined branch
     log: str = ""  # applied: the rendered log range
     target: Path | None = None  # applied: worktree path (for the restore hint)
+    noop: bool = False  # no history change requested: no backup and no rebase
+    reaped: list[str] = field(default_factory=list)  # older successful backups removed
+    cleanup_failed: list[str] = field(default_factory=list)  # exact refs git refused to remove
 
 
 # ---- bd plumbing: the shared helpers now live in bd.py / registry.py --------

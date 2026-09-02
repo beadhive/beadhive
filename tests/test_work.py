@@ -1174,6 +1174,59 @@ def test_submit_clean_local_gate_no_push(hive, fakebd):
     assert fakebd.did("dolt", "push")  # bh-dw3e.6: submit pushes bead STATE regardless of gate
 
 
+def test_submit_reaps_only_the_exact_branch_refine_backups(hive, fakebd):
+    fakebd.seed("mr-safety", title="t")
+    work.claim(bead="mr-safety", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-safety"), "feat: the change")
+    branch = "wt/bead/issue/mr-safety"
+    owned = f"{branch}.refine-20260902T031122Z"
+    foreign = f"{branch}.refine-latest"
+    _git("branch", owned, cwd=hive.main)
+    _git("branch", foreign, cwd=hive.main)
+
+    work.submit(bead="mr-safety", hive="myrepo")
+
+    assert not _git("branch", "--list", owned, cwd=hive.main).stdout.strip()
+    assert _git("branch", "--list", foreign, cwd=hive.main).stdout.strip()
+
+
+def test_submit_remote_push_warning_still_reaps_locally_accepted_refine_backup(
+    hive, fakebd, capsys
+):
+    fakebd.seed("mr-safety-push", title="t")
+    work.claim(bead="mr-safety-push", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-safety-push"), "feat: the change")
+    branch = "wt/bead/issue/mr-safety-push"
+    backup = f"{branch}.refine-20260902T031122Z"
+    _git("branch", backup, cwd=hive.main)
+    fakebd.dolt_push_rc = 1
+    fakebd.dolt_push_err = "Error: push to origin: connection refused"
+
+    work.submit(bead="mr-safety-push", hive="myrepo")
+
+    assert fakebd.states["mr-safety-push"]["review"] == "pending"
+    assert not _git("branch", "--list", backup, cwd=hive.main).stdout.strip()
+    assert "state push failed" in capsys.readouterr().err
+
+
+def test_submit_local_gate_failure_retains_refine_backup(hive, fakebd, monkeypatch):
+    fakebd.seed("mr-safety-gate", title="t")
+    work.claim(bead="mr-safety-gate", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-safety-gate"), "feat: the change")
+    branch = "wt/bead/issue/mr-safety-gate"
+    backup = f"{branch}.refine-20260902T031122Z"
+    _git("branch", backup, cwd=hive.main)
+
+    def fail_gate(*_args, **_kwargs):
+        raise typer.Exit(1)
+
+    monkeypatch.setattr(work, "_open_submit_gate", fail_gate)
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-safety-gate", hive="myrepo")
+
+    assert _git("branch", "--list", backup, cwd=hive.main).stdout.strip()
+
+
 def test_submit_ghpr_gate_pushes(hive, fakebd, monkeypatch):
     monkeypatch.setattr(config, "review_gate", lambda cfg, entry: "gh:pr")
     fakebd.seed("mr-5", title="t")
@@ -2795,6 +2848,28 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     assert fakebd.states["mr-31"]["review"] == "changes-requested"
     note_calls = [args for _actor, args in fakebd.calls if args[:2] == ["note", "mr-31"]]
     assert note_calls and "shared.txt" in " ".join(note_calls[0])
+
+
+def test_successful_merge_close_reaps_refine_and_premerge_backups(hive, fakebd):
+    fakebd.seed("mr-32", title="t")
+    work.claim(bead="mr-32", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-32"), "feat: the change")
+    branch = "wt/bead/issue/mr-32"
+    backups = [
+        f"{branch}.refine-20260902T031122Z",
+        f"{branch}.premerge-20260902T031123Z-abcd",
+    ]
+    for backup in backups:
+        _git("branch", backup, cwd=hive.main)
+    work.submit(bead="mr-32", hive="myrepo")
+    # Submit accepts/reaps refine, while premerge remains until merge acceptance.
+    assert not _git("branch", "--list", backups[0], cwd=hive.main).stdout.strip()
+    assert _git("branch", "--list", backups[1], cwd=hive.main).stdout.strip()
+    fakebd.approve("mr-32")
+
+    work.merge(bead="mr-32", hive="myrepo", rm=False, molecule=False)
+
+    assert all(not _git("branch", "--list", b, cwd=hive.main).stdout.strip() for b in backups)
 
 
 # ---- commit-flow metrics at the merge seam (hqfy.2) ------------------------

@@ -70,6 +70,46 @@ def test_section_lists_orphan(hive, fakebd, capsys):  # noqa: F811
     assert "delete manually" in out
 
 
+def test_doctor_names_orphan_safety_ref(hive, fakebd):  # noqa: F811
+    branch = "wt/bead/issue/mr-gone"
+    _git("branch", branch, cwd=hive.main)
+    safety_ref = f"{branch}.refine-20260902T031122Z"
+    _git("branch", safety_ref, cwd=hive.main)
+
+    warnings = doctor._orphan_safety_ref_warnings(config.load())
+
+    assert len(warnings) == 1
+    assert safety_ref in warnings[0]
+    assert "mr-gone does not resolve" in warnings[0]
+    assert "not prune authority" in warnings[0]
+
+
+def test_doctor_does_not_call_a_resolvable_safety_ref_orphan(hive, fakebd):  # noqa: F811
+    fakebd.seed("mr-live", title="t")
+    branch = "wt/bead/issue/mr-live"
+    _git("branch", branch, cwd=hive.main)
+    _git("branch", f"{branch}.premerge-20260902T031123Z-abcd", cwd=hive.main)
+
+    assert doctor._orphan_safety_ref_warnings(config.load()) == []
+
+
+def test_doctor_resolves_many_safety_refs_with_one_bead_snapshot(hive, fakebd):  # noqa: F811
+    fakebd.seed("mr-live", title="t")
+    for bead_id in ("mr-live", "mr-gone"):
+        branch = f"wt/bead/issue/{bead_id}"
+        _git("branch", branch, cwd=hive.main)
+        for second in ("22", "23", "24"):
+            _git("branch", f"{branch}.refine-20260902T0311{second}Z", cwd=hive.main)
+    fakebd.calls.clear()
+
+    warnings = doctor._orphan_safety_ref_warnings(config.load())
+
+    bead_queries = [args for _actor, args in fakebd.calls if args[:1] in (["list"], ["show"])]
+    assert bead_queries == [["list", "--all", "--include-infra", "--limit", "0", "--json"]]
+    assert len(warnings) == 3
+    assert all("mr-gone" in warning for warning in warnings)
+
+
 # ---- stage 2 shape A: _bulk_epic_closed (bh-xi0m1) --------------------------
 
 

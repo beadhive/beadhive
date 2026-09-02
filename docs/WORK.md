@@ -592,11 +592,14 @@ bh work refine <id> --since <ref>        # fold <ref>..tip into one digest
 bh work refine <id> --plan plan.json --dry-run   # print the would-be log; change nothing
 ```
 
-The wrapper is the point: it creates a **backup branch** (`wt/bead/<id>.refine-<ts>`),
-runs the squash as a non-interactive `rebase`, then enforces a **byte-identical gate**
-(`git diff --quiet backup tip`). If the rebase conflicts or the gate fails, it aborts
-and hard-resets back to the backup — your work is never lost. On success it leaves the
-backup in place (delete it once satisfied) and prints the restore one-liner.
+The wrapper is the point: when the plan changes history it creates a **backup branch**
+(`wt/bead/<id>.refine-<session>`), runs the squash as a non-interactive `rebase`, then enforces a
+**byte-identical gate** (`git diff --quiet backup tip`). If the rebase conflicts or the gate
+fails, it aborts and hard-resets back to the backup — your work is never lost, and that recovery
+ref remains. A successful refine retains exactly its latest backup until submit accepts the exact
+branch; a later successful refine reaps older successful backups, and submit reaps the final one.
+Re-running a semantic no-op does not mint a backup. Successful merge close/reconcile similarly
+reaps accepted `.premerge-*` refs; conflict/red/rejected paths retain them.
 
 **Squash-plan schema** (sparse — commits in no group pass through unchanged):
 

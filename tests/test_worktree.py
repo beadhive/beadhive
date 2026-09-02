@@ -104,6 +104,77 @@ def test_session_ids_sort_chronologically():
     assert sorted([later, earlier]) == [earlier, later]
 
 
+def test_safety_ref_parser_owns_only_the_exact_namespace():
+    ref = worktree.parse_safety_ref("wt/bead/issue/bh-a.2.refine-20260902T031122Z", "a" * 40)
+    assert ref is not None
+    assert (ref.branch, ref.bead_id, ref.label, ref.session, ref.sha) == (
+        "wt/bead/issue/bh-a.2",
+        "bh-a.2",
+        "refine",
+        "20260902T031122Z",
+        "a" * 40,
+    )
+    assert worktree.parse_safety_ref("topic.refine-20260902T031122Z") is None
+    assert worktree.parse_safety_ref("wt/bead/issue/bh-a.2.refined-20260902T031122Z") is None
+    assert worktree.parse_safety_ref("wt/bead/issue/bh-a.2.refine-latest") is None
+    custom = worktree.parse_safety_ref("wt/wip/custom.premerge-20260902T031122Z-abcd")
+    assert custom is not None
+    assert custom.branch == "wt/wip/custom" and custom.bead_id == ""
+
+
+def test_delete_safety_refs_is_exact_idempotent_and_keeps_foreign_refs(tmp_path, monkeypatch):
+    _cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    branch = "wt/bead/issue/mr-safe"
+    _git("branch", branch, cwd=repo)
+    owned = f"{branch}.refine-20260902T031122Z"
+    premerge = f"{branch}.premerge-20260902T031123Z-abcd"
+    foreign = f"{branch}.refine-latest"
+    other = "wt/bead/issue/mr-other.refine-20260902T031124Z"
+    custom = "wt/wip/custom.refine-20260902T031125Z-abcd"
+    for name in (owned, premerge, foreign, other, custom):
+        _git("branch", name, cwd=repo)
+
+    deleted, failed = worktree.delete_safety_refs(entry, branch, labels=("refine",))
+    assert deleted == [owned]
+    assert failed == []
+    assert _gitout("branch", "--list", foreign, cwd=repo) == foreign
+    assert _gitout("branch", "--list", premerge, cwd=repo) == premerge
+    assert _gitout("branch", "--list", other, cwd=repo) == other
+    assert worktree.delete_safety_refs(entry, branch, labels=("refine",)) == ([], [])
+
+    deleted, failed = worktree.delete_safety_refs(entry, "wt/wip/custom", labels=("refine",))
+    assert deleted == [custom] and failed == []
+
+
+def test_delete_safety_refs_uses_observed_sha_as_concurrency_fence(monkeypatch):
+    ref = worktree.parse_safety_ref("wt/bead/issue/mr-race.refine-20260902T031122Z", "1" * 40)
+    assert ref is not None
+    entry = {"provider": "github", "org": "myorg", "repo": "myrepo"}
+    monkeypatch.setattr(worktree._worktree_git.registry, "hive_dir", lambda _entry: Path("/repo"))
+    monkeypatch.setattr(worktree._worktree_git, "impl_safety_refs", lambda *a, **k: [ref])
+    calls = []
+
+    def refused(cmd, **_kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1, stdout="", stderr="moved")
+
+    monkeypatch.setattr(worktree, "_run_git", refused)
+    deleted, failed = worktree.delete_safety_refs(entry, ref.branch)
+
+    assert deleted == [] and failed == [ref.name]
+    assert calls == [
+        [
+            "git",
+            "-C",
+            "/repo",
+            "update-ref",
+            "-d",
+            f"refs/heads/{ref.name}",
+            ref.sha,
+        ]
+    ]
+
+
 def test_bead_branch_template_override():
     cfg = {"worktrees": {"bead_branch": "wip/{id}"}}  # template is the suffix; wt/ still added
     assert worktree._branch_and_leaf(cfg, bead="x-1") == ("wt/wip/x-1", "x-1")
