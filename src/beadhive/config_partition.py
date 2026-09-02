@@ -66,6 +66,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "repowise",  # local index + user-provided binary
         "hitch",  # local agent-hitch checkout path + local tool presence
         "herdr",  # local Herdr integration and preferred installed agent kind
+        "host.daemon",  # unified listener, local credentials, exposure, and resource limits
     }
 )
 
