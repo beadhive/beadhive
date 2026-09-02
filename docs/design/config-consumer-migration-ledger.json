@@ -714,7 +714,7 @@
       {
         "facade_target": "beadhive.config.set_value",
         "kind": "direct-facade",
-        "line": 195,
+        "line": 254,
         "path": "tests/test_mcp_catalog_projection.py",
         "target": "beadhive.config.set_value"
       },

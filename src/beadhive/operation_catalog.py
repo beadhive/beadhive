@@ -1044,6 +1044,25 @@ def mcp_tool_projections() -> dict[str, tuple[str, tuple[str, ...]]]:
     return result
 
 
+def mcp_tool_composites() -> dict[str, tuple[str, ...]]:
+    """Return explicit application-operation constituents for coarse MCP tools.
+
+    Most MCP tools project one canonical operation and therefore have no entry here.  A tool
+    appears only when its adapter intentionally coordinates multiple catalog operations.  The
+    result is derived from the same validated catalog snapshot as names and signatures so server
+    construction never needs a second composite allowlist.
+    """
+    result = {}
+    for operation in operations():
+        projection = operation.surfaces.get("mcp")
+        if projection and projection.get("tool"):
+            validated = _validated_mcp_projection(operation)
+            composes = tuple(validated.get("composes", ()))
+            if composes:
+                result[operation.name] = composes
+    return result
+
+
 def mcp_resource_projections() -> dict[str, tuple[str, tuple[str, ...]]]:
     """Materialize the deterministic safe MCP resource inventory from one catalog snapshot."""
     result = {}
