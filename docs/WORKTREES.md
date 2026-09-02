@@ -333,7 +333,7 @@ Each worktree is classified into one of these states:
 
 | Classification | Meaning | Safe? |
 |---|---|---|
-| `SAFE` | Bead is **closed** + branch is a git ancestor of its parent + worktree is **clean** | Yes |
+| `SAFE` | Bead is **closed**, or every exact batch-label member is closed; branch is merged into its parent; worktree is **clean** | Yes |
 | `REVIEW` | Branch merged into parent, clean, but bead not yet closed (waiting on close) | No |
 | `DIRTY` | Uncommitted changes in the working tree | No |
 | `LANDED_REBASED` | Closed, clean branch whose content is proven in the parent under different SHAs | Yes |
@@ -344,11 +344,13 @@ Each worktree is classified into one of these states:
 | `ACTIVE` | Bead is open / in-progress | No |
 | `UNKNOWN` | The bead could **not be resolved** — bh cannot say what this worktree holds | No |
 | `DETACHED` | No branch checked out (detached HEAD) | No |
-| `ABANDONED` | No bead id (session or batch worktree with no bead) | No |
+| `ABANDONED` | No bead id, including a batch worktree without complete all-closed + merged evidence | No |
 
 **SAFE** is a conservative three-way conjunction: a worktree must satisfy *all* three
-conditions — `closed AND merged AND clean` — before `prune` will touch it.  Missing any
-one condition leaves the worktree in place.
+conditions — `closed AND merged AND clean` — before `prune` will touch it. For
+`wt/batch/<group>`, `closed` means a non-empty, exact `batch:<group>` member set in which every
+member is closed and every member resolves to the same parent branch. Missing or contradictory
+evidence leaves the worktree in place.
 
 #### `UNKNOWN` — a read failure is not a state
 
