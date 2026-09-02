@@ -24,6 +24,7 @@ import json
 import os
 import platform
 import secrets
+import ssl
 import subprocess
 import sys
 import time
@@ -33,6 +34,7 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from enum import IntEnum
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -49,11 +51,29 @@ from .daemon_contract import CONTRACT_VERSION
 
 if TYPE_CHECKING:
     from .daemon_config import HostDaemonConfig
+    from .daemon_network import NetworkAdmissionPolicy
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8737
 DEFAULT_SHUTDOWN_BUDGET = 30.0
 _CONTROL_KEY_BYTES = 32
+
+
+def _secure_ssl_context(
+    _uvicorn_config: Any,
+    default_factory: Callable[[], ssl.SSLContext],
+    *,
+    minimum_version: str,
+) -> ssl.SSLContext:
+    """Harden Uvicorn's certificate-loaded context with the configured protocol floor."""
+
+    context = default_factory()
+    context.minimum_version = {
+        "TLSv1.2": ssl.TLSVersion.TLSv1_2,
+        "TLSv1.3": ssl.TLSVersion.TLSv1_3,
+    }[minimum_version]
+    context.options |= ssl.OP_NO_COMPRESSION
+    return context
 
 
 class DaemonError(RuntimeError):
@@ -712,6 +732,7 @@ def build_application(
     stateless_mcp_http: bool = False,
     mcp_server_factory: Callable[[], Any] | None = None,
     middleware: Sequence[Middleware] = (),
+    network_policy: NetworkAdmissionPolicy | None = None,
 ) -> Starlette:
     """Build the one host application and its one outer lifespan.
 
@@ -772,9 +793,21 @@ def build_application(
                 )
             await daemon_runtime.shutdown(exits)
 
+    network_middleware: list[Middleware] = []
+    if network_policy is not None:
+        from .daemon_network import SecureNetworkBoundaryMiddleware
+
+        network_middleware.append(
+            Middleware(SecureNetworkBoundaryMiddleware, policy=network_policy)
+        )
+
     app = Starlette(
         routes=[Route("/health", health, methods=["GET"]), *owned_routes],
-        middleware=[Middleware(_DrainGateMiddleware, runtime=daemon_runtime), *middleware],
+        middleware=[
+            *network_middleware,
+            Middleware(_DrainGateMiddleware, runtime=daemon_runtime),
+            *middleware,
+        ],
         lifespan=lifespan,
     )
     app.state.daemon_runtime = daemon_runtime
@@ -789,6 +822,7 @@ def build_product_application(
     listener_port: int = DEFAULT_PORT,
     allowed_origin: str | None = None,
     cfg: dict | None = None,
+    settings: HostDaemonConfig | None = None,
 ) -> Starlette:
     """Assemble the installed daemon's current routes on the shared composition seam.
 
@@ -820,24 +854,50 @@ def build_product_application(
         ready=lambda: runtime.ready,
         events=relay.events,
     )
-    app = build_application(
-        runtime=runtime,
-        routes=operator.routes(),
-        components=[relay.component()],
-        enable_mcp_http=False,
-        middleware=[
+    product_middleware: list[Middleware]
+    network_policy = None
+    if settings is None:
+        # Compatibility for callers constructing the historical phase-one application without
+        # the typed daemon settings.  Installed ``serve`` always supplies settings and therefore
+        # uses the shared authenticated network boundary below.
+        product_middleware = [
             Middleware(
                 LocalReadPolicyMiddleware,
                 listener_host=listener_host,
                 listener_port=listener_port,
                 allowed_origin=allowed_origin,
             )
-        ],
+        ]
+    else:
+        from .daemon_auth import BearerAuthMiddleware, CredentialAuthority
+        from .daemon_network import SecureNetworkAdmissionPolicy
+
+        credential_file = settings.auth.credential_file
+        if credential_file is None:  # also guarded structurally at configured startup
+            raise ListenerConfigurationError("authenticated daemon requires a credential file")
+        authority = CredentialAuthority(
+            credential_file,
+            audience=settings.auth.audience,
+            session_revalidation_seconds=settings.auth.session_revalidation_seconds,
+        )
+        network_policy = SecureNetworkAdmissionPolicy(settings)
+        product_middleware = [Middleware(BearerAuthMiddleware, authority=authority)]
+
+    app = build_application(
+        runtime=runtime,
+        routes=operator.routes(),
+        components=[relay.component()],
+        enable_mcp_http=False,
+        middleware=product_middleware,
+        network_policy=network_policy,
     )
     app.state.operator_sources = sources
     app.state.operator_feed = feed
     app.state.operator_api = operator
     app.state.operator_sse = relay
+    if network_policy is not None:
+        app.state.network_admission = network_policy
+        app.state.auth_authority = authority
     return app
 
 
@@ -908,6 +968,7 @@ def serve(
             listener_port=listener_port,
             allowed_origin=os.environ.get("BH_OPERATOR_UI_ORIGIN") or None,
             cfg=raw_config,
+            settings=settings,
         )
         uvicorn_options: dict[str, Any] = {
             "host": listener_host,
@@ -915,13 +976,20 @@ def serve(
             "log_level": "info",
             "limit_concurrency": settings.http.max_connections,
             "timeout_graceful_shutdown": shutdown_budget,
-            "proxy_headers": settings.proxy.tls_terminating,
+            # The shared ASGI boundary must see the socket peer before any forwarded identity
+            # rewrite.  It validates trusted proxy source + scheme itself.
+            "proxy_headers": False,
+            "timeout_keep_alive": min(5.0, settings.http.request_timeout_seconds),
+            "backlog": min(settings.http.max_connections, 2_048),
+            "ws_max_size": settings.terminal.client_queue_bytes,
+            "ws_max_queue": min(settings.terminal.max_sessions, 32),
         }
-        if settings.proxy.tls_terminating:
-            uvicorn_options["forwarded_allow_ips"] = ",".join(settings.proxy.trusted_addresses)
         if settings.tls.enabled:
             uvicorn_options["ssl_certfile"] = str(settings.tls.certificate_file)
             uvicorn_options["ssl_keyfile"] = str(settings.tls.private_key_file)
+            uvicorn_options["ssl_context_factory"] = partial(
+                _secure_ssl_context, minimum_version=settings.tls.minimum_version
+            )
         uvicorn.run(
             application,
             **uvicorn_options,
