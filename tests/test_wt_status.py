@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from beadhive.worktree import bead_and_parent  # noqa: E402
 from beadhive.wt_status import (  # noqa: E402
+    BatchEvidence,
     WtClassification,
     classify,
     format_disposition,
@@ -71,6 +72,7 @@ def _run(
     bead_unknown_reasons=None,
     store_unreadable_reason="",
     bead_disposition_relations=None,
+    batch_evidence=None,
 ):
     """Run classify with one managed row and the given params; return the single WtStatus.
 
@@ -95,6 +97,7 @@ def _run(
         bead_unknown_reasons=bead_unknown_reasons or {},
         store_unreadable_reason=store_unreadable_reason,
         bead_disposition_relations=bead_disposition_relations or {},
+        batch_evidence=batch_evidence or {},
     )
     assert len(result) == 1
     return result[0]
@@ -324,18 +327,114 @@ def test_merged_orphan_when_no_bead_id_but_merged_and_clean():
     assert st.safe is False
 
 
-def test_batch_worktree_is_abandoned_even_when_merged():
-    """Batch worktree (wt/batch/<epic>) stays ABANDONED even if the branch is merged.
-
-    Batch branches are coordination branches, not individual bead seats.  They keep
-    their own no-bead treatment and are never promoted to MERGED_ORPHAN.
-    """
+def test_batch_worktree_with_all_closed_members_merged_and_clean_is_safe():
+    """A label-resolved batch mirrors the single-bead closed+merged+clean SAFE rule."""
+    branch = "wt/batch/some-epic"
     st = _run(
-        branch="wt/batch/some-epic",
+        branch=branch,
         bead_id=None,
         merged=True,
         dirty=False,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("some-epic.1", "closed"), ("some-epic.2", "closed")),
+                parent="wt/bead/epic/some-epic",
+            )
+        },
     )
+    assert st.classification == WtClassification.SAFE
+    assert st.safe is True
+
+
+def test_batch_worktree_with_one_open_member_is_not_safe():
+    """One open member withholds SAFE even when the shared branch is already merged."""
+    branch = "wt/batch/some-epic"
+    st = _run(
+        branch=branch,
+        bead_id=None,
+        merged=True,
+        dirty=False,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("some-epic.1", "closed"), ("some-epic.2", "open")),
+                parent="wt/bead/epic/some-epic",
+            )
+        },
+    )
+    assert st.classification == WtClassification.ABANDONED
+    assert st.safe is False
+
+
+def test_batch_worktree_with_all_closed_members_but_unmerged_branch_is_not_safe():
+    """Closed membership alone cannot widen prune eligibility without ancestry proof."""
+    branch = "wt/batch/some-epic"
+    st = _run(
+        branch=branch,
+        bead_id=None,
+        merged=False,
+        dirty=False,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("some-epic.1", "closed"), ("some-epic.2", "closed")),
+                parent="wt/bead/epic/some-epic",
+            )
+        },
+    )
+    assert st.classification == WtClassification.ABANDONED
+    assert st.safe is False
+
+
+def test_batch_worktree_ancestry_is_checked_against_the_resolved_member_parent():
+    branch = "wt/batch/planner-group"
+    resolved_parent = "wt/bead/epic/reparented"
+    observed = []
+
+    result = classify(
+        hive_prefix=_HIVE,
+        managed_rows=[(_HIVE, "/wts/batch-planner-group", branch)],
+        meta_branches=[],
+        bead_statuses={},
+        dirty_by_path={"/wts/batch-planner-group": False},
+        is_merged_fn=lambda _entry, actual_branch, parent: (
+            observed.append((actual_branch, parent)) or True
+        ),
+        parent_fn=_make_parent_fn(None, _INTEGRATION),
+        integration=_INTEGRATION,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("legacy-name.1", "closed"),),
+                parent=resolved_parent,
+            )
+        },
+    )
+
+    assert observed == [(branch, resolved_parent)]
+    assert result[0].classification == WtClassification.SAFE
+
+
+def test_dirty_batch_worktree_is_not_safe_even_when_all_members_are_closed_and_merged():
+    """DIRTY remains the hard stop over otherwise complete batch evidence."""
+    branch = "wt/batch/some-epic"
+    st = _run(
+        branch=branch,
+        bead_id=None,
+        merged=True,
+        dirty=True,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("some-epic.1", "closed"), ("some-epic.2", "closed")),
+                parent="wt/bead/epic/some-epic",
+            )
+        },
+    )
+    assert st.classification == WtClassification.DIRTY
+    assert st.underlying == WtClassification.SAFE
+    assert st.safe is False
+
+
+def test_batch_worktree_without_complete_evidence_stays_abandoned_when_merged():
+    """A merged batch with no readable label evidence is not promoted to SAFE."""
+    st = _run(branch="wt/batch/some-epic", bead_id=None, merged=True, dirty=False)
     assert st.classification == WtClassification.ABANDONED
     assert st.safe is False
 

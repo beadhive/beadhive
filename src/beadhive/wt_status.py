@@ -172,6 +172,31 @@ class WtStatus:
 
 
 @dataclass(frozen=True)
+class BatchEvidence:
+    """Resolved lifecycle evidence for one exact ``wt/batch/<group>`` branch.
+
+    The inventory adapter owns label lookup and parent resolution.  The pure classifier owns
+    the policy decision: every named member must be closed before a merged, clean batch branch
+    may become :attr:`WtClassification.SAFE`.
+    """
+
+    member_statuses: tuple[tuple[str, str], ...]
+    """Deterministically ordered ``(bead_id, status)`` pairs from the batch-label snapshot."""
+
+    parent: str
+    """The one integration target shared by every member in this batch."""
+
+    @property
+    def all_closed(self) -> bool:
+        """True only for a non-empty batch with a parent whose complete member set is closed."""
+        return (
+            bool(self.parent)
+            and bool(self.member_statuses)
+            and all(status == "closed" for _bead_id, status in self.member_statuses)
+        )
+
+
+@dataclass(frozen=True)
 class WtDisposition:
     """Parsed, fail-closed terminal-disposition record stored in ``close_reason``."""
 
@@ -251,6 +276,7 @@ def classify(
     bead_unknown_reasons: dict[str, str] | None = None,
     store_unreadable_reason: str = "",
     bead_disposition_relations: dict[str, frozenset[tuple[str, str]]] | None = None,
+    batch_evidence: dict[str, BatchEvidence] | None = None,
 ) -> list[WtStatus]:
     """Classify every managed worktree row for one hive.
 
@@ -304,6 +330,10 @@ def classify(
         Normalized queryable terminal edges per bead: ``("retained", consumer)`` or
         ``("superseded", replacement)``. A close_reason assertion without its matching edge is
         STALE.
+    batch_evidence:
+        Exact ``wt/batch/<group>`` branch to resolved member statuses and their one shared parent.
+        Missing evidence is deliberately indistinguishable from an unresolved batch and cannot
+        make a row safe.
 
     Returns
     -------
@@ -313,6 +343,7 @@ def classify(
     results: list[WtStatus] = []
     unknown_reasons = bead_unknown_reasons or {}
     disposition_relations = bead_disposition_relations or {}
+    batches = batch_evidence or {}
 
     for prefix, path, branch in managed_rows:
         leaf = Path(path).name
@@ -331,6 +362,9 @@ def classify(
         # the branch from the sanitized directory leaf (Fix 1).
         entry_stub = {"prefix": prefix}
         bead_id, parent = parent_fn(entry_stub, path, integration, branch)
+        batch = batches.get(branch) if branch.startswith("wt/batch/") else None
+        if batch is not None:
+            parent = batch.parent
 
         # -- merge ancestry ----------------------------------------------
         if is_detached or not branch or branch == "(detached)":
@@ -369,7 +403,7 @@ def classify(
         #   1. DETACHED        — no branch; cannot determine anything else
         #   2. DIRTY           — uncommitted changes override merge/bead status, but the answer
         #                        underneath is kept in `underlying` rather than thrown away
-        #   3. ABANDONED       — no bead id AND (not merged OR is a batch worktree)
+        #   3. ABANDONED       — no bead id AND no complete closed+merged batch proof
         #   3a.MERGED_ORPHAN   — no bead id but branch IS merged+clean and not batch;
         #                        conservative: not auto-pruned (weaker signal than SAFE)
         #   3b.UNKNOWN         — a bead id that did NOT resolve.  Ahead of every bead-derived
@@ -387,12 +421,15 @@ def classify(
         if is_detached:
             cls = WtClassification.DETACHED
         elif bead_id is None:
-            # No resolvable bead: use merge ancestry to distinguish reclaimable
-            # orphans (merged+clean, non-batch) from genuinely abandoned worktrees.
-            # Batch branches (wt/batch/<epic>) keep their own no-bead treatment
-            # and are always ABANDONED regardless of merge state (Fix 2).
+            # A batch has no single bead id, so its label-defined member set is the equivalent
+            # lifecycle authority.  Promote only the complete all-closed + merged proof.  Missing
+            # members, an unresolved status, a mixed parent, or an unmerged branch remains the
+            # existing conservative ABANDONED result.  Non-batch orphans retain their separate
+            # MERGED_ORPHAN treatment and are never widened by this rule.
             is_batch = branch.startswith("wt/batch/")
-            if merged and not is_batch:
+            if is_batch and batch is not None and batch.all_closed and merged:
+                cls = WtClassification.SAFE
+            elif merged and not is_batch:
                 cls = WtClassification.MERGED_ORPHAN
             else:
                 cls = WtClassification.ABANDONED

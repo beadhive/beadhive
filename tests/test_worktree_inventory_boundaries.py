@@ -238,6 +238,71 @@ def test_disposition_relation_readback_rejects_reversed_or_wrong_typed_edges(mon
     assert worktree._bead_disposition_relations_for_entry(entry, reasons) == {}
 
 
+def test_batch_evidence_uses_one_complete_label_snapshot_and_shared_member_parent(monkeypatch):
+    entry = {"prefix": "mr"}
+    rows = [("mr", "/wt/batch-g", "wt/batch/g")]
+    calls = []
+    issues = [
+        {"id": "mr-1.2", "status": "closed", "labels": ["batch:g"]},
+        {"id": "mr-1.1", "status": "closed", "labels": ["batch:g", "size:s"]},
+        {"id": "mr-2.1", "status": "open", "labels": ["batch:other"]},
+    ]
+
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
+
+    def list_issues(args, cwd):
+        calls.append((args, cwd))
+        return issues
+
+    monkeypatch.setattr(worktree_inventory.bd, "json", list_issues)
+    monkeypatch.setattr(
+        worktree,
+        "integration_base",
+        lambda _entry, bead, integration: "wt/bead/epic/mr-1",
+    )
+
+    evidence = worktree_inventory._batch_evidence_for_entry(entry, rows, "main")
+
+    assert calls == [(["list", "--all", "--include-infra", "--limit", "0"], "/repo")]
+    assert evidence == {
+        "wt/batch/g": wt_status.BatchEvidence(
+            member_statuses=(("mr-1.1", "closed"), ("mr-1.2", "closed")),
+            parent="wt/bead/epic/mr-1",
+        )
+    }
+
+
+@pytest.mark.parametrize(
+    "issues,parent_by_bead",
+    [
+        (None, {}),
+        ([], {}),
+        ([{"id": "mr-1.1", "status": "closed", "labels": ["batch:g", "batch:x"]}], {}),
+        (
+            [
+                {"id": "mr-1.1", "status": "closed", "labels": ["batch:g"]},
+                {"id": "mr-2.1", "status": "closed", "labels": ["batch:g"]},
+            ],
+            {"mr-1.1": "wt/bead/epic/mr-1", "mr-2.1": "wt/bead/epic/mr-2"},
+        ),
+    ],
+)
+def test_batch_evidence_fails_closed_on_missing_ambiguous_or_mixed_parent_data(
+    monkeypatch, issues, parent_by_bead
+):
+    entry = {"prefix": "mr"}
+    rows = [("mr", "/wt/batch-g", "wt/batch/g")]
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
+    monkeypatch.setattr(worktree_inventory.bd, "json", lambda args, cwd: issues)
+    monkeypatch.setattr(
+        worktree,
+        "integration_base",
+        lambda _entry, bead, integration: parent_by_bead.get(bead, integration),
+    )
+
+    assert worktree_inventory._batch_evidence_for_entry(entry, rows, "main") == {}
+
+
 def test_concurrent_classification_streams_completion_order_but_flattens_entry_order(monkeypatch):
     entries = [{"prefix": "first"}, {"prefix": "second"}, {"prefix": "empty"}]
     rows_by_prefix = {
