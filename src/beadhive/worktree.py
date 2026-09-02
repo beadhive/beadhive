@@ -56,7 +56,30 @@ from . import (
 )  # noqa: F401 - compatibility patch seams retained on the facade
 from .config_consumer_ports import work_settings as config
 from .identity import workspace_identity
+from .modules.worktrees import (
+    BATCH_BRANCH_PREFIX as _BATCH_BRANCH_PREFIX,
+)
+from .modules.worktrees import (
+    BATCH_LEAF_PREFIX as _BATCH_LEAF_PREFIX,
+)
+from .modules.worktrees import (
+    WT_PREFIX,
+    CreateWorktreeRequest,
+    NativeGitWorktreeProvisioner,
+    PluginWorktreeProvisioner,
+    WorktreeBranchPolicy,
+    WorktreeLifecycleService,
+    bind_worktree,
+    branch_suffix,
+    leaf_for_branch,
+)
+from .modules.worktrees import (
+    apply_prefix as _policy_apply_prefix,
+)
 from .run import missing_binary, retry_on_index_lock, run  # noqa: F401 - compatibility patch seams
+
+BATCH_BRANCH_PREFIX = _BATCH_BRANCH_PREFIX
+BATCH_LEAF_PREFIX = _BATCH_LEAF_PREFIX
 
 # Re-export the integration-merge tier (in worktree_merge) so ws.worktree.<name> still works.
 merge_no_ff = worktree_merge.merge_no_ff
@@ -82,7 +105,6 @@ def _run_git(args, **kw):
 # ---- naming -----------------------------------------------------------------
 
 
-WT_PREFIX = "wt/"  # every managed-worktree branch starts here, whatever the mode
 VERIFY_LEAF_PREFIX = "verify-"  # ephemeral clean-checkout worktrees (clean_checkout); not a seat
 # Per-invocation verify- dirs (bh-nikb): each clean_checkout gets its own
 # verify-<branch-leaf>-<rand6> dir, so two processes validating the same branch never share (and
@@ -102,9 +124,6 @@ _VERIFY_TTL_SECONDS = 24 * 60 * 60  # hard age backstop (reboots / cross-host / 
 # seat is `wt/bead/epic/<epic>` — a bare-`<epic>` leaf, i.e. the SAME dir the batch would want.
 # Without the prefix `ensure` returns the pre-existing seat worktree and commits land on the seat
 # branch instead of `wt/batch/<epic>`, breaking `merge --group`.
-BATCH_BRANCH_PREFIX = "batch/"  # branch namespace: wt/batch/<group>
-BATCH_LEAF_PREFIX = "batch-"  # worktree-dir namespace: <root>/.../batch-<group>
-
 # Every bead branch is wt/bead/<type>/<id>. <type> is a legible role assertion in the ref path:
 # CONTAINER_TYPES are landing targets — an epic at ANY tier (a workstream is an epic-of-epics, per
 # xn3o.7) opens its own container/integration line; a leaf `issue` is never a landing target. The
@@ -139,10 +158,7 @@ def _leaf(branch: str) -> str:
     the epic id, whose seat `wt/bead/epic/<epic>` would otherwise be the same dir (ev1l).
     Idempotent on an already-computed leaf (`batch-<group>` has no `batch/` segment).
     """
-    body = branch.removeprefix(WT_PREFIX)
-    if body.startswith(BATCH_BRANCH_PREFIX):
-        return BATCH_LEAF_PREFIX + registry.sanitize(body[len(BATCH_BRANCH_PREFIX) :])
-    return registry.sanitize(branch.rsplit("/", 1)[-1])
+    return leaf_for_branch(branch)
 
 
 def _suffix(cfg, bead="", branch="", kind="issue", now=None, rand=None) -> str:
@@ -151,19 +167,26 @@ def _suffix(cfg, bead="", branch="", kind="issue", now=None, rand=None) -> str:
     A bead branch carries its `<type>` segment (`bead/{kind}/{id}`); callers resolve `kind`
     (`_bead_kind`) — the leaf default 'issue' keeps a bare template call well-formed."""
     wcfg = config.worktrees_cfg(cfg)
-    if bead:
-        tmpl = str(wcfg.get("bead_branch", "bead/{kind}/{id}"))
-        return tmpl.format(id=bead, kind=kind or "issue")
-    if branch:
-        return branch
-    ts, rnd = _ts_rand(now=now, rand=rand)
-    tmpl = str(wcfg.get("session_branch", "session/{ts}-{rand}"))
-    return tmpl.format(ts=ts, rand=rnd, id=f"{ts}-{rnd}")
+    policy = WorktreeBranchPolicy(
+        bead_template=str(wcfg.get("bead_branch", "bead/{kind}/{id}")),
+        session_template=str(wcfg.get("session_branch", "session/{ts}-{rand}")),
+    )
+    ts = rnd = ""
+    if not bead and not branch:
+        ts, rnd = _ts_rand(now=now, rand=rand)
+    return branch_suffix(
+        policy,
+        bead=bead,
+        branch=branch,
+        kind=kind,
+        timestamp=ts,
+        random_token=rnd,
+    )
 
 
 def apply_prefix(suffix: str) -> str:
     """Prepend the managed wt/ prefix to a branch suffix, never doubling an existing wt/."""
-    return WT_PREFIX + suffix.removeprefix(WT_PREFIX).lstrip("/")
+    return _policy_apply_prefix(suffix)
 
 
 def _branch_and_leaf(cfg, bead="", branch="", kind="issue", now=None, rand=None):
@@ -171,8 +194,8 @@ def _branch_and_leaf(cfg, bead="", branch="", kind="issue", now=None, rand=None)
     worktree is obvious from the branch), normalizing to never double a wt/wt/. The leaf is
     the last path segment — for a bead branch that is `<id>` regardless of `<type>`, so a
     worktree dir is named the same under the new namespace as before."""
-    br = apply_prefix(_suffix(cfg, bead=bead, branch=branch, kind=kind, now=now, rand=rand))
-    return br, _leaf(br)
+    binding = bind_worktree(_suffix(cfg, bead=bead, branch=branch, kind=kind, now=now, rand=rand))
+    return binding.branch, binding.leaf
 
 
 def _bead_kind(main: Path, bead: str, kind: str = "") -> str:
@@ -564,6 +587,54 @@ def _consult_wt_remove(
     return False
 
 
+def _worktree_lifecycle_service(cfg, entry, *, composition=None) -> WorktreeLifecycleService:
+    """Compose typed adapters over the facade's established dynamic patch seams."""
+    plugin = PluginWorktreeProvisioner(
+        preparing=lambda request: _notify_wt_create(
+            "wt_creating",
+            cfg,
+            entry,
+            main=request.main,
+            branch=request.branch,
+            target=request.target,
+            start_point=request.start_point,
+            composition=composition,
+        ),
+        create_delegate=lambda request: _consult_wt_create(
+            cfg,
+            entry,
+            main=request.main,
+            branch=request.branch,
+            target=request.target,
+            start_point=request.start_point,
+            composition=composition,
+        ),
+        created_observer=lambda request, result: _notify_wt_create(
+            "wt_created",
+            cfg,
+            entry,
+            main=request.main,
+            branch=request.branch,
+            target=result.target,
+            composition=composition,
+        ),
+        remove_delegate=lambda request: _consult_wt_remove(
+            cfg,
+            entry,
+            main=request.main,
+            target=request.target,
+            force=request.force,
+            keep_branch=request.keep_branch,
+        ),
+        supports_create=lambda: bool(
+            plugins.worktree_create_ports(cfg, entry, composition=composition)
+        ),
+        warn=lambda message: typer.echo(f"⚠ {message}", err=True),
+    )
+    native = NativeGitWorktreeProvisioner(_run_git)
+    return WorktreeLifecycleService(native=native, plugin=plugin)
+
+
 def _do_add(
     cfg, entry, main: Path, br: str, target: Path, *, new_branch: bool, start_point: str = ""
 ):
@@ -577,65 +648,23 @@ def _do_add(
     (see `_consult_wt_create`) — attach stays native even when a delegating plugin is enabled
     (bh's `wt/` branch conventions are authoritative for an existing branch; there's no naming
     decision left to delegate), with a one-line warning noting the fallthrough."""
-    target.parent.mkdir(parents=True, exist_ok=True)
     hive = str(entry.get("prefix", ""))
     started = time.monotonic()
-    delegated_target: Path | None = None
     composition = plugins.action_composition(cfg, entry)
-    _notify_wt_create(
-        "wt_creating",
-        cfg,
-        entry,
-        main=main,
-        branch=br,
-        target=target,
-        start_point=start_point,
-        composition=composition,
-    )
-    if new_branch:
-        delegated_target = _consult_wt_create(
-            cfg,
-            entry,
-            main=main,
-            branch=br,
-            target=target,
-            start_point=start_point,
-            composition=composition,
-        )
-    elif plugins.worktree_create_ports(cfg, entry, composition=composition):
-        typer.echo(
-            "⚠ worktree attach stays native (delegation only covers new-branch create)", err=True
-        )
+    service = _worktree_lifecycle_service(cfg, entry, composition=composition)
+    request = CreateWorktreeRequest(main, br, target, new_branch, start_point)
+    result = service.create(request)
 
     # Time + tag the create. The error path used to raise BEFORE any emission (always-"ok" gap), so
     # a failed create recorded nothing — now both the events counter AND the op.duration histogram
     # fire with outcome=error before the re-raise. Best-effort + gated (verify- trees never reach
     # this chokepoint; clean_checkout bypasses _do_add entirely).
-    if delegated_target is None:
-        if new_branch:
-            cmd = ["git", "-C", str(main), "worktree", "add", "-b", br, str(target)]
-            if start_point:
-                cmd.append(start_point)
-        else:
-            _run_git(["git", "-C", str(main), "worktree", "prune"], check=False)
-            cmd = ["git", "-C", str(main), "worktree", "add", str(target), br]
-        res = _run_git(cmd, check=False)
-        if res.returncode != 0:
-            elapsed = time.monotonic() - started
-            _record_wt_event("create", "error", hive=hive, leaf=target.name)
-            _record_wt_op_duration("create", elapsed, "error", hive=hive, leaf=target.name)
-            raise typer.Exit(res.returncode)
-    else:
-        target = delegated_target
-    _notify_wt_create(
-        "wt_created",
-        cfg,
-        entry,
-        main=main,
-        branch=br,
-        target=target,
-        composition=composition,
-    )
+    if not result.succeeded:
+        elapsed = time.monotonic() - started
+        _record_wt_event("create", "error", hive=hive, leaf=target.name)
+        _record_wt_op_duration("create", elapsed, "error", hive=hive, leaf=target.name)
+        raise typer.Exit(result.returncode)
+    target = result.target
     elapsed = time.monotonic() - started
     _record_wt_op_duration("create", elapsed, "ok", hive=hive, leaf=target.name)
     if run_init(cfg, entry, target):
