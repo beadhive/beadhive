@@ -4,9 +4,8 @@ Every `bh` invocation reads through `config.load()`, so the bar here is conserva
 loudly-wrong-over-quietly-wrong. Covers the AC's five cases:
 
 - clean merge (fleet base + host layer, nested sections merged, result still schema-valid)
-- an ALLOWLISTED fleet key a host may override (the mechanism, injected — the real
-  `FLEET_HOST_OVERRIDE_ALLOWLIST` is deliberately empty today, so relying on a live entry
-  would pin nothing; the same approach `tests/test_config_partition.py` already takes)
+- an ALLOWLISTED fleet key a host may override (the generic mechanism, injected independently
+  of the real `worktrees.ephemeral` entry)
 - a NON-allowlisted fleet key the host tries to override → rejected, naming the key
 - absent fleet.yaml → host-only, plus the operator-facing warning
 - absent host config.yaml → fleet-only (and both absent → the historical FileNotFoundError)
@@ -181,9 +180,7 @@ def test_getters_read_through_the_merged_view(bh_home):
 
 
 def test_allowlisted_fleet_key_may_be_overridden_by_the_host(bh_home, monkeypatch):
-    """The allowlist mechanism, exercised with an injected entry: `FLEET_HOST_OVERRIDE_ALLOWLIST`
-    is empty today (no fleet key needs a per-host escape hatch yet), so a test relying on a real
-    entry would pin nothing. An allowlisted key: host wins, no rejection."""
+    """The generic allowlist mechanism, exercised with an injected entry: host wins."""
     monkeypatch.setattr(
         config_partition, "FLEET_HOST_OVERRIDE_ALLOWLIST", frozenset({"work.validate_cmd"})
     )
@@ -219,12 +216,28 @@ def test_allowlisting_one_key_does_not_allowlist_its_siblings(bh_home, monkeypat
     assert "work.review_gate" in str(exc.value)
 
 
+def test_worktrees_ephemeral_only_allows_the_persistent_escape_hatch(bh_home):
+    """A host may retain worktrees, but cannot defeat a fleet's persistence policy."""
+    _write_fleet(bh_home, FLEET_YAML.replace("  ephemeral: true", "  ephemeral: false"))
+    _write_host(
+        bh_home,
+        HOST_YAML.replace(
+            "  path: ~/.beadhive/worktrees", "  path: ~/.beadhive/worktrees\n  ephemeral: true"
+        ),
+    )
+
+    with pytest.raises(config.ConfigError) as exc:
+        config.load()
+
+    assert "worktrees.ephemeral" in str(exc.value)
+
+
 # ---- rejected override ----------------------------------------------------------
 
 
 def test_non_allowlisted_fleet_key_is_rejected_naming_the_key(bh_home):
     """AC: rejected with a clear message NAMING the key — not silently ignored, not silently
-    applied. `work.validate_cmd` is fleet truth and the real allowlist is empty."""
+    applied. `work.validate_cmd` remains fleet truth and is not allowlisted."""
     _write_fleet(bh_home, FLEET_YAML)
     _write_host(bh_home, HOST_YAML + "  validate_cmd: just fast\n")
 

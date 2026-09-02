@@ -16,6 +16,14 @@ triplet path:
 
 Default-ephemeral keeps adoption zero-config: agents create a worktree, use it, and dispose
 of it. There's no resume of abandoned long-running tasks yet, so persistence is opt-in.
+Although `worktrees.ephemeral` is fleet policy, it may be overridden to `false` in the host
+layer when a particular machine must retain persistent worktrees. This escape hatch is one-way:
+a host cannot override a fleet requirement for persistent worktrees with `true`.
+
+```sh
+bh config set worktrees.ephemeral false --scope host
+```
+
 `$BH_WORKTREES` (legacy alias `WS_WORKTREES`) overrides the root in either mode (advanced / testing).
 
 Each is an ordinary linked `git worktree` of the hive's main clone

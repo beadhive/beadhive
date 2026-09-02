@@ -101,9 +101,9 @@ assert HOST_PREFIXES.isdisjoint(FLEET_PREFIXES), (
 # ---- override allowlist -----------------------------------------------------------
 # The narrow subset of FLEET keys a host manifest MAY still override; everything else is
 # fleet-only (a host manifest setting an unlisted fleet key is a config error, not a quiet
-# local override). Empty today — no fleet key needs a per-host escape hatch yet; extend
-# deliberately, one documented key at a time, when a concrete need shows up.
-FLEET_HOST_OVERRIDE_ALLOWLIST: frozenset[str] = frozenset()
+# local override). Persistent worktree storage is inherently host-local, so a host may opt
+# out when the fleet otherwise uses ephemeral worktrees.
+FLEET_HOST_OVERRIDE_ALLOWLIST: frozenset[str] = frozenset({"worktrees.ephemeral"})
 
 
 def _prefix_match_len(path: str, prefixes: frozenset[str]) -> int:
@@ -134,6 +134,18 @@ def is_host_overridable(path: str) -> bool:
     allowlist — 'everything else is fleet-only'). Meaningless (always False) for a key
     that is already HOST; callers should only consult this for a FLEET key."""
     return _prefix_match_len(path, FLEET_HOST_OVERRIDE_ALLOWLIST) >= 0
+
+
+def host_override_value_allowed(path: str, value: object) -> bool:
+    """Whether a host may set *value* for an allowlisted fleet key.
+
+    ``worktrees.ephemeral`` is deliberately a one-way escape hatch: a host may retain
+    persistent worktrees when the fleet default is ephemeral, but may not make itself more
+    ephemeral than a fleet that requires persistence.
+    """
+    if not is_host_overridable(path):
+        return False
+    return path != "worktrees.ephemeral" or value is False
 
 
 def schema_leaf_paths() -> list[str]:

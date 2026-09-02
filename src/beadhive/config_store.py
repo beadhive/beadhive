@@ -50,11 +50,15 @@ def load_path(api, path: Path, *, missing_ok: bool = False):
 
 
 def leaf_paths(node, prefix: str = ""):
+    yield from (path for path, _ in leaf_items(node, prefix))
+
+
+def leaf_items(node, prefix: str = ""):
     if isinstance(node, Mapping):
         for key, value in node.items():
-            yield from leaf_paths(value, f"{prefix}.{key}" if prefix else str(key))
+            yield from leaf_items(value, f"{prefix}.{key}" if prefix else str(key))
     elif prefix:
-        yield prefix
+        yield prefix, node
 
 
 def fleet_override_violations(host) -> list[str]:
@@ -62,9 +66,9 @@ def fleet_override_violations(host) -> list[str]:
 
     return [
         path
-        for path in leaf_paths(host)
+        for path, value in leaf_items(host)
         if config_partition.partition_of(path) == config_partition.FLEET
-        and not config_partition.is_host_overridable(path)
+        and not config_partition.host_override_value_allowed(path, value)
     ]
 
 
