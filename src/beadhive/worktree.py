@@ -1189,6 +1189,27 @@ def backup_branch(entry, branch, ts: str, label: str = "refine") -> str:
     return _worktree_git.impl_backup_branch(entry, branch, ts, label)
 
 
+def parse_safety_ref(name: str, sha: str = ""):
+    """Compatibility facade for ``worktree_git.impl_parse_safety_ref``."""
+    return _worktree_git.impl_parse_safety_ref(name, sha)
+
+
+def safety_refs(entry, branch: str = "", labels: tuple[str, ...] = ("refine", "premerge")):
+    """Compatibility facade for ``worktree_git.impl_safety_refs``."""
+    return _worktree_git.impl_safety_refs(entry, branch, labels)
+
+
+def delete_safety_refs(
+    entry,
+    branch: str,
+    *,
+    labels: tuple[str, ...] = ("refine", "premerge"),
+    keep: tuple[str, ...] = (),
+):
+    """Compatibility facade for ``worktree_git.impl_delete_safety_refs``."""
+    return _worktree_git.impl_delete_safety_refs(entry, branch, labels=labels, keep=keep)
+
+
 def _rebase_env(**extra) -> dict:
     """Compatibility facade for ``worktree_git.impl__rebase_env``."""
     return _worktree_git.impl__rebase_env(**extra)

@@ -703,6 +703,7 @@ def impl__reconcile_landed_bead(api, cfg, entry, main, bead, bead_data, branch, 
             err=True,
         )
         raise api.typer.Exit(1)
+    _reap_accepted_safety_refs(api, entry, branch, boundary="merge reconcile")
     api.typer.echo(
         f"✓ {bead} was already merged ({branch} → {base}) — reconciled bookkeeping "
         "(closed the bead; no re-merge)"
@@ -875,6 +876,8 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
                 err=True,
             )
             raise
+        if closed:
+            _reap_accepted_safety_refs(api, entry, branch, boundary="merge close")
     api.otel.record_merge_duration(
         api.time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}
     )
@@ -901,3 +904,15 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
         )
         raise api.typer.Exit(1)
     api.typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
+
+
+def _reap_accepted_safety_refs(api, entry, branch, *, boundary):
+    """Best-effort exact cleanup only after merge bookkeeping accepts the landed branch."""
+    reaped, failed = api.worktree.delete_safety_refs(entry, branch)
+    if reaped:
+        api.typer.echo(f"  reaped {len(reaped)} accepted safety ref(s) after {boundary}")
+    if failed:
+        api.typer.echo(
+            f"⚠ {boundary} succeeded but safety ref cleanup was refused for: " + ", ".join(failed),
+            err=True,
+        )
