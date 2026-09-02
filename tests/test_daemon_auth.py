@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import secrets
 import threading
@@ -88,6 +89,13 @@ def _failure(
     with pytest.raises(daemon_auth.AuthenticationError) as caught:
         authority.authenticate(token, **kwargs)
     return caught.value
+
+
+def _record_close(target: list[daemon_auth.AuthFailureCode]):
+    async def close(reason: daemon_auth.AuthFailureCode) -> None:
+        target.append(reason)
+
+    return close
 
 
 def test_safe_provisioning_persists_only_a_private_verifier_and_redacts_output(tmp_path: Path):
@@ -557,7 +565,7 @@ def test_live_session_closes_on_rotation_at_its_next_bounded_revalidation(tmp_pa
             session = registry.open(
                 credential.bearer,
                 required_scope=AuthScope.OPERATOR_READ,
-                close=closed.append,
+                close=_record_close(closed),
             )
             assert not session.closed
             daemon_auth.rotate_credential(path, "operator-alice")
@@ -580,7 +588,7 @@ def test_live_session_expiry_and_revocation_close_with_exact_reason(tmp_path: Pa
     session = registry.open(
         credential.bearer,
         required_scope=AuthScope.OPERATOR_READ,
-        close=closed.append,
+        close=_record_close(closed),
         now=now[0],
     )
 
@@ -601,15 +609,17 @@ def test_hung_and_cancelled_callbacks_are_bounded_isolated_and_recorded(tmp_path
     authority = _authority(path, clock=lambda: now[0], interval=0.05)
     registry = daemon_auth.CredentialSessionRegistry(authority, close_timeout_seconds=0.02)
     completed: list[daemon_auth.AuthFailureCode] = []
-    release_hung = threading.Event()
 
-    def hung(_reason):
-        release_hung.wait()
+    async def completed_callback(reason):
+        completed.append(reason)
+
+    async def hung(_reason):
+        await asyncio.Event().wait()
 
     async def cancelled(_reason):
         raise asyncio.CancelledError
 
-    for callback in (completed.append, hung, cancelled):
+    for callback in (completed_callback, hung, cancelled):
         registry.open(
             credential.bearer,
             required_scope=AuthScope.OPERATOR_READ,
@@ -631,7 +641,6 @@ def test_hung_and_cancelled_callbacks_are_bounded_isolated_and_recorded(tmp_path
         assert time.monotonic() - started < 0.2
 
     asyncio.run(exercise())
-    release_hung.set()
     assert completed == [daemon_auth.AuthFailureCode.REVOKED]
     assert {record.callback_status for record in registry.closure_records} == {
         daemon_auth.CloseCallbackStatus.COMPLETED,
@@ -662,7 +671,7 @@ def test_a_hung_callback_cannot_delay_a_later_session_invalidation(tmp_path: Pat
     later = registry.open(
         credential.bearer,
         required_scope=AuthScope.OPERATOR_READ,
-        close=later_closed.append,
+        close=_record_close(later_closed),
         now=now[0],
     )
     first.next_revalidation_at = 100.01
@@ -681,6 +690,220 @@ def test_a_hung_callback_cannot_delay_a_later_session_invalidation(tmp_path: Pat
         await registry.drain_close_callbacks()
 
     asyncio.run(exercise())
+
+
+def test_callback_drain_retires_a_completed_supervisor_without_callback_starvation(
+    tmp_path: Path,
+):
+    path, _credential = _provision(tmp_path)
+    registry = daemon_auth.CredentialSessionRegistry(_authority(path, interval=0.05))
+
+    previous_loop = asyncio.new_event_loop()
+    try:
+        completed = previous_loop.create_task(asyncio.sleep(0))
+        previous_loop.run_until_complete(completed)
+        # Model the real ordering race: Task callbacks are queued after completion, while the
+        # registry still contains the completed task.  A drain must retire it itself instead of
+        # spinning on gather() and starving the queued callback that normally removes it.
+        registry._callback_supervisors.add(completed)
+    finally:
+        previous_loop.close()
+
+    asyncio.run(registry.drain_close_callbacks())
+
+    assert not registry._callback_supervisors
+
+
+def test_callback_drain_bounds_raising_cancelled_cross_loop_and_partial_callbacks(
+    tmp_path: Path,
+):
+    path, credential = _provision(tmp_path, expires_at=1_000)
+    now = [100.0]
+    authority = _authority(path, clock=lambda: now[0], interval=0.05)
+    registry = daemon_auth.CredentialSessionRegistry(authority, close_timeout_seconds=0.02)
+    completed: list[tuple[str, daemon_auth.AuthFailureCode]] = []
+
+    async def raising(_reason):
+        raise RuntimeError("transport already stopped")
+
+    async def partial_target(label, reason):
+        completed.append((label, reason))
+
+    old_loop = asyncio.new_event_loop()
+    pending_on_old_loop = old_loop.create_future()
+
+    async def cross_loop(_reason):
+        await pending_on_old_loop
+
+    async def cancelled(_reason):
+        raise asyncio.CancelledError
+
+    callbacks = (
+        raising,
+        functools.partial(partial_target, "partial"),
+        cross_loop,
+        cancelled,
+    )
+    for callback in callbacks:
+        registry.open(
+            credential.bearer,
+            required_scope=AuthScope.OPERATOR_READ,
+            close=callback,
+            now=now[0],
+        )
+    daemon_auth.revoke_credential(path, "operator-alice")
+    now[0] += 0.05
+
+    async def exercise():
+        await registry.revalidate_due(now=now[0])
+        await registry.drain_close_callbacks()
+        assert registry.active_session_count == 0
+        assert not {
+            task
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task() and task.get_name().startswith("daemon-close-")
+        }
+
+    try:
+        asyncio.run(exercise())
+    finally:
+        pending_on_old_loop.cancel()
+        old_loop.close()
+
+    assert completed == [("partial", daemon_auth.AuthFailureCode.REVOKED)]
+    assert sorted(record.callback_status for record in registry.closure_records) == sorted(
+        (
+            daemon_auth.CloseCallbackStatus.ERROR,
+            daemon_auth.CloseCallbackStatus.COMPLETED,
+            daemon_auth.CloseCallbackStatus.ERROR,
+            daemon_auth.CloseCallbackStatus.CANCELLED,
+        )
+    )
+
+
+def test_cancelled_partial_drain_fences_sessions_and_leaves_no_registry_tasks(tmp_path: Path):
+    path, credential = _provision(tmp_path, expires_at=1_000)
+    now = [100.0]
+    authority = _authority(path, clock=lambda: now[0], interval=0.05)
+    registry = daemon_auth.CredentialSessionRegistry(authority, close_timeout_seconds=0.02)
+
+    async def ignores_completion(_reason):
+        await asyncio.Event().wait()
+
+    registry.open(
+        credential.bearer,
+        required_scope=AuthScope.OPERATOR_READ,
+        close=ignores_completion,
+        now=now[0],
+    )
+    daemon_auth.revoke_credential(path, "operator-alice")
+    now[0] += 0.05
+
+    async def exercise():
+        await registry.revalidate_due(now=now[0])
+        drain = asyncio.create_task(registry.drain_close_callbacks())
+        await asyncio.sleep(0)
+        drain.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await drain
+        await asyncio.sleep(0)
+        assert registry.active_session_count == 0
+        assert not registry._callback_supervisors
+        assert not {
+            task
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task()
+            and (
+                task.get_name().startswith("daemon-close-")
+                or task.get_name() == "daemon-session-close-supervisor"
+            )
+        }
+
+    asyncio.run(exercise())
+
+
+def test_lifespan_exit_cancels_a_still_blocked_callback_and_reaps_every_task(tmp_path: Path):
+    path, credential = _provision(tmp_path)
+    authority = _authority(path, interval=0.05)
+    registry = daemon_auth.CredentialSessionRegistry(authority, close_timeout_seconds=0.02)
+    callback_started = asyncio.Event()
+    cancellation_caught = asyncio.Event()
+    cancellations: list[None] = []
+    release = asyncio.Event()
+
+    async def blocked_through_exit(_reason):
+        callback_started.set()
+        while True:
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                cancellations.append(None)
+                cancellation_caught.set()
+
+    async def exercise():
+        started = time.monotonic()
+        async with registry.lifespan():
+            registry.open(
+                credential.bearer,
+                required_scope=AuthScope.OPERATOR_READ,
+                close=blocked_through_exit,
+            )
+        assert callback_started.is_set()
+        assert cancellation_caught.is_set()
+        assert len(cancellations) == 2
+        assert not release.is_set()
+        assert time.monotonic() - started < 0.2
+        await asyncio.sleep(0)
+        assert not {
+            task
+            for task in asyncio.all_tasks()
+            if task is not asyncio.current_task()
+            and (
+                task.get_name().startswith("daemon-close-")
+                or task.get_name() == "daemon-session-close-supervisor"
+            )
+        }
+        assert (
+            registry.closure_records[0].callback_status is daemon_auth.CloseCallbackStatus.TIMED_OUT
+        )
+
+    asyncio.run(exercise())
+    assert not [
+        thread
+        for thread in threading.enumerate()
+        if thread.name.startswith("daemon-close-callback-")
+    ]
+
+
+def test_sync_close_callback_is_rejected_without_starting_a_helper_thread(tmp_path: Path):
+    path, credential = _provision(tmp_path)
+    registry = daemon_auth.CredentialSessionRegistry(_authority(path, interval=0.05))
+    entered = threading.Event()
+    release = threading.Event()
+
+    def unsupported_blocking_callback(_reason):
+        entered.set()
+        release.wait()
+
+    async def exercise():
+        async with registry.lifespan():
+            with pytest.raises(TypeError, match="close callback must be async"):
+                registry.open(
+                    credential.bearer,
+                    required_scope=AuthScope.OPERATOR_READ,
+                    close=unsupported_blocking_callback,
+                )
+        assert not entered.is_set()
+        assert registry.active_session_count == 0
+        assert not registry.closure_records
+
+    asyncio.run(exercise())
+    assert not release.is_set()
+    assert not [
+        thread
+        for thread in threading.enumerate()
+        if thread.name.startswith("daemon-close-callback-")
+    ]
 
 
 def test_secret_values_never_reach_errors_rendered_artifacts_or_authority_repr(tmp_path: Path):

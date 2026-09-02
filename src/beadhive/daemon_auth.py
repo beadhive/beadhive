@@ -27,7 +27,7 @@ import stat
 import threading
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterator, Sequence
+from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
 from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -722,7 +722,7 @@ class BearerAuthMiddleware:
         await self.app(scope, receive, send)
 
 
-CloseCallback = Callable[[AuthFailureCode], Awaitable[None] | None]
+CloseCallback = Callable[[AuthFailureCode], Awaitable[None]]
 
 
 class CloseCallbackStatus(StrEnum):
@@ -768,7 +768,13 @@ class CredentialSession:
 
 
 class CredentialSessionRegistry:
-    """Own live sessions and enforce the configured revalidation/closure deadline."""
+    """Own live sessions and enforce the configured revalidation/closure deadline.
+
+    Close callbacks must be native async callables and must not block synchronously.  They may
+    catch the first cancellation to perform async cleanup; the registry's second cancellation is
+    terminal.  A callback that suppresses both is outside the supported contract and is
+    force-closed so it cannot survive registry lifespan exit.
+    """
 
     def __init__(
         self,
@@ -811,6 +817,8 @@ class CredentialSessionRegistry:
         expected_principal: str | None = None,
         now: float | None = None,
     ) -> CredentialSession:
+        if not inspect.iscoroutinefunction(close):
+            raise TypeError("session close callback must be async")
         resolved_now = self.authority.clock() if now is None else now
         secret = bearer if isinstance(bearer, SecretBearer) else SecretBearer(bearer)
         principal = self.authority.authenticate(
@@ -855,42 +863,8 @@ class CredentialSessionRegistry:
     async def _invoke_close_callback(
         self, session: CredentialSession, record: SessionClosureRecord
     ) -> None:
-        loop = asyncio.get_running_loop()
-        completed: asyncio.Future[Any] = loop.create_future()
-
-        def deliver(result: Any = None, error: BaseException | None = None) -> None:
-            if completed.done():
-                return
-            if error is not None:
-                completed.set_exception(error)
-            else:
-                completed.set_result(result)
-
-        def invoke() -> None:
-            try:
-                result = session.close_callback(record.reason)
-            except BaseException as exc:
-                try:
-                    loop.call_soon_threadsafe(deliver, None, exc)
-                except RuntimeError:
-                    pass
-            else:
-                try:
-                    loop.call_soon_threadsafe(deliver, result, None)
-                except RuntimeError:
-                    pass
-
-        # A daemon thread isolates synchronous transports too: unlike the loop's default executor,
-        # it cannot make event-loop or interpreter shutdown wait for an uncooperative callback.
-        threading.Thread(
-            target=invoke,
-            name=f"daemon-close-callback-{record.credential_id}",
-            daemon=True,
-        ).start()
         try:
-            result = await completed
-            if inspect.isawaitable(result):
-                await result
+            await session.close_callback(record.reason)
         except asyncio.CancelledError:
             if record.callback_status is CloseCallbackStatus.SCHEDULED:
                 record.callback_status = CloseCallbackStatus.CANCELLED
@@ -909,6 +883,45 @@ class CredentialSessionRegistry:
         except asyncio.CancelledError:
             pass
 
+    async def _cancel_and_reap_callback_tasks(
+        self,
+        tasks: Mapping[asyncio.Task[None], SessionClosureRecord],
+        *,
+        status: CloseCallbackStatus,
+    ) -> None:
+        pending = {task for task in tasks if not task.done()}
+        for task in pending:
+            record = tasks[task]
+            if record.callback_status is CloseCallbackStatus.SCHEDULED:
+                record.callback_status = status
+            task.cancel()
+
+        # One turn permits ordinary cancellation cleanup.  A second cancellation is the explicit
+        # terminal signal in the supported callback contract.
+        if pending:
+            await asyncio.sleep(0)
+        pending = {task for task in pending if not task.done()}
+        for task in pending:
+            task.cancel()
+        if pending:
+            await asyncio.sleep(0)
+
+        # Never hand a contract-violating callback to event-loop teardown.  Closing the suspended
+        # registry coroutine also closes the callback it is awaiting; cancelling once more wakes
+        # the Task so gather can reap its terminal RuntimeError/CancelledError deterministically.
+        pending = {task for task in pending if not task.done()}
+        for task in pending:
+            try:
+                task.get_coro().close()
+            except (Exception, GeneratorExit):
+                pass
+            task.cancel()
+
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in tasks:
+            self._consume_task(task)
+
     async def _supervise_close_callbacks(
         self, detached: Sequence[tuple[CredentialSession, SessionClosureRecord]]
     ) -> None:
@@ -921,14 +934,22 @@ class CredentialSessionRegistry:
         }
         if not tasks:
             return
-        done, pending = await asyncio.wait(tasks, timeout=self.close_timeout_seconds)
+        try:
+            done, pending = await asyncio.wait(tasks, timeout=self.close_timeout_seconds)
+        except asyncio.CancelledError:
+            # asyncio.wait() does not cancel its children when its own waiter is cancelled.
+            await self._cancel_and_reap_callback_tasks(
+                tasks,
+                status=CloseCallbackStatus.CANCELLED,
+            )
+            raise
         for task in done:
             self._consume_task(task)
-        for task in pending:
-            record = tasks[task]
-            record.callback_status = CloseCallbackStatus.TIMED_OUT
-            task.cancel()
-            task.add_done_callback(self._consume_task)
+        if pending:
+            await self._cancel_and_reap_callback_tasks(
+                {task: tasks[task] for task in pending},
+                status=CloseCallbackStatus.TIMED_OUT,
+            )
 
     def _schedule_close_callbacks(
         self, detached: Sequence[tuple[CredentialSession, SessionClosureRecord]]
@@ -942,16 +963,64 @@ class CredentialSessionRegistry:
         self._callback_supervisors.add(supervisor)
 
         def finished(task: asyncio.Task[None]) -> None:
-            self._callback_supervisors.discard(task)
-            self._consume_task(task)
+            self._retire_supervisor(task)
 
         supervisor.add_done_callback(finished)
+
+    def _retire_supervisor(self, task: asyncio.Task[None]) -> None:
+        """Remove a completed supervisor without depending on callback scheduling order."""
+
+        self._callback_supervisors.discard(task)
+        if task.done():
+            self._consume_task(task)
 
     async def drain_close_callbacks(self) -> None:
         """Wait only for bounded supervisors, never for a hung transport callback itself."""
 
-        while self._callback_supervisors:
-            await asyncio.gather(*tuple(self._callback_supervisors), return_exceptions=True)
+        loop = asyncio.get_running_loop()
+        try:
+            while self._callback_supervisors:
+                local: list[asyncio.Task[None]] = []
+                for task in tuple(self._callback_supervisors):
+                    if task.done():
+                        # Awaiting an already-done gather does not suspend.  Retire it here so a
+                        # queued done callback cannot be starved by a tight drain loop.
+                        self._retire_supervisor(task)
+                    elif task.get_loop() is loop:
+                        local.append(task)
+                    else:
+                        # A registry can be exercised by successive asyncio.run() calls.  Never
+                        # attach a task owned by the prior loop to this one; request cancellation
+                        # when that loop is still serviceable and fence it out of this drain.
+                        self._callback_supervisors.discard(task)
+                        owner = task.get_loop()
+                        if not owner.is_closed():
+                            try:
+                                owner.call_soon_threadsafe(task.cancel)
+                            except RuntimeError:
+                                pass
+
+                if not local:
+                    continue
+
+                # The supervisor alone owns the configured callback deadline.  A second drain
+                # timer racing the same deadline can misclassify a timeout as cancellation.
+                # Supervisors contain no transport await outside their bounded asyncio.wait().
+                done, _pending = await asyncio.wait(local)
+                for task in done:
+                    self._retire_supervisor(task)
+        except asyncio.CancelledError:
+            # Lifespan cancellation must not orphan supervisors or their callback children.
+            cancelled: list[asyncio.Task[None]] = []
+            for task in tuple(self._callback_supervisors):
+                self._callback_supervisors.discard(task)
+                if task.get_loop() is loop and not task.done():
+                    task.cancel()
+                    task.add_done_callback(self._consume_task)
+                    cancelled.append(task)
+            if cancelled:
+                await asyncio.gather(*cancelled, return_exceptions=True)
+            raise
 
     async def close(self, session: CredentialSession) -> None:
         detached = self._detach(
