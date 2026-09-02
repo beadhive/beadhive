@@ -91,8 +91,10 @@ just check
 ```
 
 Built-in artifacts live under `src/beadhive/kernel/plugins/manifests/`. Their test reconciles IDs,
-runtime-core modules, and external executable declarations with `plugin_runtime_catalog.py`.
-Discovery does not import that delivery catalog and the catalog contains no Nix attributes or
+the exact compatibility-registry order, runtime-core modules, and external executable declarations
+with `plugin_runtime_catalog.py`. The legacy registry resolves those module names at call time and
+returns each module's exact `PLUGIN` object; it adds no private cache or failure translation.
+Discovery does not import the runtime catalog, and the catalog contains no Nix attributes or
 installer commands. Nix/host package ownership remains with `bh-h441d`.
 
 `git-workspace` is the required-tool exception: it remains an unconditional `deps.py` row and an
@@ -105,7 +107,7 @@ registration metadata is manifested without transferring that ownership.
 | Compatibility surface | Current consumers | Successor | Owner | Removal trigger |
 | --- | --- | --- | --- | --- |
 | `beadhive.plugins.Plugin` nullable callback dataclass | Built-in `PLUGIN` declarations and downstream integrations constructing the old type | checked manifests, typed capability ports, and `SubscriberBinding` | `bh-qw9oi.4` compatibility facade | all built-ins and known external consumers construct bootstrap bindings directly; compatibility tests pass without instantiating `Plugin`; then remove in a separately reviewed major-compatible deprecation change |
-| `beadhive.plugins.registry()` and its lazy integration imports | CLI transport projection plus the facade's typed projection factories | declared built-in manifest source plus explicit bootstrap adapter catalog | `bh-qw9oi.4` compatibility facade | no production caller imports `registry`; CLI consumes operation projection; lazy-import SCC is absent from the architecture checker |
+| `beadhive.plugins.registry()` and its runtime catalog resolver | CLI transport projection plus the facade's typed projection factories | declared built-in manifest source plus explicit bootstrap adapter catalog | `bh-qw9oi.4` compatibility facade | no production caller imports `registry`; CLI consumes operation projection; compatibility tests no longer require the old type |
 | top-level integration config aliases (`orca`, `hitch`, `herdr`, `observaloop`, `repowise`) | persisted pre-v1 host configs | `plugins.<plugin_id>` | each integration owner | canonical config has shipped for at least 60 days and 30 representative changes with zero alias-related escapes; conflicts already fail closed before removal |
 
 Until those triggers are met, the facade is an owned compatibility boundary, not a second plugin
