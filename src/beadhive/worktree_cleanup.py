@@ -14,6 +14,7 @@ import typer
 
 from . import registry, wt_status
 from .config_consumer_ports import work_settings as config
+from .modules.worktrees import RemoveWorktreeRequest
 
 
 def _facade():
@@ -72,6 +73,10 @@ def prune(*args, **kwargs):
 
 def _consult_wt_remove(*args, **kwargs):
     return _call_facade("_consult_wt_remove", *args, **kwargs)
+
+
+def _worktree_lifecycle_service(*args, **kwargs):
+    return _call_facade("_worktree_lifecycle_service", *args, **kwargs)
 
 
 def _leaf(*args, **kwargs):
@@ -199,19 +204,14 @@ def impl_remove(hive, ref, force=False, as_json=False):
     hive = str(entry.get("prefix", ""))
     _refuse_unknown_removal(cfg, entry, target, force=force)
     started = time.monotonic()
-    delegated = _consult_wt_remove(
-        cfg, entry, main=main, target=target, force=force, keep_branch=True
+    result = _worktree_lifecycle_service(cfg, entry).remove(
+        RemoveWorktreeRequest(main, target, force=force, keep_branch=True)
     )
-    if not delegated:
-        cmd = ["git", "-C", str(main), "worktree", "remove", str(target)]
-        if force:
-            cmd.append("--force")
-        res = _run_git(cmd, check=False)
-        if res.returncode != 0:
-            elapsed = time.monotonic() - started
-            _record_wt_event("remove", "error", hive=hive, leaf=target.name)
-            _record_wt_op_duration("remove", elapsed, "error", hive=hive, leaf=target.name)
-            raise typer.Exit(res.returncode)
+    if not result.succeeded:
+        elapsed = time.monotonic() - started
+        _record_wt_event("remove", "error", hive=hive, leaf=target.name)
+        _record_wt_op_duration("remove", elapsed, "error", hive=hive, leaf=target.name)
+        raise typer.Exit(result.returncode)
     elapsed = time.monotonic() - started
     claim_authority.remove_record_path(claim_path)
     _rmdir_empty_parents(target, cfg)
@@ -318,27 +318,33 @@ def impl__prune_remove_one(cfg, entries_by_prefix: dict, main: Path, st) -> bool
     # SAFE (closed + merged + clean) → the branch is disposable, so keep_branch=False: a
     # delegating plugin owns branch cleanup for its own removals (mirrors the native
     # git-branch-D parity step below).
-    delegated = entry is not None and _consult_wt_remove(
-        cfg, entry, main=main, target=Path(st.path), force=True, keep_branch=False
+    result = (
+        _worktree_lifecycle_service(cfg, entry).remove(
+            RemoveWorktreeRequest(main, Path(st.path), force=True, keep_branch=False)
+        )
+        if entry is not None
+        else None
     )
-    if delegated:
-        outcome = "ok"
-    else:
+    if result is None:
         res = _run_git(
             ["git", "-C", str(main), "worktree", "remove", "--force", st.path],
             check=False,
         )
         outcome = "ok" if res.returncode == 0 else "error"
+        delegated = False
+        error = res.stderr or ""
+    else:
+        outcome = "ok" if result.succeeded else "error"
+        delegated = result.delegated
+        error = result.error
     elapsed = time.monotonic() - started
     if outcome == "ok":
         typer.echo(f"  removed {st.path}  [{st.branch}]")
     else:
-        # Only the native fallback can fail (a delegated removal is always "ok" here) — `res`
-        # is defined in this branch. Native calls aren't captured, so stderr already printed
-        # straight to the console; this line just stops the misleading "removed" claim.
+        # Delegated success remains terminal. A native failure retains its captured stderr when
+        # the facade runner supplied it; this line also prevents a misleading "removed" claim.
         typer.echo(
-            f"  failed to remove {st.path}  [{st.branch}]: "
-            f"{res.stderr or 'git worktree remove failed'}"
+            f"  failed to remove {st.path}  [{st.branch}]: {error or 'git worktree remove failed'}"
         )
     _record_wt_event("prune", outcome, hive=prefix, leaf=st.leaf)
     _record_wt_op_duration("prune", elapsed, outcome, hive=prefix, leaf=st.leaf)

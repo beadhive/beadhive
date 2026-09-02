@@ -20,6 +20,12 @@ import typer
 from . import bd, jsonout, precious, registry, wt_status
 from .config_consumer_ports import work_settings as config
 from .identity import workspace_identity
+from .modules.worktrees import (
+    CallbackWorktreeInventory,
+    WorktreeInventoryRequest,
+    WorktreeInventoryService,
+    WorktreeStatusRequest,
+)
 
 
 def _facade():
@@ -199,13 +205,27 @@ def impl__managed_for_entry(e, root: str) -> list:
     return out
 
 
-def impl_managed(cfg):
+def _read_managed(cfg):
     """[(prefix, path, branch)] for every linked worktree under the shadow root."""
     root = str(config.worktrees_root().resolve())
     out = []
     for e in cfg.get("managed_repos", []) or []:
         out.extend(_managed_for_entry(e, root))
     return out
+
+
+def _inventory_service(cfg=None) -> WorktreeInventoryService:
+    """Typed application boundary over legacy facade-resolved readers."""
+    adapter = CallbackWorktreeInventory(
+        inventory_reader=lambda _hive: _read_managed(cfg if cfg is not None else config.load()),
+        status_reader=_read_status_rows,
+    )
+    return WorktreeInventoryService(adapter)
+
+
+def impl_managed(cfg):
+    result = _inventory_service(cfg).inventory(WorktreeInventoryRequest())
+    return [(row.hive, row.path, row.branch) for row in result.worktrees]
 
 
 def impl__emit(out, entry, root, path, brref):
@@ -1184,7 +1204,7 @@ def impl__ordered_statuses(entries: list, statuses_by_prefix: dict[str, list]) -
     ]
 
 
-def impl_status_rows(hive: str = "") -> list:
+def _read_status_rows(hive: str = "") -> list:
     """Return the ``WtStatus`` list for managed worktrees — Typer-free core.
 
     Repopulates fresh metadata before classifying — never uses stale data.
@@ -1198,6 +1218,11 @@ def impl_status_rows(hive: str = "") -> list:
     """
     _cfg, entries, statuses_by_prefix = _status_classifications(hive)
     return _ordered_statuses(entries, statuses_by_prefix)
+
+
+def impl_status_rows(hive: str = "") -> list:
+    result = _inventory_service().status(WorktreeStatusRequest(hive))
+    return list(result.rows)
 
 
 def impl__warn_unregistered(unreg) -> None:

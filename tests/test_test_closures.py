@@ -37,11 +37,11 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert registry.full_gate == "just check"
     assert registry.release_gate == "just check-all"
     assert len(registry.closures) == 23
-    assert sum(closure.status == "present" for closure in registry.closures) == 19
-    assert sum(closure.status == "absent" for closure in registry.closures) == 4
+    assert sum(closure.status == "present" for closure in registry.closures) == 20
+    assert sum(closure.status == "absent" for closure in registry.closures) == 3
 
 
-def test_agents_config_and_hives_closures_survive_workstream_composition():
+def test_capability_module_closures_survive_workstream_composition():
     closures = test_closures.load_registry().by_id()
 
     assert closures["module.agents"].status == "present"
@@ -50,6 +50,8 @@ def test_agents_config_and_hives_closures_survive_workstream_composition():
     assert closures["module.config"].owner_path == "src/beadhive/modules/config"
     assert closures["module.hives"].status == "present"
     assert closures["module.hives"].owner_path == "src/beadhive/modules/hives"
+    assert closures["module.worktrees"].status == "present"
+    assert closures["module.worktrees"].owner_path == "src/beadhive/modules/worktrees"
     assert {"contract.agent-launch", "config.pure", "config.store", "config.fragments"} <= set(
         closures
     )

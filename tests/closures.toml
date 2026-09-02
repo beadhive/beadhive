@@ -203,9 +203,31 @@ source_paths = ["src/beadhive/modules/work/**/*.py"]
 [[closures]]
 id = "module.worktrees"
 kind = "module"
-status = "absent"
+status = "present"
 owner_path = "src/beadhive/modules/worktrees"
 source_paths = ["src/beadhive/modules/worktrees/**/*.py"]
+tests = [
+  "tests/unit/modules/worktrees/test_policy.py",
+  "tests/unit/modules/worktrees/test_services.py",
+  "tests/unit/modules/worktrees/test_adapters.py",
+  "tests/unit/modules/worktrees/test_worktrees_independence.py",
+]
+shared_contracts = ["contracts", "kernel.lifecycle"]
+shared_contract_tests = [
+  "tests/contracts/test_worktree_capability_compatibility.py",
+  "tests/unit/kernel/lifecycle/test_contracts.py",
+]
+reverse_dependencies = ["module.hives", "system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_config_worktrees.py",
+  "tests/test_workspace_config_inheritance.py",
+  "tests/test_worktree.py",
+  "tests/test_worktree_boundaries.py",
+  "tests/test_worktree_inventory_boundaries.py",
+  "tests/test_worktree_inventory_json.py",
+  "tests/test_wt_status.py",
+  "tests/test_mcp.py",
+]
 
 [[closures]]
 id = "adapters"
