@@ -3655,10 +3655,10 @@ def backup_migrate_layout_cmd(
 @backup_app.command(
     "reclaim",
     help="apply each root's retention policy: --dry-run previews, --root narrows, --confirm "
-    "is required to actually rotate the hive root.",
+    "is required to rotate the hive root or remove superseded caches.",
 )
 def backup_reclaim_cmd(
-    root: str = typer.Option("all", "--root", help="hq | hive | migrate | all"),
+    root: str = typer.Option("all", "--root", help="cache | hq | hive | migrate | all"),
     hive_id: str = typer.Option(
         "", "--hive", help="hive for the hive root's rotate (default: cwd's hive)"
     ),
@@ -3666,8 +3666,8 @@ def backup_reclaim_cmd(
     confirm: bool = typer.Option(
         False,
         "--confirm",
-        help="proceed with a real hive-root rotate (bd's own backup), or with removing a kept "
-        "in-repo pre-migrate store",
+        help="proceed with a real hive-root rotate, removal of superseded caches, or removal "
+        "of a kept in-repo pre-migrate store",
     ),
     force: bool = typer.Option(
         False, "--force", help="rotate the hive root even under backup.hive_cap_mb"
@@ -3675,11 +3675,50 @@ def backup_reclaim_cmd(
 ):
     from . import backup as backup_mod
     from .safety import format_bytes
+    from .wt_status import WtClassification
 
-    if root not in ("hq", "hive", "migrate", "all"):
-        typer.echo(f"✗ --root must be hq | hive | migrate | all, got {root!r}", err=True)
+    if root not in ("cache", "hq", "hive", "migrate", "all"):
+        typer.echo(f"✗ --root must be cache | hq | hive | migrate | all, got {root!r}", err=True)
         raise typer.Exit(1)
     cfg = config.load()
+
+    if root in ("cache", "all"):
+        preview = dry_run or not confirm
+        cache = backup_mod.reclaim_cache_entries(cfg, dry_run=preview)
+        for row in cache.entries:
+            error = cache.errors.get(row.path, "")
+            if error:
+                mark = "✗"
+            elif row.safe:
+                mark = "○" if preview else "✓"
+            else:
+                mark = "-"
+            typer.echo(
+                f"cache: {mark} [{row.classification.value.upper()}] {row.hive}  "
+                f"{format_bytes(row.size_bytes)}"
+            )
+            typer.echo(f"       {row.reason}; {row.path}")
+            if error:
+                typer.echo(f"       removal failed: {error}")
+
+        superseded = [row for row in cache.entries if row.safe]
+        retained = [row for row in cache.entries if row.classification is WtClassification.RETAINED]
+        stale = [row for row in cache.entries if row.classification is WtClassification.STALE]
+        action_count = len(superseded) if preview else len(cache.removed)
+        verb = "would reclaim" if preview else "reclaimed"
+        typer.echo(
+            f"cache: {verb} {action_count} SUPERSEDED entr{('y' if action_count == 1 else 'ies')} "
+            f"({format_bytes(cache.reclaimed_bytes)}); retain {len(retained)} only-copy "
+            f"entr{('y' if len(retained) == 1 else 'ies')} "
+            f"({format_bytes(sum(row.size_bytes for row in retained))}); "
+            f"leave {len(stale)} STALE"
+        )
+        if preview:
+            typer.echo("cache: preview only — pass --confirm to remove SUPERSEDED entries")
+        if not cache.ok:
+            raise typer.Exit(1)
+        if root == "cache" and not dry_run and not confirm:
+            raise typer.Exit(1)
 
     if root in ("hq", "all"):
         result = backup_mod.prune_hq_backups(cfg, dry_run=dry_run)

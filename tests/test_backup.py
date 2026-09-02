@@ -16,6 +16,8 @@ Covers:
 - config accessors: defaults + overrides for backup.hq_keep/hive_cap_mb/hive_rotate_keep/
   migrate_keep/total_warn_mb.
 - CLI: `bh backup export|usage|reclaim|migrate-layout`.
+- Cache reclaim: the shared hub source predicate, RETAINED/SUPERSEDED/STALE classification,
+  dry-run/confirm behavior, only-copy refusal, symlink safety, and idempotence.
 """
 
 from __future__ import annotations
@@ -26,8 +28,9 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from beadhive import backup, config
+from beadhive import backup, config, hub, registry
 from beadhive.cli import app
+from beadhive.wt_status import WtClassification
 
 runner = CliRunner()
 
@@ -54,6 +57,167 @@ def _git_init(path: Path) -> None:
 
     path.mkdir(parents=True, exist_ok=True)
     git("init", "-q", "-b", "main", cwd=path)
+
+
+# ---------------------------------------------------------------------------
+# cache reclaim — shared RETAINED / SUPERSEDED / STALE vocabulary
+# ---------------------------------------------------------------------------
+
+
+def _cache_entry(org: str, repo: str) -> dict[str, str]:
+    return {
+        "provider": "github",
+        "org": org,
+        "repo": repo,
+        "prefix": repo.replace("-", "_"),
+    }
+
+
+def _cache_store(root: Path, entry: dict[str, str], nbytes: int = 100) -> Path:
+    path = root / entry["provider"] / entry["org"] / entry["repo"]
+    (path / ".beads").mkdir(parents=True)
+    (path / ".beads" / "store.darc").write_bytes(b"x" * nbytes)
+    return path
+
+
+def _wire_cache_reclaim(monkeypatch, tmp_path, entries):
+    cache_root = tmp_path / "cache"
+    checkout_root = tmp_path / "workspace"
+    cfg = {"managed_repos": list(entries)}
+    monkeypatch.setattr(config, "cache_dir", lambda: cache_root)
+    monkeypatch.setattr(
+        registry,
+        "hive_dir",
+        lambda entry: checkout_root / entry["provider"] / entry["org"] / entry["repo"],
+    )
+    return cfg, cache_root, checkout_root
+
+
+def test_cache_classifier_reclaims_only_superseded_and_retains_every_named_only_copy(
+    monkeypatch, tmp_path
+):
+    only_copy = [
+        _cache_entry("briancripe", "workspace"),
+        _cache_entry("briancripe", "homelab"),
+        _cache_entry("ric03uec", "dell-x-nvidia-hackathon"),
+        _cache_entry("agentguides", "hermes-plugin"),
+        _cache_entry("briancripe", "agentic-git-flow"),
+    ]
+    redundant = _cache_entry("beadhive", "beadhive")
+    cfg, cache_root, checkout_root = _wire_cache_reclaim(
+        monkeypatch, tmp_path, [*only_copy, redundant]
+    )
+    paths = {entry["repo"]: _cache_store(cache_root, entry) for entry in [*only_copy, redundant]}
+    (checkout_root / "github" / "beadhive" / "beadhive" / ".beads").mkdir(parents=True)
+
+    rows = backup.classify_cache_entries(cfg)
+
+    by_hive = {row.hive: row for row in rows}
+    assert by_hive["github/beadhive/beadhive"].classification is WtClassification.SUPERSEDED
+    assert by_hive["github/beadhive/beadhive"].safe is True
+    for entry in only_copy:
+        hive = f"github/{entry['org']}/{entry['repo']}"
+        assert by_hive[hive].classification is WtClassification.RETAINED
+        assert by_hive[hive].safe is False
+
+    result = backup.reclaim_cache_entries(cfg, dry_run=False)
+
+    assert result.ok is True
+    assert result.removed == [paths["beadhive"]]
+    assert not paths["beadhive"].exists()
+    assert all(paths[entry["repo"]].is_dir() for entry in only_copy)
+
+
+def test_cache_reclaim_dry_run_reports_bytes_without_mutation(monkeypatch, tmp_path):
+    entry = _cache_entry("beadhive", "beadhive")
+    cfg, cache_root, checkout_root = _wire_cache_reclaim(monkeypatch, tmp_path, [entry])
+    cache = _cache_store(cache_root, entry, nbytes=822)
+    (checkout_root / "github" / "beadhive" / "beadhive" / ".beads").mkdir(parents=True)
+
+    result = backup.reclaim_cache_entries(cfg, dry_run=True)
+
+    assert result.dry_run is True
+    assert result.reclaimed_bytes == 822
+    assert result.removed == []
+    assert cache.is_dir()
+
+
+def test_cache_reclaim_rechecks_local_checkout_immediately_before_removal(monkeypatch, tmp_path):
+    entry = _cache_entry("beadhive", "beadhive")
+    cfg, cache_root, checkout_root = _wire_cache_reclaim(monkeypatch, tmp_path, [entry])
+    cache = _cache_store(cache_root, entry)
+    checkout = checkout_root / "github" / "beadhive" / "beadhive"
+    answers = iter((checkout, None))
+    monkeypatch.setattr(hub, "local_checkout_source", lambda _entry: next(answers))
+
+    result = backup.reclaim_cache_entries(cfg, dry_run=False)
+
+    assert result.removed == []
+    assert result.reclaimed_bytes == 0
+    assert result.entries[0].classification is WtClassification.RETAINED
+    assert cache.is_dir()
+
+
+def test_cache_reclaim_leaves_unregistered_and_symlinked_entries_stale(monkeypatch, tmp_path):
+    linked = _cache_entry("beadhive", "linked")
+    malformed = _cache_entry("beadhive", "malformed")
+    cfg, cache_root, checkout_root = _wire_cache_reclaim(monkeypatch, tmp_path, [linked, malformed])
+    target = tmp_path / "precious-target"
+    target.mkdir()
+    (target / "keep").write_text("precious")
+    link = cache_root / "github" / "beadhive" / "linked"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(target, target_is_directory=True)
+    (checkout_root / "github" / "beadhive" / "linked" / ".beads").mkdir(parents=True)
+    malformed_path = cache_root / "github" / "beadhive" / "malformed"
+    malformed_path.write_text("not a cache directory")
+    (checkout_root / "github" / "beadhive" / "malformed" / ".beads").mkdir(parents=True)
+    orphan = _cache_store(cache_root, _cache_entry("retired", "orphan"))
+
+    result = backup.reclaim_cache_entries(cfg, dry_run=False)
+
+    assert {row.classification for row in result.entries} == {WtClassification.STALE}
+    assert result.removed == []
+    assert link.is_symlink()
+    assert (target / "keep").read_text() == "precious"
+    assert malformed_path.read_text() == "not a cache directory"
+    assert orphan.is_dir()
+
+
+def test_cache_reclaim_reports_removal_failure_without_claiming_bytes(monkeypatch, tmp_path):
+    entry = _cache_entry("beadhive", "beadhive")
+    cfg, cache_root, checkout_root = _wire_cache_reclaim(monkeypatch, tmp_path, [entry])
+    cache = _cache_store(cache_root, entry, nbytes=822)
+    (checkout_root / "github" / "beadhive" / "beadhive" / ".beads").mkdir(parents=True)
+
+    def fail_removal(_path):
+        raise OSError("busy")
+
+    monkeypatch.setattr(backup.shutil, "rmtree", fail_removal)
+
+    result = backup.reclaim_cache_entries(cfg, dry_run=False)
+
+    assert result.ok is False
+    assert result.errors == {cache: "busy"}
+    assert result.removed == []
+    assert result.reclaimed_bytes == 0
+    assert cache.is_dir()
+
+
+def test_cache_reclaim_leaves_an_ambiguous_registration_stale(monkeypatch, tmp_path):
+    first = _cache_entry("beadhive", "beadhive")
+    second = {**first, "prefix": "a-conflicting-prefix"}
+    cfg, cache_root, checkout_root = _wire_cache_reclaim(monkeypatch, tmp_path, [first, second])
+    cache = _cache_store(cache_root, first)
+    (checkout_root / "github" / "beadhive" / "beadhive" / ".beads").mkdir(parents=True)
+
+    result = backup.reclaim_cache_entries(cfg, dry_run=False)
+
+    assert len(result.entries) == 1
+    assert result.entries[0].classification is WtClassification.STALE
+    assert "multiple registered hives" in result.entries[0].reason
+    assert result.removed == []
+    assert cache.is_dir()
 
 
 # ---------------------------------------------------------------------------
@@ -707,7 +871,65 @@ def test_cli_backup_reclaim_rejects_bad_root(monkeypatch, tmp_path):
     _cli_env(monkeypatch, tmp_path)
     result = runner.invoke(app, ["backup", "reclaim", "--root", "bogus"])
     assert result.exit_code != 0
-    assert "must be hq | hive | migrate | all" in result.output
+    assert "must be cache | hq | hive | migrate | all" in result.output
+
+
+def test_cli_backup_reclaim_cache_dry_run_shows_reclaimable_and_only_copy_split(
+    monkeypatch, tmp_path
+):
+    redundant = _cache_entry("beadhive", "beadhive")
+    only_copy = _cache_entry("briancripe", "workspace")
+    cfg, cache_root, checkout_root = _wire_cache_reclaim(
+        monkeypatch, tmp_path, [redundant, only_copy]
+    )
+    redundant_cache = _cache_store(cache_root, redundant, nbytes=822)
+    retained_cache = _cache_store(cache_root, only_copy, nbytes=665)
+    (checkout_root / "github" / "beadhive" / "beadhive" / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+
+    result = runner.invoke(app, ["backup", "reclaim", "--root", "cache", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "[SUPERSEDED] github/beadhive/beadhive" in result.output
+    assert "local checkout has .beads" in result.output
+    assert "[RETAINED] github/briancripe/workspace" in result.output
+    assert "only local bead store" in result.output
+    assert "would reclaim 1 SUPERSEDED entry" in result.output
+    assert "retain 1 only-copy entry" in result.output
+    assert "pass --confirm" in result.output
+    assert redundant_cache.is_dir()
+    assert retained_cache.is_dir()
+
+
+def test_cli_backup_reclaim_cache_requires_confirm_and_never_removes_retained(
+    monkeypatch, tmp_path
+):
+    redundant = _cache_entry("beadhive", "beadhive")
+    only_copy = _cache_entry("briancripe", "homelab")
+    cfg, cache_root, checkout_root = _wire_cache_reclaim(
+        monkeypatch, tmp_path, [redundant, only_copy]
+    )
+    redundant_cache = _cache_store(cache_root, redundant)
+    retained_cache = _cache_store(cache_root, only_copy)
+    (checkout_root / "github" / "beadhive" / "beadhive" / ".beads").mkdir(parents=True)
+    monkeypatch.setattr(config, "load", lambda: cfg)
+
+    refused = runner.invoke(app, ["backup", "reclaim", "--root", "cache"])
+    assert refused.exit_code == 1
+    assert redundant_cache.is_dir()
+    assert retained_cache.is_dir()
+
+    confirmed = runner.invoke(app, ["backup", "reclaim", "--root", "cache", "--confirm"])
+    assert confirmed.exit_code == 0
+    assert "reclaimed 1 SUPERSEDED entry" in confirmed.output
+    assert not redundant_cache.exists()
+    assert retained_cache.is_dir()
+
+    repeated = runner.invoke(app, ["backup", "reclaim", "--root", "cache", "--confirm"])
+    assert repeated.exit_code == 0
+    assert "reclaimed 0 SUPERSEDED entries" in repeated.output
+    assert "retain 1 only-copy entry" in repeated.output
+    assert retained_cache.is_dir()
 
 
 def test_cli_backup_reclaim_root_hive_refuses_without_confirm(monkeypatch, tmp_path):

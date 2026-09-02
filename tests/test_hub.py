@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 import typer
 
-from beadhive import bd, config, hub
+from beadhive import backup, bd, config, hub
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -68,6 +68,17 @@ def _wire(tmp_path, monkeypatch, fake_run, *repos):
     return dirs
 
 
+def test_local_checkout_source_requires_the_same_beads_directory_sync_reads(tmp_path, monkeypatch):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    monkeypatch.setattr(hub.registry, "hive_dir", lambda _entry: checkout)
+
+    assert hub.local_checkout_source(_cache_entry()) is None
+
+    (checkout / ".beads").mkdir()
+    assert hub.local_checkout_source(_cache_entry()) == checkout
+
+
 def test_sync_already_configured_readd_is_silent(tmp_path, monkeypatch, capsys):
     """Re-running sync against already-configured hives prints no error/usage noise and
     still counts every hive as hydrated."""
@@ -85,6 +96,53 @@ def test_sync_already_configured_readd_is_silent(tmp_path, monkeypatch, capsys):
     assert "already configured" not in out.out + out.err
     assert "2 hydrated, 0 skipped" in out.out
     assert out.out.startswith("✓")
+
+
+def test_sync_switches_from_cache_to_checkout_then_cache_reclaim_preserves_source(
+    tmp_path, monkeypatch
+):
+    """The garbage-producing transition: cache first, then clone, then safe reclaim."""
+    from beadhive import hub_bulk, metadata
+
+    calls = []
+
+    def fake_run(cmd, **_kwargs):
+        calls.append(cmd)
+        return Completed(0, "", "")
+
+    dirs = _wire(tmp_path, monkeypatch, fake_run, "one")
+    checkout = dirs["one"]
+    shutil.rmtree(checkout / ".beads")
+    cache_root = tmp_path / "cache"
+    cache = cache_root / "github" / "a" / "one"
+    (cache / ".beads").mkdir(parents=True)
+    (cache / ".beads" / "store.darc").write_bytes(b"cache")
+    monkeypatch.setattr(hub.config, "cache_dir", lambda: cache_root)
+    fetches = []
+    monkeypatch.setattr(hub, "_fetch_cache", lambda _cfg, _entry: fetches.append(cache) or cache)
+    monkeypatch.setattr(hub_bulk, "server_databases", lambda _hub: set())
+    monkeypatch.setattr(hub_bulk, "run_bulk_pass", lambda _hub, _entries: [])
+    monkeypatch.setattr(metadata, "invalidate", lambda _cfg: None)
+
+    assert hub.sync() == []
+    exports = [Path(cmd[2]) for cmd in calls if len(cmd) > 3 and cmd[3] == "export"]
+    assert exports[-1] == cache
+    assert fetches == [cache]
+
+    (checkout / ".beads").mkdir()
+    assert hub.sync() == []
+    exports = [Path(cmd[2]) for cmd in calls if len(cmd) > 3 and cmd[3] == "export"]
+    assert exports[-1] == checkout
+    assert fetches == [cache]
+
+    reclaimed = backup.reclaim_cache_entries(_hive_cfg("one"), dry_run=False)
+    assert reclaimed.removed == [cache]
+    assert not cache.exists()
+
+    assert hub.sync() == []
+    exports = [Path(cmd[2]) for cmd in calls if len(cmd) > 3 and cmd[3] == "export"]
+    assert exports[-1] == checkout
+    assert fetches == [cache]
 
 
 def test_sync_genuine_add_failure_surfaces(tmp_path, monkeypatch, capsys):

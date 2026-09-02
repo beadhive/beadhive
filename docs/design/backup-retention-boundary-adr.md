@@ -349,10 +349,15 @@ insufficient:
   location is that legacy row's — counting both in the category row inflated the reported total
   by exactly the bytes the operator was being told to relocate.
 
-- `bh backup reclaim --root hq|hive|migrate|all` — `migrate` prunes the pre-migration sets to
+- `bh backup reclaim --root cache|hq|hive|migrate|all` — `migrate` prunes the pre-migration sets to
   `backup.migrate_keep` and, with `--confirm`, removes leftover in-repo pre-migrate stores. The
   in-repo half is `--confirm`-gated where the sets are not: it deletes inside the operator's own
   working tree, a different blast radius from pruning `bh`'s own artifact root.
+- `--root cache` is deliberately adjacent to, not a fifth backup root. It classifies every
+  minimal-clone cache with the shared `RETAINED` / `SUPERSEDED` / `STALE` lifecycle vocabulary.
+  The only removable class is `SUPERSEDED`, proven by the same local-checkout-has-`.beads/`
+  predicate `hub.sync` uses to stop reading the cache. `--dry-run` reports reclaimable and
+  only-copy bytes separately; `--confirm` is required to remove anything.
 - `bh backup migrate-layout [--dry-run|--confirm]` — the one-time relocation above.
 - `bh hive migrate-storage --keep-pre-migrate` — opt back into the in-place rollback window.
 
