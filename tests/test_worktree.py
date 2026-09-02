@@ -3050,6 +3050,32 @@ def test_prune_classifies_hives_concurrently(monkeypatch):
     assert [status.hive for status in skipped] == ["first", "second"]
 
 
+def test_retained_is_skipped_by_two_consecutive_prune_classifications(monkeypatch):
+    """A deliberate retention is durable policy, not a one-shot skip marker."""
+    retained = wt_status.WtStatus(
+        hive="mr",
+        leaf="old",
+        branch="wt/bead/issue/old",
+        path="/wts/old",
+        bead_id="old",
+        classification=wt_status.WtClassification.RETAINED,
+        merged=False,
+        dirty=False,
+        safe=False,
+        disposition_reason="pivot",
+        citing_bead="port",
+    )
+    monkeypatch.setattr(worktree, "_classify_entry", lambda _entry, _rows, _cfg: [retained])
+    rows = [("mr", "/wts/old", "wt/bead/issue/old")]
+    entries = {"mr": {"prefix": "mr"}}
+
+    first = worktree._prune_classify({}, entries, rows)
+    second = worktree._prune_classify({}, entries, rows)
+
+    assert first == ([], [retained])
+    assert second == ([], [retained])
+
+
 def test_status_rows_classifies_concurrently_but_returns_managed_order(monkeypatch):
     first_started = threading.Event()
     second_started = threading.Event()
@@ -3620,6 +3646,29 @@ def test_an_unknown_row_is_marked_in_the_rendered_tree(capsys):
     out = capsys.readouterr().out
     assert "? u-1" in out
     assert "UNKNOWN" in out
+
+
+def test_retained_row_renders_reason_and_citing_bead_inline(capsys):
+    st = wt_status.WtStatus(
+        hive="mr",
+        leaf="old",
+        branch="wt/bead/issue/old",
+        path="/wts/old",
+        bead_id="old",
+        classification=wt_status.WtClassification.RETAINED,
+        merged=False,
+        dirty=False,
+        safe=False,
+        disposition_reason="pivot",
+        citing_bead="port",
+    )
+
+    worktree._render_status([st])
+
+    out = capsys.readouterr().out
+    assert "RETAINED" in out
+    assert "reason=pivot" in out
+    assert "citing=port" in out
 
 
 def test_a_dirty_row_renders_what_it_is_masking(capsys):

@@ -2850,6 +2850,35 @@ def wt_mark_landed(
     worktree.mark_landed(hive, ref)
 
 
+@wt_app.command(
+    "mark-abandoned",
+    help=(
+        "record an authoritative non-landing disposition; optionally link the bead that "
+        "retains or supersedes this branch"
+    ),
+)
+def wt_mark_abandoned(
+    ref: str = typer.Argument(..., help="bead id or wt/bead/<type>/<id> branch"),
+    reason: str = typer.Option(..., "--reason", help="pivot, superseded, or obsolete"),
+    retained_for: str = typer.Option(
+        "", "--retained-for", help="bead that will consume the retained branch"
+    ),
+    superseded_by: str = typer.Option(
+        "", "--superseded-by", help="replacement bead whose content supersedes this branch"
+    ),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+):
+    from . import worktree
+
+    worktree.mark_abandoned(
+        hive,
+        ref,
+        reason,
+        retained_for=retained_for,
+        superseded_by=superseded_by,
+    )
+
+
 # ---- labels (registry) ------------------------------------------------------
 
 

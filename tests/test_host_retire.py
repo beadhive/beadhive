@@ -371,6 +371,7 @@ def test_every_classification_is_either_escalated_or_deliberately_exempt():
     exempt = {
         WtClassification.SAFE,
         WtClassification.LANDED_REBASED,
+        WtClassification.SUPERSEDED,
         WtClassification.MERGED_ORPHAN,
         WtClassification.REVIEW,
     }

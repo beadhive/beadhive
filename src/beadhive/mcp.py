@@ -931,7 +931,8 @@ def _register_read_resources(mcp, tool, resource):
 
         Returns the same ``WtStatus`` list that ``bh worktree status --json`` emits,
         via the Typer-free ``worktree.status_rows()`` core — SAFE / ACTIVE / DIRTY /
-        REVIEW / UNMERGED / LANDED_REBASED / DETACHED / MERGED_ORPHAN / ABANDONED.
+        REVIEW / UNMERGED / LANDED_REBASED / RETAINED / SUPERSEDED / STALE /
+        DETACHED / MERGED_ORPHAN / ABANDONED.
         Hub-scoped (all managed hives); zero mutation, read-only.
         """
         return [s.as_dict() for s in worktree.status_rows()]

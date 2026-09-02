@@ -152,6 +152,8 @@ class FakeBd:
         # existing test's `close` keeps its old always-succeeds behavior unless it opts in.
         self.close_actor_guard = set()  # ids where a non-forced close refuses on actor mismatch
         self.close_always_fails = set()  # ids where close NEVER succeeds, even with --force
+        self.close_failures = {}  # id -> number of upcoming close calls that fail
+        self.dep_add_fails = set()  # (source, target, type) tuples
 
     def seed(self, bead_id, **fields):
         self.beads[bead_id] = {"id": bead_id, "status": "open", "assignee": "", **fields}
@@ -213,6 +215,9 @@ class FakeBd:
             return _CP(0, "", "")
         if sub == "close":
             bead_id = args[1]
+            if self.close_failures.get(bead_id, 0):
+                self.close_failures[bead_id] -= 1
+                return _CP(1, "", f"cannot close {bead_id}: simulated transient failure")
             if bead_id in self.close_always_fails:
                 return _CP(1, "", f"cannot close {bead_id}: simulated permanent failure")
             bead = self.beads.setdefault(bead_id, {"id": bead_id})
@@ -248,6 +253,25 @@ class FakeBd:
                 lbl = args[args.index("--label") + 1]
                 rows = [b for b in rows if lbl in (b.get("labels") or [])]
             return _CP(0, json.dumps(rows), "")
+        if sub == "dep" and args[1:2] == ["add"]:
+            source, target = args[2], args[3]
+            relation_type = args[args.index("-t") + 1] if "-t" in args else "blocks"
+            if (source, target, relation_type) in self.dep_add_fails:
+                return _CP(1, "", "simulated dependency failure")
+            deps = self.beads.setdefault(source, {"id": source}).setdefault("dependencies", [])
+            edge = {"depends_on_id": target, "type": relation_type}
+            if edge not in deps:
+                deps.append(edge)
+            return _CP(0, "", "")
+        if sub == "dep" and args[1:2] == ["remove"]:
+            source, target = args[2], args[3]
+            bead = self.beads.setdefault(source, {"id": source})
+            bead["dependencies"] = [
+                dep
+                for dep in bead.get("dependencies", [])
+                if str(dep.get("depends_on_id") or "") != target
+            ]
+            return _CP(0, "", "")
         if sub == "label" and len(args) >= 4 and args[1] == "add":
             bead = self.beads.setdefault(args[2], {"id": args[2]})
             labels = list(bead.get("labels") or [])
@@ -3492,6 +3516,103 @@ def test_mark_landed_noop_when_already_landed(hive, fakebd):
 
     assert fakebd.beads["mr-43"]["close_reason"] == "molecule landed"  # untouched
     assert not fakebd.did("close", "mr-43")
+
+
+# ---- worktree mark-abandoned: authoritative terminal disposition -----------
+
+
+def test_mark_abandoned_retained_writes_outgoing_relation_and_is_idempotent(hive, fakebd, capsys):
+    fakebd.seed("mr-old", title="old")
+    fakebd.seed("mr-port", title="port")
+
+    worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+    first_call_count = len(fakebd.calls)
+    worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["dependencies"] == [
+        {"depends_on_id": "mr-port", "type": "relates-to"}
+    ]
+    assert fakebd.beads["mr-old"]["close_reason"] == (
+        "bh:worktree-disposition:v1;state=retained;reason=pivot;citing=mr-port"
+    )
+    assert ["dep", "add", "mr-old", "mr-port", "-t", "relates-to"] in [
+        args for _actor, args in fakebd.calls
+    ]
+    assert ["dep", "add", "mr-port", "mr-old", "-t", "relates-to"] not in [
+        args for _actor, args in fakebd.calls
+    ]
+    repeat_calls = [args for _actor, args in fakebd.calls[first_call_count:]]
+    assert not [args for args in repeat_calls if args and args[0] in {"dep", "close", "reopen"}]
+    output = capsys.readouterr().out
+    assert "already exists" not in output
+    assert "nothing to do" in output
+
+
+def test_mark_abandoned_superseded_writes_incoming_relation_from_replacement(hive, fakebd):
+    fakebd.seed("mr-old", title="old")
+    fakebd.seed("mr-new", title="new")
+
+    worktree.mark_abandoned("myrepo", "mr-old", "superseded", superseded_by="mr-new")
+
+    assert fakebd.beads["mr-new"]["dependencies"] == [
+        {"depends_on_id": "mr-old", "type": "supersedes"}
+    ]
+    assert fakebd.beads["mr-old"]["close_reason"].endswith("citing=mr-new")
+
+
+def test_mark_abandoned_prevalidation_failure_makes_no_mutation(hive, fakebd):
+    fakebd.seed("mr-old", title="old")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-missing")
+
+    assert fakebd.beads["mr-old"]["status"] == "open"
+    assert not fakebd.did("dep", "add")
+    assert not fakebd.did("close", "mr-old")
+
+
+def test_mark_abandoned_relation_failure_happens_before_close_reason_mutation(hive, fakebd):
+    fakebd.seed("mr-old", title="old")
+    fakebd.seed("mr-port", title="port")
+    fakebd.dep_add_fails.add(("mr-old", "mr-port", "relates-to"))
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["status"] == "open"
+    assert "close_reason" not in fakebd.beads["mr-old"]
+
+
+def test_mark_abandoned_conflicting_edge_is_fail_closed_and_makes_no_mutation(hive, fakebd):
+    fakebd.seed(
+        "mr-old",
+        title="old",
+        dependencies=[{"depends_on_id": "mr-port", "type": "blocks"}],
+    )
+    fakebd.seed("mr-port", title="port")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["status"] == "open"
+    assert fakebd.beads["mr-old"]["dependencies"] == [
+        {"depends_on_id": "mr-port", "type": "blocks"}
+    ]
+    assert not fakebd.did("close", "mr-old")
+
+
+def test_mark_abandoned_reclose_failure_compensates_edge_and_original_reason(hive, fakebd):
+    fakebd.seed("mr-old", title="old", status="closed", close_reason="wontfix")
+    fakebd.seed("mr-port", title="port")
+    fakebd.close_failures["mr-old"] = 1
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["status"] == "closed"
+    assert fakebd.beads["mr-old"]["close_reason"] == "wontfix"
+    assert fakebd.beads["mr-old"].get("dependencies") == []
+    assert fakebd.did("dep", "remove", "mr-old", "mr-port")
 
 
 # ---- start / finish: epic-only aliases (kickoff + land) ---------------------
