@@ -79,6 +79,13 @@ def test_manifest_inventory_matches_runtime_catalog_without_delivery_coupling():
     }
     assert tuple(sorted(manifests)) == BUILTIN_PLUGIN_IDS
     assert set(manifests) == set(catalog)
+    assert tuple(entry.plugin_id for entry in PLUGIN_RUNTIME_CATALOG) == (
+        "orca",
+        "observaloop",
+        "hitch",
+        "herdr",
+        "repowise",
+    )
     for plugin_id, manifest in manifests.items():
         entry = catalog[plugin_id]
         assert entry.delivery == "runtime-core"
