@@ -115,8 +115,11 @@ managed_repos:
 ```
 
 `mise trust` as a per-worktree rule is the fix for the mise trust-hash collision across
-worktrees — each worktree is trusted explicitly on creation. Re-run the rules on an existing
-worktree with `bh wt init <path>`.
+worktrees — each worktree is trusted explicitly on creation. A successful seat-init pass records
+the ordered effective rule set in Git's worktree-local config. If `claim` re-attaches a checkout
+after that rule set changes (or a legacy checkout has no stamp while rules are configured), it
+warns without modifying the checkout and prints the remediation. Re-run and restamp the current
+rules explicitly with `bh wt init <path>`.
 
 ### Declared toolchains (`toolchain:`) — knowledge-only
 
@@ -333,18 +336,24 @@ Each worktree is classified into one of these states:
 
 | Classification | Meaning | Safe? |
 |---|---|---|
-| `SAFE` | Bead is **closed** + branch is a git ancestor of its parent + worktree is **clean** | Yes |
+| `SAFE` | Bead is **closed**, or every exact batch-label member is closed; branch is merged into its parent; worktree is **clean** | Yes |
 | `REVIEW` | Branch merged into parent, clean, but bead not yet closed (waiting on close) | No |
 | `DIRTY` | Uncommitted changes in the working tree | No |
-| `UNMERGED` | Bead is closed but branch is not a git ancestor of its parent | No |
+| `LANDED_REBASED` | Closed, clean branch whose content is proven in the parent under different SHAs | Yes |
+| `RETAINED` | Deliberately preserved branch with a queryable consumer and inline reason | No |
+| `SUPERSEDED` | Explicit replacement relation plus content equivalence through landed detection | Yes |
+| `STALE` | Closed terminal branch whose disposition is unknown or unproven | No |
+| `UNMERGED` | Legacy conservative vocabulary retained for machine compatibility | No |
 | `ACTIVE` | Bead is open / in-progress | No |
 | `UNKNOWN` | The bead could **not be resolved** — bh cannot say what this worktree holds | No |
 | `DETACHED` | No branch checked out (detached HEAD) | No |
-| `ABANDONED` | No bead id (session or batch worktree with no bead) | No |
+| `ABANDONED` | No bead id, including a batch worktree without complete all-closed + merged evidence | No |
 
 **SAFE** is a conservative three-way conjunction: a worktree must satisfy *all* three
-conditions — `closed AND merged AND clean` — before `prune` will touch it.  Missing any
-one condition leaves the worktree in place.
+conditions — `closed AND merged AND clean` — before `prune` will touch it. For
+`wt/batch/<group>`, `closed` means a non-empty, exact `batch:<group>` member set in which every
+member is closed and every member resolves to the same parent branch. Missing or contradictory
+evidence leaves the worktree in place.
 
 #### `UNKNOWN` — a read failure is not a state
 
@@ -380,9 +389,10 @@ unresolvable bead from the warning above.
 - No `--hive`, at the hub (not inside a hive) — all managed hives.
 
 `--json` emits a JSON array of `WtStatus` records (`hive`, `leaf`, `branch`, `path`,
-`bead_id`, `classification`, `merged`, `dirty`, `safe`, `underlying`, `unknown_reason`) for
-downstream tooling. The untrustworthy-hive warning is written to **stderr** in `--json` mode
-too: a consumer that only counts `active` sees a plausible answer either way.
+`bead_id`, `classification`, `merged`, `dirty`, `safe`, `underlying`, `unknown_reason`,
+`disposition_reason`, `citing_bead`) for downstream tooling. The untrustworthy-hive warning is
+written to **stderr** in `--json` mode too: a consumer that only counts `active` sees a plausible
+answer either way.
 
 The command **always repopulates fresh metadata** before classifying — it never reads stale
 cache data.
@@ -393,10 +403,10 @@ cache data.
 bh worktree prune [-r HIVE]
 ```
 
-`prune` removes **only** the worktrees classified `SAFE` every run.  It never touches
-`DIRTY`, `UNMERGED`, `ACTIVE`, `UNKNOWN`, `DETACHED`, or `ABANDONED` worktrees — and it
-withholds an entire hive that contains any `UNKNOWN` row, exiting non-zero so an unattended
-caller cannot read a partial run as a complete one.
+`prune` removes only worktrees whose classifier sets `safe=true`: `SAFE`, `LANDED_REBASED`, and
+`SUPERSEDED`. It never touches `RETAINED`, `STALE`, `DIRTY`, `UNMERGED`, `ACTIVE`, `UNKNOWN`,
+`DETACHED`, or `ABANDONED` worktrees — and it withholds an entire hive that contains any `UNKNOWN`
+row, exiting non-zero so an unattended caller cannot read a partial run as a complete one.
 
 - **No confirmation prompt** and **no `--force` flag** — `bh worktree status` is the
   operator's pre-flight view.  Inspect the status output to understand what will and will
@@ -420,13 +430,21 @@ best-effort and fail-closed). For a landing with no discoverable signal at all,
 `bh worktree mark-landed <bead-or-branch>` stamps the authoritative close_reason so the seat
 unsticks — an operator assertion; prefer `bh work land` when a PR exists to check.
 
+For a deliberate non-landing, use `bh worktree mark-abandoned <bead-or-branch> --reason
+pivot|superseded|obsolete`. Add `--retained-for <consumer-bead>` to preserve the branch as
+`RETAINED`, or `--superseded-by <replacement-bead>` to make it `SUPERSEDED` only when the existing
+landed-equivalence check also proves the content redundant. The command writes both an
+authoritative close reason and a queryable Beads relation; `status` prints the reason and citing
+bead inline. Without either relation option the explicit disposition is conservative `STALE`.
+
 **Observaloop note**: `prune` never tears down a hive's observaloop profile.  The profile is
 shared across all of a hive's worktrees; use `bh plugin observaloop down` to take it down separately.
 
 ### Scheduled fleet cleanup
 
 `bh worktree prune` with no `--hive` is fleet-wide: it inspects every managed hive and still
-removes only `SAFE` worktrees. Use the supplied user-level systemd timer when a host has systemd:
+removes only rows whose classifier sets `safe=true`. Use the supplied user-level systemd timer
+when a host has systemd:
 
 ```sh
 # Install the default six-hour cadence (choose any systemd duration).
@@ -472,6 +490,7 @@ bh worktree rm     [-r HIVE] [--bead ID | REF] [--force] [--json]
 bh worktree status [-r HIVE] [--json]                                  # classification pre-flight
 bh worktree prune  [-r HIVE]                                           # SAFE-set only (no confirm)
 bh worktree mark-landed [-r HIVE] (BEAD | BRANCH)                      # assert out-of-band landing
+bh worktree mark-abandoned [-r HIVE] (BEAD | BRANCH) --reason REASON  # record non-landing
 ```
 
 ## Driving bh worktrees from an orchestrator

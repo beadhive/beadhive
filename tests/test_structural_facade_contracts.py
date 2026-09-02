@@ -169,6 +169,11 @@ def test_worktree_classifier_facade_forwards_payload_and_callback_patch_points(m
             "",
         ),
     )
+    monkeypatch.setattr(
+        worktree,
+        "_bead_disposition_relations_for_entry",
+        lambda entry, close_reasons: {},
+    )
     monkeypatch.setattr(worktree, "_wt_dirty", lambda path: path.endswith("dirty"))
     monkeypatch.setattr(worktree.config, "precious_globs", lambda cfg, entry: [".env"])
     monkeypatch.setattr(worktree.config, "junk_globs", lambda cfg, entry: ["build/**"])

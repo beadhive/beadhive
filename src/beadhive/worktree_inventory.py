@@ -93,6 +93,10 @@ def _bead_statuses_for_entry(*args, **kwargs):
     return _call_facade("_bead_statuses_for_entry", *args, **kwargs)
 
 
+def _bead_disposition_relations_for_entry(*args, **kwargs):
+    return _call_facade("_bead_disposition_relations_for_entry", *args, **kwargs)
+
+
 def _classify_entry(*args, **kwargs):
     return _call_facade("_classify_entry", *args, **kwargs)
 
@@ -853,6 +857,129 @@ def impl__bead_statuses_for_entry(
     return statuses, close_reasons, unknown_reasons, store_reason
 
 
+def impl__bead_disposition_relations_for_entry(
+    entry,
+    bead_close_reasons: dict[str, str],
+) -> dict[str, frozenset[tuple[str, str]]]:
+    """Read the graph edges promised by authoritative terminal-disposition records.
+
+    Storage uses Beads' existing relation vocabulary and direction: a retained bead points
+    *down* to its consumer via ``relates-to``; a replacement points *down* to the old bead via
+    ``supersedes``.  The pure classifier receives normalized ``(state, citing_bead)`` pairs and
+    therefore never needs a database dependency.
+    """
+    dispositions = {
+        bead_id: disposition
+        for bead_id, close_reason in bead_close_reasons.items()
+        if (disposition := wt_status.parse_disposition(str(close_reason or ""))) is not None
+        and disposition.state != "stale"
+    }
+    if not dispositions:
+        return {}
+
+    main = registry.hive_dir(entry)
+    result: dict[str, frozenset[tuple[str, str]]] = {}
+    for bead_id, disposition in dispositions.items():
+        if disposition.state == "retained":
+            source_id, target_id, relation_type = (
+                bead_id,
+                disposition.citing_bead,
+                "relates-to",
+            )
+        else:
+            source_id, target_id, relation_type = (
+                disposition.citing_bead,
+                bead_id,
+                "supersedes",
+            )
+        source = bd.show(source_id, str(main)) or {}
+        dependencies = source.get("dependencies") or []
+        matched = any(
+            isinstance(dep, dict)
+            and str(dep.get("type") or dep.get("dependency_type") or "") == relation_type
+            and str(dep.get("depends_on_id") or dep.get("id") or "") == target_id
+            for dep in dependencies
+        )
+        if matched:
+            result[bead_id] = frozenset({(disposition.state, disposition.citing_bead)})
+    return result
+
+
+def _batch_evidence_for_entry(
+    entry,
+    rows: list[tuple[str, str, str]],
+    integration: str,
+) -> dict[str, wt_status.BatchEvidence]:
+    """Resolve exact batch-label membership and one shared parent from one bounded snapshot.
+
+    Batch branches deliberately have no bead id.  Their lifecycle authority is instead the set
+    of issues carrying the exact ``batch:<group>`` label.  Any unreadable or contradictory shape
+    is omitted so the pure classifier keeps the worktree ABANDONED rather than making a pruning
+    decision from partial evidence.
+    """
+    branches = tuple(
+        dict.fromkeys(
+            branch
+            for _prefix, _path, branch in rows
+            if branch.startswith("wt/batch/") and branch.removeprefix("wt/batch/")
+        )
+    )
+    if not branches:
+        return {}
+
+    main = registry.hive_dir(entry)
+    issues = bd.json(["list", "--all", "--include-infra", "--limit", "0"], str(main))
+    if not isinstance(issues, list):
+        return {}
+
+    requested = {branch.removeprefix("wt/batch/"): branch for branch in branches}
+    members: dict[str, dict[str, str]] = {group: {} for group in requested}
+    invalid: set[str] = set()
+
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+        labels = [str(label) for label in (issue.get("labels") or [])]
+        issue_groups = [
+            label.removeprefix("batch:") for label in labels if label.startswith("batch:")
+        ]
+        matching_groups = [group for group in issue_groups if group in requested]
+        if not matching_groups:
+            continue
+        bead_id = str(issue.get("id") or "")
+        if not bead_id or len(issue_groups) != 1:
+            invalid.update(matching_groups)
+            continue
+        group = matching_groups[0]
+        status = str(issue.get("status") or "")
+        previous = members[group].get(bead_id)
+        if previous is not None and previous != status:
+            invalid.add(group)
+            continue
+        members[group][bead_id] = status
+
+    evidence: dict[str, wt_status.BatchEvidence] = {}
+    for group, branch in requested.items():
+        group_members = members[group]
+        if group in invalid or not group_members:
+            continue
+        try:
+            parents = {
+                str(_facade().integration_base(entry, bead_id, integration))
+                for bead_id in group_members
+            }
+        except Exception:
+            continue
+        parents.discard("")
+        if len(parents) != 1:
+            continue
+        evidence[branch] = wt_status.BatchEvidence(
+            member_statuses=tuple(sorted(group_members.items())),
+            parent=next(iter(parents)),
+        )
+    return evidence
+
+
 def impl__classify_entry(
     entry,
     rows: list[tuple[str, str, str]],
@@ -871,9 +998,11 @@ def impl__classify_entry(
     meta_branches = meta.branches if meta else []
 
     integration = config.integration_branch(cfg, entry)
+    batch_evidence = _batch_evidence_for_entry(entry, rows, integration)
     bead_statuses, bead_close_reasons, unknown_reasons, store_reason = _bead_statuses_for_entry(
         entry, rows
     )
+    disposition_relations = _bead_disposition_relations_for_entry(entry, bead_close_reasons)
     dirty_by_path = {path: _wt_dirty(path) for _, path, _ in rows}
     precious_globs = config.precious_globs(cfg, entry)
     junk_globs = config.junk_globs(cfg, entry)
@@ -913,6 +1042,8 @@ def impl__classify_entry(
         bead_close_reasons=bead_close_reasons,
         bead_unknown_reasons=unknown_reasons,
         store_unreadable_reason=store_reason,
+        bead_disposition_relations=disposition_relations,
+        batch_evidence=batch_evidence,
     )
 
 
@@ -934,6 +1065,10 @@ def impl__status_tags(st) -> str:
         tags += f"  (under: {str(st.underlying).upper()})"
     if st.safe:
         tags += "  SAFE"
+    if getattr(st, "disposition_reason", ""):
+        tags += f"  reason={st.disposition_reason}"
+    if getattr(st, "citing_bead", ""):
+        tags += f"  citing={st.citing_bead}"
     return tags
 
 

@@ -322,6 +322,8 @@ fleet policy.
 bh config set backup.hq_keep 3            # keep fewer HQ pre-push snapshots
 bh config set backup.hive_cap_mb 200      # rotate a hive's bd backup sooner
 bh backup usage                            # see current size + policy for all three roots
+bh backup reclaim --root cache --dry-run   # split superseded caches from only-copy caches
+bh backup reclaim --root cache --confirm   # remove only caches superseded by local .beads
 bh backup reclaim --root hive --confirm    # rotate the current hive's bd backup once over cap
 ```
 

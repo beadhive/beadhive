@@ -6,7 +6,13 @@ from unittest.mock import patch
 
 from beadhive.precious import PreciousFile
 from beadhive.worktree import bead_and_parent  # noqa: E402
-from beadhive.wt_status import WtClassification, classify  # noqa: E402
+from beadhive.wt_status import (  # noqa: E402
+    BatchEvidence,
+    WtClassification,
+    classify,
+    format_disposition,
+    parse_disposition,
+)
 
 # Importing WtClassification.LANDED_REBASED here validates the new enum member is present
 _LANDED_REBASED = WtClassification.LANDED_REBASED
@@ -67,6 +73,8 @@ def _run(
     bead_unknown_reasons=None,
     store_unreadable_reason="",
     precious=(),
+    bead_disposition_relations=None,
+    batch_evidence=None,
 ):
     """Run classify with one managed row and the given params; return the single WtStatus.
 
@@ -91,6 +99,8 @@ def _run(
         bead_unknown_reasons=bead_unknown_reasons or {},
         store_unreadable_reason=store_unreadable_reason,
         precious_by_path={path: precious},
+        bead_disposition_relations=bead_disposition_relations or {},
+        batch_evidence=batch_evidence or {},
     )
     assert len(result) == 1
     return result[0]
@@ -145,10 +155,10 @@ def test_review_when_merged_clean_bead_in_progress():
     assert st.safe is False
 
 
-def test_unmerged_when_closed_but_not_merged():
-    """Closed bead + branch NOT an ancestor → UNMERGED (unusual but never safe)."""
+def test_stale_when_closed_but_not_merged():
+    """Closed bead + branch NOT an ancestor → STALE (unusual but never safe)."""
     st = _run(bead_status="closed", merged=False, dirty=False)
-    assert st.classification == WtClassification.UNMERGED
+    assert st.classification == WtClassification.STALE
     assert st.safe is False
 
 
@@ -225,7 +235,7 @@ def test_safe_false_for_all_non_safe_classes():
     cases = [
         _run(bead_status="closed", merged=True, dirty=True),  # DIRTY
         _run(bead_status="open", merged=True, dirty=False),  # REVIEW
-        _run(bead_status="closed", merged=False, dirty=False),  # UNMERGED
+        _run(bead_status="closed", merged=False, dirty=False),  # STALE
         _run(bead_status="open", merged=False, dirty=False),  # ACTIVE
         _run(branch="(detached)", bead_id=None, merged=False),  # DETACHED
         _run(branch="wt/batch/x", bead_id=None, merged=False),  # ABANDONED
@@ -331,18 +341,114 @@ def test_merged_orphan_when_no_bead_id_but_merged_and_clean():
     assert st.safe is False
 
 
-def test_batch_worktree_is_abandoned_even_when_merged():
-    """Batch worktree (wt/batch/<epic>) stays ABANDONED even if the branch is merged.
-
-    Batch branches are coordination branches, not individual bead seats.  They keep
-    their own no-bead treatment and are never promoted to MERGED_ORPHAN.
-    """
+def test_batch_worktree_with_all_closed_members_merged_and_clean_is_safe():
+    """A label-resolved batch mirrors the single-bead closed+merged+clean SAFE rule."""
+    branch = "wt/batch/some-epic"
     st = _run(
-        branch="wt/batch/some-epic",
+        branch=branch,
         bead_id=None,
         merged=True,
         dirty=False,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("some-epic.1", "closed"), ("some-epic.2", "closed")),
+                parent="wt/bead/epic/some-epic",
+            )
+        },
     )
+    assert st.classification == WtClassification.SAFE
+    assert st.safe is True
+
+
+def test_batch_worktree_with_one_open_member_is_not_safe():
+    """One open member withholds SAFE even when the shared branch is already merged."""
+    branch = "wt/batch/some-epic"
+    st = _run(
+        branch=branch,
+        bead_id=None,
+        merged=True,
+        dirty=False,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("some-epic.1", "closed"), ("some-epic.2", "open")),
+                parent="wt/bead/epic/some-epic",
+            )
+        },
+    )
+    assert st.classification == WtClassification.ABANDONED
+    assert st.safe is False
+
+
+def test_batch_worktree_with_all_closed_members_but_unmerged_branch_is_not_safe():
+    """Closed membership alone cannot widen prune eligibility without ancestry proof."""
+    branch = "wt/batch/some-epic"
+    st = _run(
+        branch=branch,
+        bead_id=None,
+        merged=False,
+        dirty=False,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("some-epic.1", "closed"), ("some-epic.2", "closed")),
+                parent="wt/bead/epic/some-epic",
+            )
+        },
+    )
+    assert st.classification == WtClassification.ABANDONED
+    assert st.safe is False
+
+
+def test_batch_worktree_ancestry_is_checked_against_the_resolved_member_parent():
+    branch = "wt/batch/planner-group"
+    resolved_parent = "wt/bead/epic/reparented"
+    observed = []
+
+    result = classify(
+        hive_prefix=_HIVE,
+        managed_rows=[(_HIVE, "/wts/batch-planner-group", branch)],
+        meta_branches=[],
+        bead_statuses={},
+        dirty_by_path={"/wts/batch-planner-group": False},
+        is_merged_fn=lambda _entry, actual_branch, parent: (
+            observed.append((actual_branch, parent)) or True
+        ),
+        parent_fn=_make_parent_fn(None, _INTEGRATION),
+        integration=_INTEGRATION,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("legacy-name.1", "closed"),),
+                parent=resolved_parent,
+            )
+        },
+    )
+
+    assert observed == [(branch, resolved_parent)]
+    assert result[0].classification == WtClassification.SAFE
+
+
+def test_dirty_batch_worktree_is_not_safe_even_when_all_members_are_closed_and_merged():
+    """DIRTY remains the hard stop over otherwise complete batch evidence."""
+    branch = "wt/batch/some-epic"
+    st = _run(
+        branch=branch,
+        bead_id=None,
+        merged=True,
+        dirty=True,
+        batch_evidence={
+            branch: BatchEvidence(
+                member_statuses=(("some-epic.1", "closed"), ("some-epic.2", "closed")),
+                parent="wt/bead/epic/some-epic",
+            )
+        },
+    )
+    assert st.classification == WtClassification.DIRTY
+    assert st.underlying == WtClassification.SAFE
+    assert st.safe is False
+
+
+def test_batch_worktree_without_complete_evidence_stays_abandoned_when_merged():
+    """A merged batch with no readable label evidence is not promoted to SAFE."""
+    st = _run(branch="wt/batch/some-epic", bead_id=None, merged=True, dirty=False)
     assert st.classification == WtClassification.ABANDONED
     assert st.safe is False
 
@@ -415,12 +521,12 @@ def test_molecule_landed_epic_classifies_landed_rebased():
     assert st.safe is True
 
 
-def test_genuinely_unlanded_closed_branch_stays_unmerged():
-    """Closed bead + not an ancestor + no patch-id match + no merge event → UNMERGED.
+def test_genuinely_unlanded_closed_branch_becomes_stale():
+    """Closed bead + not an ancestor + no patch-id match + no merge event → STALE.
 
     This is the real work-loss signal: the branch content is neither in the parent via
     ancestry nor via patch-id equivalence, and no AGF lifecycle event confirms the merge.
-    Must stay UNMERGED so prune does NOT reclaim it.
+    Must stay STALE so prune does NOT reclaim it.
     """
     st = _run(
         bead_status="closed",
@@ -429,18 +535,18 @@ def test_genuinely_unlanded_closed_branch_stays_unmerged():
         is_landed_fn=_make_landed_fn(False),  # simulates: commits have "+" in git cherry
         bead_close_reasons={_BEAD_ID: ""},
     )
-    assert st.classification == WtClassification.UNMERGED
+    assert st.classification == WtClassification.STALE
     assert st.safe is False
 
 
-def test_no_landed_fn_leaves_closed_non_ancestor_as_unmerged():
-    """Without is_landed_fn, closed+non-ancestor stays UNMERGED (unchanged behavior).
+def test_no_landed_fn_leaves_closed_non_ancestor_as_stale():
+    """Without is_landed_fn, closed+non-ancestor stays STALE and conservative.
 
     Callers that do not supply is_landed_fn preserve the pre-existing classification
     behavior — backward-compatible with all existing classify() call sites that don't
     opt in to the second-stage check.
     """
-    # Same as existing test_unmerged_when_closed_but_not_merged but explicit about the
+    # Same as the basic STALE test but explicit about the
     # backward-compat contract
     st = _run(
         bead_status="closed",
@@ -448,8 +554,91 @@ def test_no_landed_fn_leaves_closed_non_ancestor_as_unmerged():
         dirty=False,
         is_landed_fn=None,
     )
-    assert st.classification == WtClassification.UNMERGED
+    assert st.classification == WtClassification.STALE
     assert st.safe is False
+
+
+def test_disposition_codec_round_trips_and_rejects_noncanonical_records():
+    encoded = format_disposition("retained", "pivot", "bh-port")
+    assert encoded == ("bh:worktree-disposition:v1;state=retained;reason=pivot;citing=bh-port")
+    assert parse_disposition(encoded).citing_bead == "bh-port"
+    assert (
+        parse_disposition(
+            encoded.replace("state=retained;reason=pivot", "reason=pivot;state=retained")
+        )
+        is None
+    )
+    assert (
+        parse_disposition("bh:worktree-disposition:v1;state=retained;reason=pivot;citing=") is None
+    )
+
+
+def test_malformed_or_unknown_disposition_codec_fails_closed_but_arbitrary_legacy_reason_does_not():
+    malformed = _run(
+        bead_status="closed",
+        merged=True,
+        bead_close_reasons={_BEAD_ID: "bh:worktree-disposition:v2;state=retained"},
+    )
+    legacy = _run(
+        bead_status="closed",
+        merged=True,
+        bead_close_reasons={_BEAD_ID: "operator note from an older bh"},
+    )
+
+    assert malformed.classification == WtClassification.STALE
+    assert malformed.safe is False
+    assert legacy.classification == WtClassification.SAFE
+    assert legacy.safe is True
+
+
+def test_retained_requires_matching_queryable_relation_and_is_never_safe():
+    reason = format_disposition("retained", "pivot", "bh-port")
+    relations = {_BEAD_ID: frozenset({("retained", "bh-port")})}
+
+    retained = _run(
+        bead_status="closed",
+        merged=True,
+        bead_close_reasons={_BEAD_ID: reason},
+        bead_disposition_relations=relations,
+    )
+    mismatch = _run(
+        bead_status="closed",
+        merged=True,
+        bead_close_reasons={_BEAD_ID: reason},
+        bead_disposition_relations={_BEAD_ID: frozenset({("retained", "bh-other")})},
+    )
+
+    assert retained.classification == WtClassification.RETAINED
+    assert retained.safe is False
+    assert retained.disposition_reason == "pivot"
+    assert retained.citing_bead == "bh-port"
+    assert mismatch.classification == WtClassification.STALE
+    assert mismatch.safe is False
+
+
+def test_superseded_reuses_landed_equivalence_and_relation_before_becoming_safe():
+    reason = format_disposition("superseded", "superseded", "bh-replacement")
+    relations = {_BEAD_ID: frozenset({("superseded", "bh-replacement")})}
+
+    proven = _run(
+        bead_status="closed",
+        merged=False,
+        is_landed_fn=_make_landed_fn(True),
+        bead_close_reasons={_BEAD_ID: reason},
+        bead_disposition_relations=relations,
+    )
+    unproven = _run(
+        bead_status="closed",
+        merged=False,
+        is_landed_fn=_make_landed_fn(False),
+        bead_close_reasons={_BEAD_ID: reason},
+        bead_disposition_relations=relations,
+    )
+
+    assert proven.classification == WtClassification.SUPERSEDED
+    assert proven.safe is True
+    assert unproven.classification == WtClassification.STALE
+    assert unproven.safe is False
 
 
 def test_landed_rebased_is_safe_eligible():

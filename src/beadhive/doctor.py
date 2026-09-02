@@ -492,6 +492,39 @@ def _section_molecules(cfg):
     _render_molecules(_data_molecules(cfg))
 
 
+def _orphan_safety_ref_warnings(cfg) -> list[str]:
+    """Name recovery refs whose encoded bead no longer resolves.
+
+    This is deliberately diagnostic only. A missing bead never turns a ref into prune authority;
+    it makes the ref harder to reason about, so doctor surfaces the exact name for a human.
+    """
+
+    def _scan(entry) -> list[str]:
+        main = registry.hive_dir(entry)
+        refs = worktree.safety_refs(entry)
+        if not any(ref.bead_id for ref in refs):
+            return []
+        # One complete snapshot per hive, then O(1) lookups regardless of ref count. A failed
+        # store read is inconclusive, so it emits no orphan claim rather than manufacturing one.
+        rows = bd.json(["list", "--all", "--include-infra", "--limit", "0"], main)
+        if not isinstance(rows, list):
+            return []
+        resolved = {
+            str(row.get("id") or "") for row in rows if isinstance(row, dict) and row.get("id")
+        }
+        prefix = str(entry.get("prefix") or f"{entry.get('org')}/{entry.get('repo')}")
+        return [
+            f"hive '{prefix}' has orphaned safety ref {ref.name} at {ref.sha[:12]}: "
+            f"encoded bead {ref.bead_id} does not resolve. Diagnostic only — this is not "
+            "prune authority; inspect the recovery ref before deleting it"
+            for ref in refs
+            if ref.bead_id and ref.bead_id not in resolved
+        ]
+
+    entries = cfg.get("managed_repos", []) or []
+    return [warning for group in fleet.fanout(_scan, entries) for warning in group]
+
+
 # ---- prefix mismatches section (bh-6h1m) ------------------------------------
 # A hive's registry prefix (managed_repos[*].prefix) and its beads-DB issue prefix (`bd config
 # get issue_prefix`) are tracked separately — nothing keeps them in sync, and the generic
@@ -1905,6 +1938,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _disarmed_signing_gate_warnings(cfg, hives)
     warns += _orphaned_dolt_server_warnings()
     warns += _channel_drift_warnings(cfg, hives)
+    warns += _orphan_safety_ref_warnings(cfg)
     return warns
 
 
