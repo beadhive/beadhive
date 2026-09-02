@@ -1,6 +1,6 @@
 """ws.wt_status — pure worktree status classifier.
 
-Classifies each managed worktree into one of seven mutually exclusive states from
+Classifies each managed worktree into one mutually exclusive lifecycle state from
 freshly-fetched data, keeping all I/O out of the classifier itself so the function is
 trivially unit-testable.  Callers are responsible for:
 
@@ -27,8 +27,7 @@ class WtClassification(StrEnum):
     """Mutually exclusive classifications for a managed worktree."""
 
     SAFE = "safe"
-    """Closed bead + branch merged into parent + no uncommitted changes.  The only class
-    that ``ws worktree prune`` will remove."""
+    """Closed bead + branch merged into parent + no uncommitted changes. Auto-prune eligible."""
 
     REVIEW = "review"
     """Branch is merged and worktree is clean but the bead is not yet closed.  Waiting on
@@ -46,10 +45,22 @@ class WtClassification(StrEnum):
     content is confirmed in the parent even though the original per-bead tip is not an
     ancestor."""
 
+    RETAINED = "retained"
+    """A deliberately preserved terminal branch with a queryable consumer relation.
+    Never auto-pruned, even when its commits are otherwise present in the parent."""
+
+    SUPERSEDED = "superseded"
+    """A terminal branch explicitly replaced by another bead and proven content-equivalent
+    to its parent through the same ``is_landed`` predicate used by ``LANDED_REBASED``.
+    Auto-prune eligible."""
+
+    STALE = "stale"
+    """A terminal branch whose disposition is unknown or cannot be proven.  This is the
+    conservative successor to the ordinary closed-but-unmerged result; never auto-pruned."""
+
     UNMERGED = "unmerged"
-    """Bead is closed but the branch is NOT a git ancestor of its parent branch AND content
-    equivalence cannot be confirmed (no merge-event, no patch-id match).  A genuine
-    work-loss signal — not safe to remove."""
+    """Legacy vocabulary retained for machine-consumer compatibility. New ordinary
+    closed-but-unproven rows classify ``STALE``; this member remains never safe."""
 
     ACTIVE = "active"
     """Bead is open / in-progress — work is actively in progress.
@@ -124,9 +135,8 @@ class WtStatus:
     """True iff the worktree has uncommitted changes."""
 
     safe: bool
-    """True iff auto-prune should reclaim this worktree.  Set for ``SAFE``
-    (closed+merged+clean via ancestry) and ``LANDED_REBASED`` (closed+clean+content
-    confirmed in parent via merge-event or patch-id equivalence)."""
+    """True iff auto-prune should reclaim this worktree. Set for ``SAFE``,
+    ``LANDED_REBASED``, and equivalence-proven ``SUPERSEDED`` rows."""
 
     underlying: WtClassification | None = None
     """What this row would classify as if it were not ``DIRTY`` — ``None`` for every other row.
@@ -156,6 +166,12 @@ class WtStatus:
     remove it.
     """
 
+    disposition_reason: str = ""
+    """Machine-recorded terminal reason (``pivot``, ``superseded``, or ``obsolete``)."""
+
+    citing_bead: str = ""
+    """Queryable bead that retains or supersedes this branch, when one was recorded."""
+
     def as_dict(self) -> dict:
         """JSON-serializable dict with ``classification`` / ``underlying`` as strings and
         ``safe`` as a bool — suitable for ``--json`` emission."""
@@ -163,6 +179,84 @@ class WtStatus:
         d["classification"] = str(self.classification)
         d["underlying"] = str(self.underlying) if self.underlying else None
         return d
+
+
+@dataclass(frozen=True)
+class BatchEvidence:
+    """Resolved lifecycle evidence for one exact ``wt/batch/<group>`` branch.
+
+    The inventory adapter owns label lookup and parent resolution.  The pure classifier owns
+    the policy decision: every named member must be closed before a merged, clean batch branch
+    may become :attr:`WtClassification.SAFE`.
+    """
+
+    member_statuses: tuple[tuple[str, str], ...]
+    """Deterministically ordered ``(bead_id, status)`` pairs from the batch-label snapshot."""
+
+    parent: str
+    """The one integration target shared by every member in this batch."""
+
+    @property
+    def all_closed(self) -> bool:
+        """True only for a non-empty batch with a parent whose complete member set is closed."""
+        return (
+            bool(self.parent)
+            and bool(self.member_statuses)
+            and all(status == "closed" for _bead_id, status in self.member_statuses)
+        )
+
+
+@dataclass(frozen=True)
+class WtDisposition:
+    """Parsed, fail-closed terminal-disposition record stored in ``close_reason``."""
+
+    state: str
+    reason: str
+    citing_bead: str = ""
+
+
+_DISPOSITION_PREFIX = "bh:worktree-disposition:v1"
+_DISPOSITION_STATES = frozenset({"retained", "superseded", "stale"})
+_DISPOSITION_REASONS = frozenset({"pivot", "superseded", "obsolete"})
+
+
+def format_disposition(state: str, reason: str, citing_bead: str = "") -> str:
+    """Return the canonical close_reason codec; reject values that cannot round-trip."""
+    if state not in _DISPOSITION_STATES:
+        raise ValueError(f"unsupported worktree disposition state: {state}")
+    if reason not in _DISPOSITION_REASONS:
+        raise ValueError(f"unsupported worktree disposition reason: {reason}")
+    if state in {"retained", "superseded"} and not citing_bead:
+        raise ValueError(f"{state} disposition requires a citing bead")
+    if state == "stale" and citing_bead:
+        raise ValueError("stale disposition cannot carry a citing bead")
+    if any(char in citing_bead for char in ";=\n\r"):
+        raise ValueError("citing bead contains a reserved disposition-codec character")
+    return f"{_DISPOSITION_PREFIX};state={state};reason={reason};citing={citing_bead}"
+
+
+def parse_disposition(close_reason: str) -> WtDisposition | None:
+    """Parse only the exact v1 codec; malformed or future records fail closed as ``None``."""
+    parts = close_reason.split(";")
+    if len(parts) != 4 or parts[0] != _DISPOSITION_PREFIX:
+        return None
+    expected = ("state", "reason", "citing")
+    values: dict[str, str] = {}
+    for part, key in zip(parts[1:], expected, strict=True):
+        actual, separator, value = part.partition("=")
+        if separator != "=" or actual != key:
+            return None
+        values[key] = value
+    state = values["state"]
+    reason = values["reason"]
+    citing = values["citing"]
+    if state not in _DISPOSITION_STATES or reason not in _DISPOSITION_REASONS:
+        return None
+    if state in {"retained", "superseded"} and not citing:
+        return None
+    if state == "stale" and citing:
+        return None
+    return WtDisposition(state=state, reason=reason, citing_bead=citing)
 
 
 def _branch_dirty(branch: str, meta_branches: list[dict]) -> bool:
@@ -192,6 +286,8 @@ def classify(
     bead_unknown_reasons: dict[str, str] | None = None,
     store_unreadable_reason: str = "",
     precious_by_path: dict[str, list[PreciousFile] | tuple[PreciousFile, ...]] | None = None,
+    bead_disposition_relations: dict[str, frozenset[tuple[str, str]]] | None = None,
+    batch_evidence: dict[str, BatchEvidence] | None = None,
 ) -> list[WtStatus]:
     """Classify every managed worktree row for one hive.
 
@@ -224,9 +320,9 @@ def classify(
         The hive's integration branch name (e.g. ``main``).
     is_landed_fn:
         Optional callable ``(entry, branch, base, close_reason) -> bool`` — the second-stage
-        check for closed+non-ancestor rows (today's UNMERGED set).  Combines bead merge-event
+        check for closed+non-ancestor rows (the historical UNMERGED set). Combines bead merge-event
         and ``git cherry`` patch-id equivalence.  When ``None`` the second stage is skipped and
-        closed+non-ancestor branches stay UNMERGED.
+        closed+non-ancestor branches classify conservatively as STALE.
     bead_close_reasons:
         Optional mapping ``bead_id -> close_reason`` string (e.g. ``"merged"``,
         ``"molecule landed"``).  Passed to ``is_landed_fn`` so the merge-event check does not
@@ -245,6 +341,14 @@ def classify(
         Pre-computed local-only content per worktree path. Like ``dirty_by_path``, the caller
         owns filesystem and git I/O; the classifier only applies the safety overlay. Omitted
         paths have no detected precious content.
+    bead_disposition_relations:
+        Normalized queryable terminal edges per bead: ``("retained", consumer)`` or
+        ``("superseded", replacement)``. A close_reason assertion without its matching edge is
+        STALE.
+    batch_evidence:
+        Exact ``wt/batch/<group>`` branch to resolved member statuses and their one shared parent.
+        Missing evidence is deliberately indistinguishable from an unresolved batch and cannot
+        make a row safe.
 
     Returns
     -------
@@ -254,6 +358,8 @@ def classify(
     results: list[WtStatus] = []
     unknown_reasons = bead_unknown_reasons or {}
     precious_paths = precious_by_path or {}
+    disposition_relations = bead_disposition_relations or {}
+    batches = batch_evidence or {}
 
     for prefix, path, branch in managed_rows:
         leaf = Path(path).name
@@ -272,6 +378,9 @@ def classify(
         # the branch from the sanitized directory leaf (Fix 1).
         entry_stub = {"prefix": prefix}
         bead_id, parent = parent_fn(entry_stub, path, integration, branch)
+        batch = batches.get(branch) if branch.startswith("wt/batch/") else None
+        if batch is not None:
+            parent = batch.parent
 
         # -- merge ancestry ----------------------------------------------
         if is_detached or not branch or branch == "(detached)":
@@ -282,6 +391,17 @@ def classify(
         # -- bead status -------------------------------------------------
         bead_status = bead_statuses.get(bead_id or "", "") if bead_id else ""
         bead_closed = bead_status == "closed"
+        close_reason = (bead_close_reasons or {}).get(bead_id or "", "")
+        disposition = parse_disposition(close_reason) if bead_closed else None
+        malformed_disposition = (
+            bead_closed
+            and close_reason.startswith("bh:worktree-disposition:")
+            and disposition is None
+        )
+        relation = (disposition.state, disposition.citing_bead) if disposition is not None else None
+        relation_matches = relation in disposition_relations.get(bead_id or "", frozenset())
+        disposition_reason = disposition.reason if disposition is not None else ""
+        citing_bead = disposition.citing_bead if disposition is not None else ""
         # A row with a bead id whose STATUS never came back is unresolved.  Before bh-167s0 this
         # was indistinguishable from "open", because both reached the same `else` — so a store
         # that answered nothing at all reported every worktree as live work.
@@ -299,7 +419,7 @@ def classify(
         #   1. DETACHED        — no branch; cannot determine anything else
         #   2. DIRTY           — uncommitted changes override merge/bead status, but the answer
         #                        underneath is kept in `underlying` rather than thrown away
-        #   3. ABANDONED       — no bead id AND (not merged OR is a batch worktree)
+        #   3. ABANDONED       — no bead id AND no complete closed+merged batch proof
         #   3a.MERGED_ORPHAN   — no bead id but branch IS merged+clean and not batch;
         #                        conservative: not auto-pruned (weaker signal than SAFE)
         #   3b.UNKNOWN         — a bead id that did NOT resolve.  Ahead of every bead-derived
@@ -317,33 +437,51 @@ def classify(
         if is_detached:
             cls = WtClassification.DETACHED
         elif bead_id is None:
-            # No resolvable bead: use merge ancestry to distinguish reclaimable
-            # orphans (merged+clean, non-batch) from genuinely abandoned worktrees.
-            # Batch branches (wt/batch/<epic>) keep their own no-bead treatment
-            # and are always ABANDONED regardless of merge state (Fix 2).
+            # A batch has no single bead id, so its label-defined member set is the equivalent
+            # lifecycle authority.  Promote only the complete all-closed + merged proof.  Missing
+            # members, an unresolved status, a mixed parent, or an unmerged branch remains the
+            # existing conservative ABANDONED result.  Non-batch orphans retain their separate
+            # MERGED_ORPHAN treatment and are never widened by this rule.
             is_batch = branch.startswith("wt/batch/")
-            if merged and not is_batch:
+            if is_batch and batch is not None and batch.all_closed and merged:
+                cls = WtClassification.SAFE
+            elif merged and not is_batch:
                 cls = WtClassification.MERGED_ORPHAN
             else:
                 cls = WtClassification.ABANDONED
         elif unresolved:
             cls = WtClassification.UNKNOWN
+        elif malformed_disposition:
+            cls = WtClassification.STALE
+        elif bead_closed and disposition is not None and not relation_matches:
+            # A terminal assertion without its promised queryable graph edge is not authority.
+            cls = WtClassification.STALE
+        elif bead_closed and disposition is not None and disposition.state == "retained":
+            cls = WtClassification.RETAINED
+        elif bead_closed and disposition is not None and disposition.state == "stale":
+            cls = WtClassification.STALE
+        elif bead_closed and disposition is not None and disposition.state == "superseded":
+            landed = (
+                is_landed_fn(entry_stub, branch, parent, close_reason)
+                if is_landed_fn is not None
+                else False
+            )
+            cls = WtClassification.SUPERSEDED if landed else WtClassification.STALE
         elif bead_closed and merged:
             cls = WtClassification.SAFE
         elif merged and not bead_closed:
             cls = WtClassification.REVIEW
         elif bead_closed and not merged:
-            # Second-stage check: run only for closed+non-ancestor rows (current UNMERGED
+            # Second-stage check: run only for closed+non-ancestor rows (historical UNMERGED
             # set).  Cheap: is_landed_fn tries the merge-event first, then patch-id.
             if is_landed_fn is not None:
-                close_reason = (bead_close_reasons or {}).get(bead_id or "", "")
                 cls = (
                     WtClassification.LANDED_REBASED
                     if is_landed_fn(entry_stub, branch, parent, close_reason)
-                    else WtClassification.UNMERGED
+                    else WtClassification.STALE
                 )
             else:
-                cls = WtClassification.UNMERGED
+                cls = WtClassification.STALE
         else:
             # open/in-progress bead, not merged.  "unknown" left this branch in bh-167s0.
             cls = WtClassification.ACTIVE
@@ -357,7 +495,11 @@ def classify(
             underlying, cls = cls, WtClassification.DIRTY
 
         precious = tuple(precious_paths.get(path, ()))
-        base_safe = cls in (WtClassification.SAFE, WtClassification.LANDED_REBASED)
+        base_safe = cls in (
+            WtClassification.SAFE,
+            WtClassification.LANDED_REBASED,
+            WtClassification.SUPERSEDED,
+        )
         safe = base_safe and not precious
 
         results.append(
@@ -374,6 +516,8 @@ def classify(
                 underlying=underlying,
                 unknown_reason=unknown_reason,
                 precious=precious,
+                disposition_reason=disposition_reason,
+                citing_bead=citing_bead,
             )
         )
 

@@ -238,6 +238,7 @@ work submit|bead:string:o,as_:string:o,hive:string:o,group:string:o
 worktree add|hive:string:o,bead:string:o,branch:string:o,dry_run:boolean:o,as_json:boolean:o
 worktree init|path:string:r
 worktree list|as_json:boolean:o,hive:string:o,state:string:o,limit:integer:o,cursor:string:o
+worktree mark-abandoned|ref:string:r,reason:string:r,retained_for:string:o,superseded_by:string:o,hive:string:o
 worktree mark-landed|ref:string:r,hive:string:o
 worktree path|ref:string:o,bead:string:o,hive:string:o
 worktree prune|hive:string:o
@@ -385,7 +386,17 @@ _CLI_ALIAS_TARGETS: dict[str, tuple[str, dict[str, Any], str]] = {
     "host release": ("host.lease.release", {}, "hidden flat compatibility alias"),
     **{
         f"wt {verb}": (f"worktree.{verb}", {}, "hidden short group alias")
-        for verb in ("add", "init", "list", "mark-landed", "path", "prune", "rm", "status")
+        for verb in (
+            "add",
+            "init",
+            "list",
+            "mark-abandoned",
+            "mark-landed",
+            "path",
+            "prune",
+            "rm",
+            "status",
+        )
     },
 }
 

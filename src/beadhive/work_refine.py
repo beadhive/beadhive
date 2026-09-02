@@ -38,14 +38,46 @@ def impl_refine_branch(api, cfg, *, hive, bead, plan, autosquash, since, dry_run
             else api._simulate(rows, groups)
         )
         return api.RefineResult(base=base, dry_run=True, subjects=subjects)
+    _guard_refine_target(api, target, branch)
+    if _refine_is_noop(api, entry, base, branch, autosquash, rows, groups):
+        return api.RefineResult(base=base, branch=branch, target=target, noop=True)
     backup = api._apply_refine_rebase(entry, target, branch, base, autosquash, rows, groups)
+    reaped, failed = api.worktree.delete_safety_refs(
+        entry, branch, labels=("refine",), keep=(backup,)
+    )
     return api.RefineResult(
         base=base,
         backup=backup,
         branch=branch,
         log=api.worktree.log_range(entry, base, branch),
         target=target,
+        reaped=reaped,
+        cleanup_failed=failed,
     )
+
+
+def _guard_refine_target(api, target, branch):
+    if not api.worktree.is_clean(target):
+        raise api.WorkError(["✗ working tree not clean — commit or discard changes first"])
+    cur = api.worktree.current_branch(target)
+    if cur != branch:
+        raise api.WorkError([f"✗ on branch {cur or '(detached)'}, expected {branch}"])
+
+
+def _refine_is_noop(api, entry, base, branch, autosquash, rows, groups):
+    """True when the requested refinement cannot change commits or their parentage."""
+    if autosquash:
+        changes = any(api._MARKER.match(row["subject"]) for row in rows)
+    else:
+        by_sha = {row["sha"]: row for row in rows}
+        changes = False
+        for group in groups:
+            row = by_sha[group["keep"]]
+            changes = changes or bool(group["fold"])
+            changes = changes or bool(group.get("subject")) and group["subject"] != row["subject"]
+            changes = changes or group.get("body") not in (None, "")
+            changes = changes or group.get("date") not in (None, "", "keep")
+    return not changes and api.worktree.is_merged(entry, base, branch)
 
 
 def impl__guard_refine_mode(api, target, bead, plan, autosquash, since):
@@ -96,13 +128,10 @@ def impl__apply_refine_rebase(api, entry, target, branch, base, autosquash, rows
     """Real refine: require a clean tree on the expected branch, snapshot a backup branch,
     rebase (autosquash or an explicit squash-plan todo), and gate on a byte-identical net tree —
     restoring from the backup on any rebase failure or tree drift. Returns the backup branch."""
-    if not api.worktree.is_clean(target):
-        raise api.WorkError(["✗ working tree not clean — commit or discard changes first"])
-    cur = api.worktree.current_branch(target)
-    if cur != branch:
-        raise api.WorkError([f"✗ on branch {cur or '(detached)'}, expected {branch}"])
-    ts = api.datetime.datetime.now(api.datetime.UTC).strftime("%Y%m%dT%H%M%SZ")
-    backup = api.worktree.backup_branch(entry, branch, ts)
+    _guard_refine_target(api, target, branch)
+    # A timestamp alone collides when two invocations start in the same second. The shared
+    # session id keeps chronological readability and adds a random suffix, matching premerge.
+    backup = api.worktree.backup_branch(entry, branch, api.worktree._session_id())
     if autosquash:
         rc, out = api.worktree.rebase_autosquash(target, base)
     else:
@@ -148,7 +177,24 @@ def impl_refine(api, bead, plan, autosquash, since, dry_run, hive):
         for s in result.subjects:
             api.typer.echo(f"  {s}")
         return
+    if result.noop:
+        api.typer.echo(
+            f"✓ {bead} is already refined ({result.branch}) — no history change and no backup "
+            "ref created"
+        )
+        return
     api.typer.echo(f"backup branch: {result.backup}")
-    api.typer.echo(f"✓ refined {bead} ({result.branch}) — backup left at {result.backup}:")
+    api.typer.echo(
+        f"✓ refined {bead} ({result.branch}) — latest backup retained until submit at "
+        f"{result.backup}:"
+    )
     api.typer.echo(result.log)
     api.typer.echo(f"restore with: git -C {result.target} reset --hard {result.backup}")
+    if result.reaped:
+        api.typer.echo(f"  reaped {len(result.reaped)} superseded refine backup ref(s)")
+    if result.cleanup_failed:
+        api.typer.echo(
+            "⚠ refined successfully but could not reap superseded backup ref(s): "
+            + ", ".join(result.cleanup_failed),
+            err=True,
+        )

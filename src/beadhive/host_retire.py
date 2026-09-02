@@ -90,9 +90,9 @@ _RANK = safety._RETIRE_RANK
 # a bead that could not be READ AT ALL, and is the one member of this set that ranks BLOCKED
 # rather than NEEDS_BACKUP (named by `_WT_BLOCKED` below — which documents the ranking and is
 # asserted in tests; the check itself reads `untrustworthy()`, for the reason stated there).
-# SAFE, LANDED_REBASED (content confirmed
-# merged), MERGED_ORPHAN, and REVIEW (merged + clean, just awaiting a human close) are NOT
-# escalated — their content is already safe.
+# SAFE, LANDED_REBASED, SUPERSEDED (content confirmed merged/equivalent), MERGED_ORPHAN, and
+# REVIEW (merged + clean, just awaiting a human close) are NOT escalated — their content is
+# already safe. RETAINED and STALE stay escalated because clone retirement would strand them.
 #
 # UNKNOWN WAS MISSING HERE, AND THAT WAS A P0 (bh-jxeyx). bh-167s0 added the classification so
 # an unreadable bead store would stop masquerading as ACTIVE — and until this line, that fix
@@ -112,6 +112,8 @@ _WT_ESCALATE = frozenset(
         WtClassification.DIRTY,
         WtClassification.ACTIVE,
         WtClassification.UNMERGED,
+        WtClassification.RETAINED,
+        WtClassification.STALE,
         WtClassification.DETACHED,
         WtClassification.ABANDONED,
         WtClassification.UNKNOWN,
