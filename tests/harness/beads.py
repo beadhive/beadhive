@@ -7,6 +7,7 @@ process so deps/ready/gate/merge-slot/dolt-push-pull are exercised for real.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -20,6 +21,28 @@ skip_if_no_bd = pytest.mark.skipif(shutil.which("bd") is None, reason="bd not in
 # Dolt ops route through a shared dolt sql-server; cap them so a contended/wedged server
 # surfaces as a fast, clear test failure instead of an indefinite hang.
 _DOLT_TIMEOUT = 120
+_SHARED_SERVER_ENV = frozenset(
+    {"BEADS_DOLT_SHARED_SERVER", "BEADS_SHARED_SERVER_DIR", "BEADS_DOLT_SERVER_PORT"}
+)
+
+
+def embedded_env() -> dict[str, str]:
+    """Environment for fixtures that intentionally model bd's embedded engine.
+
+    Strip every shared-server control so a fixture cannot accidentally inherit a caller's
+    deliberate shared-server setup or its endpoint.
+    """
+    return {key: value for key, value in os.environ.items() if key not in _SHARED_SERVER_ENV}
+
+
+def env_for_repo(repo: Path) -> dict[str, str]:
+    """Keep an embedded fixture embedded despite an available isolated server endpoint."""
+    metadata = repo / ".beads" / "metadata.json"
+    try:
+        mode = json.loads(metadata.read_text()).get("dolt_mode")
+    except (OSError, json.JSONDecodeError):
+        mode = None
+    return embedded_env() if mode == "embedded" else dict(os.environ)
 
 
 def bd(*args, cwd: Path, check=True, capture=False, actor: str = "", timeout=None):
@@ -31,7 +54,7 @@ def bd(*args, cwd: Path, check=True, capture=False, actor: str = "", timeout=Non
     # subprocess's CalledProcessError prints only the argv; with capture=True the diagnosis
     # ("gate is not satisfied", "unknown flag", …) lives in the captured streams and was being
     # thrown away — which is why a red harness said nothing about why it was red.
-    res = run(cmd, check=False, capture=capture, timeout=timeout)
+    res = run(cmd, check=False, capture=capture, timeout=timeout, env=env_for_repo(cwd))
     if check and res.returncode != 0:
         detail = "".join(s for s in (res.stdout, res.stderr) if s)
         raise AssertionError(f"bd {' '.join(map(str, args))} → {res.returncode}\n{detail}")
@@ -51,7 +74,13 @@ def bd_json(*args, cwd: Path):
 def init_embedded(repo: Path, prefix: str):
     """Initialize an embedded-Dolt bd database in `repo`. `init` runs with cwd (not -C):
     -C requires an existing project, but init is what creates it."""
-    run(["bd", "init", "--prefix", prefix, "--quiet"], cwd=str(repo), check=True, capture=True)
+    run(
+        ["bd", "init", "--prefix", prefix, "--quiet"],
+        cwd=str(repo),
+        check=True,
+        capture=True,
+        env=embedded_env(),
+    )
 
 
 def add_file_remote(repo: Path, remote_dir: Path, name: str = "origin"):

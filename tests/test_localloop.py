@@ -1602,6 +1602,8 @@ def _isolate_demo_in_process(demo, root: Path, monkeypatch):
         "BH_HOME",
         "BH_CONFIG",
         "BH_WORKTREES",
+        "HOME",
+        "XDG_CONFIG_HOME",
         "GIT_WORKSPACE",
         "GIT_CONFIG_GLOBAL",
         "GIT_CONFIG_SYSTEM",
@@ -2037,17 +2039,17 @@ def _fake_repo_with_beads(tmp_path: Path) -> Path:
 
 
 def _scratch_world(tmp_path: Path, monkeypatch) -> Path:
-    """A scratch root holding the four roots `verify_isolation` re-reads, plus a private HOME."""
+    """A scratch root holding every root ``verify_isolation`` re-reads."""
     root = tmp_path / "scratch"
-    for name in ("bh-home", "worktrees", "workspace"):
+    for name in ("bh-home", "home", "xdg-config", "worktrees", "workspace"):
         (root / name).mkdir(parents=True)
-    (tmp_path / "home").mkdir()
     for key, value in {
         "BH_HOME": str(root / "bh-home"),
         "BH_CONFIG": str(root / "bh-home" / "config.yaml"),
         "BH_WORKTREES": str(root / "worktrees"),
+        "HOME": str(root / "home"),
+        "XDG_CONFIG_HOME": str(root / "xdg-config"),
         "GIT_WORKSPACE": str(root / "workspace"),
-        "HOME": str(tmp_path / "home"),
     }.items():
         monkeypatch.setenv(key, value)
     return root

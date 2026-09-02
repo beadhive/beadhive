@@ -228,6 +228,7 @@ def test_existing_embedded_hive_untouched_by_upgrade(tmp_path, isolated_shared_s
     against the SAME hive — the code path an upgraded bh binary now runs), verify `dolt_mode`
     is UNCHANGED on disk and every verb still works."""
     from beadhive.run import run
+    from harness.beads import embedded_env
 
     target = _repo(tmp_path / "existing")
     init = run(
@@ -236,6 +237,7 @@ def test_existing_embedded_hive_untouched_by_upgrade(tmp_path, isolated_shared_s
         check=True,
         capture=True,
         timeout=_TIMEOUT,
+        env=embedded_env(),
     )
     assert init.returncode == 0
     assert store_locator.dolt_mode(target) == "embedded"

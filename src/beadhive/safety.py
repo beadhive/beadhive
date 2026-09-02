@@ -30,9 +30,17 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 
-# Scrub dir-pointing GIT_* vars so every `-C <repo>` always wins.
-# (git hooks export GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE, which override -C.)
-_CLEAN_ENV: dict[str, str] = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+def _clean_env() -> dict[str, str]:
+    """Return the current environment without dir-pointing ``GIT_*`` variables.
+
+    This must be constructed at the call site rather than at import time.  Callers may
+    deliberately set ``HOME`` or ``XDG_CONFIG_HOME`` before asking safety to invoke ``bd``;
+    retaining the import-time values would make the probe read a different Beads configuration
+    from the caller.
+    """
+    # Git hooks export GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE, which override -C.
+    return {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
 
 
 def format_bytes(nbytes: int) -> str:
@@ -196,7 +204,7 @@ def _run(args: list[str], repo: str) -> tuple[int, str]:
         ["git", "-C", repo, *args],
         capture_output=True,
         text=True,
-        env=_CLEAN_ENV,
+        env=_clean_env(),
     )
     return result.returncode, (result.stdout or "").strip()
 
@@ -355,7 +363,7 @@ def _bd_dolt_status_payload(path: str) -> dict | None:
             ["bd", "-C", path, "dolt", "status", "--json"],
             capture_output=True,
             text=True,
-            env=_CLEAN_ENV,
+            env=_clean_env(),
             timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -395,7 +403,7 @@ def _bd_has_dolt_remote(path: str) -> bool:
             ["bd", "-C", path, "dolt", "remote", "list", "--json"],
             capture_output=True,
             text=True,
-            env=_CLEAN_ENV,
+            env=_clean_env(),
             timeout=10,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -729,7 +737,7 @@ def _non_hive_dirty_paths(repo_path: str) -> list[str] | None:
         ["git", "-C", repo_path, "status", "--porcelain=v1", "-z"],
         capture_output=True,
         text=True,
-        env=_CLEAN_ENV,
+        env=_clean_env(),
     )
     if result.returncode != 0:
         return None

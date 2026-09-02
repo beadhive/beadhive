@@ -35,7 +35,7 @@ import os
 import pytest
 
 from beadhive import storage_migrate
-from harness.beads import skip_if_no_bd
+from harness.beads import bd, embedded_env, skip_if_no_bd
 from harness.world import (
     free_port,
     git,  # noqa: F401 - re-exported for parity with sibling int tests
@@ -57,7 +57,7 @@ def _init_embedded(path, prefix, *, database=""):
     args = ["bd", "init", "--prefix", prefix, "--non-interactive"]
     if database:
         args += ["--database", database]
-    run(args, cwd=str(path), check=True, capture=True, timeout=_TIMEOUT)
+    run(args, cwd=str(path), check=True, capture=True, timeout=_TIMEOUT, env=embedded_env())
 
 
 def _init_embedded_with_pushed_remote(world, path, prefix, *, database=""):
@@ -96,9 +96,7 @@ def _init_embedded_with_pushed_remote(world, path, prefix, *, database=""):
 
 
 def _create(path, title) -> str:
-    from beadhive.run import run
-
-    res = run(["bd", "-C", str(path), "q", title], check=True, capture=True)
+    res = bd("q", title, cwd=path, capture=True)
     return (res.stdout or "").strip().splitlines()[-1].strip()
 
 

@@ -128,6 +128,11 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
     home = tmp_path_factory.mktemp("bh-home")
     monkeypatch.setenv("BH_HOME", str(home))
     monkeypatch.delenv("WS_HOME", raising=False)
+    # `bd` loads its own global config from HOME (and XDG_CONFIG_HOME), independently of
+    # Beadhive's BH_HOME. Without this, a developer's `dolt.shared-server: true` silently
+    # changes bare `bd init` fixtures from embedded to shared-server mode.
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     # Same reasoning for the in-image component manifest: running the suite INSIDE a Beadhive
     # image must not change what `bh setup check` does under test. Point it at a path that does
     # not exist, so live probing stays the default everywhere; the manifest tests set their own.
