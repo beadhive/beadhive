@@ -524,7 +524,7 @@ def test_serve_acquires_before_uvicorn_and_releases_on_signal(tmp_path, monkeypa
         status = host_daemon.daemon_status(key)
         assert status.verified
         assert status.record.listener_port == 9000
-        assert "/mcp" not in _route_paths(app)
+        assert "/mcp" in _route_paths(app)
         observed.update(kwargs)
         signal.raise_signal(signal.SIGTERM)
 

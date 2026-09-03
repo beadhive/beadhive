@@ -330,6 +330,26 @@ class SecureNetworkAdmissionPolicy:
 
         return len(self._mcp_sessions)
 
+    async def forget_mcp_session(self, session_id: str) -> None:
+        """Release one transport-owned MCP session without exposing its identifier.
+
+        Transport lifecycle owners call this after the underlying FastMCP session has been
+        terminated.  Validation deliberately matches request admission, and absence/repetition
+        is harmless so concurrent shutdown, authority invalidation, and client DELETE can race.
+        """
+
+        try:
+            encoded = session_id.encode("ascii")
+        except (AttributeError, UnicodeEncodeError):
+            raise NetworkRejected(NetworkErrorCode.INVALID_SESSION) from None
+        key = _mcp_session_key(
+            {b"mcp-session-id": [encoded]},
+            reject_invalid=True,
+        )
+        assert key is not None
+        async with self._lock:
+            self._mcp_sessions.pop(key, None)
+
     def _prune_mcp_sessions(self, now: float) -> None:
         idle = self.settings.mcp.session_idle_seconds
         absolute = self.settings.mcp.session_absolute_seconds

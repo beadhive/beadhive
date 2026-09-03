@@ -702,9 +702,10 @@ class BearerAuthMiddleware:
             if _credential_in_url(scope):
                 raise AuthenticationError(AuthFailureCode.CREDENTIAL_IN_URL)
             bearer = bearer_from_headers(scope.get("headers", ()))
+            required_scope = self.scope_resolver(scope)
             principal = self.authority.authenticate(
                 bearer,
-                required_scope=self.scope_resolver(scope),
+                required_scope=required_scope,
                 expected_principal=self.expected_principal(scope),
             )
         except AuthenticationError as exc:
@@ -722,6 +723,27 @@ class BearerAuthMiddleware:
         state = scope.setdefault("state", {})
         state["auth_principal"] = principal
         state["auth_bearer"] = SecretBearer(bearer)
+        if required_scope is AuthScope.MCP_CONTROL:
+            # FastMCP's stateful HTTP manager owns sessions through the standard ASGI
+            # authentication identity, not Starlette request state.  Carry only the stable,
+            # non-secret credential identity into that contract; the bearer remains redacted.
+            from mcp.server.auth.middleware.bearer_auth import AuthenticatedUser
+            from mcp.server.auth.provider import AccessToken
+            from starlette.authentication import AuthCredentials
+
+            scopes = sorted(item.value for item in principal.scopes)
+            scope["auth"] = AuthCredentials(scopes)
+            scope["user"] = AuthenticatedUser(
+                AccessToken(
+                    token=REDACTED,
+                    client_id=principal.credential_id,
+                    scopes=scopes,
+                    expires_at=principal.expires_at,
+                    resource=principal.audience,
+                    subject=principal.principal,
+                    claims={"iss": principal.audience},
+                )
+            )
         await self.app(scope, receive, send)
 
 

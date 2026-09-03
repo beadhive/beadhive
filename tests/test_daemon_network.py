@@ -513,6 +513,40 @@ def test_mcp_session_ceiling_tracks_sequential_reuse_termination_failure_and_exp
     asyncio.run(exercise())
 
 
+def test_mcp_session_owner_can_forget_one_exact_session_idempotently() -> None:
+    async def exercise() -> None:
+        policy = daemon_network.SecureNetworkAdmissionPolicy(_settings(mcp={"max_sessions": 2}))
+
+        for session_id in ("session-one", "session-two"):
+            scope = _scope("/mcp", scheme="https", client=REMOTE, host=HOST)
+            scope["method"] = "POST"
+            admission = await policy.admit(scope)
+            await policy.observe_response_start(
+                admission,
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"mcp-session-id", session_id.encode())],
+                },
+            )
+            await policy.release(admission)
+
+        await policy.forget_mcp_session("session-one")
+        await policy.forget_mcp_session("session-one")
+        assert policy.active_mcp_session_count == 1
+
+        with pytest.raises(daemon_network.NetworkRejected) as caught:
+            await policy.forget_mcp_session("session\nsecret")
+        assert caught.value.code is daemon_network.NetworkErrorCode.INVALID_SESSION
+        assert "session\nsecret" not in repr(caught.value)
+        assert policy.active_mcp_session_count == 1
+
+        await policy.forget_mcp_session("session-two")
+        assert policy.active_mcp_session_count == 0
+
+    asyncio.run(exercise())
+
+
 def test_mcp_session_ceiling_reserves_concurrent_handshakes_and_releases_failures() -> None:
     async def exercise() -> None:
         handshake_entered = asyncio.Event()

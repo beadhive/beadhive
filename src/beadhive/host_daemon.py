@@ -31,7 +31,7 @@ import time
 import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from datetime import UTC, datetime
 from enum import IntEnum
 from functools import partial
@@ -712,8 +712,302 @@ class _DrainGateMiddleware:
         await self.app(scope, receive, send)
 
 
+class _McpMethodPassthroughMiddleware:
+    """Keep the operator method policy while admitting FastMCP's own HTTP verbs."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        fallback_middleware: Callable[[ASGIApp], ASGIApp],
+    ) -> None:
+        self.app = app
+        self.fallback = fallback_middleware(app)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = str(scope.get("path", ""))
+        if scope["type"] == "http" and (path == "/mcp" or path.startswith("/mcp/")):
+            await self.app(scope, receive, send)
+            return
+        await self.fallback(scope, receive, send)
+
+
+@dataclass
+class _McpLiveSession:
+    session_id: str = field(repr=False)
+    credential_session: Any = field(repr=False)
+    created_at: float
+    last_seen_at: float
+
+
+class _McpSessionLifecycle:
+    """Join FastMCP transports to daemon credential and capacity ownership."""
+
+    def __init__(
+        self,
+        *,
+        credential_sessions: Any,
+        network_policy: Any,
+        idle_seconds: float,
+        absolute_seconds: float,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._credential_sessions = credential_sessions
+        self._network_policy = network_policy
+        self._idle_seconds = idle_seconds
+        self._absolute_seconds = absolute_seconds
+        self._monotonic = monotonic
+        self._manager: Any = None
+        self._sessions: dict[str, _McpLiveSession] = {}
+        self._lock = asyncio.Lock()
+        self._creation_lock = asyncio.Lock()
+        self._wake = asyncio.Event()
+        self._stopping = False
+
+    @property
+    def active_session_count(self) -> int:
+        return len(self._sessions)
+
+    def attach_manager(self, manager: Any) -> None:
+        self._manager = manager
+        original_handle_request = manager.handle_request
+
+        async def handle_with_creation_ownership(
+            scope: Scope,
+            receive: Receive,
+            send: Send,
+        ) -> None:
+            # The upstream SDK exposes no transport-created callback.  Serialize only new
+            # session requests so the manager-map delta is request-local; established sessions
+            # remain concurrent.  Exact ASGI ownership then decides whether a newly-created
+            # transport was actually exposed to this authenticated request.
+            if manager.stateless or _mcp_session_header(scope.get("headers", ())) is not None:
+                await original_handle_request(scope, receive, send)
+                return
+
+            async with self._creation_lock:
+                from mcp.server.auth.middleware.bearer_auth import (
+                    AuthenticatedUser,
+                    authorization_context,
+                )
+
+                before = frozenset(manager._server_instances)
+                exposed_session_id: str | None = None
+                user = scope.get("user")
+                expected_owner = (
+                    authorization_context(user) if isinstance(user, AuthenticatedUser) else None
+                )
+
+                async def observe(message: dict[str, Any]) -> None:
+                    nonlocal exposed_session_id
+                    if message["type"] == "http.response.start":
+                        candidate = _mcp_session_header(message.get("headers", ()))
+                        if (
+                            candidate is not None
+                            and candidate not in before
+                            and candidate in manager._server_instances
+                            and manager._session_owners.get(candidate) == expected_owner
+                        ):
+                            exposed_session_id = candidate
+                    await send(message)
+
+                try:
+                    await original_handle_request(scope, receive, observe)
+                finally:
+                    created = tuple(
+                        session_id
+                        for session_id in manager._server_instances
+                        if session_id not in before
+                    )
+                    for session_id in created:
+                        if session_id != exposed_session_id:
+                            await self.terminate(session_id)
+
+        manager.handle_request = handle_with_creation_ownership
+
+    async def register(self, session_id: str, *, bearer: Any, principal: Any) -> None:
+        from .daemon_contract import AuthScope
+
+        async with self._lock:
+            if session_id in self._sessions:
+                return
+
+            async def close_invalidated(_reason: Any) -> None:
+                await self.terminate(session_id, unregister=False)
+
+            credential_session = self._credential_sessions.open(
+                bearer,
+                required_scope=AuthScope.MCP_CONTROL,
+                expected_principal=principal.principal,
+                close=close_invalidated,
+            )
+            now = self._monotonic()
+            self._sessions[session_id] = _McpLiveSession(
+                session_id=session_id,
+                credential_session=credential_session,
+                created_at=now,
+                last_seen_at=now,
+            )
+            self._wake.set()
+
+    async def touch(self, session_id: str, *, principal: Any) -> None:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            owner = session.credential_session.principal if session is not None else None
+            if owner is not None and (
+                owner.credential_id,
+                owner.principal,
+                owner.audience,
+            ) == (
+                principal.credential_id,
+                principal.principal,
+                principal.audience,
+            ):
+                session.last_seen_at = self._monotonic()
+                self._wake.set()
+
+    async def terminate(self, session_id: str, *, unregister: bool = True) -> None:
+        async with self._lock:
+            session = self._sessions.pop(session_id, None)
+            manager = self._manager
+            transport = (
+                manager._server_instances.pop(session_id, None) if manager is not None else None
+            )
+            if manager is not None:
+                manager._session_owners.pop(session_id, None)
+        if unregister and session is not None:
+            self._credential_sessions.unregister(session.credential_session)
+        try:
+            if transport is not None:
+                await transport.terminate()
+        finally:
+            await self._network_policy.forget_mcp_session(session_id)
+
+    async def expire_due(self) -> None:
+        now = self._monotonic()
+        async with self._lock:
+            candidates = tuple(
+                session_id
+                for session_id, session in self._sessions.items()
+                if now - session.last_seen_at >= self._idle_seconds
+                or now - session.created_at >= self._absolute_seconds
+            )
+        for session_id in candidates:
+            async with self._lock:
+                session = self._sessions.get(session_id)
+                current = self._monotonic()
+                still_due = session is not None and (
+                    current - session.last_seen_at >= self._idle_seconds
+                    or current - session.created_at >= self._absolute_seconds
+                )
+            if still_due:
+                await self.terminate(session_id)
+
+    async def _run_reaper(self) -> None:
+        while not self._stopping:
+            self._wake.clear()
+            await self.expire_due()
+            async with self._lock:
+                now = self._monotonic()
+                timeout = (
+                    min(
+                        min(
+                            session.last_seen_at + self._idle_seconds,
+                            session.created_at + self._absolute_seconds,
+                        )
+                        for session in self._sessions.values()
+                    )
+                    - now
+                    if self._sessions
+                    else max(self._idle_seconds, self._absolute_seconds)
+                )
+            try:
+                await asyncio.wait_for(self._wake.wait(), timeout=max(0.001, timeout))
+            except TimeoutError:
+                pass
+
+    @asynccontextmanager
+    async def lifespan(self):
+        self._stopping = False
+        reaper = asyncio.create_task(self._run_reaper(), name="daemon-mcp-session-reaper")
+        try:
+            yield self
+        finally:
+            self._stopping = True
+            self._wake.set()
+            await reaper
+            async with self._lock:
+                session_ids = tuple(self._sessions)
+            for session_id in session_ids:
+                await self.terminate(session_id)
+
+
+class _McpSessionLifecycleMiddleware:
+    """Observe successful MCP responses and keep all session owners in lockstep."""
+
+    def __init__(self, app: ASGIApp, *, lifecycle: _McpSessionLifecycle) -> None:
+        self.app = app
+        self.lifecycle = lifecycle
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        path = str(scope.get("path", ""))
+        if scope.get("type") != "http" or not (path == "/mcp" or path.startswith("/mcp/")):
+            await self.app(scope, receive, send)
+            return
+
+        await self.lifecycle.expire_due()
+        request_id = _mcp_session_header(scope.get("headers", ()))
+        method = str(scope.get("method", ""))
+        if request_id is not None:
+            await self.lifecycle.touch(
+                request_id,
+                principal=scope.get("state", {})["auth_principal"],
+            )
+        registered_id: str | None = None
+        successful = False
+        complete = False
+
+        async def observe(message: dict[str, Any]) -> None:
+            nonlocal registered_id, successful, complete
+            if message["type"] == "http.response.start":
+                successful = 200 <= int(message.get("status", 500)) < 300
+                if successful and request_id is None:
+                    response_id = _mcp_session_header(message.get("headers", ()))
+                    if response_id is not None:
+                        registered_id = response_id
+                        state = scope.get("state", {})
+                        await self.lifecycle.register(
+                            registered_id,
+                            bearer=state["auth_bearer"],
+                            principal=state["auth_principal"],
+                        )
+            await send(message)
+            if message["type"] == "http.response.body" and not message.get("more_body", False):
+                complete = True
+
+        try:
+            await self.app(scope, receive, observe)
+        finally:
+            if registered_id is not None and not complete:
+                await self.lifecycle.terminate(registered_id)
+            if successful and request_id is not None and method == "DELETE":
+                await self.lifecycle.terminate(request_id)
+
+
+def _mcp_session_header(headers: Sequence[tuple[bytes, bytes]]) -> str | None:
+    values = [value for name, value in headers if name.lower() == b"mcp-session-id"]
+    if len(values) != 1 or not 1 <= len(values[0]) <= 256:
+        return None
+    if not all(0x21 <= value <= 0x7E for value in values[0]):
+        return None
+    return values[0].decode("ascii")
+
+
 def _mcp_component(
-    *, stateless_http: bool, server_factory: Callable[[], Any]
+    *,
+    stateless_http: bool,
+    server_factory: Callable[[], Any],
+    session_lifecycle: _McpSessionLifecycle | None = None,
 ) -> tuple[LifespanComponent, list[BaseRoute]]:
     server = server_factory()
     mcp_app = server.http_app(
@@ -722,14 +1016,29 @@ def _mcp_component(
         stateless_http=stateless_http,
         json_response=False,
     )
+    routes = list(mcp_app.routes)
+    if session_lifecycle is not None:
+        route = next(route for route in routes if getattr(route, "path", None) == "/mcp")
+
+        @asynccontextmanager
+        async def mcp_lifespan(app: Starlette):
+            async with mcp_app.lifespan(app):
+                # FastMCP binds the running manager while entering its lifespan.
+                session_lifecycle.attach_manager(route.endpoint.session_manager)
+                async with session_lifecycle.lifespan():
+                    yield
+
+        component_lifespan = mcp_lifespan
+    else:
+        component_lifespan = mcp_app.lifespan
     return (
         LifespanComponent(
             name="fastmcp-http",
-            lifespan=mcp_app.lifespan,
+            lifespan=component_lifespan,
             startup_phase=StartupPhase.RESOURCES,
             shutdown_phase=ShutdownPhase.CLOSE_SESSIONS,
         ),
-        list(mcp_app.routes),
+        routes,
     )
 
 
@@ -741,6 +1050,7 @@ def build_application(
     enable_mcp_http: bool = False,
     stateless_mcp_http: bool = False,
     mcp_server_factory: Callable[[], Any] | None = None,
+    mcp_session_lifecycle: _McpSessionLifecycle | None = None,
     middleware: Sequence[Middleware] = (),
     network_policy: NetworkAdmissionPolicy | None = None,
 ) -> Starlette:
@@ -759,7 +1069,9 @@ def build_application(
 
             mcp_server_factory = build_server
         mcp_component, mcp_routes = _mcp_component(
-            stateless_http=stateless_mcp_http, server_factory=mcp_server_factory
+            stateless_http=stateless_mcp_http,
+            server_factory=mcp_server_factory,
+            session_lifecycle=mcp_session_lifecycle,
         )
         owned_components.append(mcp_component)
         owned_routes.extend(mcp_routes)
@@ -840,8 +1152,9 @@ def build_product_application(
     """Assemble the installed daemon's current routes on the shared composition seam.
 
     Operator sources extend this one factory with injected routes and middleware; they do not
-    replace :func:`serve` or create a listener.  MCP HTTP remains explicitly disabled here until
-    its authenticated product slice.
+    replace :func:`serve` or create a listener. MCP HTTP is mounted only for the typed,
+    authenticated daemon profile; the historical unauthenticated compatibility profile remains
+    read-only and does not expose control tools.
     """
     from .daemon_activity import DurableActivityStore
     from .daemon_activity_api import ActivityPublicationService
@@ -928,6 +1241,7 @@ def build_product_application(
     product_components = [state_broker.component()]
     network_policy = None
     credential_sessions = None
+    mcp_sessions = None
     if settings is None:
         # Compatibility for callers constructing the historical phase-one application without
         # the typed daemon settings.  Installed ``serve`` always supplies settings and therefore
@@ -973,16 +1287,36 @@ def build_product_application(
             ),
         )
         network_policy = SecureNetworkAdmissionPolicy(settings)
+        if settings.mcp.mode == "sessionful":
+            mcp_sessions = _McpSessionLifecycle(
+                credential_sessions=credential_sessions,
+                network_policy=network_policy,
+                idle_seconds=settings.mcp.session_idle_seconds,
+                absolute_seconds=settings.mcp.session_absolute_seconds,
+            )
         product_middleware = [
             Middleware(BearerAuthMiddleware, authority=authority),
-            Middleware(ReadOnlyMethodMiddleware, allow_activity_publish=True),
+            *(
+                [Middleware(_McpSessionLifecycleMiddleware, lifecycle=mcp_sessions)]
+                if mcp_sessions is not None
+                else []
+            ),
+            Middleware(
+                _McpMethodPassthroughMiddleware,
+                fallback_middleware=partial(
+                    ReadOnlyMethodMiddleware,
+                    allow_activity_publish=True,
+                ),
+            ),
         ]
 
     app = build_application(
         runtime=runtime,
         routes=operator.routes(),
         components=product_components,
-        enable_mcp_http=False,
+        enable_mcp_http=settings is not None,
+        stateless_mcp_http=settings is not None and settings.mcp.mode == "stateless",
+        mcp_session_lifecycle=mcp_sessions,
         middleware=product_middleware,
         network_policy=network_policy,
     )
@@ -998,6 +1332,8 @@ def build_product_application(
         app.state.network_admission = network_policy
         app.state.auth_authority = authority
         app.state.credential_sessions = credential_sessions
+        if mcp_sessions is not None:
+            app.state.mcp_sessions = mcp_sessions
     return app
 
 
