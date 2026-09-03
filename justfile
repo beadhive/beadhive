@@ -51,7 +51,11 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check test
+check: lint lint-md openapi-check license-check test
+
+# Deterministic product schema/route generation: checked JSON may never drift from code.
+openapi-check:
+    uv run python -m beadhive.daemon_openapi --check
 
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
 #

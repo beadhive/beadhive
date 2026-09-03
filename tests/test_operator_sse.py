@@ -18,6 +18,7 @@ import jsonschema
 import pytest
 from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
+from starlette.requests import Request
 
 from beadhive import (
     daemon_auth,
@@ -1170,6 +1171,42 @@ def test_event_route_rejects_conflicts_and_checked_resnapshot(tmp_path: Path) ->
     )
     assert expired.status_code == 409
     assert expired.json() == {"error": "wrong_subscription", "action": "resnapshot"}
+    document = operator_api.openapi_document()
+    contract_uri = "urn:beadhive:host-openapi-v1"
+    registry = Registry().with_resource(
+        contract_uri,
+        Resource.from_contents(document, default_specification=DRAFT202012),
+    )
+    jsonschema.Draft202012Validator(
+        {"$ref": f"{contract_uri}#/components/schemas/Resnapshot"},
+        registry=registry,
+    ).validate(expired.json())
+    success = document["paths"]["/api/v1/hives/{hive_id}/events"]["get"]["responses"]["200"]
+    assert success["headers"] == {
+        "Cache-Control": {"schema": {"const": "no-cache, no-transform"}},
+        "X-Accel-Buffering": {"schema": {"const": "no"}},
+    }
+
+    async def live_success_headers():
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "path": f"/api/v1/hives/{HIVE}/events",
+                "raw_path": b"/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events",
+                "query_string": (f"subscription=hive:{HIVE}&after={epoch}:0".encode("ascii")),
+                "headers": [],
+                "path_params": {"hive_id": HIVE},
+            }
+        )
+        response = await relay.events(request)
+        headers = dict(response.headers)
+        await relay.close()
+        return headers
+
+    headers = asyncio.run(live_success_headers())
+    assert headers["cache-control"] == "no-cache, no-transform"
+    assert headers["x-accel-buffering"] == "no"
     assert alias.json() == identical.json() == expired.json()
     assert (alias_conflict.status_code, alias_conflict.json()["error"]["code"]) == (
         400,

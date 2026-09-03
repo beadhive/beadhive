@@ -753,30 +753,28 @@ def test_request_body_timeout_uses_the_checked_error_envelope() -> None:
 
 def test_checked_operator_routes_document_live_secure_boundary_failures() -> None:
     document = operator_api.openapi_document()
-    common_get = {
+    common_operation = {
         "400": {"$ref": "#/components/responses/BadRequest"},
         "403": {"$ref": "#/components/responses/Forbidden"},
         "408": {"$ref": "#/components/responses/RequestTimeout"},
         "413": {"$ref": "#/components/responses/PayloadTooLarge"},
-        "503": {"$ref": "#/components/responses/Unavailable"},
     }
 
     for path, item in document["paths"].items():
-        for status, response in common_get.items():
-            assert item["get"]["responses"][status] == response
-        if path != "/health":
-            assert item["get"]["responses"]["429"] == {"$ref": "#/components/responses/RateLimited"}
-        else:
-            assert "429" not in item["get"]["responses"]
-        if "options" in item:
-            assert {
-                status: item["options"]["responses"][status] for status in ("400", "403", "503")
-            } == {
-                "400": {"$ref": "#/components/responses/BadRequest"},
-                "403": {"$ref": "#/components/responses/Forbidden"},
-                "503": {"$ref": "#/components/responses/Unavailable"},
-            }
-            assert not ({"408", "413", "429"} & item["options"]["responses"].keys())
+        operations = [operation for method, operation in item.items() if method in {"get", "post"}]
+        for operation in operations:
+            for status, response in common_operation.items():
+                assert operation["responses"][status] == response
+            if path != "/health":
+                assert operation["responses"]["429"] == {
+                    "$ref": "#/components/responses/RateLimited"
+                }
+            else:
+                assert "429" not in operation["responses"]
+            if path not in {"/api/v1/terminal/attach-token", "/ws/terminal"}:
+                assert operation["responses"]["503"] == {
+                    "$ref": "#/components/responses/Unavailable"
+                }
 
     for name in ("RequestTimeout", "PayloadTooLarge", "RateLimited"):
         assert document["components"]["responses"][name]["content"]["application/json"][

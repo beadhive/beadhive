@@ -1306,6 +1306,7 @@ def build_product_application(
                 fallback_middleware=partial(
                     ReadOnlyMethodMiddleware,
                     allow_activity_publish=True,
+                    allow_terminal_unavailable=True,
                 ),
             ),
         ]
