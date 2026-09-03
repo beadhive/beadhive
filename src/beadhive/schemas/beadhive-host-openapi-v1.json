@@ -330,7 +330,7 @@
             "name": "after",
             "in": "query",
             "required": false,
-            "description": "Normative snapshot or SSE cursor producerEpoch:sequence.",
+            "description": "Normative snapshot or SSE cursor producerEpoch:sequence, with an 85-byte maximum.",
             "schema": {
               "$ref": "#/components/schemas/EventCursorString"
             }
@@ -340,7 +340,7 @@
             "in": "query",
             "required": false,
             "deprecated": true,
-            "description": "Temporary compatibility alias for after.",
+            "description": "Temporary compatibility alias for after, with the same 85-byte maximum.",
             "schema": {
               "$ref": "#/components/schemas/EventCursorString"
             }
@@ -349,6 +349,7 @@
             "name": "Last-Event-ID",
             "in": "header",
             "required": false,
+            "description": "Resumable SSE cursor producerEpoch:sequence, with an 85-byte maximum.",
             "schema": {
               "$ref": "#/components/schemas/EventCursorString"
             }
@@ -622,7 +623,8 @@
       },
       "EventCursorString": {
         "type": "string",
-        "pattern": "^[A-Za-z0-9._~-]+:(0|[1-9][0-9]*)$"
+        "maxLength": 85,
+        "pattern": "^[A-Za-z0-9._~-]{1,64}:(0|[1-9][0-9]{0,19})$"
       },
       "EntityRef": {
         "type": "object",

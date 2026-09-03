@@ -17,6 +17,16 @@ from typing import Any, TypeVar, cast
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
+from .daemon_auth import (
+    AuthenticatedPrincipal,
+    AuthenticationError,
+    AuthFailureCode,
+    CredentialSession,
+    CredentialSessionRegistry,
+    SecretBearer,
+    authentication_error_response,
+)
+from .daemon_contract import AuthScope
 from .host_daemon import (
     DaemonRuntime,
     LifespanComponent,
@@ -39,8 +49,14 @@ DEFAULT_CLIENT_QUEUE_EVENTS = 1_000
 DEFAULT_CLIENT_QUEUE_BYTES = 1024 * 1024
 DEFAULT_POLL_INTERVAL = 2.0
 DEFAULT_HEARTBEAT_INTERVAL = 15.0
+MAX_EVENT_CURSOR_EPOCH_LENGTH = 64
+MAX_EVENT_CURSOR_SEQUENCE_DIGITS = 20
+MAX_EVENT_CURSOR_LENGTH = MAX_EVENT_CURSOR_EPOCH_LENGTH + 1 + MAX_EVENT_CURSOR_SEQUENCE_DIGITS
 
-_CURSOR = re.compile(r"^([A-Za-z0-9._~-]+):(0|[1-9][0-9]*)$")
+_CURSOR = re.compile(
+    rf"^([A-Za-z0-9._~-]{{1,{MAX_EVENT_CURSOR_EPOCH_LENGTH}}}):"
+    rf"(0|[1-9][0-9]{{0,{MAX_EVENT_CURSOR_SEQUENCE_DIGITS - 1}}})$"
+)
 _ENTITY_COLLECTIONS = (
     ("workItems", "beads"),
     ("dependencies", "beads"),
@@ -66,6 +82,16 @@ class EventCursor:
 
     @classmethod
     def parse(cls, raw: str) -> EventCursor:
+        if (
+            not isinstance(raw, str)
+            or len(raw) > MAX_EVENT_CURSOR_LENGTH
+            or len(raw.encode("utf-8", errors="surrogatepass")) > MAX_EVENT_CURSOR_LENGTH
+        ):
+            raise OperatorSourceError(
+                "invalid_event_cursor",
+                "Event cursor must be a bounded producerEpoch:sequence value.",
+                status_code=400,
+            )
         match = _CURSOR.fullmatch(raw)
         if match is None:
             raise OperatorSourceError(
@@ -73,7 +99,15 @@ class EventCursor:
                 "Event cursor must be producerEpoch:sequence.",
                 status_code=400,
             )
-        return cls(match.group(1), int(match.group(2)))
+        try:
+            sequence = int(match.group(2))
+        except ValueError:
+            raise OperatorSourceError(
+                "invalid_event_cursor",
+                "Event cursor must be producerEpoch:sequence.",
+                status_code=400,
+            ) from None
+        return cls(match.group(1), sequence)
 
     def render(self) -> str:
         return f"{self.producer_epoch}:{self.sequence}"
@@ -301,6 +335,12 @@ class OperatorEventRelay:
                     entity=None,
                     payload={"kind": "reset", "reason": transition.reset_reason},
                 )
+                # The reset is the last frame an old-epoch subscription may consume.  Detach
+                # those clients from live publication without clearing the just-enqueued reset;
+                # their generators drain it and then end, forcing a replacement snapshot before
+                # any event in the new epoch can be applied.
+                for client in tuple(state.clients):
+                    self._retire_after_drain_locked(client, "resnapshot_required")
                 return 1
 
             if not state.initialized:
@@ -546,34 +586,53 @@ class OperatorEventRelay:
             return False
         client.queue.append(frame)
         client.queued_bytes += len(frame)
-        self._wake(client)
+        self._wake_locked(client)
         return True
 
-    @staticmethod
-    def _wake(client: EventSubscription) -> None:
+    def _wake_locked(self, client: EventSubscription) -> None:
+        """Wake one client or atomically release every retained reference to it."""
+
         try:
             client.loop.call_soon_threadsafe(client.wakeup.set)
         except RuntimeError:
-            client.closed = True
-            client.close_reason = client.close_reason or "event_loop_closed"
+            self._detach_client_locked(client, "event_loop_closed", clear_queue=True)
 
-    def _disconnect_locked(self, client: EventSubscription, reason: str) -> None:
-        if client.closed:
-            return
-        client.closed = True
-        client.close_reason = reason
-        client.queue.clear()
-        client.queued_bytes = 0
+    def _detach_client_locked(
+        self,
+        client: EventSubscription,
+        reason: str,
+        *,
+        clear_queue: bool,
+    ) -> bool:
+        """Detach under ``_lock`` and report whether this was a new disconnect."""
+
         state = self._hives.get(client.hive_id)
+        attached = state is not None and client in state.clients
+        newly_closed = not client.closed
+        client.closed = True
+        client.close_reason = client.close_reason or reason
+        if clear_queue:
+            client.queue.clear()
+            client.queued_bytes = 0
         if state is not None:
             state.clients.discard(client)
-        if reason == "slow_consumer":
+        return newly_closed or attached
+
+    def _disconnect_locked(self, client: EventSubscription, reason: str) -> None:
+        disconnected = self._detach_client_locked(client, reason, clear_queue=True)
+        if disconnected and reason == "slow_consumer":
             self._slow_disconnects += 1
             logger.warning(
                 "operator SSE client disconnected after exceeding its bounded queue",
                 extra={"hive_id": client.hive_id, "disconnect_reason": reason},
             )
-        self._wake(client)
+        self._wake_locked(client)
+
+    def _retire_after_drain_locked(self, client: EventSubscription, reason: str) -> None:
+        """Detach a client while preserving already-queued terminal frames."""
+
+        self._detach_client_locked(client, reason, clear_queue=False)
+        self._wake_locked(client)
 
     def subscribe(
         self,
@@ -615,7 +674,7 @@ class OperatorEventRelay:
                 client.queued_bytes += event.size
             state.clients.add(client)
             if replay:
-                self._wake(client)
+                self._wake_locked(client)
             return client
 
     def unsubscribe(self, client: EventSubscription, *, reason: str = "client_closed") -> None:
@@ -634,6 +693,12 @@ class OperatorEventRelay:
             return None, client.closed
 
     async def events(self, request: Request):
+        app = request.scope.get("app")
+        registry: CredentialSessionRegistry | None = getattr(
+            getattr(app, "state", None), "credential_sessions", None
+        )
+        session: CredentialSession | None = None
+        client: EventSubscription | None = None
         try:
             identity = canonical_hive_parameter(request, suffix=b"/events")
             raw_cursor = _cursor_values(request)
@@ -644,6 +709,25 @@ class OperatorEventRelay:
             installed = await self._run_feed_call(self.feed.installed_snapshot, identity)
             if installed is None:
                 return _resnapshot("snapshot_required")
+            if registry is not None:
+                bearer = getattr(request.state, "auth_bearer", None)
+                principal = getattr(request.state, "auth_principal", None)
+                if not isinstance(bearer, SecretBearer) or not isinstance(
+                    principal, AuthenticatedPrincipal
+                ):
+                    raise AuthenticationError(AuthFailureCode.MISSING)
+
+                async def close_for_auth(reason: AuthFailureCode) -> None:
+                    current = client
+                    if current is not None:
+                        self.unsubscribe(current, reason=reason.value)
+
+                session = registry.open(
+                    bearer,
+                    required_scope=AuthScope.OPERATOR_READ,
+                    expected_principal=principal.principal,
+                    close=close_for_auth,
+                )
             client = self.subscribe(
                 identity,
                 subscription_id=subscription_id,
@@ -651,14 +735,26 @@ class OperatorEventRelay:
                 loop=asyncio.get_running_loop(),
             )
             self._start_pump(identity, client=client)
+        except AuthenticationError as exc:
+            if session is not None and registry is not None:
+                registry.unregister(session)
+            return authentication_error_response(exc)
         except OperatorSourceError as exc:
+            if session is not None and registry is not None:
+                registry.unregister(session)
             return JSONResponse(error_payload(exc), status_code=exc.status_code)
         except ResnapshotRequired as exc:
+            if session is not None and registry is not None:
+                registry.unregister(session)
             return _resnapshot(exc.code)
 
         async def stream() -> AsyncIterator[bytes]:
-            async for frame in client.frames():
-                yield frame
+            try:
+                async for frame in client.frames():
+                    yield frame
+            finally:
+                if session is not None and registry is not None:
+                    registry.unregister(session)
 
         return StreamingResponse(
             stream(),

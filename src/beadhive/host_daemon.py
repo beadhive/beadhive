@@ -888,7 +888,9 @@ def build_product_application(
         activity_reader=state_broker.read_activity,
     )
     product_middleware: list[Middleware]
+    product_components = [state_broker.component()]
     network_policy = None
+    credential_sessions = None
     if settings is None:
         # Compatibility for callers constructing the historical phase-one application without
         # the typed daemon settings.  Installed ``serve`` always supplies settings and therefore
@@ -902,7 +904,11 @@ def build_product_application(
             )
         ]
     else:
-        from .daemon_auth import BearerAuthMiddleware, CredentialAuthority
+        from .daemon_auth import (
+            BearerAuthMiddleware,
+            CredentialAuthority,
+            CredentialSessionRegistry,
+        )
         from .daemon_network import SecureNetworkAdmissionPolicy
 
         credential_file = settings.auth.credential_file
@@ -913,6 +919,22 @@ def build_product_application(
             audience=settings.auth.audience,
             session_revalidation_seconds=settings.auth.session_revalidation_seconds,
         )
+        credential_sessions = CredentialSessionRegistry(authority)
+
+        @asynccontextmanager
+        async def credential_session_lifespan(_app: Starlette):
+            async with credential_sessions.lifespan():
+                yield
+
+        product_components.insert(
+            0,
+            LifespanComponent(
+                name="credential-sessions",
+                lifespan=credential_session_lifespan,
+                startup_phase=StartupPhase.SECURITY,
+                shutdown_phase=ShutdownPhase.CLOSE_SESSIONS,
+            ),
+        )
         network_policy = SecureNetworkAdmissionPolicy(settings)
         product_middleware = [
             Middleware(BearerAuthMiddleware, authority=authority),
@@ -922,7 +944,7 @@ def build_product_application(
     app = build_application(
         runtime=runtime,
         routes=operator.routes(),
-        components=[state_broker.component()],
+        components=product_components,
         enable_mcp_http=False,
         middleware=product_middleware,
         network_policy=network_policy,
@@ -935,6 +957,7 @@ def build_product_application(
     if network_policy is not None:
         app.state.network_admission = network_policy
         app.state.auth_authority = authority
+        app.state.credential_sessions = credential_sessions
     return app
 
 
