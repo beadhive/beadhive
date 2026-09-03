@@ -159,6 +159,55 @@ def test_concurrent_change_is_old_snapshot_then_strictly_later_install(tmp_path:
     assert installs[-1].current["cursor"]["sequence"] > old["cursor"]["sequence"]
 
 
+def test_hive_admissions_are_bounded_without_coupling_unrelated_removal(tmp_path: Path) -> None:
+    provider = MutableProvider()
+    provider.captured = threading.Event()
+    provider.release = threading.Event()
+    feed = operator_feed.OperatorFeed(
+        _sources(tmp_path, provider),
+        max_cached_activity_runs=1,
+        max_cached_activity_bytes=16 * 1_048_576,
+    )
+    responses: list[dict[str, object]] = []
+    failures: list[BaseException] = []
+
+    def blocked_snapshot() -> None:
+        try:
+            responses.append(feed.snapshot_with_cursor(HIVE))
+        except BaseException as exc:
+            failures.append(exc)
+
+    worker = threading.Thread(target=blocked_snapshot)
+    worker.start()
+    assert provider.captured.wait(2)
+    assert feed.hive_admissions == feed.max_hive_admissions == 1
+
+    with pytest.raises(operator_sources.OperatorSourceError) as saturated:
+        feed.snapshot_with_cursor("github/unknown/saturated")
+    assert (saturated.value.code, saturated.value.status_code) == (
+        "hive_admission_capacity",
+        503,
+    )
+    assert feed.hive_admission_rejections == 1
+
+    unrelated_removal = threading.Thread(target=feed.remove_hive, args=("github/beadhive/other",))
+    unrelated_removal.start()
+    unrelated_removal.join(2)
+    assert not unrelated_removal.is_alive()
+
+    provider.release.set()
+    worker.join(2)
+    assert not worker.is_alive()
+    assert not failures
+    assert len(responses) == 1
+    assert feed.hive_admissions == 0
+
+    old_epoch = responses[0]["cursor"]["producerEpoch"]
+    feed.remove_hive(HIVE)
+    replacement = feed.snapshot_with_cursor(HIVE)
+    assert replacement["cursor"]["producerEpoch"] != old_epoch
+
+
 def test_relay_transition_handler_allocates_exact_event_count_before_snapshot_returns(
     tmp_path: Path,
 ) -> None:
@@ -250,6 +299,7 @@ def test_activity_cache_evicts_deterministically_and_expires_the_old_cursor(
     assert (HIVE, "run-0") not in feed._activities
     assert list(feed._activities) == [(HIVE, f"run-{index}") for index in range(1, 65)]
     assert feed.cached_activity_bytes <= feed.max_cached_activity_bytes
+    assert feed.cached_run_ownerships == feed.max_run_ownerships
 
     with pytest.raises(operator_sources.OperatorSourceError) as expired:
         feed.activity_with_cursor("run-0", after=first_cursor)
@@ -285,6 +335,7 @@ def test_activity_cache_byte_budget_and_concurrent_many_run_reads_stay_bounded(
     assert len(results) == 80
     assert len(feed._activities) <= 64
     assert feed.cached_activity_bytes <= 4_096
+    assert feed.cached_run_ownerships <= feed.max_run_ownerships
     assert all(state.retained_bytes > 0 for state in feed._activities.values())
 
 
