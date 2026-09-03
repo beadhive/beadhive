@@ -54,6 +54,12 @@ _SOURCE_WRITERS = {
 }
 
 
+def source_writers(source: str) -> frozenset[str]:
+    """Return the journal writers a trusted publisher source is allowed to own."""
+
+    return _SOURCE_WRITERS.get(source, frozenset())
+
+
 class ActivityStoreError(ValueError):
     """Stable refusal from the durable activity boundary.
 
@@ -460,8 +466,10 @@ class DurableActivityStore:
         self,
         identity: ActivityRunIdentity,
         request: ActivityAppendRequest,
+        *,
+        register_unknown: bool = False,
     ) -> ActivityAppendResponse:
-        """Durably append once, or return the byte-identical request's durable prior result."""
+        """Validate, optionally register, and append in one durable transaction."""
 
         if not isinstance(request, ActivityAppendRequest):
             raise ActivityStoreError("invalid_activity_schema")
@@ -484,8 +492,16 @@ class DurableActivityStore:
             try:
                 run = self._run_row(connection, identity.run_id)
                 if run is None:
-                    raise ActivityStoreError("run_unknown")
-                if self._row_identity(run) != identity.values():
+                    if not register_unknown:
+                        raise ActivityStoreError("run_unknown")
+                    connection.execute(
+                        """INSERT INTO runs
+                           (run_id, hive_id, bead_id, seat, provider, writer, source,
+                            manifest_digest, revision)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (*identity.values(), EMPTY_REVISION),
+                    )
+                elif self._row_identity(run) != identity.values():
                     raise ActivityStoreError("run_identity_conflict")
 
                 # A v1 accepted activity is itself permanent, so its run-scoped key ledger is
@@ -553,13 +569,25 @@ class DurableActivityStore:
             revision=revision,
         )
 
-    def read(self, run_id: str) -> ActivityViewResponse:
-        """Read one exact run in durable append order without manufacturing partial success."""
+    def read_registered(self, run_id: str) -> tuple[ActivityRunIdentity, ActivityViewResponse]:
+        """Read trusted registration and rows from one SQLite snapshot."""
+
+        identity, view, complete, _total = self.read_registered_page(run_id)
+        if not complete:
+            raise ActivityStoreError("activity_read_limit_exceeded")
+        return identity, view
+
+    def read_registered_page(
+        self, run_id: str, *, offset: int = 0
+    ) -> tuple[ActivityRunIdentity, ActivityViewResponse, bool, int]:
+        """Read one bounded durable page and its run revision from one SQLite snapshot."""
 
         try:
             encode_run_id(run_id)
         except (TypeError, ValueError) as exc:
             raise ActivityStoreError("invalid_run_id") from exc
+        if type(offset) is not int or offset < 0:
+            raise ActivityStoreError("invalid_activity_cursor")
         with self._connect() as connection:
             connection.execute("BEGIN")
             try:
@@ -569,15 +597,18 @@ class DurableActivityStore:
                 rows = connection.execute(
                     """SELECT activity_id, run_id, idempotency_key, source, kind, occurred_at,
                               appended_at, revision, payload_json
-                         FROM activities WHERE run_id = ? ORDER BY sequence LIMIT ?""",
-                    (run_id, self.max_records_per_read + 1),
+                         FROM activities WHERE run_id = ? ORDER BY sequence LIMIT ? OFFSET ?""",
+                    (run_id, self.max_records_per_read + 1, offset),
                 ).fetchall()
+                total = connection.execute(
+                    "SELECT COUNT(*) AS value FROM activities WHERE run_id = ?", (run_id,)
+                ).fetchone()
                 connection.execute("COMMIT")
             except Exception:
                 connection.execute("ROLLBACK")
                 raise
-        if len(rows) > self.max_records_per_read:
-            raise ActivityStoreError("activity_read_limit_exceeded")
+        complete = len(rows) <= self.max_records_per_read
+        rows = rows[: self.max_records_per_read]
         activities = tuple(
             ActivityRecord(
                 activity_id=row["activity_id"],
@@ -592,11 +623,27 @@ class DurableActivityStore:
             )
             for row in rows
         )
-        return ActivityViewResponse(
-            run_id=run_id,
-            revision=run["revision"],
-            activities=activities,
+        identity = ActivityRunIdentity(
+            run_id=run["run_id"],
+            hive_id=run["hive_id"],
+            bead_id=run["bead_id"],
+            seat=run["seat"],
+            provider=run["provider"],
+            writer=run["writer"],
+            source=run["source"],
+            manifest_digest=run["manifest_digest"],
         )
+        return (
+            identity,
+            ActivityViewResponse(run_id=run_id, revision=run["revision"], activities=activities),
+            complete,
+            int(total["value"]),
+        )
+
+    def read(self, run_id: str) -> ActivityViewResponse:
+        """Read one exact run in durable append order without manufacturing partial success."""
+
+        return self.read_registered(run_id)[1]
 
 
 __all__ = [
@@ -604,5 +651,6 @@ __all__ = [
     "ActivitySourceCapability",
     "ActivityStoreError",
     "DurableActivityStore",
+    "source_writers",
     "source_capabilities",
 ]

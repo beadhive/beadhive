@@ -843,6 +843,8 @@ def build_product_application(
     replace :func:`serve` or create a listener.  MCP HTTP remains explicitly disabled here until
     its authenticated product slice.
     """
+    from .daemon_activity import DurableActivityStore
+    from .daemon_activity_api import ActivityPublicationService
     from .daemon_state_broker import DaemonStateBroker
     from .operator_api import LocalReadPolicyMiddleware, OperatorAPI, ReadOnlyMethodMiddleware
 
@@ -857,6 +859,37 @@ def build_product_application(
     sources = state_broker.sources
     feed = state_broker.feed
     relay = state_broker.relay
+    activity_store = None
+    activity_publication = None
+    if settings is not None:
+        key = (
+            DaemonKey(
+                account_id=control_record.account_id,
+                bh_home=control_record.bh_home,
+                host_id=control_record.host_id,
+            )
+            if control_record is not None
+            else DaemonKey.current()
+        )
+        activity_store = DurableActivityStore(
+            DaemonPaths.for_key(key).directory / f"activity-{key.digest}.sqlite3",
+            max_record_bytes=settings.activity.max_body_bytes,
+            max_records_per_read=settings.activity.max_records_per_read,
+            idempotency_retention_seconds=settings.activity.idempotency_retention_seconds,
+        )
+        activity_publication = ActivityPublicationService(
+            sources=sources,
+            store=activity_store,
+        )
+        feed.configure_durable_activity_reader(activity_publication.durable_records)
+
+    async def publish_activity(run_id, body, principal):
+        if activity_publication is None:
+            raise RuntimeError("activity publication is not configured")
+        result = await activity_publication.publish(run_id, body, principal)
+        await state_broker.project_latest_activity(run_id)
+        return result
+
     operator = OperatorAPI(
         sources=sources,
         feed=feed,
@@ -886,6 +919,10 @@ def build_product_application(
         events=state_broker.events,
         snapshot_reader=state_broker.read_snapshot,
         activity_reader=state_broker.read_activity,
+        activity_publisher=(publish_activity if activity_publication is not None else None),
+        activity_max_body_bytes=(
+            settings.activity.max_body_bytes if settings is not None else None
+        ),
     )
     product_middleware: list[Middleware]
     product_components = [state_broker.component()]
@@ -938,7 +975,7 @@ def build_product_application(
         network_policy = SecureNetworkAdmissionPolicy(settings)
         product_middleware = [
             Middleware(BearerAuthMiddleware, authority=authority),
-            Middleware(ReadOnlyMethodMiddleware),
+            Middleware(ReadOnlyMethodMiddleware, allow_activity_publish=True),
         ]
 
     app = build_application(
@@ -954,6 +991,9 @@ def build_product_application(
     app.state.operator_api = operator
     app.state.operator_sse = relay
     app.state.state_broker = state_broker
+    if activity_store is not None and activity_publication is not None:
+        app.state.activity_store = activity_store
+        app.state.activity_publication = activity_publication
     if network_policy is not None:
         app.state.network_admission = network_policy
         app.state.auth_authority = authority

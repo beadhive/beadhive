@@ -172,6 +172,84 @@ def test_factory_projects_exact_sources_and_explicit_degradation_without_private
     assert not ({"workspaceRoot", "worktrees", "edges", "ready"} & payload.keys())
 
 
+@pytest.mark.parametrize(
+    ("configured", "accepting", "inventory", "expected"),
+    [
+        (
+            True,
+            True,
+            RunDirectoryInventory((), Coverage.COMPLETE, None),
+            {"name": "activity-publish", "available": True, "reasonCode": None},
+        ),
+        (
+            False,
+            True,
+            RunDirectoryInventory((), Coverage.COMPLETE, None),
+            {
+                "name": "activity-publish",
+                "available": False,
+                "reasonCode": "not_implemented",
+            },
+        ),
+        (
+            True,
+            False,
+            RunDirectoryInventory((), Coverage.COMPLETE, None),
+            {
+                "name": "activity-publish",
+                "available": False,
+                "reasonCode": "daemon_not_accepting",
+            },
+        ),
+        (
+            True,
+            True,
+            RunDirectoryInventory(
+                (),
+                Coverage.PARTIAL,
+                "inventory_limit_exceeded",
+                ("inventory_limit_exceeded",),
+            ),
+            {
+                "name": "activity-publish",
+                "available": False,
+                "reasonCode": "inventory_limit_exceeded",
+            },
+        ),
+    ],
+)
+def test_factory_activity_publish_capability_reports_runtime_truth(
+    tmp_path: Path,
+    configured: bool,
+    accepting: bool,
+    inventory: RunDirectoryInventory,
+    expected: dict[str, object],
+) -> None:
+    sources = operator_sources.OperatorSources(
+        cfg=_cfg(), host_id="host-stable", provider=_Provider(), journal_base=tmp_path
+    )
+    directory = daemon_factory.FactoryDirectory(
+        sources=sources,
+        host_id="host-stable",
+        service_instance_id="instance-changing",
+        started_at=1_000,
+        describe_hive=lambda _hive: daemon_factory.HiveSourceObservation("ready", "complete"),
+        load_run_directory=lambda _hives: inventory,
+        load_assignment=lambda _hive: daemon_factory.AssignmentObservation(
+            "host-stable", "executor", "held"
+        ),
+        hq_status=lambda: daemon_factory.DependencyObservation("ready"),
+        dolt_status=lambda _hives: daemon_factory.DependencyObservation("ready"),
+        activity_publish_configured=configured,
+    )
+
+    payload = directory.snapshot(ready=True, accepting_work=accepting)
+    capability = next(
+        item for item in payload["capabilities"] if item["name"] == "activity-publish"
+    )
+    assert capability == expected
+
+
 def test_public_run_directory_resolves_exact_unknown_collision_invalid_and_partial(
     tmp_path: Path,
 ) -> None:

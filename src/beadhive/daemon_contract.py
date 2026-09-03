@@ -502,8 +502,27 @@ class HeartbeatPayload(WireModel):
     kind: Literal["heartbeat"]
 
 
+class ActivityEventPayload(WireModel):
+    kind: Literal["activity"]
+    run_id: str
+    activity: dict[str, Any]
+
+
+class ActivityResetPayload(WireModel):
+    kind: Literal["activity-reset"]
+    run_id: str
+    producer_epoch: str
+    reason: str
+
+
 OperatorEventPayload = (
-    EntityUpsertPayload | EntityRemovePayload | InvalidatePayload | ResetPayload | HeartbeatPayload
+    EntityUpsertPayload
+    | EntityRemovePayload
+    | InvalidatePayload
+    | ResetPayload
+    | HeartbeatPayload
+    | ActivityEventPayload
+    | ActivityResetPayload
 )
 
 

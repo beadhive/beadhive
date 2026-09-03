@@ -17,6 +17,7 @@ from typing import Any, TypeVar, cast
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
+from . import operator_contract
 from .daemon_auth import (
     AuthenticatedPrincipal,
     AuthenticationError,
@@ -34,7 +35,7 @@ from .host_daemon import (
     StartupPhase,
 )
 from .operator_api import canonical_hive_parameter, error_payload
-from .operator_feed import FeedInstall, FeedPulse, FeedTransition, OperatorFeed
+from .operator_feed import ActivityInstall, FeedInstall, FeedPulse, FeedTransition, OperatorFeed
 from .operator_sources import OperatorSourceError
 
 logger = logging.getLogger(__name__)
@@ -285,6 +286,7 @@ class OperatorEventRelay:
         self._slow_disconnects = 0
         self._remove_transition = feed.register_transition_handler(self._on_transition)
         self._remove_install = feed.register_install_observer(self._on_install)
+        self._remove_activity = feed.register_activity_observer(self._on_activity)
 
     def _state(self, hive_id: str) -> _HiveRelayState:
         return self._hives.setdefault(
@@ -312,6 +314,95 @@ class OperatorEventRelay:
             state.source_revision = install.source_revision
             state.initialized = True
             state.last_emit = state.last_emit or self._monotonic()
+
+    def _on_activity(self, install: ActivityInstall) -> None:
+        with self._lock:
+            if self._closing or self._closed:
+                return
+            state = self._hives.get(install.hive_id)
+            if (
+                state is None
+                or not state.initialized
+                or not state.clients
+                or self._removal_admissions.get(install.hive_id, 0)
+            ):
+                return
+        try:
+            self.feed.allocate_events(
+                install.hive_id,
+                lambda pulse: self._allocate_activity(pulse, install),
+            )
+        except OperatorSourceError as exc:
+            if exc.code not in {
+                "snapshot_required",
+                "hive_generation_expired",
+                "hive_not_found",
+            }:
+                raise
+
+    def _allocate_activity(self, pulse: FeedPulse, install: ActivityInstall) -> int:
+        with self._lock:
+            state = self._state(pulse.hive_id)
+            if self._closed:
+                return 1
+            if (state.producer_epoch, state.sequence) != (
+                pulse.producer_epoch,
+                pulse.base_sequence,
+            ):
+                raise RuntimeError("activity does not continue the installed snapshot cursor")
+            return self._publish_activity_locked(state, install)
+
+    def _publish_activity_locked(self, state: _HiveRelayState, install: ActivityInstall) -> int:
+        if install.reset_reason is not None:
+            self._append_locked(
+                state,
+                source="runtime",
+                revision=install.source_revision,
+                observed_at=self._now_millis(),
+                generated_at=self._now_millis(),
+                entity=None,
+                payload={
+                    "kind": "activity-reset",
+                    "runId": install.run_id,
+                    "producerEpoch": install.producer_epoch,
+                    "reason": install.reset_reason,
+                },
+            )
+            return 1
+        if install.added_records is not None:
+            if not install.added_records:
+                raise RuntimeError("activity page install must add at least one record")
+            added = operator_contract.run_activity_envelopes(
+                install.added_records,
+                producer_epoch=install.producer_epoch,
+                sequence_offset=install.sequence_offset,
+                first_occurred_at=install.first_occurred_at,
+            )
+        else:
+            previous_count = len(install.previous_records)
+            if tuple(install.current_records[:previous_count]) != install.previous_records:
+                raise RuntimeError("activity install must append or carry an explicit reset")
+            activities = operator_contract.run_activity_envelopes(
+                install.current_records, producer_epoch=install.producer_epoch
+            )
+            added = activities[previous_count:]
+        if not added:
+            raise RuntimeError("activity install must add an event or carry an explicit reset")
+        for activity in added:
+            self._append_locked(
+                state,
+                source="runtime",
+                revision=str(activity["sourceRevision"]),
+                observed_at=int(activity["occurredAt"]),
+                generated_at=self._now_millis(),
+                entity=None,
+                payload={
+                    "kind": "activity",
+                    "runId": install.run_id,
+                    "activity": activity,
+                },
+            )
+        return len(added)
 
     def _on_transition(self, transition: FeedTransition) -> int:
         with self._lock:
@@ -966,6 +1057,7 @@ class OperatorEventRelay:
                 self._hives.clear()
             self._remove_transition()
             self._remove_install()
+            self._remove_activity()
             self._closed = True
 
     def component(self) -> LifespanComponent:
