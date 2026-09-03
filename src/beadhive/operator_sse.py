@@ -9,10 +9,10 @@ import re
 import threading
 import time
 from collections import OrderedDict, deque
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
@@ -221,6 +221,7 @@ class OperatorEventRelay:
         global_replay_bytes: int = DEFAULT_GLOBAL_REPLAY_BYTES,
         client_queue_events: int = DEFAULT_CLIENT_QUEUE_EVENTS,
         client_queue_bytes: int = DEFAULT_CLIENT_QUEUE_BYTES,
+        feed_runner: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self.feed = feed
         self.runtime = runtime
@@ -234,6 +235,7 @@ class OperatorEventRelay:
         self.global_byte_limit = _positive_limit(global_replay_bytes, "global_replay_bytes")
         self.client_event_limit = _positive_limit(client_queue_events, "client_queue_events")
         self.client_byte_limit = _positive_limit(client_queue_bytes, "client_queue_bytes")
+        self._feed_runner = feed_runner
         self._lock = threading.RLock()
         self._hives: dict[str, _HiveRelayState] = {}
         self._retained: OrderedDict[int, tuple[_HiveRelayState, RelayEvent]] = OrderedDict()
@@ -241,6 +243,7 @@ class OperatorEventRelay:
         self._serial = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pumps: dict[str, asyncio.Task[None]] = {}
+        self._removal_admissions: dict[str, int] = {}
         self._workers: set[asyncio.Future[object]] = set()
         self._close_lock = asyncio.Lock()
         self._closing = False
@@ -581,8 +584,8 @@ class OperatorEventRelay:
         loop: asyncio.AbstractEventLoop,
     ) -> EventSubscription:
         with self._lock:
-            state = self._state(hive_id)
-            if not state.initialized:
+            state = self._hives.get(hive_id)
+            if state is None or not state.initialized or self._removal_admissions.get(hive_id, 0):
                 raise ResnapshotRequired("snapshot_required")
             if subscription_id != state.subscription_id:
                 raise ResnapshotRequired("wrong_subscription")
@@ -638,7 +641,7 @@ class OperatorEventRelay:
             if raw_cursor is None:
                 return _resnapshot("cursor_required")
             cursor = EventCursor.parse(raw_cursor)
-            installed = await asyncio.to_thread(self.feed.installed_snapshot, identity)
+            installed = await self._run_feed_call(self.feed.installed_snapshot, identity)
             if installed is None:
                 return _resnapshot("snapshot_required")
             client = self.subscribe(
@@ -647,7 +650,7 @@ class OperatorEventRelay:
                 cursor=cursor,
                 loop=asyncio.get_running_loop(),
             )
-            self._start_pump(identity)
+            self._start_pump(identity, client=client)
         except OperatorSourceError as exc:
             return JSONResponse(error_payload(exc), status_code=exc.status_code)
         except ResnapshotRequired as exc:
@@ -668,16 +671,25 @@ class OperatorEventRelay:
             state = self._hives.get(hive_id)
             return bool(state and state.clients)
 
-    def _start_pump(self, hive_id: str) -> None:
-        if self._closing or self._closed:
-            return
-        if self._loop is None:
-            self._loop = asyncio.get_running_loop()
-        task = self._pumps.get(hive_id)
-        if task is None or task.done():
-            self._pumps[hive_id] = self._loop.create_task(
-                self._pump(hive_id), name=f"operator-sse:{hive_id}"
-            )
+    def _start_pump(self, hive_id: str, *, client: EventSubscription | None = None) -> None:
+        with self._lock:
+            state = self._hives.get(hive_id)
+            if (
+                self._closing
+                or self._closed
+                or self._removal_admissions.get(hive_id, 0)
+                or state is None
+                or not state.clients
+                or (client is not None and (client.closed or client not in state.clients))
+            ):
+                return
+            if self._loop is None:
+                self._loop = asyncio.get_running_loop()
+            task = self._pumps.get(hive_id)
+            if task is None or task.done():
+                self._pumps[hive_id] = self._loop.create_task(
+                    self._pump(hive_id), name=f"operator-sse:{hive_id}"
+                )
 
     async def _run_feed_call(
         self, function: Callable[..., _FeedResult], *args: object
@@ -688,6 +700,9 @@ class OperatorEventRelay:
         draining the future makes the relay's observer lifetime cover every source install the
         worker can still perform.
         """
+
+        if self._feed_runner is not None:
+            return cast(_FeedResult, await self._feed_runner(function, *args))
 
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(None, function, *args)
@@ -711,6 +726,22 @@ class OperatorEventRelay:
             with self._lock:
                 self._workers.discard(future)
 
+    @staticmethod
+    async def _cancel_and_drain_task(task: asyncio.Task[None]) -> bool:
+        """Cancel one pump to completion and report cancellation of the calling task."""
+
+        task.cancel()
+        waiter = asyncio.gather(task, return_exceptions=True)
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(waiter)
+                return cancelled
+            except asyncio.CancelledError:
+                if waiter.done():
+                    return cancelled
+                cancelled = True
+
     async def _pump(self, hive_id: str) -> None:
         try:
             while (
@@ -724,6 +755,11 @@ class OperatorEventRelay:
                     await self._run_feed_call(self.feed.snapshot_with_cursor, hive_id)
                 except asyncio.CancelledError:
                     raise
+                except OperatorSourceError as exc:
+                    if exc.code == "hive_not_found":
+                        await self.remove_hive(hive_id)
+                        return
+                    continue
                 except Exception:
                     continue
                 with self._lock:
@@ -744,8 +780,9 @@ class OperatorEventRelay:
                         continue
         finally:
             current = asyncio.current_task()
-            if self._pumps.get(hive_id) is current:
-                self._pumps.pop(hive_id, None)
+            with self._lock:
+                if self._pumps.get(hive_id) is current:
+                    self._pumps.pop(hive_id, None)
 
     def retained_state(self) -> dict[str, object]:
         with self._lock:
@@ -767,6 +804,51 @@ class OperatorEventRelay:
                 },
             }
 
+    def tracked_hive_ids(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(self._hives) | frozenset(self._pumps)
+
+    async def remove_hive(self, hive_id: str) -> None:
+        """Drain and discard one exact hive without disturbing independent hive feeds."""
+
+        with self._lock:
+            self._removal_admissions[hive_id] = self._removal_admissions.get(hive_id, 0) + 1
+            task = self._pumps.pop(hive_id, None)
+        current = asyncio.current_task()
+        cancelled = False
+        if task is not None and task is not current:
+            cancelled = await self._cancel_and_drain_task(task)
+
+        # A direct snapshot request can still be finishing outside the pump.  Removing the feed
+        # state first waits for that per-hive lock; relay cleanup afterwards cannot be undone by
+        # a late install observer from the drained read.
+        try:
+            try:
+                await self._run_feed_call(self.feed.begin_hive_removal, hive_id)
+            except asyncio.CancelledError:
+                cancelled = True
+            with self._lock:
+                state = self._hives.pop(hive_id, None)
+                if state is not None:
+                    for client in tuple(state.clients):
+                        self._disconnect_locked(client, "hive_removed")
+                    self._clear_history_locked(state)
+        finally:
+            with self._lock:
+                try:
+                    # Keep relay admission closed while feed admission opens.  An old
+                    # subscription's delayed pump start carries its exact client token and cannot
+                    # attach to a fresh relay generation after this lock is released.
+                    self.feed.finish_hive_removal(hive_id)
+                finally:
+                    remaining = self._removal_admissions[hive_id] - 1
+                    if remaining:
+                        self._removal_admissions[hive_id] = remaining
+                    else:
+                        self._removal_admissions.pop(hive_id, None)
+        if cancelled:
+            raise asyncio.CancelledError
+
     async def close(self) -> None:
         async with self._close_lock:
             if self._closed:
@@ -785,6 +867,7 @@ class OperatorEventRelay:
                     for client in tuple(state.clients):
                         self._disconnect_locked(client, "daemon_shutdown")
                     self._clear_history_locked(state)
+                self._hives.clear()
             self._remove_transition()
             self._remove_install()
             self._closed = True

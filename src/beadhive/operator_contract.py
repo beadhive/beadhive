@@ -575,7 +575,12 @@ def run_activity_frame(
     producer_epoch: str,
     base_sequence: int,
     kind: str,
+    reset_reason: str | None = None,
 ) -> dict[str, object]:
+    if kind not in {"snapshot", "delta", "reset"}:
+        raise ValueError("activity frame kind must be snapshot, delta, or reset")
+    if (kind == "reset") != (reset_reason is not None):
+        raise ValueError("activity reset frames require exactly one reset reason")
     all_envelopes = run_activity_envelopes(records, producer_epoch=producer_epoch)
     selected = all_envelopes[base_sequence:] if kind == "delta" else all_envelopes
     coverage = {
@@ -594,6 +599,6 @@ def run_activity_frame(
         "baseSequence": base_sequence if kind == "delta" else 0,
         "sourceRevision": str(journal.source_revision),
         "coverage": {"state": coverage, "detail": journal.coverage_reason},
-        "resetReason": None,
+        "resetReason": reset_reason,
         "activities": selected,
     }

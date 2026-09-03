@@ -11,7 +11,7 @@ import json
 import re
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
 from importlib import resources
 from typing import Any
@@ -336,6 +336,9 @@ class OperatorAPI:
         dolt_probe_timeout_seconds: float = 2.0,
         factory_directory: daemon_factory.FactoryDirectory | None = None,
         events: Callable[[Request], Any] | None = None,
+        snapshot_reader: Callable[[str], Awaitable[dict[str, object]]] | None = None,
+        activity_reader: Callable[[str, tuple[str, int] | None], Awaitable[dict[str, object]]]
+        | None = None,
     ) -> None:
         self.sources = sources
         self.feed = feed
@@ -344,6 +347,8 @@ class OperatorAPI:
         self.ready = ready
         self.accepting = accepting or ready
         self.events = events
+        self.snapshot_reader = snapshot_reader
+        self.activity_reader = activity_reader
         self.factory_directory = factory_directory or daemon_factory.FactoryDirectory(
             sources=sources,
             host_id=host_id,
@@ -480,7 +485,9 @@ class OperatorAPI:
     async def snapshot(self, request: Request) -> JSONResponse:
         try:
             identity = canonical_hive_parameter(request)
-            payload = await asyncio.to_thread(self.feed.snapshot_with_cursor, identity)
+            if self.snapshot_reader is None:
+                raise RuntimeError("operator snapshot reader is not configured")
+            payload = await self.snapshot_reader(identity)
             return JSONResponse(payload)
         except OperatorSourceError as exc:
             return _error_response(exc)
@@ -498,7 +505,9 @@ class OperatorAPI:
         try:
             run_id = canonical_run_parameter(request)
             after = activity_cursor(request)
-            payload = await asyncio.to_thread(self.feed.activity_with_cursor, run_id, after=after)
+            if self.activity_reader is None:
+                raise RuntimeError("operator activity reader is not configured")
+            payload = await self.activity_reader(run_id, after)
             return JSONResponse(payload)
         except OperatorSourceError as exc:
             return _error_response(exc)

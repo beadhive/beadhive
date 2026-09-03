@@ -84,6 +84,13 @@ def _app(tmp_path: Path, *, cfg=None, provider=None):
     feed = operator_feed.OperatorFeed(sources, now_millis=lambda: 1000)
     daemon_runtime = host_daemon.DaemonRuntime()
     relay = operator_sse.OperatorEventRelay(feed, daemon_runtime)
+
+    async def read_snapshot(identity: str):
+        return feed.snapshot_with_cursor(identity)
+
+    async def read_activity(run_id: str, after: tuple[str, int] | None):
+        return feed.activity_with_cursor(run_id, after=after)
+
     api = operator_api.OperatorAPI(
         sources=sources,
         feed=feed,
@@ -91,6 +98,8 @@ def _app(tmp_path: Path, *, cfg=None, provider=None):
         instance_id="instance-1",
         ready=lambda: daemon_runtime.ready,
         events=relay.events,
+        snapshot_reader=read_snapshot,
+        activity_reader=read_activity,
     )
     app = host_daemon.build_application(
         runtime=daemon_runtime,

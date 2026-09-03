@@ -843,49 +843,20 @@ def build_product_application(
     replace :func:`serve` or create a listener.  MCP HTTP remains explicitly disabled here until
     its authenticated product slice.
     """
+    from .daemon_state_broker import DaemonStateBroker
     from .operator_api import LocalReadPolicyMiddleware, OperatorAPI, ReadOnlyMethodMiddleware
-    from .operator_feed import (
-        DEFAULT_MAX_CACHED_ACTIVITY_BYTES,
-        DEFAULT_MAX_CACHED_ACTIVITY_RUNS,
-        OperatorFeed,
-    )
-    from .operator_sources import OperatorSources, process_limits_for_shutdown
-    from .operator_sse import OperatorEventRelay
 
     host_id = control_record.host_id if control_record is not None else host_identity.host_id()
     instance_id = control_record.instance_id if control_record is not None else uuid.uuid4().hex
-    process_timeout, process_term_grace = process_limits_for_shutdown(runtime.shutdown_budget)
-    sources = OperatorSources(
-        cfg=cfg,
+    state_broker = DaemonStateBroker.for_host(
+        runtime=runtime,
         host_id=host_id,
-        process_timeout=process_timeout,
-        process_term_grace=process_term_grace,
-        max_records_per_read=(
-            settings.activity.max_records_per_read if settings is not None else 1_000
-        ),
-        max_record_bytes=(settings.activity.max_body_bytes if settings is not None else 262_144),
-        max_inventory_roots=(
-            settings.activity.max_inventory_roots if settings is not None else 256
-        ),
-        max_inventory_entries=(
-            settings.activity.max_inventory_entries if settings is not None else 10_000
-        ),
-        max_inventory_bytes=(
-            settings.activity.max_inventory_bytes if settings is not None else 64 * 1_048_576
-        ),
+        cfg=cfg,
+        settings=settings,
     )
-    feed = OperatorFeed(
-        sources,
-        max_cached_activity_runs=min(
-            DEFAULT_MAX_CACHED_ACTIVITY_RUNS,
-            sources.max_records_per_read,
-        ),
-        max_cached_activity_bytes=min(
-            DEFAULT_MAX_CACHED_ACTIVITY_BYTES,
-            sources.max_records_per_read * sources.max_record_bytes,
-        ),
-    )
-    relay = OperatorEventRelay(feed, runtime)
+    sources = state_broker.sources
+    feed = state_broker.feed
+    relay = state_broker.relay
     operator = OperatorAPI(
         sources=sources,
         feed=feed,
@@ -912,7 +883,9 @@ def build_product_application(
         dolt_probe_timeout_seconds=(
             settings.status.dependency_probe_timeout_seconds if settings is not None else 2.0
         ),
-        events=relay.events,
+        events=state_broker.events,
+        snapshot_reader=state_broker.read_snapshot,
+        activity_reader=state_broker.read_activity,
     )
     product_middleware: list[Middleware]
     network_policy = None
@@ -949,7 +922,7 @@ def build_product_application(
     app = build_application(
         runtime=runtime,
         routes=operator.routes(),
-        components=[relay.component()],
+        components=[state_broker.component()],
         enable_mcp_http=False,
         middleware=product_middleware,
         network_policy=network_policy,
@@ -958,6 +931,7 @@ def build_product_application(
     app.state.operator_feed = feed
     app.state.operator_api = operator
     app.state.operator_sse = relay
+    app.state.state_broker = state_broker
     if network_policy is not None:
         app.state.network_admission = network_policy
         app.state.auth_authority = authority
