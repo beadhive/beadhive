@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -308,14 +307,16 @@ def test_factory_hives_are_bounded_deterministic_and_distinguish_unavailable(
     )
     assert unchanged.status_code == 304
     assert unchanged.content == b""
+    assert first.headers["cache-control"] == "no-cache"
+    assert unchanged.headers["cache-control"] == "no-cache"
 
     schema = operator_api.openapi_document()["components"]["schemas"]
-    page_schema = copy.deepcopy(schema["FactoryHivePage"])
-    page_schema["properties"]["items"]["items"] = schema["FactoryHiveSummary"]
-    page_schema["properties"]["items"]["items"]["properties"]["advertisedActions"]["items"] = (
-        schema["AdvertisedAction"]
-    )
-    jsonschema.Draft202012Validator(page_schema).validate(first.json())
+    jsonschema.Draft202012Validator(
+        {
+            "components": {"schemas": schema},
+            "$ref": "#/components/schemas/FactoryHivePage",
+        }
+    ).validate(first.json())
 
 
 def test_factory_hive_cursor_limits_filters_and_revisions_are_checked(tmp_path: Path) -> None:
@@ -441,7 +442,8 @@ def test_host_origin_peer_and_read_only_profile_fail_closed(tmp_path: Path) -> N
         403,
         "invalid_preflight",
     )
-    assert [response.status_code for response in absent] == [404, 404, 404]
+    # The local read-only compatibility profile sees the reserved POST route but cannot invoke it.
+    assert [response.status_code for response in absent] == [404, 405, 404]
     assert (nonloopback.status_code, nonloopback.json()["error"]["code"]) == (
         403,
         "non_loopback_client",
@@ -491,8 +493,8 @@ def test_openapi_artifact_matches_running_route_table_and_omits_mcp(tmp_path: Pa
 
     response, app = _exercise(tmp_path, action)
     checked = operator_api.openapi_document()
-    assert response.status_code == 200
-    assert response.json() == checked
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
     assert checked["openapi"] == "3.1.0"
     assert checked["security"] == [{"BearerAuth": []}]
     assert checked["paths"]["/health"]["get"]["security"] == []
@@ -544,7 +546,9 @@ def test_product_factory_composes_operator_state_into_daemon_core(tmp_path: Path
         "/api/v1/hives/{hive_id:path}/work-items/{bead_id}",
         "/api/v1/hives/{hive_id:path}/events",
         "/api/v1/runs/{run_id}/activity",
+        "/api/v1/terminal/attach-token",
         "/openapi.json",
+        "/ws/terminal",
     }
     assert app.state.operator_feed.sources is app.state.operator_sources
     assert app.state.operator_api.feed is app.state.operator_feed

@@ -13,22 +13,27 @@ import threading
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
-from importlib import resources
 from typing import Any
 from urllib.parse import quote, urlsplit
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import BaseRoute, Route
+from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.websockets import WebSocket
 
-from . import daemon_factory, operator_contract, operator_work_items
-from .daemon_auth import AuthenticatedPrincipal
-from .daemon_contract import WIRE_SCHEMA_VERSION, encode_run_id
+from . import daemon_factory, daemon_openapi, operator_contract, operator_work_items
+from .daemon_auth import (
+    AuthenticatedPrincipal,
+    AuthenticationError,
+    AuthFailureCode,
+    authentication_error_response,
+)
+from .daemon_contract import WIRE_SCHEMA_VERSION, AuthScope, TerminalUnavailable, encode_run_id
 from .operator_feed import OperatorFeed
 from .operator_sources import OperatorSourceError, OperatorSources, validate_canonical_identity
 
-OPENAPI_CONTRACT = "beadhive-host-openapi-v1.json"
+OPENAPI_CONTRACT = daemon_openapi.OPENAPI_CONTRACT
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 200
 _HIVE_READ_CONCURRENCY = 8
@@ -68,15 +73,7 @@ def _read_only_error() -> OperatorSourceError:
 
 
 def openapi_document() -> dict[str, Any]:
-    text = (
-        resources.files("beadhive")
-        .joinpath("schemas", OPENAPI_CONTRACT)
-        .read_text(encoding="utf-8")
-    )
-    value = json.loads(text)
-    if not isinstance(value, dict):
-        raise RuntimeError("operator OpenAPI root must be an object")
-    return value
+    return daemon_openapi.checked_openapi_document()
 
 
 def _raw_parameter(request: Request, prefix: bytes, suffix: bytes) -> bytes:
@@ -225,7 +222,7 @@ def work_item_query(request: Request) -> operator_work_items.WorkItemQuery:
 def _conditional_json(request: Request, payload: dict[str, object]) -> Response:
     value = operator_work_items.etag(payload)
     candidates = {item.strip() for item in request.headers.get("if-none-match", "").split(",")}
-    headers = {"ETag": value}
+    headers = {"ETag": value, "Cache-Control": "no-cache"}
     if "*" in candidates or value in candidates:
         return Response(status_code=304, headers=headers)
     return JSONResponse(payload, headers=headers)
@@ -662,6 +659,17 @@ class OperatorAPI:
     async def openapi(self, _request: Request) -> JSONResponse:
         return JSONResponse(openapi_document())
 
+    async def terminal_attach_unavailable(self, _request: Request) -> JSONResponse:
+        return JSONResponse(TerminalUnavailable().to_wire(), status_code=503)
+
+    async def terminal_websocket_unavailable(self, websocket: WebSocket) -> None:
+        if "websocket.http.response" in websocket.scope.get("extensions", {}):
+            await websocket.send_denial_response(
+                JSONResponse(TerminalUnavailable().to_wire(), status_code=503)
+            )
+            return
+        await websocket.close(code=1013, reason="terminal.unavailable:pty_verdict_pending")
+
     def routes(self) -> list[BaseRoute]:
         routes: list[BaseRoute] = [
             Route("/api/v1/factory", self.factory, methods=["GET"], name="operator_factory"),
@@ -716,6 +724,21 @@ class OperatorAPI:
             )
         routes.append(
             Route("/openapi.json", self.openapi, methods=["GET"], name="operator_openapi")
+        )
+        routes.extend(
+            [
+                Route(
+                    "/api/v1/terminal/attach-token",
+                    self.terminal_attach_unavailable,
+                    methods=["POST"],
+                    name="terminal_attach_unavailable",
+                ),
+                WebSocketRoute(
+                    "/ws/terminal",
+                    self.terminal_websocket_unavailable,
+                    name="terminal_websocket_unavailable",
+                ),
+            ]
         )
         return routes
 
@@ -865,6 +888,17 @@ class LocalReadPolicyMiddleware:
             await _error_response(_read_only_error())(scope, receive, send)
             return
 
+        if scope.get("path") == "/openapi.json":
+            principal = scope.get("state", {}).get("auth_principal")
+            if not isinstance(principal, AuthenticatedPrincipal):
+                error = AuthenticationError(AuthFailureCode.MISSING)
+                await authentication_error_response(error)(scope, receive, send)
+                return
+            if not principal.permits(AuthScope.OPERATOR_READ):
+                error = AuthenticationError(AuthFailureCode.WRONG_SCOPE, status_code=403)
+                await authentication_error_response(error)(scope, receive, send)
+                return
+
         async def secure_send(message: Message) -> None:
             if message["type"] == "http.response.start":
                 response_headers = list(message.get("headers", ()))
@@ -885,11 +919,18 @@ class LocalReadPolicyMiddleware:
 
 
 class ReadOnlyMethodMiddleware:
-    """Return checked JSON 405 after auth except for the configured activity POST."""
+    """Return checked JSON 405 after auth except for enabled product POST routes."""
 
-    def __init__(self, app: ASGIApp, *, allow_activity_publish: bool = False) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        allow_activity_publish: bool = False,
+        allow_terminal_unavailable: bool = False,
+    ) -> None:
         self.app = app
         self.allow_activity_publish = allow_activity_publish
+        self.allow_terminal_unavailable = allow_terminal_unavailable
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope.get("method") != "GET":
@@ -900,7 +941,12 @@ class ReadOnlyMethodMiddleware:
                 and path.startswith("/api/v1/runs/")
                 and path.endswith("/activity")
             )
-            if not activity_publish:
+            terminal_unavailable = (
+                self.allow_terminal_unavailable
+                and scope.get("method") == "POST"
+                and path == "/api/v1/terminal/attach-token"
+            )
+            if not activity_publish and not terminal_unavailable:
                 await _error_response(_read_only_error())(scope, receive, send)
                 return
         await self.app(scope, receive, send)

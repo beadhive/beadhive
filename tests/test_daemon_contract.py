@@ -194,6 +194,8 @@ def test_route_manifest_covers_every_adr_non_mcp_route_scope_and_status() -> Non
         ("GET", "/api/v1/factory"),
         ("GET", "/api/v1/factory/hives"),
         ("GET", "/api/v1/hives/{hive_id}/snapshot"),
+        ("GET", "/api/v1/hives/{hive_id}/work-items"),
+        ("GET", "/api/v1/hives/{hive_id}/work-items/{bead_id}"),
         ("GET", "/api/v1/hives/{hive_id}/events"),
         ("GET", "/api/v1/runs/{run_id}/activity"),
         ("POST", "/api/v1/runs/{run_id}/activity"),
@@ -205,7 +207,8 @@ def test_route_manifest_covers_every_adr_non_mcp_route_scope_and_status() -> Non
     assert set(actual) == expected
     assert actual[("GET", "/health")].scope is None
     assert all(
-        route.statuses and len(route.statuses) == len(set(route.statuses))
+        (route.method == "WEBSOCKET" or route.statuses)
+        and len(route.statuses) == len(set(route.statuses))
         for route in actual.values()
     )
     assert all(
@@ -214,7 +217,7 @@ def test_route_manifest_covers_every_adr_non_mcp_route_scope_and_status() -> Non
     assert actual[("POST", "/api/v1/runs/{run_id}/activity")].scope == "activity:publish"
     assert actual[("POST", "/api/v1/terminal/attach-token")].scope == "terminal:attach"
     factory_hives = actual[("GET", "/api/v1/factory/hives")]
-    assert factory_hives.statuses == (200, 304, 400, 401, 403, 409, 503)
+    assert factory_hives.statuses == (200, 304, 400, 401, 403, 408, 409, 413, 429, 503)
     assert factory_hives.response_model is daemon_contract.FactoryHivePage
     assert "/mcp" not in {route.path for route in actual.values()}
     assert 409 in actual[("GET", "/api/v1/hives/{hive_id}/events")].statuses

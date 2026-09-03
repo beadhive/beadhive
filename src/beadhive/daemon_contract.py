@@ -62,6 +62,8 @@ class RouteSpec:
     scope: AuthScope | None
     statuses: tuple[int, ...]
     response_model: type[WireModel] | None = None
+    request_model: type[WireModel] | None = None
+    request_headers: tuple[str, ...] = ()
 
 
 class IdentityErrorCode(StrEnum):
@@ -576,6 +578,13 @@ class ResnapshotInstruction(WireModel):
     reason: Literal["unknown_epoch", "expired_cursor", "future_sequence", "retention_gap"]
 
 
+class EventResnapshotResponse(WireModel):
+    """The exact short error body emitted before an SSE client resnapshots."""
+
+    error: str = Field(min_length=1)
+    action: Literal["resnapshot"] = "resnapshot"
+
+
 class ActivityRecord(WireModel):
     activity_id: str
     run_id: str
@@ -597,9 +606,9 @@ class ActivityViewResponse(WireModel):
 
 class ActivityAppendRequest(WireModel):
     schema_version: Literal[1] = WIRE_SCHEMA_VERSION
-    run_id: str
-    idempotency_key: str
-    source: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$")
+    idempotency_key: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$")
+    source: Literal["baml", "hitch", "beadhive"]
     kind: str = Field(min_length=1, max_length=128)
     occurred_at: int = Field(ge=0)
     expires_at: int = Field(ge=0)
@@ -670,6 +679,154 @@ class TerminalUnavailable(WireModel):
     verdict_bead: Literal["bh-lx6e.3"] = "bh-lx6e.3"
 
 
+class ProjectionFreshness(WireModel):
+    state: Literal["fresh"]
+    as_of: int | None = Field(ge=0)
+
+
+class ProjectionSourceCoverage(WireModel):
+    state: str
+    detail: str | None
+
+
+class ProjectionCoverage(WireModel):
+    state: Literal["complete", "partial", "unavailable"]
+    sources: dict[str, ProjectionSourceCoverage]
+
+
+class WorkItemRef(WireModel):
+    hive_id: str = Field(min_length=1)
+    kind: Literal["work-item"]
+    id: str = Field(min_length=1)
+
+
+class WorkItemReadiness(WireModel):
+    state: Literal["ready", "active", "blocked", "completed", "unavailable"]
+    reason: str
+
+
+class WorkItemRow(WireModel):
+    ref: WorkItemRef
+    revision: str = Field(min_length=1)
+    hive_id: str = Field(min_length=1)
+    id: str = Field(min_length=1)
+    title: str
+    issue_type: str
+    priority: int
+    status: str
+    readiness: WorkItemReadiness
+    assignee: str | None
+    owner: str | None
+    parent_id: str | None
+    blocker_count: int = Field(ge=0)
+    blocked_dependent_count: int = Field(ge=0)
+    labels: tuple[str, ...] = Field(max_length=12)
+    remaining_label_count: int = Field(ge=0)
+    open_gate_count: int = Field(ge=0)
+    live_agent_count: int = Field(ge=0)
+    updated_at: int | None = Field(ge=0)
+
+
+class WorkDependencyDetail(WireModel):
+    id: str
+    title: str | None
+    type: str
+    state: str
+    direction: Literal["prerequisite", "dependent"]
+
+
+class WorkItemExact(WorkItemRow):
+    description: str
+    design: str
+    acceptance_criteria: str
+    notes: str
+    molecule_type: str | None
+    labels: tuple[str, ...]
+    remaining_label_count: Literal[0]
+    created_by: str | None
+    created_at: int | None = Field(ge=0)
+    closed_at: int | None = Field(ge=0)
+    due_at: int | None = Field(ge=0)
+    defer_until: int | None = Field(ge=0)
+    claim: dict[str, Any]
+    dependencies: tuple[WorkDependencyDetail, ...]
+    dependents: tuple[WorkDependencyDetail, ...]
+    gates: tuple[dict[str, Any], ...]
+    agents: tuple[dict[str, Any], ...]
+    advertised_actions: tuple[AdvertisedAction, ...]
+
+
+class WorkItemQueue(WireModel):
+    """Typed envelope emitted by ``operator_work_items.queue_payload``."""
+
+    schema_version: Literal[1] = WIRE_SCHEMA_VERSION
+    hive_id: str
+    queue: Literal["ready", "active", "blocked", "recent"]
+    revision: str
+    generated_at: int | None = Field(ge=0)
+    freshness: ProjectionFreshness
+    coverage: ProjectionCoverage
+    limit: int = Field(ge=1, le=200)
+    returned: int = Field(ge=0, le=200)
+    truncated: bool
+    next_cursor: str | None
+    items: tuple[WorkItemRow, ...] = Field(max_length=200)
+    warnings: tuple[str, ...]
+
+
+class WorkItemDetail(WireModel):
+    """Typed envelope emitted by ``operator_work_items.detail_payload``."""
+
+    schema_version: Literal[1] = WIRE_SCHEMA_VERSION
+    hive_id: str
+    revision: str
+    generated_at: int | None = Field(ge=0)
+    freshness: ProjectionFreshness
+    coverage: ProjectionCoverage
+    item: WorkItemExact
+    warnings: tuple[str, ...]
+
+
+class RunActivityEnvelope(WireModel):
+    """Allowlisted activity record emitted by ``operator_contract``."""
+
+    schema_version: Literal[1] = WIRE_SCHEMA_VERSION
+    hive_id: str
+    run_id: str
+    bead_id: str | None
+    provider_session_id: str | None
+    driver: str
+    provider: str
+    protocol: str
+    occurred_at: int = Field(ge=0)
+    elapsed_ms: int = Field(ge=0)
+    source_revision: str
+    producer_epoch: str
+    sequence: int = Field(ge=1)
+    payload: dict[str, Any]
+
+
+class RunActivityCoverage(WireModel):
+    state: Literal["complete", "partial", "unavailable"]
+    detail: str | None
+
+
+class RunActivityFrame(WireModel):
+    """Typed snapshot/delta/reset envelope emitted by the exact-run activity feed."""
+
+    schema_version: Literal[1] = WIRE_SCHEMA_VERSION
+    kind: Literal["snapshot", "delta", "reset"]
+    hive_id: str
+    run_id: str
+    producer_epoch: str
+    sequence: int = Field(ge=0)
+    base_sequence: int = Field(ge=0)
+    source_revision: str
+    coverage: RunActivityCoverage
+    reset_reason: str | None
+    activities: tuple[RunActivityEnvelope, ...]
+
+
 class ErrorCode(StrEnum):
     BAD_REQUEST = "bad_request"
     UNAUTHORIZED = "unauthorized"
@@ -729,60 +886,89 @@ def redacted_error(
 
 
 NON_MCP_ROUTES: tuple[RouteSpec, ...] = (
-    RouteSpec("GET", "/health", None, (200, 503), HealthResponse),
+    RouteSpec("GET", "/health", None, (200, 400, 403, 408, 413, 503), HealthResponse),
     RouteSpec(
-        "GET", "/api/v1/factory", AuthScope.OPERATOR_READ, (200, 401, 403, 503), FactoryResponse
+        "GET",
+        "/api/v1/factory",
+        AuthScope.OPERATOR_READ,
+        (200, 400, 401, 403, 408, 413, 429, 503),
+        FactoryResponse,
     ),
     RouteSpec(
         "GET",
         "/api/v1/factory/hives",
         AuthScope.OPERATOR_READ,
-        (200, 304, 400, 401, 403, 409, 503),
+        (200, 304, 400, 401, 403, 408, 409, 413, 429, 503),
         FactoryHivePage,
+        request_headers=("If-None-Match",),
     ),
     RouteSpec(
         "GET",
         "/api/v1/hives/{hive_id}/snapshot",
         AuthScope.OPERATOR_READ,
-        (200, 400, 401, 403, 404, 503),
+        (200, 400, 401, 403, 404, 408, 413, 429, 503),
         HiveSnapshotResponse,
+    ),
+    RouteSpec(
+        "GET",
+        "/api/v1/hives/{hive_id}/work-items",
+        AuthScope.OPERATOR_READ,
+        (200, 304, 400, 401, 403, 404, 408, 409, 413, 429, 503),
+        WorkItemQueue,
+        request_headers=("If-None-Match",),
+    ),
+    RouteSpec(
+        "GET",
+        "/api/v1/hives/{hive_id}/work-items/{bead_id}",
+        AuthScope.OPERATOR_READ,
+        (200, 304, 400, 401, 403, 404, 408, 413, 429, 503),
+        WorkItemDetail,
+        request_headers=("If-None-Match",),
     ),
     RouteSpec(
         "GET",
         "/api/v1/hives/{hive_id}/events",
         AuthScope.OPERATOR_READ,
-        (200, 400, 401, 403, 404, 409, 429, 503),
-        None,
+        (200, 400, 401, 403, 404, 408, 409, 413, 429, 503),
+        OperatorEvent,
+        request_headers=("Last-Event-ID",),
     ),
     RouteSpec(
         "GET",
         "/api/v1/runs/{run_id}/activity",
         AuthScope.OPERATOR_READ,
-        (200, 400, 401, 403, 404, 503),
-        ActivityViewResponse,
+        (200, 400, 401, 403, 404, 408, 409, 410, 413, 429, 503),
+        RunActivityFrame,
     ),
     RouteSpec(
         "POST",
         "/api/v1/runs/{run_id}/activity",
         AuthScope.ACTIVITY_PUBLISH,
-        (200, 201, 400, 401, 403, 404, 409, 413, 429, 503),
+        (200, 201, 400, 401, 403, 404, 408, 409, 413, 429, 503),
         ActivityAppendResponse,
+        ActivityAppendRequest,
     ),
     RouteSpec(
         "POST",
         "/api/v1/terminal/attach-token",
         AuthScope.TERMINAL_ATTACH,
-        (201, 400, 401, 403, 409, 429, 503),
-        TerminalAttachTokenResponse,
+        (400, 401, 403, 408, 413, 429, 503),
+        TerminalUnavailable,
     ),
     RouteSpec(
         "WEBSOCKET",
         "/ws/terminal",
         AuthScope.TERMINAL_ATTACH,
-        (101, 400, 401, 403, 409, 429, 503),
+        (503,),
         TerminalUnavailable,
     ),
-    RouteSpec("GET", "/openapi.json", AuthScope.OPERATOR_READ, (200, 401, 403, 503), None),
+    RouteSpec(
+        "GET",
+        "/openapi.json",
+        AuthScope.OPERATOR_READ,
+        (200, 400, 401, 403, 408, 413, 429, 503),
+        None,
+    ),
 )
 
 
@@ -793,10 +979,24 @@ WIRE_MODELS: tuple[type[WireModel], ...] = (
     HiveSnapshotResponse,
     OperatorEvent,
     ResnapshotInstruction,
+    EventResnapshotResponse,
     ActivityViewResponse,
     ActivityAppendRequest,
     ActivityAppendResponse,
     TerminalAttachTokenResponse,
     TerminalUnavailable,
+    ProjectionFreshness,
+    ProjectionSourceCoverage,
+    ProjectionCoverage,
+    WorkItemRef,
+    WorkItemReadiness,
+    WorkItemRow,
+    WorkDependencyDetail,
+    WorkItemExact,
+    WorkItemQueue,
+    WorkItemDetail,
+    RunActivityEnvelope,
+    RunActivityCoverage,
+    RunActivityFrame,
     ErrorResponse,
 )

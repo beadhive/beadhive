@@ -1676,22 +1676,27 @@ def test_product_factory_is_authenticated_and_health_stays_public_minimal(
         == "operator:read"
     )
     for path, item in checked["paths"].items():
-        effective_security = item["get"].get("security", checked["security"])
-        assert effective_security == ([] if path == "/health" else [{"BearerAuth": []}])
-        if path != "/health":
-            assert item["get"]["responses"]["401"] == {
-                "$ref": "#/components/responses/Unauthorized"
-            }
+        for method, operation in item.items():
+            if method not in {"get", "post"}:
+                continue
+            effective_security = operation.get("security", checked["security"])
+            assert effective_security == ([] if path == "/health" else [{"BearerAuth": []}])
+            if path != "/health":
+                assert operation["responses"]["401"] == {
+                    "$ref": "#/components/responses/Unauthorized"
+                }
     assert checked["paths"]["/health"]["get"]["responses"]["200"]["content"]["application/json"][
         "schema"
     ] == {"$ref": "#/components/schemas/HealthResponse"}
     assert checked["paths"]["/api/v1/factory"]["get"]["responses"]["200"]["content"][
         "application/json"
     ]["schema"] == {"$ref": "#/components/schemas/FactoryResponse"}
-    assert checked["paths"]["/api/v1/factory"]["options"]["responses"]["204"]
     assert checked["x-beadhive-secure-network-preflight"] == {
+        "method": "OPTIONS",
         "pathScope": "all request paths, including paths absent from this document",
         "successStatus": 204,
+        "absentPathStatus": 204,
+        "allowedMethods": ["DELETE", "GET", "POST"],
         "allowedHeaders": [
             "accept",
             "authorization",
@@ -1702,9 +1707,7 @@ def test_product_factory_is_authenticated_and_health_stays_public_minimal(
         ],
         "responseHeaderSpelling": "lower-case, lexical, comma-space separated",
     }
-    assert checked["paths"]["/api/v1/hives/{hive_id}/events"]["options"]["responses"]["204"][
-        "headers"
-    ]["Access-Control-Allow-Headers"]["schema"] == {"const": "last-event-id"}
+    assert all("options" not in path_item for path_item in checked["paths"].values())
     assert app.state.operator_api.factory_directory.dolt_probe_timeout_seconds == 0.25
     assert app.state.operator_api.factory_directory.dependency_probe_timeout_seconds == 0.25
     assert app.state.operator_api.factory_directory.journal_stale_after_seconds == 45.0
