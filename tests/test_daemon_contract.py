@@ -85,6 +85,7 @@ def test_daemon_defaults_are_disabled_loopback_authenticated_and_terminal_unavai
     assert daemon.http.allowed_hosts == ("localhost", "127.0.0.1", "[::1]")
     assert daemon.mcp.mode == "sessionful"
     assert daemon.terminal.available is False
+    assert daemon.status.run_journal_stale_after_seconds == 900.0
     assert config_partition.partition_of("host.daemon.bind") == config_partition.HOST
 
 
@@ -109,6 +110,10 @@ def test_daemon_defaults_are_disabled_loopback_authenticated_and_terminal_unavai
         {"mcp": {"session_idle_seconds": 20, "session_absolute_seconds": 10}},
         {"terminal": {"available": True}},
         {"sse": {"client_queue_events": 0}},
+        {"status": {"run_journal_stale_after_seconds": 0}},
+        {"activity": {"max_inventory_roots": 0}},
+        {"activity": {"max_inventory_entries": 0}},
+        {"activity": {"max_inventory_bytes": 0}},
     ],
 )
 def test_insecure_or_invalid_configuration_is_rejected_structurally(value: dict) -> None:

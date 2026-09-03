@@ -47,7 +47,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import config
 from . import host as host_identity
-from .daemon_contract import CONTRACT_VERSION
+from .daemon_contract import CONTRACT_VERSION, WIRE_SCHEMA_VERSION, HealthResponse
 
 if TYPE_CHECKING:
     from .daemon_config import HostDaemonConfig
@@ -696,7 +696,17 @@ class _DrainGateMiddleware:
                 await send({"type": "websocket.close", "code": 1013})
             else:
                 await JSONResponse(
-                    {"error": "daemon_draining", "retryable": True}, status_code=503
+                    {
+                        "schemaVersion": WIRE_SCHEMA_VERSION,
+                        "error": {
+                            "code": "daemon_draining",
+                            "message": "The daemon is draining and cannot accept new work.",
+                            "retryable": True,
+                            "action": "retry",
+                            "requestId": None,
+                        },
+                    },
+                    status_code=503,
                 )(scope, receive, send)
             return
         await self.app(scope, receive, send)
@@ -756,7 +766,10 @@ def build_application(
 
     async def health(_request: Request) -> JSONResponse:
         return JSONResponse(
-            {"live": True, "ready": daemon_runtime.ready, "contract": CONTRACT_VERSION}
+            HealthResponse(
+                status="stopping" if daemon_runtime.shutdown_started else "live",
+                ready=daemon_runtime.ready,
+            ).to_wire()
         )
 
     @asynccontextmanager
@@ -805,8 +818,8 @@ def build_application(
         routes=[Route("/health", health, methods=["GET"]), *owned_routes],
         middleware=[
             *network_middleware,
-            Middleware(_DrainGateMiddleware, runtime=daemon_runtime),
             *middleware,
+            Middleware(_DrainGateMiddleware, runtime=daemon_runtime),
         ],
         lifespan=lifespan,
     )
@@ -830,8 +843,12 @@ def build_product_application(
     replace :func:`serve` or create a listener.  MCP HTTP remains explicitly disabled here until
     its authenticated product slice.
     """
-    from .operator_api import LocalReadPolicyMiddleware, OperatorAPI
-    from .operator_feed import OperatorFeed
+    from .operator_api import LocalReadPolicyMiddleware, OperatorAPI, ReadOnlyMethodMiddleware
+    from .operator_feed import (
+        DEFAULT_MAX_CACHED_ACTIVITY_BYTES,
+        DEFAULT_MAX_CACHED_ACTIVITY_RUNS,
+        OperatorFeed,
+    )
     from .operator_sources import OperatorSources, process_limits_for_shutdown
     from .operator_sse import OperatorEventRelay
 
@@ -843,8 +860,31 @@ def build_product_application(
         host_id=host_id,
         process_timeout=process_timeout,
         process_term_grace=process_term_grace,
+        max_records_per_read=(
+            settings.activity.max_records_per_read if settings is not None else 1_000
+        ),
+        max_record_bytes=(settings.activity.max_body_bytes if settings is not None else 262_144),
+        max_inventory_roots=(
+            settings.activity.max_inventory_roots if settings is not None else 256
+        ),
+        max_inventory_entries=(
+            settings.activity.max_inventory_entries if settings is not None else 10_000
+        ),
+        max_inventory_bytes=(
+            settings.activity.max_inventory_bytes if settings is not None else 64 * 1_048_576
+        ),
     )
-    feed = OperatorFeed(sources)
+    feed = OperatorFeed(
+        sources,
+        max_cached_activity_runs=min(
+            DEFAULT_MAX_CACHED_ACTIVITY_RUNS,
+            sources.max_records_per_read,
+        ),
+        max_cached_activity_bytes=min(
+            DEFAULT_MAX_CACHED_ACTIVITY_BYTES,
+            sources.max_records_per_read * sources.max_record_bytes,
+        ),
+    )
     relay = OperatorEventRelay(feed, runtime)
     operator = OperatorAPI(
         sources=sources,
@@ -852,6 +892,26 @@ def build_product_application(
         host_id=host_id,
         instance_id=instance_id,
         ready=lambda: runtime.ready,
+        accepting=lambda: runtime.accepting,
+        started_at=(
+            max(
+                0,
+                int(
+                    datetime.fromisoformat(
+                        control_record.started_at.replace("Z", "+00:00")
+                    ).timestamp()
+                    * 1_000
+                ),
+            )
+            if control_record is not None
+            else time.time_ns() // 1_000_000
+        ),
+        journal_stale_after_seconds=(
+            settings.status.run_journal_stale_after_seconds if settings is not None else 900.0
+        ),
+        dolt_probe_timeout_seconds=(
+            settings.status.dependency_probe_timeout_seconds if settings is not None else 2.0
+        ),
         events=relay.events,
     )
     product_middleware: list[Middleware]
@@ -881,7 +941,10 @@ def build_product_application(
             session_revalidation_seconds=settings.auth.session_revalidation_seconds,
         )
         network_policy = SecureNetworkAdmissionPolicy(settings)
-        product_middleware = [Middleware(BearerAuthMiddleware, authority=authority)]
+        product_middleware = [
+            Middleware(BearerAuthMiddleware, authority=authority),
+            Middleware(ReadOnlyMethodMiddleware),
+        ]
 
     app = build_application(
         runtime=runtime,

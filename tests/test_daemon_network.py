@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
+import jsonschema
 import pytest
 from pydantic import ValidationError
 from starlette.requests import Request
@@ -17,7 +18,7 @@ from starlette.routing import Route, WebSocketRoute
 from starlette.types import Scope
 from starlette.websockets import WebSocket
 
-from beadhive import daemon_auth, daemon_network, host_daemon
+from beadhive import daemon_auth, daemon_network, host_daemon, operator_api
 from beadhive.daemon_config import HostDaemonConfig
 from beadhive.daemon_contract import AuthScope
 
@@ -25,6 +26,32 @@ ORIGIN = "https://operator.example"
 HOST = "daemon.example"
 PROXY = "192.0.2.2"
 REMOTE = "198.51.100.9"
+
+
+def _assert_checked_network_error(
+    response: httpx.Response,
+    *,
+    status: int,
+    code: str,
+    retryable: bool,
+) -> None:
+    assert response.status_code == status
+    assert response.headers["content-type"] == "application/json"
+    payload = response.json()
+    schemas = operator_api.openapi_document()["components"]["schemas"]
+    jsonschema.Draft202012Validator(
+        {"components": {"schemas": schemas}, "$ref": "#/components/schemas/Error"}
+    ).validate(payload)
+    assert payload == {
+        "schemaVersion": 1,
+        "error": {
+            "code": code,
+            "message": payload["error"]["message"],
+            "retryable": retryable,
+            "action": "retry" if retryable else None,
+            "requestId": None,
+        },
+    }
 
 
 def _scope(
@@ -181,17 +208,26 @@ def test_exact_host_and_credentialed_cors_fail_closed_without_reflecting_input()
                     "Access-Control-Request-Headers": "Authorization, Content-Type",
                 },
             )
+            invalid_preflight = await client.options(
+                "/mcp",
+                headers={
+                    "Origin": ORIGIN,
+                    "Access-Control-Request-Method": "PATCH",
+                },
+            )
 
         assert allowed.status_code == 200
         assert allowed.headers["access-control-allow-origin"] == ORIGIN
         assert allowed.headers["access-control-allow-credentials"] == "true"
-        assert (bad_host.status_code, bad_host.json()["error"]["code"]) == (
-            400,
-            "invalid_host",
+        _assert_checked_network_error(bad_host, status=400, code="invalid_host", retryable=False)
+        _assert_checked_network_error(
+            bad_origin, status=403, code="invalid_origin", retryable=False
         )
-        assert (bad_origin.status_code, bad_origin.json()["error"]["code"]) == (
-            403,
-            "invalid_origin",
+        _assert_checked_network_error(
+            invalid_preflight,
+            status=403,
+            code="invalid_preflight",
+            retryable=False,
         )
         assert "attacker.example" not in bad_host.text + bad_origin.text
         assert preflight.status_code == 204
@@ -200,6 +236,7 @@ def test_exact_host_and_credentialed_cors_fail_closed_without_reflecting_input()
         assert policy.metrics.snapshot()["rejected"] == {
             "invalid_host": 1,
             "invalid_origin": 1,
+            "invalid_preflight": 1,
         }
 
     asyncio.run(exercise())
@@ -461,9 +498,11 @@ def test_mcp_session_ceiling_tracks_sequential_reuse_termination_failure_and_exp
         assert created.headers["mcp-session-id"] == "session-one"
         assert reused.status_code == 200
         assert second.headers["mcp-session-id"] == "session-two"
-        assert (at_capacity.status_code, at_capacity.json()["error"]["code"]) == (
-            503,
-            "session_limit_reached",
+        _assert_checked_network_error(
+            at_capacity,
+            status=503,
+            code="session_limit_reached",
+            retryable=True,
         )
         assert terminated.status_code == 204
         assert replacement.headers["mcp-session-id"] == "session-three"
@@ -568,6 +607,12 @@ def test_oversized_body_connection_session_and_token_rate_limits_are_observable(
             429,
             "token_rate_limited",
         )
+        _assert_checked_network_error(
+            oversized, status=413, code="request_body_too_large", retryable=False
+        )
+        _assert_checked_network_error(
+            rate_limited, status=429, code="token_rate_limited", retryable=True
+        )
         assert "opaque-token" not in oversized.text + rate_limited.text
 
         first_admission = await policy.admit(
@@ -629,6 +674,152 @@ def test_oversized_body_connection_session_and_token_rate_limits_are_observable(
         assert session_policy.metrics.snapshot()["rejected"] == {"session_limit_reached": 1}
 
     asyncio.run(exercise())
+
+
+def test_request_body_timeout_uses_the_checked_error_envelope() -> None:
+    async def exercise() -> httpx.Response:
+        app, _policy = _app(
+            _settings(
+                http={
+                    "allowed_hosts": [HOST],
+                    "max_connections": 1,
+                    "max_request_body_bytes": 1024,
+                    "request_timeout_seconds": 0.01,
+                }
+            )
+        )
+        sent: list[dict] = []
+
+        async def blocked_receive() -> dict:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def send(message: dict) -> None:
+            sent.append(message)
+
+        async with app.router.lifespan_context(app):
+            await app(
+                _scope("/api/v1/factory", scheme="https", client=REMOTE, host=HOST),
+                blocked_receive,
+                send,
+            )
+        start = next(message for message in sent if message["type"] == "http.response.start")
+        body = b"".join(
+            message.get("body", b"") for message in sent if message["type"] == "http.response.body"
+        )
+        return httpx.Response(
+            start["status"],
+            headers=start["headers"],
+            content=body,
+        )
+
+    response = asyncio.run(exercise())
+    _assert_checked_network_error(response, status=408, code="request_timeout", retryable=True)
+
+
+def test_checked_operator_routes_document_live_secure_boundary_failures() -> None:
+    document = operator_api.openapi_document()
+    common_get = {
+        "400": {"$ref": "#/components/responses/BadRequest"},
+        "403": {"$ref": "#/components/responses/Forbidden"},
+        "408": {"$ref": "#/components/responses/RequestTimeout"},
+        "413": {"$ref": "#/components/responses/PayloadTooLarge"},
+        "503": {"$ref": "#/components/responses/Unavailable"},
+    }
+
+    for path, item in document["paths"].items():
+        for status, response in common_get.items():
+            assert item["get"]["responses"][status] == response
+        if path != "/health":
+            assert item["get"]["responses"]["429"] == {"$ref": "#/components/responses/RateLimited"}
+        else:
+            assert "429" not in item["get"]["responses"]
+        if "options" in item:
+            assert {
+                status: item["options"]["responses"][status] for status in ("400", "403", "503")
+            } == {
+                "400": {"$ref": "#/components/responses/BadRequest"},
+                "403": {"$ref": "#/components/responses/Forbidden"},
+                "503": {"$ref": "#/components/responses/Unavailable"},
+            }
+            assert not ({"408", "413", "429"} & item["options"]["responses"].keys())
+
+    for name in ("RequestTimeout", "PayloadTooLarge", "RateLimited"):
+        assert document["components"]["responses"][name]["content"]["application/json"][
+            "schema"
+        ] == {"$ref": "#/components/schemas/Error"}
+
+
+def test_health_preflight_and_connection_limit_live_errors_match_checked_statuses() -> None:
+    async def exercise() -> tuple[httpx.Response, httpx.Response, tuple[httpx.Response, ...]]:
+        app, policy = _app(
+            _settings(
+                http={
+                    "allowed_hosts": [HOST],
+                    "max_connections": 1,
+                    "max_request_body_bytes": 1024,
+                },
+                auth={"token_rate_limit_per_minute": 1_000_000},
+            )
+        )
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(app=app, client=(REMOTE, 5000))
+            async with httpx.AsyncClient(transport=transport, base_url=f"https://{HOST}") as client:
+                health_oversized = await client.request("GET", "/health", content=b"x" * 1025)
+                invalid_preflight = await client.options(
+                    "/api/v1/factory",
+                    headers={
+                        "Host": "bad host",
+                        "Origin": ORIGIN,
+                        "Access-Control-Request-Method": "GET",
+                    },
+                )
+                held = await policy.admit(
+                    _scope("/api/v1/factory", scheme="https", client=REMOTE, host=HOST)
+                )
+                try:
+                    limited = (
+                        await client.get("/health"),
+                        await client.get("/openapi.json"),
+                        await client.options(
+                            "/api/v1/factory",
+                            headers={
+                                "Origin": ORIGIN,
+                                "Access-Control-Request-Method": "GET",
+                            },
+                        ),
+                        await client.options(
+                            "/api/v1/hives/example/events",
+                            headers={
+                                "Origin": ORIGIN,
+                                "Access-Control-Request-Method": "GET",
+                            },
+                        ),
+                    )
+                finally:
+                    await policy.release(held)
+        return health_oversized, invalid_preflight, limited
+
+    health_oversized, invalid_preflight, limited = asyncio.run(exercise())
+    _assert_checked_network_error(
+        health_oversized,
+        status=413,
+        code="request_body_too_large",
+        retryable=False,
+    )
+    _assert_checked_network_error(
+        invalid_preflight,
+        status=400,
+        code="invalid_host",
+        retryable=False,
+    )
+    for response in limited:
+        _assert_checked_network_error(
+            response,
+            status=503,
+            code="connection_limit_reached",
+            retryable=True,
+        )
 
 
 @pytest.mark.parametrize(

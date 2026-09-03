@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import hashlib
 import ipaddress
 import json
 import re
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import replace
@@ -20,7 +22,8 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import BaseRoute, Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from . import operator_contract, operator_work_items
+from . import daemon_factory, operator_contract, operator_work_items
+from .daemon_contract import WIRE_SCHEMA_VERSION
 from .operator_feed import OperatorFeed
 from .operator_sources import OperatorSourceError, OperatorSources, validate_canonical_identity
 
@@ -38,17 +41,28 @@ _WORK_ITEM_ID = re.compile(r"^[A-Za-z0-9._~-]+$")
 
 def error_payload(error: OperatorSourceError) -> dict[str, object]:
     return {
+        "schemaVersion": WIRE_SCHEMA_VERSION,
         "error": {
             "code": error.code,
             "message": str(error),
             "retryable": error.retryable,
-        }
+            "action": None,
+            "requestId": None,
+        },
     }
 
 
 def _error_response(error: OperatorSourceError) -> JSONResponse:
     headers = {"Retry-After": "1"} if error.retryable else None
     return JSONResponse(error_payload(error), status_code=error.status_code, headers=headers)
+
+
+def _read_only_error() -> OperatorSourceError:
+    return OperatorSourceError(
+        "read_only_profile",
+        "The operator API permits read-only GET requests only.",
+        status_code=405,
+    )
 
 
 def openapi_document() -> dict[str, Any]:
@@ -314,6 +328,13 @@ class OperatorAPI:
         host_id: str,
         instance_id: str,
         ready: Callable[[], bool],
+        accepting: Callable[[], bool] | None = None,
+        started_at: int | None = None,
+        journal_stale_after_seconds: float = (
+            daemon_factory.DEFAULT_RUN_JOURNAL_STALE_AFTER_SECONDS
+        ),
+        dolt_probe_timeout_seconds: float = 2.0,
+        factory_directory: daemon_factory.FactoryDirectory | None = None,
         events: Callable[[Request], Any] | None = None,
     ) -> None:
         self.sources = sources
@@ -321,19 +342,40 @@ class OperatorAPI:
         self.host_id = host_id
         self.instance_id = instance_id
         self.ready = ready
+        self.accepting = accepting or ready
         self.events = events
+        self.factory_directory = factory_directory or daemon_factory.FactoryDirectory(
+            sources=sources,
+            host_id=host_id,
+            service_instance_id=instance_id,
+            started_at=started_at if started_at is not None else time.time_ns() // 1_000_000,
+            journal_stale_after_seconds=journal_stale_after_seconds,
+            dolt_probe_timeout_seconds=dolt_probe_timeout_seconds,
+        )
 
     async def factory(self, _request: Request) -> JSONResponse:
+        cancellation_event = threading.Event()
+        loop = asyncio.get_running_loop()
+        worker = functools.partial(
+            self.factory_directory.snapshot,
+            ready=self.ready(),
+            accepting_work=self.accepting(),
+            cancellation_event=cancellation_event,
+        )
+        future = loop.run_in_executor(None, worker)
         try:
-            hives = await asyncio.to_thread(self.sources.registered_hives)
-            payload = operator_contract.factory_snapshot(
-                [hive.entry for hive in hives],
-                generated_at=time.time_ns() // 1_000_000,
-                host_id=self.host_id,
-                instance_id=self.instance_id,
-                ready=self.ready(),
-            )
+            payload = await asyncio.shield(future)
             return JSONResponse(payload)
+        except asyncio.CancelledError:
+            cancellation_event.set()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(future),
+                    timeout=self.factory_directory.dependency_probe_timeout_seconds + 0.25,
+                )
+            except Exception:
+                pass
+            raise
         except OperatorSourceError as exc:
             return _error_response(exc)
         except Exception:
@@ -722,13 +764,7 @@ class LocalReadPolicyMiddleware:
             return
 
         if scope.get("method") != "GET":
-            await _error_response(
-                OperatorSourceError(
-                    "read_only_profile",
-                    "The phase-one operator profile permits read-only GET requests only.",
-                    status_code=405,
-                )
-            )(scope, receive, send)
+            await _error_response(_read_only_error())(scope, receive, send)
             return
 
         async def secure_send(message: Message) -> None:
@@ -748,6 +784,19 @@ class LocalReadPolicyMiddleware:
             await send(message)
 
         await self.app(scope, receive, secure_send)
+
+
+class ReadOnlyMethodMiddleware:
+    """Return the checked JSON 405 after auth for every non-GET HTTP request."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("method") != "GET":
+            await _error_response(_read_only_error())(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
 
 def route_paths(routes: Sequence[BaseRoute]) -> set[str]:

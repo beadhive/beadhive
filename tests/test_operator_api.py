@@ -131,13 +131,17 @@ def test_phase_one_gets_are_unauthenticated_direct_and_path_free(tmp_path: Path)
 
     factory, snapshot, health = _exercise(tmp_path, action)
     assert factory.status_code == snapshot.status_code == health.status_code == 200
-    assert factory.json()["workspaceRoot"] is None
-    assert factory.json()["worktrees"] == []
-    assert factory.json()["hostId"] == "host-1"
+    assert factory.json()["host"] == {
+        "hostId": "host-1",
+        "serviceInstanceId": "instance-1",
+    }
+    assert factory.json()["hives"][0]["hiveId"] == HIVE
+    assert not ({"workspaceRoot", "worktrees", "edges"} & factory.json().keys())
     assert snapshot.json()["hive"]["prefix"] == HIVE
     assert snapshot.json()["cursor"]["subscriptionId"] == f"hive:{HIVE}"
     assert health.json() == {
-        "live": True,
+        "schemaVersion": 1,
+        "status": "live",
         "ready": True,
         "contract": host_daemon.CONTRACT_VERSION,
     }
@@ -481,7 +485,12 @@ def test_openapi_artifact_matches_running_route_table_and_omits_mcp(tmp_path: Pa
     assert response.status_code == 200
     assert response.json() == checked
     assert checked["openapi"] == "3.1.0"
-    assert checked["security"] == []
+    assert checked["security"] == [{"BearerAuth": []}]
+    assert checked["paths"]["/health"]["get"]["security"] == []
+    assert (
+        checked["components"]["securitySchemes"]["BearerAuth"]["x-beadhive-required-scope"]
+        == "operator:read"
+    )
     assert "BearerAuth" in checked["components"]["securitySchemes"]
     assert "/mcp" not in checked["paths"]
 

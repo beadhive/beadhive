@@ -235,7 +235,8 @@ def test_outer_lifespan_orders_startup_and_bounded_drain_and_closes_admission():
                 health = await client.get("/health")
                 assert health.status_code == 200
                 assert health.json() == {
-                    "live": True,
+                    "schemaVersion": 1,
+                    "status": "stopping",
                     "ready": False,
                     "contract": host_daemon.CONTRACT_VERSION,
                 }
