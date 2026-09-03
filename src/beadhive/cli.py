@@ -3308,7 +3308,10 @@ def setup_check(
     text render is this same object echoed rather than a second assembly of it."""
     from . import setup as setup_mod
 
-    setup_mod.run_check(as_json=as_json)
+    setup_mod.run_check(
+        as_json=as_json,
+        daemon_advisories=host_cli.daemon_setup_advisories,
+    )
 
 
 @setup_app.command("show", help="report cached setup status without re-probing.")

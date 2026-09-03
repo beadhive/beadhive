@@ -564,6 +564,8 @@ def test_partial_application_startup_releases_singleton(tmp_path, monkeypatch):
 
 
 def test_installed_daemon_commands_render_verified_status_and_run_foreground(monkeypatch):
+    from beadhive import daemon_supervisor
+
     key = host_daemon.DaemonKey(account_id="uid:1234", bh_home="/tmp/example-bh", host_id="host-1")
     status = host_daemon.DaemonStatus(
         state="running",
@@ -572,11 +574,20 @@ def test_installed_daemon_commands_render_verified_status_and_run_foreground(mon
         detail="verified",
         key=key,
     )
-    monkeypatch.setattr(host_daemon, "daemon_status", lambda: status)
+    monkeypatch.setattr(host_daemon.DaemonKey, "current", classmethod(lambda _cls: key))
+    monkeypatch.setattr(host_daemon, "daemon_status", lambda expected: status)
+    monkeypatch.setattr(
+        daemon_supervisor,
+        "get_supervisor_backend",
+        lambda: daemon_supervisor.RecordingSupervisorBackend(),
+    )
 
     result = runner.invoke(cli_app, ["host", "daemon", "status", "--json"])
     assert result.exit_code == 0, result.output
-    assert json.loads(result.stdout) == status.payload()
+    payload = json.loads(result.stdout)
+    assert payload["state"] == "running"
+    assert payload["control_record"]["verified"] is True
+    assert payload["readiness"]["state"] == "unavailable"
 
     calls = []
     monkeypatch.setattr(host_daemon, "serve", lambda **kwargs: calls.append(kwargs))
