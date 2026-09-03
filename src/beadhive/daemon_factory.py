@@ -187,6 +187,7 @@ class FactoryDirectory:
         dolt_status: Callable[[Sequence[object]], DependencyObservation] | None = None,
         journal_stale_after_seconds: float = DEFAULT_RUN_JOURNAL_STALE_AFTER_SECONDS,
         dolt_probe_timeout_seconds: float = dolt_health.DEFAULT_PROBE_TIMEOUT,
+        activity_publish_configured: bool = False,
     ) -> None:
         if not math.isfinite(journal_stale_after_seconds) or journal_stale_after_seconds <= 0:
             raise ValueError("journal stale threshold must be finite and greater than zero")
@@ -205,6 +206,28 @@ class FactoryDirectory:
         self.journal_stale_after_seconds = float(journal_stale_after_seconds)
         self.dolt_probe_timeout_seconds = float(dolt_probe_timeout_seconds)
         self.dependency_probe_timeout_seconds = self.dolt_probe_timeout_seconds
+        self.activity_publish_configured = bool(activity_publish_configured)
+
+    def _activity_publish_capability(
+        self, inventory: RunDirectoryInventory, *, accepting_work: bool
+    ) -> FactoryCapability:
+        if not self.activity_publish_configured:
+            return FactoryCapability(
+                name="activity-publish", available=False, reason_code="not_implemented"
+            )
+        if not accepting_work:
+            return FactoryCapability(
+                name="activity-publish",
+                available=False,
+                reason_code="daemon_not_accepting",
+            )
+        if not inventory.exact_lookup_available:
+            return FactoryCapability(
+                name="activity-publish",
+                available=False,
+                reason_code=inventory.coverage_reason or "run_directory_unavailable",
+            )
+        return FactoryCapability(name="activity-publish", available=True)
 
     def _default_describe_hive(self, hive) -> HiveSourceObservation:
         resolution = source_descriptors.resolve_named_hive_sources(
@@ -530,9 +553,7 @@ class FactoryDirectory:
                         None if inventory.exact_lookup_available else inventory.coverage_reason
                     ),
                 ),
-                FactoryCapability(
-                    name="activity-publish", available=False, reason_code="not_implemented"
-                ),
+                self._activity_publish_capability(inventory, accepting_work=accepting_work),
                 FactoryCapability(
                     name="terminal", available=False, reason_code="pty_verdict_pending"
                 ),

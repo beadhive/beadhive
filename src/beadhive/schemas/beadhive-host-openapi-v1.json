@@ -2,14 +2,14 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Beadhive Host Operator API",
-    "version": "1.1.0",
-    "description": "Authenticated read-only host operator API. Health is the sole public route; every other route requires a bearer credential with operator:read."
+    "version": "1.2.0",
+    "description": "Authenticated host operator and activity API. Health is the sole public route; every other operation declares an independent bearer scope."
   },
   "security": [{"BearerAuth": []}],
-  "x-beadhive-phase": "authenticated-read-only-v1",
+  "x-beadhive-phase": "authenticated-activity-v1",
   "x-beadhive-authentication-profile": {
     "health": "public",
-    "operator": "BearerAuth with operator:read"
+    "operator": "BearerAuth with operation-specific scope"
   },
   "x-beadhive-secure-network-preflight": {
     "pathScope": "all request paths, including paths absent from this document",
@@ -469,7 +469,7 @@
             "in": "query",
             "required": false,
             "description": "Return a delta strictly after producerEpoch:sequence.",
-            "schema": {"type": "string", "pattern": "^[A-Za-z0-9._~-]+:(0|[1-9][0-9]*)$"}
+            "schema": {"type": "string", "maxLength": 85, "pattern": "^[A-Za-z0-9._~-]{1,64}:(0|[1-9][0-9]{0,19})$"}
           }
         ],
         "responses": {
@@ -494,6 +494,46 @@
             "description": "The cursor producer epoch is no longer retained",
             "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
           },
+          "503": {"$ref": "#/components/responses/Unavailable"}
+        }
+      },
+      "post": {
+        "operationId": "publishRunActivity",
+        "summary": "Durably publish activity for one exact outer run",
+        "description": "The path run ID is authoritative. The authenticated credential principal is service:<source>:<seat>; source and any payload provenance fields must agree with that principal and the exact run journal. A created response follows durable commit and installation into the exact-run read feed; a duplicate response identifies the same previously committed activity.",
+        "x-beadhive-required-scope": "activity:publish",
+        "parameters": [
+          {
+            "name": "run_id",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$"}
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {"$ref": "#/components/schemas/ActivityAppendRequest"}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Byte-identical retry of a previously committed activity",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ActivityAppendResponse"}}}
+          },
+          "201": {
+            "description": "Activity durably committed",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ActivityAppendResponse"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"},
+          "408": {"$ref": "#/components/responses/RequestTimeout"},
+          "409": {"$ref": "#/components/responses/Conflict"},
+          "413": {"$ref": "#/components/responses/PayloadTooLarge"},
+          "429": {"$ref": "#/components/responses/RateLimited"},
           "503": {"$ref": "#/components/responses/Unavailable"}
         }
       }
@@ -525,13 +565,13 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "opaque",
-        "description": "Opaque bearer credential. Every authenticated route requires operator:read.",
+        "description": "Opaque bearer credential. Each operation declares its required scope.",
         "x-beadhive-required-scope": "operator:read"
       }
     },
     "responses": {
       "Unauthorized": {
-        "description": "A valid bearer credential with operator:read is required",
+        "description": "A valid bearer credential with the operation's required scope is required",
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
       },
       "BadRequest": {
@@ -547,7 +587,7 @@
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
       },
       "ReadOnly": {
-        "description": "After authentication, the operator API permits only GET; secure-network preflight OPTIONS is handled before route dispatch",
+        "description": "After authentication, the requested mutation is not part of the enabled product surface; secure-network preflight OPTIONS is handled before route dispatch",
         "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}
       },
       "Conflict": {
@@ -735,6 +775,12 @@
               },
               {
                 "$ref": "#/components/schemas/Heartbeat"
+              },
+              {
+                "$ref": "#/components/schemas/ActivityEvent"
+              },
+              {
+                "$ref": "#/components/schemas/ActivityReset"
               }
             ]
           }
@@ -832,6 +878,27 @@
           "kind": {
             "const": "heartbeat"
           }
+        }
+      },
+      "ActivityEvent": {
+        "type": "object",
+        "required": ["kind", "runId", "activity"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {"const": "activity"},
+          "runId": {"type": "string", "minLength": 1},
+          "activity": {"$ref": "#/components/schemas/RunActivityEnvelope"}
+        }
+      },
+      "ActivityReset": {
+        "type": "object",
+        "required": ["kind", "runId", "producerEpoch", "reason"],
+        "additionalProperties": false,
+        "properties": {
+          "kind": {"const": "activity-reset"},
+          "runId": {"type": "string", "minLength": 1},
+          "producerEpoch": {"type": "string", "minLength": 1},
+          "reason": {"type": "string", "minLength": 1}
         }
       },
       "HealthResponse": {
@@ -1260,6 +1327,42 @@
           "producerEpoch": {"type": "string"},
           "sequence": {"type": "integer", "minimum": 1},
           "payload": {"type": "object"}
+        }
+      },
+      "ActivityAppendRequest": {
+        "type": "object",
+        "required": ["schemaVersion", "runId", "idempotencyKey", "source", "kind", "occurredAt", "expiresAt", "payload"],
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "runId": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$"},
+          "idempotencyKey": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"},
+          "source": {"enum": ["baml", "hitch", "beadhive"]},
+          "kind": {"type": "string", "minLength": 1, "maxLength": 128},
+          "occurredAt": {"type": "integer", "minimum": 0},
+          "expiresAt": {"type": "integer", "minimum": 0},
+          "payload": {
+            "type": "object",
+            "description": "Source-specific activity. Optional seat and writer values are assertions checked against authenticated-principal and exact-journal authority; they do not establish provenance.",
+            "properties": {
+              "seat": {"enum": ["developer", "dispatcher", "reviewer", "merger", "planner", "analyst", "warden", "supervisor", "director", "custodian", "controller"]},
+              "writer": {"enum": ["baml.provider", "agent-hitch.direct", "beadhive.local-loop", "beadhive.role"]}
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "ActivityAppendResponse": {
+        "type": "object",
+        "required": ["schemaVersion", "status", "runId", "idempotencyKey", "activityId", "revision"],
+        "additionalProperties": false,
+        "properties": {
+          "schemaVersion": {"const": 1},
+          "status": {"enum": ["created", "duplicate"]},
+          "runId": {"type": "string"},
+          "idempotencyKey": {"type": "string"},
+          "activityId": {"type": "string"},
+          "revision": {"type": "string"}
         }
       },
       "RunActivityFrame": {

@@ -413,6 +413,9 @@ async def spawn_seat(
         # failure itself remains non-fatal; an identity conflict is a launch-contract error.
         journal.bind_provider_continuation(provider_continuation)
         env = journal.child_env(env)
+        from .activity_publisher import scoped_child_env
+
+        env = scoped_child_env(env, journal.writer)
     profile_dir = baml_profile_dir(provider_continuation)
     with contextlib.suppress(OSError):  # unwritable home → BAML's problem, never a failed spawn
         profile_dir.mkdir(parents=True, exist_ok=True)

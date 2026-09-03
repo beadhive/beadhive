@@ -23,7 +23,8 @@ from starlette.routing import BaseRoute, Route
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from . import daemon_factory, operator_contract, operator_work_items
-from .daemon_contract import WIRE_SCHEMA_VERSION
+from .daemon_auth import AuthenticatedPrincipal
+from .daemon_contract import WIRE_SCHEMA_VERSION, encode_run_id
 from .operator_feed import OperatorFeed
 from .operator_sources import OperatorSourceError, OperatorSources, validate_canonical_identity
 
@@ -31,7 +32,8 @@ OPENAPI_CONTRACT = "beadhive-host-openapi-v1.json"
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 200
 _HIVE_READ_CONCURRENCY = 8
-_CURSOR = re.compile(r"^([A-Za-z0-9._~-]+):(0|[1-9][0-9]*)$")
+MAX_ACTIVITY_CURSOR_LENGTH = 85
+_CURSOR = re.compile(r"^([A-Za-z0-9._~-]{1,64}):(0|[1-9][0-9]{0,19})$")
 _EVENTS_RAW_PATH = re.compile(
     rb"^/api/v1/hives/[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F"
     rb"[A-Za-z0-9._~-]+/events$"
@@ -108,8 +110,9 @@ def canonical_run_parameter(request: Request) -> str:
     decoded = str(request.path_params["run_id"])
     raw = _raw_parameter(request, b"/api/v1/runs/", b"/activity")
     try:
+        encode_run_id(decoded)
         expected = quote(decoded, safe="-._~").encode("ascii")
-    except UnicodeEncodeError as exc:
+    except (TypeError, UnicodeEncodeError, ValueError) as exc:
         raise OperatorSourceError(
             "invalid_run_id",
             "Run identity must be one path-safe outer run token.",
@@ -238,7 +241,14 @@ def activity_cursor(request: Request) -> tuple[str, int] | None:
             "Activity requests accept at most one exact cursor.",
             status_code=400,
         )
-    match = _CURSOR.fullmatch(values[0])
+    value = values[0]
+    if len(value) > MAX_ACTIVITY_CURSOR_LENGTH or not value.isascii():
+        raise OperatorSourceError(
+            "invalid_activity_cursor",
+            "Activity cursor must be producerEpoch:sequence.",
+            status_code=400,
+        )
+    match = _CURSOR.fullmatch(value)
     if match is None:
         raise OperatorSourceError(
             "invalid_activity_cursor",
@@ -339,6 +349,9 @@ class OperatorAPI:
         snapshot_reader: Callable[[str], Awaitable[dict[str, object]]] | None = None,
         activity_reader: Callable[[str, tuple[str, int] | None], Awaitable[dict[str, object]]]
         | None = None,
+        activity_publisher: Callable[[str, bytes, AuthenticatedPrincipal], Awaitable[Any]]
+        | None = None,
+        activity_max_body_bytes: int | None = None,
     ) -> None:
         self.sources = sources
         self.feed = feed
@@ -349,6 +362,12 @@ class OperatorAPI:
         self.events = events
         self.snapshot_reader = snapshot_reader
         self.activity_reader = activity_reader
+        self.activity_publisher = activity_publisher
+        self.activity_max_body_bytes = activity_max_body_bytes
+        if (activity_publisher is None) != (activity_max_body_bytes is None):
+            raise ValueError("activity publisher and body bound must be configured together")
+        if activity_max_body_bytes is not None and activity_max_body_bytes < 1:
+            raise ValueError("activity body bound must be positive")
         self.factory_directory = factory_directory or daemon_factory.FactoryDirectory(
             sources=sources,
             host_id=host_id,
@@ -356,6 +375,7 @@ class OperatorAPI:
             started_at=started_at if started_at is not None else time.time_ns() // 1_000_000,
             journal_stale_after_seconds=journal_stale_after_seconds,
             dolt_probe_timeout_seconds=dolt_probe_timeout_seconds,
+            activity_publish_configured=activity_publisher is not None,
         )
 
     async def factory(self, _request: Request) -> JSONResponse:
@@ -521,6 +541,66 @@ class OperatorAPI:
                 )
             )
 
+    async def publish_activity(self, request: Request) -> JSONResponse:
+        try:
+            run_id = canonical_run_parameter(request)
+            if request.query_params:
+                raise OperatorSourceError(
+                    "invalid_activity_query",
+                    "Activity publication does not accept query parameters.",
+                    status_code=400,
+                )
+            if not self.accepting():
+                raise OperatorSourceError(
+                    "activity_publish_unavailable",
+                    "Activity publication is unavailable while the daemon is draining.",
+                    status_code=503,
+                    retryable=True,
+                )
+            if self.activity_publisher is None or self.activity_max_body_bytes is None:
+                raise RuntimeError("activity publisher is not configured")
+            declared = request.headers.get("content-length")
+            if declared is not None:
+                try:
+                    if int(declared) > self.activity_max_body_bytes:
+                        raise OperatorSourceError(
+                            "activity_body_too_large",
+                            "The activity exceeds the configured size limit.",
+                            status_code=413,
+                        )
+                except ValueError as exc:
+                    raise OperatorSourceError(
+                        "invalid_activity_schema",
+                        "The activity body does not match the v1 contract.",
+                        status_code=400,
+                    ) from exc
+            body = await request.body()
+            if len(body) > self.activity_max_body_bytes:
+                raise OperatorSourceError(
+                    "activity_body_too_large",
+                    "The activity exceeds the configured size limit.",
+                    status_code=413,
+                )
+            principal = getattr(request.state, "auth_principal", None)
+            if not isinstance(principal, AuthenticatedPrincipal):
+                raise RuntimeError("authenticated publisher principal is unavailable")
+            result = await self.activity_publisher(run_id, body, principal)
+            return JSONResponse(
+                result.to_wire(),
+                status_code=201 if result.status == "created" else 200,
+            )
+        except OperatorSourceError as exc:
+            return _error_response(exc)
+        except Exception:
+            return _error_response(
+                OperatorSourceError(
+                    "activity_store_unavailable",
+                    "The durable activity store is unavailable.",
+                    status_code=503,
+                    retryable=True,
+                )
+            )
+
     async def work_items(self, request: Request) -> Response:
         try:
             identity, _ = canonical_work_item_parameters(request, detail=False)
@@ -616,6 +696,15 @@ class OperatorAPI:
                 name="operator_run_activity",
             ),
         ]
+        if self.activity_publisher is not None:
+            routes.append(
+                Route(
+                    "/api/v1/runs/{run_id}/activity",
+                    self.publish_activity,
+                    methods=["POST"],
+                    name="publish_run_activity",
+                )
+            )
         if self.events is not None:
             routes.append(
                 Route(
@@ -796,15 +885,24 @@ class LocalReadPolicyMiddleware:
 
 
 class ReadOnlyMethodMiddleware:
-    """Return the checked JSON 405 after auth for every non-GET HTTP request."""
+    """Return checked JSON 405 after auth except for the configured activity POST."""
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, *, allow_activity_publish: bool = False) -> None:
         self.app = app
+        self.allow_activity_publish = allow_activity_publish
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "http" and scope.get("method") != "GET":
-            await _error_response(_read_only_error())(scope, receive, send)
-            return
+            path = str(scope.get("path", ""))
+            activity_publish = (
+                self.allow_activity_publish
+                and scope.get("method") == "POST"
+                and path.startswith("/api/v1/runs/")
+                and path.endswith("/activity")
+            )
+            if not activity_publish:
+                await _error_response(_read_only_error())(scope, receive, send)
+                return
         await self.app(scope, receive, send)
 
 

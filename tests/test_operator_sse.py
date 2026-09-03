@@ -230,6 +230,159 @@ def _multi_sources(tmp_path: Path) -> operator_sources.OperatorSources:
     )
 
 
+def _activity_record(run_id: str, revision: str, kind: str) -> dict[str, object]:
+    return {
+        "version": "beadhive.daemon-activity/v1",
+        "source_revision": revision,
+        "timestamp_ms": 1_000,
+        "run_id": run_id,
+        "hive": HIVE,
+        "bead": "bh-q0lol.11",
+        "driver": "baml",
+        "provider": "codex",
+        "manifest_digest": "sha256:" + "a" * 64,
+        "provider_continuation": None,
+        "writer": "baml.provider",
+        "activity": {"kind": kind, "source": "baml", "seat": "developer"},
+    }
+
+
+def test_activity_observer_publishes_named_sse_in_order_and_resets_exact_run(
+    tmp_path: Path,
+) -> None:
+    feed = operator_feed.OperatorFeed(_sources(tmp_path, Provider()), now_millis=lambda: 1_000)
+    relay = operator_sse.OperatorEventRelay(
+        feed,
+        host_daemon.DaemonRuntime(),
+        now_millis=lambda: 1_000,
+        monotonic=lambda: 1.0,
+    )
+    snapshot = feed.snapshot_with_cursor(HIVE)
+    initial_sequence = snapshot["cursor"]["sequence"]
+    first = _activity_record("run-sse", "opaque:activity-1", "provider.progress")
+    second = _activity_record("run-sse", "opaque:activity-2", "provider.completed")
+
+    async def exercise():
+        client = relay.subscribe(
+            HIVE,
+            subscription_id=f"hive:{HIVE}",
+            cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
+            loop=asyncio.get_running_loop(),
+        )
+        feed._notify_activity(
+            operator_feed.ActivityInstall(
+                run_id="run-sse",
+                hive_id=HIVE,
+                producer_epoch="activity-epoch-1",
+                previous_records=(),
+                current_records=(first,),
+                source_revision="opaque:combined-1",
+            )
+        )
+        feed._notify_activity(
+            operator_feed.ActivityInstall(
+                run_id="run-sse",
+                hive_id=HIVE,
+                producer_epoch="activity-epoch-1",
+                previous_records=(first,),
+                current_records=(first, second),
+                source_revision="opaque:combined-2",
+            )
+        )
+        feed._notify_activity(
+            operator_feed.ActivityInstall(
+                run_id="run-sse",
+                hive_id=HIVE,
+                producer_epoch="activity-epoch-2",
+                previous_records=(first, second),
+                current_records=(second,),
+                source_revision="opaque:combined-3",
+                reset_reason="activity_source_changed",
+            )
+        )
+        client.close()
+        return [event.payload for event in relay._hives[HIVE].history]
+
+    events = asyncio.run(exercise())
+    assert [event["payload"]["kind"] for event in events] == [
+        "activity",
+        "activity",
+        "activity-reset",
+    ]
+    assert [event["sequence"] for event in events] == [1, 2, 3]
+    assert [event["baseSequence"] for event in events] == [0, 1, 2]
+    assert events[0]["payload"]["activity"]["payload"]["name"] == "provider.progress"
+    assert events[2]["payload"]["runId"] == "run-sse"
+    assert initial_sequence == 0
+    assert snapshot["cursor"]["sequence"] == 3
+    document = operator_api.openapi_document()
+    contract_uri = "urn:beadhive:host-openapi-v1"
+    registry = Registry().with_resource(
+        contract_uri,
+        Resource.from_contents(document, default_specification=DRAFT202012),
+    )
+    validator = jsonschema.Draft202012Validator(
+        {"$ref": f"{contract_uri}#/components/schemas/OperatorEvent"},
+        registry=registry,
+    )
+    for event in events:
+        validator.validate(event)
+
+
+def test_activity_observer_requires_live_snapshot_consumer_and_unregisters_on_shutdown(
+    tmp_path: Path,
+) -> None:
+    feed = operator_feed.OperatorFeed(_sources(tmp_path, Provider()), now_millis=lambda: 1_000)
+    relay = operator_sse.OperatorEventRelay(
+        feed,
+        host_daemon.DaemonRuntime(),
+        now_millis=lambda: 1_000,
+        monotonic=lambda: 1.0,
+    )
+    record = _activity_record("run-pending", "opaque:activity-1", "provider.progress")
+    install = operator_feed.ActivityInstall(
+        run_id="run-pending",
+        hive_id=HIVE,
+        producer_epoch="activity-epoch-1",
+        previous_records=(),
+        current_records=(record,),
+        source_revision="opaque:combined-1",
+    )
+
+    feed._notify_activity(install)
+    second = _activity_record("run-pending", "opaque:activity-2", "provider.completed")
+    assert relay.retained_state()["events"] == 0
+    snapshot = feed.snapshot_with_cursor(HIVE)
+    feed._notify_activity(install)
+    assert relay.retained_state()["events"] == 0
+    assert snapshot["cursor"]["sequence"] == 0
+
+    async def exercise():
+        client = relay.subscribe(
+            HIVE,
+            subscription_id=f"hive:{HIVE}",
+            cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
+            loop=asyncio.get_running_loop(),
+        )
+        feed._notify_activity(
+            operator_feed.ActivityInstall(
+                run_id="run-pending",
+                hive_id=HIVE,
+                producer_epoch="activity-epoch-1",
+                previous_records=(record,),
+                current_records=(record, second),
+                source_revision="opaque:combined-2",
+            )
+        )
+        assert relay.retained_state()["events"] == 1
+        client.close()
+        await relay.close()
+
+    asyncio.run(exercise())
+    feed._notify_activity(install)
+    assert relay.retained_state()["events"] == 0
+
+
 def _relay(tmp_path: Path, **limits):
     provider = Provider()
     feed = operator_feed.OperatorFeed(_sources(tmp_path, provider), now_millis=lambda: 1000)

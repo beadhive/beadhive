@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import threading
 import time
@@ -15,7 +16,7 @@ from typing import Any
 
 from . import operator_contract
 from .operator_sources import ExactHive, OperatorSourceError, OperatorSources
-from .public_readers import RunDirectoryEntry, RunJournalFrame
+from .public_readers import Coverage, RunDirectoryEntry, RunJournalFrame
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,10 @@ class ActivityInstall:
     previous_records: tuple[Mapping[str, Any], ...]
     current_records: tuple[Mapping[str, Any], ...]
     source_revision: str
+    reset_reason: str | None = None
+    added_records: tuple[Mapping[str, Any], ...] | None = None
+    sequence_offset: int = 0
+    first_occurred_at: int | None = None
 
 
 @dataclass
@@ -77,6 +82,10 @@ class _ActivityState:
     lock: threading.RLock = field(default_factory=threading.RLock)
     producer_epoch: str = field(default_factory=lambda: uuid.uuid4().hex)
     records: tuple[Mapping[str, Any], ...] = ()
+    durable_records: tuple[Mapping[str, Any], ...] = ()
+    durable_total: int = 0
+    announced_sequence: int = 0
+    journal_fingerprints: tuple[str, ...] = ()
     journal: RunJournalFrame | None = None
     initialized: bool = False
     retained_bytes: int = 0
@@ -129,6 +138,10 @@ class _ActivityDiscovery:
 
 InstallObserver = Callable[[FeedInstall], None]
 ActivityObserver = Callable[[ActivityInstall], None]
+DurableActivityReader = Callable[
+    [str, RunJournalFrame, int],
+    tuple[tuple[Mapping[str, Any], ...], str | None, bool, int],
+]
 TransitionHandler = Callable[[FeedTransition], int]
 PulseHandler = Callable[[FeedPulse], int]
 DEFAULT_MAX_CACHED_ACTIVITY_RUNS = 64
@@ -187,6 +200,7 @@ class OperatorFeed:
         self._observers_lock = threading.Lock()
         self._install_observers: list[InstallObserver] = []
         self._activity_observers: list[ActivityObserver] = []
+        self._durable_activity_reader: DurableActivityReader | None = None
         self._transition_handler: TransitionHandler | None = None
 
     def _hive_state(self, hive_id: str) -> _HiveState:
@@ -493,6 +507,19 @@ class OperatorFeed:
         for observer in observers:
             observer(install)
 
+    def configure_durable_activity_reader(self, reader: DurableActivityReader) -> None:
+        """Attach the daemon store before traffic reaches this feed."""
+
+        with self._observers_lock:
+            if self._durable_activity_reader is not None:
+                raise RuntimeError("a durable activity reader is already configured")
+            self._durable_activity_reader = reader
+
+    @staticmethod
+    def _combined_activity_revision(journal_revision: str, durable_revision: str) -> str:
+        encoded = json.dumps([journal_revision, durable_revision], separators=(",", ":")).encode()
+        return f"opaque:activity-composite:{hashlib.sha256(encoded).hexdigest()}"
+
     def snapshot_with_cursor(self, identity: str) -> dict[str, object]:
         with self._hive_pin(identity) as pin:
             hive = self.sources.resolve_hive(identity)
@@ -755,6 +782,154 @@ class OperatorFeed:
             root_inode=source.root_inode,
         )
 
+    def _durable_activity_page(
+        self,
+        *,
+        run_id: str,
+        hive: ExactHive,
+        source: RunDirectoryEntry,
+        pin: _HivePin,
+        state: _ActivityState,
+        journal: RunJournalFrame,
+        after: tuple[str, int] | None,
+    ) -> dict[str, object]:
+        """Serve one durable page while retaining only bounded cursor metadata."""
+
+        assert self._durable_activity_reader is not None
+        journal_records = tuple(dict(record) for record in journal.records)
+        fingerprints = tuple(
+            hashlib.sha256(
+                json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            for record in journal_records
+        )
+        source_identity = self._activity_source_identity(source)
+        with self._run_install_lock(run_id), self._publication_pin(pin):
+            owner_generation = self._claim_run_ownership(run_id, source_identity)
+            reset_reason = state.discontinuity_reason
+            if reset_reason is None and state.initialized:
+                if state.source_identity != source_identity:
+                    reset_reason = "activity_source_changed"
+                elif state.owner_generation != owner_generation:
+                    reset_reason = "activity_owner_changed"
+                elif fingerprints != state.journal_fingerprints:
+                    append_only = fingerprints[: len(state.journal_fingerprints)] == (
+                        state.journal_fingerprints
+                    )
+                    # Once durable rows have sequence positions after the journal, any journal
+                    # edit moves those positions and therefore requires an explicit new epoch.
+                    if not append_only or state.durable_total:
+                        reset_reason = "activity_history_rewritten"
+
+            if reset_reason is not None:
+                state.producer_epoch = uuid.uuid4().hex
+                state.announced_sequence = 0
+                after = None
+
+            journal_count = len(journal_records)
+            if after is None:
+                kind = "reset" if reset_reason is not None else "snapshot"
+                base_sequence = 0
+                durable_offset = 0
+                journal_page = journal_records
+            else:
+                epoch, base_sequence = after
+                if epoch != state.producer_epoch:
+                    raise OperatorSourceError(
+                        "activity_cursor_expired",
+                        "The activity cursor belongs to an expired producer epoch.",
+                        status_code=410,
+                    )
+                if base_sequence < 0:
+                    raise OperatorSourceError(
+                        "invalid_activity_cursor",
+                        "The activity cursor is outside the installed run history.",
+                        status_code=409,
+                    )
+                kind = "delta"
+                durable_offset = max(0, base_sequence - journal_count)
+                journal_page = journal_records[base_sequence:]
+
+            durable_page, durable_revision, _complete, durable_total = (
+                self._durable_activity_reader(run_id, journal, durable_offset)
+            )
+            known_sequence = journal_count + durable_total
+            if base_sequence > known_sequence:
+                raise OperatorSourceError(
+                    "invalid_activity_cursor",
+                    "The activity cursor is outside the installed run history.",
+                    status_code=409,
+                )
+            records = journal_page + tuple(dict(record) for record in durable_page)
+            page_end = base_sequence + len(records)
+            complete = page_end >= known_sequence
+            if durable_revision is not None:
+                journal = replace(
+                    journal,
+                    source_revision=self._combined_activity_revision(
+                        str(journal.source_revision), durable_revision
+                    ),
+                )
+            if not complete:
+                journal = replace(
+                    journal,
+                    coverage=Coverage.PARTIAL,
+                    coverage_reason="durable_activity_page_truncated",
+                )
+
+            previous_announced = state.announced_sequence
+            state.records = ()
+            state.durable_records = ()
+            state.durable_total = durable_total
+            state.journal_fingerprints = fingerprints
+            state.journal = replace(journal, records=())
+            state.initialized = True
+            state.source_identity = source_identity
+            state.owner_generation = owner_generation
+            state.discontinuity_reason = None
+            self._set_activity_retained_bytes((hive.identity, run_id), state, ())
+
+            if reset_reason is not None:
+                self._notify_activity(
+                    ActivityInstall(
+                        run_id=run_id,
+                        hive_id=hive.identity,
+                        producer_epoch=state.producer_epoch,
+                        previous_records=(),
+                        current_records=(),
+                        source_revision=str(journal.source_revision),
+                        reset_reason=reset_reason,
+                    )
+                )
+            elif page_end > previous_announced:
+                first_new = max(0, previous_announced - base_sequence)
+                added = records[first_new:]
+                if added:
+                    sequence_offset = base_sequence + first_new
+                    self._notify_activity(
+                        ActivityInstall(
+                            run_id=run_id,
+                            hive_id=hive.identity,
+                            producer_epoch=state.producer_epoch,
+                            previous_records=(),
+                            current_records=(),
+                            source_revision=str(journal.source_revision),
+                            added_records=added,
+                            sequence_offset=sequence_offset,
+                            first_occurred_at=int(journal_records[0]["timestamp_ms"]),
+                        )
+                    )
+                    state.announced_sequence = page_end
+
+            return operator_contract.run_activity_page_frame(
+                journal,
+                records,
+                producer_epoch=state.producer_epoch,
+                base_sequence=base_sequence,
+                kind=kind,
+                reset_reason=reset_reason,
+            )
+
     def activity_with_cursor(
         self,
         run_id: str,
@@ -772,8 +947,35 @@ class OperatorFeed:
                     except (Exception, asyncio.CancelledError) as exc:
                         state.discontinuity_reason = self._activity_discontinuity_reason(exc)
                         raise
-                    records = tuple(dict(record) for record in journal.records)
+                    if self._durable_activity_reader is not None:
+                        return self._durable_activity_page(
+                            run_id=run_id,
+                            hive=hive,
+                            source=source,
+                            pin=pin,
+                            state=state,
+                            journal=journal,
+                            after=after,
+                        )
+                    journal_records = tuple(dict(record) for record in journal.records)
+                    durable_records: tuple[Mapping[str, Any], ...] = ()
+                    durable_revision = None
+                    durable_complete = True
                     source_identity = self._activity_source_identity(source)
+                    records = journal_records + tuple(dict(record) for record in durable_records)
+                    if durable_revision is not None:
+                        journal = replace(
+                            journal,
+                            source_revision=self._combined_activity_revision(
+                                str(journal.source_revision), durable_revision
+                            ),
+                            coverage=(journal.coverage if durable_complete else Coverage.PARTIAL),
+                            coverage_reason=(
+                                journal.coverage_reason
+                                if durable_complete
+                                else "durable_activity_page_truncated"
+                            ),
+                        )
                     with self._run_install_lock(run_id), self._publication_pin(pin):
                         owner_generation = self._claim_run_ownership(run_id, source_identity)
                         reset_reason = state.discontinuity_reason
@@ -788,16 +990,20 @@ class OperatorFeed:
                             or reset_reason is not None
                         )
                         previous_records = state.records
-                        if reset_reason is not None:
-                            state.producer_epoch = uuid.uuid4().hex
-                        elif (
+                        history_rewritten = (
                             state.initialized
                             and changed
                             and not self._is_append(state.records, records)
-                        ):
+                        )
+                        install_reset_reason = reset_reason
+                        if reset_reason is not None:
                             state.producer_epoch = uuid.uuid4().hex
+                        elif history_rewritten:
+                            state.producer_epoch = uuid.uuid4().hex
+                            install_reset_reason = "activity_history_rewritten"
                         if changed:
                             state.records = records
+                            state.durable_records = durable_records
                             state.journal = replace(journal, records=records)
                             state.initialized = True
                             state.source_identity = source_identity
@@ -811,6 +1017,7 @@ class OperatorFeed:
                                     previous_records=previous_records,
                                     current_records=records,
                                     source_revision=str(journal.source_revision),
+                                    reset_reason=install_reset_reason,
                                 )
                             )
                         else:
@@ -856,6 +1063,23 @@ class OperatorFeed:
             ):
                 self._mark_activity_error(run_id, exc)
             raise
+
+    def project_latest_durable_activity(self, run_id: str) -> dict[str, object]:
+        """Install the newest committed row without hydrating an unbounded history."""
+
+        snapshot = self.activity_with_cursor(run_id)
+        if self._durable_activity_reader is None:
+            return snapshot
+        key = (str(snapshot["hiveId"]), run_id)
+        with self._states_lock:
+            state = self._activities.get(key)
+            if state is None:
+                return snapshot
+            known_sequence = len(state.journal_fingerprints) + state.durable_total
+            epoch = state.producer_epoch
+        if int(snapshot["sequence"]) >= known_sequence:
+            return snapshot
+        return self.activity_with_cursor(run_id, after=(epoch, known_sequence - 1))
 
     def resolve_run(self, run_id: str) -> tuple[ExactHive, str]:
         """Expose exact run ownership without leaking its host-local path."""

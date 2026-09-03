@@ -22,6 +22,7 @@ import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import config, log, registry
 
@@ -172,7 +173,9 @@ class RunJournal:
     last_revision: str | None = None
     dropped_records: int = 0
     degraded: bool = False
+    activity_publisher: Any | None = field(default=None, repr=False)
     _diagnosed: bool = field(default=False, repr=False)
+    _publisher_diagnosed: bool = field(default=False, repr=False)
 
     def __post_init__(self) -> None:
         if not self.run_id or len(self.run_id) > 256 or not _RUN_ID.fullmatch(self.run_id):
@@ -190,15 +193,27 @@ class RunJournal:
         base: Path | None = None,
         run_id: str | None = None,
         writer: str = WRITER_LOCAL_LOOP,
+        activity_publisher: Any | None = None,
     ) -> RunJournal:
         """Mint an attempt and try to create + seed its journal before process spawn."""
 
         attempt = run_id or f"run-{uuid.uuid4()}"
+        if activity_publisher is None:
+            try:
+                from .activity_publisher import publisher_for_env
+
+                activity_publisher = publisher_for_env()
+            except Exception as exc:  # noqa: BLE001 - publication cannot change a launch
+                _LOG.error(
+                    "activity_publisher_configuration_unavailable",
+                    exception_class=type(exc).__name__,
+                )
         writer = cls(
             identity=identity,
             run_id=attempt,
             path=journal_path(identity, attempt, base=base),
             writer=writer,
+            activity_publisher=activity_publisher,
         )
         writer.append({"kind": "run.created", "phase": "planned"}, operation="create")
         return writer
@@ -231,6 +246,16 @@ class RunJournal:
             raise ValueError("BH_RUN_JOURNAL_PATH must be absolute")
         if writer not in WRITERS:
             raise ValueError("writer is outside the v1 provenance allowlist")
+        activity_publisher = None
+        try:
+            from .activity_publisher import publisher_for_env
+
+            activity_publisher = publisher_for_env()
+        except Exception as exc:  # noqa: BLE001 - publication cannot change a provider
+            _LOG.error(
+                "activity_publisher_configuration_unavailable",
+                exception_class=type(exc).__name__,
+            )
         return cls(
             identity=RunIdentity(
                 hive=env["BH_RUN_HIVE"],
@@ -242,6 +267,7 @@ class RunJournal:
             run_id=env["BH_RUN_ID"],
             path=path,
             writer=writer,
+            activity_publisher=activity_publisher,
         )
 
     @property
@@ -354,6 +380,20 @@ class RunJournal:
             self._drop(operation, exc)
             return False
         self.last_revision = revision
+        if self.activity_publisher is not None:
+            try:
+                self.activity_publisher.enqueue_record(record)
+            except Exception as exc:  # noqa: BLE001 - observability must remain outcome-neutral
+                if not self._publisher_diagnosed:
+                    self._publisher_diagnosed = True
+                    _LOG.error(
+                        "activity_publish_enqueue_failed",
+                        run_id=self.run_id,
+                        hive=self.identity.hive,
+                        bead=self.identity.bead,
+                        operation=operation,
+                        exception_class=type(exc).__name__,
+                    )
         return True
 
     def _drop(self, operation: str, exc: Exception) -> None:

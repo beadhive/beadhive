@@ -45,6 +45,8 @@ class StateBroker(Protocol):
         self, run_id: str, after: tuple[str, int] | None = None
     ) -> dict[str, object]: ...
 
+    async def project_latest_activity(self, run_id: str) -> dict[str, object]: ...
+
     async def events(self, request: Request) -> Any: ...
 
     async def remove_hive(self, hive_id: str) -> None: ...
@@ -250,6 +252,15 @@ class DaemonStateBroker:
             worker,
             on_cancel=lambda: self.feed.mark_activity_discontinuous(
                 run_id, "activity_read_cancelled"
+            ),
+        )
+
+    async def project_latest_activity(self, run_id: str) -> dict[str, object]:
+        return await self._run_feed_call(
+            self.feed.project_latest_durable_activity,
+            run_id,
+            on_cancel=lambda: self.feed.mark_activity_discontinuous(
+                run_id, "activity_projection_cancelled"
             ),
         )
 
