@@ -28,6 +28,7 @@ from . import (
     bd,
     channels,
     config,
+    daemon_supervisor,
     dolt_health,
     fleet,
     gitauth,
@@ -949,6 +950,51 @@ def _render_dispatch(d: dict) -> None:
 def _section_dispatch(cfg):
     """Render the dispatch section."""
     _render_dispatch(_data_dispatch(cfg))
+
+
+def _data_host_daemon(cfg) -> dict:
+    """Host-wide daemon diagnostics, separate from per-hive dispatch supervision."""
+    if not daemon_supervisor.configured(cfg):
+        return {
+            "configured": False,
+            "state": "not-configured",
+            "healthy": False,
+            "detail": "host.daemon.enabled=false",
+        }
+    try:
+        return {"configured": True, **daemon_supervisor.daemon_service_status().payload()}
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return {
+            "configured": True,
+            "state": "diagnostics-unavailable",
+            "healthy": False,
+            "detail": str(exc),
+        }
+
+
+def _render_host_daemon(d: dict) -> None:
+    typer.echo("\n# Host Daemon")
+    if not d["configured"]:
+        typer.echo(f"  - {d['detail']}")
+        return
+    if d["state"] == "diagnostics-unavailable":
+        typer.echo(f"  ! diagnostics unavailable: {d['detail']}")
+        return
+    glyph = "✓" if d["healthy"] else "!"
+    readiness = d["readiness"]
+    typer.echo(f"  {glyph} {d['state']}: {readiness['detail']}")
+    supervisor = d["supervisor"]
+    typer.echo(
+        f"    supervisor: {supervisor['backend']} ({supervisor['capability']}) — "
+        f"{supervisor['detail']}"
+    )
+    if supervisor["supported"]:
+        typer.echo(f"    start: {d['guidance']['start']}")
+    else:
+        typer.echo(f"    lifecycle handoff: {supervisor['handoff']}")
+    typer.echo(f"    status: {d['guidance']['status']}")
+    typer.echo(f"    logs: {d['guidance']['logs']}")
+    typer.echo(f"    control: {d['guidance']['control']}")
 
 
 # ---- per-group auth section (bh-4y0r.3) -------------------------------------
@@ -2519,6 +2565,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "beads_role": _timed(timings, "beads_role", _data_beads_role, cfg),
         "store_engine": _timed(timings, "store_engine", _data_store_engine, cfg),
         "dispatch": _timed(timings, "dispatch", _data_dispatch, cfg),
+        "host_daemon": _timed(timings, "host_daemon", _data_host_daemon, cfg),
         "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
         "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
@@ -2629,6 +2676,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_beads_role(data["beads_role"])
     _render_store_engine(data["store_engine"])
     _render_dispatch(data["dispatch"])
+    _render_host_daemon(data["host_daemon"])
     _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
     _render_harness_plugin(data["harness_plugin"])

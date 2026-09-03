@@ -15,6 +15,7 @@ import typer
 
 from . import (
     config,
+    daemon_supervisor,
     dolt_health,
     gitworkspace_plugin,
     hive,
@@ -339,6 +340,30 @@ def _dolt_server_check(root: Path) -> Check:
     )
 
 
+def _host_daemon_check(cfg) -> Check:
+    """Optional daemon availability; direct CLI/stdio readiness never depends on it."""
+    if not daemon_supervisor.configured(cfg):
+        return Check("host daemon", False, "na", "disabled (host.daemon.enabled=false)")
+    try:
+        status = daemon_supervisor.daemon_service_status()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return Check("host daemon", False, "warn", f"diagnostics unavailable: {exc}")
+    if status.healthy:
+        return Check("host daemon", False, "ok", status.readiness.detail)
+    lifecycle = (
+        status.supervisor.start_command
+        if status.supervisor.supported
+        else status.supervisor.handoff
+    )
+    return Check(
+        "host daemon",
+        False,
+        "warn",
+        f"{status.state}: {status.readiness.detail} — {lifecycle} "
+        "(bh does not auto-start the daemon or fall back)",
+    )
+
+
 def _schema_version_check(entry, root: Path) -> Check:
     """Read-only: this hive's recorded bd schema version vs. THIS host's bd (`bh-wnly`) — read
     from HQ's `hive_schema` record, WITHOUT opening this hive's own store (AC1 + AC5; `root` is
@@ -505,6 +530,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     # ---- Optional: integrations that could be set up ----
     checks.append(_validate_cmd_check(cfg, entry, root))
     checks.append(_dolt_server_check(root))
+    checks.append(_host_daemon_check(cfg))
     checks.append(_schema_version_check(entry, root))
     checks.append(_otel_sdk_check(cfg))
     checks.extend(_observaloop_checks(cfg, entry))

@@ -20,6 +20,7 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
+from beadhive import host_cli
 from beadhive import setup as setup_mod
 from beadhive.cli import app
 
@@ -496,3 +497,66 @@ def test_setup_check_silent_when_no_dolt_server_advisory(ws_home, monkeypatch, c
     combined = out.out + out.err
     assert "shared server" not in combined
     assert "⚠" not in combined
+
+
+def test_setup_daemon_structural_gap_is_advisory_not_core_failure(ws_home, monkeypatch):
+    all_found = {n: {"found": True, "version": "1.0"} for n, _, _ in setup_mod.PROBE_TABLE}
+    monkeypatch.setattr(setup_mod, "probe_tools", lambda: all_found)
+    monkeypatch.setattr(setup_mod, "dolt_server_advisory", lambda cwd=None: None)
+
+    def daemon_advisories():
+        return [
+            {
+                "id": "host-daemon-structural",
+                "category": "structural",
+                "message": "daemon command is missing",
+            }
+        ]
+
+    payload = setup_mod.check_payload(daemon_advisories=daemon_advisories)
+
+    assert payload["satisfied"] is True
+    assert payload["advisories"][-1]["category"] == "structural"
+
+
+def test_setup_daemon_runtime_readiness_is_a_distinct_advisory(ws_home, monkeypatch):
+    all_found = {n: {"found": True, "version": "1.0"} for n, _, _ in setup_mod.PROBE_TABLE}
+    monkeypatch.setattr(setup_mod, "probe_tools", lambda: all_found)
+    monkeypatch.setattr(setup_mod, "dolt_server_advisory", lambda cwd=None: None)
+
+    def daemon_advisories():
+        return [
+            {
+                "id": "host-daemon-readiness",
+                "category": "readiness",
+                "message": "daemon listener is unavailable",
+            }
+        ]
+
+    payload = setup_mod.check_payload(daemon_advisories=daemon_advisories)
+
+    assert payload["satisfied"] is True
+    assert payload["advisories"][-1]["category"] == "readiness"
+
+
+def test_setup_cli_supplies_daemon_advisories_without_setup_importing_daemon(ws_home, monkeypatch):
+    all_found = {n: {"found": True, "version": "1.0"} for n, _, _ in setup_mod.PROBE_TABLE}
+    monkeypatch.setattr(setup_mod, "probe_tools", lambda: all_found)
+    monkeypatch.setattr(setup_mod, "dolt_server_advisory", lambda cwd=None: None)
+    monkeypatch.setattr(
+        host_cli,
+        "daemon_setup_advisories",
+        lambda: [
+            {
+                "id": "host-daemon-readiness",
+                "category": "readiness",
+                "message": "daemon listener is unavailable",
+            }
+        ],
+    )
+
+    result = runner.invoke(app, ["setup", "check", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["advisories"][-1]["id"] == "host-daemon-readiness"

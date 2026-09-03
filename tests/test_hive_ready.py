@@ -7,11 +7,12 @@ never fail. With otel disabled (the test default) observaloop is N/A — no live
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 import typer
 
-from beadhive import config, hive, hive_ready
+from beadhive import config, daemon_supervisor, hive, hive_ready
 from harness.world import git
 
 
@@ -682,3 +683,58 @@ def test_scan_includes_dolt_server_line(world, monkeypatch):
     line = next(c for c in checks if c.label == "dolt server")
     assert line.state == "na"
     assert line.required is False
+
+
+def test_host_daemon_check_is_na_when_not_configured(monkeypatch):
+    monkeypatch.setattr(daemon_supervisor, "configured", lambda cfg: False)
+    check = hive_ready._host_daemon_check({})
+    assert check == hive_ready.Check(
+        "host daemon", False, "na", "disabled (host.daemon.enabled=false)"
+    )
+
+
+def test_host_daemon_unavailable_warns_but_never_blocks_hive_readiness(monkeypatch):
+    monkeypatch.setattr(daemon_supervisor, "configured", lambda cfg: True)
+    monkeypatch.setattr(
+        daemon_supervisor,
+        "daemon_service_status",
+        lambda: SimpleNamespace(
+            healthy=False,
+            state="listener-unreachable",
+            readiness=SimpleNamespace(detail="connection refused"),
+            supervisor=SimpleNamespace(
+                start_command="bh host daemon start", supported=True, handoff=None
+            ),
+        ),
+    )
+
+    check = hive_ready._host_daemon_check({})
+
+    assert check.state == "warn"
+    assert check.required is False
+    assert "connection refused" in check.detail
+    assert "bh host daemon start" in check.detail
+
+
+def test_host_daemon_detect_only_handoff_warns_without_claiming_lifecycle(monkeypatch):
+    monkeypatch.setattr(daemon_supervisor, "configured", lambda cfg: True)
+    monkeypatch.setattr(
+        daemon_supervisor,
+        "daemon_service_status",
+        lambda: SimpleNamespace(
+            healthy=False,
+            state="stopped",
+            readiness=SimpleNamespace(detail="daemon is stopped"),
+            supervisor=SimpleNamespace(
+                start_command="must not be rendered",
+                supported=False,
+                handoff="platform lifecycle management is owned by bh-q0lol.14",
+            ),
+        ),
+    )
+
+    check = hive_ready._host_daemon_check({})
+
+    assert check.state == "warn"
+    assert "bh-q0lol.14" in check.detail
+    assert "must not be rendered" not in check.detail
