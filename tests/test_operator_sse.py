@@ -20,6 +20,8 @@ from referencing import Registry, Resource
 from referencing.jsonschema import DRAFT202012
 
 from beadhive import (
+    daemon_auth,
+    daemon_state_broker,
     host_daemon,
     operator_api,
     operator_feed,
@@ -29,6 +31,8 @@ from beadhive import (
     state_stream_polling,
 )
 from beadhive.agent_run_summary import Freshness
+from beadhive.daemon_config import HostDaemonConfig
+from beadhive.daemon_contract import AuthScope
 from beadhive.public_readers import AgentRunSnapshot, Coverage
 
 NOW = datetime(2026, 8, 24, tzinfo=UTC).isoformat().replace("+00:00", "Z")
@@ -501,11 +505,17 @@ def test_discontinuity_rotates_epoch_and_reset_replaces_old_replay(tmp_path: Pat
     assert replacement["cursor"]["sequence"] == 1
     state = relay.retained_state()
     assert state["hives"][HIVE]["events"] == 1
-    reset_frame, _closed = relay._take(client)
+    reset_frame, closed = relay._take(client)
     assert reset_frame is not None and len(client.queue) == 0
     event_id, event = _event(reset_frame)
     assert event_id == f"{new_epoch}:1"
     assert event["payload"]["kind"] == "reset"
+    assert closed is False
+    assert relay._take(client) == (None, True)
+    assert client.close_reason == "resnapshot_required"
+
+    feed.allocate_events(HIVE, relay._heartbeat)
+    assert relay._take(client) == (None, True)
     with pytest.raises(operator_sse.ResnapshotRequired, match="cursor_epoch_expired"):
         relay.subscribe(
             HIVE,
@@ -514,6 +524,57 @@ def test_discontinuity_rotates_epoch_and_reset_replaces_old_replay(tmp_path: Pat
             loop=loop,
         )
     client.close()
+    loop.close()
+
+
+def test_reset_disconnect_is_scoped_to_one_hive_subscription(tmp_path: Path) -> None:
+    sources = _multi_sources(tmp_path)
+    provider = sources.provider
+    assert isinstance(provider, MultiProvider)
+    feed = operator_feed.OperatorFeed(sources, now_millis=lambda: 1000)
+    relay = operator_sse.OperatorEventRelay(feed, host_daemon.DaemonRuntime())
+    first = feed.snapshot_with_cursor(HIVE)
+    second = feed.snapshot_with_cursor(HIVE_TWO)
+    loop = asyncio.new_event_loop()
+    first_client = relay.subscribe(
+        HIVE,
+        subscription_id=f"hive:{HIVE}",
+        cursor=operator_sse.EventCursor(
+            str(first["cursor"]["producerEpoch"]), int(first["cursor"]["sequence"])
+        ),
+        loop=loop,
+    )
+    second_client = relay.subscribe(
+        HIVE_TWO,
+        subscription_id=f"hive:{HIVE_TWO}",
+        cursor=operator_sse.EventCursor(
+            str(second["cursor"]["producerEpoch"]), int(second["cursor"]["sequence"])
+        ),
+        loop=loop,
+    )
+
+    feed.mark_hive_discontinuous(HIVE, "source_interrupted")
+    provider.current[HIVE] = _snapshot("beads-three", "closed")
+    replacement = feed.snapshot_with_cursor(HIVE)
+
+    reset_frame, reset_closed = relay._take(first_client)
+    assert reset_frame is not None and reset_closed is False
+    _event_id, reset = _event(reset_frame)
+    assert reset["producerEpoch"] == replacement["cursor"]["producerEpoch"]
+    assert reset["payload"] == {"kind": "reset", "reason": "source_interrupted"}
+    assert relay._take(first_client) == (None, True)
+    assert first_client.close_reason == "resnapshot_required"
+
+    feed.allocate_events(HIVE_TWO, relay._heartbeat)
+    heartbeat_frame, heartbeat_closed = relay._take(second_client)
+    assert heartbeat_frame is not None and heartbeat_closed is False
+    _event_id, heartbeat = _event(heartbeat_frame)
+    assert heartbeat["producerEpoch"] == second["cursor"]["producerEpoch"]
+    assert heartbeat["payload"] == {"kind": "heartbeat"}
+    assert second_client.closed is False
+
+    first_client.close()
+    second_client.close()
     loop.close()
 
 
@@ -546,6 +607,68 @@ def test_retention_and_slow_client_are_bounded_independently(tmp_path: Path) -> 
     assert retained["clients"] == 0
     assert retained["slowDisconnects"] == 1
     assert retained["events"] == 2
+
+
+def test_closed_event_loop_wake_atomically_releases_client_and_queue(tmp_path: Path) -> None:
+    _provider, feed, _runtime, relay = _relay(tmp_path)
+    snapshot = feed.snapshot_with_cursor(HIVE)
+    loop = asyncio.new_event_loop()
+    client = relay.subscribe(
+        HIVE,
+        subscription_id=f"hive:{HIVE}",
+        cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
+        loop=loop,
+    )
+    loop.close()
+
+    feed.allocate_events(HIVE, relay._heartbeat)
+
+    assert client.closed and client.close_reason == "event_loop_closed"
+    assert not client.queue and client.queued_bytes == 0
+    assert relay.retained_state()["clients"] == 0
+    assert relay._has_clients(HIVE) is False
+
+
+def test_closed_event_loop_reset_and_shutdown_leave_no_clients_queues_or_tasks(
+    tmp_path: Path,
+) -> None:
+    provider, feed, _runtime, relay = _relay(tmp_path)
+    snapshot = feed.snapshot_with_cursor(HIVE)
+    loop = asyncio.new_event_loop()
+    reset_client = relay.subscribe(
+        HIVE,
+        subscription_id=f"hive:{HIVE}",
+        cursor=operator_sse.EventCursor(str(snapshot["cursor"]["producerEpoch"]), 0),
+        loop=loop,
+    )
+    loop.close()
+    feed.mark_hive_discontinuous(HIVE, "source_interrupted")
+    provider.current = _snapshot("beads-2", "closed")
+    feed.snapshot_with_cursor(HIVE)
+
+    assert reset_client.closed and reset_client.close_reason == "event_loop_closed"
+    assert not reset_client.queue and reset_client.queued_bytes == 0
+    assert relay.retained_state()["clients"] == 0
+
+    second_loop = asyncio.new_event_loop()
+    replacement = feed.installed_snapshot(HIVE)
+    assert replacement is not None
+    shutdown_client = relay.subscribe(
+        HIVE,
+        subscription_id=f"hive:{HIVE}",
+        cursor=operator_sse.EventCursor(
+            str(replacement["cursor"]["producerEpoch"]),
+            int(replacement["cursor"]["sequence"]),
+        ),
+        loop=second_loop,
+    )
+    second_loop.close()
+    asyncio.run(relay.close())
+
+    assert shutdown_client.closed and shutdown_client.close_reason == "daemon_shutdown"
+    assert not shutdown_client.queue and shutdown_client.queued_bytes == 0
+    assert relay.retained_state()["clients"] == 0
+    assert not relay._pumps
 
 
 def test_slow_peer_drop_does_not_interrupt_contiguous_healthy_peer_delivery(
@@ -899,3 +1022,238 @@ def test_event_route_rejects_conflicts_and_checked_resnapshot(tmp_path: Path) ->
         400,
         "conflicting_event_cursors",
     )
+
+
+def test_event_cursor_bounds_precede_integer_conversion_and_are_documented(
+    tmp_path: Path,
+) -> None:
+    _provider, feed, runtime, relay = _relay(tmp_path)
+    snapshot = feed.snapshot_with_cursor(HIVE)
+    epoch = str(snapshot["cursor"]["producerEpoch"])
+    huge_sequence = f"{epoch}:{'9' * 5_000}"
+    huge_epoch = f"{'e' * 5_000}:0"
+
+    for value in (huge_sequence, huge_epoch):
+        with pytest.raises(operator_sources.OperatorSourceError) as caught:
+            operator_sse.EventCursor.parse(value)
+        assert (caught.value.code, caught.value.status_code) == ("invalid_event_cursor", 400)
+
+    api = operator_api.OperatorAPI(
+        sources=feed.sources,
+        feed=feed,
+        host_id="host-1",
+        instance_id="instance-1",
+        ready=lambda: runtime.ready,
+        events=relay.events,
+    )
+    app = host_daemon.build_application(runtime=runtime, routes=api.routes())
+
+    async def exercise():
+        async with app.router.lifespan_context(app):
+            transport = httpx.ASGITransport(
+                app=app,
+                client=("127.0.0.1", 5000),
+                raise_app_exceptions=False,
+            )
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://127.0.0.1:8420"
+            ) as client:
+                query = await client.get(
+                    "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events",
+                    params={"subscription": f"hive:{HIVE}", "after": huge_sequence},
+                )
+                header = await client.get(
+                    "/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events",
+                    params={"subscription": f"hive:{HIVE}"},
+                    headers={"Last-Event-ID": huge_sequence},
+                )
+                return query, header
+
+    for response in asyncio.run(exercise()):
+        assert (response.status_code, response.json()["error"]["code"]) == (
+            400,
+            "invalid_event_cursor",
+        )
+
+    document = operator_api.openapi_document()
+    cursor_schema = document["components"]["schemas"]["EventCursorString"]
+    assert cursor_schema["maxLength"] == operator_sse.MAX_EVENT_CURSOR_LENGTH == 85
+    parameters = document["paths"]["/api/v1/hives/{hive_id}/events"]["get"]["parameters"]
+    cursor_parameters = {
+        parameter["name"]: parameter
+        for parameter in parameters
+        if parameter["name"] in {"after", "cursor", "Last-Event-ID"}
+    }
+    assert set(cursor_parameters) == {"after", "cursor", "Last-Event-ID"}
+    assert all("85-byte" in parameter["description"] for parameter in cursor_parameters.values())
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_reason"),
+    [
+        ("expiry", daemon_auth.AuthFailureCode.EXPIRED),
+        ("revocation", daemon_auth.AuthFailureCode.REVOKED),
+        ("rotation", daemon_auth.AuthFailureCode.ROTATED),
+    ],
+)
+def test_configured_app_revalidates_only_the_affected_live_sse_session(
+    tmp_path: Path,
+    monkeypatch,
+    mutation: str,
+    expected_reason: daemon_auth.AuthFailureCode,
+) -> None:
+    credential_file = (tmp_path / "daemon-credentials.json").absolute()
+    affected = daemon_auth.provision_credential_file(
+        credential_file,
+        credential_id="affected",
+        audience="beadhive-host",
+        principal="operator:affected",
+        scopes=(AuthScope.OPERATOR_READ,),
+        expires_at=200,
+    )
+    healthy = daemon_auth.add_credential(
+        credential_file,
+        credential_id="healthy",
+        audience="beadhive-host",
+        principal="operator:healthy",
+        scopes=(AuthScope.OPERATOR_READ,),
+        expires_at=300,
+    )
+    settings = HostDaemonConfig(
+        enabled=True,
+        auth={
+            "credential_file": credential_file,
+            "session_revalidation_seconds": 0.02,
+        },
+        sse={"heartbeat_seconds": 60},
+    )
+    runtime = host_daemon.DaemonRuntime(shutdown_budget=1.0)
+    provider = Provider()
+    broker = daemon_state_broker.DaemonStateBroker(
+        sources=_sources(tmp_path, provider),
+        runtime=runtime,
+        settings=settings,
+        registry_poll_interval=60,
+    )
+    snapshot = broker.feed.snapshot_with_cursor(HIVE)
+    monkeypatch.setattr(
+        daemon_state_broker.DaemonStateBroker,
+        "for_host",
+        classmethod(lambda _cls, **_kwargs: broker),
+    )
+    app = host_daemon.build_product_application(
+        runtime=runtime,
+        control_record=host_daemon.ControlRecord(
+            contract=host_daemon.CONTRACT_VERSION,
+            account_id="uid:test",
+            bh_home=str(tmp_path),
+            host_id="host-1",
+            instance_id="instance-1",
+            pid=1,
+            process_start="test:1",
+            listener_host="127.0.0.1",
+            listener_port=8737,
+            started_at=NOW,
+        ),
+        listener_host="127.0.0.1",
+        listener_port=8737,
+        cfg=broker.sources.cfg,
+        settings=settings,
+    )
+    now = [199.99]
+    app.state.auth_authority.clock = lambda: now[0]
+    raw_path = b"/api/v1/hives/github%2Fbeadhive%2Fbeadhive/events"
+    path = "/api/v1/hives/github/beadhive/beadhive/events"
+    query = (
+        f"subscription=hive:{HIVE}&after={snapshot['cursor']['producerEpoch']}:"
+        f"{snapshot['cursor']['sequence']}"
+    ).encode()
+
+    async def exercise() -> tuple[object, object]:
+        async def start_stream(token: str):
+            received: asyncio.Queue[dict[str, object]] = asyncio.Queue()
+            await received.put({"type": "http.request", "body": b"", "more_body": False})
+            started = asyncio.Event()
+            sent: list[dict[str, object]] = []
+
+            async def receive() -> dict[str, object]:
+                return await received.get()
+
+            async def send(message: dict[str, object]) -> None:
+                sent.append(message)
+                if message["type"] == "http.response.start":
+                    started.set()
+
+            scope = {
+                "type": "http",
+                "asgi": {"version": "3.0", "spec_version": "2.3"},
+                "http_version": "1.1",
+                "scheme": "http",
+                "method": "GET",
+                "path": path,
+                "raw_path": raw_path,
+                "query_string": query,
+                "root_path": "",
+                "headers": [
+                    (b"host", b"localhost"),
+                    (b"authorization", f"Bearer {token}".encode()),
+                ],
+                "client": ("127.0.0.1", 5000),
+                "server": ("127.0.0.1", 8737),
+                "state": {},
+            }
+            task = asyncio.create_task(app(scope, receive, send))
+            await asyncio.wait_for(started.wait(), 0.5)
+            return task, received, sent
+
+        async with app.router.lifespan_context(app):
+            affected_token = affected.bearer.reveal_for_authority()
+            healthy_token = healthy.bearer.reveal_for_authority()
+            affected_task, _affected_receive, affected_sent = await start_stream(affected_token)
+            healthy_task, healthy_receive, healthy_sent = await start_stream(healthy_token)
+            registry = app.state.credential_sessions
+            assert registry.active_session_count == 2
+            last_successful_check = now[0]
+            before = set(broker.relay._hives[HIVE].clients)
+            assert len(before) == 2
+
+            if mutation == "expiry":
+                now[0] = 200.0
+            elif mutation == "revocation":
+                daemon_auth.revoke_credential(credential_file, "affected")
+                now[0] += settings.auth.session_revalidation_seconds
+            else:
+                daemon_auth.rotate_credential(credential_file, "affected")
+                now[0] += settings.auth.session_revalidation_seconds
+
+            await asyncio.wait_for(affected_task, 0.5)
+            assert not healthy_task.done()
+            assert registry.active_session_count == 1
+            remaining = set(broker.relay._hives[HIVE].clients)
+            removed = before - remaining
+            assert len(remaining) == len(removed) == 1
+            affected_client = removed.pop()
+            healthy_client = remaining.pop()
+            assert affected_client.closed and affected_client.close_reason == expected_reason.value
+            assert not affected_client.queue and affected_client.queued_bytes == 0
+            assert not healthy_client.closed
+            assert registry.closure_records[-1].reason is expected_reason
+            assert (
+                registry.closure_records[-1].detected_at - last_successful_check
+                <= settings.auth.session_revalidation_seconds + 1e-9
+            )
+
+            rendered = repr((registry.closure_records, affected_sent, healthy_sent, app.state))
+            assert affected_token not in rendered and healthy_token not in rendered
+
+            await healthy_receive.put({"type": "http.disconnect"})
+            await asyncio.wait_for(healthy_task, 0.5)
+            assert registry.active_session_count == 0
+            assert len(registry.closure_records) == 1
+            assert healthy_client.closed and healthy_client.close_reason == "client_closed"
+            return registry, broker
+
+    registry, closed_broker = asyncio.run(exercise())
+    assert registry.active_session_count == 0
+    assert closed_broker.retained_state()["clients"] == 0
+    assert not closed_broker.relay._pumps

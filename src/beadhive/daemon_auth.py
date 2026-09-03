@@ -669,7 +669,9 @@ def _credential_in_url(scope: Scope) -> bool:
     return False
 
 
-def _error_response(error: AuthenticationError) -> JSONResponse:
+def authentication_error_response(error: AuthenticationError) -> JSONResponse:
+    """Render one checked, credential-free authentication response."""
+
     forbidden = error.status_code == 403
     body = redacted_error(ErrorCode.FORBIDDEN if forbidden else ErrorCode.UNAUTHORIZED).to_wire()
     headers = {} if forbidden else {"WWW-Authenticate": 'Bearer realm="beadhive-host"'}
@@ -715,10 +717,11 @@ class BearerAuthMiddleware:
                     }
                 )
             else:
-                await _error_response(exc)(scope, receive, send)
+                await authentication_error_response(exc)(scope, receive, send)
             return
         state = scope.setdefault("state", {})
         state["auth_principal"] = principal
+        state["auth_bearer"] = SecretBearer(bearer)
         await self.app(scope, receive, send)
 
 
@@ -1029,6 +1032,15 @@ class CredentialSessionRegistry:
             detected_at=self.authority.clock(),
         )
         self._schedule_close_callbacks((detached,) if detached is not None else ())
+
+    def unregister(self, session: CredentialSession) -> None:
+        """Forget an ordinarily completed transport without recording invalidation."""
+
+        if session.closed:
+            return
+        session.closed = True
+        self._sessions.discard(session)
+        self._wake.set()
 
     async def revalidate_due(self, *, now: float | None = None) -> None:
         resolved_now = self.authority.clock() if now is None else now
