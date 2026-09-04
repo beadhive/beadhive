@@ -130,6 +130,27 @@ daemon_app = typer.Typer(
 )
 app.add_typer(daemon_app, name="daemon")
 
+
+def _init_deferred_cli_telemetry(ctx: typer.Context) -> None:
+    """Complete root telemetry deferral for every ``host`` command except daemon ``serve``."""
+    from . import cli
+
+    cli._init_telemetry_best_effort()
+    cli._instrument_command_entry(ctx, command_name="host")
+
+
+@app.callback()
+def _host_root(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand != "daemon":
+        _init_deferred_cli_telemetry(ctx)
+
+
+@daemon_app.callback()
+def _daemon_root(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand != "serve":
+        _init_deferred_cli_telemetry(ctx)
+
+
 _AS_JSON = typer.Option(False, "--json", help="machine payload (as_json)")
 _FORCE = typer.Option(False, "-f", "--force", help="overwrite an existing manifest")
 _REMOTE_ONLY_HIVE = typer.Option(

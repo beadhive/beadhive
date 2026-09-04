@@ -141,6 +141,7 @@ class EventSubscription:
     queued_bytes: int = 0
     closed: bool = False
     close_reason: str | None = None
+    telemetry_connection: Any = None
 
     def close(self, reason: str = "client_closed") -> None:
         self.relay.unsubscribe(self, reason=reason)
@@ -284,6 +285,7 @@ class OperatorEventRelay:
         self._closing = False
         self._closed = False
         self._slow_disconnects = 0
+        self.telemetry: Any | None = None
         self._remove_transition = feed.register_transition_handler(self._on_transition)
         self._remove_install = feed.register_install_observer(self._on_install)
         self._remove_activity = feed.register_activity_observer(self._on_activity)
@@ -354,6 +356,8 @@ class OperatorEventRelay:
 
     def _publish_activity_locked(self, state: _HiveRelayState, install: ActivityInstall) -> int:
         if install.reset_reason is not None:
+            if self.telemetry is not None:
+                self.telemetry.record_reset("source_discontinuity")
             self._append_locked(
                 state,
                 source="runtime",
@@ -410,6 +414,8 @@ class OperatorEventRelay:
             if self._closed:
                 return 1
             if transition.reset_reason is not None:
+                if self.telemetry is not None:
+                    self.telemetry.record_reset("source_discontinuity")
                 self._clear_history_locked(state)
                 for client in state.clients:
                     client.queue.clear()
@@ -654,6 +660,7 @@ class OperatorEventRelay:
             old_state.history.popleft()
             old_state.history_bytes -= old_event.size
             self._retained_bytes -= old_event.size
+        self._sync_queue_telemetry_locked()
 
     def _drop_oldest_locked(self, state: _HiveRelayState) -> None:
         event = state.history.popleft()
@@ -661,6 +668,7 @@ class OperatorEventRelay:
         retained = self._retained.pop(event.serial, None)
         if retained is not None:
             self._retained_bytes -= event.size
+        self._sync_queue_telemetry_locked()
 
     def _clear_history_locked(self, state: _HiveRelayState) -> None:
         while state.history:
@@ -677,8 +685,18 @@ class OperatorEventRelay:
             return False
         client.queue.append(frame)
         client.queued_bytes += len(frame)
+        self._sync_queue_telemetry_locked()
         self._wake_locked(client)
         return True
+
+    def _sync_queue_telemetry_locked(self) -> None:
+        if self.telemetry is None:
+            return
+        self.telemetry.set_queue_depth(
+            "sse-client",
+            sum(len(client.queue) for state in self._hives.values() for client in state.clients),
+        )
+        self.telemetry.set_queue_depth("sse-replay", len(self._retained))
 
     def _wake_locked(self, client: EventSubscription) -> None:
         """Wake one client or atomically release every retained reference to it."""
@@ -707,12 +725,18 @@ class OperatorEventRelay:
             client.queued_bytes = 0
         if state is not None:
             state.clients.discard(client)
+        if client.telemetry_connection is not None and self.telemetry is not None:
+            self.telemetry.close_connection(client.telemetry_connection, reason=reason)
+            client.telemetry_connection = None
+        self._sync_queue_telemetry_locked()
         return newly_closed or attached
 
     def _disconnect_locked(self, client: EventSubscription, reason: str) -> None:
         disconnected = self._detach_client_locked(client, reason, clear_queue=True)
         if disconnected and reason == "slow_consumer":
             self._slow_disconnects += 1
+            if self.telemetry is not None:
+                self.telemetry.record_backpressure("sse", "slow_consumer")
             logger.warning(
                 "operator SSE client disconnected after exceeding its bounded queue",
                 extra={"hive_id": client.hive_id, "disconnect_reason": reason},
@@ -760,10 +784,13 @@ class OperatorEventRelay:
             if len(replay) > self.client_event_limit or replay_bytes > self.client_byte_limit:
                 raise ResnapshotRequired("replay_exceeds_client_capacity")
             client = EventSubscription(self, hive_id, loop)
+            if self.telemetry is not None:
+                client.telemetry_connection = self.telemetry.open_connection("sse")
             for event in replay:
                 client.queue.append(event.frame)
                 client.queued_bytes += event.size
             state.clients.add(client)
+            self._sync_queue_telemetry_locked()
             if replay:
                 self._wake_locked(client)
             return client
@@ -777,6 +804,7 @@ class OperatorEventRelay:
             if client.queue:
                 frame = client.queue.popleft()
                 client.queued_bytes -= len(frame)
+                self._sync_queue_telemetry_locked()
                 if not client.queue:
                     client.wakeup.clear()
                 return frame, False
@@ -835,6 +863,15 @@ class OperatorEventRelay:
                 registry.unregister(session)
             return JSONResponse(error_payload(exc), status_code=exc.status_code)
         except ResnapshotRequired as exc:
+            if self.telemetry is not None:
+                reason = {
+                    "cursor_epoch_expired": "unknown_epoch",
+                    "cursor_in_future": "future_sequence",
+                    "cursor_expired": "expired_cursor",
+                    "cursor_gap": "retention_gap",
+                    "replay_exceeds_client_capacity": "retention_gap",
+                }.get(exc.code, "retention_gap")
+                self.telemetry.record_replay_gap(reason)
             if session is not None and registry is not None:
                 registry.unregister(session)
             return _resnapshot(exc.code)

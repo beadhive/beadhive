@@ -405,6 +405,45 @@ def _event(frame: bytes) -> tuple[str, dict]:
     return lines[1].removeprefix("id: "), json.loads(lines[2].removeprefix("data: "))
 
 
+def test_exact_sse_subscription_owns_connection_and_queue_gauges_to_zero(tmp_path: Path) -> None:
+    _provider, feed, _runtime, relay = _relay(tmp_path)
+    snapshot = feed.snapshot_with_cursor(HIVE)
+
+    class Telemetry:
+        def __init__(self):
+            self.active = 0
+            self.depths = []
+
+        def open_connection(self, kind):
+            assert kind == "sse"
+            self.active += 1
+            return object()
+
+        def close_connection(self, _token, *, reason):
+            assert reason == "client_closed"
+            self.active -= 1
+
+        def set_queue_depth(self, queue, depth):
+            self.depths.append((queue, depth))
+
+    telemetry = Telemetry()
+    relay.telemetry = telemetry
+
+    async def exercise():
+        client = relay.subscribe(
+            HIVE,
+            subscription_id=f"hive:{HIVE}",
+            cursor=operator_sse.EventCursor(snapshot["cursor"]["producerEpoch"], 0),
+            loop=asyncio.get_running_loop(),
+        )
+        assert telemetry.active == 1
+        client.close()
+
+    asyncio.run(exercise())
+    assert telemetry.active == 0
+    assert ("sse-client", 0) in telemetry.depths
+
+
 def test_snapshot_boundary_replays_strictly_later_entity_event(tmp_path: Path) -> None:
     provider, feed, _runtime, relay = _relay(tmp_path)
     first = feed.snapshot_with_cursor(HIVE)

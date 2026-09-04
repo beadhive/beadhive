@@ -1144,6 +1144,13 @@ image-cross target="default": image-builder image-qemu
 otel-verify endpoint="http://localhost:4317":
     WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run pytest tests/test_otel_verify.py -v -s
 
+# Explicit compatibility gate: create a temporary environment at the declared OTel floor and
+# prove fractional env timeout parsing + bounded dead-collector daemon shutdown with zero workers.
+# Kept out of ordinary pytest because creating/installing an environment is allowed to fetch on a
+# cold cache; reviewers and dependency-floor changes invoke this recipe deliberately.
+otel-minimum-check:
+    uv run python tests/proof/verify_otel_minimum.py
+
 # live metrics-usability verification: confirms bh metrics form a stable per-(hive,command)
 # accumulating series with ws.hive/observaloop.profile labels (no service_instance_id) and
 # that rate() returns data — proving the CLI-metrics preset + delta temporality fix works.

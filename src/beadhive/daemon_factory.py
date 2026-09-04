@@ -188,6 +188,7 @@ class FactoryDirectory:
         journal_stale_after_seconds: float = DEFAULT_RUN_JOURNAL_STALE_AFTER_SECONDS,
         dolt_probe_timeout_seconds: float = dolt_health.DEFAULT_PROBE_TIMEOUT,
         activity_publish_configured: bool = False,
+        telemetry: object | None = None,
     ) -> None:
         if not math.isfinite(journal_stale_after_seconds) or journal_stale_after_seconds <= 0:
             raise ValueError("journal stale threshold must be finite and greater than zero")
@@ -207,6 +208,20 @@ class FactoryDirectory:
         self.dolt_probe_timeout_seconds = float(dolt_probe_timeout_seconds)
         self.dependency_probe_timeout_seconds = self.dolt_probe_timeout_seconds
         self.activity_publish_configured = bool(activity_publish_configured)
+        self.telemetry = telemetry
+
+    def _observed_probe(self, name: str, probe: Callable[[], DependencyObservation]):
+        started = time.monotonic()
+        observation = probe()
+        telemetry = self.telemetry
+        if telemetry is not None:
+            try:
+                telemetry.record_dependency_probe(
+                    name, str(observation.status), time.monotonic() - started
+                )
+            except Exception:
+                pass
+        return observation
 
     def _activity_publish_capability(
         self, inventory: RunDirectoryInventory, *, accepting_work: bool
@@ -453,14 +468,18 @@ class FactoryDirectory:
         journal_state, journal_reason, journal_dependency = self._journal_status(
             inventory, generated_at=generated_at
         )
-        hq_dependency = (
-            self._hq_status()
-            if self._hq_status is not None
-            else self._default_hq_status(cancellation_event)
+        hq_dependency = self._observed_probe(
+            "hq",
+            (
+                self._hq_status
+                if self._hq_status is not None
+                else lambda: self._default_hq_status(cancellation_event)
+            ),
         )
+        dolt_dependency = self._observed_probe("dolt", lambda: self._dolt_status(hives))
         dependencies = (
             hq_dependency,
-            self._dolt_status(hives),
+            dolt_dependency,
             hive_dependency,
             journal_dependency,
         )

@@ -1132,14 +1132,51 @@ def serve() -> None:
     build_server().run()
 
 
+def _init_stdio_telemetry_best_effort() -> dict:
+    """Own generic telemetry for the standalone ``bh-mcp`` process.
+
+    ``bh mcp serve`` enters through the CLI callback and calls :func:`serve` directly, so it keeps
+    the CLI's existing provider ownership.  Only the installed console script calls :func:`main`
+    and takes this path.  As with CLI telemetry, configuration and the worktree environment overlay
+    are best-effort and can never prevent the stdio server from starting.
+    """
+    cfg: dict = {}
+    try:
+        cfg = config.load()
+        from . import observaloop_env
+
+        observaloop_env.load_worktree_env(cfg)
+        otel.init(cfg)
+    except Exception:
+        pass
+    return cfg
+
+
+def _shutdown_stdio_telemetry_best_effort(cfg: dict) -> None:
+    """Flush the standalone stdio provider within its configured finite budget."""
+    timeout_seconds = 2.0
+    try:
+        timeout_seconds = config.otel_flush_timeout(cfg)
+    except Exception:
+        pass
+    try:
+        otel.shutdown(timeout_seconds=timeout_seconds)
+    except Exception:
+        pass
+
+
 def main() -> int:
     """`bh-mcp` console-script entrypoint. Returns an exit code (0 ok, 1 unavailable)."""
+    cfg = _init_stdio_telemetry_best_effort()
     try:
-        serve()
-    except MCPUnavailable as exc:
-        print(f"✗ {exc}", file=sys.stderr)
-        return 1
-    return 0
+        try:
+            serve()
+        except MCPUnavailable as exc:
+            print(f"✗ {exc}", file=sys.stderr)
+            return 1
+        return 0
+    finally:
+        _shutdown_stdio_telemetry_best_effort(cfg)
 
 
 if __name__ == "__main__":

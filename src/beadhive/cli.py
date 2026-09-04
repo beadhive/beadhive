@@ -372,7 +372,7 @@ def _init_telemetry_best_effort() -> None:
         pass
 
 
-def _instrument_command_entry(ctx: typer.Context) -> None:
+def _instrument_command_entry(ctx: typer.Context, *, command_name: str | None = None) -> None:
     """Instrument the command-entry seam: register a call_on_close hook that emits a counter +
     histogram tagged with the invoked subcommand name + outcome (ok/error). Gated on
     is_active() so the off-path (default: otel disabled) is a single bool read — zero SDK
@@ -380,7 +380,7 @@ def _instrument_command_entry(ctx: typer.Context) -> None:
     if not otel.is_active():
         return
     _start = time.monotonic()
-    _cmd = ctx.invoked_subcommand or ""
+    _cmd = command_name if command_name is not None else ctx.invoked_subcommand or ""
     # Open a root ws.cli {command} span so all child spans (trace_verb + subprocess) nest
     # under it. The context manager is entered here (making the span current) and exited in
     # call_on_close after the subcommand completes. otel.span() delegates to get_tracer(),
@@ -439,8 +439,13 @@ def _root(
     _warn_stale_schema_version_best_effort(ctx)
     _warn_missing_fleet_config_best_effort(ctx)
     _warn_literal_violations_best_effort(ctx)
-    _init_telemetry_best_effort()
-    _instrument_command_entry(ctx)
+    # ``host daemon serve`` owns a daemon-scoped provider for its entire outer lifespan.  Defer
+    # generic CLI telemetry through the nested host/daemon callbacks so that supported entrypoint
+    # does not consume the process-global SDK first.  Every other command still initializes the
+    # ordinary short-lived CLI provider before its handler runs.
+    if ctx.invoked_subcommand != "host":
+        _init_telemetry_best_effort()
+        _instrument_command_entry(ctx)
     # Same informational-only exemption as the schema-staleness nudge above (bh-sn9q): a
     # subcommand's `--help`/`-h` or shell-completion must never be blocked by the setup gate
     # (it would otherwise swallow the help text entirely on a fresh, ungated install).

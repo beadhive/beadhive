@@ -820,6 +820,18 @@ class OtelConfig(_Section):
     metrics_temporality: Literal["delta", "cumulative"] = Field(
         "delta", description="Preferred OTLP metric temporality."
     )
+    export_timeout_seconds: float = Field(
+        0.5,
+        gt=0,
+        le=30,
+        description="Finite timeout for one OTLP exporter request.",
+    )
+    flush_timeout_seconds: float = Field(
+        2.0,
+        ge=0,
+        le=30,
+        description="Finite total process-exit telemetry flush budget.",
+    )
     role: str = Field(
         "",
         description="`bh.role` stamped onto the Resource (the seat this process runs as).",
