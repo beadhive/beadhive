@@ -125,6 +125,17 @@ openapi-check:
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: require-bd lint lint-md license-check (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
+# RELEASE ONLY — validates evidence captured by real Darwin, Linux, and container targets.
+# Unit command fixtures cannot satisfy this gate: every cell carries real-execution, target,
+# exact-revision, and freshness provenance. An unavailable target or absent cell is a failure.
+# validate the complete real host-daemon platform lifecycle evidence document
+check-host-daemon-platform-release evidence revision="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    revision="{{revision}}"
+    if [ -z "$revision" ]; then revision="$(git rev-parse HEAD)"; fi
+    uv run python -m beadhive.daemon_platform "{{evidence}}" --revision "$revision"
+
 # MANUAL ONLY — the release browser matrix belongs to beadhive-ui because that repository owns
 # Chromium, the product bundle, and the browser adapters. Core delegates instead of copying the
 # test or acquiring a Node/Playwright dependency. The sibling must be clean so its source inputs

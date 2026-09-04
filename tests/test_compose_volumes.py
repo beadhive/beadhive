@@ -80,15 +80,16 @@ def test_no_literal_home_survives_in_either_file():
 
 
 def test_bh_reads_each_area_from_the_env_var_that_names_it():
-    """The whole split is these five variables — bh already honors them, so no bh code change.
+    """The whole split uses the runtime variables bh already honors, so no bh code change.
 
-    Each must point AT its mount, not merely near it: BH_HQ nests inside BH_HOME's volume by
-    design, and CLAUDE_CONFIG_DIR must equal the harness mount or ~/.claude.json lands outside
-    the volume and sign-in does not survive a recreate.
+    Each must point AT its mount, not merely near it. HQ uses BH_HOME's ``hq`` default; setting
+    the scalar ``BH_HQ`` here would collide with the typed structured ``hq`` config section.
+    CLAUDE_CONFIG_DIR must equal the harness mount or ~/.claude.json lands outside the volume
+    and sign-in does not survive a recreate.
     """
     env = COMPOSE["services"]["bh"]["environment"]
     assert _normalize(env["BH_HOME"]) == f"{AGENT_HOME}/.beadhive"
-    assert _normalize(env["BH_HQ"]).startswith(f"{AGENT_HOME}/.beadhive/")
+    assert "BH_HQ" not in env
     assert _normalize(env["CLAUDE_CONFIG_DIR"]) == f"{AGENT_HOME}/.claude"
     assert env["GIT_WORKSPACE"] == "/workspace"
     assert env["BH_WORKTREES"] == "/worktrees"

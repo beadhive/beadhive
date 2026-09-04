@@ -347,7 +347,19 @@ def _platform_backend_name() -> str:
 
 
 def get_supervisor_backend() -> SupervisorBackend:
-    return DetectOnlySupervisorBackend()
+    name = _platform_backend_name()
+    if name == "launchagent":
+        from .daemon_platform import LaunchAgentSupervisorBackend
+
+        return LaunchAgentSupervisorBackend()
+    if name == "systemd-user":
+        from .daemon_platform import SystemdUserSupervisorBackend
+
+        return SystemdUserSupervisorBackend()
+    # Container lifecycle belongs to Compose/the external orchestrator.  Returning the
+    # detect-only implementation is intentional: a process inside the image must never try
+    # to install or drive its own supervisor (or a host Docker socket).
+    return DetectOnlySupervisorBackend(name)
 
 
 def _require_identity(expected: DaemonKey, state: SupervisorState) -> SupervisorState:
