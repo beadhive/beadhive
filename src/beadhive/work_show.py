@@ -24,23 +24,29 @@ from .work_logic import flag_rows
 def show_payload(cfg, entry, bead: str, branch: str, main) -> dict:
     """Core payload for ``ws work show --json`` and ``beadhive://work/show/{id}``.
 
-    Returns ``{base, max_commits, commits, gates}`` — the base commit SHA (7-char
-    abbreviated), the configured commit limit, the flagged commit rows for ``base..branch``
-    of the named bead, and every gate touching the bead (``work_logic.gate_rows``: id, kind,
-    open/resolved status, reason snippet — open first).  Computed from the already-pure
-    producers ``worktree.commit_rows`` + ``work_logic.flag_rows``; no Typer / no side
-    effects.  Returns an empty commits list and an empty base string when the branch or
-    integration base cannot be resolved.
+    Returns ``{base, max_commits, commits, gates}`` — plus ``history_policy`` for an epic
+    container branch.  The base is a 7-char abbreviated commit SHA, ``max_commits`` remains the
+    configured leaf limit, commits are flagged rows for ``base..branch``, and gates include every
+    gate touching the bead (``work_logic.gate_rows``: id, kind, open/resolved status, reason
+    snippet — open first).  An epic policy reports its topology-derived effective limit and exact
+    attribution errors without changing the configured limit.  Computed from read-only producers;
+    returns an empty commits list and base string when the branch or integration base cannot be
+    resolved.
     """
     integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     base = worktree.base_of(entry, branch, integration)
     rows = flag_rows(worktree.commit_rows(entry, base, branch)) if base else []
-    return {
+    payload = {
         "base": base[:7] if base else "",
         "max_commits": config.max_commits(cfg, entry),
         "commits": rows,
         "gates": work_logic.gate_rows(bead, main),
     }
+    if base and branch.startswith(f"{worktree._BEAD_PREFIX}epic/"):
+        payload["history_policy"] = work_logic.epic_history_policy(
+            entry, main, bead, branch, base, config.max_commits(cfg, entry)
+        )
+    return payload
 
 
 # Typer option specs for the read-only render verbs (mirrors the lifecycle verbs' specs in
@@ -108,6 +114,20 @@ def _render_gates(bead, main):
         typer.echo(f"  {glyph} {r['kind']} gate {r['id']}: {r['reason']}")
 
 
+def _render_history_policy(policy: dict | None) -> None:
+    if not policy:
+        return
+    verdict = "valid" if policy.get("valid") else "INVALID"
+    typer.echo(
+        "history policy: "
+        f"{policy['kind']} ({verdict}) — effective max "
+        f"{policy['effective_max_commits']}, configured leaf max "
+        f"{policy['configured_max_commits']}; {policy['basis']}"
+    )
+    for error in policy.get("errors") or []:
+        typer.echo(f"  ✗ {error}")
+
+
 def _render_view(v, rows, base, max_commits, entry, branch):
     if v == "log":
         _render_log(rows, base, max_commits)
@@ -170,13 +190,26 @@ def show(
     integration = worktree.integration_base(entry, bead, config.integration_branch(cfg, entry))
     base = worktree.base_of(entry, branch, integration)
     rows = flag_rows(worktree.commit_rows(entry, base, branch)) if base else []
+    policy = (
+        work_logic.epic_history_policy(
+            entry, main, bead, branch, base, config.max_commits(cfg, entry)
+        )
+        if base and branch.startswith(f"{worktree._BEAD_PREFIX}epic/")
+        else None
+    )
     if not base:
         typer.echo(f"✗ cannot compare {branch} against {integration} (present locally?)", err=True)
     elif not rows:
         typer.echo(f"no commits over {base[:7]}")
     else:
+        _render_history_policy(policy)
         for v in view:
-            _render_view(v, rows, base, config.max_commits(cfg, entry), entry, branch)
+            limit = (
+                int(policy["effective_max_commits"])
+                if policy
+                else config.max_commits(cfg, entry)
+            )
+            _render_view(v, rows, base, limit, entry, branch)
     _render_gates(bead, main)  # gates exist independent of local history — render either way
 
 
@@ -212,6 +245,7 @@ def _legacy_review(
     # work_group.py's submit_group/merge_group (and work._batch_worktree for resume/check)
     # already apply (bh-c3nf). Checked first: a batch member has no meaningful bead_branch.
     grp = work_group.batch_label(bd.show(bead, main))
+    molecule = False
     if grp:
         # worktree.locate applies the wt/ prefix — this is the same resolution
         # work_group.py's submit_group/merge_group already use for the shared branch.
@@ -226,6 +260,7 @@ def _legacy_review(
         work._print_brief(cfg, entry, bead, bd.show(bead, main))
     elif worktree._branch_exists(main, mol_branch):
         branch = mol_branch
+        molecule = True
         _review_molecule_intent(cfg, entry, bead, main)
     elif worktree._branch_exists(main, bead_branch):
         branch = bead_branch
@@ -246,8 +281,21 @@ def _legacy_review(
             typer.echo(f"\nno commits over {base[:7]}")
         else:
             typer.echo(f"\n## Change ({branch} vs {integration})")
+            policy = (
+                work_logic.epic_history_policy(
+                    entry, main, bead, branch, base, config.max_commits(cfg, entry)
+                )
+                if molecule
+                else None
+            )
+            _render_history_policy(policy)
             for v in view:
-                _render_view(v, rows, base, config.max_commits(cfg, entry), entry, branch)
+                limit = (
+                    int(policy["effective_max_commits"])
+                    if policy
+                    else config.max_commits(cfg, entry)
+                )
+                _render_view(v, rows, base, limit, entry, branch)
 
     # execution (pristine checkout — never depends on dirty local state). REFUSE rather than
     # validate/demo a branch with no confirmed commits over its base (bh-87ktb): the old code

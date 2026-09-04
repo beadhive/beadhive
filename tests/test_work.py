@@ -471,6 +471,79 @@ def test_history_ok_rules():
     assert not work._history_ok(1, ["bumped stuff"], 10)[0]  # …but a non-conventional one is not
 
 
+@pytest.mark.parametrize("merge_position", ["keep", "fold"])
+def test_refine_plan_rejects_a_merge_commit_in_any_group(merge_position):
+    """An explicit plan cannot promise to rewrite a merge commit: interactive rebase does not
+    preserve that topology, so both the keep and fold forms fail during pure plan validation."""
+    leaf = {
+        "sha": "a" * 40,
+        "short": "a" * 8,
+        "parents": ["0" * 40],
+        "subject": "feat: leaf",
+    }
+    merge = {
+        "sha": "b" * 40,
+        "short": "b" * 8,
+        "parents": ["0" * 40, "a" * 40],
+        "subject": "chore(merge): bead mr-1.1",
+    }
+    group = (
+        {"keep": merge["sha"], "fold": [leaf["sha"]]}
+        if merge_position == "keep"
+        else {"keep": leaf["sha"], "fold": [merge["sha"]]}
+    )
+
+    ok, errors, _groups = work.validate_plan({"groups": [group]}, [leaf, merge])
+
+    assert not ok
+    assert any("merge commit" in error and merge_position in error for error in errors)
+
+
+def test_refine_dry_run_rejects_merge_before_backup_or_rebase(
+    hive, fakebd, tmp_path, monkeypatch, capsys
+):
+    """The CLI dry-run traverses the real plan loader but refuses a merge row before any
+    safety-ref or rebase mutation can begin."""
+    epic = "mr-refine-merge"
+    _start_and_land_children(hive, fakebd, epic, count=1)
+    entry = registry.resolve_hive(config.load(), "myrepo")
+    branch = f"wt/bead/epic/{epic}"
+    base = worktree.base_of(entry, branch, "main")
+    rows = worktree.commit_rows(entry, base, branch)
+    merge = next(row for row in rows if len(row["parents"]) == 2)
+    leaf = next(row for row in rows if len(row["parents"]) == 1)
+    plan = tmp_path / "merge-plan.json"
+    plan.write_text(
+        json.dumps({"base": base, "groups": [{"keep": leaf["sha"], "fold": [merge["sha"]]}]})
+    )
+    before = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    monkeypatch.setattr(
+        worktree,
+        "backup_branch",
+        lambda *_args, **_kwargs: pytest.fail("backup created before merge-plan refusal"),
+    )
+    monkeypatch.setattr(
+        worktree,
+        "rebase_squash",
+        lambda *_args, **_kwargs: pytest.fail("rebase started before merge-plan refusal"),
+    )
+
+    with pytest.raises(typer.Exit):
+        work.refine(
+            bead=epic,
+            plan=str(plan),
+            autosquash=False,
+            since="",
+            dry_run=True,
+            hive="myrepo",
+        )
+
+    assert _git("rev-parse", branch, cwd=hive.main).stdout.strip() == before
+    assert not _git("branch", "--list", f"{branch}.refine-*", cwd=hive.main).stdout.strip()
+    assert "merge commit" in capsys.readouterr().err
+
+
 def test_is_review_gate_desc_classifies_marker_forms():
     """The single review-gate selector: bh:/legacy/batch forms with a hex sha classify as review;
     an ad-hoc human gate whose reason merely starts with the word 'review' does NOT."""
@@ -1366,9 +1439,7 @@ def test_submit_epic_accepts_gate_despite_dep_refusal(hive, fakebd):
     only block other epics", beads 1.1.0). A molecule submit must accept that dep-less gate —
     the review lifecycle matches gates by description, and an in_progress epic is never in
     bd ready — instead of aborting with an orphaned open gate."""
-    fakebd.seed("mr-90", title="t", issue_type="epic")
-    work.claim(bead="mr-90", as_="disp/alice", hive="myrepo")
-    _commit(_wt(hive, "mr-90"), "docs: the change")
+    _start_and_land_children(hive, fakebd, "mr-90", count=1, dispatcher="disp/alice")
     work.submit(bead="mr-90", as_="disp/alice", hive="myrepo")
     assert fakebd.states["mr-90"]["review"] == "pending"
     assert any(g["status"] == "open" and "mr-90" in g["description"] for g in fakebd.gates)
@@ -3329,6 +3400,94 @@ def _land_two_bead_molecule(hive, fakebd, epic="mr-1"):
         work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
 
 
+def _start_and_land_children(
+    hive, fakebd, epic="mr-epic", count=6, dispatcher="disp/lead"
+):
+    """Assemble a real epic seat whose reviewed child topology exceeds the leaf limit."""
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_=dispatcher, hive="myrepo")
+    for index in range(1, count + 1):
+        bid = f"{epic}.{index}"
+        fakebd.seed(bid, title=f"child {index}", parent=epic)
+        work.claim(bead=bid, as_="dev/child", hive="myrepo")
+        _commit(_wt_of(hive, bid), f"feat: {bid}", fname=f"child-{index}.txt")
+        work.submit(bead=bid, as_="dev/child", hive="myrepo")
+        work.approve(bead=bid, as_=f"review/child-{index}", hive="myrepo")
+        work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
+    return worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
+
+
+def test_epic_submit_and_finish_accept_reviewed_topology_over_leaf_limit(
+    hive, fakebd, capsys
+):
+    """Six one-commit children produce twelve commits over base. The ordinary leaf maximum is
+    still ten, but every commit is accounted for by a reviewed child plus its no-ff bubble, so
+    epic submit and the merge-time preflight both accept the graph without rewriting it."""
+    epic = "mr-assembled"
+    _start_and_land_children(hive, fakebd, epic, count=6)
+    branch = f"wt/bead/epic/{epic}"
+    assert worktree.history(registry.resolve_hive(config.load(), "myrepo"), branch, "main")[0] == 12
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["max_commits"] == 10  # configured leaf limit remains unchanged
+    assert payload["history_policy"] == {
+        "kind": "epic-reviewed-topology",
+        "configured_max_commits": 10,
+        "effective_max_commits": 12,
+        "direct_children": 6,
+        "integrated_children": 6,
+        "basis": "12 linked commit(s) from 6 reviewed direct-child integration(s)",
+        "valid": True,
+        "errors": [],
+    }
+
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    work.review(bead=epic, run_validate=False, demo=False, view=["log"], hive="myrepo")
+    assert "epic-reviewed-topology" in capsys.readouterr().out
+    work.approve(bead=epic, as_="review/assembled-epic", hive="myrepo")
+    work.finish(epic=epic, hive="myrepo")
+
+    assert fakebd.beads[epic]["status"] == "closed"
+    assert _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == (
+        f"chore(merge): molecule {epic}"
+    )
+
+
+def test_epic_submit_rejects_unaccounted_direct_commit(hive, fakebd, capsys):
+    """A conventional-looking checkpoint committed directly on the epic spine is not child
+    provenance. A larger numeric allowance must never turn that noise into accepted history."""
+    epic = "mr-noisy-epic"
+    seat = _start_and_land_children(hive, fakebd, epic, count=1)
+    _commit(seat, "chore: direct epic checkpoint", fname="direct.txt")
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "unaccounted" in err and "direct epic checkpoint" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def test_epic_finish_rechecks_and_rejects_missing_child_linkage(hive, fakebd, capsys):
+    """Finish independently re-runs the topology guard. Removing the durable linkage from an
+    otherwise plausible child bubble makes the range unverifiable and leaves main untouched."""
+    epic = "mr-unlinked-epic"
+    _start_and_land_children(hive, fakebd, epic, count=1)
+    fakebd.beads[f"{epic}.1"]["metadata"].pop("git.commits")
+    main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.finish(epic=epic, hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "linked" in err and f"{epic}.1" in err
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
+    assert fakebd.beads[epic]["status"] != "closed"
+
+
 def test_merge_molecule_closes_swarm_bead(hive, fakebd):
     """Landing a molecule closes the swarm orchestration bead created at kickoff (bh-7tno) —
     otherwise every landed molecule leaves one permanent open type:molecule bead behind. A
@@ -3863,6 +4022,8 @@ def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(hive
     work.merge(bead="mr-ws.1.1", hive="myrepo", rm=False, molecule=False)
 
     ws_before = _git("rev-parse", "wt/bead/epic/mr-ws", cwd=hive.main).stdout.strip()
+    work.submit(bead="mr-ws.1", as_="disp/e", hive="myrepo")
+    work.approve(bead="mr-ws.1", as_="review/nested", hive="myrepo")
     work.finish(epic="mr-ws.1", hive="myrepo")  # lands child epic onto the workstream container
 
     # the child-epic bubble landed on the WORKSTREAM container, and main is untouched
@@ -3876,6 +4037,8 @@ def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(hive
     assert not worktree._branch_exists(hive.main, "wt/bead/epic/mr-ws.1")
 
     # now the workstream itself lands onto main (its integration_base is the dotless root → main)
+    work.submit(bead="mr-ws", as_="disp/ws", hive="myrepo")
+    work.approve(bead="mr-ws", as_="review/workstream", hive="myrepo")
     work.finish(epic="mr-ws", hive="myrepo")
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=hive.main).stdout.strip() == "main"
     assert (

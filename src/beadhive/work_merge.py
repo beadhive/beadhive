@@ -381,6 +381,32 @@ def impl__merge_molecule(api, cfg, epic, hive):
     if api.already_landed(entry, mol_branch, base):
         api._reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, base, hive)
         return
+    policy = api.work_logic.epic_history_policy(
+        entry, main, epic, mol_branch, base, api.config.max_commits(cfg, entry)
+    )
+    if not policy["valid"]:
+        api.typer.echo(
+            "✗ epic history topology is not fully attributable to reviewed direct-child "
+            "integrations:\n  "
+            + "\n  ".join(policy["errors"])
+            + "\n  Repair the container integration graph; do not refine away reviewed "
+            "merge bubbles.",
+            err=True,
+        )
+        raise api.typer.Exit(1)
+    count, subjects = api.worktree.history(entry, mol_branch, base)
+    ok, msg = api._history_ok(count, subjects, int(policy["effective_max_commits"]))
+    if not ok:
+        api.typer.echo(
+            f"✗ {msg} — repair the container integration graph; do not refine reviewed "
+            "merge history",
+            err=True,
+        )
+        raise api.typer.Exit(1)
+    api.typer.echo(
+        f"· epic history policy: {policy['basis']} (configured leaf max "
+        f"{policy['configured_max_commits']})"
+    )
     api._guard_signed_history(entry, mol_branch, base, cfg)
     mode = api.config.validation_mode(cfg, entry)
     if base == integration and api.config.work_landing(cfg, entry) == "pr":

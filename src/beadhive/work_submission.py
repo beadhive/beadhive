@@ -347,7 +347,25 @@ def impl__guard_submit_ready(api, entry, target, branch, bead, cfg):
         raise api.typer.Exit(1)
     base = api.worktree.integration_base(entry, bead, api.config.integration_branch(cfg, entry))
     count, subjects = api.worktree.history(entry, branch, base)
-    ok, msg = api._history_ok(count, subjects, api.config.max_commits(cfg, entry))
+    limit = api.config.max_commits(cfg, entry)
+    data = api.bd.show(bead, api.registry.hive_dir(entry))
+    if api._is_epic(data):
+        policy = api.work_logic.epic_history_policy(
+            entry, api.registry.hive_dir(entry), bead, branch, base, limit
+        )
+        if not policy["valid"]:
+            api.typer.echo(
+                "✗ epic history topology is not fully attributable to reviewed direct-child "
+                "integrations:\n  " + "\n  ".join(policy["errors"]),
+                err=True,
+            )
+            raise api.typer.Exit(1)
+        limit = int(policy["effective_max_commits"])
+        api.typer.echo(
+            f"· epic history policy: {policy['basis']} (configured leaf max "
+            f"{policy['configured_max_commits']})"
+        )
+    ok, msg = api._history_ok(count, subjects, limit)
     if not ok:
         api.typer.echo(f"✗ {msg}", err=True)
         raise api.typer.Exit(1)

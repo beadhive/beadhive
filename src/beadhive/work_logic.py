@@ -16,7 +16,7 @@ import shlex
 
 import typer
 
-from . import bd, identity, worktree
+from . import adopt, bd, git_linkage, identity, worktree
 from .config_consumer_ports import work_settings as config
 
 # Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
@@ -32,6 +32,11 @@ _MARKER = re.compile(r"^(fixup|squash)! ")
 # and the trailing hex-sha requirement is what separates a real review gate from an ad-hoc human
 # gate whose reason merely starts with the word "review" (e.g. "review the rollout plan with ops").
 _REVIEW_REASON = re.compile(r"reason: (?:bh:)?review [0-9a-f]{7,40}\b")
+
+# Integration bubbles written by the three lifecycle merge paths.  An epic may contain many
+# commits, but its own first-parent spine is made only of these no-ff bubbles; all other commits
+# must be attributable to the linked direct child named by the bubble.
+_INTEGRATION_BUBBLE = re.compile(r"^chore\(merge\): (bead|molecule|batch) (.+)$")
 
 
 def is_review_gate_desc(desc: str) -> bool:
@@ -167,12 +172,24 @@ def validate_plan(plan: dict, rows: list[dict]) -> tuple[bool, list[str], list[d
     errors: list[str] = []
     resolved: list[dict] = []
     seen: dict[str, int] = {}  # full sha -> first group index that owns it
+    by_sha = {str(row.get("sha") or ""): row for row in rows}
     for gi, g in enumerate(plan.get("groups") or []):
         keep_raw = g.get("keep")
         keep = _resolve_sha(rows, keep_raw) if keep_raw else None
         if not keep:
             errors.append(f"group {gi}: keep {keep_raw!r} is not a commit in range")
         folds = _resolve_fold_shas(g, gi, rows, errors)
+        if keep and len(by_sha.get(keep, {}).get("parents") or []) > 1:
+            errors.append(
+                f"group {gi}: keep {str(keep_raw)!r} is a merge commit; refine cannot "
+                "rewrite reviewed merge topology"
+            )
+        for raw, sha in zip(g.get("fold") or [], folds, strict=False):
+            if len(by_sha.get(sha, {}).get("parents") or []) > 1:
+                errors.append(
+                    f"group {gi}: fold {str(raw)!r} is a merge commit; refine cannot "
+                    "rewrite reviewed merge topology"
+                )
         if keep and keep in set(folds):  # set: O(1) membership, not an O(n) list scan
             errors.append(f"group {gi}: keep {keep_raw!r} also appears in its own fold")
         for sha in dict.fromkeys([keep, *folds]):  # unique within group
@@ -193,6 +210,188 @@ def validate_plan(plan: dict, rows: list[dict]) -> tuple[bool, list[str], list[d
                 }
             )
     return (not errors, errors, resolved)
+
+
+def _landed_child(data: dict) -> bool:
+    """Whether a direct child reached one of the lifecycle's code-landing dispositions."""
+    if str(data.get("status") or "") != "closed":
+        return False
+    reason = str(data.get("close_reason") or "")
+    return reason == "merged" or reason == "molecule landed" or reason.startswith(
+        "merged in batch "
+    )
+
+
+def _direct_work_children(epic: str, main) -> tuple[list[dict], list[str]]:
+    """One authoritative direct-child snapshot, excluding infrastructure/provenance rows."""
+    rows = bd.children(epic, main, ["--include-infra", "--all"])
+    if not isinstance(rows, list):
+        return [], [f"cannot read direct children for {epic}"]
+    children = [
+        row
+        for row in rows
+        if str(row.get("issue_type") or "") not in ("gate", "molecule")
+        and not adopt.is_origin_report(row.get("labels"))
+    ]
+    return children, []
+
+
+def _first_parent_spine(
+    rows: list[dict], branch_sha: str, base: str
+) -> tuple[list[dict], list[str]]:
+    """Oldest-first rows on ``branch``'s own spine, or an exact structural error."""
+    by_sha = {str(row.get("sha") or ""): row for row in rows}
+    newest_first: list[dict] = []
+    seen: set[str] = set()
+    cursor = branch_sha
+    while cursor and cursor != base:
+        if cursor in seen:
+            return [], [f"first-parent cycle at {cursor[:8]}"]
+        seen.add(cursor)
+        row = by_sha.get(cursor)
+        if not row:
+            return [], [f"first-parent spine leaves the review range at {cursor[:8]}"]
+        newest_first.append(row)
+        parents = row.get("parents") or []
+        if not parents:
+            return [], [f"first-parent spine ends before base at {cursor[:8]}"]
+        cursor = str(parents[0])
+    if cursor != base:
+        return [], [f"cannot connect first-parent spine to base {base[:8]}"]
+    return list(reversed(newest_first)), []
+
+
+def _batch_members(group: str, merge_sha: str, children: list[dict]) -> list[dict]:
+    """Direct members actually recorded against this particular batch bubble."""
+    label = f"batch:{group}"
+    return [
+        child
+        for child in children
+        if label in (child.get("labels") or [])
+        and merge_sha in git_linkage.commits_from_data(child)
+        and _landed_child(child)
+    ]
+
+
+def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_commits: int) -> dict:
+    """Audit an assembled epic without flattening its reviewed child graph.
+
+    ``max_commits`` remains the unchanged leaf budget.  Epic capacity is instead the exact union
+    of commits already linked to landed direct children and reachable in ``base..branch``.  The
+    numeric allowance therefore cannot admit noise: every commit must be linked, and the epic's
+    own first-parent spine must consist solely of lifecycle no-ff bubbles that name those direct
+    children.  Child/batch limits were enforced at their own submit+merge boundaries; this guard
+    preserves their graph and verifies the durable provenance they recorded there.
+    """
+    # Submit/finish historically pass the integration ref (for example ``main``), while show
+    # passes its already-resolved merge base.  Canonicalize both forms before walking parent SHAs;
+    # comparing an actual parent SHA to the literal ref name would make a valid spine appear to
+    # leave the range at its base commit.
+    base = worktree.base_of(entry, branch, base)
+    rows = worktree.commit_rows(entry, base, branch)
+    range_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
+    children, errors = _direct_work_children(epic, main)
+    direct = {str(child.get("id") or ""): child for child in children if child.get("id")}
+    linked_by_child = {
+        child_id: set(git_linkage.commits_from_data(child)) & range_shas
+        for child_id, child in direct.items()
+    }
+    branch_sha = worktree._branch_sha(entry, branch)
+    spine, spine_errors = _first_parent_spine(rows, branch_sha, base)
+    errors.extend(spine_errors)
+    accounted: set[str] = set()
+    integrated: set[str] = set()
+
+    for row in spine:
+        sha = str(row.get("sha") or "")
+        short = str(row.get("short") or sha[:8])
+        parents = [str(parent) for parent in (row.get("parents") or [])]
+        subject = str(row.get("subject") or "")
+        if len(parents) != 2:
+            errors.append(
+                f"unaccounted direct epic commit {short} {subject!r}; expected a lifecycle "
+                "no-ff child integration bubble"
+            )
+            continue
+        match = _INTEGRATION_BUBBLE.fullmatch(subject)
+        if not match:
+            errors.append(
+                f"unaccounted epic merge {short} {subject!r}; expected chore(merge) naming "
+                "a direct child integration"
+            )
+            continue
+        kind, name = match.groups()
+        members: list[dict]
+        if kind == "batch":
+            members = _batch_members(name, sha, children)
+            if not members:
+                errors.append(
+                    f"batch bubble {short} names {name!r} but no landed direct child links "
+                    "that merge commit"
+                )
+                continue
+        else:
+            child = direct.get(name)
+            expected_epic = kind == "molecule"
+            if child is None:
+                errors.append(f"{kind} bubble {short} names non-child {name}")
+                continue
+            if (str(child.get("issue_type") or "") == "epic") != expected_epic:
+                errors.append(f"{kind} bubble {short} has the wrong child type for {name}")
+                continue
+            members = [child]
+
+        member_ids = {str(member.get("id") or "") for member in members}
+        if integrated & member_ids:
+            repeated = ", ".join(sorted(integrated & member_ids))
+            errors.append(f"direct child integrated more than once: {repeated}")
+            continue
+        introduced = set(worktree.commit_shas(entry, parents[1], parents[0])) | {sha}
+        linked = set().union(*(linked_by_child.get(member_id, set()) for member_id in member_ids))
+        missing = introduced - linked
+        if missing:
+            errors.append(
+                f"{kind} integration {short} for {', '.join(sorted(member_ids))} has "
+                f"{len(missing)} commit(s) not linked to those reviewed direct children"
+            )
+            continue
+        if not all(_landed_child(member) for member in members):
+            errors.append(
+                f"{kind} integration {short} names a direct child without a landed disposition"
+            )
+            continue
+        integrated.update(member_ids)
+        accounted.update(introduced)
+
+    unaccounted = range_shas - accounted
+    if unaccounted and not any("unaccounted" in error for error in errors):
+        examples = [
+            f"{row.get('short')} {row.get('subject')}"
+            for row in rows
+            if row.get("sha") in unaccounted
+        ][:4]
+        errors.append(
+            f"{len(unaccounted)} unaccounted commit(s) outside reviewed direct-child linkage: "
+            + "; ".join(examples)
+        )
+    effective = len(accounted)
+    count = len(range_shas)
+    if count > effective and not errors:
+        errors.append(f"{count} commits exceed the linked epic allowance {effective}")
+    basis = (
+        f"{effective} linked commit(s) from {len(integrated)} reviewed direct-child "
+        "integration(s)"
+    )
+    return {
+        "kind": "epic-reviewed-topology",
+        "configured_max_commits": max_commits,
+        "effective_max_commits": effective,
+        "direct_children": len(children),
+        "integrated_children": len(integrated),
+        "basis": basis,
+        "valid": not errors,
+        "errors": errors,
+    }
 
 
 def plan_from_since(rows: list[dict]) -> dict:
