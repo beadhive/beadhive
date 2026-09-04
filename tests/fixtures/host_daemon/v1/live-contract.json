@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "beadhive.host-daemon/v1",
+  "consumerGate": "bhui-unkw",
+  "consumerMatrix": "bhui-61s9.11",
+  "profile": "authenticated-opt-in",
+  "baseUrl": "http://127.0.0.1:8420",
+  "mcp": {
+    "route": "/mcp",
+    "defaultMode": "sessionful",
+    "supportedModes": ["sessionful", "stateless"],
+    "fallback": "stdio"
+  },
+  "operator": {
+    "factory": "/api/v1/factory",
+    "factoryHives": "/api/v1/factory/hives",
+    "snapshot": "/api/v1/hives/{encodedHiveId}/snapshot",
+    "events": "/api/v1/hives/{encodedHiveId}/events",
+    "activity": "/api/v1/runs/{encodedRunId}/activity",
+    "openapi": "/openapi.json",
+    "health": "/health"
+  },
+  "scopes": {
+    "mcp": "mcp:control",
+    "operator": "operator:read",
+    "activityPublish": "activity:publish",
+    "terminal": "terminal:attach"
+  },
+  "cursor": {
+    "snapshotField": "cursor",
+    "resumeHeader": "Last-Event-ID",
+    "resumeQuery": "after",
+    "eventId": "{producerEpoch}:{sequence}",
+    "onConflictOrReset": "discard-live-state-and-resnapshot"
+  },
+  "sources": ["baml", "hitch", "beadhive"],
+  "terminal": {
+    "available": false,
+    "type": "terminal.unavailable",
+    "code": "pty_verdict_pending",
+    "verdictBead": "bh-lx6e.3"
+  },
+  "remoteHq": {
+    "available": false,
+    "limitationBead": "bh-pc2a.30",
+    "reason": "hq-remote-is-ssh-only"
+  },
+  "nodeRelay": {
+    "role": "test-oracle-and-rollback",
+    "retireAfter": "bhui-61s9"
+  },
+  "daemonDown": {
+    "cli": "direct",
+    "stdioMcp": "direct",
+    "httpMcp": "unavailable-reconnect-new-session",
+    "operator": "unavailable-replay-or-resnapshot",
+    "activityPublish": "bounded-idempotent-retry"
+  },
+  "liveProof": {
+    "transport": "uvicorn-tcp",
+    "source": "real-bd",
+    "overlapBarrier": "durable-append-held",
+    "deliveryBoundary": "durable-ack-before-sse",
+    "outageSequence": "refusal-cli-stdio-refusal",
+    "teardown": [
+      "fastmcp",
+      "credential-sessions",
+      "operator-sse",
+      "state-broker",
+      "telemetry",
+      "uvicorn"
+    ],
+    "evidenceNode": "tests/test_daemon_live_contract.py::test_real_product_app_composes_concurrent_cli_stdio_http_operator_and_activity"
+  },
+  "executableEvidence": {
+    "liveConcurrentComposition": [
+      "tests/test_daemon_live_contract.py::test_real_product_app_composes_concurrent_cli_stdio_http_operator_and_activity"
+    ],
+    "schemaResultErrorParity": [
+      "tests/test_daemon_mcp_http.py::test_authenticated_product_mcp_matches_exact_stdio_surface"
+    ],
+    "httpSessionModesAndExhaustion": [
+      "tests/test_daemon_mcp_http.py::test_authenticated_product_mcp_matches_exact_stdio_surface",
+      "tests/test_daemon_mcp_http.py::test_product_mcp_session_exhaustion_is_bounded_and_recoverable"
+    ],
+    "exactIdentityAttacks": [
+      "tests/test_daemon_contract.py::test_hive_identity_attacks_fail_closed",
+      "tests/test_daemon_contract.py::test_run_path_attacks_fail_closed",
+      "tests/test_daemon_contract.py::test_activity_path_and_payload_run_identity_must_be_byte_identical"
+    ],
+    "scopesExpiryRevocationRotation": [
+      "tests/test_daemon_auth.py::test_every_scope_is_independent_and_never_implies_another",
+      "tests/test_daemon_auth.py::test_rotation_and_revocation_affect_the_very_next_request",
+      "tests/test_daemon_auth.py::test_live_session_expiry_and_revocation_close_with_exact_reason"
+    ],
+    "tlsCorsHostOriginProxyTrust": [
+      "tests/test_daemon_network.py::test_direct_tls_and_trusted_terminator_cover_http_sse_and_mcp",
+      "tests/test_daemon_network.py::test_exact_host_and_credentialed_cors_fail_closed_without_reflecting_input",
+      "tests/test_daemon_network.py::test_websocket_origin_is_exact_for_direct_tls_and_trusted_proxy"
+    ],
+    "concurrentGuardedMutations": [
+      "tests/test_daemon_live_contract.py::test_real_product_app_composes_concurrent_cli_stdio_http_operator_and_activity",
+      "tests/test_daemon_mcp_http.py::test_mcp_mutation_rereads_bearer_authority_before_tool_dispatch"
+    ],
+    "snapshotAtomicity": [
+      "tests/test_operator_sse.py::test_concurrent_snapshot_handoff_never_exposes_new_state_with_old_cursor"
+    ],
+    "sseReplayResetBackpressure": [
+      "tests/test_operator_sse.py::test_snapshot_boundary_replays_strictly_later_entity_event",
+      "tests/test_operator_sse.py::test_discontinuity_rotates_epoch_and_reset_replaces_old_replay",
+      "tests/test_operator_sse.py::test_retention_and_slow_client_are_bounded_independently"
+    ],
+    "activityAfterDurableAck": [
+      "tests/test_daemon_live_contract.py::test_real_product_app_composes_concurrent_cli_stdio_http_operator_and_activity",
+      "tests/test_operator_sse.py::test_activity_observer_publishes_named_sse_in_order_and_resets_exact_run",
+      "tests/test_daemon_activity_api.py::test_activity_is_installed_only_after_durable_append_finishes"
+    ],
+    "activityDedupeRetryAndSources": [
+      "tests/test_daemon_activity_api.py::test_publish_scope_durable_ack_duplicate_and_restart",
+      "tests/test_activity_publisher.py::test_outage_retry_restart_uses_byte_identical_request_and_one_queue_row"
+    ],
+    "daemonRestartAndSessionInvalidation": [
+      "tests/test_daemon_mcp_http.py::test_sessionful_restart_rejects_an_old_active_session",
+      "tests/test_operator_sse.py::test_relay_restart_creates_a_new_epoch_and_expires_the_old_cursor"
+    ],
+    "landedSupervisorContracts": [
+      "tests/test_daemon_platform_lifecycle.py::test_systemd_user_install_is_keyed_persistent_and_bounded",
+      "tests/test_daemon_platform_lifecycle.py::test_launchagent_install_is_per_user_keyed_and_bounded"
+    ],
+    "landedContainerContract": [
+      "tests/test_daemon_platform_lifecycle.py::test_compose_daemon_is_the_supervised_main_workload",
+      "tests/test_daemon_platform_lifecycle.py::test_container_release_contract_rejects_short_stop_grace_and_ephemeral_home"
+    ],
+    "boundedTelemetry": [
+      "tests/test_daemon_telemetry.py::test_request_and_session_metrics_use_bounded_dimensions_and_gauges_return_zero",
+      "tests/test_daemon_telemetry.py::test_raw_or_unknown_metric_dimensions_collapse_instead_of_creating_series"
+    ],
+    "redaction": [
+      "tests/test_daemon_auth.py::test_tokens_never_reach_logs_checked_fixtures_or_daemon_control_records",
+      "tests/test_daemon_contract.py::test_redacted_errors_ignore_causes_and_do_not_expose_secrets_or_paths"
+    ],
+    "directCliAndStdioDuringOutage": [
+      "tests/test_daemon_live_contract.py::test_real_product_app_composes_concurrent_cli_stdio_http_operator_and_activity",
+      "tests/test_daemon_supervisor.py::test_status_without_bearer_never_starts_or_falls_back"
+    ],
+    "openapiAndTypedTerminalUnavailable": [
+      "tests/test_daemon_openapi.py::test_generated_operations_match_live_routes_manifest_scopes_and_statuses",
+      "tests/test_daemon_openapi.py::test_terminal_routes_return_the_typed_pending_replan_contract"
+    ]
+  },
+  "finalPlatformEvidenceOwner": "bh-q0lol.19"
+}
