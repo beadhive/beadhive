@@ -588,17 +588,19 @@ def _write_control(path: Path, record: ControlRecord) -> None:
         flags |= os.O_CLOEXEC
     fd = os.open(temporary, flags, 0o600)
     try:
-        payload = (json.dumps(asdict(record), sort_keys=True, indent=2) + "\n").encode()
-        with os.fdopen(fd, "wb", closefd=False) as stream:
-            stream.write(payload)
-            stream.flush()
-            os.fsync(stream.fileno())
-    finally:
-        os.close(fd)
-    try:
+        try:
+            payload = (json.dumps(asdict(record), sort_keys=True, indent=2) + "\n").encode()
+            with os.fdopen(fd, "wb", closefd=False) as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+        finally:
+            os.close(fd)
         os.replace(temporary, path)
         path.chmod(0o600)
     finally:
+        # ENOSPC can surface while writing/fsyncing, before os.replace is reached.  Never
+        # strand an incarnation-named partial record for status/restart recovery to trip over.
         temporary.unlink(missing_ok=True)
 
 
