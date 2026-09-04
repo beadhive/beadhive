@@ -217,8 +217,8 @@ def _landed_child(data: dict) -> bool:
     if str(data.get("status") or "") != "closed":
         return False
     reason = str(data.get("close_reason") or "")
-    return reason == "merged" or reason == "molecule landed" or reason.startswith(
-        "merged in batch "
+    return (
+        reason == "merged" or reason == "molecule landed" or reason.startswith("merged in batch ")
     )
 
 
@@ -379,8 +379,7 @@ def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_comm
     if count > effective and not errors:
         errors.append(f"{count} commits exceed the linked epic allowance {effective}")
     basis = (
-        f"{effective} linked commit(s) from {len(integrated)} reviewed direct-child "
-        "integration(s)"
+        f"{effective} linked commit(s) from {len(integrated)} reviewed direct-child integration(s)"
     )
     return {
         "kind": "epic-reviewed-topology",

@@ -3400,9 +3400,7 @@ def _land_two_bead_molecule(hive, fakebd, epic="mr-1"):
         work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
 
 
-def _start_and_land_children(
-    hive, fakebd, epic="mr-epic", count=6, dispatcher="disp/lead"
-):
+def _start_and_land_children(hive, fakebd, epic="mr-epic", count=6, dispatcher="disp/lead"):
     """Assemble a real epic seat whose reviewed child topology exceeds the leaf limit."""
     fakebd.seed(epic, title="epic", issue_type="epic")
     fakebd.states[epic] = {"kickoff": "approved"}
@@ -3418,9 +3416,7 @@ def _start_and_land_children(
     return worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
 
 
-def test_epic_submit_and_finish_accept_reviewed_topology_over_leaf_limit(
-    hive, fakebd, capsys
-):
+def test_epic_submit_and_finish_accept_reviewed_topology_over_leaf_limit(hive, fakebd, capsys):
     """Six one-commit children produce twelve commits over base. The ordinary leaf maximum is
     still ten, but every commit is accounted for by a reviewed child plus its no-ff bubble, so
     epic submit and the merge-time preflight both accept the graph without rewriting it."""

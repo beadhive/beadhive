@@ -205,9 +205,7 @@ def show(
         _render_history_policy(policy)
         for v in view:
             limit = (
-                int(policy["effective_max_commits"])
-                if policy
-                else config.max_commits(cfg, entry)
+                int(policy["effective_max_commits"]) if policy else config.max_commits(cfg, entry)
             )
             _render_view(v, rows, base, limit, entry, branch)
     _render_gates(bead, main)  # gates exist independent of local history — render either way
