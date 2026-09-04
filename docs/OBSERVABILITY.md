@@ -83,6 +83,8 @@ otel:
   headers:                          # optional: auth/routing headers for hosted collectors
     Authorization: "Bearer <token>"
   hive: workspace                   # stamped as bh.hive on every OTel Resource (optional)
+  export_timeout_seconds: 0.5       # finite budget for one OTLP exporter request
+  flush_timeout_seconds: 2.0        # finite total CLI/stdio exit flush budget
 ```
 
 The `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable takes precedence over `otel.endpoint`
@@ -100,6 +102,22 @@ When both are unset, the OTLP exporter uses its built-in default (`localhost:431
 `otel.headers` is a string-to-string map threaded into every OTLP exporter (traces, metrics,
 and logs). Use it to pass authentication tokens or routing keys required by hosted collectors
 such as Grafana Cloud, Honeycomb, or Datadog's OTLP intake.
+
+`otel.export_timeout_seconds` seeds the standard `OTEL_EXPORTER_OTLP_TIMEOUT` setting when the
+operator has not supplied it. `otel.flush_timeout_seconds` bounds the complete CLI or stdio
+provider drain. Initialization registers only the SDK's known timeout-aware processor/reader
+shutdown ports. Their three exporter ceilings plus one possible in-flight export must fit the
+total flush budget; an unsafe operator override or unknown provider is refused with a visible
+`refused` outcome instead of running in an abandoned helper thread. Thus an unreachable collector
+cannot serialize unbounded retry windows or delay command exit.
+
+The host daemon keeps this operator-configured stream independent from CLI and stdio. It creates
+one provider per outer lifespan with `service.name=bh-host-daemon`, stable `bh.host.id`, and the
+control record's changing `service.instance.id`. Its final flush uses
+`host.daemon.shutdown.telemetry_flush_seconds` and remains inside the daemon's total graceful
+shutdown budget. The supported `bh host daemon serve` entrypoint defers generic CLI telemetry so
+the daemon-scoped provider owns that process; ordinary CLI and stdio commands keep their generic
+provider. Export durability belongs in the collector, not an in-memory daemon queue.
 
 ### Bring-your-own collector
 
@@ -154,6 +172,16 @@ Unhandled exceptions at either boundary are observed across all three signals: a
 `cli_command_error` or `mcp_tool_error` event (always, even otel-off), the active span's
 status set to ERROR with the exception recorded, and `bh.errors` incremented. The user sees
 a concise `✗ ExcType: message` line on stderr — never a raw traceback.
+
+### Host-daemon metrics
+
+The daemon records request RED by the finite route template (never a raw hive or run path), exact
+MCP-session and SSE-subscription totals/current counts, cancellations, bounded SSE queue depth and
+backpressure, replay gaps/resets, uptime/restarts/shutdown, flush outcome, and the real HQ/Dolt
+dependency probes used by the authenticated factory view. Observable request, connection, queue,
+and uptime gauges are zeroed during shutdown. Metric labels use only the fixed route, method,
+protocol, outcome, dependency, and reason vocabularies; tokens, paths, IDs, task text, and event
+content never become labels.
 
 ### Bead lifecycle metrics
 

@@ -48,11 +48,13 @@ mcp = []
 # lazily imported so `import beadhive.otel` (and the core CLI) install/run fine without it;
 # init() no-ops with an install hint when the flag is on but these are absent. structlog is
 # listed here too (it's already a core dep) so the bridge surface is explicit for this extra.
-# Floors match the SDK API the module targets: 1.x providers (`Resource.create`,
-# `set_*_provider`), OTLP `*Exporter`, Batch processors, and `sdk._logs.LoggingHandler`.
+# The 1.37 floor is the first verified release where fractional OTLP env timeouts, the
+# cooperative batch shutdown ports used by this module, and dead-collector log suppression all
+# coexist. Keep SDK and exporter aligned: 1.36 has the timeout-aware ports but can recursively
+# re-export its own HTTP failure logs during shutdown.
 otel = [
-    "opentelemetry-sdk>=1.27",
-    "opentelemetry-exporter-otlp>=1.27",
+    "opentelemetry-sdk>=1.37,<2",
+    "opentelemetry-exporter-otlp>=1.37,<2",
     "structlog>=24",
 ]
 

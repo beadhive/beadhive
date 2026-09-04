@@ -738,6 +738,7 @@ class _McpLiveSession:
     credential_session: Any = field(repr=False)
     created_at: float
     last_seen_at: float
+    telemetry_connection: Any = field(default=None, repr=False)
 
 
 class _McpSessionLifecycle:
@@ -750,12 +751,14 @@ class _McpSessionLifecycle:
         network_policy: Any,
         idle_seconds: float,
         absolute_seconds: float,
+        telemetry: Any | None = None,
         monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._credential_sessions = credential_sessions
         self._network_policy = network_policy
         self._idle_seconds = idle_seconds
         self._absolute_seconds = absolute_seconds
+        self._telemetry = telemetry
         self._monotonic = monotonic
         self._manager: Any = None
         self._sessions: dict[str, _McpLiveSession] = {}
@@ -832,8 +835,12 @@ class _McpSessionLifecycle:
             if session_id in self._sessions:
                 return
 
-            async def close_invalidated(_reason: Any) -> None:
-                await self.terminate(session_id, unregister=False)
+            async def close_invalidated(reason: Any) -> None:
+                await self.terminate(
+                    session_id,
+                    unregister=False,
+                    reason=str(getattr(reason, "value", "cancelled")),
+                )
 
             credential_session = self._credential_sessions.open(
                 bearer,
@@ -847,6 +854,9 @@ class _McpSessionLifecycle:
                 credential_session=credential_session,
                 created_at=now,
                 last_seen_at=now,
+                telemetry_connection=(
+                    self._telemetry.open_connection("mcp") if self._telemetry is not None else None
+                ),
             )
             self._wake.set()
 
@@ -866,7 +876,13 @@ class _McpSessionLifecycle:
                 session.last_seen_at = self._monotonic()
                 self._wake.set()
 
-    async def terminate(self, session_id: str, *, unregister: bool = True) -> None:
+    async def terminate(
+        self,
+        session_id: str,
+        *,
+        unregister: bool = True,
+        reason: str = "client_closed",
+    ) -> None:
         async with self._lock:
             session = self._sessions.pop(session_id, None)
             manager = self._manager
@@ -877,6 +893,12 @@ class _McpSessionLifecycle:
                 manager._session_owners.pop(session_id, None)
         if unregister and session is not None:
             self._credential_sessions.unregister(session.credential_session)
+        if (
+            session is not None
+            and session.telemetry_connection is not None
+            and self._telemetry is not None
+        ):
+            self._telemetry.close_connection(session.telemetry_connection, reason=reason)
         try:
             if transport is not None:
                 await transport.terminate()
@@ -901,7 +923,7 @@ class _McpSessionLifecycle:
                     or current - session.created_at >= self._absolute_seconds
                 )
             if still_due:
-                await self.terminate(session_id)
+                await self.terminate(session_id, reason="timeout")
 
     async def _run_reaper(self) -> None:
         while not self._stopping:
@@ -939,7 +961,7 @@ class _McpSessionLifecycle:
             async with self._lock:
                 session_ids = tuple(self._sessions)
             for session_id in session_ids:
-                await self.terminate(session_id)
+                await self.terminate(session_id, reason="daemon_shutdown")
 
 
 class _McpSessionLifecycleMiddleware:
@@ -989,7 +1011,7 @@ class _McpSessionLifecycleMiddleware:
             await self.app(scope, receive, observe)
         finally:
             if registered_id is not None and not complete:
-                await self.lifecycle.terminate(registered_id)
+                await self.lifecycle.terminate(registered_id, reason="cancelled")
             if successful and request_id is not None and method == "DELETE":
                 await self.lifecycle.terminate(request_id)
 
@@ -1159,10 +1181,21 @@ def build_product_application(
     from .daemon_activity import DurableActivityStore
     from .daemon_activity_api import ActivityPublicationService
     from .daemon_state_broker import DaemonStateBroker
+    from .daemon_telemetry import DaemonTelemetry, DaemonTelemetryMiddleware
     from .operator_api import LocalReadPolicyMiddleware, OperatorAPI, ReadOnlyMethodMiddleware
 
     host_id = control_record.host_id if control_record is not None else host_identity.host_id()
     instance_id = control_record.instance_id if control_record is not None else uuid.uuid4().hex
+    telemetry = DaemonTelemetry(
+        cfg=cfg or {},
+        host_id=host_id,
+        instance_id=instance_id,
+        flush_budget_seconds=(
+            settings.shutdown.telemetry_flush_seconds
+            if settings is not None
+            else config.otel_flush_timeout(cfg or {})
+        ),
+    )
     state_broker = DaemonStateBroker.for_host(
         runtime=runtime,
         host_id=host_id,
@@ -1172,6 +1205,7 @@ def build_product_application(
     sources = state_broker.sources
     feed = state_broker.feed
     relay = state_broker.relay
+    relay.telemetry = telemetry
     activity_store = None
     activity_publication = None
     if settings is not None:
@@ -1237,8 +1271,26 @@ def build_product_application(
             settings.activity.max_body_bytes if settings is not None else None
         ),
     )
+    operator.factory_directory.telemetry = telemetry
     product_middleware: list[Middleware]
-    product_components = [state_broker.component()]
+
+    @asynccontextmanager
+    async def telemetry_lifespan(_app: Starlette):
+        await telemetry.start()
+        try:
+            yield
+        finally:
+            await telemetry.stop()
+
+    product_components = [
+        LifespanComponent(
+            name="daemon-telemetry",
+            lifespan=telemetry_lifespan,
+            startup_phase=StartupPhase.TELEMETRY,
+            shutdown_phase=ShutdownPhase.FLUSH_TELEMETRY,
+        ),
+        state_broker.component(),
+    ]
     network_policy = None
     credential_sessions = None
     mcp_sessions = None
@@ -1247,12 +1299,13 @@ def build_product_application(
         # the typed daemon settings.  Installed ``serve`` always supplies settings and therefore
         # uses the shared authenticated network boundary below.
         product_middleware = [
+            Middleware(DaemonTelemetryMiddleware, telemetry=telemetry),
             Middleware(
                 LocalReadPolicyMiddleware,
                 listener_host=listener_host,
                 listener_port=listener_port,
                 allowed_origin=allowed_origin,
-            )
+            ),
         ]
     else:
         from .daemon_auth import (
@@ -1293,8 +1346,10 @@ def build_product_application(
                 network_policy=network_policy,
                 idle_seconds=settings.mcp.session_idle_seconds,
                 absolute_seconds=settings.mcp.session_absolute_seconds,
+                telemetry=telemetry,
             )
         product_middleware = [
+            Middleware(DaemonTelemetryMiddleware, telemetry=telemetry),
             Middleware(BearerAuthMiddleware, authority=authority),
             *(
                 [Middleware(_McpSessionLifecycleMiddleware, lifecycle=mcp_sessions)]
@@ -1326,6 +1381,7 @@ def build_product_application(
     app.state.operator_api = operator
     app.state.operator_sse = relay
     app.state.state_broker = state_broker
+    app.state.daemon_telemetry = telemetry
     if activity_store is not None and activity_publication is not None:
         app.state.activity_store = activity_store
         app.state.activity_publication = activity_publication
