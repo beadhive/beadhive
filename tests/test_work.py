@@ -44,6 +44,7 @@ from beadhive import (
     work_logic,
     work_show,
     worktree,
+    worktree_merge,
 )
 from beadhive.run import run as real_run
 from harness.processes import process_context
@@ -536,6 +537,49 @@ def test_refine_dry_run_rejects_merge_before_backup_or_rebase(
             autosquash=False,
             since="",
             dry_run=True,
+            hive="myrepo",
+        )
+
+    assert _git("rev-parse", branch, cwd=hive.main).stdout.strip() == before
+    assert not _git("branch", "--list", f"{branch}.refine-*", cwd=hive.main).stdout.strip()
+    assert "merge commit" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "apply"])
+def test_refine_autosquash_rejects_merge_range_before_backup_or_rebase(
+    hive, fakebd, monkeypatch, capsys, dry_run
+):
+    """A fixup marker makes autosquash active, but an assembled epic range also contains its
+    reviewed merge bubble. Both preview and apply must refuse before any topology rewrite seam."""
+    epic = f"mr-autosquash-merge-{dry_run}"
+    seat = _start_and_land_children(hive, fakebd, epic, count=1)
+    entry = registry.resolve_hive(config.load(), "myrepo")
+    branch = f"wt/bead/epic/{epic}"
+    rows = worktree.commit_rows(entry, "main", branch)
+    leaf = next(row for row in rows if len(row["parents"]) == 1)
+    (seat / "fixup.txt").write_text("fixup\n")
+    _git("add", "fixup.txt", cwd=seat)
+    _git("commit", "-q", f"--fixup={leaf['sha']}", cwd=seat)
+    before = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    monkeypatch.setattr(
+        worktree,
+        "backup_branch",
+        lambda *_args, **_kwargs: pytest.fail("backup created before autosquash refusal"),
+    )
+    monkeypatch.setattr(
+        worktree,
+        "rebase_autosquash",
+        lambda *_args, **_kwargs: pytest.fail("autosquash started before merge-range refusal"),
+    )
+
+    with pytest.raises(typer.Exit):
+        work.refine(
+            bead=epic,
+            plan="",
+            autosquash=True,
+            since="",
+            dry_run=dry_run,
             hive="myrepo",
         )
 
@@ -3414,6 +3458,55 @@ def _start_and_land_children(hive, fakebd, epic="mr-epic", count=6, dispatcher="
         work.approve(bead=bid, as_=f"review/child-{index}", hive="myrepo")
         work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
     return worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
+
+
+def test_rebased_child_records_final_provenance_for_epic_submit_and_finish(
+    hive, fakebd, monkeypatch, capsys
+):
+    """A reviewed child may be replayed onto a newer container tip during serialized merge.
+    Record the rewritten child commit as durable provenance so the assembled epic audit accepts
+    both direct-child bubbles rather than falsely classifying routine rebase recovery as noise."""
+    epic = "mr-rebased-child"
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+    children = [f"{epic}.1", f"{epic}.2"]
+    for index, child in enumerate(children, 1):
+        fakebd.seed(child, title=child, parent=epic)
+        work.claim(bead=child, as_="dev/child", hive="myrepo")
+        _commit(_wt_of(hive, child), f"feat: {child}", fname=f"child-{index}.txt")
+        work.submit(bead=child, as_="dev/child", hive="myrepo")
+        work.approve(bead=child, as_=f"review/child-{index}", hive="myrepo")
+
+    work.merge(bead=children[0], hive="myrepo", rm=False, molecule=False)
+    second_branch = f"wt/bead/issue/{children[1]}"
+    submitted_sha = _git("rev-parse", second_branch, cwd=hive.main).stdout.strip()
+    real_merge_no_ff = worktree_merge.merge_no_ff
+    calls = 0
+
+    def conflict_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 1, "forced stale-base conflict"
+        return real_merge_no_ff(*args, **kwargs)
+
+    monkeypatch.setattr(worktree_merge, "merge_no_ff", conflict_once)
+    work.merge(bead=children[1], hive="myrepo", rm=False, molecule=False)
+
+    rebased_sha = _git("rev-parse", second_branch, cwd=hive.main).stdout.strip()
+    assert rebased_sha != submitted_sha
+    assert rebased_sha in git_linkage.read_commits(children[1], hive.main)
+    assert "rebased onto a newer base first" in capsys.readouterr().out
+
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    work.approve(bead=epic, as_="review/epic", hive="myrepo")
+    work.finish(epic=epic, hive="myrepo")
+
+    assert fakebd.beads[epic]["status"] == "closed"
+    assert _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == (
+        f"chore(merge): molecule {epic}"
+    )
 
 
 def test_epic_submit_and_finish_accept_reviewed_topology_over_leaf_limit(hive, fakebd, capsys):

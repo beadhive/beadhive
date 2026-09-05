@@ -855,6 +855,24 @@ def impl__record_merge_commit(api, bead, main, base):
         api.typer.echo(f"⚠ failed to record commit linkage for {bead}: {exc}", err=True)
 
 
+def _record_rebased_commits(api, bead, main, entry, branch, base_before, how):
+    """Persist the final child SHAs produced by successful merge-time replay.
+
+    Submit linked the reviewed pre-rebase identities.  ``try_merge_rebase`` may replay those
+    commits onto a newer container tip before landing, so the assembled epic needs both identities
+    as durable provenance.  Record only after combined validation accepts the merge; like the
+    existing merge-bubble linkage, metadata failure is non-fatal once code has landed.
+    """
+    if how != "rebased":
+        return
+    try:
+        shas = api.worktree.commit_shas(entry, branch, base_before)
+        if shas:
+            api.git_linkage.record_commits(bead, main, shas)
+    except Exception as exc:
+        api.typer.echo(f"⚠ failed to record post-rebase commit linkage for {bead}: {exc}", err=True)
+
+
 def impl__merge_bead(api, cfg, bead, hive, rm):
     """Serialize the land of a single approved bead onto its integration base: guard open + review
     resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
@@ -881,9 +899,11 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
     revalidate = mode == "conservative" or (on_main and mode != "loose")
     pre = api.worktree._ref_sha(main, base) if revalidate else ""
     with api.work_group.merge_slot(main, slot_attrs):
+        base_before = api.worktree._ref_sha(main, base)
         how = api._merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs)
         if revalidate:
             api._postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)
+        _record_rebased_commits(api, bead, main, entry, branch, base_before, how)
         api._record_merge_commit(bead, main, base)
         api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
         try:

@@ -107,7 +107,21 @@ def impl__build_refine_plan(api, entry, base, branch, plan, autosquash, since):
     todo, so no plan). Returns (base — possibly overridden by an explicit plan `base`, commit
     rows, groups)."""
     if autosquash:
-        return (base, api.worktree.commit_rows(entry, base, branch), [])
+        rows = api.worktree.commit_rows(entry, base, branch)
+        merges = [row for row in rows if len(row.get("parents") or []) > 1]
+        if merges:
+            details = "; ".join(
+                f"{row.get('short') or str(row.get('sha') or '')[:8]} "
+                f"{str(row.get('subject') or '')!r}"
+                for row in merges[:4]
+            )
+            raise api.WorkError(
+                [
+                    "✗ autosquash range contains merge commit(s); refine cannot rewrite "
+                    f"reviewed merge topology: {details}"
+                ]
+            )
+        return (base, rows, [])
     if since:
         plan_dict = api.plan_from_since(api.worktree.commit_rows(entry, since, branch))
     else:
