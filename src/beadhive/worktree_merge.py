@@ -207,7 +207,9 @@ def try_merge_rebase(
       2. On conflict the first merge already aborted (main left clean on `base`). Snapshot the
          bead branch behind a backup ref (like `refine` does), then `git rebase <base>` the bead
          branch in its worktree to replay its commits onto the newer base, and retry the merge.
-         A clean retry → done (how="rebased").
+         A clean retry with at least one replayed commit → done (how="rebased"). If Git drops
+         every commit as already applied, restore the reviewed branch and fail closed: there is
+         no distinct history left from which a child integration bubble could be created.
       3. **Union tier** (only when `union_globs` is non-empty): the rebase path did not resolve, so
          probe the conflicted paths from a non-aborting `--no-ff` merge. IFF *every* conflicted
          path matches a glob in `union_globs` (fnmatch), retry the merge with git's built-in
@@ -224,11 +226,12 @@ def try_merge_rebase(
     What replay actually fixes: a 3-way `--no-ff` merge resolves conflicts against the *old*
     merge-base, so a sibling's already-landed change (e.g. two coupled beads that both added the
     same import / boilerplate line, or a bead forked off a stale base) collides spuriously.
-    Rebasing replays the bead's commits one-by-one onto the current tip — git drops the
-    already-applied patches and lands the bead's unique work cleanly. The union tier then catches
-    the narrower append-only case (two beads each appending a different line at a whitelisted
-    file's EOF) that no replay order resolves, while re-validation guards against landing a
-    union-merged result that doesn't actually build/test.
+    Rebasing replays the bead's commits one-by-one onto the current tip — git may drop individual
+    already-applied patches while retaining and landing the bead's unique work cleanly. It must
+    not drop the entire reviewed range and then close the child without a bubble. The union tier
+    catches the narrower append-only case (two beads each appending a different line at a
+    whitelisted file's EOF) that no replay order resolves, while re-validation guards against
+    landing a union-merged result that doesn't actually build/test.
 
     `target` is the bead branch's worktree (where the branch is checked out) — the rebase runs
     there since a branch can only be rebased where it lives. `union_globs` defaults to empty
@@ -251,6 +254,22 @@ def try_merge_rebase(
         if uhow == "union":
             return urc, out + rout + uout, "union"
         return rrc, out + rout + uout, "conflict"
+
+    # Git may report a successful rebase after dropping every reviewed patch because equivalent
+    # content is already present on the newer base.  A subsequent `merge --no-ff` then says
+    # "Already up to date" and creates no child integration bubble at all.  Treat that as a
+    # conflict-shaped, recoverable bounce: the merger cannot close a child whose reviewed history
+    # has no distinct commit left to attribute, and must restore the submitted branch unchanged.
+    if not worktree.commit_shas(entry, branch, base):
+        worktree.reset_hard(target, backup)
+        return (
+            1,
+            out
+            + rout
+            + "\nzero-delta rebase dropped every reviewed child commit as already applied; "
+            "refusing to close without an attributable no-ff integration bubble",
+            "conflict",
+        )
 
     rc2, out2 = merge_no_ff(entry, branch, base, **idkw)
     if rc2 != 0:
