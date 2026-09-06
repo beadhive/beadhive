@@ -363,6 +363,14 @@ def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_comm
         integrated.update(member_ids)
         accounted.update(introduced)
 
+    landed = {child_id for child_id, child in direct.items() if _landed_child(child)}
+    missing_integrations = landed - integrated
+    if missing_integrations:
+        errors.append(
+            "landed direct child missing a reviewed lifecycle integration: "
+            + ", ".join(sorted(missing_integrations))
+        )
+
     unaccounted = range_shas - accounted
     if unaccounted and not any("unaccounted" in error for error in errors):
         examples = [

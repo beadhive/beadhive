@@ -3509,6 +3509,53 @@ def test_rebased_child_records_final_provenance_for_epic_submit_and_finish(
     )
 
 
+def test_zero_delta_rebase_bounces_without_closing_or_linking_child(hive, fakebd, capsys):
+    """If replay drops every reviewed patch as already present, no child commit remains to
+    introduce through a no-ff bubble. Fail closed and restore the submitted branch instead of
+    closing the child against another child's existing integration tip. The A→B→C versus A→B
+    history exercises Git's real merge conflict, abort, previously-applied skip, and restoration
+    paths without mocking a merge result."""
+    epic = "mr-zero-delta-child"
+    (hive.main / "same.txt").write_text("A\n")
+    _git("add", "same.txt", cwd=hive.main)
+    _git("commit", "-qm", "chore: seed shared state A", cwd=hive.main)
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+    children = [f"{epic}.1", f"{epic}.2"]
+    for index, child in enumerate(children, 1):
+        fakebd.seed(child, title=child, parent=epic)
+        work.claim(bead=child, as_="dev/child", hive="myrepo")
+        child_wt = _wt_of(hive, child)
+        (child_wt / "same.txt").write_text("B\n")
+        _git("add", "same.txt", cwd=child_wt)
+        _git("commit", "-qm", "feat: advance shared state to B", cwd=child_wt)
+        if index == 1:
+            (child_wt / "same.txt").write_text("C\n")
+            _git("add", "same.txt", cwd=child_wt)
+            _git("commit", "-qm", "feat: advance first child to C", cwd=child_wt)
+        work.submit(bead=child, as_="dev/child", hive="myrepo")
+        work.approve(bead=child, as_=f"review/child-{index}", hive="myrepo")
+
+    work.merge(bead=children[0], hive="myrepo", rm=False, molecule=False)
+    branch = f"wt/bead/issue/{children[1]}"
+    base = f"wt/bead/epic/{epic}"
+    branch_before = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    base_before = _git("rev-parse", base, cwd=hive.main).stdout.strip()
+    linkage_before = git_linkage.read_commits(children[1], hive.main)
+    capsys.readouterr()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead=children[1], hive="myrepo", rm=False, molecule=False)
+
+    assert _git("rev-parse", base, cwd=hive.main).stdout.strip() == base_before
+    assert _git("rev-parse", branch, cwd=hive.main).stdout.strip() == branch_before
+    assert git_linkage.read_commits(children[1], hive.main) == linkage_before
+    assert fakebd.beads[children[1]]["status"] != "closed"
+    assert fakebd.states[children[1]]["review"] == "changes-requested"
+    assert "zero-delta" in capsys.readouterr().err
+
+
 def test_epic_submit_and_finish_accept_reviewed_topology_over_leaf_limit(hive, fakebd, capsys):
     """Six one-commit children produce twelve commits over base. The ordinary leaf maximum is
     still ten, but every commit is accounted for by a reviewed child plus its no-ff bubble, so
@@ -3575,6 +3622,28 @@ def test_epic_finish_rechecks_and_rejects_missing_child_linkage(hive, fakebd, ca
     assert "linked" in err and f"{epic}.1" in err
     assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
     assert fakebd.beads[epic]["status"] != "closed"
+
+
+def test_epic_submit_rejects_landed_direct_child_without_integration(hive, fakebd, capsys):
+    """A child disposition alone is not reviewed topology. Every landed direct work child must
+    be attributable to exactly one lifecycle bubble in the assembled epic range."""
+    epic = "mr-missing-child-bubble"
+    _start_and_land_children(hive, fakebd, epic, count=1)
+    missing = f"{epic}.2"
+    fakebd.seed(
+        missing,
+        title="landed without a bubble",
+        parent=epic,
+        status="closed",
+        close_reason="merged",
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "landed direct child" in err and missing in err
+    assert not fakebd.did("set-state", epic, "review=pending")
 
 
 def test_merge_molecule_closes_swarm_bead(hive, fakebd):
