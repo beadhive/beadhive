@@ -148,5 +148,27 @@
       "tests/test_daemon_openapi.py::test_terminal_routes_return_the_typed_pending_replan_contract"
     ]
   },
-  "finalPlatformEvidenceOwner": "bh-q0lol.19"
+  "finalPlatformEvidenceOwner": "bh-q0lol",
+  "finalPlatformEvidence": {
+    "owner": "bh-q0lol",
+    "stage": "integration",
+    "sourceRevision": "exact-final-tip",
+    "containerCells": "7/7"
+  },
+  "releaseCertification": {
+    "owner": "bh-hxbln",
+    "matrix": "bh-hxbln.1",
+    "stage": "release",
+    "status": "deferred",
+    "platforms": [
+      "darwin-launchagent",
+      "persistent-linux-systemd-user"
+    ],
+    "requiredContainerMatrix": {
+      "cells": "all-7",
+      "sourceRevision": "same-exact-release-candidate",
+      "freshnessWindowDays": 7,
+      "purpose": "release-matrix-coherence"
+    }
+  }
 }

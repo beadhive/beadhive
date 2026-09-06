@@ -121,5 +121,16 @@ return HTTP MCP clients to MCP stdio. Operator clients remain visibly offline; d
 fixtures or an embedded fallback. The Beadhive UI Node relay remains a test oracle and rollback
 path through `bhui-61s9`; do not retire it in this cutover.
 
-Final fresh Darwin, persistent Linux `systemd --user`, and container execution evidence belongs to
-`bh-q0lol.19`, after this source lands. This handoff makes no external-host release claim.
+Release evidence has two distinct stages after this source lands:
+
+1. `bh-q0lol` owns exact-final-tip real container 7/7 integration proof. That evidence closes this
+   source integration boundary; it does not certify an unavailable external host.
+2. The deferred `bh-hxbln` certification molecule owns Darwin LaunchAgent and persistent Linux
+   `systemd --user` release certification through its executable real-host matrix `bh-hxbln.1`.
+   That matrix must rerun all seven container cells. All cells must use the
+   same exact release-candidate revision and complete within its seven-day freshness window.
+   This required rerun establishes complete release-matrix coherence; it does not replace q0lol's
+   proof or transfer its exact-final-tip container integration ownership.
+
+This handoff makes no Darwin or persistent-Linux release claim; those targets remain release-gated
+until the deferred matrix passes.
