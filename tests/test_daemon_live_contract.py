@@ -173,7 +173,31 @@ def test_checked_handoff_pins_the_exact_ui_endpoint_recipe_and_release_boundary(
             "test_real_product_app_composes_concurrent_cli_stdio_http_operator_and_activity"
         ),
     }
-    assert contract["finalPlatformEvidenceOwner"] == "bh-q0lol.19"
+    assert contract["finalPlatformEvidenceOwner"] == "bh-q0lol"
+    assert contract["finalPlatformEvidence"] == {
+        "owner": "bh-q0lol",
+        "stage": "integration",
+        "sourceRevision": "exact-final-tip",
+        "containerCells": "7/7",
+    }
+    assert contract["releaseCertification"] == {
+        "owner": "bh-hxbln",
+        "matrix": "bh-hxbln.1",
+        "stage": "release",
+        "status": "deferred",
+        "platforms": [
+            "darwin-launchagent",
+            "persistent-linux-systemd-user",
+        ],
+        "requiredContainerMatrix": {
+            "cells": "all-7",
+            "sourceRevision": "same-exact-release-candidate",
+            "freshnessWindowDays": 7,
+            "purpose": "release-matrix-coherence",
+        },
+    }
+    assert "containerMatrixMayRerun" not in contract["releaseCertification"]
+    assert contract["finalPlatformEvidence"]["owner"] != contract["releaseCertification"]["owner"]
 
 
 def test_every_live_contract_cell_links_to_an_exact_collected_test() -> None:
@@ -225,6 +249,14 @@ def test_operator_runbook_checks_install_credentials_migration_outage_and_rollba
         "activity:publish",
         "operator:read",
         "mcp:control",
+        "exact-final-tip",
+        "container 7/7",
+        "bh-hxbln",
+        "bh-hxbln.1",
+        "must rerun all seven",
+        "same exact release-candidate revision",
+        "seven-day freshness window",
+        "release-matrix coherence",
     ):
         assert required in text
 
