@@ -114,6 +114,84 @@ class DaemonCorsConfig(_DaemonSection):
         return values
 
 
+def canonical_http_host(authority: str, *, allow_port: bool) -> str | None:
+    """Return one canonical DNS name or IP literal from an HTTP authority.
+
+    Configured allowlist entries are host-only. Request authorities may append a numeric
+    port, but both paths use this parser so an accepted configuration always has a matching
+    runtime representation.
+    """
+
+    if not authority or any(char.isspace() for char in authority):
+        return None
+    if authority.startswith("["):
+        closing = authority.find("]")
+        if closing < 0:
+            return None
+        candidate = authority[1:closing]
+        remainder = authority[closing + 1 :]
+        if remainder and (
+            not allow_port
+            or not remainder.startswith(":")
+            or not _valid_http_port(remainder.removeprefix(":"))
+        ):
+            return None
+        try:
+            return f"[{ipaddress.IPv6Address(candidate)}]"
+        except ValueError:
+            return None
+    if authority.count(":") > 1:
+        return None
+    candidate, separator, port = authority.partition(":")
+    if separator and (not allow_port or not _valid_http_port(port)):
+        return None
+    if not candidate or candidate.endswith(".") or any(char in candidate for char in "/\\@?#"):
+        return None
+    try:
+        return str(ipaddress.IPv4Address(candidate))
+    except ValueError:
+        pass
+    if _looks_like_legacy_ipv4(candidate):
+        return None
+    try:
+        candidate.encode("ascii")
+    except UnicodeEncodeError:
+        return None
+    parts = candidate.split(".")
+    if len(candidate) > 253 or any(
+        not part
+        or len(part) > 63
+        or part.startswith("-")
+        or part.endswith("-")
+        or not part.replace("-", "").isalnum()
+        for part in parts
+    ):
+        return None
+    return candidate.lower()
+
+
+def _valid_http_port(value: str) -> bool:
+    return (
+        1 <= len(value) <= 5 and value.isascii() and value.isdigit() and 1 <= int(value) <= 65_535
+    )
+
+
+def _looks_like_legacy_ipv4(value: str) -> bool:
+    """Reject the noncanonical numeric forms accepted by legacy system resolvers."""
+
+    parts = value.split(".")
+    if not 1 <= len(parts) <= 4:
+        return False
+
+    def numeric(part: str) -> bool:
+        if part.casefold().startswith("0x"):
+            digits = part[2:]
+            return bool(digits) and all(char in "0123456789abcdefABCDEF" for char in digits)
+        return bool(part) and part.isascii() and part.isdigit()
+
+    return all(numeric(part) for part in parts)
+
+
 class DaemonHttpConfig(_DaemonSection):
     max_connections: int = Field(256, ge=1, le=100_000)
     max_request_body_bytes: int = Field(1_048_576, ge=1_024, le=64 * 1_048_576)
@@ -125,11 +203,15 @@ class DaemonHttpConfig(_DaemonSection):
     def _safe_hosts(cls, values: tuple[str, ...]) -> tuple[str, ...]:
         if not values or "*" in values:
             raise ValueError("HTTP Host validation requires an exact non-wildcard allowlist")
-        if len(set(values)) != len(values):
+        canonical = tuple(canonical_http_host(value, allow_port=False) for value in values)
+        if any(value is None for value in canonical):
+            raise ValueError(
+                "allowed_hosts entries must be host names or IP literals without ports"
+            )
+        normalized = tuple(value for value in canonical if value is not None)
+        if len(set(normalized)) != len(normalized):
             raise ValueError("allowed_hosts must be unique")
-        if any(not value or "/" in value or "\\" in value for value in values):
-            raise ValueError("allowed_hosts entries must be host names or IP literals")
-        return values
+        return normalized
 
 
 class DaemonMcpConfig(_DaemonSection):
