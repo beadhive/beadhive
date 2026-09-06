@@ -381,6 +381,32 @@ def impl__merge_molecule(api, cfg, epic, hive):
     if api.already_landed(entry, mol_branch, base):
         api._reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, base, hive)
         return
+    policy = api.work_logic.epic_history_policy(
+        entry, main, epic, mol_branch, base, api.config.max_commits(cfg, entry)
+    )
+    if not policy["valid"]:
+        api.typer.echo(
+            "✗ epic history topology is not fully attributable to reviewed direct-child "
+            "integrations:\n  "
+            + "\n  ".join(policy["errors"])
+            + "\n  Repair the container integration graph; do not refine away reviewed "
+            "merge bubbles.",
+            err=True,
+        )
+        raise api.typer.Exit(1)
+    count, subjects = api.worktree.history(entry, mol_branch, base)
+    ok, msg = api._history_ok(count, subjects, int(policy["effective_max_commits"]))
+    if not ok:
+        api.typer.echo(
+            f"✗ {msg} — repair the container integration graph; do not refine reviewed "
+            "merge history",
+            err=True,
+        )
+        raise api.typer.Exit(1)
+    api.typer.echo(
+        f"· epic history policy: {policy['basis']} (configured leaf max "
+        f"{policy['configured_max_commits']})"
+    )
     api._guard_signed_history(entry, mol_branch, base, cfg)
     mode = api.config.validation_mode(cfg, entry)
     if base == integration and api.config.work_landing(cfg, entry) == "pr":
@@ -829,6 +855,24 @@ def impl__record_merge_commit(api, bead, main, base):
         api.typer.echo(f"⚠ failed to record commit linkage for {bead}: {exc}", err=True)
 
 
+def _record_rebased_commits(api, bead, main, entry, branch, base_before, how):
+    """Persist the final child SHAs produced by successful merge-time replay.
+
+    Submit linked the reviewed pre-rebase identities.  ``try_merge_rebase`` may replay those
+    commits onto a newer container tip before landing, so the assembled epic needs both identities
+    as durable provenance.  Record only after combined validation accepts the merge; like the
+    existing merge-bubble linkage, metadata failure is non-fatal once code has landed.
+    """
+    if how != "rebased":
+        return
+    try:
+        shas = api.worktree.commit_shas(entry, branch, base_before)
+        if shas:
+            api.git_linkage.record_commits(bead, main, shas)
+    except Exception as exc:
+        api.typer.echo(f"⚠ failed to record post-rebase commit linkage for {bead}: {exc}", err=True)
+
+
 def impl__merge_bead(api, cfg, bead, hive, rm):
     """Serialize the land of a single approved bead onto its integration base: guard open + review
     resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
@@ -855,9 +899,11 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
     revalidate = mode == "conservative" or (on_main and mode != "loose")
     pre = api.worktree._ref_sha(main, base) if revalidate else ""
     with api.work_group.merge_slot(main, slot_attrs):
+        base_before = api.worktree._ref_sha(main, base)
         how = api._merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs)
         if revalidate:
             api._postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)
+        _record_rebased_commits(api, bead, main, entry, branch, base_before, how)
         api._record_merge_commit(bead, main, base)
         api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
         try:

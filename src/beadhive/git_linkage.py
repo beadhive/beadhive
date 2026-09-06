@@ -25,14 +25,14 @@ from . import bd
 METADATA_KEY = "git.commits"
 
 
-def read_commits(bead_id: str, main: Path) -> list[str]:
-    """Current `git.commits` for `bead_id`, JSON-parsed.
+def commits_from_data(data: dict | None) -> list[str]:
+    """Parse ``git.commits`` from an already-loaded bead row.
 
-    Per the contract, anything short of a clean JSON array of strings is treated as `[]` rather
-    than an error: a missing bead, a missing key, an unparseable value, or a value that parses to
-    something other than a list of strings. Treating unparseable linkage as fatal would let one
-    malformed bead break a whole caller (a submit, a merge, the backfill)."""
-    data = bd.show(bead_id, main)
+    History-policy callers inspect every direct child at once, so forcing each one back through
+    ``bd show`` would turn a single authoritative ``bd children`` snapshot into N additional,
+    potentially drifting reads.  Keep the tolerant wire-format parser here with the writer's
+    contract and let :func:`read_commits` remain the one-id convenience wrapper.
+    """
     raw = (data or {}).get("metadata", {}).get(METADATA_KEY)
     if not isinstance(raw, str):
         return []
@@ -43,6 +43,16 @@ def read_commits(bead_id: str, main: Path) -> list[str]:
     if not isinstance(parsed, list) or not all(isinstance(sha, str) for sha in parsed):
         return []
     return parsed
+
+
+def read_commits(bead_id: str, main: Path) -> list[str]:
+    """Current `git.commits` for `bead_id`, JSON-parsed.
+
+    Per the contract, anything short of a clean JSON array of strings is treated as `[]` rather
+    than an error: a missing bead, a missing key, an unparseable value, or a value that parses to
+    something other than a list of strings. Treating unparseable linkage as fatal would let one
+    malformed bead break a whole caller (a submit, a merge, the backfill)."""
+    return commits_from_data(bd.show(bead_id, main))
 
 
 def record_commits(bead_id: str, main: Path, shas: list[str]) -> bool:
