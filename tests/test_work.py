@@ -3509,13 +3509,16 @@ def test_rebased_child_records_final_provenance_for_epic_submit_and_finish(
     )
 
 
-def test_zero_delta_rebase_bounces_without_closing_or_linking_child(
-    hive, fakebd, monkeypatch, capsys
-):
+def test_zero_delta_rebase_bounces_without_closing_or_linking_child(hive, fakebd, capsys):
     """If replay drops every reviewed patch as already present, no child commit remains to
     introduce through a no-ff bubble. Fail closed and restore the submitted branch instead of
-    closing the child against another child's existing integration tip."""
+    closing the child against another child's existing integration tip. The A→B→C versus A→B
+    history exercises Git's real merge conflict, abort, previously-applied skip, and restoration
+    paths without mocking a merge result."""
     epic = "mr-zero-delta-child"
+    (hive.main / "same.txt").write_text("A\n")
+    _git("add", "same.txt", cwd=hive.main)
+    _git("commit", "-qm", "chore: seed shared state A", cwd=hive.main)
     fakebd.seed(epic, title="epic", issue_type="epic")
     fakebd.states[epic] = {"kickoff": "approved"}
     work.start(epic=epic, as_="disp/lead", hive="myrepo")
@@ -3524,9 +3527,13 @@ def test_zero_delta_rebase_bounces_without_closing_or_linking_child(
         fakebd.seed(child, title=child, parent=epic)
         work.claim(bead=child, as_="dev/child", hive="myrepo")
         child_wt = _wt_of(hive, child)
-        (child_wt / "same.txt").write_text("identical reviewed patch\n")
+        (child_wt / "same.txt").write_text("B\n")
         _git("add", "same.txt", cwd=child_wt)
-        _git("commit", "-qm", f"feat: equivalent child {index}", cwd=child_wt)
+        _git("commit", "-qm", "feat: advance shared state to B", cwd=child_wt)
+        if index == 1:
+            (child_wt / "same.txt").write_text("C\n")
+            _git("add", "same.txt", cwd=child_wt)
+            _git("commit", "-qm", "feat: advance first child to C", cwd=child_wt)
         work.submit(bead=child, as_="dev/child", hive="myrepo")
         work.approve(bead=child, as_=f"review/child-{index}", hive="myrepo")
 
@@ -3536,17 +3543,6 @@ def test_zero_delta_rebase_bounces_without_closing_or_linking_child(
     branch_before = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
     base_before = _git("rev-parse", base, cwd=hive.main).stdout.strip()
     linkage_before = git_linkage.read_commits(children[1], hive.main)
-    real_merge_no_ff = worktree_merge.merge_no_ff
-    calls = 0
-
-    def conflict_once(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return 1, "forced stale-base conflict"
-        return real_merge_no_ff(*args, **kwargs)
-
-    monkeypatch.setattr(worktree_merge, "merge_no_ff", conflict_once)
     capsys.readouterr()
 
     with pytest.raises(typer.Exit):
