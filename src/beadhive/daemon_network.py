@@ -26,7 +26,7 @@ from typing import Protocol
 from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from .daemon_config import HostDaemonConfig
+from .daemon_config import HostDaemonConfig, canonical_http_host
 from .daemon_contract import WIRE_SCHEMA_VERSION
 
 _SECURE_SCHEMES = frozenset({"https", "wss"})
@@ -198,47 +198,7 @@ def _ascii_header(values: Mapping[bytes, list[bytes]], name: bytes) -> str | Non
 def _host_name(authority: str) -> str | None:
     """Return one exact lower-case host name/literal, excluding an optional numeric port."""
 
-    if not authority or any(char.isspace() for char in authority):
-        return None
-    if authority.startswith("["):
-        closing = authority.find("]")
-        if closing < 0:
-            return None
-        candidate = authority[: closing + 1]
-        remainder = authority[closing + 1 :]
-        if remainder and (
-            not remainder.startswith(":") or not _valid_port(remainder.removeprefix(":"))
-        ):
-            return None
-        try:
-            ipaddress.IPv6Address(candidate[1:-1])
-        except ValueError:
-            return None
-        return candidate.lower()
-    if authority.count(":") > 1:
-        return None
-    candidate, separator, port = authority.partition(":")
-    if separator and not _valid_port(port):
-        return None
-    if not candidate or candidate.endswith(".") or any(char in candidate for char in "/\\@?#"):
-        return None
-    try:
-        return str(ipaddress.IPv4Address(candidate))
-    except ValueError:
-        pass
-    try:
-        candidate.encode("ascii")
-    except UnicodeEncodeError:
-        return None
-    if any(not (part and part.replace("-", "a").isalnum()) for part in candidate.split(".")):
-        return None
-    return candidate.lower()
-
-
-def _valid_port(value: str) -> bool:
-    return (
-        1 <= len(value) <= 5 and value.isascii() and value.isdigit() and 1 <= int(value) <= 65_535
-    )
+    return canonical_http_host(authority, allow_port=True)
 
 
 def _mcp_session_key(headers: Mapping[bytes, list[bytes]], *, reject_invalid: bool) -> bytes | None:

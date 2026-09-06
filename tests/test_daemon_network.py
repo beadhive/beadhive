@@ -192,6 +192,96 @@ def test_configuration_refuses_insecure_remote_and_nonexact_credentialed_cors() 
         HostDaemonConfig(cors={"allowed_origins": ["https://operator.example/path"]})
 
 
+@pytest.mark.parametrize(
+    ("allowed_host", "authority"),
+    [
+        ("127.0.0.1", "127.0.0.1:8737"),
+        ("[::1]", "[::1]:8737"),
+        ("daemon.example", "DAEMON.EXAMPLE:8737"),
+    ],
+)
+def test_port_free_allowed_hosts_admit_canonical_request_authorities(
+    allowed_host: str, authority: str
+) -> None:
+    async def exercise() -> None:
+        policy = daemon_network.SecureNetworkAdmissionPolicy(
+            _settings(http={"allowed_hosts": [allowed_host]})
+        )
+        admission = await policy.admit(
+            _scope("/health", scheme="https", client=REMOTE, host=authority)
+        )
+        await policy.release(admission)
+
+    asyncio.run(exercise())
+
+
+@pytest.mark.parametrize(
+    "ambiguous",
+    [
+        "127.1",
+        "127.0.0.01",
+        "2130706433",
+        "0x7f000001",
+        "0177.0.0.1",
+    ],
+)
+def test_legacy_numeric_ipv4_authorities_fail_closed_direct_and_forwarded(
+    ambiguous: str,
+) -> None:
+    async def exercise() -> None:
+        direct_settings = _settings(http={"allowed_hosts": ["127.0.0.1"]})
+        # Admission remains fail-closed even if an embedding bypasses Pydantic and hands the
+        # runtime a legacy persisted setting.
+        direct_settings.http.allowed_hosts = (ambiguous,)
+        direct = daemon_network.SecureNetworkAdmissionPolicy(direct_settings)
+        with pytest.raises(daemon_network.NetworkRejected) as direct_error:
+            await direct.admit(
+                _scope(
+                    "/health",
+                    scheme="https",
+                    client=REMOTE,
+                    host=f"{ambiguous}:8737",
+                )
+            )
+        assert direct_error.value.code is daemon_network.NetworkErrorCode.INVALID_HOST
+
+        proxied_settings = _settings(
+            tls={"enabled": False},
+            proxy={"tls_terminating": True, "trusted_addresses": [PROXY]},
+            http={"allowed_hosts": ["127.0.0.1"]},
+        )
+        proxied_settings.http.allowed_hosts = ("127.0.0.1", ambiguous)
+        proxied = daemon_network.SecureNetworkAdmissionPolicy(proxied_settings)
+        with pytest.raises(daemon_network.NetworkRejected) as forwarded_error:
+            await proxied.admit(
+                _scope(
+                    "/health",
+                    scheme="http",
+                    client=PROXY,
+                    host="127.0.0.1",
+                    headers=[
+                        (b"host", b"127.0.0.1"),
+                        (b"x-forwarded-proto", b"https"),
+                        (b"x-forwarded-for", REMOTE.encode()),
+                        (b"x-forwarded-host", f"{ambiguous}:8737".encode()),
+                    ],
+                )
+            )
+        assert (
+            forwarded_error.value.code is daemon_network.NetworkErrorCode.INVALID_FORWARDED_HEADERS
+        )
+
+        dns = daemon_network.SecureNetworkAdmissionPolicy(
+            _settings(http={"allowed_hosts": ["127.example"]})
+        )
+        admission = await dns.admit(
+            _scope("/health", scheme="https", client=REMOTE, host="127.example:8737")
+        )
+        await dns.release(admission)
+
+    asyncio.run(exercise())
+
+
 def test_exact_host_and_credentialed_cors_fail_closed_without_reflecting_input() -> None:
     async def exercise() -> None:
         async with _client(_settings()) as (client, policy):

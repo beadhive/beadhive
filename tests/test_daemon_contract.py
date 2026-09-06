@@ -90,6 +90,44 @@ def test_daemon_defaults_are_disabled_loopback_authenticated_and_terminal_unavai
 
 
 @pytest.mark.parametrize(
+    "host",
+    [
+        "127.0.0.1:8737",
+        "daemon.example:8737",
+        "[::1]:8737",
+        "127.1",
+        "127.0.0.01",
+        "2130706433",
+        "0x7f000001",
+        "0177.0.0.1",
+    ],
+)
+def test_enabled_daemon_refuses_port_bearing_allowed_hosts_before_startup(
+    tmp_path: Path, host: str
+) -> None:
+    credential = _private_file((tmp_path / "tokens.json").absolute())
+
+    with pytest.raises(ValidationError, match="host names or IP literals without ports"):
+        HostDaemonConfig(
+            enabled=True,
+            auth={"credential_file": credential},
+            http={"allowed_hosts": [host]},
+        )
+
+
+def test_allowed_hosts_are_canonical_and_duplicates_fail_closed() -> None:
+    daemon = HostDaemonConfig(http={"allowed_hosts": ["DAEMON.Example", "[0:0:0:0:0:0:0:1]"]})
+
+    assert daemon.http.allowed_hosts == ("daemon.example", "[::1]")
+    with pytest.raises(ValidationError, match="allowed_hosts must be unique"):
+        HostDaemonConfig(http={"allowed_hosts": ["DAEMON.example", "daemon.EXAMPLE"]})
+    with pytest.raises(ValidationError, match="allowed_hosts must be unique"):
+        HostDaemonConfig(http={"allowed_hosts": ["[0:0:0:0:0:0:0:1]", "[::1]"]})
+    with pytest.raises(ValidationError, match="host names or IP literals without ports"):
+        HostDaemonConfig(http={"allowed_hosts": ["127.0.0.1", "127.1"]})
+
+
+@pytest.mark.parametrize(
     "value",
     [
         {"bind": "0.0.0.0"},
