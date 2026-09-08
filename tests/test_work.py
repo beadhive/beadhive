@@ -3460,6 +3460,182 @@ def _start_and_land_children(hive, fakebd, epic="mr-epic", count=6, dispatcher="
     return worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
 
 
+def _wrap_reviewed_epic_over_advanced_root(
+    hive,
+    fakebd,
+    *,
+    epic="mr-composed",
+    count=2,
+    subject="",
+    reverse_parents=False,
+    direct_noise=False,
+):
+    """Build the real recovery shape: reviewed epic side plus a separately advanced root.
+
+    The accepted form checks out the root first and merges the reviewed epic as parent two.  The
+    reverse form preserves the historical bad wrapper as an explicit malformed control.
+    """
+    seat = _start_and_land_children(hive, fakebd, epic=epic, count=count)
+    branch = f"wt/bead/epic/{epic}"
+    if direct_noise:
+        _commit(seat, "chore: unreviewed epic noise", fname="noise.txt")
+    reviewed_tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    root = "mr-root"
+    fakebd.seed(root, title="workstream", issue_type="epic")
+    _mol_branch(hive, root, extra_subject="feat: advance protected root")
+    root_branch = f"wt/bead/epic/{root}"
+    fakebd.beads[epic]["parent"] = root
+
+    if reverse_parents:
+        message = subject or f"chore(merge): compose {root} into {epic}"
+        _git("merge", "--no-ff", root_branch, "-m", message, cwd=seat)
+    else:
+        message = subject or f"chore(merge): compose {epic} onto {root}"
+        _git("checkout", "-q", "--detach", reviewed_tip, cwd=seat)
+        _git("branch", "-f", branch, root_branch, cwd=hive.main)
+        _git("checkout", "-q", branch, cwd=seat)
+        _git("merge", "--no-ff", reviewed_tip, "-m", message, cwd=seat)
+    return seat
+
+
+def test_epic_submit_accepts_root_first_wrapper_and_recurses_into_reviewed_topology(
+    hive, fakebd, capsys
+):
+    """A recovery wrapper is infrastructure, not a replacement for child provenance.
+
+    Its first parent is the exact advanced workstream root; its second parent is an independently
+    reviewed two-child epic.  The audit must recurse into that reviewed side and account its two
+    child bubbles plus the explicit wrapper, while the ordinary configured leaf limit stays ten.
+    """
+    epic = "mr-composed"
+    _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["max_commits"] == 10
+    assert payload["history_policy"] == {
+        "kind": "epic-reviewed-topology",
+        "configured_max_commits": 10,
+        "effective_max_commits": 5,
+        "direct_children": 2,
+        "integrated_children": 2,
+        "basis": "5 linked/topology commit(s) from 2 reviewed direct-child integration(s)",
+        "valid": True,
+        "errors": [],
+    }
+
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    assert fakebd.states[epic]["review"] == "pending"
+
+
+@pytest.mark.parametrize(
+    "subject, reverse_parents",
+    [
+        ("chore(merge): compose mr-other onto mr-root", False),
+        ("", True),
+    ],
+)
+def test_epic_submit_rejects_wrong_or_reverse_composition_wrapper(
+    hive, fakebd, capsys, subject, reverse_parents
+):
+    epic = "mr-malformed-compose"
+    _wrap_reviewed_epic_over_advanced_root(
+        hive,
+        fakebd,
+        epic=epic,
+        subject=subject,
+        reverse_parents=reverse_parents,
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "composition" in err or "first-parent" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+@pytest.mark.parametrize("malformation", ["direct-noise", "missing-linkage"])
+def test_root_first_wrapper_never_hides_unaccounted_review_history(
+    hive, fakebd, capsys, malformation
+):
+    epic = "mr-unaccounted-compose"
+    _wrap_reviewed_epic_over_advanced_root(
+        hive,
+        fakebd,
+        epic=epic,
+        direct_noise=malformation == "direct-noise",
+    )
+    if malformation == "missing-linkage":
+        fakebd.beads[f"{epic}.1"]["metadata"].pop("git.commits")
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "unaccounted" in err or "linked" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def test_root_first_wrapper_rejects_an_empty_reviewed_side(hive, fakebd, capsys):
+    """A canonical wrapper cannot itself stand in for reviewed epic history.
+
+    Build the exact adversarial graph with real Git plumbing: A is the original epic base, the
+    protected root advances to R, and wrapper W names parents [R, A].  Since parent two is already
+    an ancestor of parent one, the reviewed side contributes no commit or child integration.
+    """
+    epic = "mr-empty-compose"
+    root = "mr-root"
+    base_sha = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    fakebd.seed(root, title="workstream", issue_type="epic")
+    _mol_branch(hive, root, extra_subject="feat: advance protected root")
+    root_branch = f"wt/bead/epic/{root}"
+    root_sha = _git("rev-parse", root_branch, cwd=hive.main).stdout.strip()
+    root_tree = _git("rev-parse", f"{root_sha}^{{tree}}", cwd=hive.main).stdout.strip()
+    fakebd.seed(epic, title="empty composed epic", issue_type="epic", parent=root)
+
+    wrapper = _git(
+        "commit-tree",
+        root_tree,
+        "-p",
+        root_sha,
+        "-p",
+        base_sha,
+        "-m",
+        f"chore(merge): compose {epic} onto {root}",
+        cwd=hive.main,
+    ).stdout.strip()
+    _git("update-ref", f"refs/heads/wt/bead/epic/{epic}", wrapper, cwd=hive.main)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert policy["integrated_children"] == 0
+    assert any("empty reviewed side" in error for error in policy["errors"])
+
+
+def test_root_first_wrapper_requires_a_proven_landed_child_integration(hive, fakebd, capsys):
+    """A non-empty second-parent range made only of direct noise is not reviewed topology."""
+    epic = "mr-no-child-compose"
+    _wrap_reviewed_epic_over_advanced_root(
+        hive,
+        fakebd,
+        epic=epic,
+        count=0,
+        direct_noise=True,
+    )
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert policy["integrated_children"] == 0
+    assert any("no proven landed direct-child integration" in error for error in policy["errors"])
+
+
 def test_rebased_child_records_final_provenance_for_epic_submit_and_finish(
     hive, fakebd, monkeypatch, capsys
 ):
@@ -3529,7 +3705,9 @@ def test_zero_delta_rebase_bounces_without_closing_or_linking_child(hive, fakebd
         child_wt = _wt_of(hive, child)
         (child_wt / "same.txt").write_text("B\n")
         _git("add", "same.txt", cwd=child_wt)
-        _git("commit", "-qm", "feat: advance shared state to B", cwd=child_wt)
+        # Distinct messages keep the two identical patches as distinct reviewed commits even
+        # when Git gives both commits the same one-second timestamp under xdist.
+        _git("commit", "-qm", f"feat: child {index} advances shared state to B", cwd=child_wt)
         if index == 1:
             (child_wt / "same.txt").write_text("C\n")
             _git("add", "same.txt", cwd=child_wt)
