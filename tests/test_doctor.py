@@ -17,6 +17,7 @@ import pytest
 
 from beadhive import (
     config,
+    daemon_supervisor,
     doctor,
     dolt_health,
     git_identity,
@@ -1163,6 +1164,7 @@ _DOCTOR_SECTIONS = {
     "beads_role",
     "store_engine",
     "dispatch",
+    "host_daemon",
     "group_auth",
     "mcp",
     "harness_plugin",
@@ -1172,6 +1174,83 @@ _DOCTOR_SECTIONS = {
     "warnings",
     "timings",
 }
+
+
+def test_host_daemon_is_a_separate_structured_doctor_section(monkeypatch, capsys):
+    payload = {
+        "state": "listener-unreachable",
+        "healthy": False,
+        "supervisor": {
+            "backend": "recording",
+            "detail": "installed but stopped",
+            "supported": True,
+            "capability": "manage",
+            "handoff": None,
+        },
+        "readiness": {"state": "unavailable", "detail": "connection refused"},
+        "guidance": {
+            "start": "bh host daemon start",
+            "status": "bh host daemon status",
+            "logs": "read daemon logs",
+            "control": "verified control record: /tmp/control.json",
+        },
+    }
+    monkeypatch.setattr(daemon_supervisor, "configured", lambda cfg: True)
+    monkeypatch.setattr(
+        daemon_supervisor,
+        "daemon_service_status",
+        lambda: SimpleNamespace(payload=lambda: payload),
+    )
+
+    data = doctor._data_host_daemon({})
+    doctor._render_host_daemon(data)
+    out = capsys.readouterr().out
+
+    assert data["configured"] is True
+    assert data["state"] == "listener-unreachable"
+    assert "# Host Daemon" in out
+    assert "connection refused" in out
+    assert "bh host daemon start" in out
+    assert "/tmp/control.json" in out
+
+
+def test_host_daemon_doctor_reports_detect_only_handoff_without_claiming_start(capsys):
+    data = {
+        "configured": True,
+        "state": "stopped",
+        "healthy": False,
+        "supervisor": {
+            "backend": "systemd-user",
+            "detail": "unit not installed",
+            "supported": False,
+            "capability": "detect-only",
+            "handoff": "platform lifecycle management is owned by bh-q0lol.14",
+        },
+        "readiness": {"state": "unavailable", "detail": "daemon is stopped"},
+        "guidance": {
+            "start": "must not be rendered",
+            "status": "systemctl --user status unit",
+            "logs": "journalctl --user -u unit",
+            "control": "verified control record",
+        },
+    }
+
+    doctor._render_host_daemon(data)
+    out = capsys.readouterr().out
+
+    assert "detect-only" in out
+    assert "bh-q0lol.14" in out
+    assert "must not be rendered" not in out
+
+
+def test_host_daemon_doctor_section_is_explicit_when_not_configured(monkeypatch):
+    monkeypatch.setattr(daemon_supervisor, "configured", lambda cfg: False)
+    assert doctor._data_host_daemon({}) == {
+        "configured": False,
+        "state": "not-configured",
+        "healthy": False,
+        "detail": "host.daemon.enabled=false",
+    }
 
 
 def test_doctor_payload_has_all_section_keys(hive, fakebd):  # noqa: F811

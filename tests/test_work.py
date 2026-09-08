@@ -3685,7 +3685,9 @@ def test_rebased_child_records_final_provenance_for_epic_submit_and_finish(
     )
 
 
-def test_zero_delta_rebase_bounces_without_closing_or_linking_child(hive, fakebd, capsys):
+def test_zero_delta_rebase_bounces_without_closing_or_linking_child(
+    hive, fakebd, capsys, monkeypatch
+):
     """If replay drops every reviewed patch as already present, no child commit remains to
     introduce through a no-ff bubble. Fail closed and restore the submitted branch instead of
     closing the child against another child's existing integration tip. The A→B→C versus A→B
@@ -3705,9 +3707,14 @@ def test_zero_delta_rebase_bounces_without_closing_or_linking_child(hive, fakebd
         child_wt = _wt_of(hive, child)
         (child_wt / "same.txt").write_text("B\n")
         _git("add", "same.txt", cwd=child_wt)
+        monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-08T12:00:00+00:00")
+        monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-09-08T12:00:00+00:00")
         # Distinct messages keep the two identical patches as distinct reviewed commits even
-        # when Git gives both commits the same one-second timestamp under xdist.
+        # when Git gives both commits the same one-second timestamp under xdist. Fixed dates make
+        # the adversarial graph deterministic while still proving the commits remain distinct.
         _git("commit", "-qm", f"feat: child {index} advances shared state to B", cwd=child_wt)
+        monkeypatch.delenv("GIT_AUTHOR_DATE")
+        monkeypatch.delenv("GIT_COMMITTER_DATE")
         if index == 1:
             (child_wt / "same.txt").write_text("C\n")
             _git("add", "same.txt", cwd=child_wt)

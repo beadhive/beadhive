@@ -73,9 +73,12 @@ directory apart, silently interchangeable (`bh-z9h7`). Don't re-derive a store p
 
 from __future__ import annotations
 
+import errno
 import json
 import os
+import re
 import socket
+import stat
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -230,6 +233,8 @@ SCHEMA_MIGRATIONS_QUERY = "SELECT MAX(version) AS max_version FROM schema_migrat
 
 DEFAULT_SCHEMA_PROBE_TIMEOUT = 15.0  # seconds — a local dolt/bd subprocess, no network involved
 SCRATCH_INIT_TIMEOUT = 30.0  # seconds — a throwaway `bd init` used only to learn LatestVersion()
+MAX_REPOSITORY_METADATA_BYTES = 1_048_576
+_DOLT_MANIFEST = re.compile(rb"[1-9][0-9]*:__DOLT__(?::[0-9a-v]{32}){4}:[0-9]+(?:\n)?")
 
 _LOCAL_VERSION_CACHE_FILENAME = "bd-schema-version.json"
 
@@ -242,6 +247,8 @@ class SchemaProbeResult:
 
     version: int | None
     detail: str
+    metadata_valid: bool | None = None
+    reason_code: str | None = None
 
 
 #: bd's own prefix for a non-fatal advisory printed to stderr (e.g. "Warning: <dir> has
@@ -319,16 +326,222 @@ def _parse_max_version(stdout: str) -> int | None:
 # ---- embedded mode: query the on-disk Dolt data directory directly --------------------------
 
 
+class _EmbeddedMetadataFailure(RuntimeError):
+    def __init__(self, reason_code: str, detail: str) -> None:
+        self.reason_code = reason_code
+        self.detail = detail
+        super().__init__(reason_code)
+
+
+def _metadata_os_failure(error: OSError) -> _EmbeddedMetadataFailure:
+    if error.errno == errno.ENOENT:
+        return _EmbeddedMetadataFailure(
+            "dolt_embedded_metadata_missing",
+            "embedded Dolt repository metadata is incomplete",
+        )
+    if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+        return _EmbeddedMetadataFailure(
+            "dolt_embedded_metadata_invalid",
+            "embedded Dolt repository metadata path is invalid",
+        )
+    return _EmbeddedMetadataFailure(
+        "dolt_embedded_metadata_unavailable",
+        "embedded Dolt repository metadata is unavailable",
+    )
+
+
+def _directory_flags() -> int:
+    return os.O_RDONLY | os.O_CLOEXEC | os.O_DIRECTORY | os.O_NOFOLLOW
+
+
+def _check_directory_descriptor(fd: int) -> None:
+    metadata = os.fstat(fd)
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or not metadata.st_mode & 0o444
+        or not metadata.st_mode & 0o111
+    ):
+        raise _EmbeddedMetadataFailure(
+            "dolt_embedded_metadata_unavailable",
+            "embedded Dolt repository metadata directory is unavailable",
+        )
+
+
+def _open_directory_path_no_follow(path: Path) -> int:
+    absolute = path.absolute()
+    current = os.open(os.sep, _directory_flags())
+    try:
+        _check_directory_descriptor(current)
+        for component in absolute.parts[1:]:
+            try:
+                child = os.open(component, _directory_flags(), dir_fd=current)
+            except OSError as error:
+                raise _metadata_os_failure(error) from error
+            os.close(current)
+            current = child
+            _check_directory_descriptor(current)
+        return current
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _open_child_directory_no_follow(parent: int, name: str) -> int:
+    try:
+        child = os.open(name, _directory_flags(), dir_fd=parent)
+    except OSError as error:
+        raise _metadata_os_failure(error) from error
+    try:
+        _check_directory_descriptor(child)
+        return child
+    except BaseException:
+        os.close(child)
+        raise
+
+
+def _read_regular_metadata_no_follow(parent: int, name: str) -> bytes:
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW, dir_fd=parent)
+    except OSError as error:
+        raise _metadata_os_failure(error) from error
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise _EmbeddedMetadataFailure(
+                "dolt_embedded_metadata_invalid",
+                "embedded Dolt repository metadata file is invalid",
+            )
+        if before.st_nlink != 1:
+            raise _EmbeddedMetadataFailure(
+                "dolt_embedded_metadata_multiply_linked",
+                "embedded Dolt repository metadata file has multiple names",
+            )
+        if not before.st_mode & 0o444:
+            raise _EmbeddedMetadataFailure(
+                "dolt_embedded_metadata_unavailable",
+                "embedded Dolt repository metadata file is unreadable",
+            )
+        if not 0 < before.st_size <= MAX_REPOSITORY_METADATA_BYTES:
+            raise _EmbeddedMetadataFailure(
+                "dolt_embedded_metadata_invalid",
+                "embedded Dolt repository metadata file has an invalid size",
+            )
+        chunks: list[bytes] = []
+        remaining = MAX_REPOSITORY_METADATA_BYTES + 1
+        while remaining:
+            chunk = os.read(fd, min(remaining, 65_536))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        value = b"".join(chunks)
+        after = os.fstat(fd)
+        if after.st_nlink != 1:
+            raise _EmbeddedMetadataFailure(
+                "dolt_embedded_metadata_multiply_linked",
+                "embedded Dolt repository metadata file has multiple names",
+            )
+        stable = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_nlink,
+        ) == (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_nlink,
+        )
+        if not stable or len(value) != before.st_size:
+            raise _EmbeddedMetadataFailure(
+                "dolt_embedded_metadata_unavailable",
+                "embedded Dolt repository metadata changed while observed",
+            )
+        return value
+    except OSError as error:
+        raise _metadata_os_failure(error) from error
+    finally:
+        os.close(fd)
+
+
+def _probe_embedded_metadata(db_dir: Path, *, metadata_root: str) -> SchemaProbeResult:
+    database_fd: int | None = None
+    dolt_fd: int | None = None
+    noms_fd: int | None = None
+    try:
+        database_fd = _open_directory_path_no_follow(db_dir)
+        dolt_fd = _open_child_directory_no_follow(database_fd, metadata_root)
+        noms_fd = _open_child_directory_no_follow(dolt_fd, "noms")
+        state_raw = _read_regular_metadata_no_follow(dolt_fd, "repo_state.json")
+        manifest_raw = _read_regular_metadata_no_follow(noms_fd, "manifest")
+        try:
+            state = json.loads(state_raw)
+        except (UnicodeDecodeError, ValueError) as error:
+            raise _EmbeddedMetadataFailure(
+                "dolt_embedded_metadata_invalid",
+                "embedded Dolt repository state is invalid",
+            ) from error
+        if (
+            not isinstance(state, dict)
+            or not isinstance(state.get("head"), str)
+            or not state["head"]
+            or any(
+                not isinstance(state.get(key), dict) for key in ("branches", "remotes", "backups")
+            )
+            or _DOLT_MANIFEST.fullmatch(manifest_raw) is None
+        ):
+            raise _EmbeddedMetadataFailure(
+                "dolt_embedded_metadata_invalid",
+                "embedded Dolt repository metadata is invalid",
+            )
+    except _EmbeddedMetadataFailure as error:
+        return SchemaProbeResult(None, error.detail, False, error.reason_code)
+    finally:
+        for fd in (noms_fd, dolt_fd, database_fd):
+            if fd is not None:
+                os.close(fd)
+    return SchemaProbeResult(None, "embedded Dolt repository metadata is valid", True, None)
+
+
 def probe_embedded_schema_version(
-    db_dir: Path, *, timeout: float = DEFAULT_SCHEMA_PROBE_TIMEOUT
+    db_dir: Path,
+    *,
+    timeout: float = DEFAULT_SCHEMA_PROBE_TIMEOUT,
+    metadata_only: bool = False,
 ) -> SchemaProbeResult:
     """The real migration version for an embedded-mode store, queried directly via the ``dolt``
     CLI against ``db_dir`` — bypassing bd's embedded-mode ``bd sql`` refusal entirely, since the
     refusal is bd's own gate, not Dolt's (see module docstring finding 3). Read-only: a bare
     ``SELECT`` against an existing store; verified (this bead) to leave ``dolt_status`` empty
     afterward — nothing is staged or committed by running it."""
-    if not (db_dir / ".dolt").is_dir():
-        return SchemaProbeResult(None, f"{db_dir} is not a Dolt data directory (no .dolt/)")
+    if metadata_only:
+        return _probe_embedded_metadata(db_dir, metadata_root=".dolt")
+    dolt_dir = db_dir / ".dolt"
+    try:
+        dolt_stat = dolt_dir.lstat()
+    except FileNotFoundError:
+        return SchemaProbeResult(
+            None,
+            f"{db_dir} is not a Dolt data directory (no .dolt/)",
+            None,
+            None,
+        )
+    except OSError:
+        return SchemaProbeResult(
+            None,
+            "embedded Dolt repository metadata is unavailable",
+            None,
+            None,
+        )
+    if stat.S_ISLNK(dolt_stat.st_mode) or not stat.S_ISDIR(dolt_stat.st_mode):
+        return SchemaProbeResult(
+            None,
+            "embedded Dolt repository metadata root is invalid",
+            None,
+            None,
+        )
     res = run(
         ["dolt", "--data-dir", str(db_dir), "sql", "-q", SCHEMA_MIGRATIONS_QUERY, "-r", "json"],
         check=False,

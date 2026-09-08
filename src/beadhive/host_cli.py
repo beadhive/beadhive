@@ -58,7 +58,7 @@ import asyncio
 import json
 import platform
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
@@ -91,6 +91,14 @@ app = typer.Typer(
     help=f"{config.BINARY_ALIAS} fleet roster: this host's manifest in Factory HQ.",
 )
 
+
+def daemon_setup_advisories() -> list[dict[str, str]]:
+    """Supply daemon diagnostics to setup without reversing setup's import boundary."""
+    from . import daemon_supervisor
+
+    return daemon_supervisor.setup_advisories()
+
+
 # `bh host lease <verb>` (bh-onm1). The lease verbs act on a HIVE LEASE, not on the host — a
 # different object from every other `bh host` verb, and a different axis from the removal
 # vocabulary (see the verb model in docs/design/cli-mcp-naming-conventions-adr.md §5b-i).
@@ -118,9 +126,44 @@ app.add_typer(dispatch_app, name="dispatch")
 # Starlette/Uvicorn merely because this command group is registered.
 daemon_app = typer.Typer(
     no_args_is_help=True,
-    help="the singleton Beadhive host daemon (phase one: loopback and read-only)",
+    help="the explicitly configured singleton Beadhive host daemon",
 )
 app.add_typer(daemon_app, name="daemon")
+
+
+_cli_telemetry_initializer: Callable[[], None] | None = None
+_cli_command_instrumenter: Callable[..., None] | None = None
+
+
+def configure_cli_telemetry(
+    initializer: Callable[[], None],
+    instrumenter: Callable[..., None],
+) -> None:
+    """Inject root-CLI telemetry without coupling the host command module back to ``cli``."""
+    global _cli_telemetry_initializer, _cli_command_instrumenter
+    _cli_telemetry_initializer = initializer
+    _cli_command_instrumenter = instrumenter
+
+
+def _init_deferred_cli_telemetry(ctx: typer.Context) -> None:
+    """Complete root telemetry deferral for every ``host`` command except daemon ``serve``."""
+    if _cli_telemetry_initializer is not None:
+        _cli_telemetry_initializer()
+    if _cli_command_instrumenter is not None:
+        _cli_command_instrumenter(ctx, command_name="host")
+
+
+@app.callback()
+def _host_root(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand != "daemon":
+        _init_deferred_cli_telemetry(ctx)
+
+
+@daemon_app.callback()
+def _daemon_root(ctx: typer.Context) -> None:
+    if ctx.invoked_subcommand != "serve":
+        _init_deferred_cli_telemetry(ctx)
+
 
 _AS_JSON = typer.Option(False, "--json", help="machine payload (as_json)")
 _FORCE = typer.Option(False, "-f", "--force", help="overwrite an existing manifest")
@@ -157,24 +200,29 @@ _DISPATCH_LOGS_LINES = typer.Option(
 # ---- `bh host daemon` ---------------------------------------------------------
 
 
-@daemon_app.command("serve", help="run the foreground phase-one host daemon")
+@daemon_app.command("serve", help="run the configured foreground host daemon")
 def daemon_serve(
-    listener_host: str = typer.Option("127.0.0.1", "--host", help="literal loopback address"),
-    listener_port: int = typer.Option(8420, "--port", help="listener TCP port"),
-    shutdown_budget: float = typer.Option(
-        10.0,
+    listener_host: str | None = typer.Option(
+        None, "--host", help="override configured literal listener address"
+    ),
+    listener_port: int | None = typer.Option(
+        None, "--port", help="override configured listener TCP port"
+    ),
+    shutdown_budget: float | None = typer.Option(
+        None,
         "--shutdown-budget",
         min=0.001,
-        help="finite total graceful-shutdown budget in seconds",
+        help="override configured finite graceful-shutdown budget in seconds",
     ),
 ) -> None:
-    from . import host_daemon
+    from . import daemon_state_broker, host_daemon
 
     try:
         host_daemon.serve(
             listener_host=listener_host,
             listener_port=listener_port,
             shutdown_budget=shutdown_budget,
+            state_broker_factory=daemon_state_broker.DaemonStateBroker.for_host,
         )
     except host_daemon.DaemonError as exc:
         typer.echo(f"✗ {exc}", err=True)
@@ -185,18 +233,118 @@ def daemon_serve(
 def daemon_status_cmd(
     as_json: bool = typer.Option(False, "--json", help="machine-readable status payload"),
 ) -> None:
-    from . import host_daemon
+    from . import daemon_supervisor
 
     try:
-        status = host_daemon.daemon_status()
-    except (FileNotFoundError, KeyError, ValueError) as exc:
+        status = daemon_supervisor.daemon_service_status()
+    except (
+        daemon_supervisor.SupervisorError,
+        FileNotFoundError,
+        KeyError,
+        ValueError,
+    ) as exc:
         typer.echo(f"✗ {exc}", err=True)
         raise typer.Exit(1) from exc
     payload = status.payload()
     if as_json:
         typer.echo(json.dumps(payload, sort_keys=True))
     else:
-        typer.echo(f"{status.state}: {status.detail}")
+        typer.echo(f"{status.state}: {status.readiness.detail}")
+        typer.echo(
+            f"  singleton: {'held' if status.local.running else 'free'}; "
+            f"control: {'verified' if status.local.verified else status.local.state}"
+        )
+        if status.listener.host is not None:
+            reachability = "reachable" if status.listener.reachable else "unverified"
+            typer.echo(
+                f"  listener: {status.listener.host}:{status.listener.port} ({reachability})"
+            )
+        identity = payload["identity"]
+        typer.echo(f"  expected host: {identity['expected_host_id']}")
+        typer.echo(f"  reported host: {identity['reported_host_id'] or 'unavailable'}")
+        typer.echo(f"  expected instance: {identity['expected_instance_id'] or 'unavailable'}")
+        typer.echo(f"  reported instance: {identity['reported_instance_id'] or 'unavailable'}")
+        readiness = payload["readiness"]
+        typer.echo(
+            f"  readiness: {readiness['state']}; acceptingWork={readiness['accepting_work']}; "
+            f"authenticated={readiness['authenticated']}; "
+            f"reason={readiness['reason_code'] or 'none'}; retryable={readiness['retryable']}"
+        )
+        typer.echo("  dependencies:")
+        for dependency in readiness["dependencies"]:
+            typer.echo(
+                f"    {dependency['name']}: {dependency['status']} "
+                f"(reason: {dependency['reason_code'] or 'none'})"
+            )
+        typer.echo(
+            f"  supervisor: {status.supervisor.backend} "
+            f"({status.supervisor.capability}) — {status.supervisor.detail}"
+        )
+        if status.supervisor.handoff:
+            typer.echo(f"  lifecycle handoff: {status.supervisor.handoff}")
+        typer.echo(f"  logs: {status.supervisor.logs_command}")
+
+
+def _daemon_lifecycle(action: str, *, as_json: bool) -> None:
+    """Run one explicit daemon lifecycle mutation through the per-key supervisor seam."""
+    from . import daemon_supervisor
+
+    try:
+        state = daemon_supervisor.run_lifecycle(action)  # type: ignore[arg-type]
+    except (
+        daemon_supervisor.SupervisorError,
+        FileNotFoundError,
+        KeyError,
+        ValueError,
+    ) as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc
+    payload = state.payload()
+    if as_json:
+        typer.echo(json.dumps(payload, sort_keys=True))
+    else:
+        typer.echo(f"{action}: {state.detail}")
+
+
+@daemon_app.command(
+    "install",
+    help="request install from a managing backend; detect-only backends fail explicitly",
+)
+def daemon_install(
+    as_json: bool = typer.Option(False, "--json", help="machine-readable supervisor state"),
+) -> None:
+    _daemon_lifecycle("install", as_json=as_json)
+
+
+@daemon_app.command(
+    "start",
+    help="request idempotent start from a managing backend; detect-only backends fail",
+)
+def daemon_start(
+    as_json: bool = typer.Option(False, "--json", help="machine-readable supervisor state"),
+) -> None:
+    _daemon_lifecycle("start", as_json=as_json)
+
+
+@daemon_app.command(
+    "stop",
+    help="request idempotent stop from a managing backend; detect-only backends fail",
+)
+def daemon_stop(
+    as_json: bool = typer.Option(False, "--json", help="machine-readable supervisor state"),
+) -> None:
+    _daemon_lifecycle("stop", as_json=as_json)
+
+
+@daemon_app.command("remove", hidden=True)
+@daemon_app.command(
+    "rm",
+    help="request removal from a managing backend; detect-only backends fail explicitly",
+)
+def daemon_remove(
+    as_json: bool = typer.Option(False, "--json", help="machine-readable supervisor state"),
+) -> None:
+    _daemon_lifecycle("remove", as_json=as_json)
 
 
 # ---- local machine facts -----------------------------------------------------

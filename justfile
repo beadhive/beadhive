@@ -53,6 +53,10 @@ bootstrap:
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
 check: lint lint-md license-check architecture-check wire-schema-compat test
 
+# Deterministic product schema/route generation: checked JSON may never drift from code.
+openapi-check:
+    uv run python -m beadhive.daemon_openapi --check
+
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
 #
 # WIRED AT TWO SEAMS, and it needs both (bh-4kq1b):
@@ -119,7 +123,7 @@ check: lint lint-md license-check architecture-check wire-schema-compat test
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check architecture-check wire-schema-compat (test FAST) test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md openapi-check license-check architecture-check wire-schema-compat (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
 # Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
 architecture-check:
@@ -130,6 +134,17 @@ architecture-check:
 # reject same-major wire breaks and in-place edits to already-published releases
 wire-schema-compat:
     uv run python scripts/check_wire_schema_compat.py
+
+# RELEASE ONLY — validates evidence captured by real Darwin, Linux, and container targets.
+# Unit command fixtures cannot satisfy this gate: every cell carries real-execution, target,
+# exact-revision, and freshness provenance. An unavailable target or absent cell is a failure.
+# validate the complete real host-daemon platform lifecycle evidence document
+check-host-daemon-platform-release evidence revision="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    revision="{{revision}}"
+    if [ -z "$revision" ]; then revision="$(git rev-parse HEAD)"; fi
+    uv run python -m beadhive.daemon_platform "{{evidence}}" --revision "$revision"
 
 # MANUAL ONLY — the release browser matrix belongs to beadhive-ui because that repository owns
 # Chromium, the product bundle, and the browser adapters. Core delegates instead of copying the
@@ -1178,6 +1193,13 @@ image-cross target="default": image-builder image-qemu
 # live OTel verification: export real traces+metrics+logs to a running collector
 otel-verify endpoint="http://localhost:4317":
     WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run pytest tests/test_otel_verify.py -v -s
+
+# Explicit compatibility gate: create a temporary environment at the declared OTel floor and
+# prove fractional env timeout parsing + bounded dead-collector daemon shutdown with zero workers.
+# Kept out of ordinary pytest because creating/installing an environment is allowed to fetch on a
+# cold cache; reviewers and dependency-floor changes invoke this recipe deliberately.
+otel-minimum-check:
+    uv run python tests/proof/verify_otel_minimum.py
 
 # live metrics-usability verification: confirms bh metrics form a stable per-(hive,command)
 # accumulating series with ws.hive/observaloop.profile labels (no service_instance_id) and

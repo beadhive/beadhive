@@ -37,6 +37,16 @@ class _LegacyFacadeSource:
 
 _SOURCE = _LegacyFacadeSource()
 
+daemon_settings = CapabilitySettings(
+    "host-daemon",
+    {
+        "home",
+        "load",
+        "otel_flush_timeout",
+    },
+    _SOURCE,
+)
+
 work_settings = CapabilitySettings(
     "work",
     {
@@ -112,6 +122,8 @@ telemetry_settings = CapabilitySettings(
         "otel_compose_file",
         "otel_enabled",
         "otel_endpoint",
+        "otel_export_timeout",
+        "otel_flush_timeout",
         "otel_headers",
         "otel_hive",
         "otel_metrics_temporality",
@@ -148,4 +160,4 @@ plugin_settings = CapabilitySettings(
     _SOURCE,
 )
 
-__all__ = ("plugin_settings", "telemetry_settings", "work_settings")
+__all__ = ("daemon_settings", "plugin_settings", "telemetry_settings", "work_settings")

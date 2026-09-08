@@ -4,31 +4,41 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import hashlib
 import ipaddress
 import json
 import re
+import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import replace
-from importlib import resources
 from typing import Any
 from urllib.parse import quote, urlsplit
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
-from starlette.routing import BaseRoute, Route
+from starlette.routing import BaseRoute, Route, WebSocketRoute
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.websockets import WebSocket
 
-from . import operator_contract, operator_work_items
+from . import daemon_factory, daemon_openapi, operator_contract, operator_work_items
+from .daemon_auth import (
+    AuthenticatedPrincipal,
+    AuthenticationError,
+    AuthFailureCode,
+    authentication_error_response,
+)
+from .daemon_contract import WIRE_SCHEMA_VERSION, AuthScope, TerminalUnavailable, encode_run_id
 from .operator_feed import OperatorFeed
 from .operator_sources import OperatorSourceError, OperatorSources, validate_canonical_identity
 
-OPENAPI_CONTRACT = "beadhive-host-openapi-v1.json"
+OPENAPI_CONTRACT = daemon_openapi.OPENAPI_CONTRACT
 DEFAULT_PAGE_LIMIT = 50
 MAX_PAGE_LIMIT = 200
 _HIVE_READ_CONCURRENCY = 8
-_CURSOR = re.compile(r"^([A-Za-z0-9._~-]+):(0|[1-9][0-9]*)$")
+MAX_ACTIVITY_CURSOR_LENGTH = 85
+_CURSOR = re.compile(r"^([A-Za-z0-9._~-]{1,64}):(0|[1-9][0-9]{0,19})$")
 _EVENTS_RAW_PATH = re.compile(
     rb"^/api/v1/hives/[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F"
     rb"[A-Za-z0-9._~-]+/events$"
@@ -38,11 +48,14 @@ _WORK_ITEM_ID = re.compile(r"^[A-Za-z0-9._~-]+$")
 
 def error_payload(error: OperatorSourceError) -> dict[str, object]:
     return {
+        "schemaVersion": WIRE_SCHEMA_VERSION,
         "error": {
             "code": error.code,
             "message": str(error),
             "retryable": error.retryable,
-        }
+            "action": None,
+            "requestId": None,
+        },
     }
 
 
@@ -51,16 +64,16 @@ def _error_response(error: OperatorSourceError) -> JSONResponse:
     return JSONResponse(error_payload(error), status_code=error.status_code, headers=headers)
 
 
-def openapi_document() -> dict[str, Any]:
-    text = (
-        resources.files("beadhive")
-        .joinpath("schemas", OPENAPI_CONTRACT)
-        .read_text(encoding="utf-8")
+def _read_only_error() -> OperatorSourceError:
+    return OperatorSourceError(
+        "read_only_profile",
+        "The operator API permits read-only GET requests only.",
+        status_code=405,
     )
-    value = json.loads(text)
-    if not isinstance(value, dict):
-        raise RuntimeError("operator OpenAPI root must be an object")
-    return value
+
+
+def openapi_document() -> dict[str, Any]:
+    return daemon_openapi.checked_openapi_document()
 
 
 def _raw_parameter(request: Request, prefix: bytes, suffix: bytes) -> bytes:
@@ -94,8 +107,9 @@ def canonical_run_parameter(request: Request) -> str:
     decoded = str(request.path_params["run_id"])
     raw = _raw_parameter(request, b"/api/v1/runs/", b"/activity")
     try:
+        encode_run_id(decoded)
         expected = quote(decoded, safe="-._~").encode("ascii")
-    except UnicodeEncodeError as exc:
+    except (TypeError, UnicodeEncodeError, ValueError) as exc:
         raise OperatorSourceError(
             "invalid_run_id",
             "Run identity must be one path-safe outer run token.",
@@ -208,7 +222,7 @@ def work_item_query(request: Request) -> operator_work_items.WorkItemQuery:
 def _conditional_json(request: Request, payload: dict[str, object]) -> Response:
     value = operator_work_items.etag(payload)
     candidates = {item.strip() for item in request.headers.get("if-none-match", "").split(",")}
-    headers = {"ETag": value}
+    headers = {"ETag": value, "Cache-Control": "no-cache"}
     if "*" in candidates or value in candidates:
         return Response(status_code=304, headers=headers)
     return JSONResponse(payload, headers=headers)
@@ -224,7 +238,14 @@ def activity_cursor(request: Request) -> tuple[str, int] | None:
             "Activity requests accept at most one exact cursor.",
             status_code=400,
         )
-    match = _CURSOR.fullmatch(values[0])
+    value = values[0]
+    if len(value) > MAX_ACTIVITY_CURSOR_LENGTH or not value.isascii():
+        raise OperatorSourceError(
+            "invalid_activity_cursor",
+            "Activity cursor must be producerEpoch:sequence.",
+            status_code=400,
+        )
+    match = _CURSOR.fullmatch(value)
     if match is None:
         raise OperatorSourceError(
             "invalid_activity_cursor",
@@ -314,26 +335,69 @@ class OperatorAPI:
         host_id: str,
         instance_id: str,
         ready: Callable[[], bool],
+        accepting: Callable[[], bool] | None = None,
+        started_at: int | None = None,
+        journal_stale_after_seconds: float = (
+            daemon_factory.DEFAULT_RUN_JOURNAL_STALE_AFTER_SECONDS
+        ),
+        dolt_probe_timeout_seconds: float = 2.0,
+        factory_directory: daemon_factory.FactoryDirectory | None = None,
         events: Callable[[Request], Any] | None = None,
+        snapshot_reader: Callable[[str], Awaitable[dict[str, object]]] | None = None,
+        activity_reader: Callable[[str, tuple[str, int] | None], Awaitable[dict[str, object]]]
+        | None = None,
+        activity_publisher: Callable[[str, bytes, AuthenticatedPrincipal], Awaitable[Any]]
+        | None = None,
+        activity_max_body_bytes: int | None = None,
     ) -> None:
         self.sources = sources
         self.feed = feed
         self.host_id = host_id
         self.instance_id = instance_id
         self.ready = ready
+        self.accepting = accepting or ready
         self.events = events
+        self.snapshot_reader = snapshot_reader
+        self.activity_reader = activity_reader
+        self.activity_publisher = activity_publisher
+        self.activity_max_body_bytes = activity_max_body_bytes
+        if (activity_publisher is None) != (activity_max_body_bytes is None):
+            raise ValueError("activity publisher and body bound must be configured together")
+        if activity_max_body_bytes is not None and activity_max_body_bytes < 1:
+            raise ValueError("activity body bound must be positive")
+        self.factory_directory = factory_directory or daemon_factory.FactoryDirectory(
+            sources=sources,
+            host_id=host_id,
+            service_instance_id=instance_id,
+            started_at=started_at if started_at is not None else time.time_ns() // 1_000_000,
+            journal_stale_after_seconds=journal_stale_after_seconds,
+            dolt_probe_timeout_seconds=dolt_probe_timeout_seconds,
+            activity_publish_configured=activity_publisher is not None,
+        )
 
     async def factory(self, _request: Request) -> JSONResponse:
+        cancellation_event = threading.Event()
+        loop = asyncio.get_running_loop()
+        worker = functools.partial(
+            self.factory_directory.snapshot,
+            ready=self.ready(),
+            accepting_work=self.accepting(),
+            cancellation_event=cancellation_event,
+        )
+        future = loop.run_in_executor(None, worker)
         try:
-            hives = await asyncio.to_thread(self.sources.registered_hives)
-            payload = operator_contract.factory_snapshot(
-                [hive.entry for hive in hives],
-                generated_at=time.time_ns() // 1_000_000,
-                host_id=self.host_id,
-                instance_id=self.instance_id,
-                ready=self.ready(),
-            )
+            payload = await asyncio.shield(future)
             return JSONResponse(payload)
+        except asyncio.CancelledError:
+            cancellation_event.set()
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(future),
+                    timeout=self.factory_directory.dependency_probe_timeout_seconds + 0.25,
+                )
+            except Exception:
+                pass
+            raise
         except OperatorSourceError as exc:
             return _error_response(exc)
         except Exception:
@@ -438,7 +502,9 @@ class OperatorAPI:
     async def snapshot(self, request: Request) -> JSONResponse:
         try:
             identity = canonical_hive_parameter(request)
-            payload = await asyncio.to_thread(self.feed.snapshot_with_cursor, identity)
+            if self.snapshot_reader is None:
+                raise RuntimeError("operator snapshot reader is not configured")
+            payload = await self.snapshot_reader(identity)
             return JSONResponse(payload)
         except OperatorSourceError as exc:
             return _error_response(exc)
@@ -456,7 +522,9 @@ class OperatorAPI:
         try:
             run_id = canonical_run_parameter(request)
             after = activity_cursor(request)
-            payload = await asyncio.to_thread(self.feed.activity_with_cursor, run_id, after=after)
+            if self.activity_reader is None:
+                raise RuntimeError("operator activity reader is not configured")
+            payload = await self.activity_reader(run_id, after)
             return JSONResponse(payload)
         except OperatorSourceError as exc:
             return _error_response(exc)
@@ -465,6 +533,66 @@ class OperatorAPI:
                 OperatorSourceError(
                     "activity_source_unavailable",
                     "The authoritative run activity source is unavailable.",
+                    status_code=503,
+                    retryable=True,
+                )
+            )
+
+    async def publish_activity(self, request: Request) -> JSONResponse:
+        try:
+            run_id = canonical_run_parameter(request)
+            if request.query_params:
+                raise OperatorSourceError(
+                    "invalid_activity_query",
+                    "Activity publication does not accept query parameters.",
+                    status_code=400,
+                )
+            if not self.accepting():
+                raise OperatorSourceError(
+                    "activity_publish_unavailable",
+                    "Activity publication is unavailable while the daemon is draining.",
+                    status_code=503,
+                    retryable=True,
+                )
+            if self.activity_publisher is None or self.activity_max_body_bytes is None:
+                raise RuntimeError("activity publisher is not configured")
+            declared = request.headers.get("content-length")
+            if declared is not None:
+                try:
+                    if int(declared) > self.activity_max_body_bytes:
+                        raise OperatorSourceError(
+                            "activity_body_too_large",
+                            "The activity exceeds the configured size limit.",
+                            status_code=413,
+                        )
+                except ValueError as exc:
+                    raise OperatorSourceError(
+                        "invalid_activity_schema",
+                        "The activity body does not match the v1 contract.",
+                        status_code=400,
+                    ) from exc
+            body = await request.body()
+            if len(body) > self.activity_max_body_bytes:
+                raise OperatorSourceError(
+                    "activity_body_too_large",
+                    "The activity exceeds the configured size limit.",
+                    status_code=413,
+                )
+            principal = getattr(request.state, "auth_principal", None)
+            if not isinstance(principal, AuthenticatedPrincipal):
+                raise RuntimeError("authenticated publisher principal is unavailable")
+            result = await self.activity_publisher(run_id, body, principal)
+            return JSONResponse(
+                result.to_wire(),
+                status_code=201 if result.status == "created" else 200,
+            )
+        except OperatorSourceError as exc:
+            return _error_response(exc)
+        except Exception:
+            return _error_response(
+                OperatorSourceError(
+                    "activity_store_unavailable",
+                    "The durable activity store is unavailable.",
                     status_code=503,
                     retryable=True,
                 )
@@ -531,6 +659,17 @@ class OperatorAPI:
     async def openapi(self, _request: Request) -> JSONResponse:
         return JSONResponse(openapi_document())
 
+    async def terminal_attach_unavailable(self, _request: Request) -> JSONResponse:
+        return JSONResponse(TerminalUnavailable().to_wire(), status_code=503)
+
+    async def terminal_websocket_unavailable(self, websocket: WebSocket) -> None:
+        if "websocket.http.response" in websocket.scope.get("extensions", {}):
+            await websocket.send_denial_response(
+                JSONResponse(TerminalUnavailable().to_wire(), status_code=503)
+            )
+            return
+        await websocket.close(code=1013, reason="terminal.unavailable:pty_verdict_pending")
+
     def routes(self) -> list[BaseRoute]:
         routes: list[BaseRoute] = [
             Route("/api/v1/factory", self.factory, methods=["GET"], name="operator_factory"),
@@ -565,6 +704,15 @@ class OperatorAPI:
                 name="operator_run_activity",
             ),
         ]
+        if self.activity_publisher is not None:
+            routes.append(
+                Route(
+                    "/api/v1/runs/{run_id}/activity",
+                    self.publish_activity,
+                    methods=["POST"],
+                    name="publish_run_activity",
+                )
+            )
         if self.events is not None:
             routes.append(
                 Route(
@@ -576,6 +724,21 @@ class OperatorAPI:
             )
         routes.append(
             Route("/openapi.json", self.openapi, methods=["GET"], name="operator_openapi")
+        )
+        routes.extend(
+            [
+                Route(
+                    "/api/v1/terminal/attach-token",
+                    self.terminal_attach_unavailable,
+                    methods=["POST"],
+                    name="terminal_attach_unavailable",
+                ),
+                WebSocketRoute(
+                    "/ws/terminal",
+                    self.terminal_websocket_unavailable,
+                    name="terminal_websocket_unavailable",
+                ),
+            ]
         )
         return routes
 
@@ -722,14 +885,19 @@ class LocalReadPolicyMiddleware:
             return
 
         if scope.get("method") != "GET":
-            await _error_response(
-                OperatorSourceError(
-                    "read_only_profile",
-                    "The phase-one operator profile permits read-only GET requests only.",
-                    status_code=405,
-                )
-            )(scope, receive, send)
+            await _error_response(_read_only_error())(scope, receive, send)
             return
+
+        if scope.get("path") == "/openapi.json":
+            principal = scope.get("state", {}).get("auth_principal")
+            if not isinstance(principal, AuthenticatedPrincipal):
+                error = AuthenticationError(AuthFailureCode.MISSING)
+                await authentication_error_response(error)(scope, receive, send)
+                return
+            if not principal.permits(AuthScope.OPERATOR_READ):
+                error = AuthenticationError(AuthFailureCode.WRONG_SCOPE, status_code=403)
+                await authentication_error_response(error)(scope, receive, send)
+                return
 
         async def secure_send(message: Message) -> None:
             if message["type"] == "http.response.start":
@@ -748,6 +916,40 @@ class LocalReadPolicyMiddleware:
             await send(message)
 
         await self.app(scope, receive, secure_send)
+
+
+class ReadOnlyMethodMiddleware:
+    """Return checked JSON 405 after auth except for enabled product POST routes."""
+
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        allow_activity_publish: bool = False,
+        allow_terminal_unavailable: bool = False,
+    ) -> None:
+        self.app = app
+        self.allow_activity_publish = allow_activity_publish
+        self.allow_terminal_unavailable = allow_terminal_unavailable
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("method") != "GET":
+            path = str(scope.get("path", ""))
+            activity_publish = (
+                self.allow_activity_publish
+                and scope.get("method") == "POST"
+                and path.startswith("/api/v1/runs/")
+                and path.endswith("/activity")
+            )
+            terminal_unavailable = (
+                self.allow_terminal_unavailable
+                and scope.get("method") == "POST"
+                and path == "/api/v1/terminal/attach-token"
+            )
+            if not activity_publish and not terminal_unavailable:
+                await _error_response(_read_only_error())(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
 
 
 def route_paths(routes: Sequence[BaseRoute]) -> set[str]:

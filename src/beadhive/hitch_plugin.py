@@ -101,14 +101,20 @@ content on rebuild is tracked separately (bh-add2.2), out of scope here.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import os
 import shutil
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 
 import typer
 
-from . import config, fleet, plugins, role, run
+from . import config, fleet, log, plugins, registry, role, run, run_journal
+
+_LOG = log.get_logger(__name__)
 
 # bh's own harness vocabulary (mirrors role.KNOWN_HARNESSES) mapped onto hitch's own `up` target
 # names — determined empirically: hitch's CLI accepts "claude-code"/"opencode"/"codex", NOT
@@ -154,11 +160,57 @@ def _scoped_launch_env() -> dict[str, str]:
     """
 
     env = run.child_env()
+    from .activity_publisher import scoped_child_env
+
+    env = scoped_child_env(env, run_journal.WRITER_HITCH)
     env.pop(_LAUNCH_RECEIPT_ENV, None)
     payload = _launch_receipt.get()
     if payload is not None:
         env[_LAUNCH_RECEIPT_ENV] = payload
     return env
+
+
+def _managed_activity_journal(cfg, hitch_target: str, profile: str, workspace: str | None):
+    """Create Hitch's exact run authority only when source publication is configured."""
+
+    payload = _launch_receipt.get()
+    if payload is None:
+        return None
+    try:
+        from .activity_publisher import publisher_for_env
+
+        publisher = publisher_for_env()
+        if publisher is None:
+            return None
+        receipt = role.AgentLaunchReceipt.model_validate_json(payload)
+        entry = registry.entry_for_dir(cfg, Path(workspace or os.getcwd()))
+        if entry is None:
+            return None
+        evidence = json.dumps(
+            {"receipt": json.loads(payload), "target": hitch_target, "profile": profile},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        identity = run_journal.RunIdentity(
+            hive=registry.hive_key(entry),
+            bead=receipt.bead,
+            driver="hitch",
+            provider=hitch_target,
+            manifest_digest=f"sha256:{hashlib.sha256(evidence).hexdigest()}",
+        )
+        return run_journal.RunJournal.create(
+            identity,
+            writer=run_journal.WRITER_HITCH,
+            activity_publisher=publisher,
+        )
+    except Exception as exc:
+        # Publication is observability.  A malformed/unavailable sink cannot alter Hitch's
+        # launch result; configured publisher status/logging carries the degradation.
+        _LOG.error(
+            "hitch_activity_publisher_unavailable",
+            exception_class=type(exc).__name__,
+        )
+        return None
 
 
 def _repo_files(repo):
@@ -280,7 +332,18 @@ def up(
         explain=explain,
     )
     launch_env = _scoped_launch_env()
+    journal = _managed_activity_journal(cfg, hitch_target, profile, workspace)
     result = run.run(argv, check=False, capture=False, env=launch_env)
+    if journal is not None:
+        journal.append(
+            {
+                "kind": "process.harvested",
+                "phase": "finished" if result.returncode == 0 else "failed",
+                "outcome_code": "done" if result.returncode == 0 else "failed",
+                "process": {"exit_code": result.returncode, "group_gone": True},
+            },
+            operation="hitch-result",
+        )
     return result.returncode
 
 

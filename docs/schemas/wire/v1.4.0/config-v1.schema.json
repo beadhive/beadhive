@@ -154,6 +154,413 @@
       "title": "ConflictConfig",
       "type": "object"
     },
+    "DaemonActivityConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "idempotency_retention_seconds": {
+          "default": 604800.0,
+          "exclusiveMinimum": 0,
+          "maximum": 31536000,
+          "title": "Idempotency Retention Seconds",
+          "type": "number"
+        },
+        "max_body_bytes": {
+          "default": 262144,
+          "maximum": 16777216,
+          "minimum": 1024,
+          "title": "Max Body Bytes",
+          "type": "integer"
+        },
+        "max_inventory_bytes": {
+          "default": 67108864,
+          "maximum": 4294967296,
+          "minimum": 1024,
+          "title": "Max Inventory Bytes",
+          "type": "integer"
+        },
+        "max_inventory_entries": {
+          "default": 10000,
+          "maximum": 1000000,
+          "minimum": 1,
+          "title": "Max Inventory Entries",
+          "type": "integer"
+        },
+        "max_inventory_roots": {
+          "default": 256,
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Max Inventory Roots",
+          "type": "integer"
+        },
+        "max_records_per_read": {
+          "default": 1000,
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Max Records Per Read",
+          "type": "integer"
+        }
+      },
+      "title": "DaemonActivityConfig",
+      "type": "object"
+    },
+    "DaemonAuthConfig": {
+      "additionalProperties": false,
+      "description": "Bearer-token verification inputs; raw credentials never belong in config.yaml.",
+      "properties": {
+        "audience": {
+          "default": "beadhive-host",
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Audience",
+          "type": "string"
+        },
+        "credential_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Absolute owner-readable file containing verifier records; required when enabled.",
+          "title": "Credential File"
+        },
+        "required": {
+          "const": true,
+          "default": true,
+          "description": "Authentication is mandatory on every route except /health.",
+          "title": "Required",
+          "type": "boolean"
+        },
+        "session_revalidation_seconds": {
+          "default": 30.0,
+          "description": "Maximum seconds a long-lived MCP, SSE, or terminal session may remain open after its last successful credential check. The daemon session registry closes a session at its next deadline when expiry, rotation, or revocation is observed.",
+          "exclusiveMinimum": 0,
+          "maximum": 300,
+          "title": "Session Revalidation Seconds",
+          "type": "number"
+        },
+        "token_rate_limit_per_minute": {
+          "default": 600,
+          "maximum": 1000000,
+          "minimum": 1,
+          "title": "Token Rate Limit Per Minute",
+          "type": "integer"
+        }
+      },
+      "title": "DaemonAuthConfig",
+      "type": "object"
+    },
+    "DaemonCorsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_origins": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Origins",
+          "type": "array"
+        }
+      },
+      "title": "DaemonCorsConfig",
+      "type": "object"
+    },
+    "DaemonHttpConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_hosts": {
+          "default": [
+            "localhost",
+            "127.0.0.1",
+            "[::1]"
+          ],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Hosts",
+          "type": "array"
+        },
+        "max_connections": {
+          "default": 256,
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Max Connections",
+          "type": "integer"
+        },
+        "max_request_body_bytes": {
+          "default": 1048576,
+          "maximum": 67108864,
+          "minimum": 1024,
+          "title": "Max Request Body Bytes",
+          "type": "integer"
+        },
+        "request_timeout_seconds": {
+          "default": 30.0,
+          "exclusiveMinimum": 0,
+          "maximum": 600,
+          "title": "Request Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "title": "DaemonHttpConfig",
+      "type": "object"
+    },
+    "DaemonMcpConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "max_sessions": {
+          "default": 64,
+          "maximum": 10000,
+          "minimum": 1,
+          "title": "Max Sessions",
+          "type": "integer"
+        },
+        "mode": {
+          "default": "sessionful",
+          "enum": [
+            "sessionful",
+            "stateless"
+          ],
+          "title": "Mode",
+          "type": "string"
+        },
+        "session_absolute_seconds": {
+          "default": 14400.0,
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Session Absolute Seconds",
+          "type": "number"
+        },
+        "session_idle_seconds": {
+          "default": 900.0,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Session Idle Seconds",
+          "type": "number"
+        }
+      },
+      "title": "DaemonMcpConfig",
+      "type": "object"
+    },
+    "DaemonProxyConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "tls_terminating": {
+          "default": false,
+          "title": "Tls Terminating",
+          "type": "boolean"
+        },
+        "trusted_addresses": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Trusted Addresses",
+          "type": "array"
+        }
+      },
+      "title": "DaemonProxyConfig",
+      "type": "object"
+    },
+    "DaemonShutdownConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "graceful_seconds": {
+          "default": 30.0,
+          "exclusiveMinimum": 0,
+          "maximum": 300,
+          "title": "Graceful Seconds",
+          "type": "number"
+        },
+        "request_drain_seconds": {
+          "default": 10.0,
+          "maximum": 300,
+          "minimum": 0,
+          "title": "Request Drain Seconds",
+          "type": "number"
+        },
+        "telemetry_flush_seconds": {
+          "default": 3.0,
+          "maximum": 30,
+          "minimum": 0,
+          "title": "Telemetry Flush Seconds",
+          "type": "number"
+        }
+      },
+      "title": "DaemonShutdownConfig",
+      "type": "object"
+    },
+    "DaemonSseConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "client_queue_events": {
+          "default": 256,
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Client Queue Events",
+          "type": "integer"
+        },
+        "heartbeat_seconds": {
+          "default": 15.0,
+          "exclusiveMinimum": 0,
+          "maximum": 300,
+          "title": "Heartbeat Seconds",
+          "type": "number"
+        },
+        "max_clients": {
+          "default": 128,
+          "maximum": 100000,
+          "minimum": 1,
+          "title": "Max Clients",
+          "type": "integer"
+        },
+        "replay_events_per_hive": {
+          "default": 2048,
+          "maximum": 1000000,
+          "minimum": 1,
+          "title": "Replay Events Per Hive",
+          "type": "integer"
+        },
+        "replay_total_bytes": {
+          "default": 67108864,
+          "maximum": 4294967296,
+          "minimum": 65536,
+          "title": "Replay Total Bytes",
+          "type": "integer"
+        }
+      },
+      "title": "DaemonSseConfig",
+      "type": "object"
+    },
+    "DaemonStatusConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "dependency_probe_interval_seconds": {
+          "default": 10.0,
+          "exclusiveMinimum": 0,
+          "maximum": 300,
+          "title": "Dependency Probe Interval Seconds",
+          "type": "number"
+        },
+        "dependency_probe_timeout_seconds": {
+          "default": 2.0,
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Dependency Probe Timeout Seconds",
+          "type": "number"
+        },
+        "run_journal_stale_after_seconds": {
+          "default": 900.0,
+          "description": "Maximum age of the newest observed run journal before factory coverage and the run-journals dependency become explicitly stale.",
+          "exclusiveMinimum": 0,
+          "maximum": 604800,
+          "title": "Run Journal Stale After Seconds",
+          "type": "number"
+        }
+      },
+      "title": "DaemonStatusConfig",
+      "type": "object"
+    },
+    "DaemonTerminalConfig": {
+      "additionalProperties": false,
+      "description": "Reserved limits; availability remains false until the PTY verdict is consumed.",
+      "properties": {
+        "absolute_seconds": {
+          "default": 14400.0,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Absolute Seconds",
+          "type": "number"
+        },
+        "attach_token_ttl_seconds": {
+          "default": 30.0,
+          "exclusiveMinimum": 0,
+          "maximum": 120,
+          "title": "Attach Token Ttl Seconds",
+          "type": "number"
+        },
+        "available": {
+          "const": false,
+          "default": false,
+          "title": "Available",
+          "type": "boolean"
+        },
+        "client_queue_bytes": {
+          "default": 262144,
+          "maximum": 16777216,
+          "minimum": 4096,
+          "title": "Client Queue Bytes",
+          "type": "integer"
+        },
+        "idle_seconds": {
+          "default": 900.0,
+          "exclusiveMinimum": 0,
+          "maximum": 86400,
+          "title": "Idle Seconds",
+          "type": "number"
+        },
+        "max_sessions": {
+          "default": 8,
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Max Sessions",
+          "type": "integer"
+        }
+      },
+      "title": "DaemonTerminalConfig",
+      "type": "object"
+    },
+    "DaemonTlsConfig": {
+      "additionalProperties": false,
+      "properties": {
+        "certificate_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Certificate File"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "minimum_version": {
+          "default": "TLSv1.3",
+          "enum": [
+            "TLSv1.2",
+            "TLSv1.3"
+          ],
+          "title": "Minimum Version",
+          "type": "string"
+        },
+        "private_key_file": {
+          "anyOf": [
+            {
+              "format": "path",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Private Key File"
+        }
+      },
+      "title": "DaemonTlsConfig",
+      "type": "object"
+    },
     "DevIdentity": {
       "additionalProperties": false,
       "description": "One ``dev/<name>`` seat's identity overrides (``work.identity.devs[dev/<name>]``).",
@@ -545,6 +952,10 @@
       "additionalProperties": false,
       "description": "Multi-host model policy (``host``) — how this factory arbitrates who may write a hive.\n\nDistinct from ``hosts/<host_id>.yaml`` (the per-host manifest in HQ,\n:mod:`beadhive.hosts`): that file describes ONE machine; this section is the fleet-wide\npolicy every machine applies.",
       "properties": {
+        "daemon": {
+          "$ref": "#/$defs/HostDaemonConfig",
+          "description": "Unified host daemon listener, security, transport, and resource limits."
+        },
         "dispatch": {
           "$ref": "#/$defs/HostDispatchConfig"
         },
@@ -553,6 +964,64 @@
         }
       },
       "title": "HostConfig",
+      "type": "object"
+    },
+    "HostDaemonConfig": {
+      "additionalProperties": false,
+      "description": "All listener/security/resource limits validated as one host-local boundary.",
+      "properties": {
+        "activity": {
+          "$ref": "#/$defs/DaemonActivityConfig"
+        },
+        "auth": {
+          "$ref": "#/$defs/DaemonAuthConfig"
+        },
+        "bind": {
+          "default": "127.0.0.1",
+          "title": "Bind",
+          "type": "string"
+        },
+        "cors": {
+          "$ref": "#/$defs/DaemonCorsConfig"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "http": {
+          "$ref": "#/$defs/DaemonHttpConfig"
+        },
+        "mcp": {
+          "$ref": "#/$defs/DaemonMcpConfig"
+        },
+        "port": {
+          "default": 8737,
+          "maximum": 65535,
+          "minimum": 1,
+          "title": "Port",
+          "type": "integer"
+        },
+        "proxy": {
+          "$ref": "#/$defs/DaemonProxyConfig"
+        },
+        "shutdown": {
+          "$ref": "#/$defs/DaemonShutdownConfig"
+        },
+        "sse": {
+          "$ref": "#/$defs/DaemonSseConfig"
+        },
+        "status": {
+          "$ref": "#/$defs/DaemonStatusConfig"
+        },
+        "terminal": {
+          "$ref": "#/$defs/DaemonTerminalConfig"
+        },
+        "tls": {
+          "$ref": "#/$defs/DaemonTlsConfig"
+        }
+      },
+      "title": "HostDaemonConfig",
       "type": "object"
     },
     "HostDispatchConfig": {
@@ -1167,6 +1636,22 @@
           "description": "OTLP collector endpoint (OTEL_EXPORTER_OTLP_ENDPOINT env wins).",
           "title": "Endpoint",
           "type": "string"
+        },
+        "export_timeout_seconds": {
+          "default": 0.5,
+          "description": "Finite timeout for one OTLP exporter request.",
+          "exclusiveMinimum": 0,
+          "maximum": 30,
+          "title": "Export Timeout Seconds",
+          "type": "number"
+        },
+        "flush_timeout_seconds": {
+          "default": 2.0,
+          "description": "Finite total process-exit telemetry flush budget.",
+          "maximum": 30,
+          "minimum": 0,
+          "title": "Flush Timeout Seconds",
+          "type": "number"
         },
         "genai": {
           "$ref": "#/$defs/GenaiConfig"

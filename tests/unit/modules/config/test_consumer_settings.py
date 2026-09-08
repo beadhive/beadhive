@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from beadhive import config
-from beadhive.config_consumer_ports import work_settings
+from beadhive.config_consumer_ports import daemon_settings, work_settings
 from beadhive.modules.config.application.consumer_settings import CapabilitySettings
 
 
@@ -44,6 +44,10 @@ def test_worktree_safety_settings_are_exposed_by_the_narrow_work_port():
         "junk_globs",
         "precious_min_bytes",
     } <= set(work_settings.allowed_names)
+
+
+def test_host_daemon_settings_are_exposed_by_the_narrow_daemon_port():
+    assert set(daemon_settings.allowed_names) == {"home", "load", "otel_flush_timeout"}
 
 
 def test_patching_a_consumer_port_replaces_the_legacy_facade_name(monkeypatch):

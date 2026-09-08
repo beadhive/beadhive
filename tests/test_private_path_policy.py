@@ -481,6 +481,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     # User/workspace config paths, never repository-private state.
     | _owned("config.py", "env_file", ".env")
     | _owned("config_services.py", "archive_dir", ".archived")
+    | _owned("daemon_platform.py", "_systemd_user_dir", ".config")
     | _owned("identity.py", "_legacy_workspace_populated", ".git")
     | _owned("dispatch_supervisor.py", "_systemd_user_dir", ".config")
     | _owned("doctor.py", "_missing_required_dep_warnings", ".nix-profile")

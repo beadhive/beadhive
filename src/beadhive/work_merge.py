@@ -682,7 +682,27 @@ def impl_already_landed(api, entry, branch, base):
     return api.worktree.landed_via_merge(entry, branch, base)
 
 
-def impl__guard_bead_clean_history(api, entry, branch, base, cfg):
+def _has_linked_landing_bubble(api, entry, branch, base, bead, bead_data):
+    """Whether this bead owns a recorded no-ff bubble in ``branch..base``.
+
+    Ancestry alone cannot identify the owner of a commit: two reviewed children can produce the
+    same commit object when their tree, parent, identity, message, and second-resolution timestamp
+    match.  Merge records its no-ff bubble before closing the bead, so that bead-specific linkage
+    is the durable provenance needed by the idempotent reconciliation path.
+    """
+    linked = set(api.git_linkage.commits_from_data(bead_data))
+    expected_subject = f"chore(merge): bead {bead}"
+    return any(
+        row.get("sha") in linked
+        and row.get("subject") == expected_subject
+        and len(row.get("parents") or []) == 2
+        for row in api.worktree.commit_rows(entry, branch, base)
+    )
+
+
+def impl__guard_bead_clean_history(
+    api, entry, branch, base, cfg, *, bead="", main=None, bead_data=None
+):
     """Guard the branch is a small clean conventional history before it's allowed to merge —
     reuses submit's `_history_ok` check as a merge-time backstop.
 
@@ -691,7 +711,16 @@ def impl__guard_bead_clean_history(api, entry, branch, base, cfg):
     base and NOT an ancestor of it — still takes the self-refine bounce unchanged."""
     count, subjects = api.worktree.history(entry, branch, base)
     if count == 0 and api.already_landed(entry, branch, base):
-        return True
+        if not bead or _has_linked_landing_bubble(api, entry, branch, base, bead, bead_data):
+            return True
+        api.work_logic.record_merge_conflict(entry, branch, base, main, [bead], "merge")
+        api.typer.echo(
+            f"✗ zero-delta merge for {bead}: {branch} is reachable from {base}, but no "
+            "bead-linked no-ff integration bubble attributes that history to this child; "
+            "bounced to review=changes-requested instead of closing another child's work",
+            err=True,
+        )
+        raise api.typer.Exit(1)
     ok, msg = api._history_ok(count, subjects, api.config.max_commits(cfg, entry))
     if not ok:
         api.typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
@@ -886,7 +915,15 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
     api._guard_bead_merge_gates(bead, main, landing_pr)
     integration = api.config.integration_branch(cfg, entry)
     base = api._guard_bead_land_base(entry, bead, integration)
-    if api._guard_bead_clean_history(entry, branch, base, cfg):
+    if api._guard_bead_clean_history(
+        entry,
+        branch,
+        base,
+        cfg,
+        bead=bead,
+        main=main,
+        bead_data=bead_data,
+    ):
         api._reconcile_landed_bead(cfg, entry, main, bead, bead_data, branch, base, hive, rm)
         return
     api._guard_signed_history(entry, branch, base, cfg)

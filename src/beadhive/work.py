@@ -1555,7 +1555,9 @@ def already_landed(entry, branch: str, base: str) -> bool:
     return work_merge.impl_already_landed(sys.modules[__name__], entry, branch, base)
 
 
-def _guard_bead_clean_history(entry, branch, base, cfg) -> bool:
+def _guard_bead_clean_history(
+    entry, branch, base, cfg, *, bead="", main=None, bead_data=None
+) -> bool:
     """Guard the branch is a small clean conventional history before it's allowed to merge —
     reuses submit's `_history_ok` check as a merge-time backstop.
 
@@ -1563,7 +1565,14 @@ def _guard_bead_clean_history(entry, branch, base, cfg) -> bool:
     of merging (bh-lvqs); False on the ordinary path. A genuinely empty branch — no commits over
     base and NOT an ancestor of it — still takes the self-refine bounce unchanged."""
     return work_merge.impl__guard_bead_clean_history(
-        sys.modules[__name__], entry, branch, base, cfg
+        sys.modules[__name__],
+        entry,
+        branch,
+        base,
+        cfg,
+        bead=bead,
+        main=main,
+        bead_data=bead_data,
     )
 
 

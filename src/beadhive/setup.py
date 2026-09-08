@@ -38,6 +38,7 @@ import platform
 import re
 import shutil
 import subprocess
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -463,7 +464,12 @@ def tool_remedy(name: str, *, manifest: dict[str, Any] | None = None) -> str:
     return f"Install {name} and re-run `{config.BINARY_ALIAS} setup check`."
 
 
-def check_payload(manifest: dict[str, Any] | None = None, *, probed: bool = False) -> dict:
+def check_payload(
+    manifest: dict[str, Any] | None = None,
+    *,
+    probed: bool = False,
+    daemon_advisories: Callable[[], list[dict[str, str]]] | None = None,
+) -> dict:
     """The structured result behind ``bh setup check`` — the ONE object both renderings read.
 
     Not a second assembly of what :func:`run_check` prints: `run_check` calls this and then
@@ -529,6 +535,10 @@ def check_payload(manifest: dict[str, Any] | None = None, *, probed: bool = Fals
         server_advisory = dolt_server_advisory()
         if server_advisory:
             advisories.append({"id": "dolt-shared-server", "message": server_advisory})
+        # Optional to direct CLI/stdio.  Keep structural and moving readiness facts distinct
+        # without allowing either to become the core dependency gate.
+        if daemon_advisories is not None:
+            advisories.extend(daemon_advisories())
 
     return jsonout.envelope(
         "setup check",
@@ -558,7 +568,11 @@ def _cache_tools(payload: dict) -> dict[str, dict[str, Any]]:
     return {r["name"]: {"found": r["found"], "version": r["version"]} for r in payload["tools"]}
 
 
-def run_check(as_json: bool = False) -> None:
+def run_check(
+    as_json: bool = False,
+    *,
+    daemon_advisories: Callable[[], list[dict[str, str]]] | None = None,
+) -> None:
     """Implement ``bh setup check``: probe all deps, cache the result, report it.
 
     Inside a Beadhive image the component manifest replaces probing entirely — no
@@ -579,7 +593,11 @@ def run_check(as_json: bool = False) -> None:
         else:
             typer.echo("Checking post-ws dependencies…")
 
-    payload = check_payload(manifest, probed=True)
+    payload = check_payload(
+        manifest,
+        probed=True,
+        daemon_advisories=daemon_advisories,
+    )
     _write_cache(_cache_tools(payload), success=payload["satisfied"], image=payload["image"])
 
     if as_json:

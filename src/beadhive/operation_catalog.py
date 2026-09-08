@@ -110,8 +110,13 @@ hive sync peers|hive:string:o,all_hives:boolean:o,peer:string:o,strategy:string:
 hive sync remotes|hive:string:o,all_hives:boolean:o,remote:string:o,pull:boolean:o,push:boolean:o,dry_run:boolean:o,force:boolean:o,verbose:boolean:o
 hive sync-remote|all_hives:boolean:o,dry_run:boolean:o,verbose:boolean:o
 host adopt|hive:string:r,force:boolean:o
+host daemon install|as_json:boolean:o
+host daemon remove|as_json:boolean:o
+host daemon rm|as_json:boolean:o
 host daemon serve|listener_host:string:o,listener_port:integer:o,shutdown_budget:number:o
+host daemon start|as_json:boolean:o
 host daemon status|as_json:boolean:o
+host daemon stop|as_json:boolean:o
 host dispatch disable|hive:string:o,as_json:boolean:o
 host dispatch enable|hive:string:o,as_json:boolean:o,dry_run:boolean:o,seat_binary:string:o
 host dispatch logs|hive:string:o,lines:integer:o,as_json:boolean:o
@@ -321,6 +326,7 @@ _HIDDEN_PATHS = {
     "hive context",
     "hive sync-remote",
     "host adopt",
+    "host daemon remove",
     "host dispatch run",
     "host packup",
     "host release",
@@ -378,6 +384,11 @@ _CLI_ALIAS_TARGETS: dict[str, tuple[str, dict[str, Any], str]] = {
     "harness list": ("dep.list", {"kind": "harness"}, "hidden harness-filter alias onto dep list"),
     "hive sync-remote": ("hive.sync.remotes", {"push": True}, "deprecated push-only alias"),
     "host adopt": ("host.lease.adopt", {}, "hidden flat compatibility alias"),
+    "host daemon remove": (
+        "host.daemon.rm",
+        {},
+        "hidden compatibility alias for the canonical short remove command",
+    ),
     "host packup": (
         "host.lease.release",
         {"all_hives": True},
