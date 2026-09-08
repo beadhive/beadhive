@@ -38,6 +38,12 @@ _REVIEW_REASON = re.compile(r"reason: (?:bh:)?review [0-9a-f]{7,40}\b")
 # must be attributable to the linked direct child named by the bubble.
 _INTEGRATION_BUBBLE = re.compile(r"^chore\(merge\): (bead|molecule|batch) (.+)$")
 
+# Recovery may need to compose an already-reviewed epic over a parent workstream that advanced
+# independently.  The safe shape is deliberately directional: parent/root first, reviewed epic
+# second.  It is infrastructure around the epic's existing child bubbles, never a substitute for
+# auditing them.
+_COMPOSITION_BUBBLE = re.compile(r"^chore\(merge\): compose (.+) onto (.+)$")
+
 
 def is_review_gate_desc(desc: str) -> bool:
     """True iff `desc` is a convention review-gate description — the ONE selector every verb shares
@@ -273,6 +279,84 @@ def _batch_members(group: str, merge_sha: str, children: list[dict]) -> list[dic
     ]
 
 
+def _reviewed_epic_spine(
+    entry,
+    rows: list[dict],
+    branch_sha: str,
+    base: str,
+    epic: str,
+    parent: str,
+) -> tuple[list[dict], set[str], list[str]]:
+    """Return the child-integration spine behind one explicit root-first composition wrapper.
+
+    Ordinary assembled epics return their existing spine unchanged.  A composition is accepted
+    only when the wrapper is the sole commit on the outer first-parent spine, names the current
+    epic and its exact bd parent, and uses the canonical integration base as parent one.  Parent
+    two is then audited from its merge-base with parent one.  The exact outer range must equal the
+    reviewed nested range plus the wrapper, so neither parent ordering nor hidden side history can
+    smuggle unaccounted commits through the topology allowance.
+    """
+    spine, errors = _first_parent_spine(rows, branch_sha, base)
+    if errors or len(spine) != 1:
+        return spine, set(), errors
+
+    wrapper = spine[0]
+    subject = str(wrapper.get("subject") or "")
+    match = _COMPOSITION_BUBBLE.fullmatch(subject)
+    if not match:
+        return spine, set(), errors
+
+    sha = str(wrapper.get("sha") or "")
+    short = str(wrapper.get("short") or sha[:8])
+    parents = [str(value) for value in (wrapper.get("parents") or [])]
+    if len(parents) != 2:
+        return [], set(), [f"composition wrapper {short} must have exactly two parents"]
+    composed_epic, composed_parent = match.groups()
+    if composed_epic != epic:
+        errors.append(
+            f"composition wrapper {short} names {composed_epic}, expected current epic {epic}"
+        )
+    if not parent:
+        errors.append(f"composition wrapper {short} cannot resolve the bd parent of {epic}")
+    elif composed_parent != parent:
+        errors.append(
+            f"composition wrapper {short} names parent {composed_parent}, expected {parent}"
+        )
+    if parents[0] != base:
+        errors.append(
+            f"composition wrapper {short} must use the exact integration base as first parent"
+        )
+    if errors:
+        return [], set(), errors
+
+    nested_base = worktree.base_of(entry, parents[1], parents[0])
+    if not nested_base:
+        return [], set(), [f"composition wrapper {short} has no merge base between its parents"]
+    nested_rows = worktree.commit_rows(entry, nested_base, parents[1])
+    if not nested_rows:
+        return [], set(), [f"composition wrapper {short} has an empty reviewed side"]
+    nested_spine, nested_errors = _first_parent_spine(nested_rows, parents[1], nested_base)
+    if nested_errors:
+        return (
+            [],
+            set(),
+            [
+                f"composition wrapper {short} has invalid reviewed-side topology: {error}"
+                for error in nested_errors
+            ],
+        )
+
+    outer_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
+    nested_shas = {str(row.get("sha") or "") for row in nested_rows if row.get("sha")}
+    if outer_shas != nested_shas | {sha}:
+        return (
+            [],
+            set(),
+            [f"composition wrapper {short} range is not exactly its reviewed side plus wrapper"],
+        )
+    return nested_spine, {sha}, []
+
+
 def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_commits: int) -> dict:
     """Audit an assembled epic without flattening its reviewed child graph.
 
@@ -297,9 +381,13 @@ def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_comm
         for child_id, child in direct.items()
     }
     branch_sha = worktree._branch_sha(entry, branch)
-    spine, spine_errors = _first_parent_spine(rows, branch_sha, base)
+    epic_data = bd.show(epic, main) or {}
+    parent = str(epic_data.get("parent") or "")
+    spine, topology_commits, spine_errors = _reviewed_epic_spine(
+        entry, rows, branch_sha, base, epic, parent
+    )
     errors.extend(spine_errors)
-    accounted: set[str] = set()
+    accounted: set[str] = set(topology_commits)
     integrated: set[str] = set()
 
     for row in spine:
@@ -370,6 +458,8 @@ def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_comm
             "landed direct child missing a reviewed lifecycle integration: "
             + ", ".join(sorted(missing_integrations))
         )
+    if topology_commits and not integrated:
+        errors.append("composition wrapper contains no proven landed direct-child integration")
 
     unaccounted = range_shas - accounted
     if unaccounted and not any("unaccounted" in error for error in errors):
@@ -386,8 +476,10 @@ def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_comm
     count = len(range_shas)
     if count > effective and not errors:
         errors.append(f"{count} commits exceed the linked epic allowance {effective}")
+    provenance = "linked/topology" if topology_commits else "linked"
     basis = (
-        f"{effective} linked commit(s) from {len(integrated)} reviewed direct-child integration(s)"
+        f"{effective} {provenance} commit(s) from "
+        f"{len(integrated)} reviewed direct-child integration(s)"
     )
     return {
         "kind": "epic-reviewed-topology",
