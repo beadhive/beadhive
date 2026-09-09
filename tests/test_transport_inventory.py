@@ -45,7 +45,7 @@ def _route_inventory(routes) -> set[str]:
 def test_checked_inventory_is_current_deterministic_and_schema_valid() -> None:
     first = document()
     assert first == document()
-    assert first["inventory_version"] == "1.4.0"
+    assert first["inventory_version"] == "1.5.0"
     assert json.loads(ARTIFACT.read_text()) == first
     schema = json.loads(SCHEMA.read_text())
     Draft202012Validator.check_schema(schema)
@@ -81,6 +81,41 @@ def test_generated_cli_and_mcp_inventory_exactly_covers_the_catalog() -> None:
                 assert rows["mcp-tool", tool].operation == operation.name
             if resource := mcp.get("resource"):
                 assert rows["mcp-resource", resource].operation == operation.name
+
+
+def test_one_operation_meaning_has_promised_parity_and_explicit_transport_differences() -> None:
+    catalog = {operation.name: operation for operation in operation_catalog.operations()}
+    work_list = catalog["work.list"]
+    rows = [
+        row for row in projections() if row.operation == "work.list" or "work.list" in row.composes
+    ]
+
+    exact = next(row for row in rows if row.identifier == "work list")
+    assert (exact.surface, exact.shape, exact.request_schema, exact.result_schema) == (
+        "cli",
+        "exact",
+        "catalog:work.list#parameters",
+        work_list.result_schema,
+    )
+    richer = next(row for row in rows if row.identifier.endswith("/work-items"))
+    assert (richer.surface, richer.classification, richer.operation, richer.shape) == (
+        "operator-api",
+        "catalog-entry",
+        "work.list",
+        "richer",
+    )
+    composites = [row for row in rows if row.classification == "composite"]
+    assert {(row.surface, row.shape, row.composes) for row in composites} == {
+        ("operator-api", "coarser", ("work.list", "work.schedule")),
+        ("gateway", "coarser", ("work.list", "work.schedule")),
+    }
+    assert len(composites) == 3
+    for row in rows:
+        contracts = {contract.operation: contract for contract in row.canonical_contracts}
+        if row.surface in {"operator-api", "gateway"}:
+            assert contracts["work.list"].result_schema == work_list.result_schema
+            assert contracts["work.list"].privilege == work_list.privilege
+            assert contracts["work.list"].side_effects == "none"
 
 
 def test_operator_inventory_matches_runtime_routes_and_checked_openapi() -> None:

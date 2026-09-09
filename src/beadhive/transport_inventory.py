@@ -14,7 +14,7 @@ from typing import Any, Literal
 
 from . import daemon_contract
 from .gateway_wire_contracts import WireFamily, schema_ref
-from .operation_catalog import OperationSpec, operations
+from .kernel.operations import OperationSpec, operations
 
 Classification = Literal["catalog-entry", "composite", "transport-mechanic", "explicit-exclusion"]
 ProjectionShape = Literal["exact", "richer", "coarser", "transport-only", "excluded"]
@@ -50,6 +50,132 @@ class ProjectionSpec:
     canonical_contracts: tuple[CanonicalOperationContract, ...]
     transport_owner: str
     shape: ProjectionShape
+
+
+@dataclass(frozen=True)
+class CompositionRootSpec:
+    """One installed process boundary and the executable proof that keeps it thin."""
+
+    surface: str
+    console_script: str
+    module: str
+    callable: str
+    runtime_factory: str
+    responsibility: str
+    registration_drift_test: str
+    test_closure: tuple[str, ...]
+
+
+def composition_roots() -> tuple[CompositionRootSpec, ...]:
+    """Return every installed transport entrypoint in stable surface order."""
+
+    return (
+        CompositionRootSpec(
+            surface="cli",
+            console_script="bh",
+            module="beadhive.bootstrap.cli",
+            callable="main",
+            runtime_factory="beadhive.cli:app",
+            responsibility="composition-and-process-lifecycle-only",
+            registration_drift_test=(
+                "tests/test_cli_projection.py::test_complete_cli_tree_is_catalog_derived"
+            ),
+            test_closure=(
+                "tests/test_transport_composition_roots.py",
+                "tests/test_operation_catalog.py",
+                "tests/test_cli_projection.py",
+                "tests/test_cli.py",
+            ),
+        ),
+        CompositionRootSpec(
+            surface="gateway",
+            console_script="beadhive-gateway",
+            module="beadhive.bootstrap.gateway",
+            callable="main",
+            runtime_factory="beadhive.remote_gateway_runtime:create_application",
+            responsibility="composition-and-process-lifecycle-only",
+            registration_drift_test=(
+                "tests/test_transport_inventory.py::"
+                "test_gateway_inventory_matches_every_registered_runtime_route"
+            ),
+            test_closure=(
+                "tests/test_transport_composition_roots.py",
+                "tests/test_transport_inventory.py",
+                "tests/test_gateway_contract.py",
+                "tests/test_remote_gateway.py",
+                "tests/test_remote_gateway_runtime.py",
+            ),
+        ),
+        CompositionRootSpec(
+            surface="mcp",
+            console_script="bh-mcp",
+            module="beadhive.bootstrap.mcp",
+            callable="main",
+            runtime_factory="beadhive.mcp:build_server",
+            responsibility="composition-and-process-lifecycle-only",
+            registration_drift_test=(
+                "tests/test_mcp_catalog_projection.py::"
+                "test_registration_plan_carries_the_explicit_composite_declaration"
+            ),
+            test_closure=(
+                "tests/test_transport_composition_roots.py",
+                "tests/test_mcp_catalog_projection.py",
+                "tests/test_mcp.py",
+                "tests/test_daemon_mcp_http.py",
+            ),
+        ),
+        CompositionRootSpec(
+            surface="operator-api",
+            console_script="bh-host-daemon",
+            module="beadhive.bootstrap.host",
+            callable="main",
+            runtime_factory="beadhive.host_daemon:build_product_application",
+            responsibility="composition-and-process-lifecycle-only",
+            registration_drift_test=(
+                "tests/test_transport_inventory.py::"
+                "test_operator_inventory_matches_runtime_routes_and_checked_openapi"
+            ),
+            test_closure=(
+                "tests/test_transport_composition_roots.py",
+                "tests/test_transport_inventory.py",
+                "tests/test_daemon_openapi.py",
+                "tests/test_host_daemon.py",
+                "tests/test_daemon_state_broker.py",
+            ),
+        ),
+    )
+
+
+def registration_drift(
+    surface: str,
+    declared: frozenset[str],
+    observed: frozenset[str],
+) -> dict[str, Any]:
+    """Describe both directions of drift between declarations and a live runtime surface."""
+
+    additions = sorted(observed - declared)
+    removals = sorted(declared - observed)
+    return {
+        "surface": surface,
+        "declared": sorted(declared),
+        "observed": sorted(observed),
+        "declared_count": len(declared),
+        "observed_count": len(observed),
+        "additions": additions,
+        "removals": removals,
+        "delta": len(additions) + len(removals),
+        "matches": not additions and not removals,
+    }
+
+
+def validate_registration_drift(evidence: dict[str, Any]) -> None:
+    """Fail closed on either an undeclared runtime registration or a missing declaration."""
+
+    if not evidence["matches"]:
+        raise RuntimeError(
+            f"{evidence['surface']} registration drift: "
+            f"additions={evidence['additions']!r}, removals={evidence['removals']!r}"
+        )
 
 
 def _effect(operation: OperationSpec) -> str:
@@ -609,7 +735,7 @@ def document() -> dict[str, Any]:
         rows.append(rendered)
     return {
         "format_version": 1,
-        "inventory_version": "1.4.0",
+        "inventory_version": "1.5.0",
         "policy": {
             "classification": (
                 "every public projection is a catalog entry, composite, transport mechanic, "
@@ -625,5 +751,9 @@ def document() -> dict[str, Any]:
                 "and supervision"
             ),
         },
+        "composition_roots": [
+            {**asdict(root), "test_closure": list(root.test_closure)}
+            for root in composition_roots()
+        ],
         "projections": rows,
     }

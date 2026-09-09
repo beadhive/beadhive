@@ -1,6 +1,70 @@
 {
+  "composition_roots": [
+    {
+      "callable": "main",
+      "console_script": "bh",
+      "module": "beadhive.bootstrap.cli",
+      "registration_drift_test": "tests/test_cli_projection.py::test_complete_cli_tree_is_catalog_derived",
+      "responsibility": "composition-and-process-lifecycle-only",
+      "runtime_factory": "beadhive.cli:app",
+      "surface": "cli",
+      "test_closure": [
+        "tests/test_transport_composition_roots.py",
+        "tests/test_operation_catalog.py",
+        "tests/test_cli_projection.py",
+        "tests/test_cli.py"
+      ]
+    },
+    {
+      "callable": "main",
+      "console_script": "beadhive-gateway",
+      "module": "beadhive.bootstrap.gateway",
+      "registration_drift_test": "tests/test_transport_inventory.py::test_gateway_inventory_matches_every_registered_runtime_route",
+      "responsibility": "composition-and-process-lifecycle-only",
+      "runtime_factory": "beadhive.remote_gateway_runtime:create_application",
+      "surface": "gateway",
+      "test_closure": [
+        "tests/test_transport_composition_roots.py",
+        "tests/test_transport_inventory.py",
+        "tests/test_gateway_contract.py",
+        "tests/test_remote_gateway.py",
+        "tests/test_remote_gateway_runtime.py"
+      ]
+    },
+    {
+      "callable": "main",
+      "console_script": "bh-mcp",
+      "module": "beadhive.bootstrap.mcp",
+      "registration_drift_test": "tests/test_mcp_catalog_projection.py::test_registration_plan_carries_the_explicit_composite_declaration",
+      "responsibility": "composition-and-process-lifecycle-only",
+      "runtime_factory": "beadhive.mcp:build_server",
+      "surface": "mcp",
+      "test_closure": [
+        "tests/test_transport_composition_roots.py",
+        "tests/test_mcp_catalog_projection.py",
+        "tests/test_mcp.py",
+        "tests/test_daemon_mcp_http.py"
+      ]
+    },
+    {
+      "callable": "main",
+      "console_script": "bh-host-daemon",
+      "module": "beadhive.bootstrap.host",
+      "registration_drift_test": "tests/test_transport_inventory.py::test_operator_inventory_matches_runtime_routes_and_checked_openapi",
+      "responsibility": "composition-and-process-lifecycle-only",
+      "runtime_factory": "beadhive.host_daemon:build_product_application",
+      "surface": "operator-api",
+      "test_closure": [
+        "tests/test_transport_composition_roots.py",
+        "tests/test_transport_inventory.py",
+        "tests/test_daemon_openapi.py",
+        "tests/test_host_daemon.py",
+        "tests/test_daemon_state_broker.py"
+      ]
+    }
+  ],
   "format_version": 1,
-  "inventory_version": "1.4.0",
+  "inventory_version": "1.5.0",
   "policy": {
     "classification": "every public projection is a catalog entry, composite, transport mechanic, or explicit exclusion",
     "composites": "constituents are canonical operations and must preserve application privilege and side-effect policy",

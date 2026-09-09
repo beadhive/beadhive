@@ -4,10 +4,12 @@
   "title": "Beadhive transport projection inventory v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["format_version", "inventory_version", "policy", "projections"],
+  "required": [
+    "format_version", "inventory_version", "policy", "composition_roots", "projections"
+  ],
   "properties": {
     "format_version": {"const": 1},
-    "inventory_version": {"const": "1.4.0"},
+    "inventory_version": {"const": "1.5.0"},
     "policy": {
       "type": "object",
       "additionalProperties": false,
@@ -19,6 +21,12 @@
         "ownership": {"type": "string", "minLength": 1}
       }
     },
+    "composition_roots": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {"$ref": "#/$defs/composition_root"}
+    },
     "projections": {
       "type": "array",
       "minItems": 1,
@@ -26,6 +34,27 @@
     }
   },
   "$defs": {
+    "composition_root": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface", "console_script", "module", "callable", "runtime_factory",
+        "responsibility", "registration_drift_test", "test_closure"
+      ],
+      "properties": {
+        "surface": {"enum": ["cli", "mcp", "operator-api", "gateway"]},
+        "console_script": {"type": "string", "minLength": 1},
+        "module": {"type": "string", "pattern": "^beadhive\\.bootstrap\\.[a-z_]+$"},
+        "callable": {"const": "main"},
+        "runtime_factory": {"type": "string", "minLength": 1},
+        "responsibility": {"const": "composition-and-process-lifecycle-only"},
+        "registration_drift_test": {"type": "string", "minLength": 1},
+        "test_closure": {
+          "type": "array", "minItems": 1, "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
     "projection": {
       "type": "object",
       "additionalProperties": false,

@@ -15,10 +15,18 @@ from .adapters.cli.projection import (
     bind_handler,
     catalog_cli_groups,
     generated_callbacks,
-    project_cli_group,
     validate_catalog_generation_rules,
     validate_migration_inventory,
 )
+from .adapters.cli.projection import (
+    project_cli_group as _project_cli_group,
+)
+
+
+def project_cli_group(*args, **kwargs):
+    """Preserve the historical telemetry patch seam around the explicit adapter port."""
+    return _project_cli_group(*args, trace_verb=otel.trace_verb, **kwargs)
+
 
 __all__ = [
     "HAND_AUTHORED_CLI_GROUPS",

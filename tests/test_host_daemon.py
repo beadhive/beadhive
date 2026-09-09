@@ -636,7 +636,7 @@ def test_installed_daemon_commands_render_verified_status_and_run_foreground(mon
 
 def test_daemon_entrypoint_is_installed_and_ordinary_imports_do_not_load_runtime():
     pyproject = Path("pyproject.toml").read_text()
-    assert 'bh-host-daemon = "beadhive.host_daemon_entrypoint:main"' in pyproject
+    assert 'bh-host-daemon = "beadhive.bootstrap.host:main"' in pyproject
 
     probe = (
         "import sys; import beadhive.cli; import beadhive.mcp; "

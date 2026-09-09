@@ -77,7 +77,6 @@ from . import (
     hub,
     log,
     molecule,
-    operation_catalog,
     otel,
     plan,
     registry,
@@ -91,6 +90,7 @@ from . import (
     worktree,
 )
 from .identity import resolve_actor, workspace_root
+from .kernel import operations as operation_catalog
 from .modules.hives import (
     HiveIdentity,
     HiveListRequest,

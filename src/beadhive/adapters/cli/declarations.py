@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
-from ...operation_catalog import OperationSpec, cli_parents, operations
+from ...kernel.operations import OperationSpec, cli_parents, operations
 
 
 @dataclass(frozen=True)

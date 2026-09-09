@@ -18,7 +18,7 @@ import typer
 from typer.main import get_command
 from typer.models import CommandInfo, TyperInfo
 
-from ...operation_catalog import OperationSpec
+from ...kernel.operations import OperationSpec
 from .declarations import (
     PROJECTION_EXCLUSIONS,
     TRANSPORT_MECHANICS,

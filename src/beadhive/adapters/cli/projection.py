@@ -25,8 +25,8 @@ from typing import Any
 import typer
 from typer.main import get_command
 
-from ... import otel
-from ...operation_catalog import OperationSpec, operations
+from ...kernel.operations import OperationSpec, operations
+from ...kernel.telemetry import TraceVerb
 
 MIGRATED_CLI_GROUPS: tuple[str, ...] = (
     "<root>",
@@ -340,6 +340,7 @@ def project_cli_group(
     handlers: Mapping[str, Callable[..., Any] | HandlerBinding],
     *,
     operation_specs: Sequence[OperationSpec] | None = None,
+    trace_verb: TraceVerb,
 ) -> ProjectionReport:
     """Generate ``group``'s Typer leaves from catalog rows and explicit core handlers.
 
@@ -385,7 +386,7 @@ def project_cli_group(
         _reject_retired_surface_tokens(
             inspect.getdoc(handler) or "", f"generated handler {operation_name!r} docstring"
         )
-        traced = otel.trace_verb(operation.name)(handler)
+        traced = trace_verb(operation.name)(handler)
         if getattr(traced, "__otel_verb__", None) != operation.name:
             _fail(5, f"{path!r} lost its trace_verb marker")
         context_settings = None

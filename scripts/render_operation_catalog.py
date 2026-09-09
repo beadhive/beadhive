@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
@@ -12,8 +13,16 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "docs" / "schemas" / "wire" / "v1.2.0" / "operation-catalog-v1.json"
 
 
-def main() -> int:
-    TARGET.write_text(json.dumps(document(), indent=2, sort_keys=True) + "\n")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--check", action="store_true")
+    args = parser.parse_args(argv)
+    rendered = json.dumps(document(), indent=2, sort_keys=True) + "\n"
+    if args.check:
+        if not TARGET.is_file() or TARGET.read_text(encoding="utf-8") != rendered:
+            parser.error(f"{TARGET.relative_to(ROOT)} is stale; render it without --check")
+        return 0
+    TARGET.write_text(rendered, encoding="utf-8")
     return 0
 
 
