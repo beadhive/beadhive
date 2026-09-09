@@ -303,6 +303,39 @@ def _composition_identity_errors(row: dict, epic: str, parent: str) -> list[str]
     return errors
 
 
+def _reversed_composition_wrappers(rows: list[dict], branch_sha: str, base: str) -> list[dict]:
+    """Find reversed wrappers on the outer first-parent path, including below suffix merges.
+
+    A reversed wrapper cannot connect to ``base`` through parent one, so
+    :func:`_first_parent_spine` necessarily fails before the ordinary wrapper audit can inspect
+    it.  Walk only rows actually reached from the branch tip and recognize an integration base
+    among the non-first parents.  The caller distinguishes an exact two-parent reversal from a
+    malformed parent count.  This is diagnostic discovery only; every discovered topology is
+    rejected.
+    """
+    by_sha = {str(row.get("sha") or ""): row for row in rows}
+    wrappers: list[dict] = []
+    cursor = branch_sha
+    seen: set[str] = set()
+    while cursor and cursor != base and cursor not in seen:
+        seen.add(cursor)
+        row = by_sha.get(cursor)
+        if row is None:
+            break
+        parents = [str(value) for value in (row.get("parents") or [])]
+        if (
+            _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+            and parents
+            and parents[0] != base
+            and base in parents[1:]
+        ):
+            wrappers.append(row)
+        if not parents:
+            break
+        cursor = parents[0]
+    return wrappers
+
+
 def _reviewed_epic_spine(
     entry,
     rows: list[dict],
@@ -323,25 +356,28 @@ def _reviewed_epic_spine(
     """
     # A reversed canonical wrapper cannot reach ``base`` by following parent one, so the generic
     # first-parent walk below would otherwise hide the more useful trust-boundary diagnostic.
-    # Recognize only the unambiguous reversal shape here: the branch tip is a canonical wrapper
-    # whose *second* parent is the exact integration base.  Misplaced wrappers (whose first parent
-    # descends from ``base``) still flow through the ordinary placement audit below.
-    tip = next(
-        (row for row in rows if str(row.get("sha") or "") == branch_sha),
-        None,
-    )
-    tip_subject = str((tip or {}).get("subject") or "")
-    tip_parents = [str(value) for value in ((tip or {}).get("parents") or [])]
-    if (
-        _COMPOSITION_BUBBLE.fullmatch(tip_subject)
-        and len(tip_parents) == 2
-        and tip_parents[0] != base
-        and tip_parents[1] == base
-    ):
-        identity_errors = _composition_identity_errors(tip or {}, epic, parent)
+    # Inspect the actual outer path before that walk, including a wrapper buried below ordinary
+    # reviewed suffix merges.  This is never an allowance: every recognized shape returns an
+    # error, while wrappers off the outer path remain subject to the normal provenance audit.
+    reversed_wrappers = _reversed_composition_wrappers(rows, branch_sha, base)
+    if len(reversed_wrappers) > 1:
+        shorts = ", ".join(
+            str(row.get("short") or str(row.get("sha") or "")[:8]) for row in reversed_wrappers
+        )
+        return (
+            [],
+            set(),
+            [f"composition wrapper appears more than once on the epic spine: {shorts}"],
+        )
+    if reversed_wrappers:
+        wrapper = reversed_wrappers[0]
+        parents = [str(value) for value in (wrapper.get("parents") or [])]
+        short = str(wrapper.get("short") or str(wrapper.get("sha") or "")[:8])
+        if len(parents) != 2:
+            return [], set(), [f"composition wrapper {short} must have exactly two parents"]
+        identity_errors = _composition_identity_errors(wrapper, epic, parent)
         if identity_errors:
             return [], set(), identity_errors
-        short = str((tip or {}).get("short") or branch_sha[:8])
         return (
             [],
             set(),

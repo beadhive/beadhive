@@ -3801,6 +3801,111 @@ def test_epic_submit_rejects_canonical_composition_wrapper_with_reversed_parents
     assert not fakebd.did("set-state", epic, "review=pending")
 
 
+def test_epic_submit_rejects_buried_canonical_reversal_after_reviewed_suffixes(
+    hive, fakebd, capsys
+):
+    """Reviewed suffix bubbles cannot hide the exact reversed-boundary diagnostic."""
+    epic = "mr-buried-reverse-compose"
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=epic,
+        composed_parent="mr-root",
+    )
+    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "must use the exact integration base as first parent" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+@pytest.mark.parametrize(
+    ("epic", "composed_epic", "composed_parent", "identity_diagnostics"),
+    [
+        (
+            "mr-buried-reverse-wrong-epic",
+            "mr-other",
+            "mr-root",
+            ["names mr-other, expected current epic mr-buried-reverse-wrong-epic"],
+        ),
+        (
+            "mr-buried-reverse-wrong-parent",
+            "mr-buried-reverse-wrong-parent",
+            "mr-other-root",
+            ["names parent mr-other-root, expected mr-root"],
+        ),
+    ],
+)
+def test_buried_reversed_wrapper_reports_identity_before_parent_order(
+    hive,
+    fakebd,
+    capsys,
+    epic,
+    composed_epic,
+    composed_parent,
+    identity_diagnostics,
+):
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=composed_epic,
+        composed_parent=composed_parent,
+    )
+    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert all(diagnostic in err for diagnostic in identity_diagnostics)
+    assert "must use the exact integration base as first parent" not in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def test_buried_reversed_wrapper_rejects_malformed_parent_count(hive, fakebd, capsys):
+    epic = "mr-buried-reverse-parent-count"
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=epic,
+        composed_parent="mr-root",
+    )
+    seat = worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
+    branch = f"wt/bead/epic/{epic}"
+    wrapper = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    tree = _git("rev-parse", f"{wrapper}^{{tree}}", cwd=hive.main).stdout.strip()
+    parents = _git("show", "-s", "--format=%P", wrapper, cwd=hive.main).stdout.split()
+    third_parent = _git("rev-parse", f"{parents[0]}^1", cwd=hive.main).stdout.strip()
+    malformed = _git(
+        "commit-tree",
+        tree,
+        "-p",
+        parents[0],
+        "-p",
+        parents[1],
+        "-p",
+        third_parent,
+        "-m",
+        f"chore(merge): compose {epic} onto mr-root",
+        cwd=hive.main,
+    ).stdout.strip()
+    _git("reset", "--hard", malformed, cwd=seat)
+    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+
+    assert not policy["valid"]
+    assert any("must have exactly two parents" in error for error in policy["errors"])
+
+
 @pytest.mark.parametrize(
     ("composed_epic", "composed_parent", "identity_diagnostics"),
     [
