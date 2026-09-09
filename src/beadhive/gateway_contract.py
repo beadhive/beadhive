@@ -13,6 +13,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from .gateway_wire_contracts import documents as wire_contract_documents
 from .transport_inventory import catalog_projection_extension, projections
 
 CONTRACT_ARTIFACT = "beadhive-gateway-projection-v1.json"
@@ -60,7 +61,7 @@ def generate_document() -> dict[str, Any]:
     return {
         "$id": CONTRACT_ID,
         "formatVersion": 1,
-        "contractVersion": "1.0.0",
+        "contractVersion": "1.3.0",
         "profile": "Development",
         "policy": {
             "catalogRole": "operation identity, request/result contracts, privilege, side effects",
@@ -71,6 +72,7 @@ def generate_document() -> dict[str, Any]:
             ),
             "localCompatibility": "CLI and MCP stdio do not require the gateway or host daemon",
         },
+        "wireContracts": list(wire_contract_documents()),
         "operations": [_operation(row) for row in rows],
     }
 

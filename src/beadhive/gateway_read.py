@@ -80,6 +80,98 @@ _MAX_COLLECTION_ITEMS = 10_000
 _PAGE_CURSOR_TTL_SECONDS = 300
 
 
+def gateway_wire_schemas() -> dict[str, dict[str, object]]:
+    """Return the ``gateway.read.v1`` schemas owned by the rich-read boundary."""
+
+    schema_version = {"const": SCHEMA_VERSION}
+    contract_version = {"const": CONTRACT_VERSION}
+    scoped_path = {
+        "factoryId": {"type": "string", "minLength": 1},
+        "hiveId": {"type": "string", "minLength": 1},
+    }
+    return {
+        "hiveListRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["limit"],
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+                "after": {"type": ["string", "null"]},
+            },
+        },
+        "hiveListResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "schemaVersion",
+                "contractVersion",
+                "instanceId",
+                "factoryId",
+                "detailLevel",
+                "items",
+                "nextCursor",
+            ],
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "instanceId": {"const": INSTANCE_ID},
+                "factoryId": {"const": FACTORY_ID},
+                "detailLevel": {"const": "summary"},
+                "items": {"type": "array"},
+                "nextCursor": {"type": ["string", "null"]},
+            },
+        },
+        "snapshotRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["factoryId", "hiveId", "detail"],
+            "properties": {**scoped_path, "detail": {"const": "live"}},
+        },
+        "snapshotResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "schemaVersion",
+                "contractVersion",
+                "instanceId",
+                "factoryId",
+                "hiveId",
+                "detailLevel",
+                "source",
+                "snapshot",
+            ],
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "instanceId": {"const": INSTANCE_ID},
+                "factoryId": {"const": FACTORY_ID},
+                "hiveId": {"type": "string", "minLength": 1},
+                "detailLevel": {"const": "live"},
+                "source": {"type": "object"},
+                "snapshot": {
+                    "type": "object",
+                    "required": sorted(_SNAPSHOT_REQUIRED),
+                    "properties": {key: {} for key in sorted(_SNAPSHOT_REQUIRED)},
+                },
+            },
+        },
+        "eventsRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["factoryId", "hiveId", "subscription"],
+            "properties": {
+                **scoped_path,
+                "subscription": {"type": "string", "minLength": 1},
+                "after": {"type": ["string", "null"]},
+            },
+        },
+        "eventStreamResponse": {
+            "type": "string",
+            "contentMediaType": "text/event-stream",
+        },
+    }
+
+
 class CatalogValidationError(RuntimeError):
     """The packaged source cannot safely open readiness."""
 

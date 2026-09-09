@@ -45,7 +45,7 @@ def _route_inventory(routes) -> set[str]:
 def test_checked_inventory_is_current_deterministic_and_schema_valid() -> None:
     first = document()
     assert first == document()
-    assert first["inventory_version"] == "1.1.0"
+    assert first["inventory_version"] == "1.4.0"
     assert json.loads(ARTIFACT.read_text()) == first
     schema = json.loads(SCHEMA.read_text())
     Draft202012Validator.check_schema(schema)

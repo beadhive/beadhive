@@ -13,6 +13,7 @@ from functools import cache
 from typing import Any, Literal
 
 from . import daemon_contract
+from .gateway_wire_contracts import WireFamily, schema_ref
 from .operation_catalog import OperationSpec, operations
 
 Classification = Literal["catalog-entry", "composite", "transport-mechanic", "explicit-exclusion"]
@@ -405,10 +406,13 @@ def _gateway(
     composes: tuple[str, ...] = (),
     streaming: bool = False,
     side_effects: str = "none",
+    privilege: str | None = None,
+    wire_family: WireFamily,
+    wire_request_schema: str,
+    wire_result_schema: str,
     reason: str,
     shape: ProjectionShape,
 ) -> ProjectionSpec:
-    symbol = path.replace("/", "~1")
     return _http(
         "gateway",
         method,
@@ -416,9 +420,12 @@ def _gateway(
         classification,
         operation=operation,
         composes=composes,
-        request_schema=f"python:beadhive.remote_gateway#{method.lower()}:{symbol}:request",
-        result_schema=f"python:beadhive.remote_gateway#{method.lower()}:{symbol}:result",
-        privilege="authenticated-development-subject" if path != "/healthz" else "public-liveness",
+        request_schema=schema_ref(wire_family, wire_request_schema),
+        result_schema=schema_ref(wire_family, wire_result_schema),
+        privilege=(
+            privilege
+            or ("authenticated-development-subject" if path != "/healthz" else "public-liveness")
+        ),
         side_effects=side_effects,
         streaming=streaming,
         availability=_GATEWAY_AVAILABILITY,
@@ -429,107 +436,157 @@ def _gateway(
     )
 
 
-_GATEWAY_FUNCTIONAL = (
-    _gateway(
-        "GET",
-        "/healthz",
-        "transport-mechanic",
-        reason="gateway liveness mechanic",
-        shape="transport-only",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances",
-        "composite",
-        composes=("hive.list", "host.list"),
-        reason="authorized remote directory composite",
-        shape="coarser",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/hives",
-        "catalog-entry",
-        operation="hive.list",
-        reason="richer remote projection of the canonical hive list",
-        shape="richer",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
-        "composite",
-        composes=("work.list", "work.schedule"),
-        reason="bounded remote state composite",
-        shape="coarser",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
-        "transport-mechanic",
-        streaming=True,
-        reason="remote SSE cursor/replay mechanic",
-        shape="transport-only",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/snapshot",
-        "composite",
-        composes=("work.list", "work.schedule"),
-        reason="legacy coarse snapshot composes canonical work reads behind gateway.v1",
-        shape="coarser",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/events",
-        "transport-mechanic",
-        streaming=True,
-        reason="legacy coarse SSE compatibility mechanic",
-        shape="transport-only",
-    ),
-    _gateway(
-        "POST",
-        "/v1/instances/{stage}/{slug}/commands/refresh",
-        "explicit-exclusion",
-        side_effects="bounded-runtime-refresh",
-        reason="runtime refresh is not canonical sync and has no canonical operation",
-        shape="excluded",
-    ),
-    _gateway(
-        "POST",
-        "/v1/instances/{stage}/{slug}/commands/{command}",
-        "transport-mechanic",
-        reason="stable unavailable-command response prevents undeclared mutation exposure",
-        shape="transport-only",
-    ),
-)
+def _gateway_projections() -> tuple[ProjectionSpec, ...]:
+    """Build fresh refs so gateway-owned version/schema drift changes the inventory."""
 
-_GATEWAY_OPTIONS_PATHS = tuple(
-    spec.identifier.removeprefix("GET ").removeprefix("POST ") for spec in _GATEWAY_FUNCTIONAL[1:8]
-)
-_GATEWAY_MECHANICS = tuple(
-    _gateway(
-        "OPTIONS",
-        path,
-        "transport-mechanic",
-        reason="exact credentialed CORS preflight allowlist",
-        shape="transport-only",
+    functional = (
+        _gateway(
+            "GET",
+            "/healthz",
+            "transport-mechanic",
+            wire_family="gateway.v1",
+            wire_request_schema="emptyRequest",
+            wire_result_schema="healthResponse",
+            reason="gateway liveness mechanic",
+            shape="transport-only",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances",
+            "composite",
+            composes=("hive.list", "host.list"),
+            wire_family="gateway.v1",
+            wire_request_schema="instancesRequest",
+            wire_result_schema="instancesResponse",
+            reason="authorized remote directory composite",
+            shape="coarser",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/hives",
+            "catalog-entry",
+            operation="hive.list",
+            wire_family="gateway.read.v1",
+            wire_request_schema="hiveListRequest",
+            wire_result_schema="hiveListResponse",
+            reason="richer remote projection of the canonical hive list",
+            shape="richer",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
+            "composite",
+            composes=("work.list", "work.schedule"),
+            wire_family="gateway.read.v1",
+            wire_request_schema="snapshotRequest",
+            wire_result_schema="snapshotResponse",
+            reason="bounded remote state composite",
+            shape="coarser",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
+            "transport-mechanic",
+            streaming=True,
+            wire_family="gateway.read.v1",
+            wire_request_schema="eventsRequest",
+            wire_result_schema="eventStreamResponse",
+            reason="remote SSE cursor/replay mechanic",
+            shape="transport-only",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/snapshot",
+            "composite",
+            composes=("work.list", "work.schedule"),
+            wire_family="gateway.v1",
+            wire_request_schema="snapshotRequest",
+            wire_result_schema="snapshotResponse",
+            reason="legacy coarse snapshot composes canonical work reads behind gateway.v1",
+            shape="coarser",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/events",
+            "transport-mechanic",
+            streaming=True,
+            wire_family="gateway.v1",
+            wire_request_schema="eventsRequest",
+            wire_result_schema="eventStreamResponse",
+            reason="legacy coarse SSE compatibility mechanic",
+            shape="transport-only",
+        ),
+        _gateway(
+            "POST",
+            "/v1/instances/{stage}/{slug}/commands/refresh",
+            "explicit-exclusion",
+            side_effects="bounded-runtime-refresh",
+            wire_family="gateway.v1",
+            wire_request_schema="refreshRequest",
+            wire_result_schema="commandResponse",
+            reason="runtime refresh is not canonical sync and has no canonical operation",
+            shape="excluded",
+        ),
+        _gateway(
+            "POST",
+            "/v1/instances/{stage}/{slug}/commands/{command}",
+            "transport-mechanic",
+            wire_family="gateway.v1",
+            wire_request_schema="unavailableCommandRequest",
+            wire_result_schema="errorResponse",
+            reason="stable unavailable-command response prevents undeclared mutation exposure",
+            shape="transport-only",
+        ),
     )
-    for path in _GATEWAY_OPTIONS_PATHS
-) + (
-    _gateway(
-        "GET",
-        "/{path:path}",
-        "transport-mechanic",
-        reason="closed-world not-found fallback",
-        shape="transport-only",
-    ),
-    _gateway(
-        "OPTIONS",
-        "/{path:path}",
-        "transport-mechanic",
-        reason="closed-world preflight fallback",
-        shape="transport-only",
-    ),
-)
+    read_options_paths = tuple(spec.identifier.removeprefix("GET ") for spec in functional[1:7])
+    mechanics = tuple(
+        _gateway(
+            "OPTIONS",
+            path,
+            "transport-mechanic",
+            privilege="network-admission",
+            wire_family="gateway.v1",
+            wire_request_schema="readPreflightRequest",
+            wire_result_schema="emptyResponse",
+            reason="exact credentialed CORS preflight allowlist",
+            shape="transport-only",
+        )
+        for path in read_options_paths
+    ) + (
+        _gateway(
+            "OPTIONS",
+            "/v1/instances/{stage}/{slug}/commands/refresh",
+            "transport-mechanic",
+            privilege="network-admission",
+            wire_family="gateway.v1",
+            wire_request_schema="commandPreflightRequest",
+            wire_result_schema="emptyResponse",
+            reason="exact credentialed command CORS preflight allowlist",
+            shape="transport-only",
+        ),
+        _gateway(
+            "GET",
+            "/{path:path}",
+            "transport-mechanic",
+            wire_family="gateway.v1",
+            wire_request_schema="fallbackRequest",
+            wire_result_schema="errorResponse",
+            reason="closed-world not-found fallback",
+            shape="transport-only",
+        ),
+        _gateway(
+            "OPTIONS",
+            "/{path:path}",
+            "transport-mechanic",
+            privilege="network-admission",
+            wire_family="gateway.v1",
+            wire_request_schema="fallbackRequest",
+            wire_result_schema="errorResponse",
+            reason="closed-world preflight fallback",
+            shape="transport-only",
+        ),
+    )
+    return functional + mechanics
 
 
 def projections() -> tuple[ProjectionSpec, ...]:
@@ -537,8 +594,7 @@ def projections() -> tuple[ProjectionSpec, ...]:
     rows = [
         *_catalog_projections(),
         *_operator_projections(),
-        *_GATEWAY_FUNCTIONAL,
-        *_GATEWAY_MECHANICS,
+        *_gateway_projections(),
     ]
     return tuple(sorted(rows, key=lambda row: (row.surface, row.identifier)))
 
@@ -553,7 +609,7 @@ def document() -> dict[str, Any]:
         rows.append(rendered)
     return {
         "format_version": 1,
-        "inventory_version": "1.1.0",
+        "inventory_version": "1.4.0",
         "policy": {
             "classification": (
                 "every public projection is a catalog entry, composite, transport mechanic, "

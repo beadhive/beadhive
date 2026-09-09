@@ -389,6 +389,192 @@ _EVENT_CURSOR = re.compile(
 )
 
 
+def gateway_wire_schemas() -> dict[str, dict[str, object]]:
+    """Return the ``gateway.v1`` schemas owned by this disclosure boundary.
+
+    The projection artifact consumes this declaration instead of reverse-engineering handler
+    names. Required response keys come from the same allowlists that reject runtime payloads.
+    """
+
+    schema_version = {"const": SCHEMA_VERSION}
+    contract_version = {"const": CONTRACT_VERSION}
+    stage_slug = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["stage", "slug"],
+        "properties": {
+            "stage": {"type": "string", "minLength": 1},
+            "slug": {"type": "string", "minLength": 1},
+        },
+    }
+    error_response = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": sorted(_ERROR_KEYS),
+        "properties": {
+            "error": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": sorted(_ERROR_DETAIL_KEYS),
+                "properties": {
+                    "code": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "message": {"type": "string", "minLength": 1, "maxLength": 512},
+                    "retryable": {"type": "boolean"},
+                },
+            }
+        },
+    }
+    return {
+        "emptyRequest": {"type": "object", "additionalProperties": False},
+        "emptyResponse": {"const": ""},
+        "healthResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["contractVersion", "live"],
+            "properties": {
+                "contractVersion": contract_version,
+                "live": {"const": True},
+            },
+        },
+        "instancesRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["limit"],
+            "properties": {"limit": {"const": 50}},
+        },
+        "instancesResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_INSTANCE_PAGE_KEYS),
+            "properties": {
+                "schemaVersion": schema_version,
+                "items": {
+                    "type": "array",
+                    "maxItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": sorted(_INSTANCE_KEYS),
+                        "properties": {
+                            "id": {"const": DEVELOPMENT_INSTANCE_ID},
+                            "displayName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256,
+                            },
+                            "availability": {"enum": ["online", "offline"]},
+                            "capabilities": {
+                                "enum": [
+                                    ["snapshot"],
+                                    ["snapshot", "refresh"],
+                                    ["snapshot", "events"],
+                                    ["snapshot", "refresh", "events"],
+                                ]
+                            },
+                        },
+                    },
+                },
+                "nextCursor": {"type": "null"},
+            },
+        },
+        "snapshotRequest": stage_slug,
+        "snapshotResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_ENVELOPE_KEYS),
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "instanceId": {"const": DEVELOPMENT_INSTANCE_ID},
+                "snapshot": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": sorted(_SNAPSHOT_KEYS),
+                    "properties": {key: {} for key in sorted(_SNAPSHOT_KEYS | {"eventCursor"})},
+                },
+            },
+        },
+        "eventsRequest": {
+            **stage_slug,
+            "required": ["stage", "slug", "cursor"],
+            "properties": {
+                **stage_slug["properties"],  # type: ignore[dict-item]
+                "cursor": {"type": "string", "minLength": 1},
+            },
+        },
+        "eventStreamResponse": {
+            "type": "string",
+            "contentMediaType": "text/event-stream",
+        },
+        "refreshRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_COMMAND_INPUT_KEYS),
+            "properties": {
+                "schemaVersion": schema_version,
+                "correlationId": {"type": "string", "pattern": _CORRELATION_ID.pattern},
+                "expectedRevision": {"type": "string", "pattern": _REVISION.pattern},
+            },
+        },
+        "commandResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_COMMAND_ENVELOPE_KEYS),
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "instanceId": {"const": DEVELOPMENT_INSTANCE_ID},
+                "command": {"const": "refresh"},
+                "correlationId": {"type": "string", "pattern": _CORRELATION_ID.pattern},
+                "result": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": sorted(_COMMAND_RESULT_KEYS),
+                    "properties": {
+                        "status": {"const": "completed"},
+                        "revision": {"type": "string", "pattern": _REVISION.pattern},
+                    },
+                },
+            },
+        },
+        "unavailableCommandRequest": {
+            **stage_slug,
+            "required": ["stage", "slug", "command"],
+            "properties": {
+                **stage_slug["properties"],  # type: ignore[dict-item]
+                "command": {"type": "string", "minLength": 1},
+            },
+        },
+        "errorResponse": error_response,
+        "readPreflightRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["origin", "method", "headers"],
+            "properties": {
+                "origin": {"type": "string", "format": "uri"},
+                "method": {"const": "GET"},
+                "headers": {"const": ["authorization"]},
+            },
+        },
+        "commandPreflightRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["origin", "method", "headers"],
+            "properties": {
+                "origin": {"type": "string", "format": "uri"},
+                "method": {"const": "POST"},
+                "headers": {"const": ["authorization", "content-type"]},
+            },
+        },
+        "fallbackRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["path"],
+            "properties": {"path": {"type": "string"}},
+        },
+    }
+
+
 def _exact_keys(value: object, expected: frozenset[str]) -> bool:
     return isinstance(value, dict) and set(value) == expected
 
