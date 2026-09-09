@@ -566,6 +566,10 @@ test-closure-check:
 test-closure-certification-check:
     uv run python scripts/test_closure_certification.py --check
 
+# Advisory only: emit a machine-readable impacted-test plan; never runs tests or changes policy.
+test-impact-plan base head="HEAD":
+    uv run python scripts/test_impact_selector.py --base {{quote(base)}} --head {{quote(head)}}
+
 test-kernel:
     just test-closure kernel
 

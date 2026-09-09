@@ -21,20 +21,64 @@ sys.modules[SPEC.name] = certification
 SPEC.loader.exec_module(certification)
 
 
-def test_checked_certification_evidence_is_current() -> None:
+def test_checked_certification_evidence_is_a_valid_historical_snapshot() -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
 
     assert certification.validate_evidence(evidence, ROOT) == ()
 
 
-def test_checked_source_identity_is_recomputed_from_checkout_inputs() -> None:
+def test_checked_source_identity_is_recomputed_from_historical_git_objects() -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
-    identity = certification.checkout_input_identity(ROOT)
+    snapshot = certification._historical_snapshot_commit(ROOT)
+    identity = certification.checkout_input_identity_at(ROOT, snapshot)
 
     assert evidence["certification_input_identity"] == identity
     assert evidence["source_revision"] == identity["revision"]
     assert evidence["source_tree"] == identity["tree"]
     assert evidence["same_tree_full_gate_oracle"]["input_identity"] == identity
+
+
+def test_unrelated_descendant_does_not_invalidate_the_historical_snapshot() -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    snapshot = certification._historical_snapshot_commit(ROOT)
+
+    assert snapshot != certification._git(ROOT, "rev-parse", "HEAD")
+    assert certification.validate_evidence(evidence, ROOT) == ()
+    applicability = certification.current_applicability(evidence, ROOT)
+    assert set(applicability) == {row["id"] for row in evidence["closures"]}
+
+
+def test_receipt_lookup_targets_historical_snapshot_tree(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    receipt = {
+        "schema": 1,
+        "tree": "historical-tree",
+        "command": "just check",
+        "command_hash": certification.FULL_GATE_COMMAND_HASH,
+        "bead": "bh-ck1t6.1",
+        "phase": "check",
+        "lifecycle": "completed",
+        "verdict": "green",
+        "exit_code": 0,
+        "signal": None,
+    }
+
+    def fake_git(_root: Path, *args: str) -> str:
+        if args[0] == "status":
+            return ""
+        if args[0] == "log":
+            return "historical-commit"
+        if args[0] == "rev-parse":
+            assert args[1] == "historical-commit^{tree}"
+            return "historical-tree"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(certification, "_git", fake_git)
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == ()
 
 
 @pytest.mark.parametrize(
