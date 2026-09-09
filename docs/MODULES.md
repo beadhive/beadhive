@@ -30,11 +30,16 @@ later implementation bead explicitly owns a contract change.
 
 ## Current structure and evidence
 
-At the named baseline, Beadhive has three installed entry points:
+At the named baseline, Beadhive had three installed entry points:
 
 - `bh = beadhive.cli:main`;
 - `bh-mcp = beadhive.mcp:main`; and
 - `beadhive-gateway = beadhive.remote_gateway_runtime:main`.
+
+The Transport composition closeout (`bh-3qkmk.5`) routes the four current console scripts
+through `beadhive.bootstrap.{cli,mcp,host,gateway}:main`. The historical modules remain
+compatibility/runtime adapters behind exact exception-ledger edges until their patch inventories
+permit physical relocation; reusable production code has no dependency back into bootstrap.
 
 The production package contains approximately 177 flat top-level Python modules and 95,000 lines
 of code. The test tree contains approximately 343 Python files and 123,000 lines. The principal

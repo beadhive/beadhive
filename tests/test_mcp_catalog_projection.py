@@ -8,6 +8,7 @@ import inspect
 import pytest
 
 from beadhive import config as config_mod
+from beadhive import host_daemon
 from beadhive import mcp as mcp_mod
 from beadhive import operation_catalog as catalog
 
@@ -35,6 +36,33 @@ def _registered_components(server):
             *asyncio.run(server.list_resource_templates()),
         ],
     )
+
+
+def _server_contract(server):
+    tools, resources = _registered_components(server)
+    return {
+        "tools": {
+            tool.name: {
+                "schema": tool.parameters,
+                "operation": tool.fn.bh_catalog_operation,
+                "parameters": tool.fn.bh_catalog_parameters,
+                "composes": tool.fn.bh_catalog_composes,
+                "strict_bd": tool.fn.bh_strict_bd,
+                "model_safe_errors": tool.fn.bh_model_safe_errors,
+            }
+            for tool in tools
+        },
+        "resources": {
+            str(getattr(resource, "uri", getattr(resource, "uri_template", ""))): {
+                "schema": getattr(resource, "parameters", None),
+                "operation": resource.fn.bh_catalog_operation,
+                "parameters": resource.fn.bh_catalog_parameters,
+                "strict_bd": getattr(resource.fn, "bh_strict_bd", False),
+                "model_safe_errors": resource.fn.bh_model_safe_errors,
+            }
+            for resource in resources
+        },
+    }
 
 
 def test_mcp_composition_root_contains_no_hand_typed_registration_uri_or_bare_tool():
@@ -181,6 +209,37 @@ def test_composite_allowlist_is_small_explicit_and_references_catalog_operations
     assert composites == {"hive.onboard": ["hive.init", "sync"]}
     assert set(composites["hive.onboard"]) <= set(operations)
     assert operations["hive.onboard"].surfaces["mcp"]["granularity"]["mode"] == "coarse"
+
+
+def test_registration_plan_carries_the_explicit_composite_declaration():
+    tool_plan, resource_plan = mcp_mod._registration_plan(mcp_mod._handler_bindings())
+
+    assert len(tool_plan) == 10
+    assert len(resource_plan) == 21
+    assert {binding.operation: binding.composes for binding in tool_plan if binding.composes} == {
+        "hive.onboard": ("hive.init", "sync")
+    }
+
+
+def test_stdio_and_host_daemon_http_use_identical_contracts_and_envelopes():
+    pytest.importorskip("fastmcp")
+    stdio_server = mcp_mod.build_server()
+    captured = []
+
+    def server_factory():
+        server = mcp_mod.build_server()
+        captured.append(server)
+        return server
+
+    app = host_daemon.build_application(enable_mcp_http=True, mcp_server_factory=server_factory)
+
+    assert any(getattr(route, "path", None) == "/mcp" for route in app.routes)
+    assert len(captured) == 1
+    assert _server_contract(captured[0]) == _server_contract(stdio_server)
+    assert _server_contract(stdio_server)["tools"]["hive_onboard"]["composes"] == (
+        "hive.init",
+        "sync",
+    )
 
 
 def test_catalog_drives_completed_mutation_notifications(monkeypatch):

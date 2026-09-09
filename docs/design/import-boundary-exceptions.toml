@@ -2,6 +2,74 @@
 format_version = 1
 verified_commit = "ad4077d7ee5ae40c966f089920ca794006538090"
 
+[[boundary_exception]]
+id = "boundary-bootstrap-cli-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.cli"
+importer_path = "src/beadhive/bootstrap/cli.py"
+imported_module = "beadhive.cli"
+symbol = "beadhive.cli"
+target_owner_package = "adapters/cli"
+successor = "bh-inqwc"
+reason = "The installed root delegates to the released CLI compatibility module until its inventoried command-handler patch surface is empty; the root itself owns only process composition."
+consumer_inventory = { production = "beadhive.bootstrap.cli console-script root", tests = "tests/test_transport_composition_roots.py plus CLI compatibility closure", docs = "CLI compatibility removal ledger and transport composition proof", external = "installed bh console script" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_cli.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the released beadhive.cli implementation behind adapters/cli after its patch inventory reaches zero."
+
+[[boundary_exception]]
+id = "boundary-bootstrap-mcp-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.mcp"
+importer_path = "src/beadhive/bootstrap/mcp.py"
+imported_module = "beadhive.mcp"
+symbol = "beadhive.mcp"
+target_owner_package = "adapters/mcp"
+successor = "bh-inqwc"
+reason = "The installed root delegates to the released FastMCP compatibility module while preserving its public construction and telemetry seams."
+consumer_inventory = { production = "beadhive.bootstrap.mcp console-script root", tests = "tests/test_transport_composition_roots.py and MCP closure", docs = "transport composition proof", external = "installed bh-mcp console script and historical beadhive.mcp imports" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_mcp.py; tests/test_mcp_catalog_projection.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the released beadhive.mcp implementation behind adapters/mcp after its compatibility consumer inventory reaches zero."
+
+[[boundary_exception]]
+id = "boundary-bootstrap-host-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.host"
+importer_path = "src/beadhive/bootstrap/host.py"
+imported_module = "beadhive.host_daemon_entrypoint"
+symbol = "beadhive.host_daemon_entrypoint"
+target_owner_package = "adapters/operator_api"
+successor = "bh-inqwc"
+reason = "The installed root retains the released host-daemon entrypoint as its concrete adapter while daemon runtime ownership remains with bh-q0lol."
+consumer_inventory = { production = "beadhive.bootstrap.host console-script root", tests = "tests/test_transport_composition_roots.py and daemon closure", docs = "transport composition proof", external = "installed bh-host-daemon console script and historical entrypoint imports" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_host_daemon.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the q0lol-owned daemon composition adapter behind adapters/operator_api without changing daemon lifecycle ownership."
+
+[[boundary_exception]]
+id = "boundary-bootstrap-gateway-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.gateway"
+importer_path = "src/beadhive/bootstrap/gateway.py"
+imported_module = "beadhive.remote_gateway_runtime"
+symbol = "beadhive.remote_gateway_runtime"
+target_owner_package = "adapters/gateway"
+successor = "bh-inqwc"
+reason = "The installed root delegates to the released Development gateway runtime so the bootstrap adds no alternate network or security policy."
+consumer_inventory = { production = "beadhive.bootstrap.gateway console-script root", tests = "tests/test_transport_composition_roots.py and gateway closure", docs = "transport composition proof", external = "installed beadhive-gateway console script and historical runtime imports" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_remote_gateway_runtime.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the released Development gateway runtime behind adapters/gateway after its compatibility consumers reach zero."
+
 [cycle_snapshot]
 sha256 = "f60b8e61436c0a28909f9d20ce9c3d1e500fe6961c76c54caae1c1e9969f7b09"
 components = 8
@@ -790,6 +858,140 @@ test_closure = "module.config; just architecture-check; just check"
 introduced_commit = "bh-18hud.2"
 last_verified_commit = "bh-18hud.2"
 expiry_trigger = "Move tier_names with ComplexityTier to an inward shared contract and forward beadhive.complexity."
+
+[[boundary_exception]]
+id = "boundary-cli-declarations-operation-spec"
+status = "removed"
+importer = "beadhive.adapters.cli.declarations"
+importer_path = "src/beadhive/adapters/cli/declarations.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.OperationSpec"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The CLI adapter consumes the canonical catalog contract while that already-released contract still has a flat compatibility home."
+consumer_inventory = { production = "catalog-derived CLI command declarations", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "canonical operation catalog ADR and this ledger", external = "none; this is an internal adapter edge" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move the canonical operation declarations to kernel/operations and leave beadhive.operation_catalog as a one-way facade."
+
+[[boundary_exception]]
+id = "boundary-cli-declarations-parents"
+status = "removed"
+importer = "beadhive.adapters.cli.declarations"
+importer_path = "src/beadhive/adapters/cli/declarations.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.cli_parents"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "CLI parent metadata is canonical catalog data and must not be recopied into the Typer adapter while its owner remains flat."
+consumer_inventory = { production = "catalog-derived Typer parent declarations", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "canonical operation catalog ADR and this ledger", external = "none; this is an internal adapter edge" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move CLI parent declarations with the canonical catalog to kernel/operations."
+
+[[boundary_exception]]
+id = "boundary-cli-declarations-operations"
+status = "removed"
+importer = "beadhive.adapters.cli.declarations"
+importer_path = "src/beadhive/adapters/cli/declarations.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.operations"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The CLI adapter projects the existing canonical operations function without creating a second registry."
+consumer_inventory = { production = "catalog-derived CLI command declarations", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "canonical operation catalog ADR and this ledger", external = "none; this is an internal adapter edge" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move operations to kernel/operations and preserve the flat catalog only as a one-way facade."
+
+[[boundary_exception]]
+id = "boundary-cli-projection-operation-spec"
+status = "removed"
+importer = "beadhive.adapters.cli.projection"
+importer_path = "src/beadhive/adapters/cli/projection.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.OperationSpec"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The focused compatibility projector types catalog input through the established flat catalog contract."
+consumer_inventory = { production = "work and plan CLI compatibility projection", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "CLI compatibility removal ledger and this ledger", external = "none; public callers enter through the flat CLI projection facade" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move OperationSpec to kernel/operations and remove this exact adapter-to-flat edge."
+
+[[boundary_exception]]
+id = "boundary-cli-projection-operations"
+status = "removed"
+importer = "beadhive.adapters.cli.projection"
+importer_path = "src/beadhive/adapters/cli/projection.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.operations"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The focused compatibility projector consumes the one canonical operations registry while its released path remains flat."
+consumer_inventory = { production = "work and plan CLI compatibility projection", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "CLI compatibility removal ledger and this ledger", external = "none; public callers enter through the flat CLI projection facade" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move operations to kernel/operations and remove this exact adapter-to-flat edge."
+
+[[boundary_exception]]
+id = "boundary-cli-projection-otel"
+status = "removed"
+importer = "beadhive.adapters.cli.projection"
+importer_path = "src/beadhive/adapters/cli/projection.py"
+imported_module = "beadhive.otel"
+symbol = "beadhive.otel"
+target_owner_package = "kernel/telemetry/contracts"
+successor = "bh-3qkmk.5"
+reason = "Generated callbacks preserve the released trace_verb wrapper and its public monkeypatch seam until telemetry exposes an inward contract."
+consumer_inventory = { production = "work and plan generated callback tracing", tests = "tests/test_cli_projection.py::test_generator_refuses_a_dropped_trace_wrapper; tests/test_import_boundaries.py", docs = "CLI compatibility removal ledger and this ledger", external = "beadhive.cli_projection.otel monkeypatch consumers are not separately enumerable" }
+executable_test = "tests/test_cli_projection.py::test_generator_refuses_a_dropped_trace_wrapper; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Introduce a public inward telemetry trace contract and empty the cli_projection.otel patch inventory."
+
+[[boundary_exception]]
+id = "boundary-cli-tree-operation-spec"
+status = "removed"
+importer = "beadhive.adapters.cli.tree"
+importer_path = "src/beadhive/adapters/cli/tree.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.OperationSpec"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The root Typer composition accepts injected catalog specs through the released catalog type while its kernel migration is pending."
+consumer_inventory = { production = "assembled CLI tree composition", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "canonical operation catalog ADR and this ledger", external = "none; this is an internal adapter edge" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move OperationSpec to kernel/operations and remove this exact adapter-to-flat edge."
+
+[[facade]]
+id = "facade-cli-projection"
+status = "active"
+facade_path = "src/beadhive/cli_projection.py"
+preserved_symbols = ["HAND_AUTHORED_CLI_GROUPS", "MIGRATED_CLI_GROUPS", "CatalogProjectionError", "HandlerBinding", "ProjectionReport", "bind_handler", "catalog_cli_groups", "generated_callbacks", "otel", "project_cli_group", "validate_catalog_generation_rules", "validate_migration_inventory"]
+target_owner_package = "adapters/cli"
+successor = "bh-3qkmk.5"
+reason = "Preserve work/plan imports and the otel monkeypatch seam while the implementation moves to the explicit CLI adapter package."
+consumer_inventory = { production = "beadhive.work and beadhive.plan", tests = "tests/test_cli_projection.py; tests/test_naming_conventions.py", docs = "CLI compatibility removal ledger and this ledger", external = "existing beadhive.cli_projection consumers; not separately enumerable" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "26a3a84b"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "All production imports target beadhive.adapters.cli and the otel patch inventory is empty."
 
 [[facade]]
 id = "facade-config-schema"

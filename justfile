@@ -51,11 +51,23 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check architecture-check wire-schema-compat test
+check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat test
+
+# Every checked transport declaration: catalog, projection inventory, OpenAPI, gateway and roots.
+transport-artifact-check:
+    uv run python scripts/render_operation_catalog.py --check
+    uv run python scripts/render_transport_inventory.py --check
+    uv run python -m beadhive.daemon_openapi --check
+    uv run python -m beadhive.gateway_contract --check
+    uv run python scripts/render_transport_composition_evidence.py --check
 
 # Deterministic product schema/route generation: checked JSON may never drift from code.
 openapi-check:
     uv run python -m beadhive.daemon_openapi --check
+
+# Catalog relationship for every Development gateway route; wire/runtime policy stays gateway-owned.
+gateway-contract-check:
+    uv run python -m beadhive.gateway_contract --check
 
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
 #
@@ -123,7 +135,7 @@ openapi-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md openapi-check license-check architecture-check wire-schema-compat (test FAST) test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
 # Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
 architecture-check:

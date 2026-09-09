@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the canonical Python operation declaration as language-neutral JSON."""
+"""Render the deterministic public transport projection inventory."""
 
 from __future__ import annotations
 
@@ -7,22 +7,22 @@ import argparse
 import json
 from pathlib import Path
 
-from beadhive.operation_catalog import document
+from beadhive.transport_inventory import document
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / "docs" / "schemas" / "wire" / "v1.2.0" / "operation-catalog-v1.json"
+TARGET = ROOT / "docs" / "design" / "transport-projection-inventory-v1.json"
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--check", action="store_true", help="fail when the artifact would change")
     args = parser.parse_args(argv)
     rendered = json.dumps(document(), indent=2, sort_keys=True) + "\n"
     if args.check:
-        if not TARGET.is_file() or TARGET.read_text(encoding="utf-8") != rendered:
+        if not TARGET.exists() or TARGET.read_text() != rendered:
             parser.error(f"{TARGET.relative_to(ROOT)} is stale; render it without --check")
         return 0
-    TARGET.write_text(rendered, encoding="utf-8")
+    TARGET.write_text(rendered)
     return 0
 
 

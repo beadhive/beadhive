@@ -59,10 +59,10 @@ otel = [
 ]
 
 [project.scripts]
-bh = "beadhive.cli:main"
-bh-mcp = "beadhive.mcp:main"
-bh-host-daemon = "beadhive.host_daemon_entrypoint:main"
-beadhive-gateway = "beadhive.remote_gateway_runtime:main"
+bh = "beadhive.bootstrap.cli:main"
+bh-mcp = "beadhive.bootstrap.mcp:main"
+bh-host-daemon = "beadhive.bootstrap.host:main"
+beadhive-gateway = "beadhive.bootstrap.gateway:main"
 
 [build-system]
 requires = ["hatchling"]
