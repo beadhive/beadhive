@@ -940,6 +940,7 @@ def operations() -> tuple[OperationSpec, ...]:
             )
         )
     operation_names = {operation.name for operation in result}
+    operations_by_name = {operation.name: operation for operation in result}
     for composite, components in _MCP_COMPOSITES.items():
         if composite not in _MCP_TOOLS:
             raise ValueError(f"MCP composite {composite!r} is not an allowlisted tool")
@@ -947,6 +948,17 @@ def operations() -> tuple[OperationSpec, ...]:
         if missing:
             raise ValueError(
                 f"MCP composite {composite!r} references unknown operations: {sorted(missing)}"
+            )
+        unsafe = []
+        for component in components:
+            operation = operations_by_name[component]
+            if operation.privilege == "privileged" or any(
+                operation.constraints[key] for key in ("hq_write", "secret_material", "interactive")
+            ):
+                unsafe.append(component)
+        if unsafe:
+            raise ValueError(
+                f"MCP composite {composite!r} bypasses component policy: {sorted(unsafe)}"
             )
     return tuple(result)
 
@@ -1040,6 +1052,25 @@ def mcp_tool_projections() -> dict[str, tuple[str, tuple[str, ...]]]:
             result[operation.name] = _tool_projection(
                 operation, _validated_mcp_projection(operation)
             )
+    return result
+
+
+def mcp_tool_composites() -> dict[str, tuple[str, ...]]:
+    """Return explicit application-operation constituents for coarse MCP tools.
+
+    Most MCP tools project one canonical operation and therefore have no entry here.  A tool
+    appears only when its adapter intentionally coordinates multiple catalog operations.  The
+    result is derived from the same validated catalog snapshot as names and signatures so server
+    construction never needs a second composite allowlist.
+    """
+    result = {}
+    for operation in operations():
+        projection = operation.surfaces.get("mcp")
+        if projection and projection.get("tool"):
+            validated = _validated_mcp_projection(operation)
+            composes = tuple(validated.get("composes", ()))
+            if composes:
+                result[operation.name] = composes
     return result
 
 

@@ -63,7 +63,10 @@ import os
 import sys
 import tempfile
 import time
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from . import (
     alerts,
@@ -191,6 +194,102 @@ ToolError = None
 ResourceError = None
 
 
+@dataclass(frozen=True)
+class _ToolBinding:
+    """One validated catalog projection bound to its FastMCP adapter handler."""
+
+    operation: str
+    name: str
+    parameters: tuple[str, ...]
+    composes: tuple[str, ...]
+    handler: Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class _ResourceBinding:
+    """One validated catalog resource projection bound to its adapter handler."""
+
+    operation: str
+    uri: str
+    parameters: tuple[str, ...]
+    handler: Callable[..., Any]
+    options: dict[str, Any]
+
+
+@dataclass
+class _HandlerBindings:
+    """Explicit application-handler catalog consumed by the FastMCP composition root.
+
+    Handler declarations identify canonical operations only.  Names, URIs, public signatures,
+    privilege policy, composite constituents, and invalidations remain owned by
+    :mod:`operation_catalog` and are joined exactly once by :func:`_registration_plan`.
+    """
+
+    tools: dict[str, Callable[..., Any]] = field(default_factory=dict)
+    resources: dict[str, tuple[Callable[..., Any], dict[str, Any]]] = field(default_factory=dict)
+
+    def tool(self, operation: str):
+        def bind(fn):
+            if operation in self.tools:
+                raise operation_catalog.MCPProjectionError(
+                    f"duplicate MCP tool handler for {operation!r}"
+                )
+            self.tools[operation] = fn
+            return fn
+
+        return bind
+
+    def resource(self, operation: str, **options):
+        def bind(fn):
+            if operation in self.resources:
+                raise operation_catalog.MCPProjectionError(
+                    f"duplicate MCP resource handler for {operation!r}"
+                )
+            self.resources[operation] = (fn, options)
+            return fn
+
+        return bind
+
+
+def _registration_plan(bindings: _HandlerBindings):
+    """Join explicit handlers to one safe catalog snapshot and reject any drift."""
+    tool_projections = operation_catalog.mcp_tool_projections()
+    resource_projections = operation_catalog.mcp_resource_projections()
+    composites = operation_catalog.mcp_tool_composites()
+    missing_tools = set(tool_projections) - set(bindings.tools)
+    missing_resources = set(resource_projections) - set(bindings.resources)
+    stale_tools = set(bindings.tools) - set(tool_projections)
+    stale_resources = set(bindings.resources) - set(resource_projections)
+    if missing_tools or missing_resources or stale_tools or stale_resources:
+        raise operation_catalog.MCPProjectionError(
+            "MCP catalog/handler bindings differ: "
+            f"missing tools={sorted(missing_tools)}, "
+            f"missing resources={sorted(missing_resources)}, "
+            f"stale tools={sorted(stale_tools)}, stale resources={sorted(stale_resources)}"
+        )
+    tools = tuple(
+        _ToolBinding(
+            operation=operation,
+            name=projection[0],
+            parameters=projection[1],
+            composes=composites.get(operation, ()),
+            handler=bindings.tools[operation],
+        )
+        for operation, projection in tool_projections.items()
+    )
+    resources = tuple(
+        _ResourceBinding(
+            operation=operation,
+            uri=projection[0],
+            parameters=projection[1],
+            handler=bindings.resources[operation][0],
+            options=bindings.resources[operation][1],
+        )
+        for operation, projection in resource_projections.items()
+    )
+    return tools, resources
+
+
 def _measured(fn, *, span_name, record, name, expected_exc, mapper, register):
     """Wrap *fn* in the shared timing / outcome / error envelope, then register it via *register*.
 
@@ -272,7 +371,7 @@ def _project_tool_signature(fn, parameter_names: tuple[str, ...]) -> inspect.Sig
     return signature.replace(parameters=[*projected, *internal])
 
 
-def _measured_tool(mcp, operation_name, fn, *, projection=None):
+def _measured_tool(mcp, binding: _ToolBinding):
     """Register *fn* through one catalog-allowlisted MCP tool projection.
 
     The catalog generates the public tool name and parameter signature; *fn* remains the behavior
@@ -285,7 +384,10 @@ def _measured_tool(mcp, operation_name, fn, *, projection=None):
     `plan.file_molecule`'s `bd.json` calls and got the None that means "no such bead". There is no
     tool-side equivalent of ``beadhive://doctor``'s exemption: no tool exists to diagnose a broken
     seat, so strictness is unconditional here and a tool added later inherits it."""
-    tool_name, parameter_names = projection or operation_catalog.mcp_tool_projection(operation_name)
+    operation_name = binding.operation
+    tool_name = binding.name
+    parameter_names = binding.parameters
+    fn = binding.handler
     projected_signature = _project_tool_signature(fn, parameter_names)
 
     def _mapper(exc):
@@ -296,6 +398,8 @@ def _measured_tool(mcp, operation_name, fn, *, projection=None):
         wrapper.__signature__ = projected_signature
         wrapper.bh_catalog_operation = operation_name
         wrapper.bh_catalog_parameters = parameter_names
+        wrapper.bh_catalog_composes = binding.composes
+        wrapper.bh_model_safe_errors = True
         return mcp.tool(name=tool_name)(wrapper)
 
     return _measured(
@@ -349,7 +453,7 @@ def _strict_bd_reads(fn):
     return _strict
 
 
-def _measured_resource(mcp, operation_name, *, projection=None, **kw):
+def _measured_resource(mcp, binding: _ResourceBinding):
     """Register *fn* through a catalog resource projection and the shared measured envelope.
 
     Defaults ``mime_type="application/json"`` + read-only / idempotent
@@ -361,7 +465,11 @@ def _measured_resource(mcp, operation_name, *, projection=None, **kw):
     agent as an error naming the binary rather than an empty-but-plausible payload. ``strict_bd``
     opts one resource out of that, for the only case where raising is the wrong answer — see
     ``beadhive://doctor``."""
-    uri, parameter_names = projection or operation_catalog.mcp_resource_projection(operation_name)
+    operation_name = binding.operation
+    uri = binding.uri
+    parameter_names = binding.parameters
+    fn = binding.handler
+    kw = dict(binding.options)
     kw.setdefault("mime_type", "application/json")
     kw.setdefault("annotations", {"readOnlyHint": True, "idempotentHint": True})
     strict_bd = kw.pop("strict_bd", True)
@@ -378,6 +486,7 @@ def _measured_resource(mcp, operation_name, *, projection=None, **kw):
             wrapper.__signature__ = projected_signature
             wrapper.bh_catalog_operation = operation_name
             wrapper.bh_catalog_parameters = parameter_names
+            wrapper.bh_model_safe_errors = True
             return mcp.resource(uri, **kw)(wrapper)
 
         return _measured(
@@ -390,7 +499,7 @@ def _measured_resource(mcp, operation_name, *, projection=None, **kw):
             register=_register,
         )
 
-    return _decorator
+    return _decorator(fn)
 
 
 async def _notify_updated(ctx, uris) -> None:
@@ -581,71 +690,16 @@ def build_server():
     _warm_serve_path_imports()
 
     mcp = FastMCP(config.BINARY_ALIAS)
-    tool_handlers = {}
-    resource_handlers = {}
-
-    def _tool(operation_name):
-        def _bind(fn):
-            if operation_name in tool_handlers:
-                raise operation_catalog.MCPProjectionError(
-                    f"duplicate MCP tool handler for {operation_name!r}"
-                )
-            tool_handlers[operation_name] = fn
-            return fn
-
-        return _bind
-
-    def _resource(operation_name, **kw):
-        def _bind(fn):
-            if operation_name in resource_handlers:
-                raise operation_catalog.MCPProjectionError(
-                    f"duplicate MCP resource handler for {operation_name!r}"
-                )
-            resource_handlers[operation_name] = (fn, kw)
-            return fn
-
-        return _bind
-
-    _register_config_probes(mcp, _tool, _resource)
-    _register_plan_tools(mcp, _tool, _resource)
-    _register_hive_tools(mcp, _tool, _resource)
-    _register_read_resources(mcp, _tool, _resource)
-    _register_toolchain_surface(mcp, _tool, _resource)
-
-    tool_projections = operation_catalog.mcp_tool_projections()
-    resource_projections = operation_catalog.mcp_resource_projections()
-    tool_operations = tuple(tool_projections)
-    resource_operations = tuple(resource_projections)
-    missing_tools = set(tool_operations) - set(tool_handlers)
-    missing_resources = set(resource_operations) - set(resource_handlers)
-    stale_tools = set(tool_handlers) - set(tool_operations)
-    stale_resources = set(resource_handlers) - set(resource_operations)
-    if missing_tools or missing_resources or stale_tools or stale_resources:
-        raise operation_catalog.MCPProjectionError(
-            "MCP catalog/handler bindings differ: "
-            f"missing tools={sorted(missing_tools)}, "
-            f"missing resources={sorted(missing_resources)}, "
-            f"stale tools={sorted(stale_tools)}, stale resources={sorted(stale_resources)}"
-        )
-    for operation_name in tool_operations:
-        _measured_tool(
-            mcp,
-            operation_name,
-            tool_handlers[operation_name],
-            projection=tool_projections[operation_name],
-        )
-    for operation_name in resource_operations:
-        fn, kw = resource_handlers[operation_name]
-        _measured_resource(
-            mcp,
-            operation_name,
-            projection=resource_projections[operation_name],
-            **kw,
-        )(fn)
+    bindings = _handler_bindings()
+    tool_plan, resource_plan = _registration_plan(bindings)
+    for binding in tool_plan:
+        _measured_tool(mcp, binding)
+    for binding in resource_plan:
+        _measured_resource(mcp, binding)
     return mcp
 
 
-def _register_config_probes(mcp, tool, resource):
+def _register_config_probes(_mcp, tool, resource):
     """Config / probe / doctor read-only resources."""
 
     @resource("probe.health")
@@ -705,7 +759,7 @@ def _register_config_probes(mcp, tool, resource):
         return rows
 
 
-def _register_plan_tools(mcp, tool, resource):
+def _register_plan_tools(_mcp, tool, resource):
     """Planning + work tools: plan_check / plan_file / work_refine / bd_create."""
 
     @tool("plan.check")
@@ -846,7 +900,7 @@ def _register_plan_tools(mcp, tool, resource):
         return {"created": created, "count": len(created)}
 
 
-def _register_hive_tools(mcp, tool, resource):
+def _register_hive_tools(_mcp, tool, resource):
     """Hive lifecycle tools + hive status/survey resources."""
 
     @tool("hive.list")
@@ -1041,7 +1095,7 @@ def _register_hive_tools(mcp, tool, resource):
         return survey.collect_rows(config.load())
 
 
-def _register_read_resources(mcp, tool, resource):
+def _register_read_resources(_mcp, tool, resource):
     """Read-only resources: labels / worktrees / work / plans / hq planes."""
     # ---- labels plane -----------------------------------------------------------
 
@@ -1223,7 +1277,7 @@ def _register_read_resources(mcp, tool, resource):
         )
 
 
-def _register_toolchain_surface(mcp, tool, resource):
+def _register_toolchain_surface(_mcp, tool, resource):
     """Toolchain plane (bh-d0kb, knowledge-only): list/show resources + the exec tool.
 
     The resources share the CLI's payload producers (toolchain.list_payload /
@@ -1276,6 +1330,25 @@ def _register_toolchain_surface(mcp, tool, resource):
             "stdout": res.stdout or "",
             "stderr": res.stderr or "",
         }
+
+
+def _handler_bindings() -> _HandlerBindings:
+    """Collect the explicit operation-to-handler declarations without touching FastMCP.
+
+    The declaration providers group related adapter bodies for readability; they cannot choose
+    transport names, schemas, privilege, composites, or invalidations.  Construction consumes
+    this one catalog and joins it to the canonical projections in :func:`_registration_plan`.
+    """
+    bindings = _HandlerBindings()
+    for declare in (
+        _register_config_probes,
+        _register_plan_tools,
+        _register_hive_tools,
+        _register_read_resources,
+        _register_toolchain_surface,
+    ):
+        declare(None, bindings.tool, bindings.resource)
+    return bindings
 
 
 def serve() -> None:

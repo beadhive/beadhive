@@ -26,6 +26,7 @@ CONFIG_BASE_REVISION = "5e47c61107a67a26676fc5890a89f0fd0b715c78"
 CHURN_SINCE = "2026-06-03T00:00:00Z"
 MEASURED_AT = "2026-09-02T00:00:00Z"
 DEFAULT_OUTPUT = ROOT / "docs/proof/bh-bptze.7-capability-closeout.json"
+LEDGER_PATH = "docs/design/import-boundary-exceptions.toml"
 
 MODULES = ("agents", "config", "hives", "planning", "state", "work", "worktrees")
 AGENT_BASE_PATHS = (
@@ -406,8 +407,14 @@ def build_proof() -> dict[str, Any]:
     baseline_map = json.loads(
         (ROOT / "docs/design/capability-module-dependency-map.json").read_text(encoding="utf-8")
     )
-    ledger_path = ROOT / "docs/design/import-boundary-exceptions.toml"
-    ledger = tomllib.loads(ledger_path.read_text(encoding="utf-8"))
+    # Reproduce the historical proof from one coherent snapshot.  Current active exceptions
+    # describe today's source graph and must not be evaluated against the pinned .7 source.
+    ledger_source = _source(SOURCE_REVISION, LEDGER_PATH)
+    ledger = tomllib.loads(ledger_source)
+    # The ledger file at the measured commit necessarily names its predecessor: a commit cannot
+    # contain its own hash.  The checked proof records the immutable source revision that this
+    # historical ledger snapshot verifies.
+    ledger["verified_commit"] = SOURCE_REVISION
     graph = _current_graph(ledger)
     with tempfile.TemporaryDirectory(prefix="bh-bptze-check-") as tmp:
         root = Path(tmp)
@@ -415,6 +422,9 @@ def build_proof() -> dict[str, Any]:
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(_source(SOURCE_REVISION, path), encoding="utf-8")
+        ledger_path = root / LEDGER_PATH
+        ledger_path.parent.mkdir(parents=True, exist_ok=True)
+        ledger_path.write_text(ledger_source, encoding="utf-8")
         checked = check(root / "src", ledger_path)
     if checked.errors:
         raise RuntimeError("; ".join(checked.errors))

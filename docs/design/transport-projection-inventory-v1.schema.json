@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:transport-projection-inventory:1",
+  "title": "Beadhive transport projection inventory v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format_version", "inventory_version", "policy", "projections"],
+  "properties": {
+    "format_version": {"const": 1},
+    "inventory_version": {"const": "1.0.0"},
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["classification", "composites", "mcp", "ownership"],
+      "properties": {
+        "classification": {"type": "string", "minLength": 1},
+        "composites": {"type": "string", "minLength": 1},
+        "mcp": {"type": "string", "minLength": 1},
+        "ownership": {"type": "string", "minLength": 1}
+      }
+    },
+    "projections": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/projection"}
+    }
+  },
+  "$defs": {
+    "projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "surface", "identifier", "classification", "operation", "composes",
+        "request_schema", "result_schema", "privilege", "side_effects", "prompts",
+        "streaming", "availability", "compatibility", "reason"
+      ],
+      "properties": {
+        "surface": {
+          "enum": ["cli", "mcp-tool", "mcp-resource", "operator-api", "gateway"]
+        },
+        "identifier": {"type": "string", "minLength": 1},
+        "classification": {
+          "enum": ["catalog-entry", "composite", "transport-mechanic", "explicit-exclusion"]
+        },
+        "operation": {
+          "type": ["string", "null"],
+          "pattern": "^[a-z0-9-]+(?:\\.[a-z0-9-]+)*$"
+        },
+        "composes": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[a-z0-9-]+(?:\\.[a-z0-9-]+)*$"}
+        },
+        "request_schema": {"type": "string", "minLength": 1},
+        "result_schema": {"type": "string", "minLength": 1},
+        "privilege": {"type": "string", "minLength": 1},
+        "side_effects": {"type": "string", "minLength": 1},
+        "prompts": {"type": "boolean"},
+        "streaming": {"type": "boolean"},
+        "availability": {"type": "string", "minLength": 1},
+        "compatibility": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"classification": {"const": "catalog-entry"}}},
+          "then": {"required": ["operation"], "properties": {"operation": {"type": "string"}}}
+        },
+        {
+          "if": {"properties": {"classification": {"const": "composite"}}},
+          "then": {"properties": {"composes": {"minItems": 1}}}
+        }
+      ]
+    }
+  }
+}

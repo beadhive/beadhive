@@ -122,7 +122,8 @@ def _read_probe():
 def test_naming_adr_rules_and_migration_inventory_are_generator_checked():
     validate_catalog_generation_rules()
     validate_migration_inventory()
-    assert MIGRATED_CLI_GROUPS == ("plan", "work")
+    assert set(MIGRATED_CLI_GROUPS) == set(catalog_cli_groups())
+    assert HAND_AUTHORED_CLI_GROUPS == ()
     assert set(MIGRATED_CLI_GROUPS) | set(HAND_AUTHORED_CLI_GROUPS) == set(catalog_cli_groups())
 
 
