@@ -31,6 +31,7 @@ HOST_PREFIXES: frozenset[str] = frozenset(
         "repowise",
         "hitch",
         "herdr",
+        "host.daemon",
     }
 )
 

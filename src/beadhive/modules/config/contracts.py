@@ -50,6 +50,7 @@ from pydantic_core import PydanticUndefined
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from ...complexity import ComplexityTier, tier_names
+from ...kernel.daemon.contracts.config import HostDaemonConfig
 
 #: ISO-8601 duration parser for `WorkConfig.ledger_ttl` — pydantic's own, so `P1D` / `PT30M`
 #: need no hand-rolled grammar (`config.duration_seconds` uses the same adapter at read time).
@@ -773,6 +774,10 @@ class HostConfig(_Section):
 
     lease: HostLeaseConfig = Field(default_factory=HostLeaseConfig)
     dispatch: HostDispatchConfig = Field(default_factory=HostDispatchConfig)
+    daemon: HostDaemonConfig = Field(
+        default_factory=HostDaemonConfig,
+        description="Unified host daemon listener, security, transport, and resource limits.",
+    )
 
 
 # ---- release (release-order planning, bh-k2j8) --------------------------------
@@ -862,6 +867,18 @@ class OtelConfig(_Section):
     )
     metrics_temporality: Literal["delta", "cumulative"] = Field(
         "delta", description="Preferred OTLP metric temporality."
+    )
+    export_timeout_seconds: float = Field(
+        0.5,
+        gt=0,
+        le=30,
+        description="Finite timeout for one OTLP exporter request.",
+    )
+    flush_timeout_seconds: float = Field(
+        2.0,
+        ge=0,
+        le=30,
+        description="Finite total process-exit telemetry flush budget.",
     )
     role: str = Field(
         "",
@@ -1588,6 +1605,7 @@ __all__ = (
     "HerdrConfig",
     "HitchConfig",
     "HostConfig",
+    "HostDaemonConfig",
     "HostDispatchConfig",
     "HostLeaseConfig",
     "HqConfig",

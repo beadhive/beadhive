@@ -263,7 +263,7 @@ def test_every_cli_leaf_and_signature_is_declared_exactly_once() -> None:
 
 def test_every_projection_declares_granularity_progress_and_interactivity() -> None:
     cli = _projected_cli()
-    assert len(cli) == 208
+    assert len(cli) == 213
     for path, (_name, projection) in cli.items():
         assert projection["granularity"]["mode"] in {"fine", "coarse", "divergent"}
         if projection["granularity"]["mode"] == "fine":
@@ -386,6 +386,7 @@ def test_cli_parent_alias_and_passthrough_metadata_is_complete() -> None:
         "harness list": "dep.list",
         "hive sync-remote": "hive.sync.remotes",
         "host adopt": "host.lease.adopt",
+        "host daemon remove": "host.daemon.rm",
         "host packup": "host.lease.release",
         "host release": "host.lease.release",
         "wt add": "worktree.add",
@@ -585,7 +586,7 @@ def test_convention_8_scans_every_live_description_probe_and_test_filename() -> 
     filename_texts = {f"test-filename:{path}": Path(path).name for path in test_files}
     scanned = {**cli_texts, **mcp_texts, **filename_texts}
 
-    assert len(cli_texts) == 208 * 2  # rendered help + callback docstring for every leaf
+    assert len(cli_texts) == 213 * 2  # rendered help + callback docstring for every leaf
     assert mcp_counts == {"tools": 10, "resources": 21, "probes": 1}
     assert len(filename_texts) == len(test_files) > 0
     assert set(RETIRED_SURFACE_EXCLUSIONS) <= set(scanned)

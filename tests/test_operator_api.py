@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,6 +12,7 @@ import jsonschema
 from starlette.middleware import Middleware
 
 from beadhive import (
+    daemon_state_broker,
     host_daemon,
     operator_api,
     operator_feed,
@@ -84,6 +84,13 @@ def _app(tmp_path: Path, *, cfg=None, provider=None):
     feed = operator_feed.OperatorFeed(sources, now_millis=lambda: 1000)
     daemon_runtime = host_daemon.DaemonRuntime()
     relay = operator_sse.OperatorEventRelay(feed, daemon_runtime)
+
+    async def read_snapshot(identity: str):
+        return feed.snapshot_with_cursor(identity)
+
+    async def read_activity(run_id: str, after: tuple[str, int] | None):
+        return feed.activity_with_cursor(run_id, after=after)
+
     api = operator_api.OperatorAPI(
         sources=sources,
         feed=feed,
@@ -91,6 +98,8 @@ def _app(tmp_path: Path, *, cfg=None, provider=None):
         instance_id="instance-1",
         ready=lambda: daemon_runtime.ready,
         events=relay.events,
+        snapshot_reader=read_snapshot,
+        activity_reader=read_activity,
     )
     app = host_daemon.build_application(
         runtime=daemon_runtime,
@@ -131,13 +140,17 @@ def test_phase_one_gets_are_unauthenticated_direct_and_path_free(tmp_path: Path)
 
     factory, snapshot, health = _exercise(tmp_path, action)
     assert factory.status_code == snapshot.status_code == health.status_code == 200
-    assert factory.json()["workspaceRoot"] is None
-    assert factory.json()["worktrees"] == []
-    assert factory.json()["hostId"] == "host-1"
+    assert factory.json()["host"] == {
+        "hostId": "host-1",
+        "serviceInstanceId": "instance-1",
+    }
+    assert factory.json()["hives"][0]["hiveId"] == HIVE
+    assert not ({"workspaceRoot", "worktrees", "edges"} & factory.json().keys())
     assert snapshot.json()["hive"]["prefix"] == HIVE
     assert snapshot.json()["cursor"]["subscriptionId"] == f"hive:{HIVE}"
     assert health.json() == {
-        "live": True,
+        "schemaVersion": 1,
+        "status": "live",
         "ready": True,
         "contract": host_daemon.CONTRACT_VERSION,
     }
@@ -295,14 +308,16 @@ def test_factory_hives_are_bounded_deterministic_and_distinguish_unavailable(
     )
     assert unchanged.status_code == 304
     assert unchanged.content == b""
+    assert first.headers["cache-control"] == "no-cache"
+    assert unchanged.headers["cache-control"] == "no-cache"
 
     schema = operator_api.openapi_document()["components"]["schemas"]
-    page_schema = copy.deepcopy(schema["FactoryHivePage"])
-    page_schema["properties"]["items"]["items"] = schema["FactoryHiveSummary"]
-    page_schema["properties"]["items"]["items"]["properties"]["advertisedActions"]["items"] = (
-        schema["AdvertisedAction"]
-    )
-    jsonschema.Draft202012Validator(page_schema).validate(first.json())
+    jsonschema.Draft202012Validator(
+        {
+            "components": {"schemas": schema},
+            "$ref": "#/components/schemas/FactoryHivePage",
+        }
+    ).validate(first.json())
 
 
 def test_factory_hive_cursor_limits_filters_and_revisions_are_checked(tmp_path: Path) -> None:
@@ -428,7 +443,8 @@ def test_host_origin_peer_and_read_only_profile_fail_closed(tmp_path: Path) -> N
         403,
         "invalid_preflight",
     )
-    assert [response.status_code for response in absent] == [404, 404, 404]
+    # The local read-only compatibility profile sees the reserved POST route but cannot invoke it.
+    assert [response.status_code for response in absent] == [404, 405, 404]
     assert (nonloopback.status_code, nonloopback.json()["error"]["code"]) == (
         403,
         "non_loopback_client",
@@ -478,10 +494,15 @@ def test_openapi_artifact_matches_running_route_table_and_omits_mcp(tmp_path: Pa
 
     response, app = _exercise(tmp_path, action)
     checked = operator_api.openapi_document()
-    assert response.status_code == 200
-    assert response.json() == checked
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
     assert checked["openapi"] == "3.1.0"
-    assert checked["security"] == []
+    assert checked["security"] == [{"BearerAuth": []}]
+    assert checked["paths"]["/health"]["get"]["security"] == []
+    assert (
+        checked["components"]["securitySchemes"]["BearerAuth"]["x-beadhive-required-scope"]
+        == "operator:read"
+    )
     assert "BearerAuth" in checked["components"]["securitySchemes"]
     assert "/mcp" not in checked["paths"]
 
@@ -511,6 +532,7 @@ def test_product_factory_composes_operator_state_into_daemon_core(tmp_path: Path
     )
     app = host_daemon.build_product_application(
         runtime=runtime,
+        state_broker_factory=daemon_state_broker.DaemonStateBroker.for_host,
         control_record=record,
         listener_host="127.0.0.1",
         listener_port=8420,
@@ -526,7 +548,9 @@ def test_product_factory_composes_operator_state_into_daemon_core(tmp_path: Path
         "/api/v1/hives/{hive_id:path}/work-items/{bead_id}",
         "/api/v1/hives/{hive_id:path}/events",
         "/api/v1/runs/{run_id}/activity",
+        "/api/v1/terminal/attach-token",
         "/openapi.json",
+        "/ws/terminal",
     }
     assert app.state.operator_feed.sources is app.state.operator_sources
     assert app.state.operator_api.feed is app.state.operator_feed

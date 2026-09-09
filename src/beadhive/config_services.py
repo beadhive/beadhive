@@ -318,6 +318,16 @@ def otel_headers(cfg=None) -> dict[str, str]:
     return {str(k): str(v) for k, v in dict(headers).items()}
 
 
+def otel_export_timeout(cfg=None) -> float:
+    """Finite timeout for each OTLP exporter request."""
+    return float(otel_cfg(cfg).get("export_timeout_seconds", 0.5))
+
+
+def otel_flush_timeout(cfg=None) -> float:
+    """Finite total budget for process-exit telemetry flush and provider shutdown."""
+    return float(otel_cfg(cfg).get("flush_timeout_seconds", 2.0))
+
+
 # Preferred OTLP *metric* temporality. The OTel-standard env that pre-selects it (the SDK reads
 # this itself when no ``preferred_temporality`` is passed to the exporter).
 OTEL_METRICS_TEMPORALITY_ENV = "OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE"
@@ -830,6 +840,8 @@ __all__ = [
     "OTEL_PROTOCOLS",
     "otel_protocol",
     "otel_headers",
+    "otel_export_timeout",
+    "otel_flush_timeout",
     "OTEL_METRICS_TEMPORALITY_ENV",
     "OTEL_TEMPORALITY_DELTA",
     "OTEL_TEMPORALITY_CUMULATIVE",

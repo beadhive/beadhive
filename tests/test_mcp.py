@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from importlib.metadata import entry_points
 from unittest.mock import MagicMock
 
 import pytest
@@ -70,6 +71,52 @@ def test_main_without_fastmcp_returns_error_and_hints(monkeypatch, capsys):
     err = capsys.readouterr().err.lower()
     assert "beadhive[otel]" in err
     assert "ws[mcp]" not in err
+
+
+def test_installed_bh_mcp_entrypoint_owns_generic_telemetry_lifecycle(monkeypatch):
+    from beadhive import observaloop_env
+
+    cfg = {"otel": {"enabled": True, "flush_timeout_seconds": 0.375}}
+    events = []
+    monkeypatch.setattr(config_mod, "load", lambda: cfg)
+    monkeypatch.setattr(
+        observaloop_env,
+        "load_worktree_env",
+        lambda loaded: events.append(("environment", loaded)),
+    )
+    monkeypatch.setattr(
+        otel_mod,
+        "init",
+        lambda loaded, **kwargs: events.append(("init", loaded, kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        otel_mod,
+        "shutdown",
+        lambda **kwargs: events.append(("shutdown", kwargs)),
+    )
+    monkeypatch.setattr(mcp_mod, "serve", lambda: events.append(("serve",)))
+
+    entrypoint = next(iter(entry_points(group="console_scripts", name="bh-mcp"))).load()
+
+    assert entrypoint() == 0
+    assert events == [
+        ("environment", cfg),
+        ("init", cfg, {}),
+        ("serve",),
+        ("shutdown", {"timeout_seconds": 0.375}),
+    ]
+
+
+def test_bh_mcp_entrypoint_flushes_when_stdio_server_fails(monkeypatch):
+    cfg = {"otel": {"flush_timeout_seconds": 0.25}}
+    shutdown = MagicMock()
+    monkeypatch.setattr(config_mod, "load", lambda: cfg)
+    monkeypatch.setattr(otel_mod, "init", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(otel_mod, "shutdown", shutdown)
+    monkeypatch.setattr(mcp_mod, "serve", MagicMock(side_effect=mcp_mod.MCPUnavailable("gone")))
+
+    assert mcp_mod.main() == 1
+    shutdown.assert_called_once_with(timeout_seconds=0.25)
 
 
 def test_the_mcp_hint_never_tells_a_container_to_reinstall(monkeypatch):

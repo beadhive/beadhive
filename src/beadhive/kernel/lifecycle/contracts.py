@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import math
 import re
+from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from types import MappingProxyType
-from typing import Generic, Protocol, TypeVar
+from typing import Any, Generic, Protocol, TypeVar
 
 ContextT = TypeVar("ContextT")
 _DOTTED_ID = re.compile(r"^[a-z][a-z0-9-]*(?:\.[a-z][a-z0-9-]*)+$")
@@ -65,6 +66,57 @@ class HostLifecyclePhase(StrEnum):
     DRAIN = "drain"
     SHUTDOWN = "shutdown"
     TELEMETRY_FLUSH = "telemetry-flush"
+
+
+class HostDaemonStartupPhase(IntEnum):
+    """Ordered host-daemon extension points which run before traffic becomes ready."""
+
+    TELEMETRY = 10
+    SECURITY = 20
+    RESOURCES = 30
+
+    @property
+    def lifecycle_phase(self) -> HostLifecyclePhase:
+        return HostLifecyclePhase.STARTUP
+
+
+class HostDaemonShutdownPhase(IntEnum):
+    """Ordered host-daemon drain phases."""
+
+    REJECT_NEW_WORK = 10
+    DRAIN_IN_FLIGHT = 20
+    CLOSE_SESSIONS = 30
+    CANCEL_PROCESSES = 40
+    CLOSE_RESOURCES = 50
+    FLUSH_TELEMETRY = 60
+
+    @property
+    def lifecycle_phase(self) -> HostLifecyclePhase:
+        if self <= HostDaemonShutdownPhase.DRAIN_IN_FLIGHT:
+            return HostLifecyclePhase.DRAIN
+        if self is HostDaemonShutdownPhase.FLUSH_TELEMETRY:
+            return HostLifecyclePhase.TELEMETRY_FLUSH
+        return HostLifecyclePhase.SHUTDOWN
+
+
+class HostDaemonLifespanFactory(Protocol):
+    def __call__(self, app: Any) -> AbstractAsyncContextManager[Any]: ...
+
+
+@dataclass(frozen=True)
+class HostDaemonLifespanComponent:
+    """One ordered async context owned by the host daemon."""
+
+    name: str
+    lifespan: HostDaemonLifespanFactory
+    startup_phase: HostDaemonStartupPhase = HostDaemonStartupPhase.RESOURCES
+    shutdown_phase: HostDaemonShutdownPhase = HostDaemonShutdownPhase.CLOSE_RESOURCES
+
+
+class HostDaemonRuntimePort(Protocol):
+    """Runtime surface required by daemon-owned adapter components."""
+
+    shutdown_budget: float
 
 
 LifecyclePhase = (

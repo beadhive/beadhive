@@ -52,7 +52,7 @@ def test_dependency_ledger_records_indirect_adapter_patch_points_exactly():
     points = ledger["current"]["config_patch_points"]
 
     assert ledger["schema_version"] == 2
-    assert ledger["current"]["config_patch_point_count"] == 270
+    assert ledger["current"]["config_patch_point_count"] == 274
     expected = {
         (
             "tests/test_structural_facade_contracts.py",

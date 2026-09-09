@@ -536,12 +536,18 @@ def run_activity_envelopes(
     records: Sequence[Mapping[str, Any]],
     *,
     producer_epoch: str,
+    sequence_offset: int = 0,
+    first_occurred_at: int | None = None,
 ) -> list[dict[str, object]]:
     """Map the journal allowlist without manufacturing transcript or message content."""
 
-    first_at = int(records[0]["timestamp_ms"]) if records else 0
+    first_at = (
+        int(first_occurred_at)
+        if first_occurred_at is not None
+        else (int(records[0]["timestamp_ms"]) if records else 0)
+    )
     envelopes = []
-    for sequence, record in enumerate(records, start=1):
+    for sequence, record in enumerate(records, start=sequence_offset + 1):
         activity = dict(record["activity"])
         name = str(activity.get("kind", "activity"))
         occurred_at = int(record["timestamp_ms"])
@@ -554,7 +560,7 @@ def run_activity_envelopes(
                 "providerSessionId": record.get("provider_continuation"),
                 "driver": str(record["driver"]),
                 "provider": str(record["provider"]),
-                "protocol": "beadhive.run-journal/v1",
+                "protocol": str(record.get("version", "beadhive.run-journal/v1")),
                 "occurredAt": occurred_at,
                 "elapsedMs": max(0, occurred_at - first_at),
                 "sourceRevision": str(record["source_revision"]),
@@ -571,6 +577,49 @@ def run_activity_envelopes(
     return envelopes
 
 
+def run_activity_page_frame(
+    journal: RunJournalFrame,
+    records: Sequence[Mapping[str, Any]],
+    *,
+    producer_epoch: str,
+    base_sequence: int,
+    kind: str,
+    reset_reason: str | None = None,
+) -> dict[str, object]:
+    """Map one bounded history page while retaining absolute run-sequence truth."""
+
+    if kind not in {"snapshot", "delta", "reset"}:
+        raise ValueError("activity frame kind must be snapshot, delta, or reset")
+    if (kind == "reset") != (reset_reason is not None):
+        raise ValueError("activity reset frames require exactly one reset reason")
+    first_at = int(journal.records[0]["timestamp_ms"]) if journal.records else None
+    activities = run_activity_envelopes(
+        records,
+        producer_epoch=producer_epoch,
+        sequence_offset=base_sequence,
+        first_occurred_at=first_at,
+    )
+    coverage = {
+        Coverage.COMPLETE: "complete",
+        Coverage.PARTIAL: "partial",
+        Coverage.DEGRADED: "partial",
+        Coverage.UNKNOWN: "unavailable",
+    }[journal.coverage]
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "kind": kind,
+        "hiveId": str(journal.records[0]["hive"]),
+        "runId": journal.run_id,
+        "producerEpoch": producer_epoch,
+        "sequence": base_sequence + len(records),
+        "baseSequence": base_sequence if kind == "delta" else 0,
+        "sourceRevision": str(journal.source_revision),
+        "coverage": {"state": coverage, "detail": journal.coverage_reason},
+        "resetReason": reset_reason,
+        "activities": activities,
+    }
+
+
 def run_activity_frame(
     journal: RunJournalFrame,
     records: Sequence[Mapping[str, Any]],
@@ -578,7 +627,12 @@ def run_activity_frame(
     producer_epoch: str,
     base_sequence: int,
     kind: str,
+    reset_reason: str | None = None,
 ) -> dict[str, object]:
+    if kind not in {"snapshot", "delta", "reset"}:
+        raise ValueError("activity frame kind must be snapshot, delta, or reset")
+    if (kind == "reset") != (reset_reason is not None):
+        raise ValueError("activity reset frames require exactly one reset reason")
     all_envelopes = run_activity_envelopes(records, producer_epoch=producer_epoch)
     selected = all_envelopes[base_sequence:] if kind == "delta" else all_envelopes
     coverage = {
@@ -597,6 +651,6 @@ def run_activity_frame(
         "baseSequence": base_sequence if kind == "delta" else 0,
         "sourceRevision": str(journal.source_revision),
         "coverage": {"state": coverage, "detail": journal.coverage_reason},
-        "resetReason": None,
+        "resetReason": reset_reason,
         "activities": selected,
     }

@@ -9,14 +9,25 @@ import re
 import threading
 import time
 from collections import OrderedDict, deque
-from collections.abc import AsyncIterator, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 from starlette.requests import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
+from . import operator_contract
+from .daemon_auth import (
+    AuthenticatedPrincipal,
+    AuthenticationError,
+    AuthFailureCode,
+    CredentialSession,
+    CredentialSessionRegistry,
+    SecretBearer,
+    authentication_error_response,
+)
+from .daemon_contract import AuthScope
 from .host_daemon import (
     DaemonRuntime,
     LifespanComponent,
@@ -24,7 +35,7 @@ from .host_daemon import (
     StartupPhase,
 )
 from .operator_api import canonical_hive_parameter, error_payload
-from .operator_feed import FeedInstall, FeedPulse, FeedTransition, OperatorFeed
+from .operator_feed import ActivityInstall, FeedInstall, FeedPulse, FeedTransition, OperatorFeed
 from .operator_sources import OperatorSourceError
 
 logger = logging.getLogger(__name__)
@@ -39,8 +50,14 @@ DEFAULT_CLIENT_QUEUE_EVENTS = 1_000
 DEFAULT_CLIENT_QUEUE_BYTES = 1024 * 1024
 DEFAULT_POLL_INTERVAL = 2.0
 DEFAULT_HEARTBEAT_INTERVAL = 15.0
+MAX_EVENT_CURSOR_EPOCH_LENGTH = 64
+MAX_EVENT_CURSOR_SEQUENCE_DIGITS = 20
+MAX_EVENT_CURSOR_LENGTH = MAX_EVENT_CURSOR_EPOCH_LENGTH + 1 + MAX_EVENT_CURSOR_SEQUENCE_DIGITS
 
-_CURSOR = re.compile(r"^([A-Za-z0-9._~-]+):(0|[1-9][0-9]*)$")
+_CURSOR = re.compile(
+    rf"^([A-Za-z0-9._~-]{{1,{MAX_EVENT_CURSOR_EPOCH_LENGTH}}}):"
+    rf"(0|[1-9][0-9]{{0,{MAX_EVENT_CURSOR_SEQUENCE_DIGITS - 1}}})$"
+)
 _ENTITY_COLLECTIONS = (
     ("workItems", "beads"),
     ("dependencies", "beads"),
@@ -66,6 +83,16 @@ class EventCursor:
 
     @classmethod
     def parse(cls, raw: str) -> EventCursor:
+        if (
+            not isinstance(raw, str)
+            or len(raw) > MAX_EVENT_CURSOR_LENGTH
+            or len(raw.encode("utf-8", errors="surrogatepass")) > MAX_EVENT_CURSOR_LENGTH
+        ):
+            raise OperatorSourceError(
+                "invalid_event_cursor",
+                "Event cursor must be a bounded producerEpoch:sequence value.",
+                status_code=400,
+            )
         match = _CURSOR.fullmatch(raw)
         if match is None:
             raise OperatorSourceError(
@@ -73,7 +100,15 @@ class EventCursor:
                 "Event cursor must be producerEpoch:sequence.",
                 status_code=400,
             )
-        return cls(match.group(1), int(match.group(2)))
+        try:
+            sequence = int(match.group(2))
+        except ValueError:
+            raise OperatorSourceError(
+                "invalid_event_cursor",
+                "Event cursor must be producerEpoch:sequence.",
+                status_code=400,
+            ) from None
+        return cls(match.group(1), sequence)
 
     def render(self) -> str:
         return f"{self.producer_epoch}:{self.sequence}"
@@ -106,6 +141,7 @@ class EventSubscription:
     queued_bytes: int = 0
     closed: bool = False
     close_reason: str | None = None
+    telemetry_connection: Any = None
 
     def close(self, reason: str = "client_closed") -> None:
         self.relay.unsubscribe(self, reason=reason)
@@ -221,6 +257,7 @@ class OperatorEventRelay:
         global_replay_bytes: int = DEFAULT_GLOBAL_REPLAY_BYTES,
         client_queue_events: int = DEFAULT_CLIENT_QUEUE_EVENTS,
         client_queue_bytes: int = DEFAULT_CLIENT_QUEUE_BYTES,
+        feed_runner: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
         self.feed = feed
         self.runtime = runtime
@@ -234,6 +271,7 @@ class OperatorEventRelay:
         self.global_byte_limit = _positive_limit(global_replay_bytes, "global_replay_bytes")
         self.client_event_limit = _positive_limit(client_queue_events, "client_queue_events")
         self.client_byte_limit = _positive_limit(client_queue_bytes, "client_queue_bytes")
+        self._feed_runner = feed_runner
         self._lock = threading.RLock()
         self._hives: dict[str, _HiveRelayState] = {}
         self._retained: OrderedDict[int, tuple[_HiveRelayState, RelayEvent]] = OrderedDict()
@@ -241,13 +279,16 @@ class OperatorEventRelay:
         self._serial = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._pumps: dict[str, asyncio.Task[None]] = {}
+        self._removal_admissions: dict[str, int] = {}
         self._workers: set[asyncio.Future[object]] = set()
         self._close_lock = asyncio.Lock()
         self._closing = False
         self._closed = False
         self._slow_disconnects = 0
+        self.telemetry: Any | None = None
         self._remove_transition = feed.register_transition_handler(self._on_transition)
         self._remove_install = feed.register_install_observer(self._on_install)
+        self._remove_activity = feed.register_activity_observer(self._on_activity)
 
     def _state(self, hive_id: str) -> _HiveRelayState:
         return self._hives.setdefault(
@@ -276,12 +317,105 @@ class OperatorEventRelay:
             state.initialized = True
             state.last_emit = state.last_emit or self._monotonic()
 
+    def _on_activity(self, install: ActivityInstall) -> None:
+        with self._lock:
+            if self._closing or self._closed:
+                return
+            state = self._hives.get(install.hive_id)
+            if (
+                state is None
+                or not state.initialized
+                or not state.clients
+                or self._removal_admissions.get(install.hive_id, 0)
+            ):
+                return
+        try:
+            self.feed.allocate_events(
+                install.hive_id,
+                lambda pulse: self._allocate_activity(pulse, install),
+            )
+        except OperatorSourceError as exc:
+            if exc.code not in {
+                "snapshot_required",
+                "hive_generation_expired",
+                "hive_not_found",
+            }:
+                raise
+
+    def _allocate_activity(self, pulse: FeedPulse, install: ActivityInstall) -> int:
+        with self._lock:
+            state = self._state(pulse.hive_id)
+            if self._closed:
+                return 1
+            if (state.producer_epoch, state.sequence) != (
+                pulse.producer_epoch,
+                pulse.base_sequence,
+            ):
+                raise RuntimeError("activity does not continue the installed snapshot cursor")
+            return self._publish_activity_locked(state, install)
+
+    def _publish_activity_locked(self, state: _HiveRelayState, install: ActivityInstall) -> int:
+        if install.reset_reason is not None:
+            if self.telemetry is not None:
+                self.telemetry.record_reset("source_discontinuity")
+            self._append_locked(
+                state,
+                source="runtime",
+                revision=install.source_revision,
+                observed_at=self._now_millis(),
+                generated_at=self._now_millis(),
+                entity=None,
+                payload={
+                    "kind": "activity-reset",
+                    "runId": install.run_id,
+                    "producerEpoch": install.producer_epoch,
+                    "reason": install.reset_reason,
+                },
+            )
+            return 1
+        if install.added_records is not None:
+            if not install.added_records:
+                raise RuntimeError("activity page install must add at least one record")
+            added = operator_contract.run_activity_envelopes(
+                install.added_records,
+                producer_epoch=install.producer_epoch,
+                sequence_offset=install.sequence_offset,
+                first_occurred_at=install.first_occurred_at,
+            )
+        else:
+            previous_count = len(install.previous_records)
+            if tuple(install.current_records[:previous_count]) != install.previous_records:
+                raise RuntimeError("activity install must append or carry an explicit reset")
+            activities = operator_contract.run_activity_envelopes(
+                install.current_records, producer_epoch=install.producer_epoch
+            )
+            added = activities[previous_count:]
+        if not added:
+            raise RuntimeError("activity install must add an event or carry an explicit reset")
+        for activity in added:
+            self._append_locked(
+                state,
+                source="runtime",
+                revision=str(activity["sourceRevision"]),
+                observed_at=int(activity["occurredAt"]),
+                generated_at=self._now_millis(),
+                entity=None,
+                payload={
+                    "kind": "activity",
+                    "runId": install.run_id,
+                    "activity": activity,
+                },
+            )
+        return len(added)
+
     def _on_transition(self, transition: FeedTransition) -> int:
         with self._lock:
             state = self._state(transition.hive_id)
             if self._closed:
                 return 1
             if transition.reset_reason is not None:
+                if self.telemetry is not None:
+                    self.telemetry.record_reset("source_discontinuity")
                 self._clear_history_locked(state)
                 for client in state.clients:
                     client.queue.clear()
@@ -298,6 +432,12 @@ class OperatorEventRelay:
                     entity=None,
                     payload={"kind": "reset", "reason": transition.reset_reason},
                 )
+                # The reset is the last frame an old-epoch subscription may consume.  Detach
+                # those clients from live publication without clearing the just-enqueued reset;
+                # their generators drain it and then end, forcing a replacement snapshot before
+                # any event in the new epoch can be applied.
+                for client in tuple(state.clients):
+                    self._retire_after_drain_locked(client, "resnapshot_required")
                 return 1
 
             if not state.initialized:
@@ -520,6 +660,7 @@ class OperatorEventRelay:
             old_state.history.popleft()
             old_state.history_bytes -= old_event.size
             self._retained_bytes -= old_event.size
+        self._sync_queue_telemetry_locked()
 
     def _drop_oldest_locked(self, state: _HiveRelayState) -> None:
         event = state.history.popleft()
@@ -527,6 +668,7 @@ class OperatorEventRelay:
         retained = self._retained.pop(event.serial, None)
         if retained is not None:
             self._retained_bytes -= event.size
+        self._sync_queue_telemetry_locked()
 
     def _clear_history_locked(self, state: _HiveRelayState) -> None:
         while state.history:
@@ -543,34 +685,69 @@ class OperatorEventRelay:
             return False
         client.queue.append(frame)
         client.queued_bytes += len(frame)
-        self._wake(client)
+        self._sync_queue_telemetry_locked()
+        self._wake_locked(client)
         return True
 
-    @staticmethod
-    def _wake(client: EventSubscription) -> None:
+    def _sync_queue_telemetry_locked(self) -> None:
+        if self.telemetry is None:
+            return
+        self.telemetry.set_queue_depth(
+            "sse-client",
+            sum(len(client.queue) for state in self._hives.values() for client in state.clients),
+        )
+        self.telemetry.set_queue_depth("sse-replay", len(self._retained))
+
+    def _wake_locked(self, client: EventSubscription) -> None:
+        """Wake one client or atomically release every retained reference to it."""
+
         try:
             client.loop.call_soon_threadsafe(client.wakeup.set)
         except RuntimeError:
-            client.closed = True
-            client.close_reason = client.close_reason or "event_loop_closed"
+            self._detach_client_locked(client, "event_loop_closed", clear_queue=True)
 
-    def _disconnect_locked(self, client: EventSubscription, reason: str) -> None:
-        if client.closed:
-            return
-        client.closed = True
-        client.close_reason = reason
-        client.queue.clear()
-        client.queued_bytes = 0
+    def _detach_client_locked(
+        self,
+        client: EventSubscription,
+        reason: str,
+        *,
+        clear_queue: bool,
+    ) -> bool:
+        """Detach under ``_lock`` and report whether this was a new disconnect."""
+
         state = self._hives.get(client.hive_id)
+        attached = state is not None and client in state.clients
+        newly_closed = not client.closed
+        client.closed = True
+        client.close_reason = client.close_reason or reason
+        if clear_queue:
+            client.queue.clear()
+            client.queued_bytes = 0
         if state is not None:
             state.clients.discard(client)
-        if reason == "slow_consumer":
+        if client.telemetry_connection is not None and self.telemetry is not None:
+            self.telemetry.close_connection(client.telemetry_connection, reason=reason)
+            client.telemetry_connection = None
+        self._sync_queue_telemetry_locked()
+        return newly_closed or attached
+
+    def _disconnect_locked(self, client: EventSubscription, reason: str) -> None:
+        disconnected = self._detach_client_locked(client, reason, clear_queue=True)
+        if disconnected and reason == "slow_consumer":
             self._slow_disconnects += 1
+            if self.telemetry is not None:
+                self.telemetry.record_backpressure("sse", "slow_consumer")
             logger.warning(
                 "operator SSE client disconnected after exceeding its bounded queue",
                 extra={"hive_id": client.hive_id, "disconnect_reason": reason},
             )
-        self._wake(client)
+        self._wake_locked(client)
+
+    def _retire_after_drain_locked(self, client: EventSubscription, reason: str) -> None:
+        """Detach a client while preserving already-queued terminal frames."""
+
+        self._detach_client_locked(client, reason, clear_queue=False)
+        self._wake_locked(client)
 
     def subscribe(
         self,
@@ -581,8 +758,8 @@ class OperatorEventRelay:
         loop: asyncio.AbstractEventLoop,
     ) -> EventSubscription:
         with self._lock:
-            state = self._state(hive_id)
-            if not state.initialized:
+            state = self._hives.get(hive_id)
+            if state is None or not state.initialized or self._removal_admissions.get(hive_id, 0):
                 raise ResnapshotRequired("snapshot_required")
             if subscription_id != state.subscription_id:
                 raise ResnapshotRequired("wrong_subscription")
@@ -607,12 +784,15 @@ class OperatorEventRelay:
             if len(replay) > self.client_event_limit or replay_bytes > self.client_byte_limit:
                 raise ResnapshotRequired("replay_exceeds_client_capacity")
             client = EventSubscription(self, hive_id, loop)
+            if self.telemetry is not None:
+                client.telemetry_connection = self.telemetry.open_connection("sse")
             for event in replay:
                 client.queue.append(event.frame)
                 client.queued_bytes += event.size
             state.clients.add(client)
+            self._sync_queue_telemetry_locked()
             if replay:
-                self._wake(client)
+                self._wake_locked(client)
             return client
 
     def unsubscribe(self, client: EventSubscription, *, reason: str = "client_closed") -> None:
@@ -624,6 +804,7 @@ class OperatorEventRelay:
             if client.queue:
                 frame = client.queue.popleft()
                 client.queued_bytes -= len(frame)
+                self._sync_queue_telemetry_locked()
                 if not client.queue:
                     client.wakeup.clear()
                 return frame, False
@@ -631,6 +812,12 @@ class OperatorEventRelay:
             return None, client.closed
 
     async def events(self, request: Request):
+        app = request.scope.get("app")
+        registry: CredentialSessionRegistry | None = getattr(
+            getattr(app, "state", None), "credential_sessions", None
+        )
+        session: CredentialSession | None = None
+        client: EventSubscription | None = None
         try:
             identity = canonical_hive_parameter(request, suffix=b"/events")
             raw_cursor = _cursor_values(request)
@@ -638,24 +825,64 @@ class OperatorEventRelay:
             if raw_cursor is None:
                 return _resnapshot("cursor_required")
             cursor = EventCursor.parse(raw_cursor)
-            installed = await asyncio.to_thread(self.feed.installed_snapshot, identity)
+            installed = await self._run_feed_call(self.feed.installed_snapshot, identity)
             if installed is None:
                 return _resnapshot("snapshot_required")
+            if registry is not None:
+                bearer = getattr(request.state, "auth_bearer", None)
+                principal = getattr(request.state, "auth_principal", None)
+                if not isinstance(bearer, SecretBearer) or not isinstance(
+                    principal, AuthenticatedPrincipal
+                ):
+                    raise AuthenticationError(AuthFailureCode.MISSING)
+
+                async def close_for_auth(reason: AuthFailureCode) -> None:
+                    current = client
+                    if current is not None:
+                        self.unsubscribe(current, reason=reason.value)
+
+                session = registry.open(
+                    bearer,
+                    required_scope=AuthScope.OPERATOR_READ,
+                    expected_principal=principal.principal,
+                    close=close_for_auth,
+                )
             client = self.subscribe(
                 identity,
                 subscription_id=subscription_id,
                 cursor=cursor,
                 loop=asyncio.get_running_loop(),
             )
-            self._start_pump(identity)
+            self._start_pump(identity, client=client)
+        except AuthenticationError as exc:
+            if session is not None and registry is not None:
+                registry.unregister(session)
+            return authentication_error_response(exc)
         except OperatorSourceError as exc:
+            if session is not None and registry is not None:
+                registry.unregister(session)
             return JSONResponse(error_payload(exc), status_code=exc.status_code)
         except ResnapshotRequired as exc:
+            if self.telemetry is not None:
+                reason = {
+                    "cursor_epoch_expired": "unknown_epoch",
+                    "cursor_in_future": "future_sequence",
+                    "cursor_expired": "expired_cursor",
+                    "cursor_gap": "retention_gap",
+                    "replay_exceeds_client_capacity": "retention_gap",
+                }.get(exc.code, "retention_gap")
+                self.telemetry.record_replay_gap(reason)
+            if session is not None and registry is not None:
+                registry.unregister(session)
             return _resnapshot(exc.code)
 
         async def stream() -> AsyncIterator[bytes]:
-            async for frame in client.frames():
-                yield frame
+            try:
+                async for frame in client.frames():
+                    yield frame
+            finally:
+                if session is not None and registry is not None:
+                    registry.unregister(session)
 
         return StreamingResponse(
             stream(),
@@ -668,16 +895,25 @@ class OperatorEventRelay:
             state = self._hives.get(hive_id)
             return bool(state and state.clients)
 
-    def _start_pump(self, hive_id: str) -> None:
-        if self._closing or self._closed:
-            return
-        if self._loop is None:
-            self._loop = asyncio.get_running_loop()
-        task = self._pumps.get(hive_id)
-        if task is None or task.done():
-            self._pumps[hive_id] = self._loop.create_task(
-                self._pump(hive_id), name=f"operator-sse:{hive_id}"
-            )
+    def _start_pump(self, hive_id: str, *, client: EventSubscription | None = None) -> None:
+        with self._lock:
+            state = self._hives.get(hive_id)
+            if (
+                self._closing
+                or self._closed
+                or self._removal_admissions.get(hive_id, 0)
+                or state is None
+                or not state.clients
+                or (client is not None and (client.closed or client not in state.clients))
+            ):
+                return
+            if self._loop is None:
+                self._loop = asyncio.get_running_loop()
+            task = self._pumps.get(hive_id)
+            if task is None or task.done():
+                self._pumps[hive_id] = self._loop.create_task(
+                    self._pump(hive_id), name=f"operator-sse:{hive_id}"
+                )
 
     async def _run_feed_call(
         self, function: Callable[..., _FeedResult], *args: object
@@ -688,6 +924,9 @@ class OperatorEventRelay:
         draining the future makes the relay's observer lifetime cover every source install the
         worker can still perform.
         """
+
+        if self._feed_runner is not None:
+            return cast(_FeedResult, await self._feed_runner(function, *args))
 
         loop = asyncio.get_running_loop()
         future = loop.run_in_executor(None, function, *args)
@@ -711,6 +950,22 @@ class OperatorEventRelay:
             with self._lock:
                 self._workers.discard(future)
 
+    @staticmethod
+    async def _cancel_and_drain_task(task: asyncio.Task[None]) -> bool:
+        """Cancel one pump to completion and report cancellation of the calling task."""
+
+        task.cancel()
+        waiter = asyncio.gather(task, return_exceptions=True)
+        cancelled = False
+        while True:
+            try:
+                await asyncio.shield(waiter)
+                return cancelled
+            except asyncio.CancelledError:
+                if waiter.done():
+                    return cancelled
+                cancelled = True
+
     async def _pump(self, hive_id: str) -> None:
         try:
             while (
@@ -724,6 +979,11 @@ class OperatorEventRelay:
                     await self._run_feed_call(self.feed.snapshot_with_cursor, hive_id)
                 except asyncio.CancelledError:
                     raise
+                except OperatorSourceError as exc:
+                    if exc.code == "hive_not_found":
+                        await self.remove_hive(hive_id)
+                        return
+                    continue
                 except Exception:
                     continue
                 with self._lock:
@@ -744,8 +1004,9 @@ class OperatorEventRelay:
                         continue
         finally:
             current = asyncio.current_task()
-            if self._pumps.get(hive_id) is current:
-                self._pumps.pop(hive_id, None)
+            with self._lock:
+                if self._pumps.get(hive_id) is current:
+                    self._pumps.pop(hive_id, None)
 
     def retained_state(self) -> dict[str, object]:
         with self._lock:
@@ -767,6 +1028,51 @@ class OperatorEventRelay:
                 },
             }
 
+    def tracked_hive_ids(self) -> frozenset[str]:
+        with self._lock:
+            return frozenset(self._hives) | frozenset(self._pumps)
+
+    async def remove_hive(self, hive_id: str) -> None:
+        """Drain and discard one exact hive without disturbing independent hive feeds."""
+
+        with self._lock:
+            self._removal_admissions[hive_id] = self._removal_admissions.get(hive_id, 0) + 1
+            task = self._pumps.pop(hive_id, None)
+        current = asyncio.current_task()
+        cancelled = False
+        if task is not None and task is not current:
+            cancelled = await self._cancel_and_drain_task(task)
+
+        # A direct snapshot request can still be finishing outside the pump.  Removing the feed
+        # state first waits for that per-hive lock; relay cleanup afterwards cannot be undone by
+        # a late install observer from the drained read.
+        try:
+            try:
+                await self._run_feed_call(self.feed.begin_hive_removal, hive_id)
+            except asyncio.CancelledError:
+                cancelled = True
+            with self._lock:
+                state = self._hives.pop(hive_id, None)
+                if state is not None:
+                    for client in tuple(state.clients):
+                        self._disconnect_locked(client, "hive_removed")
+                    self._clear_history_locked(state)
+        finally:
+            with self._lock:
+                try:
+                    # Keep relay admission closed while feed admission opens.  An old
+                    # subscription's delayed pump start carries its exact client token and cannot
+                    # attach to a fresh relay generation after this lock is released.
+                    self.feed.finish_hive_removal(hive_id)
+                finally:
+                    remaining = self._removal_admissions[hive_id] - 1
+                    if remaining:
+                        self._removal_admissions[hive_id] = remaining
+                    else:
+                        self._removal_admissions.pop(hive_id, None)
+        if cancelled:
+            raise asyncio.CancelledError
+
     async def close(self) -> None:
         async with self._close_lock:
             if self._closed:
@@ -785,8 +1091,10 @@ class OperatorEventRelay:
                     for client in tuple(state.clients):
                         self._disconnect_locked(client, "daemon_shutdown")
                     self._clear_history_locked(state)
+                self._hives.clear()
             self._remove_transition()
             self._remove_install()
+            self._remove_activity()
             self._closed = True
 
     def component(self) -> LifespanComponent:
