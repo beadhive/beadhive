@@ -290,21 +290,42 @@ def _reviewed_epic_spine(
     """Return the child-integration spine behind one explicit root-first composition wrapper.
 
     Ordinary assembled epics return their existing spine unchanged.  A composition is accepted
-    only when the wrapper is the sole commit on the outer first-parent spine, names the current
-    epic and its exact bd parent, and uses the canonical integration base as parent one.  Parent
-    two is then audited from its merge-base with parent one.  The exact outer range must equal the
-    reviewed nested range plus the wrapper, so neither parent ordering nor hidden side history can
-    smuggle unaccounted commits through the topology allowance.
+    only when exactly one wrapper is the oldest commit on the outer first-parent spine, names the
+    current epic and its exact bd parent, and uses the canonical integration base as parent one.
+    Parent two is then audited from its merge-base with parent one.  Newer outer rows remain on
+    the returned spine so the normal child-integration audit accounts their reviewed suffix.
+    Neither nested nor suffix history gets a subject-only allowance: the caller still proves
+    every introduced commit through durable direct-child linkage.
     """
     spine, errors = _first_parent_spine(rows, branch_sha, base)
-    if errors or len(spine) != 1:
+    if errors:
         return spine, set(), errors
 
-    wrapper = spine[0]
+    wrappers = [
+        (index, row)
+        for index, row in enumerate(spine)
+        if _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+    ]
+    if not wrappers:
+        return spine, set(), errors
+    if len(wrappers) != 1:
+        shorts = ", ".join(
+            str(row.get("short") or str(row.get("sha") or "")[:8]) for _, row in wrappers
+        )
+        return (
+            [],
+            set(),
+            [f"composition wrapper appears more than once on the epic spine: {shorts}"],
+        )
+
+    wrapper_index, wrapper = wrappers[0]
+    if wrapper_index != 0:
+        short = str(wrapper.get("short") or str(wrapper.get("sha") or "")[:8])
+        return [], set(), [f"composition wrapper {short} must be the oldest epic boundary row"]
+
     subject = str(wrapper.get("subject") or "")
     match = _COMPOSITION_BUBBLE.fullmatch(subject)
-    if not match:
-        return spine, set(), errors
+    assert match is not None
 
     sha = str(wrapper.get("sha") or "")
     short = str(wrapper.get("short") or sha[:8])
@@ -346,15 +367,30 @@ def _reviewed_epic_spine(
             ],
         )
 
-    outer_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
-    nested_shas = {str(row.get("sha") or "") for row in nested_rows if row.get("sha")}
-    if outer_shas != nested_shas | {sha}:
+    nested_wrappers = [
+        str(row.get("short") or str(row.get("sha") or "")[:8])
+        for row in nested_spine
+        if _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+    ]
+    if nested_wrappers:
         return (
             [],
             set(),
-            [f"composition wrapper {short} range is not exactly its reviewed side plus wrapper"],
+            [
+                f"composition wrapper {short} has stacked reviewed-side wrapper(s): "
+                + ", ".join(nested_wrappers)
+            ],
         )
-    return nested_spine, {sha}, []
+
+    outer_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
+    nested_shas = {str(row.get("sha") or "") for row in nested_rows if row.get("sha")}
+    if not (nested_shas | {sha}) <= outer_shas:
+        return (
+            [],
+            set(),
+            [f"composition wrapper {short} reviewed side leaves the outer review range"],
+        )
+    return [*nested_spine, *spine[1:]], {sha}, []
 
 
 def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_commits: int) -> dict:
