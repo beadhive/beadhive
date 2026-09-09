@@ -296,7 +296,7 @@ def migrate_legacy_tree(entry, tree: str) -> int:
         for manifest, _summary in prepared:
             path = runs_root / manifest["run_id"] / "manifest.json"
             if not path.exists():
-                validation_records._atomic_json(path, manifest)
+                validation_records._write_manifest(path, manifest)
                 imported += 1
         payload = {
             "tree": tree,

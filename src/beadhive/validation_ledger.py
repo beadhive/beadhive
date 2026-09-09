@@ -529,7 +529,7 @@ def _migrate_legacy_ledger(entry) -> int:
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / "manifest.json"
             if not path.exists():
-                validation_records._atomic_json(path, manifest)
+                validation_records._write_manifest(path, manifest)
                 imported += 1
             keys.add((tree, key))
         except OSError:
@@ -556,33 +556,16 @@ def _migrate_legacy_ledger(entry) -> int:
     return imported
 
 
-def _sync_index(
-    entry,
+def _sync_index_from_runs(
     tree: str,
     key: str,
-    *,
-    retained_runs: list[dict] | None = None,
-    validation_root: Path | None = None,
+    runs: list[dict],
+    validation_root: Path,
 ) -> bool:
-    """Make one pointer exactly reflect the newest retained execution fact.
-
-    The manifest is truth.  A pointer exists only for its newest completed-green manifest; every
-    other lifecycle/verdict removes it.  Atomic replace means concurrent readers see an old whole
-    pointer, a new whole pointer, or a miss — never torn JSON.
-    """
-    if retained_runs is None:
-        hive = registry.hive_dir(entry)
-        runs = validation_records.matching_runs(hive, tree=tree, command_hash=key)
-        latest = max(runs, key=validation_records._run_order_key, default=None)
-        path = _verdict_path(entry, tree, key, create=latest is not None)
-    else:
-        runs = [
-            run
-            for run in retained_runs
-            if run.get("tree") == tree and run.get("command_hash") == key
-        ]
-        latest = max(runs, key=validation_records._run_order_key, default=None)
-        path = _verdict_path_in(validation_root, tree, key)
+    """Commit one pointer from a manifest snapshot protected by the verdict transaction."""
+    runs = [run for run in runs if run.get("tree") == tree and run.get("command_hash") == key]
+    latest = max(runs, key=validation_records._run_order_key, default=None)
+    path = _verdict_path_in(validation_root, tree, key)
     if path is None:
         return False
     try:
@@ -623,6 +606,25 @@ def _sync_index(
         return False
 
 
+def _sync_index(entry, tree: str, key: str) -> bool:
+    """Make one pointer exactly reflect the newest retained execution fact.
+
+    The manifest is truth.  A pointer exists only for its newest completed-green manifest; every
+    other lifecycle/verdict removes it.  Atomic replace means concurrent readers see an old whole
+    pointer, a new whole pointer, or a miss — never torn JSON.
+    """
+    hive = registry.hive_dir(entry)
+    git_root = private_paths.git_private_root(hive)
+    root = git_root / "validation" if git_root else None
+    if root is None:
+        return False
+    with validation_records._verdict_transaction(root) as locked:
+        if not locked:
+            return False
+        runs = validation_records._read_run_directory(root / "runs")
+        return _sync_index_from_runs(tree, key, runs, root)
+
+
 def rebuild_verdict_index(entry) -> int:
     """Reconstruct all lookup pointers from retained run manifests; return green pointers made."""
     hive = registry.hive_dir(entry)
@@ -631,24 +633,23 @@ def rebuild_verdict_index(entry) -> int:
     runs_dir = root / "runs" if root else None
     if runs_dir is None or not runs_dir.is_dir():
         return 0
-    retained_runs = validation_records._read_run_directory(runs_dir)
-    keys = {
-        (run["tree"], run["command_hash"])
-        for run in retained_runs
-        if isinstance(run.get("tree"), str) and isinstance(run.get("command_hash"), str)
-    }
-    rebuilt = 0
-    for tree, key in keys:
-        _sync_index(
-            entry,
-            tree,
-            key,
-            retained_runs=retained_runs,
-            validation_root=root,
-        )
-        path = _verdict_path_in(root, tree, key)
-        rebuilt += bool(path is not None and path.is_file())
-    return rebuilt
+    with validation_records._verdict_transaction(root) as locked:
+        if not locked:
+            return 0
+        # The snapshot and every pointer commit share the transaction held by production
+        # manifest writers, so none can become stale between this read and its atomic replace.
+        retained_runs = validation_records._read_run_directory(runs_dir)
+        keys = {
+            (run["tree"], run["command_hash"])
+            for run in retained_runs
+            if isinstance(run.get("tree"), str) and isinstance(run.get("command_hash"), str)
+        }
+        rebuilt = 0
+        for tree, key in keys:
+            _sync_index_from_runs(tree, key, retained_runs, root)
+            path = _verdict_path_in(root, tree, key)
+            rebuilt += bool(path is not None and path.is_file())
+        return rebuilt
 
 
 def _is_fresh(e: dict, now: float, ttl: int) -> bool:

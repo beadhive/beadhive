@@ -13,6 +13,9 @@ import os
 import secrets
 import shutil
 import signal
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Literal
 
@@ -29,6 +32,9 @@ INFRASTRUCTURE_REASONS = frozenset(
     {"missing_binary", "checkout_failure", "setup_failure", "interrupted", "owner_dead"}
 )
 
+_VERDICT_LOCKS_GUARD = threading.Lock()
+_VERDICT_LOCKS: dict[str, threading.RLock] = {}
+
 
 def _now() -> str:
     return dt.datetime.now(dt.UTC).isoformat()
@@ -41,11 +47,67 @@ def _atomic_json(path: Path, value: dict) -> None:
     os.replace(tmp, path)
 
 
+def _thread_verdict_lock(root: Path) -> threading.RLock:
+    key = os.path.abspath(root)
+    with _VERDICT_LOCKS_GUARD:
+        return _VERDICT_LOCKS.setdefault(key, threading.RLock())
+
+
+@contextmanager
+def _verdict_transaction(root: Path | None) -> Iterator[bool]:
+    """Serialize manifest publication with reconstruction of the derived verdict index.
+
+    The manifest directory is authoritative, but an atomic pointer replace alone cannot stop a
+    rebuild from publishing a stale snapshot over a concurrently completed run.  Every
+    production manifest writer and both pointer writers therefore share this validation-root
+    transaction lock.  The in-process lock is required in addition to ``flock`` because
+    same-process flock semantics vary across supported kernels.
+
+    Lock failure remains best-effort ledger failure: callers withhold the record/pointer and run
+    validation normally.  The persistent lock file contains no decision data and is not an
+    additional index.
+    """
+    if root is None:
+        yield False
+        return
+    lock_path = root / ".verdict-transaction.lock"
+    thread_lock = _thread_verdict_lock(root)
+    with thread_lock:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            stream = lock_path.open("a+")
+        except OSError:
+            yield False
+            return
+        try:
+            import fcntl
+
+            try:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+            except OSError:
+                yield False
+                return
+            try:
+                yield True
+            finally:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        finally:
+            stream.close()
+
+
 def _write_manifest(path: Path, value: dict) -> None:
-    """Persist one typed run fact through the state capability's storage port."""
+    """Persist one typed run fact through the state port and verdict transaction."""
 
     def write(record: ValidationRecord) -> ValidationRecord:
-        _atomic_json(path, record.to_mapping())
+        # <validation>/runs/<run-id>/manifest.json -> <validation>
+        try:
+            root = path.parents[2]
+        except IndexError:
+            raise OSError("validation manifest path has no validation root") from None
+        with _verdict_transaction(root) as locked:
+            if not locked:
+                raise OSError("validation verdict transaction lock is unavailable")
+            _atomic_json(path, record.to_mapping())
         return record
 
     state_services.validation_record_service(write=write).write(
