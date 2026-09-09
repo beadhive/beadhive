@@ -7,7 +7,7 @@
   "required": ["format_version", "inventory_version", "policy", "projections"],
   "properties": {
     "format_version": {"const": 1},
-    "inventory_version": {"const": "1.0.0"},
+    "inventory_version": {"const": "1.1.0"},
     "policy": {
       "type": "object",
       "additionalProperties": false,
@@ -32,7 +32,8 @@
       "required": [
         "surface", "identifier", "classification", "operation", "composes",
         "request_schema", "result_schema", "privilege", "side_effects", "prompts",
-        "streaming", "availability", "compatibility", "reason"
+        "streaming", "availability", "compatibility", "reason", "canonical_contracts",
+        "transport_owner", "shape"
       ],
       "properties": {
         "surface": {
@@ -59,7 +60,16 @@
         "streaming": {"type": "boolean"},
         "availability": {"type": "string", "minLength": 1},
         "compatibility": {"type": "string", "minLength": 1},
-        "reason": {"type": "string", "minLength": 1}
+        "reason": {"type": "string", "minLength": 1},
+        "canonical_contracts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/canonical_contract"}
+        },
+        "transport_owner": {"type": "string", "minLength": 1},
+        "shape": {
+          "enum": ["exact", "richer", "coarser", "transport-only", "excluded"]
+        }
       },
       "allOf": [
         {
@@ -71,6 +81,23 @@
           "then": {"properties": {"composes": {"minItems": 1}}}
         }
       ]
+    },
+    "canonical_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation", "request_schema", "result_schema", "privilege", "side_effects"
+      ],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+(?:\\.[a-z0-9-]+)*$"
+        },
+        "request_schema": {"type": "string", "minLength": 1},
+        "result_schema": {"type": "string", "minLength": 1},
+        "privilege": {"type": "string", "minLength": 1},
+        "side_effects": {"type": "string", "minLength": 1}
+      }
     }
   }
 }
