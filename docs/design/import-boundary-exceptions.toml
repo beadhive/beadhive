@@ -2,6 +2,74 @@
 format_version = 1
 verified_commit = "ad4077d7ee5ae40c966f089920ca794006538090"
 
+[[boundary_exception]]
+id = "boundary-bootstrap-cli-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.cli"
+importer_path = "src/beadhive/bootstrap/cli.py"
+imported_module = "beadhive.cli"
+symbol = "beadhive.cli"
+target_owner_package = "adapters/cli"
+successor = "bh-inqwc"
+reason = "The installed root delegates to the released CLI compatibility module until its inventoried command-handler patch surface is empty; the root itself owns only process composition."
+consumer_inventory = { production = "beadhive.bootstrap.cli console-script root", tests = "tests/test_transport_composition_roots.py plus CLI compatibility closure", docs = "CLI compatibility removal ledger and transport composition proof", external = "installed bh console script" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_cli.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the released beadhive.cli implementation behind adapters/cli after its patch inventory reaches zero."
+
+[[boundary_exception]]
+id = "boundary-bootstrap-mcp-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.mcp"
+importer_path = "src/beadhive/bootstrap/mcp.py"
+imported_module = "beadhive.mcp"
+symbol = "beadhive.mcp"
+target_owner_package = "adapters/mcp"
+successor = "bh-inqwc"
+reason = "The installed root delegates to the released FastMCP compatibility module while preserving its public construction and telemetry seams."
+consumer_inventory = { production = "beadhive.bootstrap.mcp console-script root", tests = "tests/test_transport_composition_roots.py and MCP closure", docs = "transport composition proof", external = "installed bh-mcp console script and historical beadhive.mcp imports" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_mcp.py; tests/test_mcp_catalog_projection.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the released beadhive.mcp implementation behind adapters/mcp after its compatibility consumer inventory reaches zero."
+
+[[boundary_exception]]
+id = "boundary-bootstrap-host-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.host"
+importer_path = "src/beadhive/bootstrap/host.py"
+imported_module = "beadhive.host_daemon_entrypoint"
+symbol = "beadhive.host_daemon_entrypoint"
+target_owner_package = "adapters/operator_api"
+successor = "bh-inqwc"
+reason = "The installed root retains the released host-daemon entrypoint as its concrete adapter while daemon runtime ownership remains with bh-q0lol."
+consumer_inventory = { production = "beadhive.bootstrap.host console-script root", tests = "tests/test_transport_composition_roots.py and daemon closure", docs = "transport composition proof", external = "installed bh-host-daemon console script and historical entrypoint imports" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_host_daemon.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the q0lol-owned daemon composition adapter behind adapters/operator_api without changing daemon lifecycle ownership."
+
+[[boundary_exception]]
+id = "boundary-bootstrap-gateway-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.gateway"
+importer_path = "src/beadhive/bootstrap/gateway.py"
+imported_module = "beadhive.remote_gateway_runtime"
+symbol = "beadhive.remote_gateway_runtime"
+target_owner_package = "adapters/gateway"
+successor = "bh-inqwc"
+reason = "The installed root delegates to the released Development gateway runtime so the bootstrap adds no alternate network or security policy."
+consumer_inventory = { production = "beadhive.bootstrap.gateway console-script root", tests = "tests/test_transport_composition_roots.py and gateway closure", docs = "transport composition proof", external = "installed beadhive-gateway console script and historical runtime imports" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_remote_gateway_runtime.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the released Development gateway runtime behind adapters/gateway after its compatibility consumers reach zero."
+
 [cycle_snapshot]
 sha256 = "f60b8e61436c0a28909f9d20ce9c3d1e500fe6961c76c54caae1c1e9969f7b09"
 components = 8
@@ -793,7 +861,7 @@ expiry_trigger = "Move tier_names with ComplexityTier to an inward shared contra
 
 [[boundary_exception]]
 id = "boundary-cli-declarations-operation-spec"
-status = "active"
+status = "removed"
 importer = "beadhive.adapters.cli.declarations"
 importer_path = "src/beadhive/adapters/cli/declarations.py"
 imported_module = "beadhive.operation_catalog"
@@ -810,7 +878,7 @@ expiry_trigger = "Move the canonical operation declarations to kernel/operations
 
 [[boundary_exception]]
 id = "boundary-cli-declarations-parents"
-status = "active"
+status = "removed"
 importer = "beadhive.adapters.cli.declarations"
 importer_path = "src/beadhive/adapters/cli/declarations.py"
 imported_module = "beadhive.operation_catalog"
@@ -827,7 +895,7 @@ expiry_trigger = "Move CLI parent declarations with the canonical catalog to ker
 
 [[boundary_exception]]
 id = "boundary-cli-declarations-operations"
-status = "active"
+status = "removed"
 importer = "beadhive.adapters.cli.declarations"
 importer_path = "src/beadhive/adapters/cli/declarations.py"
 imported_module = "beadhive.operation_catalog"
@@ -844,7 +912,7 @@ expiry_trigger = "Move operations to kernel/operations and preserve the flat cat
 
 [[boundary_exception]]
 id = "boundary-cli-projection-operation-spec"
-status = "active"
+status = "removed"
 importer = "beadhive.adapters.cli.projection"
 importer_path = "src/beadhive/adapters/cli/projection.py"
 imported_module = "beadhive.operation_catalog"
@@ -861,7 +929,7 @@ expiry_trigger = "Move OperationSpec to kernel/operations and remove this exact 
 
 [[boundary_exception]]
 id = "boundary-cli-projection-operations"
-status = "active"
+status = "removed"
 importer = "beadhive.adapters.cli.projection"
 importer_path = "src/beadhive/adapters/cli/projection.py"
 imported_module = "beadhive.operation_catalog"
@@ -878,7 +946,7 @@ expiry_trigger = "Move operations to kernel/operations and remove this exact ada
 
 [[boundary_exception]]
 id = "boundary-cli-projection-otel"
-status = "active"
+status = "removed"
 importer = "beadhive.adapters.cli.projection"
 importer_path = "src/beadhive/adapters/cli/projection.py"
 imported_module = "beadhive.otel"
@@ -895,7 +963,7 @@ expiry_trigger = "Introduce a public inward telemetry trace contract and empty t
 
 [[boundary_exception]]
 id = "boundary-cli-tree-operation-spec"
-status = "active"
+status = "removed"
 importer = "beadhive.adapters.cli.tree"
 importer_path = "src/beadhive/adapters/cli/tree.py"
 imported_module = "beadhive.operation_catalog"

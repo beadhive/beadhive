@@ -5,7 +5,8 @@ Status: active compatibility contract for `bh-3qkmk.2`
 The supported transport boundary is `beadhive.adapters.cli`. The canonical operation catalog
 owns operation identity, eligibility and request/result shape; the adapter owns Typer paths,
 aliases, options, prompts, rendering, exits and help. `beadhive.cli` is the process composition
-root. It binds application handlers, optional integration apps and the two transport mechanics,
+adapter behind the installed `beadhive.bootstrap.cli` root. It binds application handlers,
+optional integration apps and the transport mechanics,
 then `project_cli_tree` replaces every provisional registration with the 208 catalog-derived
 command/alias declarations and 36 catalog-derived parent declarations.
 
