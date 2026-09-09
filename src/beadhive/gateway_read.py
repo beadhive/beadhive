@@ -78,6 +78,10 @@ _EVENT_REQUIRED = frozenset(
 _MAX_DOCUMENT_BYTES = 2_000_000
 _MAX_COLLECTION_ITEMS = 10_000
 _PAGE_CURSOR_TTL_SECONDS = 300
+_EVENT_SUBSCRIPTION_MAX_LENGTH = 512
+_EVENT_AFTER_MAX_LENGTH = 512
+_EVENT_SUBSCRIPTION_PATTERN = r"^\S(?:[\s\S]*\S)?$"
+_EVENT_SUBSCRIPTION_TERMINATOR_PATTERN = r"[\r\n\u2028\u2029]$"
 
 
 def gateway_wire_schemas() -> dict[str, dict[str, object]]:
@@ -161,8 +165,18 @@ def gateway_wire_schemas() -> dict[str, dict[str, object]]:
             "required": ["factoryId", "hiveId", "subscription"],
             "properties": {
                 **scoped_path,
-                "subscription": {"type": "string", "minLength": 1},
-                "after": {"type": ["string", "null"]},
+                "subscription": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": _EVENT_SUBSCRIPTION_MAX_LENGTH,
+                    "pattern": _EVENT_SUBSCRIPTION_PATTERN,
+                    "not": {"pattern": _EVENT_SUBSCRIPTION_TERMINATOR_PATTERN},
+                },
+                "after": {
+                    "type": ["string", "null"],
+                    "minLength": 1,
+                    "maxLength": _EVENT_AFTER_MAX_LENGTH,
+                },
             },
         },
         "eventStreamResponse": {

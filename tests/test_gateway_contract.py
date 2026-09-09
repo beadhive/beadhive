@@ -97,6 +97,63 @@ def _success_gateway_app():
     )
 
 
+def _event_gateway_app(calls: list[str], *, read_source=None):
+    subject = "review-subject"
+    epoch = "123e4567-e89b-42d3-a456-426614174000"
+
+    class Verifier:
+        def verify(self, encoded: str) -> str:
+            assert encoded == "review-token"
+            return subject
+
+    async def snapshot():
+        return {
+            "schemaVersion": 1,
+            "revision": "sha256:" + "a" * 64,
+            "generatedAt": 1724716800000,
+            "workItems": [],
+            "agents": [],
+            "eventCursor": f"{epoch}:0",
+        }
+
+    async def online() -> bool:
+        return True
+
+    async def events(cursor: str):
+        calls.append(cursor)
+        sequence = int(cursor.rsplit(":", 1)[1])
+
+        async def stream():
+            yield {
+                "cursor": f"{epoch}:{sequence + 1}",
+                "revision": "sha256:" + "b" * 64,
+            }
+
+        return stream()
+
+    return remote_gateway.build_development_gateway_application(
+        config=remote_gateway.DevelopmentGatewayConfig(
+            issuer=remote_gateway.DEVELOPMENT_ISSUER,
+            audience="beadhive-gateway-dev",
+            app_origin="https://app-dev.beadhive.cloud",
+            gateway_origin="https://gateway-dev.beadhive.cloud",
+        ),
+        verifier=Verifier(),
+        registry=remote_gateway.DevelopmentInstanceRegistry(
+            instances={
+                remote_gateway.DEVELOPMENT_INSTANCE_ID: remote_gateway.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({subject}),
+                    snapshot=snapshot,
+                    online=online,
+                    events=events,
+                )
+            }
+        ),
+        read_source=read_source,
+    )
+
+
 def _live_routes() -> set[str]:
     app = _gateway_app()
     return {
@@ -299,6 +356,183 @@ def test_gateway_wire_references_resolve_to_versioned_digested_owned_contracts()
     assert rich_snapshot["properties"]["snapshot"]["required"] == sorted(
         gateway_read._SNAPSHOT_REQUIRED
     )
+
+
+def test_checked_legacy_event_cursor_schema_matches_runtime_grammar() -> None:
+    document = gateway_contract.checked_document()
+    events = next(
+        operation
+        for operation in document["operations"]
+        if operation["identifier"] == "GET /v1/instances/{stage}/{slug}/events"
+    )
+    request_schema = _resolve_wire_schema(document, events["wireRequestSchema"])
+    cursor_schema = request_schema["properties"]["cursor"]
+
+    assert cursor_schema["pattern"] == remote_gateway._EVENT_CURSOR.pattern
+
+    values = (
+        "123e4567-e89b-42d3-a456-426614174000:0",
+        "123e4567-e89b-42d3-a456-426614174000:1234567890123456",
+        "",
+        "not-a-cursor",
+        "123e4567-e89b-12d3-a456-426614174000:1",
+        "123e4567-e89b-42d3-a456-426614174000:01",
+        "123e4567-e89b-42d3-a456-426614174000:12345678901234567",
+        "123e4567-e89b-42d3-a456-426614174000:1\n",
+    )
+    validator = Draft202012Validator(cursor_schema)
+    assert [not validator.is_valid(value) for value in values] == [
+        remote_gateway._EVENT_CURSOR.fullmatch(value) is None for value in values
+    ]
+
+    calls: list[str] = []
+
+    async def exercise():
+        transport = httpx.ASGITransport(app=_event_gateway_app(calls), client=("127.0.0.1", 5000))
+        async with httpx.AsyncClient(
+            transport=transport, base_url="https://gateway-dev.beadhive.cloud"
+        ) as client:
+            headers = {
+                "Authorization": "Bearer review-token",
+                "Origin": "https://app-dev.beadhive.cloud",
+            }
+            valid = await client.get(
+                "/v1/instances/dev/demo/events", params={"cursor": values[0]}, headers=headers
+            )
+            malformed = [
+                await client.get(
+                    "/v1/instances/dev/demo/events", params={"cursor": value}, headers=headers
+                )
+                for value in values[2:]
+            ]
+            ambiguous = await client.get(
+                "/v1/instances/dev/demo/events",
+                params=[("cursor", values[0]), ("cursor", values[0])],
+                headers=headers,
+            )
+            extra = await client.get(
+                "/v1/instances/dev/demo/events",
+                params={"cursor": values[0], "after": values[0]},
+                headers=headers,
+            )
+            missing = await client.get("/v1/instances/dev/demo/events", headers=headers)
+        return valid, malformed, ambiguous, extra, missing
+
+    valid, malformed, ambiguous, extra, missing = asyncio.run(exercise())
+    assert valid.status_code == 200
+    assert all(response.status_code == 400 for response in malformed)
+    assert ambiguous.status_code == extra.status_code == missing.status_code == 400
+    assert calls == [values[0]]
+
+
+def test_checked_gateway_read_request_constraints_match_runtime_admission() -> None:
+    document = gateway_contract.checked_document()
+    operations = {operation["identifier"]: operation for operation in document["operations"]}
+
+    legacy_events = _resolve_wire_schema(
+        document,
+        operations["GET /v1/instances/{stage}/{slug}/events"]["wireRequestSchema"],
+    )
+    assert legacy_events["properties"]["stage"] == {"type": "string", "minLength": 1}
+    assert legacy_events["properties"]["slug"] == {"type": "string", "minLength": 1}
+
+    instances = _resolve_wire_schema(document, operations["GET /v1/instances"]["wireRequestSchema"])
+    assert instances["properties"]["limit"] == {"const": 50}
+
+    rich_events = _resolve_wire_schema(
+        document,
+        operations["GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/events"][
+            "wireRequestSchema"
+        ],
+    )
+    assert rich_events["properties"]["subscription"] == {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": gateway_read._EVENT_SUBSCRIPTION_MAX_LENGTH,
+        "pattern": gateway_read._EVENT_SUBSCRIPTION_PATTERN,
+        "not": {"pattern": gateway_read._EVENT_SUBSCRIPTION_TERMINATOR_PATTERN},
+    }
+    assert rich_events["properties"]["after"] == {
+        "type": ["string", "null"],
+        "minLength": 1,
+        "maxLength": gateway_read._EVENT_AFTER_MAX_LENGTH,
+    }
+    validator = Draft202012Validator(rich_events)
+    valid = {
+        "factoryId": gateway_read.FACTORY_ID,
+        "hiveId": "github/beadhive/beadhive",
+        "subscription": "hive:github/beadhive/beadhive",
+        "after": "epoch:1",
+    }
+    validator.validate(valid)
+    for invalid in (
+        valid | {"subscription": ""},
+        valid | {"subscription": " padded"},
+        valid | {"subscription": "padded "},
+        valid | {"subscription": "s" * (gateway_read._EVENT_SUBSCRIPTION_MAX_LENGTH + 1)},
+        valid | {"after": ""},
+        valid | {"after": "a" * (gateway_read._EVENT_AFTER_MAX_LENGTH + 1)},
+    ):
+        assert not validator.is_valid(invalid)
+
+
+def test_checked_rich_event_subscription_schema_matches_live_whitespace_admission() -> None:
+    source_calls: list[str] = []
+
+    class Source:
+        cache_boundary = "rich-event-subscription-test"
+
+        async def events(self, _subject, *, subscription, **_scope):
+            source_calls.append(subscription)
+            raise AssertionError("invalid subscription reached the rich event source")
+
+    document = gateway_contract.checked_document()
+    operation = next(
+        operation
+        for operation in document["operations"]
+        if operation["identifier"] == "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/events"
+    )
+    request_schema = _resolve_wire_schema(document, operation["wireRequestSchema"])
+    validator = Draft202012Validator(request_schema)
+    invalid_subscriptions = (
+        "subscription\n",
+        " subscription",
+        "subscription ",
+        "subscription\r",
+        "subscription\u2028",
+        "subscription\u2029",
+    )
+
+    async def exercise():
+        app = _event_gateway_app([], read_source=Source())
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5000))
+        async with httpx.AsyncClient(
+            transport=transport, base_url="https://gateway-dev.beadhive.cloud"
+        ) as client:
+            headers = {
+                "Authorization": "Bearer review-token",
+                "Origin": "https://app-dev.beadhive.cloud",
+            }
+            return [
+                await client.get(
+                    "/v1/instances/dev/demo/hives/github%2Fbeadhive%2Fbeadhive/events",
+                    params={"subscription": subscription},
+                    headers=headers,
+                )
+                for subscription in invalid_subscriptions
+            ]
+
+    responses = asyncio.run(exercise())
+    assert all(response.status_code == 400 for response in responses)
+    assert source_calls == []
+    for subscription in invalid_subscriptions:
+        assert not validator.is_valid(
+            {
+                "factoryId": gateway_read.FACTORY_ID,
+                "hiveId": "github/beadhive/beadhive",
+                "subscription": subscription,
+            }
+        )
 
 
 def test_gateway_owned_wire_version_and_required_shape_drift_changes_artifact(
