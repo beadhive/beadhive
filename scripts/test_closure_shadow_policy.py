@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CERTIFICATION_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.1-test-closure-certification.json"
 EVIDENCE_PATH = ROOT / "docs" / "proof" / "bh-ck1t6.3-shadow-activation.json"
 SELECTOR_PATH = ROOT / "scripts" / "test_impact_selector.py"
+VERIFIER_PATH = ROOT / "scripts" / "test_closure_shadow_verifier.py"
 
 SCHEMA_VERSION = 1
 POLICY_VERSION = "bh-test-closure-shadow-policy-v1"
@@ -137,21 +138,6 @@ AUTHORITY_FIELDS = frozenset(
         "plan_digest",
         "selected_receipt_digest",
         "full_receipt_digest",
-    }
-)
-ROUTE_BINDING_FIELDS = frozenset(
-    {
-        "schema_version",
-        "plan_digest",
-        "base",
-        "head",
-        "merge_base",
-        "tree",
-        "closure_id",
-        "closure_input_digest",
-        "source_revision",
-        "candidate_decision_digest",
-        "authoritative_evidence_digest",
     }
 )
 
@@ -640,6 +626,15 @@ def evaluate_candidate(
             else None
         )
         decision["authoritative_evidence_digest"] = evidence_digest
+        decision["evidence_digest"] = _canonical_digest(
+            {
+                "samples": list(samples),
+                "authoritative_evidence": sorted(
+                    authoritative_evidence,
+                    key=lambda item: str(item.get("sample_id", "")),
+                ),
+            }
+        )
         decision["decision_digest"] = _canonical_digest(decision)
     return decision
 
@@ -652,9 +647,8 @@ def route_validation(
     is_leaf: bool,
     local_enabled: bool,
     allow_simulation: bool = False,
-    route_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Resolve one already-built plan; uncertainty always returns the ordinary full gate."""
+    """Resolve a simulation plan; production evidence is owned by the trusted verifier."""
 
     def full(*reasons: str) -> dict[str, Any]:
         return {
@@ -683,7 +677,12 @@ def route_validation(
     candidate = candidate_decisions.get(closure_id)
     if not isinstance(candidate, Mapping) or candidate.get("eligible") is not True:
         return full("closure-not-eligible")
-    if candidate.get("evidence_mode") != "qualifying-merged-change" and not allow_simulation:
+    evidence_mode = candidate.get("evidence_mode")
+    if evidence_mode not in {"qualifying-merged-change", "simulation-only"}:
+        return full("invalid-shadow-provenance")
+    if evidence_mode == "qualifying-merged-change":
+        return full("production-verifier-required")
+    if not allow_simulation:
         return full("simulation-evidence-not-activatable")
     selector = plan.get("selector")
     if not isinstance(selector, Mapping) or selector != candidate.get("selector"):
@@ -717,23 +716,6 @@ def route_validation(
         _without_digest(candidate, "decision_digest")
     ):
         return full("candidate-decision-digest-mismatch")
-    if route_binding is None or set(route_binding) != ROUTE_BINDING_FIELDS:
-        return full("missing-or-invalid-route-binding")
-    if (
-        route_binding.get("schema_version") != 1
-        or route_binding.get("plan_digest") != plan.get("plan_digest")
-        or route_binding.get("base") != plan_range.get("base")
-        or route_binding.get("head") != plan_range.get("head")
-        or route_binding.get("merge_base") != plan_range.get("merge_base")
-        or not _is_sha(route_binding.get("tree"))
-        or route_binding.get("closure_id") != closure_id
-        or route_binding.get("closure_input_digest") != candidate.get("input_digest")
-        or route_binding.get("source_revision") != candidate.get("source_revision")
-        or route_binding.get("candidate_decision_digest") != candidate.get("decision_digest")
-        or route_binding.get("authoritative_evidence_digest")
-        != candidate.get("authoritative_evidence_digest")
-    ):
-        return full("current-route-evidence-mismatch")
     return {
         "command": expected_command,
         "selective": True,
@@ -745,6 +727,7 @@ def route_validation(
 def build_checked_evidence(root: Path = ROOT) -> dict[str, Any]:
     certification_path = root / CERTIFICATION_PATH.relative_to(ROOT)
     selector_path = root / SELECTOR_PATH.relative_to(ROOT)
+    verifier_path = root / VERIFIER_PATH.relative_to(ROOT)
     policy_path = root / Path(__file__).resolve().relative_to(ROOT)
     certification = _load_json(certification_path)
     selector_digest = _digest_bytes(selector_path.read_bytes())
@@ -772,6 +755,10 @@ def build_checked_evidence(root: Path = ROOT) -> dict[str, Any]:
             "path": policy_path.relative_to(root).as_posix(),
             "version": POLICY_VERSION,
             "digest": _digest_bytes(policy_path.read_bytes()),
+        },
+        "shadow_verifier": {
+            "path": VERIFIER_PATH.relative_to(ROOT).as_posix(),
+            "digest": _digest_bytes(verifier_path.read_bytes()),
         },
     }
     return {

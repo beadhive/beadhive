@@ -156,6 +156,29 @@ completed receipt digests. Selected tests must be a subset of the full inventory
 failure inventories, relevant failures, and replayed escapes must agree. Selective routing also
 requires an exact binding to the current plan range/head/tree, candidate closure row and digest,
 source revision, decision digest, and authoritative evidence set; any mismatch runs `just check`.
+Caller-provided authority records remain untrusted. The pure policy router is simulation-only and
+requires an explicit test opt-in; it has no production capability constructor or caller-supplied
+binding input. Production routing is owned end to end by the digest-bound read-only verifier. Its
+public entrypoint constructs the repository Git and receipt adapters and derives the symbolic live
+checkout ref, exact HEAD, and tree itself; callers cannot choose the ancestry ref. The selected
+plan's HEAD and computed tree must match that live snapshot, which is also the ancestry boundary
+for every qualifying commit. The verifier reloads both completed receipts from the Git-private
+local store, repeats the complete verification, and finally re-reads the live ref/HEAD/tree after
+all authority reads. Any stale plan, cross-process replay, or snapshot drift returns `just check`.
+No reusable attestation crosses that boundary, and qualifying production evidence sent directly
+to the pure router falls back to `just check`.
+
+The live snapshot also requires an empty tracked/index state and no non-ignored untracked paths;
+Git-ignored caches remain outside the validation input. Git runs through the pinned absolute
+`/usr/bin/git` executable with a fixed system command path; ambient `PATH`, repository override
+variables, and global/system configuration cannot select another executable or redirect the
+repository authority. Replacement objects are disabled and optional index writes are suppressed.
+A non-empty legacy graft or alternate-object file makes the repository unverifiable. The
+Git-private receipt directory is opened from the filesystem root one directory component at a
+time using no-follow directory descriptors, and every receipt is opened relative to that
+descriptor with no-follow, regular-file, size, unique-binding, and duplicate-JSON-key checks. The
+full repository, all 60 receipt bindings, and checkout cleanliness are re-read before selection; a
+final live snapshot must be identical.
 
 No real closure is currently a shadow candidate. All 23 prerequisite rows are `uncertified`, have
 no fresh dynamic per-test contexts, have no qualifying same-tree shadow samples, and therefore

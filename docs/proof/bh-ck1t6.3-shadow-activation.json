@@ -956,7 +956,7 @@
     "command": "just check",
     "receipt_reuse": "exact-tree full-gate receipts may be reused by existing lifecycle policy"
   },
-  "input_digest": "sha256:c875b004b822de42947556b60154305338f8a97524dcd2a2cf266fb1e04d34b4",
+  "input_digest": "sha256:c20e5475ffe45b54a2ed8a2a70eb3e9090d2cd1b19ee39e1104c1626d5eaa684",
   "inputs": {
     "certification_artifact": {
       "digest": "sha256:7801489b1970009e4d0b3abc523aa7860361d3b41ebd9dc2f3f1b3f8bc6b2033",
@@ -968,9 +968,13 @@
       "version": "bh-test-impact-selector-v1"
     },
     "shadow_policy": {
-      "digest": "sha256:c7ee0c641a9113e6d68d3d2b015b405000d51e35522eda795fb6ca00db7db2d3",
+      "digest": "sha256:831b4ee4843b9316509f015e47d38af1e6f3d500ea192175ac49cf7efbdb161c",
       "path": "scripts/test_closure_shadow_policy.py",
       "version": "bh-test-closure-shadow-policy-v1"
+    },
+    "shadow_verifier": {
+      "digest": "sha256:84bb30f642b0679fcf966108e859ccb5a10095338607a253c55e17971f2b5e78",
+      "path": "scripts/test_closure_shadow_verifier.py"
     }
   },
   "observations": {

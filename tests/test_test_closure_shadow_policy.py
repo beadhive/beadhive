@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import inspect
 import json
+import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -13,12 +15,20 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "test_closure_shadow_policy.py"
+VERIFIER_SCRIPT = ROOT / "scripts" / "test_closure_shadow_verifier.py"
 EVIDENCE = ROOT / "docs" / "proof" / "bh-ck1t6.3-shadow-activation.json"
-SPEC = importlib.util.spec_from_file_location("test_closure_shadow_policy_script", SCRIPT)
+SPEC = importlib.util.spec_from_file_location("test_closure_shadow_policy", SCRIPT)
 assert SPEC is not None and SPEC.loader is not None
 shadow = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = shadow
 SPEC.loader.exec_module(shadow)
+VERIFIER_SPEC = importlib.util.spec_from_file_location(
+    "test_closure_shadow_verifier", VERIFIER_SCRIPT
+)
+assert VERIFIER_SPEC is not None and VERIFIER_SPEC.loader is not None
+verifier = importlib.util.module_from_spec(VERIFIER_SPEC)
+sys.modules[VERIFIER_SPEC.name] = verifier
+VERIFIER_SPEC.loader.exec_module(verifier)
 
 SELECTOR_DIGEST = "sha256:" + "1" * 64
 SOURCE_REVISION = "2" * 40
@@ -236,21 +246,136 @@ def _selective_plan() -> dict[str, object]:
     return _plan(shadow.MIN_QUALIFYING_CHANGES - 1, ["tests/unit/modules/alpha/test_service.py"])
 
 
-def _route_binding(plan: dict[str, object], candidate: dict[str, object]) -> dict[str, object]:
-    plan_range = plan["range"]
+def _git(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ("git", "-C", str(repo), *args),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout.strip()
+
+
+def _rehash_sample(sample: dict[str, object]) -> None:
+    plan = sample["plan"]
+    plan["plan_digest"] = _digest(
+        {key: value for key, value in plan.items() if key != "plan_digest"}
+    )
+    for receipt_name in ("selected", "full"):
+        receipt = sample[receipt_name]
+        receipt["receipt_digest"] = _digest(
+            {key: value for key, value in receipt.items() if key != "receipt_digest"}
+        )
+
+
+def _store_receipts(receipt_root: Path, sample: dict[str, object]) -> None:
+    for receipt_name in ("selected", "full"):
+        receipt = sample[receipt_name]
+        (receipt_root / f"{receipt['receipt_id']}.json").write_text(
+            json.dumps(receipt, sort_keys=True),
+            encoding="utf-8",
+        )
+
+
+def _real_production_fixture(tmp_path: Path) -> dict[str, object]:
+    repo = tmp_path / "repo"
+    receipts = tmp_path / "receipts"
+    repo.mkdir()
+    receipts.mkdir()
+    _git(repo, "init", "-b", "main")
+    _git(repo, "config", "user.name", "Shadow Test")
+    _git(repo, "config", "user.email", "shadow@example.invalid")
+    _git(repo, "config", "commit.gpgsign", "false")
+    tracked = repo / "tracked.txt"
+    tracked.write_text("seed\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "seed")
+    previous = _git(repo, "rev-parse", "HEAD")
+    revisions: list[tuple[str, str, str]] = []
+    for index in range(shadow.MIN_QUALIFYING_CHANGES):
+        tracked.write_text(f"sample {index}\n", encoding="utf-8")
+        _git(repo, "add", "tracked.txt")
+        _git(repo, "commit", "-m", f"sample {index}")
+        commit = _git(repo, "rev-parse", "HEAD")
+        tree = _git(repo, "rev-parse", "HEAD^{tree}")
+        revisions.append((previous, commit, tree))
+        previous = commit
+
+    closure = _certified_closure()
+    closure["coverage_mapping"]["source_revision"] = previous
+    samples = _graduated_samples()
+    for sample, (base, commit, tree) in zip(samples, revisions, strict=True):
+        sample["provenance"] = "qualifying-merged-change"
+        sample["commit"] = commit
+        sample["tree"] = tree
+        sample["source_revision"] = previous
+        sample["plan"]["range"].update({"base": base, "head": commit, "merge_base": base})
+        for receipt_name in ("selected", "full"):
+            sample[receipt_name]["commit"] = commit
+            sample[receipt_name]["tree"] = tree
+        _rehash_sample(sample)
+        _store_receipts(receipts, sample)
+    authorities = [_authority(sample) for sample in samples]
+    candidate = _evaluate(
+        samples,
+        closure=closure,
+        authoritative_evidence=authorities,
+    )
     return {
-        "schema_version": 1,
-        "plan_digest": plan["plan_digest"],
-        "base": plan_range["base"],
-        "head": plan_range["head"],
-        "merge_base": plan_range["merge_base"],
-        "tree": f"{shadow.MIN_QUALIFYING_CHANGES + 1000:040x}",
-        "closure_id": "module.alpha",
-        "closure_input_digest": candidate["input_digest"],
-        "source_revision": candidate["source_revision"],
-        "candidate_decision_digest": candidate["decision_digest"],
-        "authoritative_evidence_digest": candidate["authoritative_evidence_digest"],
+        "repo": repo,
+        "receipt_root": receipts,
+        "closure": closure,
+        "samples": samples,
+        "authorities": authorities,
+        "candidate": candidate,
+        "plan": samples[-1]["plan"],
+        "git": verifier._SubprocessGitEvidence(repo),
+        "receipts": verifier._LocalReceiptDirectory(receipts),
     }
+
+
+def _prepare_public_production_fixture(
+    fixture: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selector_digest = shadow._digest_bytes(shadow.SELECTOR_PATH.read_bytes())
+    samples = fixture["samples"]
+    for sample in samples:
+        sample["selector"]["digest"] = selector_digest
+        sample["plan"]["selector"]["digest"] = selector_digest
+        _rehash_sample(sample)
+    authorities = [_authority(sample) for sample in samples]
+    fixture["authorities"] = authorities
+    fixture["candidate"] = _evaluate(
+        samples,
+        closure=fixture["closure"],
+        authoritative_evidence=authorities,
+        selector_digest=selector_digest,
+    )
+    receipt_root = fixture["repo"] / ".git" / "bh" / "shadow-validation" / "receipts"
+    receipt_root.mkdir(parents=True)
+    for sample in samples:
+        _store_receipts(receipt_root, sample)
+    monkeypatch.setattr(shadow, "ROOT", fixture["repo"])
+
+
+def _route_real_fixture(
+    fixture: dict[str, object],
+    *,
+    receipts: object | None = None,
+) -> dict[str, object]:
+    return verifier._route_production_validation_with_ports(
+        closure=fixture["closure"],
+        samples=fixture["samples"],
+        authoritative_evidence=fixture["authorities"],
+        candidate=fixture["candidate"],
+        current_plan=fixture["plan"],
+        boundary="submit",
+        is_leaf=True,
+        local_enabled=True,
+        git=fixture["git"],
+        receipts=receipts or fixture["receipts"],
+        selector_digest=SELECTOR_DIGEST,
+    )
 
 
 def test_checked_current_artifact_rejects_every_real_closure() -> None:
@@ -487,7 +612,6 @@ def test_simulated_eligible_closure_is_scoped_to_local_leaf_boundaries(boundary:
         is_leaf=True,
         local_enabled=True,
         allow_simulation=True,
-        route_binding=_route_binding(plan, candidate),
     )
 
     assert route == {
@@ -509,7 +633,6 @@ def test_one_local_setting_change_rolls_an_eligible_simulation_back_to_full() ->
         is_leaf=True,
         local_enabled=True,
         allow_simulation=True,
-        route_binding=_route_binding(plan, candidate),
     )
     rolled_back = shadow.route_validation(
         plan,
@@ -589,13 +712,12 @@ def test_simulation_evidence_cannot_route_without_an_explicit_test_control() -> 
     assert route["reasons"] == ["simulation-evidence-not-activatable"]
 
 
-def test_authoritatively_bound_production_evidence_can_route_only_its_current_plan() -> None:
+def test_caller_forged_authority_for_nonexistent_shas_never_routes_production() -> None:
     samples = _graduated_samples()
     for sample in samples:
         sample["provenance"] = "qualifying-merged-change"
     candidate = _evaluate(samples)
     plan = _selective_plan()
-    binding = _route_binding(plan, candidate)
 
     route = shadow.route_validation(
         plan,
@@ -603,22 +725,510 @@ def test_authoritatively_bound_production_evidence_can_route_only_its_current_pl
         boundary="submit",
         is_leaf=True,
         local_enabled=True,
-        route_binding=binding,
     )
-    binding["plan_digest"] = "sha256:" + "9" * 64
-    drifted = shadow.route_validation(
-        plan,
+
+    assert route["selective"] is False
+    assert route["command"] == "just check"
+
+
+def test_policy_exposes_no_production_capability_constructor_or_binding_input() -> None:
+    samples = _graduated_samples()
+    for sample in samples:
+        sample["provenance"] = "qualifying-merged-change"
+    candidate = _evaluate(
+        samples,
+        authoritative_evidence=[_authority(sample) for sample in samples],
+    )
+
+    assert candidate["eligible"] is True
+    assert not hasattr(shadow, "_ATTESTATION_ISSUER")
+    assert not hasattr(shadow, "_VerifiedProductionAttestation")
+    assert not hasattr(shadow, "_issue_verified_production_attestation")
+    assert (
+        "integration_ref" not in inspect.signature(verifier.route_production_validation).parameters
+    )
+    route = shadow.route_validation(
+        samples[-1]["plan"],
         {"module.alpha": candidate},
         boundary="submit",
         is_leaf=True,
         local_enabled=True,
-        route_binding=binding,
     )
 
-    assert candidate["eligible"] is True
+    assert route == {
+        "command": "just check",
+        "selective": False,
+        "closure": None,
+        "reasons": ["production-verifier-required"],
+    }
+
+
+def test_real_git_and_local_receipts_select_a_production_route_atomically(
+    tmp_path: Path,
+) -> None:
+    fixture = _real_production_fixture(tmp_path)
+
+    route = verifier._route_production_validation_with_ports(
+        closure=fixture["closure"],
+        samples=fixture["samples"],
+        authoritative_evidence=fixture["authorities"],
+        candidate=fixture["candidate"],
+        current_plan=fixture["plan"],
+        boundary="submit",
+        is_leaf=True,
+        local_enabled=True,
+        git=fixture["git"],
+        receipts=fixture["receipts"],
+        selector_digest=SELECTOR_DIGEST,
+    )
+
+    assert route == {
+        "command": "just test-closure module.alpha",
+        "selective": True,
+        "closure": "module.alpha",
+        "reasons": [],
+    }
+
+
+@pytest.mark.parametrize("dirty_kind", ["tracked", "untracked"])
+def test_production_route_rejects_dirty_or_unknown_live_checkout(
+    tmp_path: Path,
+    dirty_kind: str,
+) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    repo = fixture["repo"]
+    if dirty_kind == "tracked":
+        (repo / "tracked.txt").write_text("dirty behavior change\n", encoding="utf-8")
+    else:
+        (repo / "unknown-global-config.py").write_text("unknown behavior\n", encoding="utf-8")
+
+    route = _route_real_fixture(fixture)
+
+    assert route["command"] == "just check"
+    assert route["selective"] is False
+    assert "live-checkout-not-verifiable" in route["reasons"]
+
+
+def test_production_route_allows_git_ignored_cache_in_clean_checkout(tmp_path: Path) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    repo = fixture["repo"]
+    (repo / ".git" / "info" / "exclude").write_text("ignored-cache/\n", encoding="utf-8")
+    cache = repo / "ignored-cache" / "state"
+    cache.parent.mkdir()
+    cache.write_text("irrelevant cache\n", encoding="utf-8")
+
+    route = _route_real_fixture(fixture)
+
     assert route["selective"] is True
-    assert drifted["selective"] is False
-    assert drifted["reasons"] == ["current-route-evidence-mismatch"]
+
+
+def test_production_route_rejects_grafted_false_ancestry(tmp_path: Path) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    repo = fixture["repo"]
+    main = _git(repo, "rev-parse", "HEAD")
+    main_parent = _git(repo, "rev-parse", "HEAD^")
+    sample = fixture["samples"][0]
+    base = sample["plan"]["range"]["base"]
+    _git(repo, "checkout", "-b", "unmerged-graft", base)
+    (repo / "tracked.txt").write_text("unmerged graft sample\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "unmerged graft sample")
+    unmerged = _git(repo, "rev-parse", "HEAD")
+    unmerged_tree = _git(repo, "rev-parse", "HEAD^{tree}")
+    _git(repo, "checkout", "main")
+    assert (
+        subprocess.run(
+            (
+                "git",
+                "--no-replace-objects",
+                "-C",
+                str(repo),
+                "merge-base",
+                "--is-ancestor",
+                unmerged,
+                main,
+            ),
+            check=False,
+        ).returncode
+        == 1
+    )
+    sample["commit"] = unmerged
+    sample["tree"] = unmerged_tree
+    sample["plan"]["range"].update({"head": unmerged, "merge_base": base})
+    for receipt_name in ("selected", "full"):
+        sample[receipt_name]["commit"] = unmerged
+        sample[receipt_name]["tree"] = unmerged_tree
+    _rehash_sample(sample)
+    _store_receipts(fixture["receipt_root"], sample)
+    fixture["authorities"] = [_authority(item) for item in fixture["samples"]]
+    fixture["candidate"] = _evaluate(
+        fixture["samples"],
+        closure=fixture["closure"],
+        authoritative_evidence=fixture["authorities"],
+    )
+    (repo / ".git" / "info" / "grafts").write_text(
+        f"{main} {main_parent} {unmerged}\n",
+        encoding="utf-8",
+    )
+
+    route = _route_real_fixture(fixture)
+
+    assert route["command"] == "just check"
+    assert route["selective"] is False
+    assert "live-checkout-not-verifiable" in route["reasons"]
+
+
+def test_git_adapter_rejects_repository_alternates(tmp_path: Path) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    repo = fixture["repo"]
+    alternates = repo / ".git" / "objects" / "info" / "alternates"
+    alternates.write_text(str(tmp_path / "external-objects") + "\n", encoding="utf-8")
+
+    assert fixture["git"].checkout_snapshot() is None
+
+
+def test_receipt_directory_rejects_root_and_intermediate_symlinks(tmp_path: Path) -> None:
+    actual = tmp_path / "actual" / "receipts"
+    actual.mkdir(parents=True)
+    root_link = tmp_path / "root-link"
+    root_link.symlink_to(actual, target_is_directory=True)
+    intermediate_link = tmp_path / "intermediate-link"
+    intermediate_link.symlink_to(actual.parent, target_is_directory=True)
+
+    with pytest.raises(OSError):
+        verifier._LocalReceiptDirectory(root_link)
+    with pytest.raises(OSError):
+        verifier._LocalReceiptDirectory(intermediate_link / "receipts")
+
+
+def test_receipt_directory_validates_leaf_names_types_sizes_and_json(tmp_path: Path) -> None:
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    valid = {"receipt": "valid"}
+    (receipts / "valid.json").write_text(json.dumps(valid), encoding="utf-8")
+    (receipts / "other.json").symlink_to(receipts / "valid.json")
+    (receipts / "directory.json").mkdir()
+    (receipts / "oversize.json").write_bytes(b"x" * 1_000_001)
+    (receipts / "duplicate.json").write_text('{"receipt": 1, "receipt": 2}', encoding="utf-8")
+    (receipts / "valid.json.json").write_text(
+        json.dumps({"receipt": "distinct-suffix"}), encoding="utf-8"
+    )
+    store = verifier._LocalReceiptDirectory(receipts)
+
+    assert store.load("valid") == valid
+    assert store.load("../valid") is None
+    assert store.load("other") is None
+    assert store.load("directory") is None
+    assert store.load("oversize") is None
+    assert store.load("duplicate") is None
+    assert store.load("valid.json") == {"receipt": "distinct-suffix"}
+
+
+def test_production_route_rejects_duplicate_receipt_binding(tmp_path: Path) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    duplicate_id = fixture["samples"][0]["selected"]["receipt_id"]
+    fixture["samples"][1]["selected"]["receipt_id"] = duplicate_id
+    _rehash_sample(fixture["samples"][1])
+    fixture["authorities"] = [_authority(item) for item in fixture["samples"]]
+    fixture["candidate"] = _evaluate(
+        fixture["samples"],
+        closure=fixture["closure"],
+        authoritative_evidence=fixture["authorities"],
+    )
+
+    route = _route_real_fixture(fixture)
+
+    assert route["command"] == "just check"
+    assert "duplicate-or-invalid-local-receipt" in route["reasons"]
+
+
+def test_production_route_rechecks_receipts_on_second_pass(tmp_path: Path) -> None:
+    fixture = _real_production_fixture(tmp_path)
+
+    class ChangingReceipts:
+        def __init__(self) -> None:
+            self.loads = 0
+
+        def load(self, receipt_id: str) -> object:
+            self.loads += 1
+            stored = fixture["receipts"].load(receipt_id)
+            if self.loads > shadow.MIN_QUALIFYING_CHANGES * 2 and isinstance(stored, dict):
+                return {**stored, "wall_seconds": stored["wall_seconds"] + 1}
+            return stored
+
+    changing = ChangingReceipts()
+    route = _route_real_fixture(fixture, receipts=changing)
+
+    assert changing.loads == shadow.MIN_QUALIFYING_CHANGES * 4
+    assert route["command"] == "just check"
+    assert "production-authority-snapshot-changed" in route["reasons"]
+    assert "completed-local-receipt-not-verifiable" in route["reasons"]
+
+
+def test_production_route_rechecks_cleanliness_after_receipt_pass(tmp_path: Path) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    repo = fixture["repo"]
+
+    class DirtyingReceipts:
+        def __init__(self) -> None:
+            self.loads = 0
+
+        def load(self, receipt_id: str) -> object:
+            self.loads += 1
+            stored = fixture["receipts"].load(receipt_id)
+            if self.loads == shadow.MIN_QUALIFYING_CHANGES * 4:
+                (repo / "unknown-after-verification.py").write_text(
+                    "late unknown input\n", encoding="utf-8"
+                )
+            return stored
+
+    route = _route_real_fixture(fixture, receipts=DirtyingReceipts())
+
+    assert route["command"] == "just check"
+    assert "production-authority-snapshot-changed" in route["reasons"]
+
+
+def test_git_adapter_ignores_replace_refs_and_ambient_git_environment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    repo = fixture["repo"]
+    original = _git(repo, "rev-parse", "HEAD")
+    original_tree = _git(repo, "rev-parse", "HEAD^{tree}")
+    (repo / "tracked.txt").write_text("replacement object\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "replacement")
+    replacement = _git(repo, "rev-parse", "HEAD")
+    _git(repo, "reset", "--hard", original)
+    _git(repo, "replace", original, replacement)
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    _git(decoy, "init", "-b", "main")
+    monkeypatch.setenv("GIT_DIR", str(decoy / ".git"))
+    monkeypatch.setenv("GIT_OBJECT_DIRECTORY", str(decoy / ".git" / "objects"))
+    monkeypatch.setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", str(repo / ".git" / "objects"))
+
+    assert fixture["git"].commit_tree(original) == original_tree
+    assert fixture["git"].checkout_snapshot() is not None
+
+
+def test_git_adapter_uses_pinned_real_git_when_ambient_path_is_hostile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    expected_head = _git(fixture["repo"], "rev-parse", "HEAD")
+    hostile_bin = tmp_path / "hostile-bin"
+    hostile_bin.mkdir()
+    marker = tmp_path / "hostile-git-ran"
+    hostile_git = hostile_bin / "git"
+    hostile_git.write_text(
+        f"#!/bin/sh\n/usr/bin/touch '{marker}'\nexit 99\n",
+        encoding="utf-8",
+    )
+    hostile_git.chmod(0o755)
+    monkeypatch.setenv("PATH", str(hostile_bin))
+
+    snapshot = fixture["git"].checkout_snapshot()
+
+    assert snapshot is not None
+    assert snapshot.ref == "refs/heads/main"
+    assert snapshot.head == expected_head
+    assert marker.exists() is False
+
+
+def test_public_production_route_derives_a_stable_live_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    _prepare_public_production_fixture(fixture, monkeypatch)
+
+    route = verifier.route_production_validation(
+        closure=fixture["closure"],
+        samples=fixture["samples"],
+        authoritative_evidence=fixture["authorities"],
+        candidate=fixture["candidate"],
+        current_plan=fixture["plan"],
+        boundary="submit",
+        is_leaf=True,
+        local_enabled=True,
+    )
+
+    assert route == {
+        "command": "just test-closure module.alpha",
+        "selective": True,
+        "closure": "module.alpha",
+        "reasons": [],
+    }
+
+
+def test_production_route_rejects_replayed_plan_after_live_head_advances(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    _prepare_public_production_fixture(fixture, monkeypatch)
+    repo = fixture["repo"]
+    (repo / "tracked.txt").write_text("advanced live checkout\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "advance live checkout")
+
+    route = verifier.route_production_validation(
+        closure=fixture["closure"],
+        samples=fixture["samples"],
+        authoritative_evidence=fixture["authorities"],
+        candidate=fixture["candidate"],
+        current_plan=fixture["plan"],
+        boundary="submit",
+        is_leaf=True,
+        local_enabled=True,
+    )
+
+    assert route["selective"] is False
+    assert route["command"] == "just check"
+    assert "current-plan-does-not-match-live-checkout" in route["reasons"]
+
+
+def test_production_route_rejects_head_drift_during_final_receipt_verification(
+    tmp_path: Path,
+) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    repo = fixture["repo"]
+
+    class HeadAdvancingReceipts:
+        def __init__(self) -> None:
+            self.loads = 0
+
+        def load(self, receipt_id: str) -> object:
+            stored = fixture["receipts"].load(receipt_id)
+            self.loads += 1
+            if self.loads == shadow.MIN_QUALIFYING_CHANGES * 4:
+                (repo / "tracked.txt").write_text("mid-verification drift\n", encoding="utf-8")
+                _git(repo, "add", "tracked.txt")
+                _git(repo, "commit", "-m", "drift during verification")
+            return stored
+
+    route = verifier._route_production_validation_with_ports(
+        closure=fixture["closure"],
+        samples=fixture["samples"],
+        authoritative_evidence=fixture["authorities"],
+        candidate=fixture["candidate"],
+        current_plan=fixture["plan"],
+        boundary="submit",
+        is_leaf=True,
+        local_enabled=True,
+        git=fixture["git"],
+        receipts=HeadAdvancingReceipts(),
+        selector_digest=SELECTOR_DIGEST,
+    )
+
+    assert route["selective"] is False
+    assert route["command"] == "just check"
+    assert "production-authority-snapshot-changed" in route["reasons"]
+
+
+def test_verifier_rejects_nonexistent_commit_even_with_rehashed_caller_authority(
+    tmp_path: Path,
+) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    sample = fixture["samples"][0]
+    sample["commit"] = "f" * 40
+    sample["tree"] = "e" * 40
+    sample["plan"]["range"]["head"] = sample["commit"]
+    for receipt_name in ("selected", "full"):
+        sample[receipt_name]["commit"] = sample["commit"]
+        sample[receipt_name]["tree"] = sample["tree"]
+    _rehash_sample(sample)
+    _store_receipts(fixture["receipt_root"], sample)
+    authorities = [_authority(item) for item in fixture["samples"]]
+    candidate = _evaluate(
+        fixture["samples"],
+        closure=fixture["closure"],
+        authoritative_evidence=authorities,
+    )
+
+    verified = verifier._verify_production_evidence(
+        closure=fixture["closure"],
+        samples=fixture["samples"],
+        authoritative_evidence=authorities,
+        candidate=candidate,
+        current_plan=fixture["plan"],
+        git=fixture["git"],
+        receipts=fixture["receipts"],
+        selector_digest=SELECTOR_DIGEST,
+    )
+
+    assert verified.route_binding is None
+    assert "sample-commit-tree-or-ancestry-not-verifiable" in verified.errors
+
+
+def test_verifier_rejects_rehashed_caller_receipt_not_in_local_store(tmp_path: Path) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    sample = fixture["samples"][0]
+    sample["full"]["wall_seconds"] = 139.0
+    _rehash_sample(sample)
+    authorities = [_authority(item) for item in fixture["samples"]]
+    candidate = _evaluate(
+        fixture["samples"],
+        closure=fixture["closure"],
+        authoritative_evidence=authorities,
+    )
+
+    verified = verifier._verify_production_evidence(
+        closure=fixture["closure"],
+        samples=fixture["samples"],
+        authoritative_evidence=authorities,
+        candidate=candidate,
+        current_plan=fixture["plan"],
+        git=fixture["git"],
+        receipts=fixture["receipts"],
+        selector_digest=SELECTOR_DIGEST,
+    )
+
+    assert verified.route_binding is None
+    assert "completed-local-receipt-not-verifiable" in verified.errors
+
+
+def test_verifier_rejects_real_commit_outside_configured_integration_ancestry(
+    tmp_path: Path,
+) -> None:
+    fixture = _real_production_fixture(tmp_path)
+    repo = fixture["repo"]
+    sample = fixture["samples"][0]
+    base = sample["plan"]["range"]["base"]
+    _git(repo, "checkout", "-b", "unmerged", base)
+    (repo / "tracked.txt").write_text("unmerged\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "unmerged sample")
+    sample["commit"] = _git(repo, "rev-parse", "HEAD")
+    sample["tree"] = _git(repo, "rev-parse", "HEAD^{tree}")
+    _git(repo, "checkout", "main")
+    sample["plan"]["range"]["head"] = sample["commit"]
+    for receipt_name in ("selected", "full"):
+        sample[receipt_name]["commit"] = sample["commit"]
+        sample[receipt_name]["tree"] = sample["tree"]
+    _rehash_sample(sample)
+    _store_receipts(fixture["receipt_root"], sample)
+    authorities = [_authority(item) for item in fixture["samples"]]
+    candidate = _evaluate(
+        fixture["samples"],
+        closure=fixture["closure"],
+        authoritative_evidence=authorities,
+    )
+
+    verified = verifier._verify_production_evidence(
+        closure=fixture["closure"],
+        samples=fixture["samples"],
+        authoritative_evidence=authorities,
+        candidate=candidate,
+        current_plan=fixture["plan"],
+        git=fixture["git"],
+        receipts=fixture["receipts"],
+        selector_digest=SELECTOR_DIGEST,
+    )
+
+    assert verified.route_binding is None
+    assert "sample-commit-tree-or-ancestry-not-verifiable" in verified.errors
 
 
 def test_checked_evidence_mutation_is_rejected() -> None:
@@ -632,9 +1242,17 @@ def test_checked_evidence_mutation_is_rejected() -> None:
 
 def test_policy_module_never_runs_tests_or_mutates_the_repository() -> None:
     source = SCRIPT.read_text(encoding="utf-8")
+    verifier_source = VERIFIER_SCRIPT.read_text(encoding="utf-8")
 
     assert "subprocess" not in source
     assert "os.system" not in source
     assert "write_text" not in source
     assert "write_bytes" not in source
     assert "git " not in source
+    assert "write_text" not in verifier_source
+    assert "write_bytes" not in verifier_source
+    assert 'self._run("push"' not in verifier_source
+    assert 'self._run("checkout"' not in verifier_source
+    assert 'self._run("commit"' not in verifier_source
+    assert "requests" not in verifier_source
+    assert "socket" not in verifier_source
