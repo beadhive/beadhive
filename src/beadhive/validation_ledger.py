@@ -293,7 +293,21 @@ def _verdict_path(entry, tree: str, command_hash: str, *, create: bool = False) 
         if create
         else private_paths.git_private_root(hive)
     )
-    return root / "validation" / "verdicts" / tree / f"{command_hash}.json" if root else None
+    return _verdict_path_in(root / "validation" if root else None, tree, command_hash)
+
+
+def _verdict_path_in(root: Path | None, tree: str, command_hash: str) -> Path | None:
+    """Resolve one pointer below an already-canonical validation root."""
+    if (
+        root is None
+        or not tree
+        or not command_hash
+        or any(
+            value in {".", ".."} or "/" in value or "\\" in value for value in (tree, command_hash)
+        )
+    ):
+        return None
+    return root / "verdicts" / tree / f"{command_hash}.json"
 
 
 def _read_index(path: Path | None) -> dict | None:
@@ -542,16 +556,33 @@ def _migrate_legacy_ledger(entry) -> int:
     return imported
 
 
-def _sync_index(entry, tree: str, key: str) -> bool:
+def _sync_index(
+    entry,
+    tree: str,
+    key: str,
+    *,
+    retained_runs: list[dict] | None = None,
+    validation_root: Path | None = None,
+) -> bool:
     """Make one pointer exactly reflect the newest retained execution fact.
 
     The manifest is truth.  A pointer exists only for its newest completed-green manifest; every
     other lifecycle/verdict removes it.  Atomic replace means concurrent readers see an old whole
     pointer, a new whole pointer, or a miss — never torn JSON.
     """
-    hive = registry.hive_dir(entry)
-    latest = validation_records.latest_run(hive, tree=tree, command_hash=key)
-    path = _verdict_path(entry, tree, key, create=latest is not None)
+    if retained_runs is None:
+        hive = registry.hive_dir(entry)
+        runs = validation_records.matching_runs(hive, tree=tree, command_hash=key)
+        latest = max(runs, key=validation_records._run_order_key, default=None)
+        path = _verdict_path(entry, tree, key, create=latest is not None)
+    else:
+        runs = [
+            run
+            for run in retained_runs
+            if run.get("tree") == tree and run.get("command_hash") == key
+        ]
+        latest = max(runs, key=validation_records._run_order_key, default=None)
+        path = _verdict_path_in(validation_root, tree, key)
     if path is None:
         return False
     try:
@@ -562,10 +593,7 @@ def _sync_index(entry, tree: str, key: str) -> bool:
         if at is None:
             path.unlink(missing_ok=True)
             return True
-        runs = sorted(
-            validation_records.matching_runs(hive, tree=tree, command_hash=key),
-            key=validation_records._run_order_key,
-        )
+        runs = sorted(runs, key=validation_records._run_order_key)
         shas = []
         for run_record in runs:
             if not validation_records.is_qualifying_green(run_record):
@@ -598,21 +626,27 @@ def _sync_index(entry, tree: str, key: str) -> bool:
 def rebuild_verdict_index(entry) -> int:
     """Reconstruct all lookup pointers from retained run manifests; return green pointers made."""
     hive = registry.hive_dir(entry)
-    root = private_paths.git_private_root(hive)
-    runs = root / "validation" / "runs" if root else None
-    if runs is None or not runs.is_dir():
+    git_root = private_paths.git_private_root(hive)
+    root = git_root / "validation" if git_root else None
+    runs_dir = root / "runs" if root else None
+    if runs_dir is None or not runs_dir.is_dir():
         return 0
+    retained_runs = validation_records._read_run_directory(runs_dir)
     keys = {
-        (run.get("tree"), run.get("command_hash"))
-        for child in runs.iterdir()
-        if (run := validation_records.read_run(hive, child.name)) is not None
-        and isinstance(run.get("tree"), str)
-        and isinstance(run.get("command_hash"), str)
+        (run["tree"], run["command_hash"])
+        for run in retained_runs
+        if isinstance(run.get("tree"), str) and isinstance(run.get("command_hash"), str)
     }
     rebuilt = 0
     for tree, key in keys:
-        _sync_index(entry, tree, key)
-        path = _verdict_path(entry, tree, key)
+        _sync_index(
+            entry,
+            tree,
+            key,
+            retained_runs=retained_runs,
+            validation_root=root,
+        )
+        path = _verdict_path_in(root, tree, key)
         rebuilt += bool(path is not None and path.is_file())
     return rebuilt
 

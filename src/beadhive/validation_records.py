@@ -199,16 +199,39 @@ def begin_run(
     return None
 
 
-def read_run(hive: str | Path, run_id: str) -> dict | None:
-    root = _validation_root(hive)
-    path = root / "runs" / run_id / "manifest.json" if root else None
+def _read_run_manifest(path: Path | None, expected_run_id: str) -> dict | None:
+    """Read one already-resolved manifest while preserving identity validation.
+
+    Directory queries resolve the canonical Git-private root once and call this helper for each
+    child.  Keeping path resolution out of this loop avoids two Git subprocesses per manifest;
+    requiring the directory's run id here preserves the public reader's fail-closed semantics.
+    """
     if path is None or not path.is_file():
         return None
     try:
         value = json.loads(path.read_text())
     except (OSError, ValueError):
         return None
-    return value if isinstance(value, dict) and value.get("run_id") == run_id else None
+    return value if isinstance(value, dict) and value.get("run_id") == expected_run_id else None
+
+
+def _read_run_directory(directory: Path | None) -> list[dict]:
+    """Read every authoritative manifest below an already-resolved runs directory."""
+    if directory is None or not directory.is_dir():
+        return []
+    return [
+        value
+        for child in sorted(directory.iterdir(), key=lambda path: path.name)
+        if child.is_dir()
+        and (value := _read_run_manifest(child / "manifest.json", child.name)) is not None
+    ]
+
+
+def read_run(hive: str | Path, run_id: str) -> dict | None:
+    """Read one run after independently resolving its canonical private root."""
+    root = _validation_root(hive)
+    path = root / "runs" / run_id / "manifest.json" if root else None
+    return _read_run_manifest(path, run_id)
 
 
 def mark_artifacts_uploaded(hive: str | Path, run_id: str) -> dict | None:
@@ -252,8 +275,7 @@ def prune_artifacts(hive: str | Path) -> int:
     runs_dir = root / "runs" if root else None
     if runs_dir is None or not runs_dir.is_dir():
         return 0
-    runs = [read_run(hive, p.name) for p in runs_dir.iterdir() if p.is_dir()]
-    runs = [r for r in runs if r]
+    runs = _read_run_directory(runs_dir)
     # Uses are an audit trail, not a raw-artifact retention lease: every ordinary
     # completed execution creates one, so treating them as permanent references
     # makes cleanup a no-op. The bounded verdict index is the actual live decision
@@ -438,7 +460,7 @@ def record_use(
 ) -> dict | None:
     """Record one gate decision; reuse points at the original run without creating a run."""
     root = _validation_root(hive, create=True)
-    if root is None or read_run(hive, run_id) is None:
+    if root is None or _read_run_manifest(root / "runs" / run_id / "manifest.json", run_id) is None:
         return None
     for _ in range(16):
         use_id = _new_id("use")
@@ -525,16 +547,13 @@ def completed_run(hive: str | Path, *, tree: str, command_hash: str) -> dict | N
     directory = root / "runs" if root else None
     if directory is None or not directory.is_dir():
         return None
-    matches = []
-    for child in directory.iterdir():
-        value = read_run(hive, child.name)
-        if (
-            value is not None
-            and value.get("lifecycle") == "completed"
-            and value.get("tree") == tree
-            and value.get("command_hash") == command_hash
-        ):
-            matches.append(value)
+    matches = [
+        value
+        for value in _read_run_directory(directory)
+        if value.get("lifecycle") == "completed"
+        and value.get("tree") == tree
+        and value.get("command_hash") == command_hash
+    ]
     return max(matches, key=_run_order_key, default=None)
 
 
@@ -550,10 +569,8 @@ def matching_runs(hive: str | Path, *, tree: str, command_hash: str) -> list[dic
         return []
     return [
         value
-        for child in sorted(directory.iterdir(), key=lambda path: path.name)
-        if (value := read_run(hive, child.name)) is not None
-        and value.get("tree") == tree
-        and value.get("command_hash") == command_hash
+        for value in _read_run_directory(directory)
+        if value.get("tree") == tree and value.get("command_hash") == command_hash
     ]
 
 
@@ -582,9 +599,8 @@ def running_runs(
     if directory is None or not directory.is_dir():
         return []
     result = []
-    for child in directory.iterdir():
-        value = read_run(hive, child.name)
-        if value is None or value.get("lifecycle") != "running":
+    for value in _read_run_directory(directory):
+        if value.get("lifecycle") != "running":
             continue
         if bead is not None and value.get("bead") != bead:
             continue

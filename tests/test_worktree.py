@@ -2036,6 +2036,49 @@ def test_clean_checkout_reuses_green_verdict(tmp_path, monkeypatch, capsys):
     assert pointer is not None and pointer.is_file()
 
 
+def test_clean_checkout_reuse_uses_selected_run_without_completed_run_rescan(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    monkeypatch.setattr(
+        validation_records,
+        "completed_run",
+        lambda *args, **kwargs: pytest.fail("selected green run must not trigger a rescan"),
+    )
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert _run_count(log) == 1
+
+
+def test_reuse_minimal_monkeypatched_green_result_keeps_safe_completed_run_fallback(
+    tmp_path, monkeypatch
+):
+    _cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    fallback = {"run_id": "run-fallback", "verdict": "green"}
+    completed_calls = []
+    uses = []
+    monkeypatch.setattr(
+        validation_ledger,
+        "green_verdict",
+        lambda *args, **kwargs: {"at": time.time(), "tree": "tree", "rc": 0},
+    )
+    monkeypatch.setattr(
+        validation_records,
+        "completed_run",
+        lambda *args, **kwargs: completed_calls.append((args, kwargs)) or fallback,
+    )
+    monkeypatch.setattr(
+        validation_records,
+        "record_use",
+        lambda *args, **kwargs: uses.append(kwargs),
+    )
+    monkeypatch.setattr(worktree.otel, "count_validation_reuse", lambda *args: None)
+
+    assert worktree._reuse_verdict_hit(entry, "main", "just check", cfg={"work": {}}, bead="bh-x")
+    assert len(completed_calls) == 1
+    assert uses[0]["run_id"] == "run-fallback"
+
+
 def test_clean_checkout_reuse_hit_counts_telemetry(tmp_path, monkeypatch):
     """A reuse hit increments the dedicated bh.work.validation.reused counter (tagged with the
     hive) — the series that keeps runs/duration interpretable once reuse is common."""
