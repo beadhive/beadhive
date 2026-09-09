@@ -303,6 +303,101 @@ def _composition_identity_errors(row: dict, epic: str, parent: str) -> list[str]
     return errors
 
 
+def _reversed_composition_wrappers(rows: list[dict], branch_sha: str, base: str) -> list[dict]:
+    """Find reversed wrappers on the outer first-parent path, including below suffix merges.
+
+    A reversed wrapper cannot connect to ``base`` through parent one, so
+    :func:`_first_parent_spine` necessarily fails before the ordinary wrapper audit can inspect
+    it.  Walk only rows actually reached from the branch tip and recognize an integration base
+    among the non-first parents.  The caller distinguishes an exact two-parent reversal from a
+    malformed parent count.  This is diagnostic discovery only; every discovered topology is
+    rejected.
+    """
+    by_sha = {str(row.get("sha") or ""): row for row in rows}
+    wrappers: list[dict] = []
+    cursor = branch_sha
+    seen: set[str] = set()
+    while cursor and cursor != base and cursor not in seen:
+        seen.add(cursor)
+        row = by_sha.get(cursor)
+        if row is None:
+            break
+        parents = [str(value) for value in (row.get("parents") or [])]
+        if (
+            _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+            and parents
+            and parents[0] != base
+            and base in parents[1:]
+        ):
+            wrappers.append(row)
+        if not parents:
+            break
+        cursor = parents[0]
+    return wrappers
+
+
+def _reversed_composition_spine(
+    entry,
+    rows: list[dict],
+    branch_sha: str,
+    base: str,
+    wrapper: dict,
+    epic: str,
+    parent: str,
+) -> tuple[list[dict], set[str], list[str]]:
+    """Audit both reviewed sides of a rejected reversed composition boundary."""
+    sha = str(wrapper.get("sha") or "")
+    short = str(wrapper.get("short") or sha[:8])
+    parents = [str(value) for value in (wrapper.get("parents") or [])]
+
+    errors = _composition_identity_errors(wrapper, epic, parent)
+    if not errors:
+        if len(parents) != 2:
+            errors.append(f"composition wrapper {short} must have exactly two parents")
+        else:
+            errors.append(
+                f"composition wrapper {short} must use the exact integration base as first parent"
+            )
+
+    suffix_spine, suffix_errors = _first_parent_spine(rows, branch_sha, sha)
+    errors.extend(suffix_errors)
+
+    nested_base = worktree.base_of(entry, parents[0], base)
+    if not nested_base:
+        errors.append(f"composition wrapper {short} has no merge base between its parents")
+        return suffix_spine, {sha}, errors
+    nested_rows = worktree.commit_rows(entry, nested_base, parents[0])
+    if not nested_rows:
+        errors.append(f"composition wrapper {short} has an empty reviewed side")
+        return suffix_spine, {sha}, errors
+    nested_spine, nested_errors = _first_parent_spine(nested_rows, parents[0], nested_base)
+    if nested_errors:
+        errors.extend(
+            f"composition wrapper {short} has invalid reviewed-side topology: {error}"
+            for error in nested_errors
+        )
+        return suffix_spine, {sha}, errors
+
+    nested_wrappers = [
+        str(row.get("short") or str(row.get("sha") or "")[:8])
+        for row in nested_spine
+        if _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+    ]
+    if nested_wrappers:
+        errors.append(
+            f"composition wrapper {short} has stacked reviewed-side wrapper(s): "
+            + ", ".join(nested_wrappers)
+        )
+        return suffix_spine, {sha}, errors
+
+    outer_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
+    nested_shas = {str(row.get("sha") or "") for row in nested_rows if row.get("sha")}
+    if not (nested_shas | {sha}) <= outer_shas:
+        errors.append(f"composition wrapper {short} reviewed side leaves the outer review range")
+        return suffix_spine, {sha}, errors
+    return [*nested_spine, *suffix_spine], {sha}, errors
+
+
 def _reviewed_epic_spine(
     entry,
     rows: list[dict],
@@ -323,30 +418,22 @@ def _reviewed_epic_spine(
     """
     # A reversed canonical wrapper cannot reach ``base`` by following parent one, so the generic
     # first-parent walk below would otherwise hide the more useful trust-boundary diagnostic.
-    # Recognize only the unambiguous reversal shape here: the branch tip is a canonical wrapper
-    # whose *second* parent is the exact integration base.  Misplaced wrappers (whose first parent
-    # descends from ``base``) still flow through the ordinary placement audit below.
-    tip = next(
-        (row for row in rows if str(row.get("sha") or "") == branch_sha),
-        None,
-    )
-    tip_subject = str((tip or {}).get("subject") or "")
-    tip_parents = [str(value) for value in ((tip or {}).get("parents") or [])]
-    if (
-        _COMPOSITION_BUBBLE.fullmatch(tip_subject)
-        and len(tip_parents) == 2
-        and tip_parents[0] != base
-        and tip_parents[1] == base
-    ):
-        identity_errors = _composition_identity_errors(tip or {}, epic, parent)
-        if identity_errors:
-            return [], set(), identity_errors
-        short = str((tip or {}).get("short") or branch_sha[:8])
+    # Inspect the actual outer path before that walk, including a wrapper buried below ordinary
+    # reviewed suffix merges.  This is never an allowance: every recognized shape returns an
+    # error, while wrappers off the outer path remain subject to the normal provenance audit.
+    reversed_wrappers = _reversed_composition_wrappers(rows, branch_sha, base)
+    if len(reversed_wrappers) > 1:
+        shorts = ", ".join(
+            str(row.get("short") or str(row.get("sha") or "")[:8]) for row in reversed_wrappers
+        )
         return (
             [],
             set(),
-            [f"composition wrapper {short} must use the exact integration base as first parent"],
+            [f"composition wrapper appears more than once on the epic spine: {shorts}"],
         )
+    if reversed_wrappers:
+        wrapper = reversed_wrappers[0]
+        return _reversed_composition_spine(entry, rows, branch_sha, base, wrapper, epic, parent)
 
     spine, errors = _first_parent_spine(rows, branch_sha, base)
     if errors:
