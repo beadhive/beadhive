@@ -279,6 +279,30 @@ def _batch_members(group: str, merge_sha: str, children: list[dict]) -> list[dic
     ]
 
 
+def _composition_identity_errors(row: dict, epic: str, parent: str) -> list[str]:
+    """Validate the two identities named by one syntactically canonical composition wrapper."""
+    subject = str(row.get("subject") or "")
+    match = _COMPOSITION_BUBBLE.fullmatch(subject)
+    if match is None:
+        return []
+
+    sha = str(row.get("sha") or "")
+    short = str(row.get("short") or sha[:8])
+    composed_epic, composed_parent = match.groups()
+    errors = []
+    if composed_epic != epic:
+        errors.append(
+            f"composition wrapper {short} names {composed_epic}, expected current epic {epic}"
+        )
+    if not parent:
+        errors.append(f"composition wrapper {short} cannot resolve the bd parent of {epic}")
+    elif composed_parent != parent:
+        errors.append(
+            f"composition wrapper {short} names parent {composed_parent}, expected {parent}"
+        )
+    return errors
+
+
 def _reviewed_epic_spine(
     entry,
     rows: list[dict],
@@ -297,6 +321,33 @@ def _reviewed_epic_spine(
     Neither nested nor suffix history gets a subject-only allowance: the caller still proves
     every introduced commit through durable direct-child linkage.
     """
+    # A reversed canonical wrapper cannot reach ``base`` by following parent one, so the generic
+    # first-parent walk below would otherwise hide the more useful trust-boundary diagnostic.
+    # Recognize only the unambiguous reversal shape here: the branch tip is a canonical wrapper
+    # whose *second* parent is the exact integration base.  Misplaced wrappers (whose first parent
+    # descends from ``base``) still flow through the ordinary placement audit below.
+    tip = next(
+        (row for row in rows if str(row.get("sha") or "") == branch_sha),
+        None,
+    )
+    tip_subject = str((tip or {}).get("subject") or "")
+    tip_parents = [str(value) for value in ((tip or {}).get("parents") or [])]
+    if (
+        _COMPOSITION_BUBBLE.fullmatch(tip_subject)
+        and len(tip_parents) == 2
+        and tip_parents[0] != base
+        and tip_parents[1] == base
+    ):
+        identity_errors = _composition_identity_errors(tip or {}, epic, parent)
+        if identity_errors:
+            return [], set(), identity_errors
+        short = str((tip or {}).get("short") or branch_sha[:8])
+        return (
+            [],
+            set(),
+            [f"composition wrapper {short} must use the exact integration base as first parent"],
+        )
+
     spine, errors = _first_parent_spine(rows, branch_sha, base)
     if errors:
         return spine, set(), errors
@@ -332,17 +383,7 @@ def _reviewed_epic_spine(
     parents = [str(value) for value in (wrapper.get("parents") or [])]
     if len(parents) != 2:
         return [], set(), [f"composition wrapper {short} must have exactly two parents"]
-    composed_epic, composed_parent = match.groups()
-    if composed_epic != epic:
-        errors.append(
-            f"composition wrapper {short} names {composed_epic}, expected current epic {epic}"
-        )
-    if not parent:
-        errors.append(f"composition wrapper {short} cannot resolve the bd parent of {epic}")
-    elif composed_parent != parent:
-        errors.append(
-            f"composition wrapper {short} names parent {composed_parent}, expected {parent}"
-        )
+    errors.extend(_composition_identity_errors(wrapper, epic, parent))
     if parents[0] != base:
         errors.append(
             f"composition wrapper {short} must use the exact integration base as first parent"
