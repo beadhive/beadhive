@@ -140,6 +140,38 @@ This bead does not provide those final eligibility records: all 23 checked rows 
 auditable shadow inputs that still fall back to `just check`. `bh-ck1t6.3` owns shadow comparison,
 escape thresholds, rollback, and any provisional local leaf activation.
 
+## Shadow policy and current activation state
+
+The checked shadow-policy evidence is
+[`docs/proof/bh-ck1t6.3-shadow-activation.json`](proof/bh-ck1t6.3-shadow-activation.json).
+It binds the prerequisite artifact, selector source/version, and pure policy source. The policy
+does not execute tests, write observations, mutate configuration, or replace a lifecycle command.
+It evaluates already-recorded, exact-tree selected/full observations and resolves uncertainty to
+`just check`.
+
+No real closure is currently a shadow candidate. All 23 prerequisite rows are `uncertified`, have
+no fresh dynamic per-test contexts, have no qualifying same-tree shadow samples, and therefore
+publish unavailable—not estimated—timing, compute, queue, flake, miss, and fallback measurements.
+The checked activation set is empty. Simulation-labelled fixtures exercise the positive policy
+path without claiming that a repository closure qualifies.
+
+The predeclared eligibility bar is per closure: at least 30 qualifying merged changes spanning at
+least 60 days; exact selector and closure-input digests; complete selected and omitted node IDs;
+same-tree selected/full commands and outcomes; zero selected-green/full-red relevant escapes; and
+a measured median selected wall time no more than half the full median with at least 30 seconds of
+median savings. Any escape, selector/input drift, ownership or confidence degradation, unknown or
+unowned path, shared/global/build/config/validation-lifecycle change, multi-module ambiguity, or
+other full-plan reason restores the full command immediately. The local policy switch provides a
+one-change rollback to full and is tested only as pure policy; it is not wired into configuration.
+
+Even after the evidence bar is met, the only provisioned selective scope is local leaf `check`,
+`submit`, and pristine-review feedback. Leaf merge, epic finish, final workstream submit/review,
+scheduled validation, and release remain full-only. `bh-ck1t6.4` owns any later promotion after
+real 30-change/60-day evidence; this bead enables none. For the current workstream, the immediate
+benefit is auditable shadow collection and fast focused developer/reviewer feedback. Existing
+exact-tree receipt reuse avoids duplicate full executions, while every configured submit/review
+gate still runs or reuses the authoritative full gate because the candidate set is empty.
+
 Any affected digest mismatch, unavailable coverage, unenforceable port, unknown ownership,
 shared contract/schema change, dynamic plugin or subprocess ambiguity, compatibility facade,
 generated artifact, or test-infrastructure change falls back to `just check`. Invalidation is
