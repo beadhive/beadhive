@@ -9,11 +9,26 @@ does not register routes or dispatch application behavior.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from functools import cache
 from typing import Any, Literal
 
+from . import daemon_contract
+from .gateway_wire_contracts import WireFamily, schema_ref
 from .operation_catalog import OperationSpec, operations
 
 Classification = Literal["catalog-entry", "composite", "transport-mechanic", "explicit-exclusion"]
+ProjectionShape = Literal["exact", "richer", "coarser", "transport-only", "excluded"]
+
+
+@dataclass(frozen=True)
+class CanonicalOperationContract:
+    """Catalog-owned request/result and policy metadata referenced by one projection."""
+
+    operation: str
+    request_schema: str
+    result_schema: str
+    privilege: str
+    side_effects: str
 
 
 @dataclass(frozen=True)
@@ -32,10 +47,35 @@ class ProjectionSpec:
     availability: str
     compatibility: str
     reason: str
+    canonical_contracts: tuple[CanonicalOperationContract, ...]
+    transport_owner: str
+    shape: ProjectionShape
 
 
 def _effect(operation: OperationSpec) -> str:
     return "none" if operation.kind == "read-resource" else "application-mutation"
+
+
+@cache
+def _catalog_index() -> dict[str, OperationSpec]:
+    return {row.name: row for row in operations()}
+
+
+def _canonical_contracts(
+    operation: str | None, composes: tuple[str, ...]
+) -> tuple[CanonicalOperationContract, ...]:
+    names = (operation,) if operation is not None else composes
+    catalog = _catalog_index()
+    return tuple(
+        CanonicalOperationContract(
+            operation=name,
+            request_schema=f"catalog:{name}#parameters",
+            result_schema=catalog[name].result_schema,
+            privilege=catalog[name].privilege,
+            side_effects=_effect(catalog[name]),
+        )
+        for name in names
+    )
 
 
 def _catalog_projections() -> list[ProjectionSpec]:
@@ -59,6 +99,9 @@ def _catalog_projections() -> list[ProjectionSpec]:
                     availability="local process; no daemon required",
                     compatibility="Typer path, options, help, output, and exit behavior",
                     reason="canonical CLI projection",
+                    canonical_contracts=(),
+                    transport_owner="cli-projection",
+                    shape="exact",
                 )
             )
             for alias in cli["aliases"]:
@@ -78,6 +121,9 @@ def _catalog_projections() -> list[ProjectionSpec]:
                         availability="local process; no daemon required",
                         compatibility="declared CLI compatibility alias",
                         reason=alias["divergence"],
+                        canonical_contracts=(),
+                        transport_owner="cli-projection",
+                        shape="exact",
                     )
                 )
 
@@ -100,6 +146,9 @@ def _catalog_projections() -> list[ProjectionSpec]:
                     availability="stdio; HTTP parity is owned by bh-q0lol.6",
                     compatibility="FastMCP discovery is authoritative",
                     reason=mcp.get("divergence", "positive catalog allowlist"),
+                    canonical_contracts=(),
+                    transport_owner="mcp-projection",
+                    shape="coarser" if composes else "exact",
                 )
             )
         if mcp and (resource := mcp.get("resource")):
@@ -119,6 +168,9 @@ def _catalog_projections() -> list[ProjectionSpec]:
                     availability="stdio; HTTP parity is owned by bh-q0lol.6",
                     compatibility="FastMCP discovery is authoritative",
                     reason=mcp.get("divergence", "positive catalog allowlist"),
+                    canonical_contracts=(),
+                    transport_owner="mcp-projection",
+                    shape="exact",
                 )
             )
     return result
@@ -140,6 +192,8 @@ def _http(
     availability: str,
     compatibility: str,
     reason: str,
+    transport_owner: str,
+    shape: ProjectionShape,
 ) -> ProjectionSpec:
     return ProjectionSpec(
         surface=surface,
@@ -156,6 +210,9 @@ def _http(
         availability=availability,
         compatibility=compatibility,
         reason=reason,
+        canonical_contracts=_canonical_contracts(operation, composes),
+        transport_owner=transport_owner,
+        shape=shape,
     )
 
 
@@ -163,139 +220,177 @@ _OPERATOR_OPENAPI = "openapi:beadhive-host-openapi-v1.json"
 _OPERATOR_AVAILABILITY = "loopback host daemon; CLI and stdio remain daemon-independent"
 _OPERATOR_COMPATIBILITY = "checked OpenAPI 3.1 operation and runtime route must remain identical"
 
-_OPERATOR_PROJECTIONS = (
-    _http(
-        "operator-api",
-        "GET",
-        "/health",
-        "transport-mechanic",
-        request_schema=f"{_OPERATOR_OPENAPI}#/paths/~1health/get",
-        result_schema=f"{_OPERATOR_OPENAPI}#/paths/~1health/get/responses",
-        privilege="public-liveness",
-        availability=_OPERATOR_AVAILABILITY,
-        compatibility=_OPERATOR_COMPATIBILITY,
-        reason="daemon liveness/readiness mechanic",
-    ),
-    _http(
-        "operator-api",
-        "GET",
-        "/api/v1/factory",
-        "composite",
-        composes=("hive.list", "host.list"),
-        request_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1factory/get",
-        result_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1factory/get/responses",
-        privilege="operator-read",
-        availability=_OPERATOR_AVAILABILITY,
-        compatibility=_OPERATOR_COMPATIBILITY,
-        reason="read-only directory composite over canonical hive and host inventories",
-    ),
-    _http(
-        "operator-api",
-        "GET",
-        "/api/v1/factory/hives",
-        "composite",
-        composes=("hive.list", "hive.status"),
-        request_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1factory~1hives/get",
-        result_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1factory~1hives/get/responses",
-        privilege="operator-read",
-        availability=_OPERATOR_AVAILABILITY,
-        compatibility=_OPERATOR_COMPATIBILITY,
-        reason="bounded hive summary composite over canonical hive reads",
-    ),
-    _http(
-        "operator-api",
-        "GET",
-        "/api/v1/hives/{hive_id:path}/snapshot",
-        "composite",
-        composes=("work.list", "work.schedule"),
-        request_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1snapshot/get",
-        result_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1snapshot/get/responses",
-        privilege="operator-read",
-        availability=_OPERATOR_AVAILABILITY,
-        compatibility=_OPERATOR_COMPATIBILITY,
-        reason="read-only state composite; source projection policy remains authoritative",
-    ),
-    _http(
-        "operator-api",
-        "GET",
-        "/api/v1/hives/{hive_id:path}/work-items",
-        "catalog-entry",
-        operation="work.list",
-        request_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1work-items/get",
-        result_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1work-items/get/responses",
-        privilege="operator-read",
-        availability=_OPERATOR_AVAILABILITY,
-        compatibility=_OPERATOR_COMPATIBILITY,
-        reason="richer bounded projection of the canonical work list read",
-    ),
-    _http(
-        "operator-api",
-        "GET",
-        "/api/v1/hives/{hive_id:path}/work-items/{bead_id}",
-        "catalog-entry",
-        operation="work.issue",
-        request_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1work-items~1{{bead_id}}/get",
-        result_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1work-items~1{{bead_id}}/get/responses",
-        privilege="operator-read",
-        availability=_OPERATOR_AVAILABILITY,
-        compatibility=_OPERATOR_COMPATIBILITY,
-        reason="exact-identity projection of the canonical work issue read",
-    ),
-    _http(
-        "operator-api",
-        "GET",
-        "/api/v1/runs/{run_id}/activity",
-        "explicit-exclusion",
-        request_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1runs~1{{run_id}}~1activity/get",
-        result_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1runs~1{{run_id}}~1activity/get/responses",
-        privilege="operator-read",
-        availability=_OPERATOR_AVAILABILITY,
-        compatibility=_OPERATOR_COMPATIBILITY,
-        reason=(
-            "run-journal read has no canonical application operation yet; "
-            "bh-3qkmk.4 owns projection"
-        ),
-    ),
-    _http(
-        "operator-api",
-        "GET",
-        "/api/v1/hives/{hive_id:path}/events",
-        "transport-mechanic",
-        request_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1events/get",
-        result_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1events/get/responses",
-        privilege="operator-read",
-        streaming=True,
-        availability="optional host-daemon SSE route",
-        compatibility=_OPERATOR_COMPATIBILITY,
-        reason="SSE cursor/replay/backpressure is transport policy owned by bh-q0lol",
-    ),
-    _http(
-        "operator-api",
-        "OPTIONS",
-        "/api/v1/hives/{hive_id:path}/events",
-        "transport-mechanic",
-        request_schema=f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1events/options",
-        result_schema=(
-            f"{_OPERATOR_OPENAPI}#/paths/~1api~1v1~1hives~1{{hive_id}}~1events/options/responses"
-        ),
-        privilege="operator-read",
-        availability="optional host-daemon SSE route",
-        compatibility=_OPERATOR_COMPATIBILITY,
-        reason="exact local SSE CORS preflight mechanic",
-    ),
-    _http(
-        "operator-api",
-        "GET",
-        "/openapi.json",
-        "transport-mechanic",
-        request_schema="none",
-        result_schema="openapi:beadhive-host-openapi-v1.json",
-        privilege="operator-read",
-        availability=_OPERATOR_AVAILABILITY,
-        compatibility="must byte-match the checked OpenAPI artifact",
-        reason="transport contract discovery, not an application operation",
-    ),
-)
+# q0lol's RouteSpec manifest remains authoritative for methods, paths, auth scopes, and wire
+# models.  This overlay owns only the catalog relationship and projection shape.  Requiring an
+# exact key match makes a daemon route addition fail closed until Transport classifies it.
+_OPERATOR_APPLICATION_PROJECTIONS: dict[tuple[str, str], dict[str, Any]] = {
+    ("GET", "/health"): {
+        "classification": "transport-mechanic",
+        "shape": "transport-only",
+        "reason": "daemon liveness/readiness mechanic",
+    },
+    ("GET", "/api/v1/factory"): {
+        "classification": "composite",
+        "composes": ("hive.list", "host.list"),
+        "shape": "coarser",
+        "reason": "read-only directory composite over canonical hive and host inventories",
+    },
+    ("GET", "/api/v1/factory/hives"): {
+        "classification": "composite",
+        "composes": ("hive.list", "hive.status"),
+        "shape": "coarser",
+        "reason": "bounded hive summary composite over canonical hive reads",
+    },
+    ("GET", "/api/v1/hives/{hive_id}/snapshot"): {
+        "classification": "composite",
+        "composes": ("work.list", "work.schedule"),
+        "shape": "coarser",
+        "reason": "read-only state composite; source projection policy remains authoritative",
+    },
+    ("GET", "/api/v1/hives/{hive_id}/work-items"): {
+        "classification": "catalog-entry",
+        "operation": "work.list",
+        "shape": "richer",
+        "reason": "richer bounded projection of the canonical work list read",
+    },
+    ("GET", "/api/v1/hives/{hive_id}/work-items/{bead_id}"): {
+        "classification": "catalog-entry",
+        "operation": "work.issue",
+        "shape": "richer",
+        "reason": "richer exact-identity projection of the canonical work issue read",
+    },
+    ("GET", "/api/v1/hives/{hive_id}/events"): {
+        "classification": "transport-mechanic",
+        "shape": "transport-only",
+        "streaming": True,
+        "availability": "optional host-daemon SSE route",
+        "reason": "SSE cursor/replay/backpressure is transport policy owned by bh-q0lol",
+    },
+    ("GET", "/api/v1/runs/{run_id}/activity"): {
+        "classification": "explicit-exclusion",
+        "shape": "excluded",
+        "reason": "run-journal read has no canonical application operation",
+    },
+    ("POST", "/api/v1/runs/{run_id}/activity"): {
+        "classification": "explicit-exclusion",
+        "shape": "excluded",
+        "side_effects": "durable-activity-append",
+        "reason": "authenticated activity publication has no canonical application operation",
+    },
+    ("POST", "/api/v1/terminal/attach-token"): {
+        "classification": "transport-mechanic",
+        "shape": "transport-only",
+        "availability": "typed unavailable response pending the terminal implementation replan",
+        "reason": "terminal session and availability policy is owned by bh-q0lol",
+    },
+    ("WEBSOCKET", "/ws/terminal"): {
+        "classification": "transport-mechanic",
+        "shape": "transport-only",
+        "streaming": True,
+        "availability": "typed unavailable response pending the terminal implementation replan",
+        "reason": "terminal WebSocket/session policy is owned by bh-q0lol",
+    },
+    ("GET", "/openapi.json"): {
+        "classification": "transport-mechanic",
+        "shape": "transport-only",
+        "reason": "transport contract discovery, not an application operation",
+    },
+}
+
+
+def _openapi_operation_reference(method: str, path: str) -> str:
+    pointer_path = path.replace("~", "~0").replace("/", "~1")
+    operation_key = "x-beadhive-websocket" if method == "WEBSOCKET" else method.lower()
+    return f"{_OPERATOR_OPENAPI}#/paths/{pointer_path}/{operation_key}"
+
+
+def _operator_runtime_path(path: str) -> str:
+    return path.replace("{hive_id}", "{hive_id:path}")
+
+
+def _operator_projections() -> tuple[ProjectionSpec, ...]:
+    manifest = {(route.method, route.path): route for route in daemon_contract.NON_MCP_ROUTES}
+    if set(_OPERATOR_APPLICATION_PROJECTIONS) != set(manifest):
+        missing = sorted(set(manifest) - set(_OPERATOR_APPLICATION_PROJECTIONS))
+        extra = sorted(set(_OPERATOR_APPLICATION_PROJECTIONS) - set(manifest))
+        raise ValueError(f"operator projection overlay drift (missing={missing}, extra={extra})")
+
+    rows: list[ProjectionSpec] = []
+    for key, route in manifest.items():
+        semantics = _OPERATOR_APPLICATION_PROJECTIONS[key]
+        reference = _openapi_operation_reference(*key)
+        rows.append(
+            _http(
+                "operator-api",
+                route.method,
+                _operator_runtime_path(route.path),
+                semantics["classification"],
+                operation=semantics.get("operation"),
+                composes=semantics.get("composes", ()),
+                request_schema="none" if route.path == "/openapi.json" else reference,
+                result_schema=(
+                    _OPERATOR_OPENAPI if route.path == "/openapi.json" else f"{reference}/responses"
+                ),
+                privilege=route.scope.value if route.scope is not None else "public-liveness",
+                side_effects=semantics.get("side_effects", "none"),
+                streaming=semantics.get("streaming", False),
+                availability=semantics.get("availability", _OPERATOR_AVAILABILITY),
+                compatibility=_OPERATOR_COMPATIBILITY,
+                reason=semantics["reason"],
+                transport_owner="bh-q0lol",
+                shape=semantics["shape"],
+            )
+        )
+    rows.append(
+        _http(
+            "operator-api",
+            "OPTIONS",
+            "*",
+            "transport-mechanic",
+            request_schema=f"{_OPERATOR_OPENAPI}#/x-beadhive-secure-network-preflight",
+            result_schema=f"{_OPERATOR_OPENAPI}#/x-beadhive-secure-network-preflight",
+            privilege="network-admission",
+            availability=_OPERATOR_AVAILABILITY,
+            compatibility=_OPERATOR_COMPATIBILITY,
+            reason="wildcard CORS preflight/auth admission is owned by bh-q0lol",
+            transport_owner="bh-q0lol",
+            shape="transport-only",
+        )
+    )
+    return tuple(rows)
+
+
+def operator_projection(method: str, path: str) -> ProjectionSpec:
+    """Return catalog semantics for one q0lol-owned manifest route."""
+
+    identifier = f"{method} {_operator_runtime_path(path)}"
+    try:
+        return next(row for row in _operator_projections() if row.identifier == identifier)
+    except StopIteration as exc:  # pragma: no cover - guarded by the exact overlay gate
+        raise ValueError(f"unclassified operator route: {method} {path}") from exc
+
+
+def catalog_projection_extension(row: ProjectionSpec) -> dict[str, Any]:
+    """Render the transport-neutral catalog metadata embedded in wire contracts."""
+
+    return {
+        "classification": row.classification,
+        "shape": row.shape,
+        "canonicalContracts": [
+            {
+                "operation": contract.operation,
+                "requestSchema": contract.request_schema,
+                "resultSchema": contract.result_schema,
+                "privilege": contract.privilege,
+                "sideEffects": contract.side_effects,
+            }
+            for contract in row.canonical_contracts
+        ],
+        "transportOwner": row.transport_owner,
+        "transportPrivilege": row.privilege,
+        "sideEffects": row.side_effects,
+        "reason": row.reason,
+    }
 
 
 _GATEWAY_AVAILABILITY = "Development gateway profile only; local CLI/stdio remain independent"
@@ -311,9 +406,13 @@ def _gateway(
     composes: tuple[str, ...] = (),
     streaming: bool = False,
     side_effects: str = "none",
+    privilege: str | None = None,
+    wire_family: WireFamily,
+    wire_request_schema: str,
+    wire_result_schema: str,
     reason: str,
+    shape: ProjectionShape,
 ) -> ProjectionSpec:
-    symbol = path.replace("/", "~1")
     return _http(
         "gateway",
         method,
@@ -321,110 +420,196 @@ def _gateway(
         classification,
         operation=operation,
         composes=composes,
-        request_schema=f"python:beadhive.remote_gateway#{method.lower()}:{symbol}:request",
-        result_schema=f"python:beadhive.remote_gateway#{method.lower()}:{symbol}:result",
-        privilege="authenticated-development-subject" if path != "/healthz" else "public-liveness",
+        request_schema=schema_ref(wire_family, wire_request_schema),
+        result_schema=schema_ref(wire_family, wire_result_schema),
+        privilege=(
+            privilege
+            or ("authenticated-development-subject" if path != "/healthz" else "public-liveness")
+        ),
         side_effects=side_effects,
         streaming=streaming,
         availability=_GATEWAY_AVAILABILITY,
         compatibility=_GATEWAY_COMPATIBILITY,
         reason=reason,
+        transport_owner="gateway-contract",
+        shape=shape,
     )
 
 
-_GATEWAY_FUNCTIONAL = (
-    _gateway("GET", "/healthz", "transport-mechanic", reason="gateway liveness mechanic"),
-    _gateway(
-        "GET",
-        "/v1/instances",
-        "composite",
-        composes=("hive.list", "host.list"),
-        reason="authorized remote directory composite",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/hives",
-        "catalog-entry",
-        operation="hive.list",
-        reason="richer remote projection of the canonical hive list",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
-        "composite",
-        composes=("work.list", "work.schedule"),
-        reason="bounded remote state composite",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
-        "transport-mechanic",
-        streaming=True,
-        reason="remote SSE cursor/replay mechanic",
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/snapshot",
-        "explicit-exclusion",
-        reason=(
-            "legacy coarse snapshot has no single application operation; "
-            "bh-3qkmk.4 owns replacement mapping"
+def _gateway_projections() -> tuple[ProjectionSpec, ...]:
+    """Build fresh refs so gateway-owned version/schema drift changes the inventory."""
+
+    functional = (
+        _gateway(
+            "GET",
+            "/healthz",
+            "transport-mechanic",
+            wire_family="gateway.v1",
+            wire_request_schema="emptyRequest",
+            wire_result_schema="healthResponse",
+            reason="gateway liveness mechanic",
+            shape="transport-only",
         ),
-    ),
-    _gateway(
-        "GET",
-        "/v1/instances/{stage}/{slug}/events",
-        "transport-mechanic",
-        streaming=True,
-        reason="legacy coarse SSE compatibility mechanic",
-    ),
-    _gateway(
-        "POST",
-        "/v1/instances/{stage}/{slug}/commands/refresh",
-        "explicit-exclusion",
-        side_effects="bounded-runtime-refresh",
-        reason="runtime refresh is not canonical sync; bh-3qkmk.4 owns operation projection",
-    ),
-    _gateway(
-        "POST",
-        "/v1/instances/{stage}/{slug}/commands/{command}",
-        "transport-mechanic",
-        reason="stable unavailable-command response prevents undeclared mutation exposure",
-    ),
-)
-
-_GATEWAY_OPTIONS_PATHS = tuple(
-    spec.identifier.removeprefix("GET ").removeprefix("POST ") for spec in _GATEWAY_FUNCTIONAL[1:8]
-)
-_GATEWAY_MECHANICS = tuple(
-    _gateway(
-        "OPTIONS", path, "transport-mechanic", reason="exact credentialed CORS preflight allowlist"
+        _gateway(
+            "GET",
+            "/v1/instances",
+            "composite",
+            composes=("hive.list", "host.list"),
+            wire_family="gateway.v1",
+            wire_request_schema="instancesRequest",
+            wire_result_schema="instancesResponse",
+            reason="authorized remote directory composite",
+            shape="coarser",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/hives",
+            "catalog-entry",
+            operation="hive.list",
+            wire_family="gateway.read.v1",
+            wire_request_schema="hiveListRequest",
+            wire_result_schema="hiveListResponse",
+            reason="richer remote projection of the canonical hive list",
+            shape="richer",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
+            "composite",
+            composes=("work.list", "work.schedule"),
+            wire_family="gateway.read.v1",
+            wire_request_schema="snapshotRequest",
+            wire_result_schema="snapshotResponse",
+            reason="bounded remote state composite",
+            shape="coarser",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
+            "transport-mechanic",
+            streaming=True,
+            wire_family="gateway.read.v1",
+            wire_request_schema="eventsRequest",
+            wire_result_schema="eventStreamResponse",
+            reason="remote SSE cursor/replay mechanic",
+            shape="transport-only",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/snapshot",
+            "composite",
+            composes=("work.list", "work.schedule"),
+            wire_family="gateway.v1",
+            wire_request_schema="snapshotRequest",
+            wire_result_schema="snapshotResponse",
+            reason="legacy coarse snapshot composes canonical work reads behind gateway.v1",
+            shape="coarser",
+        ),
+        _gateway(
+            "GET",
+            "/v1/instances/{stage}/{slug}/events",
+            "transport-mechanic",
+            streaming=True,
+            wire_family="gateway.v1",
+            wire_request_schema="eventsRequest",
+            wire_result_schema="eventStreamResponse",
+            reason="legacy coarse SSE compatibility mechanic",
+            shape="transport-only",
+        ),
+        _gateway(
+            "POST",
+            "/v1/instances/{stage}/{slug}/commands/refresh",
+            "explicit-exclusion",
+            side_effects="bounded-runtime-refresh",
+            wire_family="gateway.v1",
+            wire_request_schema="refreshRequest",
+            wire_result_schema="commandResponse",
+            reason="runtime refresh is not canonical sync and has no canonical operation",
+            shape="excluded",
+        ),
+        _gateway(
+            "POST",
+            "/v1/instances/{stage}/{slug}/commands/{command}",
+            "transport-mechanic",
+            wire_family="gateway.v1",
+            wire_request_schema="unavailableCommandRequest",
+            wire_result_schema="errorResponse",
+            reason="stable unavailable-command response prevents undeclared mutation exposure",
+            shape="transport-only",
+        ),
     )
-    for path in _GATEWAY_OPTIONS_PATHS
-) + (
-    _gateway("GET", "/{path:path}", "transport-mechanic", reason="closed-world not-found fallback"),
-    _gateway(
-        "OPTIONS", "/{path:path}", "transport-mechanic", reason="closed-world preflight fallback"
-    ),
-)
+    read_options_paths = tuple(spec.identifier.removeprefix("GET ") for spec in functional[1:7])
+    mechanics = tuple(
+        _gateway(
+            "OPTIONS",
+            path,
+            "transport-mechanic",
+            privilege="network-admission",
+            wire_family="gateway.v1",
+            wire_request_schema="readPreflightRequest",
+            wire_result_schema="emptyResponse",
+            reason="exact credentialed CORS preflight allowlist",
+            shape="transport-only",
+        )
+        for path in read_options_paths
+    ) + (
+        _gateway(
+            "OPTIONS",
+            "/v1/instances/{stage}/{slug}/commands/refresh",
+            "transport-mechanic",
+            privilege="network-admission",
+            wire_family="gateway.v1",
+            wire_request_schema="commandPreflightRequest",
+            wire_result_schema="emptyResponse",
+            reason="exact credentialed command CORS preflight allowlist",
+            shape="transport-only",
+        ),
+        _gateway(
+            "GET",
+            "/{path:path}",
+            "transport-mechanic",
+            wire_family="gateway.v1",
+            wire_request_schema="fallbackRequest",
+            wire_result_schema="errorResponse",
+            reason="closed-world not-found fallback",
+            shape="transport-only",
+        ),
+        _gateway(
+            "OPTIONS",
+            "/{path:path}",
+            "transport-mechanic",
+            privilege="network-admission",
+            wire_family="gateway.v1",
+            wire_request_schema="fallbackRequest",
+            wire_result_schema="errorResponse",
+            reason="closed-world preflight fallback",
+            shape="transport-only",
+        ),
+    )
+    return functional + mechanics
 
 
 def projections() -> tuple[ProjectionSpec, ...]:
     """Return the complete inventory in stable surface/identifier order."""
     rows = [
         *_catalog_projections(),
-        *_OPERATOR_PROJECTIONS,
-        *_GATEWAY_FUNCTIONAL,
-        *_GATEWAY_MECHANICS,
+        *_operator_projections(),
+        *_gateway_projections(),
     ]
     return tuple(sorted(rows, key=lambda row: (row.surface, row.identifier)))
 
 
 def document() -> dict[str, Any]:
     """Return the checked, language-neutral transport inventory document."""
+    rows = []
+    for row in projections():
+        rendered = asdict(row)
+        rendered["composes"] = list(row.composes)
+        rendered["canonical_contracts"] = [asdict(contract) for contract in row.canonical_contracts]
+        rows.append(rendered)
     return {
         "format_version": 1,
-        "inventory_version": "1.0.0",
+        "inventory_version": "1.4.0",
         "policy": {
             "classification": (
                 "every public projection is a catalog entry, composite, transport mechanic, "
@@ -440,5 +625,5 @@ def document() -> dict[str, Any]:
                 "and supervision"
             ),
         },
-        "projections": [asdict(row) | {"composes": list(row.composes)} for row in projections()],
+        "projections": rows,
     }

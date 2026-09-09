@@ -16,6 +16,7 @@ from typing import Any
 
 from . import daemon_contract
 from .daemon_contract import NON_MCP_ROUTES, TERMINAL_PROTOCOL, RouteSpec, WireModel
+from .transport_inventory import catalog_projection_extension, operator_projection
 
 OPENAPI_CONTRACT = "beadhive-host-openapi-v1.json"
 OPENAPI_COMPONENTS_SHA256 = "2faaddede747d89b03d91029e78d98d9f62f8d628e1bafd26080cb7824417231"
@@ -458,6 +459,9 @@ def _operation(route: RouteSpec) -> dict[str, Any]:
         "security": [] if route.scope is None else [{"BearerAuth": []}],
         "x-beadhive-required-scope": None if route.scope is None else route.scope.value,
         "responses": {},
+        "x-beadhive-catalog-projection": catalog_projection_extension(
+            operator_projection(route.method, route.path)
+        ),
     }
     parameters = _route_parameters(route)
     if parameters:
@@ -498,6 +502,9 @@ def _websocket_operation(route: RouteSpec) -> dict[str, Any]:
         "summary": "Terminal attachment is unavailable pending the bh-lx6e replan",
         "security": [{"BearerAuth": []}],
         "x-beadhive-required-scope": route.scope.value if route.scope is not None else None,
+        "x-beadhive-catalog-projection": catalog_projection_extension(
+            operator_projection(route.method, route.path)
+        ),
         "x-beadhive-availability": "unavailable-pending-bh-lx6e-replan",
         "x-beadhive-websocket-subprotocol": TERMINAL_PROTOCOL,
         "responses": {
@@ -580,7 +587,7 @@ def generate_openapi_document() -> dict[str, Any]:
         "openapi": "3.1.0",
         "info": {
             "title": "Beadhive Host Daemon API",
-            "version": "1.3.0",
+            "version": "1.4.0",
             "description": (
                 "Generated contract for daemon-owned REST, SSE, health, and reserved terminal "
                 "routes. MCP is intentionally discovered through FastMCP instead."

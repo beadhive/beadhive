@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "inventory_version": "1.0.0",
+  "inventory_version": "1.4.0",
   "policy": {
     "classification": "every public projection is a catalog entry, composite, transport mechanic, or explicit exclusion",
     "composites": "constituents are canonical operations and must preserve application privilege and side-effect policy",
@@ -10,6 +10,7 @@
   "projections": [
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -20,12 +21,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:alerts.show#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -36,12 +40,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:backfill-complexity#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -52,12 +59,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:backup.export#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -68,12 +78,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:backup.migrate-layout#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -84,12 +97,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:backup.reclaim#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -100,12 +116,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:backup.usage#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -116,12 +135,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:bd#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -132,12 +154,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:checkpoint.run#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -148,12 +173,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:config.get#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -164,12 +192,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:config.init#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -180,12 +211,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:config.path#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -196,12 +230,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:config.schema#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -212,12 +249,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:config.set#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -228,12 +268,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:config.show#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -244,12 +287,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:config.split#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -260,12 +306,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:config.unset#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -276,12 +325,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:config.validate#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -292,12 +344,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:contrib.outbound#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -308,12 +363,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:contrib.publish#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -324,12 +382,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dep.auth#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -340,12 +401,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dep.install#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -356,12 +420,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dep.list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -372,12 +439,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dep.show#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -388,12 +458,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:doctor#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -404,12 +477,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dolt.down#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -420,12 +496,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dolt.logs#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -436,12 +515,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dolt.provision#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -452,12 +534,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dolt.ps#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -468,12 +553,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dolt.sql#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -484,12 +572,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:dolt.up#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -500,12 +591,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:escalate#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -516,12 +610,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:git#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -532,12 +629,15 @@
       "reason": "hidden harness-filter alias onto dep auth",
       "request_schema": "catalog:dep.auth#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -548,12 +648,15 @@
       "reason": "hidden harness-filter alias onto dep install",
       "request_schema": "catalog:dep.install#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -564,12 +667,15 @@
       "reason": "hidden harness-filter alias onto dep list",
       "request_schema": "catalog:dep.list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -580,12 +686,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.add#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -596,12 +705,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.archive.list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -612,12 +724,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.archive.prune#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -628,12 +743,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.check-push-fence#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -644,12 +762,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.classify#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -660,12 +781,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.context#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -676,12 +800,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.contrib-profile.build#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -692,12 +819,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.contrib-profile.show#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -708,12 +838,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.disable#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -724,12 +857,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.enable#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -740,12 +876,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.hook.install#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -756,12 +895,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.hook.pre-push#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -772,12 +914,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.hook.push-main#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -788,12 +933,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.init#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -804,12 +952,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -820,12 +971,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.migrate#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -836,12 +990,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.migrate-storage#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -852,12 +1009,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.onboard#parameters",
       "result_schema": "urn:beadhive:wire-schema:bh.hive-onboard:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -868,12 +1028,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.prefix#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -884,12 +1047,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.ready#parameters",
       "result_schema": "urn:beadhive:wire-schema:bh.hive-ready:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -900,12 +1066,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.reclaim#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -916,12 +1085,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.repair#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -932,12 +1104,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.retire#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -948,12 +1123,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.rm#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -964,12 +1142,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:bh.hive-status:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -980,12 +1161,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.survey#parameters",
       "result_schema": "urn:beadhive:wire-schema:bh.hive-survey:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -996,12 +1180,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.sync.peers#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1012,12 +1199,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hive.sync.remotes#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -1028,12 +1218,15 @@
       "reason": "deprecated push-only alias",
       "request_schema": "catalog:hive.sync.remotes#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -1044,12 +1237,72 @@
       "reason": "hidden flat compatibility alias",
       "request_schema": "catalog:host.lease.adopt#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
+      "classification": "catalog-entry",
+      "compatibility": "Typer path, options, help, output, and exit behavior",
+      "composes": [],
+      "identifier": "host daemon install",
+      "operation": "host.daemon.install",
+      "privilege": "ordinary-mutation",
+      "prompts": false,
+      "reason": "canonical CLI projection",
+      "request_schema": "catalog:host.daemon.install#parameters",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
+      "side_effects": "application-mutation",
+      "streaming": false,
+      "surface": "cli",
+      "transport_owner": "cli-projection"
+    },
+    {
+      "availability": "local process; no daemon required",
+      "canonical_contracts": [],
+      "classification": "catalog-entry",
+      "compatibility": "declared CLI compatibility alias",
+      "composes": [],
+      "identifier": "host daemon remove",
+      "operation": "host.daemon.rm",
+      "privilege": "ordinary-mutation",
+      "prompts": false,
+      "reason": "hidden compatibility alias for the canonical short remove command",
+      "request_schema": "catalog:host.daemon.rm#parameters",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
+      "side_effects": "application-mutation",
+      "streaming": false,
+      "surface": "cli",
+      "transport_owner": "cli-projection"
+    },
+    {
+      "availability": "local process; no daemon required",
+      "canonical_contracts": [],
+      "classification": "catalog-entry",
+      "compatibility": "Typer path, options, help, output, and exit behavior",
+      "composes": [],
+      "identifier": "host daemon rm",
+      "operation": "host.daemon.rm",
+      "privilege": "ordinary-mutation",
+      "prompts": false,
+      "reason": "canonical CLI projection",
+      "request_schema": "catalog:host.daemon.rm#parameters",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
+      "side_effects": "application-mutation",
+      "streaming": false,
+      "surface": "cli",
+      "transport_owner": "cli-projection"
+    },
+    {
+      "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1060,12 +1313,34 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.daemon.serve#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
+      "classification": "catalog-entry",
+      "compatibility": "Typer path, options, help, output, and exit behavior",
+      "composes": [],
+      "identifier": "host daemon start",
+      "operation": "host.daemon.start",
+      "privilege": "ordinary-mutation",
+      "prompts": false,
+      "reason": "canonical CLI projection",
+      "request_schema": "catalog:host.daemon.start#parameters",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
+      "side_effects": "application-mutation",
+      "streaming": false,
+      "surface": "cli",
+      "transport_owner": "cli-projection"
+    },
+    {
+      "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1076,12 +1351,34 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.daemon.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
+      "classification": "catalog-entry",
+      "compatibility": "Typer path, options, help, output, and exit behavior",
+      "composes": [],
+      "identifier": "host daemon stop",
+      "operation": "host.daemon.stop",
+      "privilege": "ordinary-mutation",
+      "prompts": false,
+      "reason": "canonical CLI projection",
+      "request_schema": "catalog:host.daemon.stop#parameters",
+      "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
+      "side_effects": "application-mutation",
+      "streaming": false,
+      "surface": "cli",
+      "transport_owner": "cli-projection"
+    },
+    {
+      "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1092,12 +1389,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.dispatch.disable#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1108,12 +1408,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.dispatch.enable#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1124,12 +1427,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.dispatch.logs#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1140,12 +1446,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.dispatch.run#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1156,12 +1465,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.dispatch.runs#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1172,12 +1484,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.dispatch.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1188,12 +1503,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.identity#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1204,12 +1522,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.init#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1220,12 +1541,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.lease.adopt#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1236,12 +1560,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.lease.release#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1252,12 +1579,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -1268,12 +1598,15 @@
       "reason": "hidden release-all compatibility alias",
       "request_schema": "catalog:host.lease.release#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1284,12 +1617,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.provision#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -1300,12 +1636,15 @@
       "reason": "hidden flat compatibility alias",
       "request_schema": "catalog:host.lease.release#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1316,12 +1655,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.retire#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1332,12 +1674,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.rm#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1348,12 +1693,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:host.show#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1364,12 +1712,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hq.bd#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1380,12 +1731,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hq.clone#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1396,12 +1750,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hq.init#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1412,12 +1769,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hq.intake#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1428,12 +1788,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hq.prune-aggregate#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1444,12 +1807,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hq.push#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1460,12 +1826,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hq.restore#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1476,12 +1845,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hq.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1492,12 +1864,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:hub#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1508,12 +1883,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:label.allowed#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1524,12 +1902,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:label.docs#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1540,12 +1921,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:label.report#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1556,12 +1940,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:label.sync#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1572,12 +1959,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:label.validate#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1588,12 +1978,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:mcp.install#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1604,12 +1997,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:mcp.serve#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1620,12 +2016,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:otel.disable#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1636,12 +2035,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:otel.down#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1652,12 +2054,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:otel.enable#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1668,12 +2073,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:otel.endpoint#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1684,12 +2092,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:otel.logs#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1700,12 +2111,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:otel.ps#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1716,12 +2130,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:otel.up#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1732,12 +2149,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plan.adopt#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1748,12 +2168,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plan.approve#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1764,12 +2187,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plan.check#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1780,12 +2206,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plan.file#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1796,12 +2225,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plan.repair#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1812,12 +2244,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plan.show#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1828,12 +2263,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plan.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1844,12 +2282,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plan.verify#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1860,12 +2301,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.git-workspace.groups#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1876,12 +2320,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.add#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1892,12 +2339,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.attach#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1908,12 +2358,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.dispatch#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1924,12 +2377,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.integrate#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1940,12 +2396,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.launch#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1956,12 +2415,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.ps#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1972,12 +2434,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.reap#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -1988,12 +2453,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.spawn#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2004,12 +2472,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2020,12 +2491,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.view.agent#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2036,12 +2510,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.view.bead#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2052,12 +2529,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.view.crew#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2068,12 +2548,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.view.deck#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2084,12 +2567,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.view.layout#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2100,12 +2586,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.view.picker#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2116,12 +2605,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.view.presentation#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2132,12 +2624,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.view.stream#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2148,12 +2643,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.herdr.watch#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2164,12 +2662,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.hitch.up#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2180,12 +2681,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.observaloop.down#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2196,12 +2700,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.observaloop.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2212,12 +2719,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.orca.fix-settings#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2228,12 +2738,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.orca.sync#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2244,12 +2757,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.repowise.index#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2260,12 +2776,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:plugin.repowise.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2276,12 +2795,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:release.attest#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2292,12 +2814,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:release.await#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2308,12 +2833,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:release.order#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2324,12 +2852,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:release.pending#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2340,12 +2871,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:release.preflight#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2356,12 +2890,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:release.preview#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2372,12 +2909,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:release.recover#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2388,12 +2928,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:report#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2404,12 +2947,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:report-target#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2420,12 +2966,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:role#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2436,12 +2985,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:setup.check#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2452,12 +3004,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:setup.guide#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2468,12 +3023,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:setup.show#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2484,12 +3042,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:setup.toolchain#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2500,12 +3061,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:statusline#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2516,12 +3080,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:stream#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2532,12 +3099,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:sync#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2548,12 +3118,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:toolchain.exec#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2564,12 +3137,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:toolchain.list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2580,12 +3156,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:toolchain.show#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2596,12 +3175,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.abandon#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2612,12 +3194,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.accept#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2628,12 +3213,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.approve#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2644,12 +3232,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.artifacts-uploaded#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2660,12 +3251,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.assign#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2676,12 +3270,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.bounce#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2692,12 +3289,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.brief#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2708,12 +3308,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.check#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2724,12 +3327,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.claim#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2740,12 +3346,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.finish#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2756,12 +3365,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.intake#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2772,12 +3384,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.issue#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2788,12 +3403,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.land#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2804,12 +3422,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2820,12 +3441,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.loop#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2836,12 +3460,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.merge#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2852,12 +3479,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.next#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2868,12 +3498,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.promote#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2884,12 +3517,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.readiness#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2900,12 +3536,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.ready#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2916,12 +3555,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.refine#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2932,12 +3574,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.reject#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2948,12 +3593,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.reroute#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2964,12 +3612,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.resume#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2980,12 +3631,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.review#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -2996,12 +3650,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.schedule#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3012,12 +3669,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.show#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3028,12 +3688,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.start#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3044,12 +3707,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:work.submit#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3060,12 +3726,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:worktree.add#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3076,12 +3745,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:worktree.init#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3092,12 +3764,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:worktree.list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3108,12 +3783,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:worktree.mark-abandoned#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3124,12 +3802,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:worktree.mark-landed#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3140,12 +3821,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:worktree.path#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3156,12 +3840,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:worktree.prune#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3172,12 +3859,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:worktree.rm#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "Typer path, options, help, output, and exit behavior",
       "composes": [],
@@ -3188,12 +3878,15 @@
       "reason": "canonical CLI projection",
       "request_schema": "catalog:worktree.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -3204,12 +3897,15 @@
       "reason": "hidden short group alias",
       "request_schema": "catalog:worktree.add#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -3220,12 +3916,15 @@
       "reason": "hidden short group alias",
       "request_schema": "catalog:worktree.init#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -3236,12 +3935,15 @@
       "reason": "hidden short group alias",
       "request_schema": "catalog:worktree.list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -3252,12 +3954,15 @@
       "reason": "hidden short group alias",
       "request_schema": "catalog:worktree.mark-abandoned#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -3268,12 +3973,15 @@
       "reason": "hidden short group alias",
       "request_schema": "catalog:worktree.mark-landed#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -3284,12 +3992,15 @@
       "reason": "hidden short group alias",
       "request_schema": "catalog:worktree.path#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -3300,12 +4011,15 @@
       "reason": "hidden short group alias",
       "request_schema": "catalog:worktree.prune#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -3316,12 +4030,15 @@
       "reason": "hidden short group alias",
       "request_schema": "catalog:worktree.rm#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "local process; no daemon required",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "declared CLI compatibility alias",
       "composes": [],
@@ -3332,12 +4049,15 @@
       "reason": "hidden short group alias",
       "request_schema": "catalog:worktree.status#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "cli"
+      "surface": "cli",
+      "transport_owner": "cli-projection"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
@@ -3346,14 +4066,32 @@
       "privilege": "public-liveness",
       "prompts": false,
       "reason": "gateway liveness mechanic",
-      "request_schema": "python:beadhive.remote_gateway#get:~1healthz:request",
-      "result_schema": "python:beadhive.remote_gateway#get:~1healthz:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/healthResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [
+        {
+          "operation": "hive.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:hive.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        },
+        {
+          "operation": "host.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:host.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        }
+      ],
       "classification": "composite",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [
@@ -3365,14 +4103,17 @@
       "privilege": "authenticated-development-subject",
       "prompts": false,
       "reason": "authorized remote directory composite",
-      "request_schema": "python:beadhive.remote_gateway#get:~1v1~1instances:request",
-      "result_schema": "python:beadhive.remote_gateway#get:~1v1~1instances:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/instancesRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/instancesResponse",
+      "shape": "coarser",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
@@ -3381,14 +4122,25 @@
       "privilege": "authenticated-development-subject",
       "prompts": false,
       "reason": "legacy coarse SSE compatibility mechanic",
-      "request_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1events:request",
-      "result_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1events:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/eventsRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/eventStreamResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": true,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [
+        {
+          "operation": "hive.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:hive.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        }
+      ],
       "classification": "catalog-entry",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
@@ -3397,14 +4149,17 @@
       "privilege": "authenticated-development-subject",
       "prompts": false,
       "reason": "richer remote projection of the canonical hive list",
-      "request_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1hives:request",
-      "result_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1hives:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/hiveListRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/hiveListResponse",
+      "shape": "richer",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
@@ -3413,14 +4168,32 @@
       "privilege": "authenticated-development-subject",
       "prompts": false,
       "reason": "remote SSE cursor/replay mechanic",
-      "request_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1hives~1{hive_id:path}~1events:request",
-      "result_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1hives~1{hive_id:path}~1events:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/eventsRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/eventStreamResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": true,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [
+        {
+          "operation": "work.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        },
+        {
+          "operation": "work.schedule",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.schedule#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        }
+      ],
       "classification": "composite",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [
@@ -3432,30 +4205,54 @@
       "privilege": "authenticated-development-subject",
       "prompts": false,
       "reason": "bounded remote state composite",
-      "request_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1hives~1{hive_id:path}~1snapshot:request",
-      "result_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1hives~1{hive_id:path}~1snapshot:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/snapshotRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/snapshotResponse",
+      "shape": "coarser",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
-      "classification": "explicit-exclusion",
+      "canonical_contracts": [
+        {
+          "operation": "work.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        },
+        {
+          "operation": "work.schedule",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.schedule#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        }
+      ],
+      "classification": "composite",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
-      "composes": [],
+      "composes": [
+        "work.list",
+        "work.schedule"
+      ],
       "identifier": "GET /v1/instances/{stage}/{slug}/snapshot",
       "operation": null,
       "privilege": "authenticated-development-subject",
       "prompts": false,
-      "reason": "legacy coarse snapshot has no single application operation; bh-3qkmk.4 owns replacement mapping",
-      "request_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1snapshot:request",
-      "result_schema": "python:beadhive.remote_gateway#get:~1v1~1instances~1{stage}~1{slug}~1snapshot:result",
+      "reason": "legacy coarse snapshot composes canonical work reads behind gateway.v1",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/snapshotRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/snapshotResponse",
+      "shape": "coarser",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
@@ -3464,142 +4261,169 @@
       "privilege": "authenticated-development-subject",
       "prompts": false,
       "reason": "closed-world not-found fallback",
-      "request_schema": "python:beadhive.remote_gateway#get:~1{path:path}:request",
-      "result_schema": "python:beadhive.remote_gateway#get:~1{path:path}:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/fallbackRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/errorResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
       "identifier": "OPTIONS /v1/instances",
       "operation": null,
-      "privilege": "authenticated-development-subject",
+      "privilege": "network-admission",
       "prompts": false,
       "reason": "exact credentialed CORS preflight allowlist",
-      "request_schema": "python:beadhive.remote_gateway#options:~1v1~1instances:request",
-      "result_schema": "python:beadhive.remote_gateway#options:~1v1~1instances:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
       "identifier": "OPTIONS /v1/instances/{stage}/{slug}/commands/refresh",
       "operation": null,
-      "privilege": "authenticated-development-subject",
+      "privilege": "network-admission",
       "prompts": false,
-      "reason": "exact credentialed CORS preflight allowlist",
-      "request_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1commands~1refresh:request",
-      "result_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1commands~1refresh:result",
+      "reason": "exact credentialed command CORS preflight allowlist",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/commandPreflightRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
       "identifier": "OPTIONS /v1/instances/{stage}/{slug}/events",
       "operation": null,
-      "privilege": "authenticated-development-subject",
+      "privilege": "network-admission",
       "prompts": false,
       "reason": "exact credentialed CORS preflight allowlist",
-      "request_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1events:request",
-      "result_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1events:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
       "identifier": "OPTIONS /v1/instances/{stage}/{slug}/hives",
       "operation": null,
-      "privilege": "authenticated-development-subject",
+      "privilege": "network-admission",
       "prompts": false,
       "reason": "exact credentialed CORS preflight allowlist",
-      "request_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1hives:request",
-      "result_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1hives:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
       "identifier": "OPTIONS /v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
       "operation": null,
-      "privilege": "authenticated-development-subject",
+      "privilege": "network-admission",
       "prompts": false,
       "reason": "exact credentialed CORS preflight allowlist",
-      "request_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1hives~1{hive_id:path}~1events:request",
-      "result_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1hives~1{hive_id:path}~1events:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
       "identifier": "OPTIONS /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
       "operation": null,
-      "privilege": "authenticated-development-subject",
+      "privilege": "network-admission",
       "prompts": false,
       "reason": "exact credentialed CORS preflight allowlist",
-      "request_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1hives~1{hive_id:path}~1snapshot:request",
-      "result_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1hives~1{hive_id:path}~1snapshot:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
       "identifier": "OPTIONS /v1/instances/{stage}/{slug}/snapshot",
       "operation": null,
-      "privilege": "authenticated-development-subject",
+      "privilege": "network-admission",
       "prompts": false,
       "reason": "exact credentialed CORS preflight allowlist",
-      "request_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1snapshot:request",
-      "result_schema": "python:beadhive.remote_gateway#options:~1v1~1instances~1{stage}~1{slug}~1snapshot:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
       "identifier": "OPTIONS /{path:path}",
       "operation": null,
-      "privilege": "authenticated-development-subject",
+      "privilege": "network-admission",
       "prompts": false,
       "reason": "closed-world preflight fallback",
-      "request_schema": "python:beadhive.remote_gateway#options:~1{path:path}:request",
-      "result_schema": "python:beadhive.remote_gateway#options:~1{path:path}:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/fallbackRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/errorResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "explicit-exclusion",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
@@ -3607,15 +4431,18 @@
       "operation": null,
       "privilege": "authenticated-development-subject",
       "prompts": false,
-      "reason": "runtime refresh is not canonical sync; bh-3qkmk.4 owns operation projection",
-      "request_schema": "python:beadhive.remote_gateway#post:~1v1~1instances~1{stage}~1{slug}~1commands~1refresh:request",
-      "result_schema": "python:beadhive.remote_gateway#post:~1v1~1instances~1{stage}~1{slug}~1commands~1refresh:result",
+      "reason": "runtime refresh is not canonical sync and has no canonical operation",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/refreshRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/commandResponse",
+      "shape": "excluded",
       "side_effects": "bounded-runtime-refresh",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
@@ -3624,14 +4451,17 @@
       "privilege": "authenticated-development-subject",
       "prompts": false,
       "reason": "stable unavailable-command response prevents undeclared mutation exposure",
-      "request_schema": "python:beadhive.remote_gateway#post:~1v1~1instances~1{stage}~1{slug}~1commands~1{command}:request",
-      "result_schema": "python:beadhive.remote_gateway#post:~1v1~1instances~1{stage}~1{slug}~1commands~1{command}:result",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/unavailableCommandRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/errorResponse",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "gateway"
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3642,12 +4472,15 @@
       "reason": "alerts is the established singleton collection resource",
       "request_schema": "fastmcp:resource/beadhive://alerts#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3658,12 +4491,15 @@
       "reason": "the root config resource is the established collection representation",
       "request_schema": "fastmcp:resource/beadhive://config#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3674,12 +4510,15 @@
       "reason": "a dotted config key is addressed directly under the config resource",
       "request_schema": "fastmcp:resource/beadhive://config/{key}#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3690,12 +4529,15 @@
       "reason": "doctor is the established singleton diagnostic resource",
       "request_schema": "fastmcp:resource/beadhive://doctor#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3706,12 +4548,15 @@
       "reason": "legacy dual exposure retained for tool-only MCP clients",
       "request_schema": "fastmcp:resource/beadhive://hive/list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3722,12 +4567,15 @@
       "reason": "legacy dual exposure retained for tool-only MCP clients",
       "request_schema": "fastmcp:resource/beadhive://hive/status#parameters",
       "result_schema": "urn:beadhive:wire-schema:bh.hive-status:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3738,12 +4586,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://hive/survey#parameters",
       "result_schema": "urn:beadhive:wire-schema:bh.hive-survey:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3754,12 +4605,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://hq/intake#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3770,12 +4624,15 @@
       "reason": "the resource names the validation result rather than the CLI verb",
       "request_schema": "fastmcp:resource/beadhive://label/validation#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3786,12 +4643,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://plan/list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3802,12 +4662,15 @@
       "reason": "the established template identifies a plan directly by reference",
       "request_schema": "fastmcp:resource/beadhive://plan/{ref}#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3818,12 +4681,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://probe/health#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3834,12 +4700,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://toolchain/list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3850,12 +4719,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://toolchain/show/{name}#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3866,12 +4738,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://work/intake#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3882,12 +4757,15 @@
       "reason": "the cheap duplicate view is nested under the intake collection",
       "request_schema": "fastmcp:resource/beadhive://work/intake/dupes#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3898,12 +4776,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://work/issue/{id}#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3914,12 +4795,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://work/ready#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3930,12 +4814,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://work/schedule/{epic}#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3946,12 +4833,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://work/show/{id}#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3962,12 +4852,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:resource/beadhive://worktree/list#parameters",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-resource"
+      "surface": "mcp-resource",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3978,12 +4871,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:tool/bd_create#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -3994,12 +4890,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:tool/config_set#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -4010,12 +4909,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:tool/hive_add#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -4026,12 +4928,15 @@
       "reason": "legacy dual exposure retained for tool-only MCP clients",
       "request_schema": "fastmcp:tool/hive_list#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "composite",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [
@@ -4045,12 +4950,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:tool/hive_onboard#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:bh.hive-onboard:1",
+      "shape": "coarser",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -4061,12 +4969,15 @@
       "reason": "legacy dual exposure retained for tool-only MCP clients",
       "request_schema": "fastmcp:tool/hive_status#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:bh.hive-status:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -4077,12 +4988,15 @@
       "reason": "legacy dual exposure retained for tool-only MCP clients",
       "request_schema": "fastmcp:tool/plan_check#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "none",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -4093,12 +5007,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:tool/plan_file#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -4109,12 +5026,15 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:tool/toolchain_exec#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+      "canonical_contracts": [],
       "classification": "catalog-entry",
       "compatibility": "FastMCP discovery is authoritative",
       "composes": [],
@@ -4125,12 +5045,30 @@
       "reason": "positive catalog allowlist",
       "request_schema": "fastmcp:tool/work_refine#inputSchema",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
+      "shape": "exact",
       "side_effects": "application-mutation",
       "streaming": false,
-      "surface": "mcp-tool"
+      "surface": "mcp-tool",
+      "transport_owner": "mcp-projection"
     },
     {
       "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [
+        {
+          "operation": "hive.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:hive.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        },
+        {
+          "operation": "host.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:host.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        }
+      ],
       "classification": "composite",
       "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [
@@ -4139,17 +5077,35 @@
       ],
       "identifier": "GET /api/v1/factory",
       "operation": null,
-      "privilege": "operator-read",
+      "privilege": "operator:read",
       "prompts": false,
       "reason": "read-only directory composite over canonical hive and host inventories",
       "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1factory/get",
       "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1factory/get/responses",
+      "shape": "coarser",
       "side_effects": "none",
       "streaming": false,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     },
     {
       "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [
+        {
+          "operation": "hive.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:hive.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        },
+        {
+          "operation": "hive.status",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:hive.status#parameters",
+          "result_schema": "urn:beadhive:wire-schema:bh.hive-status:1",
+          "side_effects": "none"
+        }
+      ],
       "classification": "composite",
       "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [
@@ -4158,33 +5114,54 @@
       ],
       "identifier": "GET /api/v1/factory/hives",
       "operation": null,
-      "privilege": "operator-read",
+      "privilege": "operator:read",
       "prompts": false,
       "reason": "bounded hive summary composite over canonical hive reads",
       "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1factory~1hives/get",
       "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1factory~1hives/get/responses",
+      "shape": "coarser",
       "side_effects": "none",
       "streaming": false,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     },
     {
       "availability": "optional host-daemon SSE route",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [],
       "identifier": "GET /api/v1/hives/{hive_id:path}/events",
       "operation": null,
-      "privilege": "operator-read",
+      "privilege": "operator:read",
       "prompts": false,
       "reason": "SSE cursor/replay/backpressure is transport policy owned by bh-q0lol",
       "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1events/get",
       "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1events/get/responses",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": true,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     },
     {
       "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [
+        {
+          "operation": "work.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        },
+        {
+          "operation": "work.schedule",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.schedule#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        }
+      ],
       "classification": "composite",
       "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [
@@ -4193,65 +5170,93 @@
       ],
       "identifier": "GET /api/v1/hives/{hive_id:path}/snapshot",
       "operation": null,
-      "privilege": "operator-read",
+      "privilege": "operator:read",
       "prompts": false,
       "reason": "read-only state composite; source projection policy remains authoritative",
       "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1snapshot/get",
       "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1snapshot/get/responses",
+      "shape": "coarser",
       "side_effects": "none",
       "streaming": false,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     },
     {
       "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [
+        {
+          "operation": "work.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        }
+      ],
       "classification": "catalog-entry",
       "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [],
       "identifier": "GET /api/v1/hives/{hive_id:path}/work-items",
       "operation": "work.list",
-      "privilege": "operator-read",
+      "privilege": "operator:read",
       "prompts": false,
       "reason": "richer bounded projection of the canonical work list read",
       "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1work-items/get",
       "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1work-items/get/responses",
+      "shape": "richer",
       "side_effects": "none",
       "streaming": false,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     },
     {
       "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [
+        {
+          "operation": "work.issue",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.issue#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        }
+      ],
       "classification": "catalog-entry",
       "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [],
       "identifier": "GET /api/v1/hives/{hive_id:path}/work-items/{bead_id}",
       "operation": "work.issue",
-      "privilege": "operator-read",
+      "privilege": "operator:read",
       "prompts": false,
-      "reason": "exact-identity projection of the canonical work issue read",
+      "reason": "richer exact-identity projection of the canonical work issue read",
       "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1work-items~1{bead_id}/get",
       "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1work-items~1{bead_id}/get/responses",
+      "shape": "richer",
       "side_effects": "none",
       "streaming": false,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     },
     {
       "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [],
       "classification": "explicit-exclusion",
       "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [],
       "identifier": "GET /api/v1/runs/{run_id}/activity",
       "operation": null,
-      "privilege": "operator-read",
+      "privilege": "operator:read",
       "prompts": false,
-      "reason": "run-journal read has no canonical application operation yet; bh-3qkmk.4 owns projection",
+      "reason": "run-journal read has no canonical application operation",
       "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1runs~1{run_id}~1activity/get",
       "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1runs~1{run_id}~1activity/get/responses",
+      "shape": "excluded",
       "side_effects": "none",
       "streaming": false,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     },
     {
       "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [],
@@ -4262,41 +5267,106 @@
       "reason": "daemon liveness/readiness mechanic",
       "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1health/get",
       "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1health/get/responses",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     },
     {
       "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
-      "compatibility": "must byte-match the checked OpenAPI artifact",
+      "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [],
       "identifier": "GET /openapi.json",
       "operation": null,
-      "privilege": "operator-read",
+      "privilege": "operator:read",
       "prompts": false,
       "reason": "transport contract discovery, not an application operation",
       "request_schema": "none",
       "result_schema": "openapi:beadhive-host-openapi-v1.json",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     },
     {
-      "availability": "optional host-daemon SSE route",
+      "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
       "composes": [],
-      "identifier": "OPTIONS /api/v1/hives/{hive_id:path}/events",
+      "identifier": "OPTIONS *",
       "operation": null,
-      "privilege": "operator-read",
+      "privilege": "network-admission",
       "prompts": false,
-      "reason": "exact local SSE CORS preflight mechanic",
-      "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1events/options",
-      "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1hives~1{hive_id}~1events/options/responses",
+      "reason": "wildcard CORS preflight/auth admission is owned by bh-q0lol",
+      "request_schema": "openapi:beadhive-host-openapi-v1.json#/x-beadhive-secure-network-preflight",
+      "result_schema": "openapi:beadhive-host-openapi-v1.json#/x-beadhive-secure-network-preflight",
+      "shape": "transport-only",
       "side_effects": "none",
       "streaming": false,
-      "surface": "operator-api"
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
+    },
+    {
+      "availability": "loopback host daemon; CLI and stdio remain daemon-independent",
+      "canonical_contracts": [],
+      "classification": "explicit-exclusion",
+      "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
+      "composes": [],
+      "identifier": "POST /api/v1/runs/{run_id}/activity",
+      "operation": null,
+      "privilege": "activity:publish",
+      "prompts": false,
+      "reason": "authenticated activity publication has no canonical application operation",
+      "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1runs~1{run_id}~1activity/post",
+      "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1runs~1{run_id}~1activity/post/responses",
+      "shape": "excluded",
+      "side_effects": "durable-activity-append",
+      "streaming": false,
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
+    },
+    {
+      "availability": "typed unavailable response pending the terminal implementation replan",
+      "canonical_contracts": [],
+      "classification": "transport-mechanic",
+      "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
+      "composes": [],
+      "identifier": "POST /api/v1/terminal/attach-token",
+      "operation": null,
+      "privilege": "terminal:attach",
+      "prompts": false,
+      "reason": "terminal session and availability policy is owned by bh-q0lol",
+      "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1terminal~1attach-token/post",
+      "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1api~1v1~1terminal~1attach-token/post/responses",
+      "shape": "transport-only",
+      "side_effects": "none",
+      "streaming": false,
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
+    },
+    {
+      "availability": "typed unavailable response pending the terminal implementation replan",
+      "canonical_contracts": [],
+      "classification": "transport-mechanic",
+      "compatibility": "checked OpenAPI 3.1 operation and runtime route must remain identical",
+      "composes": [],
+      "identifier": "WEBSOCKET /ws/terminal",
+      "operation": null,
+      "privilege": "terminal:attach",
+      "prompts": false,
+      "reason": "terminal WebSocket/session policy is owned by bh-q0lol",
+      "request_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1ws~1terminal/x-beadhive-websocket",
+      "result_schema": "openapi:beadhive-host-openapi-v1.json#/paths/~1ws~1terminal/x-beadhive-websocket/responses",
+      "shape": "transport-only",
+      "side_effects": "none",
+      "streaming": true,
+      "surface": "operator-api",
+      "transport_owner": "bh-q0lol"
     }
   ]
 }

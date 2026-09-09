@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Beadhive Host Daemon API",
-    "version": "1.3.0",
+    "version": "1.4.0",
     "description": "Generated contract for daemon-owned REST, SSE, health, and reserved terminal routes. MCP is intentionally discovered through FastMCP instead."
   },
   "security": [
@@ -68,6 +68,15 @@
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
+        },
+        "x-beadhive-catalog-projection": {
+          "classification": "transport-mechanic",
+          "shape": "transport-only",
+          "canonicalContracts": [],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "public-liveness",
+          "sideEffects": "none",
+          "reason": "daemon liveness/readiness mechanic"
         }
       }
     },
@@ -113,6 +122,30 @@
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
+        },
+        "x-beadhive-catalog-projection": {
+          "classification": "composite",
+          "shape": "coarser",
+          "canonicalContracts": [
+            {
+              "operation": "hive.list",
+              "requestSchema": "catalog:hive.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            },
+            {
+              "operation": "host.list",
+              "requestSchema": "catalog:host.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            }
+          ],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "read-only directory composite over canonical hive and host inventories"
         }
       }
     },
@@ -188,6 +221,30 @@
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
+        },
+        "x-beadhive-catalog-projection": {
+          "classification": "composite",
+          "shape": "coarser",
+          "canonicalContracts": [
+            {
+              "operation": "hive.list",
+              "requestSchema": "catalog:hive.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            },
+            {
+              "operation": "hive.status",
+              "requestSchema": "catalog:hive.status#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:bh.hive-status:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            }
+          ],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "bounded hive summary composite over canonical hive reads"
         },
         "parameters": [
           {
@@ -279,6 +336,30 @@
             "$ref": "#/components/responses/Unavailable"
           }
         },
+        "x-beadhive-catalog-projection": {
+          "classification": "composite",
+          "shape": "coarser",
+          "canonicalContracts": [
+            {
+              "operation": "work.list",
+              "requestSchema": "catalog:work.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            },
+            {
+              "operation": "work.schedule",
+              "requestSchema": "catalog:work.schedule#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            }
+          ],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "read-only state composite; source projection policy remains authoritative"
+        },
         "parameters": [
           {
             "name": "hive_id",
@@ -368,6 +449,23 @@
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
+        },
+        "x-beadhive-catalog-projection": {
+          "classification": "catalog-entry",
+          "shape": "richer",
+          "canonicalContracts": [
+            {
+              "operation": "work.list",
+              "requestSchema": "catalog:work.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            }
+          ],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "richer bounded projection of the canonical work list read"
         },
         "parameters": [
           {
@@ -547,6 +645,23 @@
             "$ref": "#/components/responses/Unavailable"
           }
         },
+        "x-beadhive-catalog-projection": {
+          "classification": "catalog-entry",
+          "shape": "richer",
+          "canonicalContracts": [
+            {
+              "operation": "work.issue",
+              "requestSchema": "catalog:work.issue#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "privilege": "unprivileged-read",
+              "sideEffects": "none"
+            }
+          ],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "richer exact-identity projection of the canonical work issue read"
+        },
         "parameters": [
           {
             "name": "hive_id",
@@ -638,6 +753,15 @@
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
+        },
+        "x-beadhive-catalog-projection": {
+          "classification": "transport-mechanic",
+          "shape": "transport-only",
+          "canonicalContracts": [],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "SSE cursor/replay/backpressure is transport policy owned by bh-q0lol"
         },
         "parameters": [
           {
@@ -744,6 +868,15 @@
             "$ref": "#/components/responses/Unavailable"
           }
         },
+        "x-beadhive-catalog-projection": {
+          "classification": "explicit-exclusion",
+          "shape": "excluded",
+          "canonicalContracts": [],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "run-journal read has no canonical application operation"
+        },
         "parameters": [
           {
             "name": "run_id",
@@ -826,6 +959,15 @@
             "$ref": "#/components/responses/Unavailable"
           }
         },
+        "x-beadhive-catalog-projection": {
+          "classification": "explicit-exclusion",
+          "shape": "excluded",
+          "canonicalContracts": [],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "activity:publish",
+          "sideEffects": "durable-activity-append",
+          "reason": "authenticated activity publication has no canonical application operation"
+        },
         "parameters": [
           {
             "name": "run_id",
@@ -896,6 +1038,15 @@
             }
           }
         },
+        "x-beadhive-catalog-projection": {
+          "classification": "transport-mechanic",
+          "shape": "transport-only",
+          "canonicalContracts": [],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "terminal:attach",
+          "sideEffects": "none",
+          "reason": "terminal session and availability policy is owned by bh-q0lol"
+        },
         "x-beadhive-availability": "unavailable-pending-bh-lx6e-replan"
       }
     },
@@ -909,6 +1060,15 @@
           }
         ],
         "x-beadhive-required-scope": "terminal:attach",
+        "x-beadhive-catalog-projection": {
+          "classification": "transport-mechanic",
+          "shape": "transport-only",
+          "canonicalContracts": [],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "terminal:attach",
+          "sideEffects": "none",
+          "reason": "terminal WebSocket/session policy is owned by bh-q0lol"
+        },
         "x-beadhive-availability": "unavailable-pending-bh-lx6e-replan",
         "x-beadhive-websocket-subprotocol": "bh-terminal.v1",
         "responses": {
@@ -995,6 +1155,15 @@
           "503": {
             "$ref": "#/components/responses/Unavailable"
           }
+        },
+        "x-beadhive-catalog-projection": {
+          "classification": "transport-mechanic",
+          "shape": "transport-only",
+          "canonicalContracts": [],
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read",
+          "sideEffects": "none",
+          "reason": "transport contract discovery, not an application operation"
         }
       }
     }
