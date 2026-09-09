@@ -60,9 +60,18 @@ TRANSPORT_MECHANICS: tuple[CliTransportMechanic, ...] = (
         "backward-compatible default for a Typer group; catalog operations are the typed peers "
         "and remotes leaves",
     ),
+    CliTransportMechanic(
+        "host",
+        "defers generic CLI telemetry while routing host-daemon commands into the daemon-owned "
+        "provider lifecycle",
+    ),
+    CliTransportMechanic(
+        "host daemon",
+        "initializes daemon-scoped telemetry before the selected lifecycle command runs",
+    ),
 )
 
-# All 208 public leaves are eligible today.  The explicit empty set is still policy: adding an
+# All 213 public leaves are eligible today.  The explicit empty set is still policy: adding an
 # exclusion requires a named path and rationale in the same review as its catalog change.
 PROJECTION_EXCLUSIONS: Mapping[str, str] = MappingProxyType({})
 

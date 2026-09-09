@@ -80,13 +80,23 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 208
+    assert len(declarations) == 213
     assert len(parents) == 36
     assert cli.CLI_PROJECTION.paths == tuple(row.path for row in declarations)
     assert cli.CLI_PROJECTION.operations == tuple(row.operation for row in declarations)
     assert cli.CLI_PROJECTION.parents == tuple(row.path for row in parents)
-    assert cli.CLI_PROJECTION.transport_mechanics == ("<root>", "hive sync")
-    assert tuple(row.path for row in TRANSPORT_MECHANICS) == ("<root>", "hive sync")
+    assert cli.CLI_PROJECTION.transport_mechanics == (
+        "<root>",
+        "hive sync",
+        "host",
+        "host daemon",
+    )
+    assert tuple(row.path for row in TRANSPORT_MECHANICS) == (
+        "<root>",
+        "hive sync",
+        "host",
+        "host daemon",
+    )
     assert PROJECTION_EXCLUSIONS == {}
     assert cli.CLI_PROJECTION.exclusions == ()
     assert cli.CLI_PROJECTION.unavailable_optional_plugins == ()
