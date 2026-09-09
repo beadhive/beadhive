@@ -49,6 +49,111 @@ FULL_ONLY_BOUNDARIES = frozenset(
         "release",
     }
 )
+SAMPLE_FIELDS = frozenset(
+    {
+        "sample_id",
+        "provenance",
+        "change_class",
+        "qualifying_merged_change",
+        "observed_at",
+        "commit",
+        "tree",
+        "closure_id",
+        "source_revision",
+        "closure_input_digest",
+        "selector",
+        "plan",
+        "selected",
+        "full",
+        "omitted_tests",
+        "fallback_reasons",
+        "escapes",
+    }
+)
+PLAN_FIELDS = frozenset(
+    {
+        "schema_version",
+        "selector",
+        "range",
+        "changes",
+        "decision",
+        "selection_scope",
+        "confidence",
+        "commands",
+        "tests",
+        "candidate_closures",
+        "changed_modules",
+        "dependency_paths",
+        "contracts",
+        "closure_digests",
+        "exclusions",
+        "fallback_reasons",
+        "artifact_errors",
+        "activation",
+        "plan_digest",
+    }
+)
+PLAN_RANGE_FIELDS = frozenset({"base", "head", "merge_base", "merge_base_status"})
+PLAN_CANDIDATE_FIELDS = frozenset(
+    {
+        "id",
+        "kind",
+        "command",
+        "tests",
+        "contracts",
+        "input_digest",
+        "confidence",
+        "relationships",
+        "applicability",
+    }
+)
+SELECTED_RECEIPT_FIELDS = frozenset(
+    {
+        "schema_version",
+        "receipt_id",
+        "status",
+        "command",
+        "commit",
+        "tree",
+        "tests",
+        "exit_code",
+        "failures",
+        "wall_seconds",
+        "compute_seconds",
+        "queue_seconds",
+        "flake_count",
+        "receipt_digest",
+    }
+)
+FULL_RECEIPT_FIELDS = SELECTED_RECEIPT_FIELDS | {"relevant_failures"}
+AUTHORITY_FIELDS = frozenset(
+    {
+        "sample_id",
+        "provenance",
+        "commit",
+        "tree",
+        "merge_verified",
+        "sample_digest",
+        "plan_digest",
+        "selected_receipt_digest",
+        "full_receipt_digest",
+    }
+)
+ROUTE_BINDING_FIELDS = frozenset(
+    {
+        "schema_version",
+        "plan_digest",
+        "base",
+        "head",
+        "merge_base",
+        "tree",
+        "closure_id",
+        "closure_input_digest",
+        "source_revision",
+        "candidate_decision_digest",
+        "authoritative_evidence_digest",
+    }
+)
 
 
 def _digest_bytes(value: bytes) -> str:
@@ -57,6 +162,35 @@ def _digest_bytes(value: bytes) -> str:
 
 def _canonical_digest(value: object) -> str:
     return _digest_bytes(json.dumps(value, sort_keys=True, separators=(",", ":")).encode())
+
+
+def _without_digest(value: Mapping[str, Any], field: str) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if key != field}
+
+
+def _is_sha(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _is_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and value.startswith("sha256:")
+        and len(value) == 71
+        and all(character in "0123456789abcdef" for character in value[7:])
+    )
+
+
+def _string_list(value: object, *, unique: bool = True) -> bool:
+    return (
+        isinstance(value, list)
+        and all(isinstance(item, str) and item for item in value)
+        and (not unique or len(value) == len(set(value)))
+    )
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -157,6 +291,7 @@ def evaluate_candidate(
     *,
     selector_version: str,
     selector_digest: str,
+    authoritative_evidence: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
     """Return a deterministic eligibility decision from already-recorded observations."""
     reasons = _prerequisite_reasons(closure)
@@ -175,18 +310,41 @@ def evaluate_candidate(
     fallback_count = 0
     change_classes: set[str] = set()
     evidence_modes: set[str] = set()
+    sample_ids: set[str] = set()
+    commits: set[str] = set()
+
+    authorities: dict[str, Mapping[str, Any]] = {}
+    if len(authoritative_evidence) != len(samples):
+        reasons.add("authoritative-evidence-cardinality-mismatch")
+    for authority in authoritative_evidence:
+        if set(authority) != AUTHORITY_FIELDS:
+            reasons.add("invalid-authoritative-evidence-schema")
+            continue
+        authority_id = authority.get("sample_id")
+        if not isinstance(authority_id, str) or not authority_id or authority_id in authorities:
+            reasons.add("invalid-authoritative-evidence-schema")
+            continue
+        authorities[authority_id] = authority
 
     for sample in samples:
+        if set(sample) != SAMPLE_FIELDS:
+            reasons.add("invalid-shadow-sample-schema")
         sample_fallbacks = sample.get("fallback_reasons")
-        if not isinstance(sample_fallbacks, list):
+        if not _string_list(sample_fallbacks):
             reasons.add("invalid-shadow-sample")
             sample_fallbacks = ["invalid-shadow-sample"]
         if sample_fallbacks:
             fallback_count += 1
             reasons.add("shadow-sample-fell-back")
         if sample.get("qualifying_merged_change") is not True:
+            reasons.add("invalid-shadow-sample-cardinality")
             continue
         qualifying.append(sample)
+        sample_id = sample.get("sample_id")
+        if not isinstance(sample_id, str) or not sample_id or sample_id in sample_ids:
+            reasons.add("duplicate-or-invalid-shadow-sample-id")
+        else:
+            sample_ids.add(sample_id)
         provenance = sample.get("provenance")
         if provenance not in {"qualifying-merged-change", "simulation-only"}:
             reasons.add("invalid-shadow-provenance")
@@ -198,94 +356,178 @@ def evaluate_candidate(
         else:
             change_classes.add(change_class)
         timestamp = _parse_timestamp(sample.get("observed_at"))
-        if timestamp is None:
+        if timestamp is None or timestamp.tzinfo is None:
             reasons.add("invalid-shadow-sample")
         else:
             timestamps.append(timestamp)
+
+        commit = sample.get("commit")
+        tree = sample.get("tree")
+        if not _is_sha(commit) or not _is_sha(tree):
+            reasons.add("invalid-authoritative-git-provenance")
+        if isinstance(commit, str) and commit in commits:
+            reasons.add("duplicate-shadow-commit")
+        elif isinstance(commit, str):
+            commits.add(commit)
+
+        coverage = closure.get("coverage_mapping")
+        if (
+            sample.get("closure_id") != closure_id
+            or sample.get("closure_input_digest") != closure_digest
+            or not isinstance(coverage, Mapping)
+            or sample.get("source_revision") != coverage.get("source_revision")
+        ):
+            reasons.add("closure-source-binding-mismatch")
+        if sample.get("closure_input_digest") != closure_digest:
+            reasons.add("closure-input-digest-mismatch")
 
         selected = sample.get("selected")
         full = sample.get("full")
         if not isinstance(selected, Mapping) or not isinstance(full, Mapping):
             reasons.add("invalid-shadow-sample")
             continue
-        sample_tree = sample.get("tree")
-        if (
-            not sample_tree
-            or selected.get("tree") != sample_tree
-            or full.get("tree") != sample_tree
-        ):
+        if selected.get("tree") != tree or full.get("tree") != tree:
             reasons.add("selected-full-tree-mismatch")
+        if selected.get("commit") != commit or full.get("commit") != commit:
+            reasons.add("selected-full-commit-mismatch")
         selector = sample.get("selector")
         if (
             not isinstance(selector, Mapping)
+            or set(selector) != {"version", "digest"}
             or selector.get("version") != selector_version
             or selector.get("digest") != selector_digest
+            or not _is_digest(selector.get("digest"))
         ):
             reasons.add("selector-drift")
-        sample_digest = sample.get("closure_input_digest")
-        if not isinstance(sample_digest, str) or not sample_digest:
-            reasons.add("closure-input-digest-mismatch")
         plan = sample.get("plan")
         if not isinstance(plan, Mapping):
             reasons.add("missing-selector-plan")
         else:
-            if (
-                not isinstance(plan.get("plan_digest"), str)
-                or not plan.get("plan_digest")
-                or plan.get("plan_digest") != plan.get("replay_plan_digest")
-            ):
-                reasons.add("selector-plan-not-deterministic")
+            if set(plan) != PLAN_FIELDS:
+                reasons.add("invalid-selector-plan-schema")
+            recomputed_plan_digest = _canonical_digest(_without_digest(plan, "plan_digest"))
+            if plan.get("plan_digest") != recomputed_plan_digest:
+                reasons.add("selector-plan-digest-mismatch")
             if plan.get("selector") != selector:
                 reasons.add("selector-drift")
             if plan.get("decision") != "selective" or plan.get("fallback_reasons"):
                 reasons.add("shadow-sample-fell-back")
             if plan.get("commands") != [command] or plan.get("tests") != selected.get("tests"):
                 reasons.add("selector-plan-run-mismatch")
+            plan_range = plan.get("range")
+            if (
+                not isinstance(plan_range, Mapping)
+                or set(plan_range) != PLAN_RANGE_FIELDS
+                or plan_range.get("head") != commit
+                or plan_range.get("merge_base_status") != "resolved"
+                or not all(
+                    _is_sha(plan_range.get(field)) for field in ("base", "head", "merge_base")
+                )
+            ):
+                reasons.add("selector-plan-range-mismatch")
+            candidates = plan.get("candidate_closures")
+            candidate = None
+            if isinstance(candidates, list) and len(candidates) == 1:
+                candidate = candidates[0]
+            if (
+                not isinstance(candidate, Mapping)
+                or set(candidate) != PLAN_CANDIDATE_FIELDS
+                or candidate.get("id") != closure_id
+                or candidate.get("command") != command
+                or candidate.get("input_digest") != closure_digest
+                or candidate.get("tests") != selected.get("tests")
+                or candidate.get("applicability") != closure.get("current_applicability")
+                or plan.get("changed_modules") != [closure_id]
+                or plan.get("closure_digests") != {closure_id: closure_digest}
+            ):
+                reasons.add("selector-plan-closure-binding-mismatch")
         if selected.get("command") != command or full.get("command") != FULL_GATE:
             reasons.add("invalid-shadow-command")
-        for collection in (
-            selected.get("tests"),
-            full.get("tests"),
-            sample.get("omitted_tests"),
-        ):
-            if not isinstance(collection, list) or any(
-                not isinstance(item, str) for item in collection
+        if set(selected) != SELECTED_RECEIPT_FIELDS or set(full) != FULL_RECEIPT_FIELDS:
+            reasons.add("invalid-receipt-schema")
+        for result in (selected, full):
+            digest = result.get("receipt_digest")
+            if not _is_digest(digest) or digest != _canonical_digest(
+                _without_digest(result, "receipt_digest")
             ):
+                reasons.add("invalid-receipt-digest")
+            if result.get("schema_version") != 1 or result.get("status") != "completed":
+                reasons.add("incomplete-receipt")
+            if not _string_list(result.get("tests")) or not _string_list(result.get("failures")):
                 reasons.add("incomplete-test-inventory")
+            exit_code = result.get("exit_code")
+            failures = result.get("failures")
+            if (
+                isinstance(exit_code, bool)
+                or not isinstance(exit_code, int)
+                or exit_code < 0
+                or not isinstance(failures, list)
+                or (exit_code == 0) != (not failures)
+            ):
+                reasons.add("inconsistent-test-result")
         selected_tests = selected.get("tests")
         full_tests = full.get("tests")
         omitted_tests = sample.get("omitted_tests")
         inventories = (selected_tests, full_tests, omitted_tests)
-        if all(
-            isinstance(value, list) and all(isinstance(item, str) for item in value)
-            for value in inventories
-        ):
+        if all(_string_list(value) for value in inventories):
+            if not set(selected_tests).issubset(full_tests):
+                reasons.add("selected-tests-not-subset-of-full-inventory")
             expected_omitted = sorted(set(full_tests) - set(selected_tests))
             if sorted(omitted_tests) != expected_omitted:
                 reasons.add("omitted-test-inventory-mismatch")
-        for result in (selected, full):
-            if not isinstance(result.get("failures"), list):
-                reasons.add("incomplete-failure-inventory")
         relevant_failures = full.get("relevant_failures")
         escapes = sample.get("escapes")
-        if not isinstance(relevant_failures, list) or not isinstance(escapes, list):
+        if not _string_list(relevant_failures) or not isinstance(escapes, list):
             reasons.add("invalid-shadow-sample")
             relevant_failures = []
             escapes = []
+        elif not set(relevant_failures).issubset(full.get("failures", ())):
+            reasons.add("inconsistent-relevant-failure-inventory")
         selected_green = selected.get("exit_code") == 0
+        if (
+            selected_green
+            and full.get("exit_code") != 0
+            and set(relevant_failures) != set(full.get("failures", ()))
+        ):
+            reasons.add("inconsistent-relevant-failure-inventory")
         if selected_green and relevant_failures:
             miss_count += 1
             reasons.add("selected-green-full-red-escape")
-            if not escapes or any(
-                not isinstance(escape, Mapping)
-                or not escape.get("root_cause")
-                or not escape.get("correction")
-                or not escape.get("replay")
-                for escape in escapes
+            if (
+                not escapes
+                or {escape.get("failure") for escape in escapes if isinstance(escape, Mapping)}
+                != set(relevant_failures)
+                or any(
+                    not isinstance(escape, Mapping)
+                    or set(escape) != {"failure", "root_cause", "correction", "replay"}
+                    or not escape.get("root_cause")
+                    or not escape.get("correction")
+                    or escape.get("replay") != "passed"
+                    for escape in escapes
+                )
             ):
                 reasons.add("unexplained-or-unreplayed-escape")
         elif escapes:
             reasons.add("escape-ledger-inconsistent")
+
+        authority = authorities.get(str(sample_id))
+        if (
+            authority is None
+            or authority.get("provenance") != provenance
+            or authority.get("commit") != commit
+            or authority.get("tree") != tree
+            or authority.get("sample_digest") != _canonical_digest(sample)
+            or authority.get("plan_digest")
+            != (plan.get("plan_digest") if isinstance(plan, Mapping) else None)
+            or authority.get("selected_receipt_digest") != selected.get("receipt_digest")
+            or authority.get("full_receipt_digest") != full.get("receipt_digest")
+            or (
+                provenance == "qualifying-merged-change"
+                and authority.get("merge_verified") is not True
+            )
+            or (provenance == "simulation-only" and authority.get("merge_verified") is not False)
+        ):
+            reasons.add("receipt-or-provenance-not-authoritatively-validated")
 
         values = {
             "selected_wall": _number(selected.get("wall_seconds")),
@@ -325,6 +567,9 @@ def evaluate_candidate(
         reasons.add("simulation-evidence-not-authoritative")
     if len(evidence_modes) > 1:
         reasons.add("mixed-shadow-provenance")
+    if not samples:
+        reasons.add("closure-input-digest-mismatch")
+        reasons.add("dynamic-trace-revision-mismatch")
     unique_trees = {sample.get("tree") for sample in qualifying if sample.get("tree")}
     if len(unique_trees) != len(qualifying):
         reasons.add("duplicate-shadow-tree")
@@ -333,20 +578,6 @@ def evaluate_candidate(
         window_days = (max(timestamps) - min(timestamps)).days
     if window_days is None or window_days < MIN_WINDOW_DAYS:
         reasons.add("shadow-window-too-young")
-    latest_sample = max(
-        ((timestamp, sample) for timestamp, sample in zip(timestamps, qualifying, strict=False)),
-        default=None,
-        key=lambda item: item[0],
-    )
-    coverage = closure.get("coverage_mapping")
-    if latest_sample is None or latest_sample[1].get("closure_input_digest") != closure_digest:
-        reasons.add("closure-input-digest-mismatch")
-    if (
-        latest_sample is None
-        or not isinstance(coverage, Mapping)
-        or latest_sample[1].get("source_revision") != coverage.get("source_revision")
-    ):
-        reasons.add("dynamic-trace-revision-mismatch")
 
     selected_wall_median = _median(selected_wall)
     full_wall_median = _median(full_wall)
@@ -387,7 +618,10 @@ def evaluate_candidate(
             "fallback_count": fallback_count,
             "fallback_rate": fallback_count / len(samples),
         }
-    return {
+    evidence_digest = _canonical_digest(
+        sorted(authoritative_evidence, key=lambda item: str(item.get("sample_id", "")))
+    )
+    decision = {
         "id": closure_id,
         "command": command,
         "eligible": not reasons,
@@ -399,6 +633,15 @@ def evaluate_candidate(
         ),
         "measurements": measurements,
     }
+    if samples:
+        decision["source_revision"] = (
+            (closure.get("coverage_mapping") or {}).get("source_revision")
+            if isinstance(closure.get("coverage_mapping"), Mapping)
+            else None
+        )
+        decision["authoritative_evidence_digest"] = evidence_digest
+        decision["decision_digest"] = _canonical_digest(decision)
+    return decision
 
 
 def route_validation(
@@ -409,6 +652,7 @@ def route_validation(
     is_leaf: bool,
     local_enabled: bool,
     allow_simulation: bool = False,
+    route_binding: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve one already-built plan; uncertainty always returns the ordinary full gate."""
 
@@ -448,6 +692,48 @@ def route_validation(
     expected_command = candidate.get("command")
     if commands != [expected_command] or not isinstance(expected_command, str):
         return full("selector-command-drift")
+    plan_range = plan.get("range")
+    candidate_rows = plan.get("candidate_closures")
+    candidate_row = None
+    if isinstance(candidate_rows, list) and len(candidate_rows) == 1:
+        candidate_row = candidate_rows[0]
+    if (
+        set(plan) != PLAN_FIELDS
+        or plan.get("plan_digest") != _canonical_digest(_without_digest(plan, "plan_digest"))
+        or not isinstance(plan_range, Mapping)
+        or set(plan_range) != PLAN_RANGE_FIELDS
+        or plan_range.get("merge_base_status") != "resolved"
+        or not all(_is_sha(plan_range.get(field)) for field in ("base", "head", "merge_base"))
+        or not isinstance(candidate_row, Mapping)
+        or set(candidate_row) != PLAN_CANDIDATE_FIELDS
+        or candidate_row.get("id") != closure_id
+        or candidate_row.get("command") != expected_command
+        or candidate_row.get("input_digest") != candidate.get("input_digest")
+        or candidate_row.get("tests") != plan.get("tests")
+        or plan.get("closure_digests") != {closure_id: candidate.get("input_digest")}
+    ):
+        return full("current-selector-plan-mismatch")
+    if candidate.get("decision_digest") != _canonical_digest(
+        _without_digest(candidate, "decision_digest")
+    ):
+        return full("candidate-decision-digest-mismatch")
+    if route_binding is None or set(route_binding) != ROUTE_BINDING_FIELDS:
+        return full("missing-or-invalid-route-binding")
+    if (
+        route_binding.get("schema_version") != 1
+        or route_binding.get("plan_digest") != plan.get("plan_digest")
+        or route_binding.get("base") != plan_range.get("base")
+        or route_binding.get("head") != plan_range.get("head")
+        or route_binding.get("merge_base") != plan_range.get("merge_base")
+        or not _is_sha(route_binding.get("tree"))
+        or route_binding.get("closure_id") != closure_id
+        or route_binding.get("closure_input_digest") != candidate.get("input_digest")
+        or route_binding.get("source_revision") != candidate.get("source_revision")
+        or route_binding.get("candidate_decision_digest") != candidate.get("decision_digest")
+        or route_binding.get("authoritative_evidence_digest")
+        != candidate.get("authoritative_evidence_digest")
+    ):
+        return full("current-route-evidence-mismatch")
     return {
         "command": expected_command,
         "selective": True,

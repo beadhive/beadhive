@@ -149,6 +149,14 @@ does not execute tests, write observations, mutate configuration, or replace a l
 It evaluates already-recorded, exact-tree selected/full observations and resolves uncertainty to
 `just check`.
 
+Production observations must use exact sample, selector-plan, selected-receipt, full-receipt, and
+authority schemas. Every sample is bound to a unique merged commit and tree, the current closure
+and dynamic-trace revision, a canonically recomputed plan digest, and independently validated
+completed receipt digests. Selected tests must be a subset of the full inventory, and exit codes,
+failure inventories, relevant failures, and replayed escapes must agree. Selective routing also
+requires an exact binding to the current plan range/head/tree, candidate closure row and digest,
+source revision, decision digest, and authoritative evidence set; any mismatch runs `just check`.
+
 No real closure is currently a shadow candidate. All 23 prerequisite rows are `uncertified`, have
 no fresh dynamic per-test contexts, have no qualifying same-tree shadow samples, and therefore
 publish unavailable—not estimated—timing, compute, queue, flake, miss, and fallback measurements.
