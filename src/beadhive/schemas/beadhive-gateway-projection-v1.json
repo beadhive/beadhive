@@ -11,8 +11,8 @@
   },
   "wireContracts": [
     {
-      "$id": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3",
-      "digest": "sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3",
+      "$id": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a",
+      "digest": "sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a",
       "contractVersion": "gateway.read.v1",
       "schemaVersion": 1,
       "schemas": {
@@ -191,13 +191,20 @@
             },
             "subscription": {
               "type": "string",
-              "minLength": 1
+              "minLength": 1,
+              "maxLength": 512,
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+              "not": {
+                "pattern": "[\\r\\n\\u2028\\u2029]$"
+              }
             },
             "after": {
               "type": [
                 "string",
                 "null"
-              ]
+              ],
+              "minLength": 1,
+              "maxLength": 512
             }
           }
         },
@@ -208,8 +215,8 @@
       }
     },
     {
-      "$id": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1",
-      "digest": "sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1",
+      "$id": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9",
+      "digest": "sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9",
       "contractVersion": "gateway.v1",
       "schemaVersion": 1,
       "schemas": {
@@ -392,7 +399,10 @@
             },
             "cursor": {
               "type": "string",
-              "minLength": 1
+              "pattern": "^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(0|[1-9][0-9]{0,15})$",
+              "not": {
+                "pattern": "[\\r\\n\\u2028\\u2029]"
+              }
             }
           }
         },
@@ -595,8 +605,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/healthResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/healthResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "public-liveness",
       "sideEffects": "none",
@@ -627,8 +637,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/instancesRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/instancesResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/instancesRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/instancesResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -644,8 +654,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/eventsRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/eventStreamResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/eventsRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/eventStreamResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -669,8 +679,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/hiveListRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/hiveListResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/hiveListRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/hiveListResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -686,8 +696,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/eventsRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/eventStreamResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/eventsRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/eventStreamResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -718,8 +728,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/snapshotRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:b4f87f69438c65c0a8a9c884ffc175c954b602e84b77402130c61cc5b3c2fea3#/schemas/snapshotResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/snapshotRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/snapshotResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -750,8 +760,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/snapshotRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/snapshotResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/snapshotRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/snapshotResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -767,8 +777,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/fallbackRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/errorResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/fallbackRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/errorResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -784,8 +794,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
@@ -801,8 +811,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/commandPreflightRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/commandPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
@@ -818,8 +828,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
@@ -835,8 +845,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
@@ -852,8 +862,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
@@ -869,8 +879,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
@@ -886,8 +896,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/readPreflightRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/emptyResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
@@ -903,8 +913,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/fallbackRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/errorResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/fallbackRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/errorResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
@@ -920,8 +930,8 @@
       "classification": "explicit-exclusion",
       "shape": "excluded",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/refreshRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/commandResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/refreshRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/commandResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "bounded-runtime-refresh",
@@ -937,8 +947,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/unavailableCommandRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:8ed078339b30064a492598355e47320deccb788afb52edf619d763937ebb25b1#/schemas/errorResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/unavailableCommandRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/errorResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",

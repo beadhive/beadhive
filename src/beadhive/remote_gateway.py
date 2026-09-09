@@ -383,10 +383,18 @@ _CORRELATION_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
 )
 _REVISION = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_EVENT_CURSOR = re.compile(
-    r"(?P<epoch>[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
-    r":(?P<sequence>0|[1-9][0-9]{0,15})\Z"
+_EVENT_CURSOR_PATTERN = (
+    r"^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
+    r":(0|[1-9][0-9]{0,15})$"
 )
+_EVENT_CURSOR = re.compile(_EVENT_CURSOR_PATTERN)
+_EVENT_CURSOR_SCHEMA = {
+    "type": "string",
+    "pattern": _EVENT_CURSOR_PATTERN,
+    # ECMA-262 ``$`` can match before a final line terminator. Excluding its four line
+    # terminators keeps JSON Schema search semantics identical to Python ``fullmatch``.
+    "not": {"pattern": r"[\r\n\u2028\u2029]"},
+}
 
 
 def gateway_wire_schemas() -> dict[str, dict[str, object]]:
@@ -499,7 +507,7 @@ def gateway_wire_schemas() -> dict[str, dict[str, object]]:
             "required": ["stage", "slug", "cursor"],
             "properties": {
                 **stage_slug["properties"],  # type: ignore[dict-item]
-                "cursor": {"type": "string", "minLength": 1},
+                "cursor": _EVENT_CURSOR_SCHEMA,
             },
         },
         "eventStreamResponse": {
@@ -1067,7 +1075,7 @@ def build_development_gateway_application(
             subscriptions = request.query_params.getlist("subscription")
             if (
                 len(subscriptions) != 1
-                or not 1 <= len(subscriptions[0]) <= 512
+                or not 1 <= len(subscriptions[0]) <= gateway_read_mod._EVENT_SUBSCRIPTION_MAX_LENGTH
                 or subscriptions[0].strip() != subscriptions[0]
             ):
                 raise gateway_read_mod.ReadSourceInvalidRequest
@@ -1078,7 +1086,10 @@ def build_development_gateway_application(
             if after_values and header_values and after_values[0] != header_values[0]:
                 raise gateway_read_mod.ReadSourceInvalidRequest
             after = after_values[0] if after_values else header_values[0] if header_values else None
-            if after is not None and not 1 <= len(after) <= 512:
+            if (
+                after is not None
+                and not 1 <= len(after) <= gateway_read_mod._EVENT_AFTER_MAX_LENGTH
+            ):
                 raise gateway_read_mod.ReadSourceInvalidRequest
             if not stream_admission.acquire(subject):
                 return rich_error(
@@ -1346,8 +1357,8 @@ def build_development_gateway_application(
             cursor = cursors[0]
             match = _EVENT_CURSOR.fullmatch(cursor)
             assert match is not None
-            epoch = match.group("epoch")
-            sequence = int(match.group("sequence"))
+            epoch = match.group(1)
+            sequence = int(match.group(2))
             if not stream_admission.acquire(subject):
                 return _error(
                     "runtime_unavailable", "The runtime is unavailable.", 503, retryable=True
@@ -1403,8 +1414,8 @@ def build_development_gateway_application(
                         )
                         if (
                             next_match is None
-                            or next_match.group("epoch") != epoch
-                            or int(next_match.group("sequence")) != sequence + 1
+                            or next_match.group(1) != epoch
+                            or int(next_match.group(2)) != sequence + 1
                             or not isinstance(revision, str)
                             or _REVISION.fullmatch(revision) is None
                         ):
