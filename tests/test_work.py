@@ -3711,30 +3711,142 @@ def test_root_first_wrapper_rejects_duplicate_child_attribution_in_suffix(hive, 
     assert any("integrated more than once" in error for error in policy["errors"])
 
 
-@pytest.mark.parametrize(
-    "subject, reverse_parents",
-    [
-        ("chore(merge): compose mr-other onto mr-root", False),
-        ("", True),
-    ],
-)
-def test_epic_submit_rejects_wrong_or_reverse_composition_wrapper(
-    hive, fakebd, capsys, subject, reverse_parents
-):
-    epic = "mr-malformed-compose"
+def test_epic_submit_rejects_noncanonical_composition_subject(hive, fakebd, capsys):
+    epic = "mr-wrong-subject-compose"
     _wrap_reviewed_epic_over_advanced_root(
         hive,
         fakebd,
         epic=epic,
-        subject=subject,
-        reverse_parents=reverse_parents,
+        subject=f"chore(merge): compose {epic} into mr-root",
     )
 
     with pytest.raises(typer.Exit):
         work.submit(bead=epic, as_="disp/lead", hive="myrepo")
 
     err = capsys.readouterr().err
-    assert "composition" in err or "first-parent" in err
+    assert "unaccounted epic merge" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def test_epic_submit_rejects_wrong_epic_composition_wrapper(hive, fakebd, capsys):
+    epic = "mr-wrong-epic-compose"
+    _wrap_reviewed_epic_over_advanced_root(
+        hive,
+        fakebd,
+        epic=epic,
+        subject="chore(merge): compose mr-other onto mr-root",
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert f"names mr-other, expected current epic {epic}" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def _wrap_reviewed_epic_with_reversed_parents(
+    hive,
+    fakebd,
+    *,
+    epic: str,
+    composed_epic: str,
+    composed_parent: str,
+):
+    """Build and prove the reviewed-tip-first parent pair for a canonical-looking wrapper."""
+    root = "mr-root"
+    seat = _start_and_land_children(hive, fakebd, epic=epic, count=2)
+    branch = f"wt/bead/epic/{epic}"
+    reviewed_tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    fakebd.seed(root, title="workstream", issue_type="epic")
+    _mol_branch(hive, root, extra_subject="feat: advance protected root")
+    root_branch = f"wt/bead/epic/{root}"
+    authoritative_parent_tip = _git("rev-parse", root_branch, cwd=hive.main).stdout.strip()
+    fakebd.beads[epic]["parent"] = root
+
+    _git(
+        "merge",
+        "--no-ff",
+        root_branch,
+        "-m",
+        f"chore(merge): compose {composed_epic} onto {composed_parent}",
+        cwd=seat,
+    )
+    wrapper = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    actual_parents = (
+        _git("show", "-s", "--format=%P", wrapper, cwd=hive.main).stdout.strip().split()
+    )
+    assert actual_parents == [reviewed_tip, authoritative_parent_tip]
+
+
+def test_epic_submit_rejects_canonical_composition_wrapper_with_reversed_parents(
+    hive, fakebd, capsys
+):
+    """A canonical subject cannot disguise a reviewed-tip-first wrapper."""
+    epic = "mr-reverse-compose"
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=epic,
+        composed_parent="mr-root",
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "must use the exact integration base as first parent" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+@pytest.mark.parametrize(
+    ("composed_epic", "composed_parent", "identity_diagnostics"),
+    [
+        (
+            "mr-other",
+            "mr-root",
+            ["names mr-other, expected current epic mr-reverse-wrong-identity"],
+        ),
+        (
+            "mr-reverse-wrong-identity",
+            "mr-other-root",
+            ["names parent mr-other-root, expected mr-root"],
+        ),
+        (
+            "mr-other",
+            "mr-other-root",
+            [
+                "names mr-other, expected current epic mr-reverse-wrong-identity",
+                "names parent mr-other-root, expected mr-root",
+            ],
+        ),
+    ],
+)
+def test_reversed_composition_wrapper_reports_identity_before_parent_order(
+    hive,
+    fakebd,
+    capsys,
+    composed_epic,
+    composed_parent,
+    identity_diagnostics,
+):
+    epic = "mr-reverse-wrong-identity"
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=composed_epic,
+        composed_parent=composed_parent,
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert all(diagnostic in err for diagnostic in identity_diagnostics)
+    assert "must use the exact integration base as first parent" not in err
     assert not fakebd.did("set-state", epic, "review=pending")
 
 
