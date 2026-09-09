@@ -4,6 +4,15 @@ Beadhive's module-local commands are advisory developer feedback. They do not re
 authoritative `just check` submit gate or the `just check-all` land/release gate. A green local
 closure must not be reported as either full-gate verdict.
 
+The checked prerequisite certification is
+[`docs/proof/bh-ck1t6.1-test-closure-certification.json`](proof/bh-ck1t6.1-test-closure-certification.json).
+It binds every closure to the content of its owned implementation, public port, mandatory tests,
+shared-contract inputs, and certification tooling. Each record carries the current pytest
+collection count and digest, the best available selector-to-source map, known reverse dependents,
+relationship classes, historical timing where one exists, confidence, and fail-closed triggers.
+The artifact explicitly does **not** activate selective validation. `bh-ck1t6.2` owns deterministic
+selection and `bh-ck1t6.3` owns shadow validation and any provisional local activation.
+
 The checked impact map is [`tests/closures.toml`](../tests/closures.toml). Each present closure
 declares three kinds of evidence:
 
@@ -60,6 +69,57 @@ is reported explicitly rather than being mistaken for a successful closure.
 
 `tests/test_test_closures.py` keeps the drift failures executable. The existing import-boundary
 checker remains part of `just check`; this registry complements it with test-impact ownership.
+`just test-closure-certification-check` verifies the digest-bound evidence and is also composed
+into `architecture-check`, so an owned source, port, shared contract, selector, or certifier change
+cannot silently leave a current-looking record behind.
+
+## Certification semantics
+
+The current evidence uses an explicitly labelled `declared-best-available` mapping. It is finer
+than a directory-only path filter because each record unions owned source, public ports, shared
+contracts, boundary tests, real-adapter tests, and known reverse-dependent tests. It is not fresh
+dynamic per-test coverage, so every record remains `uncertified` with its prerequisites recorded
+and is ineligible for selective activation. The oracle is bound to a checkout-derived identity of
+every tracked input except the generated evidence JSON itself. Its source revision, source tree,
+and full-gate lookup identity are independently recomputed rather than trusted as artifact
+constants. `--check` resolves the candidate Git tree and `just check` command hash against the
+authoritative git-private Beadhive validation ledger. A live exact-tree check may bootstrap its
+own receipt only when its manifest names this host and its PID is live, non-zombie, and has the
+exact recorded process-start token. Unknown, foreign-host, dead, zombie, or recycled-PID owners
+fail closed. Any non-ignored untracked path also blocks both running and completed receipt use,
+because a source or test outside `git ls-files` could affect execution without entering the
+identity. Git-ignored caches and environments remain irrelevant. Every later check requires the
+completed green receipt. Because the generated JSON is the identity's sole self-reference
+exclusion, the checker re-derives its complete material schema: policy and oracle claims, closure
+certification and eligibility, confidence and timing, boundary and coverage mappings, and the
+current pytest collection count and node-ID digest. Collection wall time is intentionally not a
+stored claim because it cannot be reproduced exactly. Closure rows must also match the registry
+one-for-one in canonical order; duplicate, missing, reordered, or extra rows fail before any
+ID-indexed comparison. This is evidence, not a committed cache or permission to skip the gate.
+
+Any affected digest mismatch, unavailable coverage, unenforceable port, unknown ownership,
+shared contract/schema change, dynamic plugin or subprocess ambiguity, compatibility facade,
+generated artifact, or test-infrastructure change falls back to `just check`. Invalidation is
+closure-local: changing one module's owned inputs does not expire an unrelated module's digest.
+Changing the certifier or shared test infrastructure intentionally expires every record. A record
+can become activation-eligible only after the later selector and shadow-validation beads add a
+fresh exact per-test trace, zero unexplained escapes, and a matching same-tree oracle.
+
+## Certification execution evidence
+
+The prerequisite refresh began from clean source revision `6025df2248e1cd00ab46325587df52460a2ad740`
+after the updated lifecycle CLI product-natively refreshed the zero-delta leaf/container from
+`7055fec` before developer edits. Those hashes describe provenance only; they are not the
+candidate identity. The checked artifact derives its current identity from the candidate
+checkout, excluding only its own generated JSON path to avoid self-reference. The prior refs
+remain in reflogs and no manual reset or rebase occurred.
+
+The selected cadence was **economical**: one shared pytest collection universe plus the
+marker-specific integration collection, focused certification regressions, and the named module
+isolation/real-adapter closure before the mandatory full `bh work check` and clean-submit gates.
+The final focused boundary run produced 323 passed, 1 skipped, and 1 known Pydantic warning. The
+single required `bh work check` produces the external authoritative receipt; exact-tree submit
+may then reuse it instead of paying for a duplicate full-suite pass.
 
 ## Initial evidence
 
