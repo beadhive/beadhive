@@ -686,8 +686,13 @@ def impl__reuse_verdict_hit(
     # monkeypatch seam above, then attach provenance here at the clean-checkout boundary.
     main = registry.hive_dir(entry)
     tree = validation_ledger.tree_of(entry, sha)
-    original = validation_records.completed_run(
-        main, tree=tree, command_hash=validation_ledger.cmd_hash(cmd)
+    selected_run_id = hit.get("run_id")
+    original = (
+        hit
+        if isinstance(selected_run_id, str) and selected_run_id
+        else validation_records.completed_run(
+            main, tree=tree, command_hash=validation_ledger.cmd_hash(cmd)
+        )
     )
     if original is not None:
         # The flat 0.15.1 index may still say green after a later `work check` observed red/none:

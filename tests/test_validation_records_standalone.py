@@ -12,8 +12,8 @@ import pytest
 @pytest.mark.parametrize(
     ("mode", "expected"),
     [
-        (("--collect-only",), "14 tests collected"),
-        ((), "14 passed"),
+        (("--collect-only",), "16 tests collected"),
+        ((), "16 passed"),
     ],
 )
 def test_validation_records_standalone_without_import_preload(tmp_path, mode, expected):

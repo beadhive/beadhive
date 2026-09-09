@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import threading
 import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -21,6 +23,19 @@ def _entry(tmp_path, monkeypatch):
 
 def _path(entry, rev="tree"):
     return validation_ledger._verdict_path(entry, rev, validation_ledger.cmd_hash("just check"))
+
+
+def _copy_unrelated_manifests(repo, source, count):
+    root = repo / ".git/bh/validation/runs"
+    for index in range(count):
+        run_id = f"run-unrelated-{index:04d}"
+        manifest = {
+            **source,
+            "run_id": run_id,
+            "tree": f"unrelated-tree-{index}",
+            "command_hash": f"unrelated-command-{index}",
+        }
+        validation_records._atomic_json(root / run_id / "manifest.json", manifest)
 
 
 def test_verdict_path_fails_closed_when_canonical_git_resolution_misses(tmp_path, monkeypatch):
@@ -69,6 +84,169 @@ def test_index_rebuild_restores_green_and_requires_referenced_completed_run(tmp_
     payload["run_id"] = "run-missing"
     pointer.write_text(json.dumps(payload))
     assert validation_ledger.green_verdict(entry, "tree", "just check") is None
+
+
+def test_large_manifest_queries_are_subsecond_with_constant_metadata_probes(tmp_path, monkeypatch):
+    """The measured 689-manifest case is bounded structurally as well as by elapsed time."""
+    entry, repo = _entry(tmp_path, monkeypatch)
+    command = "just check"
+    validation_ledger.record(entry, "tree", command, 0)
+    hit = validation_ledger.green_verdict(entry, "tree", command, cfg={"work": {}})
+    assert hit is not None
+    source = validation_records.read_run(repo, hit["run_id"])
+    assert source is not None
+    _copy_unrelated_manifests(repo, source, 688)
+
+    original_metadata = private_paths._metadata
+    probes = []
+
+    def counted_metadata(hive):
+        probes.append(repo)
+        return original_metadata(hive)
+
+    monkeypatch.setattr(private_paths, "_metadata", counted_metadata)
+    started = time.perf_counter()
+    assert (
+        validation_records.latest_run(
+            repo, tree="tree", command_hash=validation_ledger.cmd_hash(command)
+        )["run_id"]
+        == hit["run_id"]
+    )
+    assert validation_records.running_runs(repo) == []
+    assert validation_ledger.green_verdict(entry, "tree", command, cfg={"work": {}}) is not None
+    elapsed = time.perf_counter() - started
+
+    # Three lookups read 2,067 manifests, but canonical Git metadata is resolved a constant
+    # four times: once per directory query plus once for the derived verdict pointer.
+    assert len(probes) == 4
+    assert elapsed < 1.0, f"689-manifest lookup closure took {elapsed:.3f}s"
+
+
+def test_index_rebuild_resolves_private_root_once_and_ignores_bad_manifests(tmp_path, monkeypatch):
+    entry, repo = _entry(tmp_path, monkeypatch)
+    validation_ledger.record(entry, "tree", "just check", 0)
+    pointer = _path(entry)
+    assert pointer is not None
+    source = validation_records.read_run(repo, json.loads(pointer.read_text())["run_id"])
+    assert source is not None
+    _copy_unrelated_manifests(repo, source, 24)
+    corrupt = repo / ".git/bh/validation/runs/run-corrupt/manifest.json"
+    corrupt.parent.mkdir()
+    corrupt.write_text("{")
+    mismatch = repo / ".git/bh/validation/runs/run-mismatch/manifest.json"
+    mismatch.parent.mkdir()
+    mismatch.write_text(json.dumps({**source, "run_id": "not-run-mismatch"}))
+    pointer.unlink()
+
+    original_metadata = private_paths._metadata
+    probes = []
+
+    def counted_metadata(hive):
+        probes.append(repo)
+        return original_metadata(hive)
+
+    monkeypatch.setattr(private_paths, "_metadata", counted_metadata)
+    assert validation_ledger.rebuild_verdict_index(entry) == 25
+    assert len(probes) == 1
+    assert pointer.is_file()
+
+
+@pytest.mark.parametrize(("later_verdict", "later_exit"), [("green", 0), ("red", 1)])
+def test_index_rebuild_serializes_later_manifest_publication_at_commit_point(
+    tmp_path, monkeypatch, later_verdict, later_exit
+):
+    """A writer arriving after rebuild's snapshot wins after its locked linearization point."""
+    entry, repo = _entry(tmp_path, monkeypatch)
+    command = "just check"
+    key = validation_ledger.cmd_hash(command)
+    validation_ledger.record(entry, "tree", command, 0)
+    pointer = _path(entry)
+    assert pointer is not None and pointer.is_file()
+    old = validation_records.read_run(repo, json.loads(pointer.read_text())["run_id"])
+    assert old is not None
+    later = {
+        **old,
+        "run_id": f"run-zzzz-later-{later_verdict}",
+        "verdict": later_verdict,
+        "exit_code": later_exit,
+        "reason": "command_exit",
+    }
+    later_path = repo / ".git/bh/validation/runs" / later["run_id"] / "manifest.json"
+
+    snapshot_seen = threading.Event()
+    writer_waiting = threading.Event()
+    release_rebuild = threading.Event()
+    writer_done = threading.Event()
+    failures = []
+    results = {}
+    original_sync = validation_ledger._sync_index_from_runs
+    original_transaction = validation_records._verdict_transaction
+    paused = False
+
+    def pause_after_snapshot(*args, **kwargs):
+        nonlocal paused
+        if threading.current_thread().name == "rebuild" and not paused:
+            paused = True
+            snapshot_seen.set()
+            assert release_rebuild.wait(5), "test did not release the rebuild transaction"
+        return original_sync(*args, **kwargs)
+
+    @contextmanager
+    def observe_writer_wait(root):
+        if threading.current_thread().name == "later-writer":
+            writer_waiting.set()
+        with original_transaction(root) as locked:
+            yield locked
+
+    original_metadata = private_paths._metadata
+    metadata_probes = []
+
+    def counted_metadata(hive):
+        metadata_probes.append(threading.current_thread().name)
+        return original_metadata(hive)
+
+    monkeypatch.setattr(validation_ledger, "_sync_index_from_runs", pause_after_snapshot)
+    monkeypatch.setattr(validation_records, "_verdict_transaction", observe_writer_wait)
+    monkeypatch.setattr(private_paths, "_metadata", counted_metadata)
+
+    def rebuild():
+        try:
+            results["rebuilt"] = validation_ledger.rebuild_verdict_index(entry)
+        except BaseException as exc:  # pragma: no cover - surfaced by the assertion below
+            failures.append(exc)
+
+    def publish_later():
+        try:
+            validation_records._write_manifest(later_path, later)
+            validation_ledger._sync_index(entry, "tree", key)
+        except BaseException as exc:  # pragma: no cover - surfaced by the assertion below
+            failures.append(exc)
+        finally:
+            writer_done.set()
+
+    rebuild_thread = threading.Thread(target=rebuild, name="rebuild")
+    writer_thread = threading.Thread(target=publish_later, name="later-writer")
+    rebuild_thread.start()
+    assert snapshot_seen.wait(5)
+    writer_thread.start()
+    assert writer_waiting.wait(5)
+    # The manifest writer reached the same transaction while rebuild still owns it.  It cannot
+    # publish between the retained-manifest read and pointer replace.
+    assert not writer_done.is_set()
+    release_rebuild.set()
+    rebuild_thread.join(5)
+    writer_thread.join(5)
+
+    assert not rebuild_thread.is_alive() and not writer_thread.is_alive()
+    assert failures == []
+    assert results["rebuilt"] == 1  # truthful at rebuild's locked linearization point
+    assert metadata_probes.count("rebuild") == 1
+    if later_verdict == "green":
+        assert json.loads(pointer.read_text())["run_id"] == later["run_id"]
+        assert validation_ledger.green_verdict(entry, "tree", command)["run_id"] == later["run_id"]
+    else:
+        assert not pointer.exists()
+        assert validation_ledger.green_verdict(entry, "tree", command) is None
 
 
 def test_legacy_flat_rows_import_once_as_manifests_and_green_pointer(tmp_path, monkeypatch):
