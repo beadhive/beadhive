@@ -581,7 +581,7 @@ def test_checked_evidence_remains_uncertified_and_disabled() -> None:
         (ROOT / "docs/proof/bh-ck1t6.1-test-closure-certification.json").read_text(encoding="utf-8")
     )
 
-    assert len(checked["closures"]) == 23
+    assert len(checked["closures"]) == 24
     assert checked["policy"]["activation"] == "disabled"
     assert all(row["certification"]["status"] == "uncertified" for row in checked["closures"])
     assert not any(
