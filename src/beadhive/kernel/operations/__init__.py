@@ -1211,3 +1211,19 @@ def document() -> dict[str, Any]:
             }
         ],
     }
+
+
+# Bind the catalog before importing the executor.  The private registry is sealed and survives an
+# executor reload, while this package's deterministic catalog continues to own ``OperationSpec``.
+from ._registry import (  # noqa: E402
+    bind_registered_operation_names as _bind_registered_operation_names,
+)
+
+_bind_registered_operation_names(frozenset(operation.name for operation in operations()))
+del _bind_registered_operation_names
+
+
+# Imported after the catalog declarations so executor typing can remain structural.
+from .executor import (  # noqa: E402
+    OperationExecutor as OperationExecutor,
+)

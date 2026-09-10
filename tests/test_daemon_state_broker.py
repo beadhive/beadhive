@@ -787,6 +787,42 @@ def test_registry_reconciler_removes_cached_hive_without_clients_or_pumps(tmp_pa
     assert not broker.relay._pumps
 
 
+def test_registry_tracking_cannot_starve_the_event_loop(tmp_path: Path) -> None:
+    broker = _broker(
+        sources=_sources(tmp_path, MutableProvider()),
+        runtime=host_daemon.DaemonRuntime(),
+        settings=_settings(),
+    )
+    entered = threading.Event()
+    heartbeat = threading.Event()
+    original_tracked_hive_ids = broker.feed.tracked_hive_ids
+
+    def blocking_tracked_hive_ids() -> frozenset[str]:
+        entered.set()
+        assert heartbeat.wait(1), "feed tracking blocked the broker event loop"
+        return original_tracked_hive_ids()
+
+    broker.feed.tracked_hive_ids = blocking_tracked_hive_ids  # type: ignore[method-assign]
+
+    async def reconcile_while_tracking_is_blocked() -> None:
+        loop = asyncio.get_running_loop()
+
+        def publish_heartbeat() -> None:
+            assert entered.wait(1)
+            loop.call_soon_threadsafe(heartbeat.set)
+
+        publisher = threading.Thread(target=publish_heartbeat)
+        publisher.start()
+        try:
+            await broker.reconcile_registry()
+        finally:
+            publisher.join(2)
+        assert heartbeat.is_set()
+
+    asyncio.run(reconcile_while_tracking_is_blocked())
+    asyncio.run(broker.close())
+
+
 def test_activity_disappearance_recovers_with_reset_without_rotating_other_run(
     tmp_path: Path,
 ) -> None:

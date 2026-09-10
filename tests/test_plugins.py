@@ -24,6 +24,13 @@ from beadhive.adapters.cli.declarations import command_declarations
 from beadhive.adapters.cli.tree import project_cli_tree
 from beadhive.cli_projection import CatalogProjectionError
 from beadhive.kernel.lifecycle import EVENTS_BY_ID, DeliveryStatus
+from beadhive.kernel.telemetry import (
+    EventIdentity,
+    Outcome,
+    RecordingTelemetrySink,
+    SemanticEventName,
+    SemanticTelemetry,
+)
 from beadhive.plugin_runtime_catalog import PLUGIN_RUNTIME_CATALOG, PLUGIN_RUNTIME_MODULES
 
 
@@ -158,6 +165,46 @@ def test_compatibility_facade_projects_cli_and_typed_lifecycle(monkeypatch):
     assert report.event_id == "hive.onboarding"
     assert report.deliveries[0].subscription_id == "orca.register-hive"
     assert report.deliveries[0].status is DeliveryStatus.SUCCEEDED
+
+
+def test_plugin_lifecycle_delivery_uses_semantic_port_with_bounded_attribution(
+    monkeypatch,
+) -> None:
+    sink = RecordingTelemetrySink()
+    semantic = SemanticTelemetry(
+        sink=sink,
+        identity=EventIdentity(service="bh", instance_id="cli-one"),
+    )
+    plugin = _mk("orca", lambda _ctx: None)
+    monkeypatch.setattr(plugins, "registry", lambda: [plugin])
+    monkeypatch.setattr(plugins, "_semantic_telemetry", semantic)
+    participant = plugins.onboard_participants()[0].resolve({}, {})
+    context = type(
+        "Ctx",
+        (),
+        {"hive": "github/acme/repo", "private_prompt": "token=secret"},
+    )()
+
+    report = participant.deliver(context)
+
+    assert report.deliveries[0].status is DeliveryStatus.SUCCEEDED
+    assert len(sink.events) == 2
+    started, completed = sink.events
+    assert started.event_name is SemanticEventName.LIFECYCLE_DELIVERY
+    assert started.correlation_id == "onboard:orca"
+    assert completed.correlation_id == started.correlation_id
+    assert completed.causation_id == started.event_id
+    assert completed.outcome is Outcome.SUCCEEDED
+    assert started.identity.plugin_id == "orca"
+    assert started.identity.plugin_version is None
+    assert {attribute.key.value: attribute.value for attribute in started.attributes} == {
+        "lifecycle.event": "hive.onboarding",
+        "operation.kind": "lifecycle",
+        "retry.count": 0,
+        "surface": "internal",
+    }
+    assert "private_prompt" not in repr(sink.events)
+    assert "token=secret" not in repr(sink.events)
 
 
 def test_runtime_callers_do_not_inspect_nullable_plugin_callbacks():

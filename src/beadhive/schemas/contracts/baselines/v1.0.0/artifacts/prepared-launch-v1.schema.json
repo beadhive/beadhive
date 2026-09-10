@@ -1,0 +1,289 @@
+{
+  "$defs": {
+    "AdapterAction": {
+      "enum": [
+        "allocate",
+        "reuse",
+        "none"
+      ],
+      "title": "AdapterAction",
+      "type": "string"
+    },
+    "AgentLaunchReceipt": {
+      "additionalProperties": false,
+      "description": "Portable, redacted facts proving one resolved core launch.\n\nThe discriminator is deliberately namespaced so extension consumers can route a\nreceipt before validation.  Core consumers accept only this exact base shape: an\nextension must explicitly project its ``core`` member instead of relying on extra\nfields being ignored.",
+      "properties": {
+        "available_seats": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Available Seats",
+          "type": "array",
+          "uniqueItems": true
+        },
+        "bead": {
+          "anyOf": [
+            {
+              "pattern": "^[a-z][a-z0-9-]*-[a-z0-9]+(?:\\.[a-z0-9]+)*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bead"
+        },
+        "current_seat": {
+          "minLength": 1,
+          "title": "Current Seat",
+          "type": "string"
+        },
+        "effort": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Effort"
+        },
+        "harness": {
+          "$ref": "#/$defs/Harness"
+        },
+        "initial_seat": {
+          "minLength": 1,
+          "title": "Initial Seat",
+          "type": "string"
+        },
+        "managed_bead": {
+          "title": "Managed Bead",
+          "type": "boolean"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "receipt_type": {
+          "const": "beadhive.agent-launch",
+          "default": "beadhive.agent-launch",
+          "title": "Receipt Type",
+          "type": "string"
+        },
+        "seat_contract_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Seat Contract Digest",
+          "type": "string"
+        },
+        "seat_contract_version": {
+          "minLength": 1,
+          "title": "Seat Contract Version",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "managed_bead",
+        "initial_seat",
+        "current_seat",
+        "available_seats",
+        "harness",
+        "seat_contract_version",
+        "seat_contract_digest"
+      ],
+      "title": "AgentLaunchReceipt",
+      "type": "object"
+    },
+    "Harness": {
+      "enum": [
+        "codex",
+        "claude",
+        "opencode"
+      ],
+      "title": "Harness",
+      "type": "string"
+    },
+    "WorkspaceBindingKind": {
+      "enum": [
+        "managed_bead",
+        "beadless_seat",
+        "batch",
+        "epic_container",
+        "shared_checkout"
+      ],
+      "title": "WorkspaceBindingKind",
+      "type": "string"
+    },
+    "WorkspaceBindingV1": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Batch Id"
+        },
+        "binding_kind": {
+          "$ref": "#/$defs/WorkspaceBindingKind"
+        },
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "epic_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Epic Id"
+        },
+        "hive_id": {
+          "title": "Hive Id",
+          "type": "string"
+        },
+        "parent_launch_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Launch Id"
+        },
+        "requested_bead": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Bead"
+        },
+        "type": {
+          "const": "beadhive.workspace-binding",
+          "default": "beadhive.workspace-binding",
+          "title": "Type",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        },
+        "worktree_id": {
+          "title": "Worktree Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hive_id",
+        "binding_kind",
+        "branch",
+        "worktree_id"
+      ],
+      "title": "WorkspaceBindingV1",
+      "type": "object"
+    }
+  },
+  "$id": "urn:beadhive:wire-schema:prepared-launch:1",
+  "additionalProperties": false,
+  "properties": {
+    "adapter_action": {
+      "$ref": "#/$defs/AdapterAction"
+    },
+    "adapter_kind": {
+      "title": "Adapter Kind",
+      "type": "string"
+    },
+    "adapter_plan_digest": {
+      "title": "Adapter Plan Digest",
+      "type": "string"
+    },
+    "binding_digest": {
+      "title": "Binding Digest",
+      "type": "string"
+    },
+    "launch_id": {
+      "title": "Launch Id",
+      "type": "string"
+    },
+    "prepare_operation_id": {
+      "title": "Prepare Operation Id",
+      "type": "string"
+    },
+    "profile_receipt": {
+      "$ref": "#/$defs/AgentLaunchReceipt"
+    },
+    "state": {
+      "const": "prepared",
+      "default": "prepared",
+      "title": "State",
+      "type": "string"
+    },
+    "type": {
+      "const": "beadhive.prepared-launch",
+      "default": "beadhive.prepared-launch",
+      "title": "Type",
+      "type": "string"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    },
+    "workspace_binding": {
+      "$ref": "#/$defs/WorkspaceBindingV1"
+    }
+  },
+  "required": [
+    "launch_id",
+    "prepare_operation_id",
+    "profile_receipt",
+    "workspace_binding",
+    "binding_digest",
+    "adapter_kind",
+    "adapter_action",
+    "adapter_plan_digest"
+  ],
+  "title": "PreparedLaunchV1",
+  "type": "object",
+  "version": 1
+}

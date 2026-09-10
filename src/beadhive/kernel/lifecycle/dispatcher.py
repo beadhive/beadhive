@@ -5,9 +5,21 @@ from __future__ import annotations
 import asyncio
 import time
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Any, TypeVar, cast
+
+from beadhive.kernel.telemetry.contracts import (
+    AttributeKey,
+    ErrorClassification,
+    EventError,
+    Outcome,
+    SemanticEventName,
+    SemanticTelemetryPort,
+    TelemetryAttribute,
+    TelemetryObservation,
+    activate_non_fatal,
+)
 
 from .contracts import (
     EVENTS_BY_ID,
@@ -93,7 +105,12 @@ class LifecycleDeliveryError(RuntimeError):
 class LifecycleDispatcher:
     """An immutable coordinator over explicit bindings, not a process-global event bus."""
 
-    def __init__(self, bindings: tuple[SubscriberBinding[Any], ...] = ()) -> None:
+    def __init__(
+        self,
+        bindings: tuple[SubscriberBinding[Any], ...] = (),
+        *,
+        telemetry: SemanticTelemetryPort | None = None,
+    ) -> None:
         for binding in bindings:
             _canonical_event(binding.event)
         identities = [(binding.plugin_id, binding.subscription_id) for binding in bindings]
@@ -110,6 +127,7 @@ class LifecycleDispatcher:
                 ),
             )
         )
+        self._telemetry = telemetry
 
     def bindings_for(
         self, event: LifecycleEvent[ContextT]
@@ -127,7 +145,7 @@ class LifecycleDispatcher:
         deliveries: list[DeliveryResult] = []
         completed: list[SubscriberBinding[ContextT]] = []
         for binding in self.bindings_for(canonical):
-            result = await self._invoke(binding, context, compensation=False)
+            result = await self._invoke(canonical, binding, context, compensation=False)
             deliveries.append(
                 DeliveryResult(
                     plugin_id=binding.plugin_id,
@@ -143,7 +161,7 @@ class LifecycleDispatcher:
                 continue
             if binding.policy.criticality is Criticality.BEST_EFFORT:
                 continue
-            compensations = await self._compensate(reversed(completed), context)
+            compensations = await self._compensate(canonical, reversed(completed), context)
             raise LifecycleDeliveryError(
                 DeliveryReport(canonical.id, tuple(deliveries), compensations)
             )
@@ -151,12 +169,13 @@ class LifecycleDispatcher:
 
     async def _compensate(
         self,
+        event: LifecycleEvent[ContextT],
         bindings: Iterable[SubscriberBinding[ContextT]],
         context: ContextT,
     ) -> tuple[CompensationResult, ...]:
         results: list[CompensationResult] = []
         for binding in bindings:
-            attempts = await self._invoke(binding, context, compensation=True)
+            attempts = await self._invoke(event, binding, context, compensation=True)
             action_id = binding.policy.compensation.action_id
             assert action_id is not None
             results.append(
@@ -169,8 +188,9 @@ class LifecycleDispatcher:
             )
         return tuple(results)
 
-    @staticmethod
     async def _invoke(
+        self,
+        event: LifecycleEvent[ContextT],
         binding: SubscriberBinding[ContextT],
         context: ContextT,
         *,
@@ -181,10 +201,24 @@ class LifecycleDispatcher:
         attempts: list[DeliveryAttempt] = []
         for number in range(1, binding.policy.retry.max_attempts + 1):
             started = time.monotonic()
+            observation = self._begin_delivery(event, binding, context, number=number)
             try:
-                async with asyncio.timeout(binding.policy.timeout_seconds):
-                    await callback(context)
+                with activate_non_fatal(self._telemetry, observation):
+                    async with asyncio.timeout(binding.policy.timeout_seconds):
+                        await callback(context)
+            except asyncio.CancelledError:
+                self._complete_delivery(
+                    observation,
+                    Outcome.CANCELLED,
+                    EventError(ErrorClassification.CANCELLATION, "lifecycle.cancelled"),
+                )
+                raise
             except TimeoutError as exc:
+                self._complete_delivery(
+                    observation,
+                    Outcome.TIMED_OUT,
+                    EventError(ErrorClassification.TIMEOUT, "lifecycle.timeout", True),
+                )
                 attempts.append(
                     DeliveryAttempt(
                         number,
@@ -194,6 +228,11 @@ class LifecycleDispatcher:
                     )
                 )
             except Exception as exc:
+                self._complete_delivery(
+                    observation,
+                    Outcome.FAILED,
+                    EventError(ErrorClassification.INTERNAL, "lifecycle.failed"),
+                )
                 attempts.append(
                     DeliveryAttempt(
                         number,
@@ -203,6 +242,7 @@ class LifecycleDispatcher:
                     )
                 )
             else:
+                self._complete_delivery(observation, Outcome.SUCCEEDED)
                 attempts.append(
                     DeliveryAttempt(
                         number,
@@ -214,3 +254,47 @@ class LifecycleDispatcher:
             if number < binding.policy.retry.max_attempts:
                 await asyncio.sleep(binding.policy.retry.backoff_seconds)
         return tuple(attempts)
+
+    def _begin_delivery(
+        self,
+        event: LifecycleEvent[ContextT],
+        binding: SubscriberBinding[ContextT],
+        context: ContextT,
+        *,
+        number: int,
+    ) -> TelemetryObservation | None:
+        if self._telemetry is None:
+            return None
+        try:
+            identity = replace(
+                self._telemetry.identity,
+                plugin_id=binding.plugin_id,
+                plugin_version=None,
+            )
+            attributes = (
+                TelemetryAttribute(AttributeKey.LIFECYCLE_EVENT, event.id),
+                TelemetryAttribute(AttributeKey.OPERATION_KIND, "lifecycle"),
+                TelemetryAttribute(AttributeKey.RETRY_COUNT, number - 1),
+                TelemetryAttribute(AttributeKey.SURFACE, "internal"),
+            )
+            return self._telemetry.begin(
+                SemanticEventName.LIFECYCLE_DELIVERY,
+                correlation_id=context.correlation_id,
+                identity=identity,
+                attributes=attributes,
+            )
+        except BaseException:
+            return None
+
+    def _complete_delivery(
+        self,
+        observation: TelemetryObservation | None,
+        outcome: Outcome,
+        error: EventError | None = None,
+    ) -> None:
+        if self._telemetry is None:
+            return
+        try:
+            self._telemetry.complete(observation, outcome, error=error)
+        except BaseException:
+            return

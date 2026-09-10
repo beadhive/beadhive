@@ -13,7 +13,8 @@ from typing import Any
 import httpx
 from joserfc.jwk import KeySet
 
-from . import gateway_read
+from . import config as bh_config
+from . import gateway_read, otel
 from .remote_gateway import (
     DEVELOPMENT_INSTANCE_ID,
     DEVELOPMENT_ISSUER,
@@ -196,11 +197,24 @@ def create_application():
         events=runtime.events,
         close=runtime.close,
     )
+    telemetry = None
+    try:
+        raw_config = bh_config.load()
+        otel.init(
+            raw_config,
+            service_name="bh-gateway",
+            enrich_resource=False,
+        )
+        telemetry = otel.current_semantic_telemetry()
+    except BaseException:
+        # Gateway correctness and listener construction never depend on observability.
+        pass
     return build_development_gateway_application(
         config=config,
         verifier=ClerkTokenVerifier(config=config, key=key_set),
         registry=DevelopmentInstanceRegistry(instances={DEVELOPMENT_INSTANCE_ID: instance}),
         read_source=read_source,
+        telemetry=telemetry,
     )
 
 

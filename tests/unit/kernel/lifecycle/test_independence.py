@@ -23,9 +23,13 @@ def test_lifecycle_kernel_import_has_no_framework_or_ambient_dependencies(monkey
         "beadhive.config",
         "beadhive.host_daemon",
         "beadhive.plugins",
+        "beadhive.kernel.telemetry.instrumentation",
+        "beadhive.kernel.telemetry.sinks",
     )
     for name in tuple(sys.modules):
-        if name.startswith(("beadhive.kernel.lifecycle", *forbidden_imports)):
+        if name.startswith(
+            ("beadhive.kernel.lifecycle", "beadhive.kernel.telemetry", *forbidden_imports)
+        ):
             monkeypatch.delitem(sys.modules, name, raising=False)
 
     class RefuseOuterLayer(importlib.abc.MetaPathFinder):

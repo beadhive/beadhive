@@ -3,6 +3,24 @@
 `bh` emits structured logs and — when opted in — OpenTelemetry traces, metrics, and logs.
 Everything is **disabled or no-op by default**; nothing exports without explicit configuration.
 
+## Semantic telemetry ownership
+
+The kernel-owned contract is `beadhive.kernel.telemetry`: it owns event meaning, correlation,
+redaction, and bounded-cardinality attributes, but imports no OpenTelemetry code. Application and
+domain code emit only through `SemanticTelemetryPort`. `beadhive.adapters.telemetry` owns the OTel
+projection, including semantic span lifetime, correlation attributes, identity-free metric labels,
+and delegation to the single finite provider-shutdown budget. `beadhive.otel` is the process
+composition and legacy-dashboard compatibility seam; existing `bh.*` metric names remain stable
+while the semantic adapter also publishes `beadhive.semantic.events` and
+`beadhive.semantic.duration`.
+
+CLI catalog operations, daemon routes/sessions/SSE and dependency probes, gateway exchanges, and
+plugin lifecycle deliveries enter through that semantic port. Adapter failure is observational and
+cannot change their results. Shutdown closes unfinished semantic spans, zeros daemon current-state
+gauges, and asks each exporter to finish within one finite total budget. Collector processes,
+deployment, storage, retry durability, and the separate proposed product-usage pipeline remain
+outside core and are not started or managed by `bh`.
+
 Run-scoped process/provider activity has a separate, host-local contract: the
 [run-journal correlation contract](design/run-journal-correlation-contract.md). Its journal is
 append-only observability, never bead lifecycle state, and a sink failure is diagnosed without

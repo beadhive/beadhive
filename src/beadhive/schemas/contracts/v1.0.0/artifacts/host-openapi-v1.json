@@ -1,0 +1,3808 @@
+{
+  "components": {
+    "responses": {
+      "BadRequest": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Unsafe identity, encoding, body, or cursor"
+      },
+      "Conflict": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "Authoritative identity or revision conflict"
+      },
+      "Forbidden": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "The credential does not grant the operation"
+      },
+      "Gone": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "The supplied resumable cursor has expired"
+      },
+      "NotFound": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "The exact resource does not exist"
+      },
+      "PayloadTooLarge": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "The request body exceeded its configured bound"
+      },
+      "RateLimited": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "The normalized bearer exceeded its configured request rate"
+      },
+      "RequestTimeout": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "The bounded request body read timed out"
+      },
+      "Resnapshot": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Resnapshot"
+            }
+          }
+        },
+        "description": "Fetch a replacement hive snapshot before reconnecting"
+      },
+      "Unauthorized": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "A bearer credential is required"
+      },
+      "Unavailable": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        },
+        "description": "An authoritative source is unavailable or the daemon is draining"
+      }
+    },
+    "schemas": {
+      "ActivityAppendRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "expiresAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "idempotencyKey": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$",
+            "type": "string"
+          },
+          "kind": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "occurredAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "runId": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$",
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "baml",
+              "hitch",
+              "beadhive"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "runId",
+          "idempotencyKey",
+          "source",
+          "kind",
+          "occurredAt",
+          "expiresAt",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "ActivityAppendResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "activityId": {
+            "type": "string"
+          },
+          "idempotencyKey": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "created",
+              "duplicate"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "status",
+          "runId",
+          "idempotencyKey",
+          "activityId",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "ActivityEventPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "activity": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "kind": {
+            "const": "activity",
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "runId",
+          "activity"
+        ],
+        "type": "object"
+      },
+      "ActivityResetPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "activity-reset",
+            "type": "string"
+          },
+          "producerEpoch": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "runId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "runId",
+          "producerEpoch",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "AdvertisedAction": {
+        "additionalProperties": false,
+        "properties": {
+          "advertisedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "availability": {
+            "enum": [
+              "allowed",
+              "confirmation-required",
+              "forbidden",
+              "unavailable"
+            ],
+            "type": "string"
+          },
+          "capability": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "consequence": {
+            "enum": [
+              "navigate",
+              "read",
+              "reversible-write",
+              "approval",
+              "destructive"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[a-z][a-z0-9-]*(\\.[a-z][a-z0-9-]*)+$",
+            "type": "string"
+          },
+          "input": {
+            "$ref": "#/components/schemas/AdvertisedActionInput"
+          },
+          "preconditions": {
+            "$ref": "#/components/schemas/AdvertisedActionPreconditions"
+          },
+          "reason": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "reasonCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sourceRevision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "target": {
+            "$ref": "#/components/schemas/AdvertisedActionTarget"
+          }
+        },
+        "required": [
+          "id",
+          "capability",
+          "target",
+          "availability",
+          "reasonCode",
+          "reason",
+          "consequence",
+          "advertisedAt",
+          "sourceRevision",
+          "preconditions",
+          "input"
+        ],
+        "type": "object"
+      },
+      "AdvertisedActionInput": {
+        "additionalProperties": false,
+        "properties": {
+          "required": {
+            "type": "boolean"
+          },
+          "schema": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "transport": {
+            "enum": [
+              "none",
+              "parameters",
+              "stdin"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "transport",
+          "required",
+          "schema"
+        ],
+        "type": "object"
+      },
+      "AdvertisedActionPreconditions": {
+        "additionalProperties": false,
+        "properties": {
+          "mustMatch": {
+            "type": "boolean"
+          },
+          "sourceRevision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "sourceRevision",
+          "mustMatch"
+        ],
+        "type": "object"
+      },
+      "AdvertisedActionTarget": {
+        "additionalProperties": false,
+        "properties": {
+          "hiveId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "hive",
+              "work-item",
+              "agent"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "hiveId",
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
+      "DaemonStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptingWork": {
+            "type": "boolean"
+          },
+          "dependencies": {
+            "items": {
+              "$ref": "#/components/schemas/DependencyStatus"
+            },
+            "type": "array"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/ReadinessStatus"
+          },
+          "startedAt": {
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "readiness",
+          "acceptingWork",
+          "startedAt",
+          "dependencies"
+        ],
+        "type": "object"
+      },
+      "DependencyStatus": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "enum": [
+              "hq",
+              "dolt",
+              "bead-state",
+              "run-journals"
+            ],
+            "type": "string"
+          },
+          "reasonCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReadinessStatus"
+          }
+        },
+        "required": [
+          "name",
+          "status",
+          "reasonCode"
+        ],
+        "type": "object"
+      },
+      "EntityRemovePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "kind": {
+            "const": "entity-remove",
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "entity",
+          "revision"
+        ],
+        "type": "object"
+      },
+      "EntityUpsertPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "entity": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "kind": {
+            "const": "entity-upsert",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "entity"
+        ],
+        "type": "object"
+      },
+      "Error": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "enum": [
+                  "retry",
+                  "resnapshot",
+                  "reauthenticate",
+                  null
+                ],
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "code": {
+                "type": "string"
+              },
+              "message": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "retryable": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "code",
+              "message",
+              "retryable",
+              "action",
+              "requestId"
+            ],
+            "type": "object"
+          },
+          "schemaVersion": {
+            "const": 1
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "error"
+        ],
+        "type": "object"
+      },
+      "EventCursorString": {
+        "maxLength": 85,
+        "pattern": "^[A-Za-z0-9._~-]{1,64}:(0|[1-9][0-9]{0,19})$",
+        "type": "string"
+      },
+      "FactoryAssignment": {
+        "additionalProperties": false,
+        "properties": {
+          "hiveId": {
+            "type": "string"
+          },
+          "hostId": {
+            "type": "string"
+          },
+          "leaseExpiresAt": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "role": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "held",
+              "renewal-due",
+              "expired",
+              "unassigned",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "hiveId",
+          "hostId",
+          "role",
+          "state",
+          "leaseExpiresAt"
+        ],
+        "type": "object"
+      },
+      "FactoryCapability": {
+        "additionalProperties": false,
+        "properties": {
+          "available": {
+            "type": "boolean"
+          },
+          "name": {
+            "enum": [
+              "snapshot",
+              "events",
+              "activity-read",
+              "activity-publish",
+              "terminal"
+            ],
+            "type": "string"
+          },
+          "reasonCode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "name",
+          "available",
+          "reasonCode"
+        ],
+        "type": "object"
+      },
+      "FactoryCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "generatedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sources": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/FactorySourceCoverage"
+            },
+            "type": "object"
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "generatedAt",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "FactoryHiveAvailability": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "available",
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "FactoryHiveCounts": {
+        "additionalProperties": false,
+        "properties": {
+          "active": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blocked": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "open": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "ready": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "open",
+          "ready",
+          "active",
+          "blocked"
+        ],
+        "type": "object"
+      },
+      "FactoryHiveCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "FactoryHivePage": {
+        "additionalProperties": false,
+        "properties": {
+          "generatedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FactoryHiveSummary"
+            },
+            "maxItems": 200,
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "returnedCount": {
+            "maximum": 200,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "revision",
+          "generatedAt",
+          "items",
+          "returnedCount",
+          "limit",
+          "truncated",
+          "nextCursor",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "FactoryHiveSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "advertisedActions": {
+            "items": {
+              "$ref": "#/components/schemas/AdvertisedAction"
+            },
+            "type": "array"
+          },
+          "asOf": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "availability": {
+            "$ref": "#/components/schemas/FactoryHiveAvailability"
+          },
+          "counts": {
+            "$ref": "#/components/schemas/FactoryHiveCounts"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/FactoryHiveCoverage"
+          },
+          "displayLabel": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "pattern": "^[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+$",
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "opaqueRef": {
+            "pattern": "^hive-sha256-[a-f0-9]{64}$",
+            "type": "string"
+          },
+          "org": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "prefix": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "provider": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "repo": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "revision": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "displayLabel",
+          "opaqueRef",
+          "prefix",
+          "provider",
+          "org",
+          "repo",
+          "kind",
+          "availability",
+          "counts",
+          "revision",
+          "asOf",
+          "coverage",
+          "advertisedActions"
+        ],
+        "type": "object"
+      },
+      "FactoryHost": {
+        "additionalProperties": false,
+        "properties": {
+          "hostId": {
+            "type": "string"
+          },
+          "serviceInstanceId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hostId",
+          "serviceInstanceId"
+        ],
+        "type": "object"
+      },
+      "FactoryRelationship": {
+        "additionalProperties": false,
+        "properties": {
+          "fromHiveId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "toHiveId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "fromHiveId",
+          "toHiveId",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "FactoryResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "assignments": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FactoryAssignment"
+            },
+            "type": "array"
+          },
+          "capabilities": {
+            "items": {
+              "$ref": "#/components/schemas/FactoryCapability"
+            },
+            "type": "array"
+          },
+          "contractVersion": {
+            "default": "beadhive.host-daemon/v1",
+            "type": "string"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/FactoryCoverage"
+          },
+          "generatedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hives": {
+            "items": {
+              "$ref": "#/components/schemas/HiveDescriptor"
+            },
+            "type": "array"
+          },
+          "host": {
+            "$ref": "#/components/schemas/FactoryHost"
+          },
+          "relationships": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/FactoryRelationship"
+            },
+            "type": "array"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/DaemonStatus"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "contractVersion",
+          "generatedAt",
+          "host",
+          "status",
+          "hives",
+          "relationships",
+          "assignments",
+          "capabilities",
+          "coverage"
+        ],
+        "type": "object"
+      },
+      "FactorySourceCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "generatedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "detail",
+          "generatedAt"
+        ],
+        "type": "object"
+      },
+      "HealthResponse": {
+        "additionalProperties": false,
+        "description": "Public, deliberately minimal response.  No identity or dependency details.",
+        "properties": {
+          "contract": {
+            "default": "beadhive.host-daemon/v1",
+            "type": "string"
+          },
+          "ready": {
+            "type": "boolean"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/HealthStatus"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "status",
+          "ready",
+          "contract"
+        ],
+        "type": "object"
+      },
+      "HealthStatus": {
+        "enum": [
+          "live",
+          "stopping"
+        ],
+        "type": "string"
+      },
+      "HeartbeatPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "heartbeat",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind"
+        ],
+        "type": "object"
+      },
+      "HiveDescriptor": {
+        "additionalProperties": false,
+        "properties": {
+          "encodedHiveId": {
+            "type": "string"
+          },
+          "hiveId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "org": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/ReadinessStatus"
+          },
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "hiveId",
+          "encodedHiveId",
+          "provider",
+          "org",
+          "repo",
+          "prefix",
+          "kind",
+          "readiness"
+        ],
+        "type": "object"
+      },
+      "HiveInfo": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "org": {
+            "type": "string"
+          },
+          "prefix": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "repo": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "prefix",
+          "provider",
+          "org",
+          "repo",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "HiveOperatorSnapshot": {
+        "additionalProperties": false,
+        "description": "Top-level UI snapshot envelope; entity bodies retain the shared UI contract.",
+        "properties": {
+          "advertisedActions": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "agents": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "assignments": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/OperatorCoverage"
+          },
+          "cursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/StreamCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependencies": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "epics": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "evidence": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "gates": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "generatedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hive": {
+            "$ref": "#/components/schemas/HiveInfo"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "schedules": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "workItems": {
+            "default": [],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "hive",
+          "revision",
+          "generatedAt",
+          "cursor",
+          "coverage",
+          "workItems",
+          "dependencies",
+          "epics",
+          "gates",
+          "agents",
+          "assignments",
+          "schedules",
+          "evidence",
+          "advertisedActions"
+        ],
+        "type": "object"
+      },
+      "InvalidatePayload": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "invalidate",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "kind",
+          "scopes",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "OperatorCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "generatedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sources": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/OperatorSourceCoverage"
+            },
+            "type": "object"
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "generatedAt",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "OperatorEvent": {
+        "additionalProperties": false,
+        "properties": {
+          "baseSequence": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "generatedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hiveId": {
+            "type": "string"
+          },
+          "observedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload": {
+            "discriminator": {
+              "mapping": {
+                "activity": "#/components/schemas/ActivityEventPayload",
+                "activity-reset": "#/components/schemas/ActivityResetPayload",
+                "entity-remove": "#/components/schemas/EntityRemovePayload",
+                "entity-upsert": "#/components/schemas/EntityUpsertPayload",
+                "heartbeat": "#/components/schemas/HeartbeatPayload",
+                "invalidate": "#/components/schemas/InvalidatePayload",
+                "reset": "#/components/schemas/ResetPayload"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/EntityUpsertPayload"
+              },
+              {
+                "$ref": "#/components/schemas/EntityRemovePayload"
+              },
+              {
+                "$ref": "#/components/schemas/InvalidatePayload"
+              },
+              {
+                "$ref": "#/components/schemas/ResetPayload"
+              },
+              {
+                "$ref": "#/components/schemas/HeartbeatPayload"
+              },
+              {
+                "$ref": "#/components/schemas/ActivityEventPayload"
+              },
+              {
+                "$ref": "#/components/schemas/ActivityResetPayload"
+              }
+            ]
+          },
+          "producerEpoch": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "sequence": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "source": {
+            "enum": [
+              "beads",
+              "runtime",
+              "git",
+              "mcp",
+              "supervisor"
+            ],
+            "type": "string"
+          },
+          "subscriptionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "hiveId",
+          "subscriptionId",
+          "producerEpoch",
+          "sequence",
+          "baseSequence",
+          "observedAt",
+          "generatedAt",
+          "source",
+          "revision",
+          "entity",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "OperatorSourceCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "fromCache": {
+            "default": 0,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "generatedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/SourceProvenance"
+          },
+          "requested": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "returned": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "requested",
+          "returned",
+          "fromCache",
+          "detail",
+          "generatedAt",
+          "provenance"
+        ],
+        "type": "object"
+      },
+      "ProjectionCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "sources": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ProjectionSourceCoverage"
+            },
+            "type": "object"
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "sources"
+        ],
+        "type": "object"
+      },
+      "ProjectionFreshness": {
+        "additionalProperties": false,
+        "properties": {
+          "asOf": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "const": "fresh",
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "asOf"
+        ],
+        "type": "object"
+      },
+      "ProjectionSourceCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "ReadinessStatus": {
+        "enum": [
+          "ready",
+          "degraded",
+          "unavailable",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "ResetPayload": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "reset",
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "Resnapshot": {
+        "additionalProperties": false,
+        "description": "The exact short error body emitted before an SSE client resnapshots.",
+        "properties": {
+          "action": {
+            "const": "resnapshot",
+            "default": "resnapshot",
+            "type": "string"
+          },
+          "error": {
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "error",
+          "action"
+        ],
+        "type": "object"
+      },
+      "RunActivityCoverage": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "partial",
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "RunActivityEnvelope": {
+        "additionalProperties": false,
+        "description": "Allowlisted activity record emitted by ``operator_contract``.",
+        "properties": {
+          "beadId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "driver": {
+            "type": "string"
+          },
+          "elapsedMs": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hiveId": {
+            "type": "string"
+          },
+          "occurredAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "producerEpoch": {
+            "type": "string"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "providerSessionId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runId": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "sequence": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "sourceRevision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "hiveId",
+          "runId",
+          "beadId",
+          "providerSessionId",
+          "driver",
+          "provider",
+          "protocol",
+          "occurredAt",
+          "elapsedMs",
+          "sourceRevision",
+          "producerEpoch",
+          "sequence",
+          "payload"
+        ],
+        "type": "object"
+      },
+      "RunActivityFrame": {
+        "additionalProperties": false,
+        "description": "Typed snapshot/delta/reset envelope emitted by the exact-run activity feed.",
+        "properties": {
+          "activities": {
+            "items": {
+              "$ref": "#/components/schemas/RunActivityEnvelope"
+            },
+            "type": "array"
+          },
+          "baseSequence": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "coverage": {
+            "$ref": "#/components/schemas/RunActivityCoverage"
+          },
+          "hiveId": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "snapshot",
+              "delta",
+              "reset"
+            ],
+            "type": "string"
+          },
+          "producerEpoch": {
+            "type": "string"
+          },
+          "resetReason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "runId": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "sequence": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sourceRevision": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "kind",
+          "hiveId",
+          "runId",
+          "producerEpoch",
+          "sequence",
+          "baseSequence",
+          "sourceRevision",
+          "coverage",
+          "resetReason",
+          "activities"
+        ],
+        "type": "object"
+      },
+      "SourceProvenance": {
+        "additionalProperties": false,
+        "properties": {
+          "documentRef": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "instance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "runId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "system": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "system",
+          "instance",
+          "runId",
+          "documentRef"
+        ],
+        "type": "object"
+      },
+      "StreamCursor": {
+        "additionalProperties": false,
+        "properties": {
+          "observedAt": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "producerEpoch": {
+            "type": "string"
+          },
+          "sequence": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subscriptionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "subscriptionId",
+          "producerEpoch",
+          "sequence",
+          "observedAt"
+        ],
+        "type": "object"
+      },
+      "TerminalUnavailable": {
+        "additionalProperties": false,
+        "properties": {
+          "code": {
+            "const": "pty_verdict_pending",
+            "default": "pty_verdict_pending",
+            "type": "string"
+          },
+          "message": {
+            "const": "Terminal attachment is not available on this host.",
+            "default": "Terminal attachment is not available on this host.",
+            "type": "string"
+          },
+          "retryable": {
+            "const": false,
+            "default": false,
+            "type": "boolean"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "type": {
+            "const": "terminal.unavailable",
+            "default": "terminal.unavailable",
+            "type": "string"
+          },
+          "verdictBead": {
+            "const": "bh-lx6e.3",
+            "default": "bh-lx6e.3",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "type",
+          "code",
+          "message",
+          "retryable",
+          "verdictBead"
+        ],
+        "type": "object"
+      },
+      "WorkDependencyDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "direction": {
+            "enum": [
+              "prerequisite",
+              "dependent"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "type",
+          "state",
+          "direction"
+        ],
+        "type": "object"
+      },
+      "WorkItemDetail": {
+        "additionalProperties": false,
+        "description": "Typed envelope emitted by ``operator_work_items.detail_payload``.",
+        "properties": {
+          "coverage": {
+            "$ref": "#/components/schemas/ProjectionCoverage"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/ProjectionFreshness"
+          },
+          "generatedAt": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hiveId": {
+            "type": "string"
+          },
+          "item": {
+            "$ref": "#/components/schemas/WorkItemExact"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "hiveId",
+          "revision",
+          "generatedAt",
+          "freshness",
+          "coverage",
+          "item",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "WorkItemExact": {
+        "additionalProperties": false,
+        "properties": {
+          "acceptanceCriteria": {
+            "type": "string"
+          },
+          "advertisedActions": {
+            "items": {
+              "$ref": "#/components/schemas/AdvertisedAction"
+            },
+            "type": "array"
+          },
+          "agents": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blockedDependentCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "blockerCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "claim": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "closedAt": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdBy": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "deferUntil": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dependencies": {
+            "items": {
+              "$ref": "#/components/schemas/WorkDependencyDetail"
+            },
+            "type": "array"
+          },
+          "dependents": {
+            "items": {
+              "$ref": "#/components/schemas/WorkDependencyDetail"
+            },
+            "type": "array"
+          },
+          "description": {
+            "type": "string"
+          },
+          "design": {
+            "type": "string"
+          },
+          "dueAt": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "gates": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "hiveId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "issueType": {
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "liveAgentCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "moleculeType": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "notes": {
+            "type": "string"
+          },
+          "openGateCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/WorkItemReadiness"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/WorkItemRef"
+          },
+          "remainingLabelCount": {
+            "const": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ref",
+          "revision",
+          "hiveId",
+          "id",
+          "title",
+          "issueType",
+          "priority",
+          "status",
+          "readiness",
+          "assignee",
+          "owner",
+          "parentId",
+          "blockerCount",
+          "blockedDependentCount",
+          "labels",
+          "remainingLabelCount",
+          "openGateCount",
+          "liveAgentCount",
+          "updatedAt",
+          "description",
+          "design",
+          "acceptanceCriteria",
+          "notes",
+          "moleculeType",
+          "createdBy",
+          "createdAt",
+          "closedAt",
+          "dueAt",
+          "deferUntil",
+          "claim",
+          "dependencies",
+          "dependents",
+          "gates",
+          "agents",
+          "advertisedActions"
+        ],
+        "type": "object"
+      },
+      "WorkItemQueue": {
+        "additionalProperties": false,
+        "description": "Typed envelope emitted by ``operator_work_items.queue_payload``.",
+        "properties": {
+          "coverage": {
+            "$ref": "#/components/schemas/ProjectionCoverage"
+          },
+          "freshness": {
+            "$ref": "#/components/schemas/ProjectionFreshness"
+          },
+          "generatedAt": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "hiveId": {
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/WorkItemRow"
+            },
+            "maxItems": 200,
+            "type": "array"
+          },
+          "limit": {
+            "maximum": 200,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "queue": {
+            "enum": [
+              "ready",
+              "active",
+              "blocked",
+              "recent"
+            ],
+            "type": "string"
+          },
+          "returned": {
+            "maximum": 200,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "type": "string"
+          },
+          "schemaVersion": {
+            "const": 1,
+            "default": 1,
+            "type": "integer"
+          },
+          "truncated": {
+            "type": "boolean"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "hiveId",
+          "queue",
+          "revision",
+          "generatedAt",
+          "freshness",
+          "coverage",
+          "limit",
+          "returned",
+          "truncated",
+          "nextCursor",
+          "items",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "WorkItemQueueName": {
+        "enum": [
+          "ready",
+          "active",
+          "blocked",
+          "recent"
+        ],
+        "type": "string"
+      },
+      "WorkItemReadiness": {
+        "additionalProperties": false,
+        "properties": {
+          "reason": {
+            "type": "string"
+          },
+          "state": {
+            "enum": [
+              "ready",
+              "active",
+              "blocked",
+              "completed",
+              "unavailable"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "WorkItemRef": {
+        "additionalProperties": false,
+        "properties": {
+          "hiveId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "kind": {
+            "const": "work-item",
+            "type": "string"
+          }
+        },
+        "required": [
+          "hiveId",
+          "kind",
+          "id"
+        ],
+        "type": "object"
+      },
+      "WorkItemRow": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "blockedDependentCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "blockerCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "hiveId": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "id": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "issueType": {
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 12,
+            "type": "array"
+          },
+          "liveAgentCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "openGateCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "parentId": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "priority": {
+            "type": "integer"
+          },
+          "readiness": {
+            "$ref": "#/components/schemas/WorkItemReadiness"
+          },
+          "ref": {
+            "$ref": "#/components/schemas/WorkItemRef"
+          },
+          "remainingLabelCount": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "ref",
+          "revision",
+          "hiveId",
+          "id",
+          "title",
+          "issueType",
+          "priority",
+          "status",
+          "readiness",
+          "assignee",
+          "owner",
+          "parentId",
+          "blockerCount",
+          "blockedDependentCount",
+          "labels",
+          "remainingLabelCount",
+          "openGateCount",
+          "liveAgentCount",
+          "updatedAt"
+        ],
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "BearerAuth": {
+        "bearerFormat": "bh1.<credential-id>.<secret>",
+        "scheme": "bearer",
+        "type": "http",
+        "x-beadhive-required-scope": "operator:read"
+      }
+    }
+  },
+  "info": {
+    "description": "Generated contract for daemon-owned REST, SSE, health, and reserved terminal routes. MCP is intentionally discovered through FastMCP instead.",
+    "title": "Beadhive Host Daemon API",
+    "version": "1.4.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/factory": {
+      "get": {
+        "operationId": "operatorFactory",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactoryResponse"
+                }
+              }
+            },
+            "description": "Product wire response"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "operatorFactory",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [
+            {
+              "operation": "hive.list",
+              "privilege": "unprivileged-read",
+              "requestSchema": "catalog:hive.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "sideEffects": "none"
+            },
+            {
+              "operation": "host.list",
+              "privilege": "unprivileged-read",
+              "requestSchema": "catalog:host.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "sideEffects": "none"
+            }
+          ],
+          "classification": "composite",
+          "reason": "read-only directory composite over canonical hive and host inventories",
+          "shape": "coarser",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read"
+        },
+        "x-beadhive-required-scope": "operator:read"
+      }
+    },
+    "/api/v1/factory/hives": {
+      "get": {
+        "operationId": "operatorFactoryHives",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque snapshot-scoped cursor returned by nextCursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "availability",
+            "required": false,
+            "schema": {
+              "enum": [
+                "available",
+                "unavailable"
+              ]
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FactoryHivePage"
+                }
+              }
+            },
+            "description": "Product wire response",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The current representation matches If-None-Match",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "operatorFactoryHives",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [
+            {
+              "operation": "hive.list",
+              "privilege": "unprivileged-read",
+              "requestSchema": "catalog:hive.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "sideEffects": "none"
+            },
+            {
+              "operation": "hive.status",
+              "privilege": "unprivileged-read",
+              "requestSchema": "catalog:hive.status#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:bh.hive-status:1",
+              "sideEffects": "none"
+            }
+          ],
+          "classification": "composite",
+          "reason": "bounded hive summary composite over canonical hive reads",
+          "shape": "coarser",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read"
+        },
+        "x-beadhive-required-scope": "operator:read"
+      }
+    },
+    "/api/v1/hives/{hive_id}/events": {
+      "get": {
+        "operationId": "operatorHiveEvents",
+        "parameters": [
+          {
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F.",
+            "in": "path",
+            "name": "hive_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "subscription",
+            "required": true,
+            "schema": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Resumable producerEpoch:sequence cursor, with an 85-byte maximum.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EventCursorString"
+            }
+          },
+          {
+            "deprecated": true,
+            "description": "Temporary compatibility alias. Resumable producerEpoch:sequence cursor, with an 85-byte maximum.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EventCursorString"
+            }
+          },
+          {
+            "description": "Resumable producerEpoch:sequence cursor, with an 85-byte maximum.",
+            "in": "header",
+            "name": "Last-Event-ID",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EventCursorString"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/OperatorEvent"
+                }
+              }
+            },
+            "description": "Product wire response",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache, no-transform"
+                }
+              },
+              "X-Accel-Buffering": {
+                "schema": {
+                  "const": "no"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/Resnapshot"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "operatorHiveEvents",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [],
+          "classification": "transport-mechanic",
+          "reason": "SSE cursor/replay/backpressure is transport policy owned by bh-q0lol",
+          "shape": "transport-only",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read"
+        },
+        "x-beadhive-required-scope": "operator:read",
+        "x-beadhive-streaming": "server-sent-events"
+      }
+    },
+    "/api/v1/hives/{hive_id}/snapshot": {
+      "get": {
+        "operationId": "operatorHiveSnapshot",
+        "parameters": [
+          {
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F.",
+            "in": "path",
+            "name": "hive_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HiveOperatorSnapshot"
+                }
+              }
+            },
+            "description": "Product wire response"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "operatorHiveSnapshot",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [
+            {
+              "operation": "work.list",
+              "privilege": "unprivileged-read",
+              "requestSchema": "catalog:work.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "sideEffects": "none"
+            },
+            {
+              "operation": "work.schedule",
+              "privilege": "unprivileged-read",
+              "requestSchema": "catalog:work.schedule#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "sideEffects": "none"
+            }
+          ],
+          "classification": "composite",
+          "reason": "read-only state composite; source projection policy remains authoritative",
+          "shape": "coarser",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read"
+        },
+        "x-beadhive-required-scope": "operator:read"
+      }
+    },
+    "/api/v1/hives/{hive_id}/work-items": {
+      "get": {
+        "operationId": "operatorWorkItems",
+        "parameters": [
+          {
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F.",
+            "in": "path",
+            "name": "hive_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "queue",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/WorkItemQueueName"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Opaque cursor returned by the preceding page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Repeat to select any supplied priority.",
+            "explode": true,
+            "in": "query",
+            "name": "priority",
+            "required": false,
+            "schema": {
+              "items": {
+                "pattern": "^P[0-4]$",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "description": "Repeat to require every supplied label.",
+            "explode": true,
+            "in": "query",
+            "name": "label",
+            "required": false,
+            "schema": {
+              "items": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "in": "query",
+            "name": "assignee",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "type",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "parent",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemQueue"
+                }
+              }
+            },
+            "description": "Product wire response",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The current representation matches If-None-Match",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "operatorWorkItems",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [
+            {
+              "operation": "work.list",
+              "privilege": "unprivileged-read",
+              "requestSchema": "catalog:work.list#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "sideEffects": "none"
+            }
+          ],
+          "classification": "catalog-entry",
+          "reason": "richer bounded projection of the canonical work list read",
+          "shape": "richer",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read"
+        },
+        "x-beadhive-required-scope": "operator:read"
+      }
+    },
+    "/api/v1/hives/{hive_id}/work-items/{bead_id}": {
+      "get": {
+        "operationId": "operatorWorkItemDetail",
+        "parameters": [
+          {
+            "description": "Full canonical provider/organization/repository identity, with separators encoded as uppercase %2F.",
+            "in": "path",
+            "name": "hive_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "bead_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9._~-]+$",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "If-None-Match",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkItemDetail"
+                }
+              }
+            },
+            "description": "Product wire response",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "304": {
+            "description": "The current representation matches If-None-Match",
+            "headers": {
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-cache"
+                }
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "operatorWorkItemDetail",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [
+            {
+              "operation": "work.issue",
+              "privilege": "unprivileged-read",
+              "requestSchema": "catalog:work.issue#parameters",
+              "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+              "sideEffects": "none"
+            }
+          ],
+          "classification": "catalog-entry",
+          "reason": "richer exact-identity projection of the canonical work issue read",
+          "shape": "richer",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read"
+        },
+        "x-beadhive-required-scope": "operator:read"
+      }
+    },
+    "/api/v1/runs/{run_id}/activity": {
+      "get": {
+        "operationId": "operatorRunActivity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a delta strictly after producerEpoch:sequence.",
+            "in": "query",
+            "name": "after",
+            "required": false,
+            "schema": {
+              "maxLength": 85,
+              "pattern": "^[A-Za-z0-9._~-]{1,64}:(0|[1-9][0-9]{0,19})$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunActivityFrame"
+                }
+              }
+            },
+            "description": "Product wire response"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "410": {
+            "$ref": "#/components/responses/Gone"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "operatorRunActivity",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [],
+          "classification": "explicit-exclusion",
+          "reason": "run-journal read has no canonical application operation",
+          "shape": "excluded",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read"
+        },
+        "x-beadhive-required-scope": "operator:read"
+      },
+      "post": {
+        "operationId": "publishRunActivity",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivityAppendRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityAppendResponse"
+                }
+              }
+            },
+            "description": "Product wire response"
+          },
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivityAppendResponse"
+                }
+              }
+            },
+            "description": "Product wire response"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "publishRunActivity",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [],
+          "classification": "explicit-exclusion",
+          "reason": "authenticated activity publication has no canonical application operation",
+          "shape": "excluded",
+          "sideEffects": "durable-activity-append",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "activity:publish"
+        },
+        "x-beadhive-required-scope": "activity:publish"
+      }
+    },
+    "/api/v1/terminal/attach-token": {
+      "post": {
+        "operationId": "terminalAttachTokenUnavailable",
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/TerminalUnavailable"
+                    },
+                    {
+                      "$ref": "#/components/schemas/Error"
+                    }
+                  ]
+                }
+              }
+            },
+            "description": "Terminal attachment is explicitly unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "terminalAttachTokenUnavailable",
+        "x-beadhive-availability": "unavailable-pending-bh-lx6e-replan",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [],
+          "classification": "transport-mechanic",
+          "reason": "terminal session and availability policy is owned by bh-q0lol",
+          "shape": "transport-only",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "terminal:attach"
+        },
+        "x-beadhive-required-scope": "terminal:attach"
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Product wire response"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [],
+        "summary": "health",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [],
+          "classification": "transport-mechanic",
+          "reason": "daemon liveness/readiness mechanic",
+          "shape": "transport-only",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "public-liveness"
+        },
+        "x-beadhive-required-scope": null
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "operatorOpenapi",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "OpenAPI 3.1 document"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "408": {
+            "$ref": "#/components/responses/RequestTimeout"
+          },
+          "413": {
+            "$ref": "#/components/responses/PayloadTooLarge"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "503": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "operatorOpenapi",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [],
+          "classification": "transport-mechanic",
+          "reason": "transport contract discovery, not an application operation",
+          "shape": "transport-only",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "operator:read"
+        },
+        "x-beadhive-required-scope": "operator:read"
+      }
+    },
+    "/ws/terminal": {
+      "x-beadhive-websocket": {
+        "operationId": "terminalWebsocketUnavailable",
+        "responses": {
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TerminalUnavailable"
+                }
+              }
+            },
+            "description": "Terminal attachment is explicitly unavailable"
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Terminal attachment is unavailable pending the bh-lx6e replan",
+        "x-beadhive-availability": "unavailable-pending-bh-lx6e-replan",
+        "x-beadhive-catalog-projection": {
+          "canonicalContracts": [],
+          "classification": "transport-mechanic",
+          "reason": "terminal WebSocket/session policy is owned by bh-q0lol",
+          "shape": "transport-only",
+          "sideEffects": "none",
+          "transportOwner": "bh-q0lol",
+          "transportPrivilege": "terminal:attach"
+        },
+        "x-beadhive-close-events": {
+          "forbidden": {
+            "code": 4403,
+            "reason": "Forbidden"
+          },
+          "terminalUnavailable": {
+            "code": 1013,
+            "reason": "terminal.unavailable:pty_verdict_pending"
+          },
+          "unauthenticated": {
+            "code": 4401,
+            "reason": "Unauthorized"
+          }
+        },
+        "x-beadhive-denial-handshake": {
+          "extension": "websocket.http.response",
+          "fallback": {
+            "closeCode": 1013,
+            "reason": "terminal.unavailable:pty_verdict_pending"
+          },
+          "whenAdvertised": {
+            "contentType": "application/json",
+            "schema": {
+              "$ref": "#/components/schemas/TerminalUnavailable"
+            },
+            "status": 503
+          }
+        },
+        "x-beadhive-required-scope": "terminal:attach",
+        "x-beadhive-websocket-subprotocol": "bh-terminal.v1"
+      }
+    }
+  },
+  "security": [
+    {
+      "BearerAuth": []
+    }
+  ],
+  "x-beadhive-mcp": {
+    "describedByOpenAPI": false,
+    "path": "/mcp",
+    "schemaAuthority": "FastMCP protocol discovery"
+  },
+  "x-beadhive-secure-network-preflight": {
+    "absentPathStatus": 204,
+    "allowedHeaders": [
+      "accept",
+      "authorization",
+      "content-type",
+      "last-event-id",
+      "mcp-protocol-version",
+      "mcp-session-id"
+    ],
+    "allowedMethods": [
+      "DELETE",
+      "GET",
+      "POST"
+    ],
+    "method": "OPTIONS",
+    "pathScope": "all request paths, including paths absent from this document",
+    "responseHeaderSpelling": "lower-case, lexical, comma-space separated",
+    "successStatus": 204
+  }
+}

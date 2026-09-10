@@ -409,6 +409,21 @@ class OperatorFeed:
     def _run_install_lock(self, run_id: str) -> threading.RLock:
         return self._run_install_locks[hash(run_id) % len(self._run_install_locks)]
 
+    @contextmanager
+    def _activity_install_window(
+        self,
+        run_id: str,
+        pin: _HivePin,
+    ) -> Iterator[Callable[[ActivityInstall], None]]:
+        """Defer observers past publication while serializing the exact run return."""
+
+        notifications: list[ActivityInstall] = []
+        with self._run_install_lock(run_id):
+            with self._publication_pin(pin):
+                yield notifications.append
+            for notification in notifications:
+                self._notify_activity(notification)
+
     def _claim_run_ownership(self, run_id: str, source_identity: _ActivitySourceIdentity) -> str:
         """Return a generation that changes on every observed host-wide owner transition."""
 
@@ -805,7 +820,8 @@ class OperatorFeed:
             for record in journal_records
         )
         source_identity = self._activity_source_identity(source)
-        with self._run_install_lock(run_id), self._publication_pin(pin):
+        notification: ActivityInstall | None = None
+        with self._activity_install_window(run_id, pin) as defer_notification:
             owner_generation = self._claim_run_ownership(run_id, source_identity)
             reset_reason = state.discontinuity_reason
             if reset_reason is None and state.initialized:
@@ -891,38 +907,34 @@ class OperatorFeed:
             self._set_activity_retained_bytes((hive.identity, run_id), state, ())
 
             if reset_reason is not None:
-                self._notify_activity(
-                    ActivityInstall(
-                        run_id=run_id,
-                        hive_id=hive.identity,
-                        producer_epoch=state.producer_epoch,
-                        previous_records=(),
-                        current_records=(),
-                        source_revision=str(journal.source_revision),
-                        reset_reason=reset_reason,
-                    )
+                notification = ActivityInstall(
+                    run_id=run_id,
+                    hive_id=hive.identity,
+                    producer_epoch=state.producer_epoch,
+                    previous_records=(),
+                    current_records=(),
+                    source_revision=str(journal.source_revision),
+                    reset_reason=reset_reason,
                 )
             elif page_end > previous_announced:
                 first_new = max(0, previous_announced - base_sequence)
                 added = records[first_new:]
                 if added:
                     sequence_offset = base_sequence + first_new
-                    self._notify_activity(
-                        ActivityInstall(
-                            run_id=run_id,
-                            hive_id=hive.identity,
-                            producer_epoch=state.producer_epoch,
-                            previous_records=(),
-                            current_records=(),
-                            source_revision=str(journal.source_revision),
-                            added_records=added,
-                            sequence_offset=sequence_offset,
-                            first_occurred_at=int(journal_records[0]["timestamp_ms"]),
-                        )
+                    notification = ActivityInstall(
+                        run_id=run_id,
+                        hive_id=hive.identity,
+                        producer_epoch=state.producer_epoch,
+                        previous_records=(),
+                        current_records=(),
+                        source_revision=str(journal.source_revision),
+                        added_records=added,
+                        sequence_offset=sequence_offset,
+                        first_occurred_at=int(journal_records[0]["timestamp_ms"]),
                     )
                     state.announced_sequence = page_end
 
-            return operator_contract.run_activity_page_frame(
+            response = operator_contract.run_activity_page_frame(
                 journal,
                 records,
                 producer_epoch=state.producer_epoch,
@@ -930,6 +942,11 @@ class OperatorFeed:
                 kind=kind,
                 reset_reason=reset_reason,
             )
+            # Relay observers allocate snapshot events.  The install window invokes them after
+            # its publication pin exits while retaining exact run ownership through this return.
+            if notification is not None:
+                defer_notification(notification)
+            return response
 
     def activity_with_cursor(
         self,
@@ -977,7 +994,8 @@ class OperatorFeed:
                                 else "durable_activity_page_truncated"
                             ),
                         )
-                    with self._run_install_lock(run_id), self._publication_pin(pin):
+                    notification: ActivityInstall | None = None
+                    with self._activity_install_window(run_id, pin) as defer_notification:
                         owner_generation = self._claim_run_ownership(run_id, source_identity)
                         reset_reason = state.discontinuity_reason
                         if reset_reason is None and state.initialized:
@@ -1010,16 +1028,14 @@ class OperatorFeed:
                             state.source_identity = source_identity
                             state.owner_generation = owner_generation
                             self._set_activity_retained_bytes(key, state, records)
-                            self._notify_activity(
-                                ActivityInstall(
-                                    run_id=run_id,
-                                    hive_id=hive.identity,
-                                    producer_epoch=state.producer_epoch,
-                                    previous_records=previous_records,
-                                    current_records=records,
-                                    source_revision=str(journal.source_revision),
-                                    reset_reason=install_reset_reason,
-                                )
+                            notification = ActivityInstall(
+                                run_id=run_id,
+                                hive_id=hive.identity,
+                                producer_epoch=state.producer_epoch,
+                                previous_records=previous_records,
+                                current_records=records,
+                                source_revision=str(journal.source_revision),
+                                reset_reason=install_reset_reason,
                             )
                         else:
                             # Coverage/freshness may change without changing the append-only
@@ -1057,6 +1073,10 @@ class OperatorFeed:
                             reset_reason=reset_reason,
                         )
                         state.discontinuity_reason = None
+                        # Keep observer allocation outside the publication pin while the install
+                        # window and activity-state lock preserve exact notification order.
+                        if notification is not None:
+                            defer_notification(notification)
                         return response
         except (Exception, asyncio.CancelledError) as exc:
             if not located and not (

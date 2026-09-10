@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import tomllib
 import types
 from pathlib import Path
@@ -43,6 +44,8 @@ def _reset(monkeypatch):
     otel._initialized = False
     otel._providers = ()
     otel._shutdown_ports = ()
+    otel._semantic_sink = None
+    otel._semantic_telemetry = None
     otel._atexit_registered = False
     monkeypatch.delenv(_ENDPOINT_ENV, raising=False)
     monkeypatch.delenv(_TIMEOUT_ENV, raising=False)
@@ -61,6 +64,8 @@ def _reset(monkeypatch):
     otel._initialized = False
     otel._providers = ()
     otel._shutdown_ports = ()
+    otel._semantic_sink = None
+    otel._semantic_telemetry = None
     otel._atexit_registered = False
     root.handlers.clear()
     root.handlers.extend(saved)
@@ -885,6 +890,63 @@ def test_shutdown_refuses_three_noncooperative_providers_without_workers(monkeyp
     assert calls == []
     assert not [thread for thread in threading.enumerate() if thread.name == "bh-otel-shutdown"]
     release.set()
+
+
+def test_cli_flush_semantics_share_one_budget_and_report_dead_collector_timeout(
+    monkeypatch,
+) -> None:
+    from beadhive.kernel.telemetry import EventIdentity, RecordingTelemetrySink, SemanticTelemetry
+
+    calls: list[tuple[str, int]] = []
+    recording = RecordingTelemetrySink()
+    semantic = SemanticTelemetry(
+        sink=recording,
+        identity=EventIdentity(service="bh", instance_id="cli-one"),
+    )
+
+    class Pending:
+        def close_open_spans(self) -> None:
+            calls.append(("close-spans", 0))
+
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(otel, "_providers", (object(),))
+    monkeypatch.setattr(
+        otel,
+        "_shutdown_ports",
+        (
+            otel._ShutdownPort(
+                name="traces",
+                export_timeout_seconds=0.01,
+                force_flush=lambda timeout_millis: calls.append(("flush", timeout_millis)) or False,
+                close=lambda timeout_millis: calls.append(("shutdown", timeout_millis)),
+                worker_alive=lambda: False,
+            ),
+        ),
+    )
+    monkeypatch.setattr(otel, "_semantic_sink", Pending())
+    monkeypatch.setattr(otel, "_semantic_telemetry", semantic)
+    monkeypatch.setattr(otel, "_semantic_surface", "cli")
+
+    started = time.monotonic()
+    result = otel.shutdown(timeout_seconds=0.05)
+
+    assert time.monotonic() - started < 0.1
+    assert result.status == "timed_out"
+    assert calls[0][0] == "flush"
+    assert 0 < calls[0][1] <= 50
+    assert [name for name, _budget in calls] == ["flush", "close-spans", "shutdown"]
+    assert [event.event_name.value for event in recording.events] == [
+        "beadhive.telemetry.flush",
+        "beadhive.telemetry.flush",
+    ]
+    assert recording.events[-1].outcome.value == "timed-out"
+    assert (
+        dict(
+            (attribute.key.value, attribute.value) for attribute in recording.events[0].attributes
+        )["surface"]
+        == "cli"
+    )
+    assert not [thread for thread in threading.enumerate() if thread.name == "bh-otel-shutdown"]
 
 
 def test_otel_extra_declares_the_verified_cooperative_sdk_floor():
