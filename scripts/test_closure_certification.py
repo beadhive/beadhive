@@ -822,11 +822,11 @@ def _receipt_manifests(root: Path) -> tuple[dict[str, Any], ...]:
 
 
 def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> tuple[str, ...]:
-    """Resolve the oracle against the immutable snapshot's authoritative run manifest.
+    """Resolve lifecycle admission against the current candidate's authoritative manifest.
 
-    The original certifying checkout may bootstrap from its exact live owner.  Later descendants
-    continue to verify that recorded tree's completed green receipt; current applicability is a
-    separate per-closure digest question.
+    Certification content and input identity remain anchored to the immutable historical snapshot
+    by ``validate_evidence``.  The lifecycle receipt is a separate authority boundary: it admits
+    only this clean candidate's exact tree and may bootstrap only from that run's live owner.
     """
     oracle = evidence.get("same_tree_full_gate_oracle") or {}
     provenance = oracle.get("receipt_provenance") or {}
@@ -834,8 +834,7 @@ def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> t
         return ("same-tree oracle receipt provenance does not match the full gate",)
     if _git(root, "status", "--porcelain", "--untracked-files=all"):
         return ("full-gate receipt lookup requires a clean checkout with no untracked inputs",)
-    snapshot = _historical_snapshot_commit(root)
-    candidate_tree = _git(root, "rev-parse", f"{snapshot}^{{tree}}" if snapshot else "HEAD^{tree}")
+    candidate_tree = _git(root, "rev-parse", "HEAD^{tree}")
     matches = [
         manifest
         for manifest in _receipt_manifests(root)
