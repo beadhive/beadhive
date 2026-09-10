@@ -9,7 +9,7 @@
   },
   "fan_in": {
     "production_config_importers_before": 95,
-    "production_config_importers_after": 76,
+    "production_config_importers_after": 77,
     "production_config_schema_importers_before": 8,
     "production_config_schema_importers_after": 3,
     "remaining_dependency_owner": "bh-18hud.5 compatibility migration ledger",

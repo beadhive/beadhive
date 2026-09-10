@@ -1,9 +1,9 @@
-"""Bounded, low-cardinality telemetry owned by one host-daemon lifespan.
+"""Bounded adapter/composition telemetry owned by one host-daemon lifespan.
 
-The generic :mod:`beadhive.otel` module remains the independent CLI/stdio provider seam.  This
-module adds only daemon-incarnation identity and instruments state the daemon genuinely owns.
-It deliberately retains no event journal or export queue; delivery durability belongs to the
-collector.
+Daemon route, session/SSE, dependency, gauge, and shutdown facts are translated through the
+kernel semantic port.  This adapter also preserves the established ``bh.daemon.*`` dashboard
+instruments while :mod:`beadhive.otel` owns the shared SDK provider.  It retains no event journal
+or export queue; delivery durability and collector lifecycle remain external concerns.
 """
 
 from __future__ import annotations
@@ -21,6 +21,16 @@ from typing import Any
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from . import otel
+from .kernel.telemetry import (
+    AttributeKey,
+    ErrorClassification,
+    EventError,
+    Outcome,
+    SemanticEventName,
+    SemanticTelemetryPort,
+    TelemetryAttribute,
+    TelemetryObservation,
+)
 
 SERVICE_NAME = "bh-host-daemon"
 
@@ -93,11 +103,13 @@ class RequestToken:
     method: str
     protocol: str
     started_at: float
+    observation: TelemetryObservation | None = None
 
 
 @dataclass(frozen=True)
 class ConnectionToken:
     kind: str
+    observation: TelemetryObservation | None = None
 
 
 class DaemonTelemetry:
@@ -111,6 +123,7 @@ class DaemonTelemetry:
         instance_id: str,
         flush_budget_seconds: float,
         monotonic: Callable[[], float] = time.monotonic,
+        semantic_telemetry: SemanticTelemetryPort | None = None,
     ) -> None:
         if not host_id or not instance_id:
             raise ValueError("daemon telemetry requires host and instance identities")
@@ -130,7 +143,12 @@ class DaemonTelemetry:
         self._instruments: dict[str, Any] = {}
         self._active_requests: Counter[tuple[str, str]] = Counter()
         self._active_connections: Counter[str] = Counter()
+        self._request_tokens: dict[int, RequestToken] = {}
+        self._connection_tokens: dict[int, ConnectionToken] = {}
+        self._semantic_request_tokens: dict[int, TelemetryObservation] = {}
+        self._semantic_connection_tokens: dict[int, TelemetryObservation] = {}
         self._queue_depths: dict[str, int] = {}
+        self._semantic = semantic_telemetry
 
     async def start(self) -> bool:
         """Initialize the process-global OTel SDK exactly once for this outer lifespan."""
@@ -152,6 +170,8 @@ class DaemonTelemetry:
         )
         if not self._wired:
             return False
+        if self._semantic is None:
+            self._semantic = otel.current_semantic_telemetry()
         self._meter = otel.get_meter(SERVICE_NAME)
         self._create_instruments()
         self._add("bh.daemon.restarts", 1, {})
@@ -164,13 +184,34 @@ class DaemonTelemetry:
             if not self._started or self._stopped:
                 return
             self._stopped = True
+            open_semantic = (
+                *self._semantic_request_tokens.values(),
+                *self._semantic_connection_tokens.values(),
+            )
+            self._semantic_request_tokens.clear()
+            self._semantic_connection_tokens.clear()
+            self._request_tokens.clear()
+            self._connection_tokens.clear()
             self._active_requests.clear()
             self._active_connections.clear()
             self._queue_depths = {name: 0 for name in self._queue_depths}
+        cancellation = EventError(ErrorClassification.CANCELLATION, "daemon.shutdown")
+        for observation in open_semantic:
+            self._semantic_complete(observation, Outcome.CANCELLED, cancellation)
         started = self._monotonic()
         if not self._wired:
             return
         self._add("bh.daemon.lifecycle", 1, {"bh.daemon.lifecycle.event": "stopping"})
+        flush_observation = None
+        if self._semantic is not None and self._semantic is not otel.current_semantic_telemetry():
+            flush_observation = self._semantic_begin(
+                SemanticEventName.TELEMETRY_FLUSH,
+                (
+                    TelemetryAttribute(AttributeKey.OPERATION_KIND, "internal"),
+                    TelemetryAttribute(AttributeKey.SURFACE, "daemon"),
+                    TelemetryAttribute(AttributeKey.SHUTDOWN_PHASE, "flush-telemetry"),
+                ),
+            )
 
         def emit_shutdown_summary(flush_result: otel.ShutdownResult) -> None:
             duration = max(0.0, self._monotonic() - started)
@@ -186,11 +227,59 @@ class DaemonTelemetry:
                 1,
                 {"bh.daemon.lifecycle.event": "stopped"},
             )
+            if flush_observation is not None:
+                if status == "completed":
+                    self._semantic_complete(flush_observation, Outcome.SUCCEEDED)
+                elif status == "timed_out":
+                    self._semantic_complete(
+                        flush_observation,
+                        Outcome.TIMED_OUT,
+                        EventError(
+                            ErrorClassification.TIMEOUT,
+                            "telemetry.flush.timeout",
+                            True,
+                        ),
+                    )
+                else:
+                    self._semantic_complete(
+                        flush_observation,
+                        Outcome.FAILED,
+                        EventError(
+                            ErrorClassification.DEPENDENCY,
+                            "telemetry.flush.failed",
+                            True,
+                        ),
+                    )
 
         otel.shutdown(
             timeout_seconds=self.flush_budget_seconds,
             before_close=emit_shutdown_summary,
         )
+
+    def _semantic_begin(
+        self,
+        event_name: SemanticEventName,
+        attributes: tuple[TelemetryAttribute, ...],
+    ) -> TelemetryObservation | None:
+        if self._semantic is None:
+            return None
+        try:
+            return self._semantic.begin(event_name, attributes=attributes)
+        except BaseException:
+            return None
+
+    def _semantic_complete(
+        self,
+        observation: TelemetryObservation | None,
+        outcome: Outcome,
+        error: EventError | None = None,
+    ) -> None:
+        if self._semantic is None or observation is None:
+            return
+        try:
+            self._semantic.complete(observation, outcome, error=error)
+        except BaseException:
+            pass
 
     def _create_instruments(self) -> None:
         for name, description in (
@@ -305,20 +394,59 @@ class DaemonTelemetry:
         route = _bounded(route_template, _ROUTES, "unmatched")
         bounded_method = _bounded(method.upper(), _METHODS, "OTHER")
         bounded_protocol = _bounded(protocol, _PROTOCOLS, "other")
-        token = RequestToken(route, bounded_method, bounded_protocol, self._monotonic())
-        if self._wired:
-            with self._lock:
+        semantic_transport = "websocket" if bounded_protocol == "websocket" else "http"
+        observation = self._semantic_begin(
+            SemanticEventName.OPERATION_EXECUTION,
+            (
+                TelemetryAttribute(AttributeKey.OPERATION_KIND, "route"),
+                TelemetryAttribute(AttributeKey.SURFACE, "daemon"),
+                TelemetryAttribute(AttributeKey.TRANSPORT, semantic_transport),
+                TelemetryAttribute(
+                    AttributeKey.HTTP_METHOD,
+                    bounded_method if bounded_method != "WEBSOCKET" else "OTHER",
+                ),
+            ),
+        )
+        token = RequestToken(
+            route,
+            bounded_method,
+            bounded_protocol,
+            self._monotonic(),
+            observation,
+        )
+        with self._lock:
+            if observation is not None:
+                self._semantic_request_tokens[id(token)] = observation
+            if self._wired:
                 self._active_requests[(route, bounded_protocol)] += 1
+                self._request_tokens[id(token)] = token
         return token
 
     def finish_request(
         self, token: RequestToken, *, status_code: int, cancelled: bool = False
     ) -> None:
-        if not self._wired:
-            return
         with self._lock:
-            key = (token.route_template, token.protocol)
-            self._active_requests[key] = max(0, self._active_requests[key] - 1)
+            observation = self._semantic_request_tokens.pop(id(token), None)
+            legacy_token = self._request_tokens.pop(id(token), None)
+            if legacy_token is not None:
+                key = (token.route_template, token.protocol)
+                self._active_requests[key] = max(0, self._active_requests[key] - 1)
+        if cancelled:
+            self._semantic_complete(
+                observation,
+                Outcome.CANCELLED,
+                EventError(ErrorClassification.CANCELLATION, "request.cancelled"),
+            )
+        elif status_code >= 400:
+            self._semantic_complete(
+                observation,
+                Outcome.FAILED,
+                EventError(ErrorClassification.INTERNAL, "request.failed"),
+            )
+        else:
+            self._semantic_complete(observation, Outcome.SUCCEEDED)
+        if legacy_token is None:
+            return
         outcome = "cancelled" if cancelled else "error" if status_code >= 400 else "ok"
         attrs = {
             "http.route": token.route_template,
@@ -343,22 +471,63 @@ class DaemonTelemetry:
 
     def open_connection(self, kind: str) -> ConnectionToken:
         bounded_kind = _bounded(kind, _CONNECTIONS, "mcp")
-        if self._wired:
-            with self._lock:
+        semantic_transport = {"sse": "sse", "terminal": "websocket", "mcp": "http"}[bounded_kind]
+        observation = self._semantic_begin(
+            SemanticEventName.OPERATION_EXECUTION,
+            (
+                TelemetryAttribute(AttributeKey.OPERATION_KIND, "internal"),
+                TelemetryAttribute(AttributeKey.SURFACE, "daemon"),
+                TelemetryAttribute(AttributeKey.TRANSPORT, semantic_transport),
+            ),
+        )
+        token = ConnectionToken(bounded_kind, observation)
+        with self._lock:
+            if observation is not None:
+                self._semantic_connection_tokens[id(token)] = observation
+            if self._wired:
                 self._active_connections[bounded_kind] += 1
+        if self._wired:
             self._add(
                 "bh.daemon.connections",
                 1,
                 {"bh.daemon.connection": bounded_kind, "bh.daemon.connection.outcome": "opened"},
             )
-        return ConnectionToken(bounded_kind)
+            with self._lock:
+                self._connection_tokens[id(token)] = token
+        return token
 
-    def close_connection(self, token: ConnectionToken, *, reason: str = "client_closed") -> None:
-        if not self._wired:
-            return
+    def close_connection(
+        self,
+        token: ConnectionToken,
+        *,
+        reason: str = "client_closed",
+        failed: bool = False,
+    ) -> None:
         bounded_reason = _bounded(reason, _REASONS, "other")
         with self._lock:
-            self._active_connections[token.kind] = max(0, self._active_connections[token.kind] - 1)
+            observation = self._semantic_connection_tokens.pop(id(token), None)
+            legacy_token = self._connection_tokens.pop(id(token), None)
+            if legacy_token is not None:
+                self._active_connections[token.kind] = max(
+                    0, self._active_connections[token.kind] - 1
+                )
+        semantic_reason = bounded_reason.replace("_", "-")
+        if failed:
+            self._semantic_complete(
+                observation,
+                Outcome.FAILED,
+                EventError(ErrorClassification.INTERNAL, "connection.failed"),
+            )
+        elif semantic_reason in {"cancelled", "daemon-shutdown", "timeout"}:
+            self._semantic_complete(
+                observation,
+                Outcome.CANCELLED,
+                EventError(ErrorClassification.CANCELLATION, "connection.cancelled"),
+            )
+        else:
+            self._semantic_complete(observation, Outcome.SUCCEEDED)
+        if legacy_token is None:
+            return
         self._add(
             "bh.daemon.connections",
             1,
@@ -427,6 +596,23 @@ class DaemonTelemetry:
             )
 
     def record_dependency_probe(self, dependency: str, status: str, seconds: float) -> None:
+        semantic_dependency = dependency if dependency in {"hq", "dolt"} else "other"
+        observation = self._semantic_begin(
+            SemanticEventName.OPERATION_EXECUTION,
+            (
+                TelemetryAttribute(AttributeKey.OPERATION_KIND, "internal"),
+                TelemetryAttribute(AttributeKey.SURFACE, "daemon"),
+                TelemetryAttribute(AttributeKey.DEPENDENCY, semantic_dependency),
+            ),
+        )
+        if status == "ready":
+            self._semantic_complete(observation, Outcome.SUCCEEDED)
+        else:
+            self._semantic_complete(
+                observation,
+                Outcome.FAILED,
+                EventError(ErrorClassification.DEPENDENCY, "dependency.unavailable", True),
+            )
         if not self._wired:
             return
         attrs = {
@@ -460,6 +646,7 @@ class DaemonTelemetryMiddleware:
         connection = self.telemetry.open_connection(kind) if kind is not None else None
         status_code = 500
         cancelled = False
+        failed = False
 
         async def observe(message: dict[str, Any]) -> None:
             nonlocal status_code
@@ -474,12 +661,20 @@ class DaemonTelemetryMiddleware:
         except asyncio.CancelledError:
             cancelled = True
             raise
+        except Exception:
+            failed = True
+            raise
         finally:
-            self.telemetry.finish_request(request, status_code=status_code, cancelled=cancelled)
+            self.telemetry.finish_request(
+                request,
+                status_code=500 if failed else status_code,
+                cancelled=cancelled,
+            )
             if connection is not None:
                 self.telemetry.close_connection(
                     connection,
                     reason="cancelled" if cancelled else "client_closed",
+                    failed=failed,
                 )
 
 

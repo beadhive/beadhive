@@ -5,9 +5,19 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 
+import pytest
 from typer.testing import CliRunner
 
 from beadhive import cli, daemon_supervisor, daemon_telemetry, host_daemon, otel
+from beadhive.kernel.telemetry import (
+    ErrorClassification,
+    EventIdentity,
+    EventPhase,
+    Outcome,
+    RecordingTelemetrySink,
+    SemanticEventName,
+    SemanticTelemetry,
+)
 
 
 class _Instrument:
@@ -148,6 +158,26 @@ def test_daemon_lifespan_has_distinct_stable_identity_and_one_bounded_flush(monk
     assert len(shutdown_calls) == 1
     assert shutdown_calls[0]["timeout_seconds"] == 0.2
     assert callable(shutdown_calls[0]["before_close"])
+    assert set(meter.instruments) == {
+        "bh.daemon.backpressure",
+        "bh.daemon.cancellations",
+        "bh.daemon.connections",
+        "bh.daemon.connections.active",
+        "bh.daemon.dependency.duration",
+        "bh.daemon.dependency.probes",
+        "bh.daemon.errors",
+        "bh.daemon.lifecycle",
+        "bh.daemon.queue.depth",
+        "bh.daemon.replay.gaps",
+        "bh.daemon.request.duration",
+        "bh.daemon.requests",
+        "bh.daemon.requests.active",
+        "bh.daemon.resets",
+        "bh.daemon.restarts",
+        "bh.daemon.shutdown.duration",
+        "bh.daemon.telemetry.flush",
+        "bh.daemon.uptime",
+    }
     assert meter.instruments["bh.daemon.restarts"].values == [(1, {})]
     assert meter.instruments["bh.daemon.telemetry.flush"].values[-1][1] == {
         "bh.daemon.flush.outcome": "completed"
@@ -350,6 +380,164 @@ def test_asgi_middleware_records_stream_lifetime_by_route_template(monkeypatch) 
     assert list(meter.callbacks["bh.daemon.requests.active"](None))[0].value == 0
 
 
+def test_websocket_app_failure_fails_request_and_connection_without_leaking(
+    monkeypatch,
+) -> None:
+    meter = _Meter()
+    sink = RecordingTelemetrySink(capacity=8)
+    semantic = SemanticTelemetry(
+        sink=sink,
+        identity=EventIdentity(
+            service="bh-host-daemon",
+            instance_id="instance-one",
+            host_id="host-stable",
+        ),
+    )
+    monkeypatch.setattr(otel, "get_meter", lambda _name: meter)
+    monkeypatch.setattr(otel, "init", lambda *_args, **_kwargs: True)
+    telemetry = daemon_telemetry.DaemonTelemetry(
+        cfg={"otel": {"enabled": True}},
+        host_id="host-stable",
+        instance_id="instance-one",
+        flush_budget_seconds=0.2,
+        semantic_telemetry=semantic,
+    )
+    asyncio.run(telemetry.start())
+
+    async def app(_scope, _receive, send):
+        await send({"type": "websocket.accept"})
+        raise RuntimeError("private-websocket-failure")
+
+    middleware = daemon_telemetry.DaemonTelemetryMiddleware(app, telemetry=telemetry)
+    sent = []
+
+    async def request() -> None:
+        async def receive():
+            return {"type": "websocket.disconnect", "code": 1011}
+
+        async def send(message):
+            sent.append(message)
+
+        with pytest.raises(RuntimeError, match="private-websocket-failure"):
+            await middleware(
+                {
+                    "type": "websocket",
+                    "path": "/api/v1/terminal/private-session",
+                },
+                receive,
+                send,
+            )
+
+    asyncio.run(request())
+
+    started = {
+        event.correlation_id: event for event in sink.events if event.phase is EventPhase.STARTED
+    }
+    completed = [event for event in sink.events if event.phase is EventPhase.COMPLETED]
+    assert [event.outcome for event in completed] == [Outcome.FAILED, Outcome.FAILED]
+    assert [event.error.classification for event in completed if event.error is not None] == [
+        ErrorClassification.INTERNAL,
+        ErrorClassification.INTERNAL,
+    ]
+    assert [event.error.code for event in completed if event.error is not None] == [
+        "request.failed",
+        "connection.failed",
+    ]
+    for terminal in completed:
+        assert terminal.causation_id == started[terminal.correlation_id].event_id
+    assert "private-websocket-failure" not in repr(sink.events)
+    assert sent == [{"type": "websocket.accept"}]
+    assert telemetry._semantic_request_tokens == {}
+    assert telemetry._semantic_connection_tokens == {}
+    assert telemetry._request_tokens == {}
+    assert telemetry._connection_tokens == {}
+    assert list(meter.callbacks["bh.daemon.requests.active"](None))[0].value == 0
+    assert list(meter.callbacks["bh.daemon.connections.active"](None))[0].value == 0
+    assert (
+        meter.instruments["bh.daemon.requests"].values[-1][1]["bh.daemon.request.outcome"]
+        == "error"
+    )
+    assert meter.instruments["bh.daemon.errors"].values[-1][1]["http.response.status_code"] == 500
+    assert meter.instruments["bh.daemon.connections"].values[-1][1] == {
+        "bh.daemon.connection": "terminal",
+        "bh.daemon.connection.outcome": "closed",
+        "bh.daemon.reason": "client_closed",
+    }
+
+
+@pytest.mark.parametrize(
+    ("reason", "failed", "expected_outcome", "expected_classification", "expected_code"),
+    (
+        ("client_closed", False, Outcome.SUCCEEDED, None, None),
+        (
+            "cancelled",
+            False,
+            Outcome.CANCELLED,
+            ErrorClassification.CANCELLATION,
+            "connection.cancelled",
+        ),
+        (
+            "timeout",
+            False,
+            Outcome.CANCELLED,
+            ErrorClassification.CANCELLATION,
+            "connection.cancelled",
+        ),
+        (
+            "daemon_shutdown",
+            False,
+            Outcome.CANCELLED,
+            ErrorClassification.CANCELLATION,
+            "connection.cancelled",
+        ),
+        (
+            "client_closed",
+            True,
+            Outcome.FAILED,
+            ErrorClassification.INTERNAL,
+            "connection.failed",
+        ),
+    ),
+)
+def test_connection_semantic_terminal_classification_is_exactly_once(
+    reason,
+    failed,
+    expected_outcome,
+    expected_classification,
+    expected_code,
+) -> None:
+    sink = RecordingTelemetrySink(capacity=4)
+    telemetry = daemon_telemetry.DaemonTelemetry(
+        cfg={"otel": {"enabled": False}},
+        host_id="host-stable",
+        instance_id="instance-one",
+        flush_budget_seconds=0.2,
+        semantic_telemetry=SemanticTelemetry(
+            sink=sink,
+            identity=EventIdentity(
+                service="bh-host-daemon",
+                instance_id="instance-one",
+                host_id="host-stable",
+            ),
+        ),
+    )
+
+    connection = telemetry.open_connection("terminal")
+    telemetry.close_connection(connection, reason=reason, failed=failed)
+    telemetry.close_connection(connection, reason="other", failed=not failed)
+
+    completed = [event for event in sink.events if event.phase is EventPhase.COMPLETED]
+    assert len(completed) == 1
+    assert completed[0].outcome is expected_outcome
+    if expected_classification is None:
+        assert completed[0].error is None
+    else:
+        assert completed[0].error is not None
+        assert completed[0].error.classification is expected_classification
+        assert completed[0].error.code == expected_code
+    assert telemetry._semantic_connection_tokens == {}
+
+
 def test_exact_mcp_session_register_and_terminate_own_active_gauge(monkeypatch) -> None:
     meter = _Meter()
     monkeypatch.setattr(otel, "get_meter", lambda _name: meter)
@@ -395,3 +583,273 @@ def test_exact_mcp_session_register_and_terminate_own_active_gauge(monkeypatch) 
     asyncio.run(exercise())
     assert list(meter.callbacks["bh.daemon.connections.active"](None))[0].value == 0
     assert "sensitive-session-id" not in repr(meter.instruments["bh.daemon.connections"].values)
+
+
+def test_daemon_routes_sessions_probes_and_flush_share_semantic_port_exactly_once(
+    monkeypatch,
+) -> None:
+    meter = _Meter()
+    sink = RecordingTelemetrySink(capacity=16)
+    semantic = SemanticTelemetry(
+        sink=sink,
+        identity=EventIdentity(
+            service="bh-host-daemon",
+            instance_id="instance-one",
+            host_id="host-stable",
+        ),
+    )
+    monkeypatch.setattr(otel, "get_meter", lambda _name: meter)
+    monkeypatch.setattr(otel, "init", lambda *_args, **_kwargs: True)
+
+    def shutdown(**kwargs):
+        result = _Flush("completed")
+        kwargs["before_close"](result)
+        return result
+
+    monkeypatch.setattr(otel, "shutdown", shutdown)
+    telemetry = daemon_telemetry.DaemonTelemetry(
+        cfg={"otel": {"enabled": True}},
+        host_id="host-stable",
+        instance_id="instance-one",
+        flush_budget_seconds=0.2,
+        semantic_telemetry=semantic,
+    )
+
+    async def exercise() -> None:
+        await telemetry.start()
+        request = telemetry.begin_request(
+            route_template="/api/v1/runs/{run_id}/activity",
+            method="GET",
+            protocol="http",
+        )
+        telemetry.finish_request(request, status_code=200)
+        telemetry.finish_request(request, status_code=500)
+        session = telemetry.open_connection("sse")
+        telemetry.close_connection(session, reason="daemon_shutdown")
+        telemetry.close_connection(session, reason="other")
+        telemetry.record_dependency_probe("dolt", "unavailable", 0.01)
+        await telemetry.stop()
+
+    asyncio.run(exercise())
+
+    assert len(sink.events) == 8
+    assert [event.event_name for event in sink.events] == [
+        SemanticEventName.OPERATION_EXECUTION,
+        SemanticEventName.OPERATION_EXECUTION,
+        SemanticEventName.OPERATION_EXECUTION,
+        SemanticEventName.OPERATION_EXECUTION,
+        SemanticEventName.OPERATION_EXECUTION,
+        SemanticEventName.OPERATION_EXECUTION,
+        SemanticEventName.TELEMETRY_FLUSH,
+        SemanticEventName.TELEMETRY_FLUSH,
+    ]
+    assert [event.outcome for event in sink.events if event.outcome is not None] == [
+        Outcome.SUCCEEDED,
+        Outcome.CANCELLED,
+        Outcome.FAILED,
+        Outcome.SUCCEEDED,
+    ]
+    assert "private-run" not in repr(sink.events)
+    assert "host-stable" in repr(sink.events)
+    assert list(meter.callbacks["bh.daemon.requests.active"](None))[0].value == 0
+    assert list(meter.callbacks["bh.daemon.connections.active"](None))[0].value == 0
+
+
+@pytest.mark.parametrize(
+    "otel_config",
+    ({"enabled": False}, {"enabled": True}),
+    ids=("disabled", "sdk-unavailable"),
+)
+def test_semantic_terminals_do_not_depend_on_legacy_otel_wiring(monkeypatch, otel_config) -> None:
+    sink = RecordingTelemetrySink(capacity=32)
+    semantic = SemanticTelemetry(
+        sink=sink,
+        identity=EventIdentity(
+            service="bh-host-daemon",
+            instance_id="instance-unwired",
+            host_id="host-stable",
+        ),
+    )
+    completion_observations = []
+    actual_complete = semantic.complete
+
+    def complete(observation, outcome, *, error=None):
+        completion_observations.append(observation)
+        return actual_complete(observation, outcome, error=error)
+
+    monkeypatch.setattr(semantic, "complete", complete)
+    monkeypatch.setattr(otel, "init", lambda *_args, **_kwargs: False)
+    telemetry = daemon_telemetry.DaemonTelemetry(
+        cfg={"otel": otel_config},
+        host_id="host-stable",
+        instance_id="instance-unwired",
+        flush_budget_seconds=0.2,
+        semantic_telemetry=semantic,
+    )
+
+    async def exercise() -> None:
+        assert await telemetry.start() is False
+        succeeded = telemetry.begin_request(route_template="/health", method="GET", protocol="http")
+        failed = telemetry.begin_request(
+            route_template="/api/v1/factory", method="GET", protocol="http"
+        )
+        cancelled = telemetry.begin_request(
+            route_template="/api/v1/hives/{hive_id}/events",
+            method="GET",
+            protocol="http",
+        )
+        closed = telemetry.open_connection("sse")
+        aborted = telemetry.open_connection("sse")
+
+        telemetry.finish_request(succeeded, status_code=200)
+        telemetry.finish_request(succeeded, status_code=503)
+        telemetry.finish_request(failed, status_code=503)
+        telemetry.finish_request(failed, status_code=200)
+        telemetry.finish_request(cancelled, status_code=499, cancelled=True)
+        telemetry.finish_request(cancelled, status_code=200)
+        telemetry.close_connection(closed, reason="client_closed")
+        telemetry.close_connection(closed, reason="daemon_shutdown")
+        telemetry.close_connection(aborted, reason="daemon_shutdown")
+        telemetry.close_connection(aborted, reason="client_closed")
+        telemetry.record_dependency_probe("dolt", "unavailable", 0.01)
+        await telemetry.stop()
+
+    asyncio.run(exercise())
+
+    completed = [event for event in sink.events if event.phase is EventPhase.COMPLETED]
+    assert [event.outcome for event in completed] == [
+        Outcome.SUCCEEDED,
+        Outcome.FAILED,
+        Outcome.CANCELLED,
+        Outcome.SUCCEEDED,
+        Outcome.CANCELLED,
+        Outcome.FAILED,
+    ]
+    assert len(sink.events) == 12
+    assert len(completion_observations) == 6
+    assert all(observation is not None for observation in completion_observations)
+    started_by_correlation = {
+        event.correlation_id: event for event in sink.events if event.phase is EventPhase.STARTED
+    }
+    assert len(started_by_correlation) == 6
+    for terminal in completed:
+        started = started_by_correlation[terminal.correlation_id]
+        assert terminal.correlation_id == started.correlation_id
+        assert terminal.causation_id == started.event_id
+    assert telemetry._semantic_request_tokens == {}
+    assert telemetry._semantic_connection_tokens == {}
+
+
+def test_unwired_daemon_stop_cancels_open_semantic_observations_once(monkeypatch) -> None:
+    sink = RecordingTelemetrySink(capacity=8)
+    semantic = SemanticTelemetry(
+        sink=sink,
+        identity=EventIdentity(
+            service="bh-host-daemon",
+            instance_id="instance-unwired",
+            host_id="host-stable",
+        ),
+    )
+    completion_observations = []
+    actual_complete = semantic.complete
+
+    def complete(observation, outcome, *, error=None):
+        completion_observations.append(observation)
+        return actual_complete(observation, outcome, error=error)
+
+    monkeypatch.setattr(semantic, "complete", complete)
+    monkeypatch.setattr(otel, "init", lambda *_args, **_kwargs: False)
+    telemetry = daemon_telemetry.DaemonTelemetry(
+        cfg={"otel": {"enabled": False}},
+        host_id="host-stable",
+        instance_id="instance-unwired",
+        flush_budget_seconds=0.2,
+        semantic_telemetry=semantic,
+    )
+
+    async def exercise() -> None:
+        await telemetry.start()
+        request = telemetry.begin_request(route_template="/health", method="GET", protocol="http")
+        connection = telemetry.open_connection("sse")
+        await telemetry.stop()
+        telemetry.finish_request(request, status_code=200)
+        telemetry.close_connection(connection)
+
+    asyncio.run(exercise())
+
+    completed = [event for event in sink.events if event.phase is EventPhase.COMPLETED]
+    assert [event.outcome for event in completed] == [Outcome.CANCELLED, Outcome.CANCELLED]
+    assert len(sink.events) == 4
+    assert len(completion_observations) == 2
+    assert all(observation is not None for observation in completion_observations)
+    assert telemetry._semantic_request_tokens == {}
+    assert telemetry._semantic_connection_tokens == {}
+
+
+def test_daemon_error_cancel_and_restart_zero_every_active_gauge_without_leaks(
+    monkeypatch,
+) -> None:
+    meter = _Meter()
+    sink = RecordingTelemetrySink(capacity=32)
+    monkeypatch.setattr(otel, "get_meter", lambda _name: meter)
+    monkeypatch.setattr(otel, "init", lambda *_args, **_kwargs: True)
+
+    def shutdown(**kwargs):
+        result = _Flush("completed")
+        kwargs["before_close"](result)
+        return result
+
+    monkeypatch.setattr(otel, "shutdown", shutdown)
+
+    async def run_incarnation(instance_id: str, *, cancel_request: bool) -> None:
+        semantic = SemanticTelemetry(
+            sink=sink,
+            identity=EventIdentity(
+                service="bh-host-daemon",
+                instance_id=instance_id,
+                host_id="host-stable",
+            ),
+        )
+        telemetry = daemon_telemetry.DaemonTelemetry(
+            cfg={"otel": {"enabled": True}},
+            host_id="host-stable",
+            instance_id=instance_id,
+            flush_budget_seconds=0.2,
+            semantic_telemetry=semantic,
+        )
+        await telemetry.start()
+        request = telemetry.begin_request(
+            route_template="/api/v1/hives/{hive_id}/events",
+            method="GET",
+            protocol="http",
+        )
+        telemetry.finish_request(
+            request,
+            status_code=499 if cancel_request else 503,
+            cancelled=cancel_request,
+        )
+        telemetry.open_connection("sse")
+        telemetry.set_queue_depth("sse-client", 4)
+        await telemetry.stop()
+        assert telemetry._request_tokens == {}
+        assert telemetry._connection_tokens == {}
+
+    async def exercise() -> None:
+        await run_incarnation("instance-one", cancel_request=False)
+        await run_incarnation("instance-two", cancel_request=True)
+
+    asyncio.run(exercise())
+
+    assert meter.instruments["bh.daemon.restarts"].values == [(1, {}), (1, {})]
+    assert list(meter.callbacks["bh.daemon.requests.active"](None))[0].value == 0
+    assert list(meter.callbacks["bh.daemon.connections.active"](None))[0].value == 0
+    assert list(meter.callbacks["bh.daemon.queue.depth"](None))[0].value == 0
+    assert {event.identity.instance_id for event in sink.events} == {
+        "instance-one",
+        "instance-two",
+    }
+    assert [
+        event.outcome
+        for event in sink.events
+        if event.event_name is SemanticEventName.OPERATION_EXECUTION and event.outcome is not None
+    ] == [Outcome.FAILED, Outcome.CANCELLED, Outcome.CANCELLED, Outcome.CANCELLED]

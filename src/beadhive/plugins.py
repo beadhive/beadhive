@@ -41,7 +41,17 @@ from .kernel.plugins import (
     discover_plugins,
     parse_kernel_config,
 )
+from .kernel.telemetry import SemanticTelemetryPort
 from .plugin_runtime_catalog import PLUGIN_RUNTIME_MODULES
+
+_semantic_telemetry: SemanticTelemetryPort | None = None
+
+
+def configure_semantic_telemetry(telemetry: SemanticTelemetryPort | None) -> None:
+    """Install the composition-owned semantic port used by compatibility dispatch."""
+
+    global _semantic_telemetry
+    _semantic_telemetry = telemetry
 
 
 @dataclass(frozen=True)
@@ -239,7 +249,11 @@ def _dispatch(binding: SubscriberBinding[ContextT], context: ContextT) -> Delive
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(LifecycleDispatcher((binding,)).dispatch(binding.event, context))
+        return asyncio.run(
+            LifecycleDispatcher((binding,), telemetry=_semantic_telemetry).dispatch(
+                binding.event, context
+            )
+        )
     raise RuntimeError("legacy synchronous plugin facade cannot run inside an active event loop")
 
 

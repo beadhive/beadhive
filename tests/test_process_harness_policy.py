@@ -11,6 +11,7 @@ from harness import processes
 
 ROOT = Path(__file__).resolve().parents[1]
 FORK_POLICY = ROOT / "tests" / "harness" / "processes.py"
+DAEMON_LIVE_CONTRACT = ROOT / "tests" / "test_daemon_live_contract.py"
 
 
 def _unsafe_process_calls(path: Path) -> list[tuple[int, str]]:
@@ -102,6 +103,24 @@ def test_policy_allows_thread_pool_executor(tmp_path) -> None:
 
 def test_ordinary_process_policy_is_spawn_on_every_platform() -> None:
     assert processes.process_context().get_start_method() == "spawn"
+
+
+def test_daemon_live_server_isolated_from_the_xdist_worker_thread() -> None:
+    source = DAEMON_LIVE_CONTRACT.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(DAEMON_LIVE_CONTRACT))
+
+    worker_threads = [
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and ast.unparse(node.func) == "threading.Thread"
+    ]
+    assert worker_threads == []
+    assert "process_context()" in source
+    assert "target=_live_contract_scenario_process" in source
+    assert "ctx.Event()" not in source
+    assert '"kind": "progress"' in source
+    assert '"kind": "heartbeat"' in source
+    assert "LIVE_SCENARIO_LIVENESS_SECONDS < LIVE_SCENARIO_WATCHDOG_SECONDS" in source
 
 
 def test_fork_policy_refuses_an_xdist_worker(monkeypatch) -> None:
