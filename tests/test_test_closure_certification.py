@@ -482,7 +482,7 @@ def test_every_advisory_closure_has_a_complete_digest_bound_record() -> None:
     records = {record["id"]: record for record in evidence["closures"]}
 
     assert set(records) == set(registry.by_id())
-    assert len(records) == 23
+    assert len(records) == 24
     required = {
         "owner",
         "public_ports",

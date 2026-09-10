@@ -649,9 +649,9 @@ def build_evidence(root: Path = ROOT, *, collect: bool = False) -> dict[str, Any
         "source_tree": input_identity["tree"],
         "certification_input_identity": input_identity,
         "refresh_provenance": {
-            "from": "7055fec76a80c73acbb7ed44a943ea8d80868177",
-            "to": "6025df2248e1cd00ab46325587df52460a2ad740",
-            "kind": "product-native zero-delta stale-child refresh before developer edits",
+            "from": "311d30db44d3a04120d908bc8ce61c40fe7fcdc4",
+            "to": "ced493be87c9b36736cb081906c5ddb97989bd6c",
+            "kind": "telemetry-closure promotion refresh after bh-id9pp landed",
         },
         "policy": {
             "activation": "disabled",

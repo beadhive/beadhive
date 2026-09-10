@@ -5,9 +5,9 @@
     "excluded_paths": [
       "docs/proof/bh-ck1t6.1-test-closure-certification.json"
     ],
-    "file_count": 1219,
-    "revision": "sha256:142d890fdd0e44af563ee055a9bb6f1984de831430f48cd6f5c580c9e9b38ac5",
-    "tree": "sha256:e73d36a171f5ede95950eeab167872ce205bbaab7e1b6b3e7807114642117aba"
+    "file_count": 1230,
+    "revision": "sha256:b62f99417e8c041b2d526d2146dff9d34964d4cf1f3011c5d66d1a4ac7ff9b5c",
+    "tree": "sha256:43392866ca896c321e16c567b99077a5a91d56abdd66eec8fbfaa7522e8e5f8a"
   },
   "closures": [
     {
@@ -19,10 +19,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 79,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:92492dfd84945115d9f769cdf84ed0e668f49ea8dab0116e0bf8ab9b826f2429",
-        "shared_universe": true
+        "count": 5,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure kernel",
       "confidence": "medium",
@@ -65,13 +64,13 @@
       "independence_tests": [
         "tests/unit/test_pure_module_independence.py"
       ],
-      "input_digest": "sha256:a5d3e0dfc23cfc12ab0a12eefe9cc9e0e034aa079d8054a81a5d894736638d0f",
+      "input_digest": "sha256:e50d9ebaa153a074f547492f2ff69dc4c3e2e608aa850fb2add67809857a9de5",
       "kind": "kernel",
       "mandatory_boundary_tests": [
         "tests/unit/testing/test_conformance_testkit.py",
         "tests/unit/test_pure_module_independence.py"
       ],
-      "observed_input_digest": "sha256:a5d3e0dfc23cfc12ab0a12eefe9cc9e0e034aa079d8054a81a5d894736638d0f",
+      "observed_input_digest": "sha256:e50d9ebaa153a074f547492f2ff69dc4c3e2e608aa850fb2add67809857a9de5",
       "owner": "kernel closure maintainers",
       "public_ports": [
         "src/beadhive/operation_catalog.py"
@@ -129,10 +128,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 68,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:4c9b873ec540e60190253b9b8035aab6e0afb78a6002609fbc499975a989ef4e",
-        "shared_universe": true
+        "count": 4,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure kernel.lifecycle",
       "confidence": "medium",
@@ -174,12 +172,12 @@
       "independence_tests": [
         "tests/unit/kernel/lifecycle/test_independence.py"
       ],
-      "input_digest": "sha256:4c7976f3cc40ef7b1a6d4a565c90a3430751f059063687384eccccbff7e54184",
+      "input_digest": "sha256:84006fe476977d0b0ad472847fec156c93ffee4dd228c0d3f877249949f6ee9c",
       "kind": "kernel",
       "mandatory_boundary_tests": [
         "tests/unit/kernel/lifecycle/test_independence.py"
       ],
-      "observed_input_digest": "sha256:4c7976f3cc40ef7b1a6d4a565c90a3430751f059063687384eccccbff7e54184",
+      "observed_input_digest": "sha256:84006fe476977d0b0ad472847fec156c93ffee4dd228c0d3f877249949f6ee9c",
       "owner": "kernel.lifecycle closure maintainers",
       "public_ports": [
         "src/beadhive/kernel/lifecycle/contracts.py"
@@ -229,10 +227,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 62,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:ce515ff727285e7a2b0fee30d3b74ee76351980a1787e1e75f2a0f001c35634b",
-        "shared_universe": true
+        "count": 5,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure kernel.plugins",
       "confidence": "medium",
@@ -291,14 +288,14 @@
       "independence_tests": [
         "tests/unit/kernel/plugins/test_discovery.py"
       ],
-      "input_digest": "sha256:690564b0be7d0373b1c04c57a0e37eacecf70525579eacb8e7d4baafae413f8d",
+      "input_digest": "sha256:7fc64a4895c3533f5bd15a81df4c9990bd5f51aae1a91f70d237bd32242f3e97",
       "kind": "kernel",
       "mandatory_boundary_tests": [
         "tests/contracts/test_plugin_discovery_contract.py",
         "tests/contracts/test_sample_plugin_authoring.py",
         "tests/unit/kernel/plugins/test_discovery.py"
       ],
-      "observed_input_digest": "sha256:690564b0be7d0373b1c04c57a0e37eacecf70525579eacb8e7d4baafae413f8d",
+      "observed_input_digest": "sha256:7fc64a4895c3533f5bd15a81df4c9990bd5f51aae1a91f70d237bd32242f3e97",
       "owner": "kernel.plugins closure maintainers",
       "public_ports": [
         "src/beadhive/kernel/plugins/contracts.py"
@@ -365,10 +362,141 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 292,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:094e805e5a18c173d156a03b8fed1598a3319c84722f2c60869823582e5c8d53",
-        "shared_universe": true
+        "count": 9,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
+      },
+      "command": "just test-closure kernel.telemetry",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/adapters/telemetry.py",
+          "src/beadhive/daemon_telemetry.py",
+          "src/beadhive/kernel/telemetry/__init__.py",
+          "src/beadhive/kernel/telemetry/contracts.py",
+          "src/beadhive/kernel/telemetry/instrumentation.py",
+          "src/beadhive/kernel/telemetry/schema.py",
+          "src/beadhive/kernel/telemetry/sinks.py",
+          "src/beadhive/otel.py",
+          "src/beadhive/otel_lgtm.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/test_telemetry_contract.py",
+          "tests/unit/kernel/telemetry/test_instrumentation.py",
+          "tests/test_contract_release.py::test_bundle_inventory_is_complete_canonical_and_source_owned",
+          "tests/test_contract_release.py::test_checked_release_is_current_and_install_lookup_is_path_safe",
+          "tests/test_contract_release.py::test_compatibility_gate_rejects_removal_rename_and_requiredness",
+          "tests/test_contract_release_evidence.py::test_compatibility_report_accounts_for_every_published_and_candidate_artifact",
+          "tests/test_contract_release_evidence.py::test_checked_compatibility_report_is_canonical_and_current",
+          "tests/test_semantic_otel_adapter.py",
+          "tests/test_daemon_telemetry.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/modules/adapters -> public kernel contract -> kernel implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "kernel.telemetry",
+      "implementation_boundary": [
+        "src/beadhive/adapters/telemetry.py",
+        "src/beadhive/daemon_telemetry.py",
+        "src/beadhive/kernel/telemetry/__init__.py",
+        "src/beadhive/kernel/telemetry/contracts.py",
+        "src/beadhive/kernel/telemetry/instrumentation.py",
+        "src/beadhive/kernel/telemetry/schema.py",
+        "src/beadhive/kernel/telemetry/sinks.py",
+        "src/beadhive/otel.py",
+        "src/beadhive/otel_lgtm.py"
+      ],
+      "independence_tests": [
+        "tests/test_telemetry_contract.py"
+      ],
+      "input_digest": "sha256:610b2d2b1ff765bc4890ae5cd72c1fa369c5e41ad718273bd7c1c72f8b922665",
+      "kind": "kernel",
+      "mandatory_boundary_tests": [
+        "tests/test_contract_release.py::test_bundle_inventory_is_complete_canonical_and_source_owned",
+        "tests/test_contract_release.py::test_checked_release_is_current_and_install_lookup_is_path_safe",
+        "tests/test_contract_release.py::test_compatibility_gate_rejects_removal_rename_and_requiredness",
+        "tests/test_contract_release_evidence.py::test_compatibility_report_accounts_for_every_published_and_candidate_artifact",
+        "tests/test_contract_release_evidence.py::test_checked_compatibility_report_is_canonical_and_current",
+        "tests/test_telemetry_contract.py"
+      ],
+      "observed_input_digest": "sha256:610b2d2b1ff765bc4890ae5cd72c1fa369c5e41ad718273bd7c1c72f8b922665",
+      "owner": "kernel.telemetry closure maintainers",
+      "public_ports": [
+        "src/beadhive/kernel/telemetry/contracts.py"
+      ],
+      "real_adapter_tests": [
+        "tests/test_semantic_otel_adapter.py"
+      ],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_semantic_otel_adapter.py",
+        "tests/test_daemon_telemetry.py"
+      ],
+      "reverse_dependents": [
+        "adapters",
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "unavailable",
+        "seconds": null,
+        "source_revision": null
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 6,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure module.agents",
       "confidence": "medium",
@@ -424,13 +552,13 @@
       "independence_tests": [
         "tests/unit/modules/agents/test_agent_independence.py"
       ],
-      "input_digest": "sha256:2d57806c51c611435f1976876e4dc0590f0a5519aafe892f71ab96bd9f243ae0",
+      "input_digest": "sha256:5b69f420e0a8519212a33384591d72c3bb441c13e0043332d55b8f973d4ee855",
       "kind": "module",
       "mandatory_boundary_tests": [
         "tests/contracts/test_agent_launch_compatibility.py",
         "tests/unit/modules/agents/test_agent_independence.py"
       ],
-      "observed_input_digest": "sha256:2d57806c51c611435f1976876e4dc0590f0a5519aafe892f71ab96bd9f243ae0",
+      "observed_input_digest": "sha256:5b69f420e0a8519212a33384591d72c3bb441c13e0043332d55b8f973d4ee855",
       "owner": "module.agents closure maintainers",
       "public_ports": [
         "src/beadhive/modules/agents/contracts/ports.py"
@@ -489,10 +617,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 283,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:9ca0572cc86f518ac929fb0c678591efaee1e9bbaa9bdc3fb272649cde83eecc",
-        "shared_universe": true
+        "count": 19,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure module.config",
       "confidence": "medium",
@@ -573,14 +700,14 @@
       "independence_tests": [
         "tests/unit/modules/config/test_pure_independence.py"
       ],
-      "input_digest": "sha256:e58b6ff2868730f9408afbb40bf25dfedc41413a932b7a76c0857edfd3375cb7",
+      "input_digest": "sha256:9b6752dbf38d82a1a1723e771bab20666c8d69ce074843aab7001641b679db99",
       "kind": "module",
       "mandatory_boundary_tests": [
         "tests/contracts/test_config_contract_compatibility.py",
         "tests/contracts/test_config_resolution_compatibility.py",
         "tests/unit/modules/config/test_pure_independence.py"
       ],
-      "observed_input_digest": "sha256:e58b6ff2868730f9408afbb40bf25dfedc41413a932b7a76c0857edfd3375cb7",
+      "observed_input_digest": "sha256:9b6752dbf38d82a1a1723e771bab20666c8d69ce074843aab7001641b679db99",
       "owner": "module.config closure maintainers",
       "public_ports": [
         "src/beadhive/modules/config/contracts.py",
@@ -658,10 +785,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 82,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:97faf9f7839369d83ca524624e7982bcfeebfa590e320fa7440e50f2ac6acac7",
-        "shared_universe": true
+        "count": 4,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure config.pure",
       "confidence": "medium",
@@ -707,12 +833,12 @@
       "independence_tests": [
         "tests/unit/modules/config/test_pure_independence.py"
       ],
-      "input_digest": "sha256:8a8d45fa0a05493e648ce03a0366e30be39f59a2051285226820302ffd4b8ae4",
+      "input_digest": "sha256:17c53a9f8990a171c2ef033ab9d9f8f7378c8e776780a05dcd0976167f5c7217",
       "kind": "contract",
       "mandatory_boundary_tests": [
         "tests/unit/modules/config/test_pure_independence.py"
       ],
-      "observed_input_digest": "sha256:8a8d45fa0a05493e648ce03a0366e30be39f59a2051285226820302ffd4b8ae4",
+      "observed_input_digest": "sha256:17c53a9f8990a171c2ef033ab9d9f8f7378c8e776780a05dcd0976167f5c7217",
       "owner": "config.pure closure maintainers",
       "public_ports": [
         "src/beadhive/modules/config/contracts.py",
@@ -754,10 +880,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 96,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:2a1fd7510557105249af08409bb0f9560f3184a9da1b6bc0877f71149d5d6ed8",
-        "shared_universe": true
+        "count": 5,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure config.store",
       "confidence": "medium",
@@ -798,12 +923,12 @@
       "independence_tests": [
         "tests/unit/modules/config/test_yaml_store.py"
       ],
-      "input_digest": "sha256:69543bd6018bd0b4a59e42f040ebf15eacaaaa434c01e7ee170ac9306e1d4dca",
+      "input_digest": "sha256:b546e06808be523a0a9e32500adaab600281e55ac91265edb2f0674c26ca1b45",
       "kind": "contract",
       "mandatory_boundary_tests": [
         "tests/unit/modules/config/test_yaml_store.py"
       ],
-      "observed_input_digest": "sha256:69543bd6018bd0b4a59e42f040ebf15eacaaaa434c01e7ee170ac9306e1d4dca",
+      "observed_input_digest": "sha256:b546e06808be523a0a9e32500adaab600281e55ac91265edb2f0674c26ca1b45",
       "owner": "config.store closure maintainers",
       "public_ports": [
         "src/beadhive/modules/config/domain/ports.py"
@@ -856,10 +981,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 26,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:925209a248dbb408b52ebc17102dcb59f9ada199ab64e8e4f10d271b1f1a7b86",
-        "shared_universe": true
+        "count": 4,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure config.fragments",
       "confidence": "medium",
@@ -899,14 +1023,14 @@
       "independence_tests": [
         "tests/unit/modules/config/test_plugin_fragments.py"
       ],
-      "input_digest": "sha256:ece315205c844b1e953632b4607e843a4f8317aecafcc1932ac8947c9a3f1075",
+      "input_digest": "sha256:f7f88608a969f4173dd8c817144353bc7395efe15a23884614bc5a50157af0ea",
       "kind": "contract",
       "mandatory_boundary_tests": [
         "tests/contracts/test_builtin_plugin_manifests.py",
         "tests/contracts/test_config_contract_compatibility.py",
         "tests/unit/modules/config/test_plugin_fragments.py"
       ],
-      "observed_input_digest": "sha256:ece315205c844b1e953632b4607e843a4f8317aecafcc1932ac8947c9a3f1075",
+      "observed_input_digest": "sha256:f7f88608a969f4173dd8c817144353bc7395efe15a23884614bc5a50157af0ea",
       "owner": "config.fragments closure maintainers",
       "public_ports": [
         "src/beadhive/modules/config/contracts.py"
@@ -964,10 +1088,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 195,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:e52b2c4b6ebe2266457c3ea300cb492aab18226c9a66f91c5819a03101c02fd3",
-        "shared_universe": true
+        "count": 13,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure module.hives",
       "confidence": "medium",
@@ -1028,14 +1151,14 @@
       "independence_tests": [
         "tests/unit/modules/hives/test_hive_independence.py"
       ],
-      "input_digest": "sha256:74d0dcaebc63c84932626c539a928f702548a8e28719cec4eb6156dbcff0d585",
+      "input_digest": "sha256:9c568c5788ed27e07354d3d78d5fc2c5d8e1e43ac6c234ed4278d49b7257b4f3",
       "kind": "module",
       "mandatory_boundary_tests": [
         "tests/contracts/test_hive_lifecycle_compatibility.py",
         "tests/unit/kernel/lifecycle/test_dispatcher.py",
         "tests/unit/modules/hives/test_hive_independence.py"
       ],
-      "observed_input_digest": "sha256:74d0dcaebc63c84932626c539a928f702548a8e28719cec4eb6156dbcff0d585",
+      "observed_input_digest": "sha256:9c568c5788ed27e07354d3d78d5fc2c5d8e1e43ac6c234ed4278d49b7257b4f3",
       "owner": "module.hives closure maintainers",
       "public_ports": [
         "src/beadhive/modules/hives/contracts/ports.py"
@@ -1101,10 +1224,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 176,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:f3797fc206cf02b2d7f54b82037ea28b5be94771d474f09fd6a60d8b3d9edbe6",
-        "shared_universe": true
+        "count": 8,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure module.planning",
       "confidence": "medium",
@@ -1158,13 +1280,13 @@
       "independence_tests": [
         "tests/unit/modules/planning/test_planning_independence.py"
       ],
-      "input_digest": "sha256:e4879f613b150af4408759f0acde7a9b708f258e9917a1762674e0278883aab3",
+      "input_digest": "sha256:d846b985c298f79baecbc0d2d69092cb0d40765f14cf6ed5f9bcfac6a44f71e6",
       "kind": "module",
       "mandatory_boundary_tests": [
         "tests/contracts/test_planning_capability_adapters.py",
         "tests/unit/modules/planning/test_planning_independence.py"
       ],
-      "observed_input_digest": "sha256:e4879f613b150af4408759f0acde7a9b708f258e9917a1762674e0278883aab3",
+      "observed_input_digest": "sha256:d846b985c298f79baecbc0d2d69092cb0d40765f14cf6ed5f9bcfac6a44f71e6",
       "owner": "module.planning closure maintainers",
       "public_ports": [
         "src/beadhive/modules/planning/contracts/ports.py"
@@ -1226,10 +1348,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 90,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:5b009141d0af2bb653153ba08fbdfb674de083e76c2e4f318d0ee84a6b440b49",
-        "shared_universe": true
+        "count": 9,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure module.state",
       "confidence": "medium",
@@ -1290,13 +1411,13 @@
       "independence_tests": [
         "tests/unit/modules/state/test_state_independence.py"
       ],
-      "input_digest": "sha256:706ca9205c9138b0290112c4ec76422e7805dd00129dd9ba2dbeb197c663dbc5",
+      "input_digest": "sha256:8fae71796ba61cf70f49652719afce07c94cd79b0affdbc9ab86b38d77ab7cc7",
       "kind": "module",
       "mandatory_boundary_tests": [
         "tests/contracts/test_state_capability_adapters.py",
         "tests/unit/modules/state/test_state_independence.py"
       ],
-      "observed_input_digest": "sha256:706ca9205c9138b0290112c4ec76422e7805dd00129dd9ba2dbeb197c663dbc5",
+      "observed_input_digest": "sha256:8fae71796ba61cf70f49652719afce07c94cd79b0affdbc9ab86b38d77ab7cc7",
       "owner": "module.state closure maintainers",
       "public_ports": [
         "src/beadhive/modules/state/contracts/ports.py"
@@ -1359,10 +1480,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 508,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:39fbbecefadb0d88379b62395c80d4546104e339013e46a117bb4c0b7f475b54",
-        "shared_universe": true
+        "count": 11,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure module.work",
       "confidence": "medium",
@@ -1419,14 +1539,14 @@
       "independence_tests": [
         "tests/unit/modules/work/test_work_independence.py"
       ],
-      "input_digest": "sha256:0540baf048ddbd4e3019a4a0756c26e53172d2d687eacdc1836590e18e4b1dda",
+      "input_digest": "sha256:ca374cc3440256256fb69e48f5d7e523c9dd226fca6f6d28a48e86d3c87b551e",
       "kind": "module",
       "mandatory_boundary_tests": [
         "tests/contracts/test_work_capability_adapters.py",
         "tests/unit/kernel/lifecycle/test_contracts.py",
         "tests/unit/modules/work/test_work_independence.py"
       ],
-      "observed_input_digest": "sha256:0540baf048ddbd4e3019a4a0756c26e53172d2d687eacdc1836590e18e4b1dda",
+      "observed_input_digest": "sha256:ca374cc3440256256fb69e48f5d7e523c9dd226fca6f6d28a48e86d3c87b551e",
       "owner": "module.work closure maintainers",
       "public_ports": [
         "src/beadhive/modules/work/contracts/ports.py"
@@ -1501,10 +1621,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 453,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:bd52fbfcc04a1347c7ac590442b8122a265a71819735a7abe4b6192750ecc419",
-        "shared_universe": true
+        "count": 14,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure module.worktrees",
       "confidence": "medium",
@@ -1572,14 +1691,14 @@
       "independence_tests": [
         "tests/unit/modules/worktrees/test_worktrees_independence.py"
       ],
-      "input_digest": "sha256:6a39377d82dc529e08f8378f6484789eb7fe3d4440cf579f7f514fc40b1413f1",
+      "input_digest": "sha256:0040b14a4bc2c8f5f8272024560cfe0ad3f895de40006bba6bb0aa8b7be42fb5",
       "kind": "module",
       "mandatory_boundary_tests": [
         "tests/contracts/test_worktree_capability_compatibility.py",
         "tests/unit/kernel/lifecycle/test_contracts.py",
         "tests/unit/modules/worktrees/test_worktrees_independence.py"
       ],
-      "observed_input_digest": "sha256:6a39377d82dc529e08f8378f6484789eb7fe3d4440cf579f7f514fc40b1413f1",
+      "observed_input_digest": "sha256:0040b14a4bc2c8f5f8272024560cfe0ad3f895de40006bba6bb0aa8b7be42fb5",
       "owner": "module.worktrees closure maintainers",
       "public_ports": [
         "src/beadhive/modules/worktrees/contracts/ports.py"
@@ -1655,10 +1774,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 131,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:3dc49ead25235db375110e3f1df5475aec786af34df331aadac7d1a4c2ddfaa6",
-        "shared_universe": true
+        "count": 8,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure adapters",
       "confidence": "low",
@@ -1702,13 +1820,13 @@
         "src/beadhive/state_stream_polling.py"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:2de2011510894e49a461be07d954a7120291de1ef3156f6e5da13e5281508742",
+      "input_digest": "sha256:91cd162e87bf88b32e5a13cadb7a8692e72f9e3d8c3964efaa27ac71d5cfa3ab",
       "kind": "adapter",
       "mandatory_boundary_tests": [
         "tests/test_state_stream.py",
         "tests/unit/testing/test_conformance_testkit.py"
       ],
-      "observed_input_digest": "sha256:2de2011510894e49a461be07d954a7120291de1ef3156f6e5da13e5281508742",
+      "observed_input_digest": "sha256:91cd162e87bf88b32e5a13cadb7a8692e72f9e3d8c3964efaa27ac71d5cfa3ab",
       "owner": "adapters closure maintainers",
       "public_ports": [
         "src/beadhive/state_stream.py"
@@ -1778,10 +1896,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 318,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:6779efc2e9d53fc5486ca618860e8821640cf1e5b40e78ba49c6e1756b7545a8",
-        "shared_universe": true
+        "count": 11,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure plugin.herdr",
       "confidence": "medium",
@@ -1852,14 +1969,14 @@
         "src/beadhive/kernel/plugins/manifests/herdr.json"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:6129ff33fb523791a5e03a802f8cb033cf58f382599273073e0542542e236c2a",
+      "input_digest": "sha256:7e6218cc5a6dc241354885f3b9a3fc027a8eb07c7bfbde0ff390b1caa3521057",
       "kind": "plugin",
       "mandatory_boundary_tests": [
         "tests/unit/testing/test_conformance_testkit.py",
         "tests/contracts/test_builtin_plugin_manifests.py",
         "tests/contracts/test_agent_launch_compatibility.py"
       ],
-      "observed_input_digest": "sha256:6129ff33fb523791a5e03a802f8cb033cf58f382599273073e0542542e236c2a",
+      "observed_input_digest": "sha256:7e6218cc5a6dc241354885f3b9a3fc027a8eb07c7bfbde0ff390b1caa3521057",
       "owner": "plugin.herdr closure maintainers",
       "public_ports": [
         "src/beadhive/kernel/plugins/contracts.py",
@@ -1936,10 +2053,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 148,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:f94218896945f82f697fc34b044e073451037d032350d80168107555a0a7f207",
-        "shared_universe": true
+        "count": 5,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure plugin.hitch",
       "confidence": "medium",
@@ -1978,13 +2094,13 @@
         "src/beadhive/kernel/plugins/manifests/hitch.json"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:8207e8044a078a290529db40146e9a50e22c3f890a5041f909c13753036e7151",
+      "input_digest": "sha256:d11ebbd03acaa7092e422c3989639dbb13f684f6c53334da9b9cc42abd2eaec7",
       "kind": "plugin",
       "mandatory_boundary_tests": [
         "tests/unit/testing/test_conformance_testkit.py",
         "tests/contracts/test_builtin_plugin_manifests.py"
       ],
-      "observed_input_digest": "sha256:8207e8044a078a290529db40146e9a50e22c3f890a5041f909c13753036e7151",
+      "observed_input_digest": "sha256:d11ebbd03acaa7092e422c3989639dbb13f684f6c53334da9b9cc42abd2eaec7",
       "owner": "plugin.hitch closure maintainers",
       "public_ports": [
         "src/beadhive/kernel/plugins/contracts.py"
@@ -2054,10 +2170,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 94,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:57f4d6dd09cd8d1b218515da23d0208ff2c2d4dc5fc1f8e481fcbcd95bf16845",
-        "shared_universe": true
+        "count": 5,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure plugin.observaloop",
       "confidence": "medium",
@@ -2096,13 +2211,13 @@
         "src/beadhive/observaloop.py"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:3f8112946c8175316de7d2a70977ebc4dd5261abf5fab54e20b17215ab34e1ee",
+      "input_digest": "sha256:f1eb298dbb4cfd28211ee9e9485ea69bbe127bd3d12b551e86548c0707cb01d8",
       "kind": "plugin",
       "mandatory_boundary_tests": [
         "tests/unit/testing/test_conformance_testkit.py",
         "tests/contracts/test_builtin_plugin_manifests.py"
       ],
-      "observed_input_digest": "sha256:3f8112946c8175316de7d2a70977ebc4dd5261abf5fab54e20b17215ab34e1ee",
+      "observed_input_digest": "sha256:f1eb298dbb4cfd28211ee9e9485ea69bbe127bd3d12b551e86548c0707cb01d8",
       "owner": "plugin.observaloop closure maintainers",
       "public_ports": [
         "src/beadhive/kernel/plugins/contracts.py"
@@ -2172,10 +2287,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 126,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:d2a05267e291d3ec2e5255648c48562c0006e06633f58dfe60ae74537cb619a1",
-        "shared_universe": true
+        "count": 5,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure plugin.orca",
       "confidence": "medium",
@@ -2214,13 +2328,13 @@
         "src/beadhive/orca.py"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:0fbbd83a9b32d6761c9c90bd1957d3e9945d1895925480d5aed46ea588ccca87",
+      "input_digest": "sha256:7d5f18ecde67941781d0fccaed590b5f3a387ff8cfe6bf0680b86ba0066ed068",
       "kind": "plugin",
       "mandatory_boundary_tests": [
         "tests/unit/testing/test_conformance_testkit.py",
         "tests/contracts/test_builtin_plugin_manifests.py"
       ],
-      "observed_input_digest": "sha256:0fbbd83a9b32d6761c9c90bd1957d3e9945d1895925480d5aed46ea588ccca87",
+      "observed_input_digest": "sha256:7d5f18ecde67941781d0fccaed590b5f3a387ff8cfe6bf0680b86ba0066ed068",
       "owner": "plugin.orca closure maintainers",
       "public_ports": [
         "src/beadhive/kernel/plugins/contracts.py"
@@ -2290,10 +2404,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 79,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:3963785a47b9e031602755e92fe590c73a0dfcce3bbb1c845bb06513945bcfeb",
-        "shared_universe": true
+        "count": 5,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure plugin.repowise",
       "confidence": "medium",
@@ -2332,13 +2445,13 @@
         "src/beadhive/repowise_plugin.py"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:11f6a71c3a9311c4f6c223997704e6ce2aad52fb78dc328d8aa5cad8e631eb42",
+      "input_digest": "sha256:f4d2955f7d06fc3b0002cc7056eebeb98332f83a7bfccd40dd8d0ab724c70760",
       "kind": "plugin",
       "mandatory_boundary_tests": [
         "tests/unit/testing/test_conformance_testkit.py",
         "tests/contracts/test_builtin_plugin_manifests.py"
       ],
-      "observed_input_digest": "sha256:11f6a71c3a9311c4f6c223997704e6ce2aad52fb78dc328d8aa5cad8e631eb42",
+      "observed_input_digest": "sha256:f4d2955f7d06fc3b0002cc7056eebeb98332f83a7bfccd40dd8d0ab724c70760",
       "owner": "plugin.repowise closure maintainers",
       "public_ports": [
         "src/beadhive/kernel/plugins/contracts.py"
@@ -2408,10 +2521,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 369,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:f657bd2404ca87962d608e465353963b8cf92f4cb27482d061601c964e6369e6",
-        "shared_universe": true
+        "count": 8,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure contract.agent-launch",
       "confidence": "medium",
@@ -2475,10 +2587,10 @@
         "src/beadhive/seat_contracts.py"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:1c444703598ce96485008d1ef581c8004770b65807facd734055473dff296955",
+      "input_digest": "sha256:8bac00ed2c4cbde51587e392434246d06315532103dde0db4d69096c2bbddd35",
       "kind": "contract",
       "mandatory_boundary_tests": [],
-      "observed_input_digest": "sha256:1c444703598ce96485008d1ef581c8004770b65807facd734055473dff296955",
+      "observed_input_digest": "sha256:8bac00ed2c4cbde51587e392434246d06315532103dde0db4d69096c2bbddd35",
       "owner": "contract.agent-launch closure maintainers",
       "public_ports": [
         "src/beadhive/modules/agents/contracts/ports.py",
@@ -2533,10 +2645,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 170,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:8982bd4ab01f7e2346c17aa54d5771b38da4df9da1bee25faa6a2efeb39dba08",
-        "shared_universe": true
+        "count": 10,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure contracts",
       "confidence": "medium",
@@ -2726,10 +2837,10 @@
         "src/beadhive/testing/conformance.py"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:6aeea6969c76d00d1b9a68882205fc4d99a9caa84b046940278febf98f33ff77",
+      "input_digest": "sha256:3f7e1711cc284cc19fa2fc2f502ec0c08d97f151c12dd7ed86926c6a01b6715c",
       "kind": "contract",
       "mandatory_boundary_tests": [],
-      "observed_input_digest": "sha256:6aeea6969c76d00d1b9a68882205fc4d99a9caa84b046940278febf98f33ff77",
+      "observed_input_digest": "sha256:3f7e1711cc284cc19fa2fc2f502ec0c08d97f151c12dd7ed86926c6a01b6715c",
       "owner": "contracts closure maintainers",
       "public_ports": [
         "src/beadhive/testing",
@@ -2801,10 +2912,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 88,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:e640cb777c8f5ea0b4bf2da239e00847252975df021feb3d9f5178bb85c8929f",
-        "shared_universe": false
+        "count": 2,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure integration",
       "confidence": "low",
@@ -2862,12 +2972,12 @@
         "tests/test_work_refine_int.py"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:4c232ec9871047018df2c9336144c65881e83ed1b9d4fa6b6e3244406b67c864",
+      "input_digest": "sha256:bcef1fa266be8ae5204f64a314ab40248022cf6e6e2ae70226914515d6f5b4c5",
       "kind": "integration",
       "mandatory_boundary_tests": [
         "tests/unit/testing/test_conformance_testkit.py"
       ],
-      "observed_input_digest": "sha256:4c232ec9871047018df2c9336144c65881e83ed1b9d4fa6b6e3244406b67c864",
+      "observed_input_digest": "sha256:bcef1fa266be8ae5204f64a314ab40248022cf6e6e2ae70226914515d6f5b4c5",
       "owner": "integration closure maintainers",
       "public_ports": [],
       "real_adapter_tests": [],
@@ -2918,10 +3028,9 @@
         "status": "uncertified"
       },
       "collection": {
-        "count": 26,
-        "kind": "current-pytest-nodeids",
-        "nodeid_digest": "sha256:65914875d310fad9cd1e664becec367703009251746977cd1325bd2ebeb673e4",
-        "shared_universe": true
+        "count": 4,
+        "kind": "selector-count-placeholder",
+        "nodeid_digest": null
       },
       "command": "just test-closure system-smoke",
       "confidence": "low",
@@ -2961,12 +3070,12 @@
         "src/beadhive/stream_cli.py"
       ],
       "independence_tests": [],
-      "input_digest": "sha256:94fd24327a279c008aba9aa5ae07870cfc12a096a63f3a738be4cc4365bc1f30",
+      "input_digest": "sha256:a6699db56ad7e84a19e799a15bff656f17bdc2838a5f7bcf858c62308911dcfd",
       "kind": "system",
       "mandatory_boundary_tests": [
         "tests/unit/testing/test_conformance_testkit.py"
       ],
-      "observed_input_digest": "sha256:94fd24327a279c008aba9aa5ae07870cfc12a096a63f3a738be4cc4365bc1f30",
+      "observed_input_digest": "sha256:a6699db56ad7e84a19e799a15bff656f17bdc2838a5f7bcf858c62308911dcfd",
       "owner": "system-smoke closure maintainers",
       "public_ports": [],
       "real_adapter_tests": [],
@@ -3039,9 +3148,9 @@
     "unrelated_closure_digests_remain_valid": true
   },
   "refresh_provenance": {
-    "from": "7055fec76a80c73acbb7ed44a943ea8d80868177",
-    "kind": "product-native zero-delta stale-child refresh before developer edits",
-    "to": "6025df2248e1cd00ab46325587df52460a2ad740"
+    "from": "311d30db44d3a04120d908bc8ce61c40fe7fcdc4",
+    "kind": "telemetry-closure promotion refresh after bh-id9pp landed",
+    "to": "ced493be87c9b36736cb081906c5ddb97989bd6c"
   },
   "required_relationship_classes": [
     "import",
@@ -3062,9 +3171,9 @@
       "excluded_paths": [
         "docs/proof/bh-ck1t6.1-test-closure-certification.json"
       ],
-      "file_count": 1219,
-      "revision": "sha256:142d890fdd0e44af563ee055a9bb6f1984de831430f48cd6f5c580c9e9b38ac5",
-      "tree": "sha256:e73d36a171f5ede95950eeab167872ce205bbaab7e1b6b3e7807114642117aba"
+      "file_count": 1230,
+      "revision": "sha256:b62f99417e8c041b2d526d2146dff9d34964d4cf1f3011c5d66d1a4ac7ff9b5c",
+      "tree": "sha256:43392866ca896c321e16c567b99077a5a91d56abdd66eec8fbfaa7522e8e5f8a"
     },
     "note": "The checked JSON declares the receipt lookup identity, not a self-asserted run. --check resolves the candidate's Git tree against the authoritative git-private ledger; the matching in-flight work-check is accepted only to bootstrap that same gate, and later checks require its completed green receipt.",
     "receipt_provenance": {
@@ -3080,6 +3189,6 @@
   },
   "schema_version": 2,
   "scope": "bh-ck1t6.1 digest-bound test-closure prerequisite certification",
-  "source_revision": "sha256:142d890fdd0e44af563ee055a9bb6f1984de831430f48cd6f5c580c9e9b38ac5",
-  "source_tree": "sha256:e73d36a171f5ede95950eeab167872ce205bbaab7e1b6b3e7807114642117aba"
+  "source_revision": "sha256:b62f99417e8c041b2d526d2146dff9d34964d4cf1f3011c5d66d1a4ac7ff9b5c",
+  "source_tree": "sha256:43392866ca896c321e16c567b99077a5a91d56abdd66eec8fbfaa7522e8e5f8a"
 }
