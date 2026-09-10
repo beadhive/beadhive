@@ -590,6 +590,19 @@ Rules:
 
 ### Test selection and CI progression
 
+The final checked operational state is published in
+[Selective-CI operational report](SELECTIVE-CI-OPERATIONS.md). A new module or plugin cannot
+register without a present test closure and a conformance declaration. Its `tests/closures.toml`
+row is the declaration: it must name the owner and source scope, direct tests, shared-contract
+tests, and reverse-dependent tests. `just test-closure-check` discovers module directories and
+plugin registrations and fails when the row is missing, absent, or incomplete.
+
+At the 2026-09-10 evidence boundary, all 24 closures are uncertified and there are zero production
+selective routes. Commit and main-integration routing is provisioned but therefore falls back to
+`just check`. Leaf merge, child-epic finish, final workstream submit/review, scheduled validation,
+and release remain full-only on `just check-all`. These retained gates supersede the aspirational
+progression below wherever they are stricter.
+
 The program should not remove the full correctness gate merely because files were moved. CI
 selection evolves in verified stages:
 

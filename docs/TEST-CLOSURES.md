@@ -135,7 +135,7 @@ digest-mismatched proofs force `just check`. Exclusions report their current sta
 applicability evidence alongside the historical input digest; an inapplicable closure is therefore
 never described as unaffected or stable.
 
-This bead does not provide those final eligibility records: all 23 checked rows remain
+This bead does not provide those final eligibility records: all 24 checked rows remain
 `uncertified`, and activation remains disabled. Consequently current repository plans are
 auditable shadow inputs that still fall back to `just check`. `bh-ck1t6.3` owns shadow comparison,
 escape thresholds, rollback, and any provisional local leaf activation.
@@ -180,7 +180,7 @@ descriptor with no-follow, regular-file, size, unique-binding, and duplicate-JSO
 full repository, all 60 receipt bindings, and checkout cleanliness are re-read before selection; a
 final live snapshot must be identical.
 
-No real closure is currently a shadow candidate. All 23 prerequisite rows are `uncertified`, have
+No real closure is currently a shadow candidate. All 24 prerequisite rows are `uncertified`, have
 no fresh dynamic per-test contexts, have no qualifying same-tree shadow samples, and therefore
 publish unavailable—not estimated—timing, compute, queue, flake, miss, and fallback measurements.
 The checked activation set is empty. Simulation-labelled fixtures exercise the positive policy
@@ -242,6 +242,13 @@ gate. It does not permanently corrupt unrelated historical closure evidence afte
 landed and passed its own full gate. A record can become activation-eligible only after the later
 shadow-validation bead adds a fresh exact per-test trace, zero unexplained escapes, and a matching
 same-tree oracle.
+
+## Operational closeout
+
+The generated [Selective-CI operational report](SELECTIVE-CI-OPERATIONS.md) names every closure's
+2026-09-10 certification state, owner, fallback, and recertification triggers. It also publishes
+commit and main-integration measurements as unavailable because the qualifying sample count is
+zero; it does not turn the initial focused timings below into a production savings claim.
 
 ## Certification execution evidence
 
