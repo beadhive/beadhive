@@ -1,0 +1,544 @@
+{
+  "cases": [
+    {
+      "artifact_id": "urn:beadhive:wire-schema:abort-receipt:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "abort_operation_id": "abort-example",
+        "compensated_allocation_id": null,
+        "compensation": "not_needed",
+        "failed_operation_id": null,
+        "launch_id": "launch-aborted-example",
+        "reason_code": "adapter.refused",
+        "state": "aborted",
+        "type": "beadhive.launch-abort",
+        "version": "1",
+        "workspace_binding": null
+      },
+      "name": "abort-receipt-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:adapter-commit-result:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "adapter_kind": "codex",
+        "allocation_id": "allocation-example",
+        "binding_digest": "sha256:cc491a3d9bc7a09fb5f0e7c3eaa76c816c6f2bfc84eec7111aff8ff09c825a2d",
+        "commit_operation_id": "commit-example",
+        "error_code": null,
+        "generation": 1,
+        "launch_id": "launch-example",
+        "outcome": "committed",
+        "portable_receipt": null,
+        "type": "beadhive.adapter-commit-result",
+        "version": "1"
+      },
+      "name": "adapter-commit-result-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:agent-launch-profile:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "available_seats": [
+          "planner"
+        ],
+        "bead": null,
+        "effort": null,
+        "harness": "codex",
+        "initial_seat": "planner",
+        "managed_bead": false,
+        "model": null,
+        "version": "1"
+      },
+      "name": "agent-launch-profile-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:agent-launch-receipt:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "available_seats": [
+          "planner"
+        ],
+        "bead": null,
+        "current_seat": "planner",
+        "effort": null,
+        "harness": "codex",
+        "initial_seat": "planner",
+        "managed_bead": false,
+        "model": null,
+        "receipt_type": "beadhive.agent-launch",
+        "seat_contract_digest": "sha256:40eac5d13a13f4112d2f6f5c32fa939402aac30f7b9aa3b122040d6b7af1cd14",
+        "seat_contract_version": "1",
+        "version": "1"
+      },
+      "name": "agent-launch-receipt-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-catalog:cli-projections:1",
+      "assertion": "projection-row-present",
+      "input": {
+        "availability": "local process; no daemon required",
+        "canonical_contracts": [],
+        "classification": "catalog-entry",
+        "compatibility": "Typer path, options, help, output, and exit behavior",
+        "composes": [],
+        "identifier": "alerts show",
+        "operation": "alerts.show",
+        "privilege": "unprivileged-read",
+        "prompts": false,
+        "reason": "canonical CLI projection",
+        "request_schema": "catalog:alerts.show#parameters",
+        "result_schema": "urn:beadhive:wire-schema:json-value:1",
+        "shape": "exact",
+        "side_effects": "none",
+        "streaming": false,
+        "surface": "cli",
+        "transport_owner": "cli-projection"
+      },
+      "name": "cli-projections-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:config:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {},
+      "name": "config-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-catalog:gateway-contracts:1",
+      "assertion": "gateway-contract-present",
+      "input": {
+        "contractVersion": "gateway.read.v1"
+      },
+      "name": "gateway-contracts-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-contract:host-openapi:1",
+      "assertion": "openapi-path-present",
+      "input": {
+        "operations": [
+          "get"
+        ],
+        "path": "/api/v1/factory"
+      },
+      "name": "host-openapi-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:launch-receipt:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "adapter_kind": "codex",
+        "adapter_receipt": null,
+        "allocation_id": "allocation-example",
+        "commit_operation_id": "commit-example",
+        "generation": 1,
+        "launch_id": "launch-example",
+        "prepare_operation_id": "prepare-example",
+        "profile_receipt": {
+          "available_seats": [
+            "planner"
+          ],
+          "bead": null,
+          "current_seat": "planner",
+          "effort": null,
+          "harness": "codex",
+          "initial_seat": "planner",
+          "managed_bead": false,
+          "model": null,
+          "receipt_type": "beadhive.agent-launch",
+          "seat_contract_digest": "sha256:40eac5d13a13f4112d2f6f5c32fa939402aac30f7b9aa3b122040d6b7af1cd14",
+          "seat_contract_version": "1",
+          "version": "1"
+        },
+        "state": "committed",
+        "type": "beadhive.launch",
+        "version": "1",
+        "workspace_binding": {
+          "batch_id": null,
+          "binding_kind": "beadless_seat",
+          "branch": "planning/example",
+          "epic_id": null,
+          "hive_id": "github/beadhive/beadhive",
+          "parent_launch_id": null,
+          "requested_bead": null,
+          "type": "beadhive.workspace-binding",
+          "version": "1",
+          "worktree_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "name": "launch-receipt-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-catalog:lifecycle-events:1",
+      "assertion": "lifecycle-event-present",
+      "input": {
+        "context": {
+          "fields": [
+            "plugin_id",
+            "correlation_id"
+          ],
+          "type": "PluginLifecycleContext"
+        },
+        "family": "plugin",
+        "id": "plugin.discovered",
+        "order": 10,
+        "phase": "discovered"
+      },
+      "name": "lifecycle-events-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-catalog:mcp-projections:1",
+      "assertion": "projection-row-present",
+      "input": {
+        "availability": "stdio; HTTP parity is owned by bh-q0lol.6",
+        "canonical_contracts": [],
+        "classification": "catalog-entry",
+        "compatibility": "FastMCP discovery is authoritative",
+        "composes": [],
+        "identifier": "beadhive://alerts",
+        "operation": "alerts.show",
+        "privilege": "unprivileged-read",
+        "prompts": false,
+        "reason": "alerts is the established singleton collection resource",
+        "request_schema": "fastmcp:resource/beadhive://alerts#parameters",
+        "result_schema": "urn:beadhive:wire-schema:json-value:1",
+        "shape": "exact",
+        "side_effects": "none",
+        "streaming": false,
+        "surface": "mcp-resource",
+        "transport_owner": "mcp-projection"
+      },
+      "name": "mcp-projections-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-catalog:operations:1",
+      "assertion": "catalog-row-present",
+      "input": {
+        "alias_of": null,
+        "constraints": {
+          "hq_write": false,
+          "interactive": false,
+          "override_parameters": [],
+          "secret_material": false
+        },
+        "kind": "read-resource",
+        "name": "alerts.show",
+        "parameters": [
+          {
+            "name": "as_json",
+            "privilege": "inherited",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "privilege": "unprivileged-read",
+        "result_schema": "urn:beadhive:wire-schema:json-value:1",
+        "surfaces": {
+          "cli": {
+            "aliases": [],
+            "declared_hidden": false,
+            "effective_hidden": false,
+            "granularity": {
+              "mode": "fine",
+              "reason": null
+            },
+            "interactivity": {
+              "guard_conditions": [],
+              "guard_parameters": [],
+              "mode": "none",
+              "prompt_seams": [],
+              "reason": null
+            },
+            "parameter_map": {},
+            "parameters": [
+              "as_json"
+            ],
+            "path": "alerts show",
+            "progress": {
+              "mode": "structured",
+              "notification_uris": [],
+              "reason": "--json carries machine-readable status/result data instead of a separate progress channel"
+            }
+          },
+          "mcp": {
+            "allowlisted": true,
+            "divergence": "alerts is the established singleton collection resource",
+            "granularity": {
+              "mode": "fine",
+              "reason": null
+            },
+            "interactivity": {
+              "guard_conditions": [],
+              "guard_parameters": [],
+              "mode": "none",
+              "prompt_seams": [],
+              "reason": null
+            },
+            "progress": {
+              "mode": "none",
+              "notification_uris": [],
+              "reason": "MCP returns one structured result and emits no progress notification"
+            },
+            "resource": "beadhive://alerts",
+            "resource_parameters": []
+          }
+        }
+      },
+      "name": "operation-catalog-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {},
+      "name": "plugin-config-herdr-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {},
+      "name": "plugin-config-hitch-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {},
+      "name": "plugin-config-observaloop-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {},
+      "name": "plugin-config-orca-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {},
+      "name": "plugin-config-repowise-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:plugin-manifest:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "capabilities": {
+          "provides": [
+            {
+              "api_version": 1,
+              "id": "agent.session"
+            }
+          ]
+        },
+        "compatibility": {
+          "beadhive": {
+            "maximum_exclusive": "1.0.0",
+            "minimum_inclusive": "0.15.0"
+          },
+          "plugin_kernel": {
+            "maximum_exclusive": "2.0.0",
+            "minimum_inclusive": "1.0.0"
+          }
+        },
+        "configuration": {
+          "legacy_namespaces": [
+            "herdr"
+          ],
+          "namespace": "plugins.herdr",
+          "schema_artifact": "urn:beadhive:wire-schema:plugin-config:herdr:1"
+        },
+        "lifecycle": {
+          "subscriptions": [
+            {
+              "compensation": {
+                "action_id": null,
+                "mode": "none"
+              },
+              "criticality": "best-effort",
+              "event": "host.readiness",
+              "id": "herdr.probe-readiness",
+              "idempotency": "not-applicable",
+              "order": 100,
+              "retry": {
+                "backoff_seconds": 0,
+                "max_attempts": 1
+              },
+              "timeout_seconds": 30
+            },
+            {
+              "compensation": {
+                "action_id": null,
+                "mode": "none"
+              },
+              "criticality": "best-effort",
+              "event": "hive.onboarding",
+              "id": "herdr.install-plugin",
+              "idempotency": "required",
+              "order": 100,
+              "retry": {
+                "backoff_seconds": 0,
+                "max_attempts": 1
+              },
+              "timeout_seconds": 30
+            }
+          ]
+        },
+        "manifest_version": 1,
+        "plugin_id": "herdr",
+        "plugin_version": "1.0.0",
+        "presentation": {
+          "cli": [
+            {
+              "capability_id": "agent.session",
+              "command": "plugin herdr"
+            }
+          ]
+        },
+        "security": {
+          "credentials": [],
+          "executables": [
+            {
+              "name": "herdr",
+              "required": false,
+              "version": {
+                "maximum_exclusive": "999.0.0",
+                "minimum_inclusive": "0.0.0"
+              }
+            }
+          ],
+          "permissions": [
+            {
+              "id": "process.session.control",
+              "purpose": "control optional terminal sessions",
+              "required": true
+            }
+          ]
+        }
+      },
+      "name": "plugin-manifest-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:prepared-launch:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "adapter_action": "allocate",
+        "adapter_kind": "codex",
+        "adapter_plan_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "binding_digest": "sha256:cc491a3d9bc7a09fb5f0e7c3eaa76c816c6f2bfc84eec7111aff8ff09c825a2d",
+        "launch_id": "launch-example",
+        "prepare_operation_id": "prepare-example",
+        "profile_receipt": {
+          "available_seats": [
+            "planner"
+          ],
+          "bead": null,
+          "current_seat": "planner",
+          "effort": null,
+          "harness": "codex",
+          "initial_seat": "planner",
+          "managed_bead": false,
+          "model": null,
+          "receipt_type": "beadhive.agent-launch",
+          "seat_contract_digest": "sha256:40eac5d13a13f4112d2f6f5c32fa939402aac30f7b9aa3b122040d6b7af1cd14",
+          "seat_contract_version": "1",
+          "version": "1"
+        },
+        "state": "prepared",
+        "type": "beadhive.prepared-launch",
+        "version": "1",
+        "workspace_binding": {
+          "batch_id": null,
+          "binding_kind": "beadless_seat",
+          "branch": "planning/example",
+          "epic_id": null,
+          "hive_id": "github/beadhive/beadhive",
+          "parent_launch_id": null,
+          "requested_bead": null,
+          "type": "beadhive.workspace-binding",
+          "version": "1",
+          "worktree_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+        }
+      },
+      "name": "prepared-launch-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-catalog:seat-contracts:1",
+      "assertion": "seat-contract-present",
+      "input": {
+        "digest": "sha256:caee095384402e14f8ee7d47e6c3293cc6e7d5de19ce362f2e381527ea01e83d",
+        "instructions": "You are the Beadhive analyst seat. Research the assigned question and return evidence without taking lifecycle authority.",
+        "seat": "analyst",
+        "version": "1"
+      },
+      "name": "seat-contracts-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:telemetry.event-envelope:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "attributes": {
+          "surface": "cli"
+        },
+        "causation_id": null,
+        "correlation_id": "018f47b1-2948-7c2a-b0f1-92d5be4d92cf",
+        "duration_ms": 1,
+        "error": null,
+        "event_id": "018f47b1-2948-7c2a-b0f1-92d5be4d92ce",
+        "event_name": "beadhive.operation.execution",
+        "event_version": 1,
+        "identity": {
+          "actor": null,
+          "bead_id": null,
+          "hive_id": null,
+          "host_id": null,
+          "instance_id": "release-example",
+          "plugin_id": null,
+          "plugin_version": null,
+          "run_id": null,
+          "seat": null,
+          "service": "bh"
+        },
+        "occurred_at": "2026-09-10T00:00:00Z",
+        "outcome": "succeeded",
+        "phase": "completed",
+        "schema_version": 1,
+        "span_id": null,
+        "trace_id": null
+      },
+      "name": "telemetry-event-envelope-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:workspace-binding:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "batch_id": null,
+        "binding_kind": "beadless_seat",
+        "branch": "planning/example",
+        "epic_id": null,
+        "hive_id": "github/beadhive/beadhive",
+        "parent_launch_id": null,
+        "requested_bead": null,
+        "type": "beadhive.workspace-binding",
+        "version": "1",
+        "worktree_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      "name": "workspace-binding-v1-valid"
+    },
+    {
+      "artifact_id": "urn:beadhive:wire-schema:workspace-target:1",
+      "assertion": "valid-json-schema-instance",
+      "input": {
+        "batch_id": null,
+        "binding_kind": "beadless_seat",
+        "epic_id": null,
+        "hive_id": "github/beadhive/beadhive",
+        "parent_launch_id": null,
+        "requested_bead": null,
+        "type": "beadhive.workspace-target",
+        "version": "1"
+      },
+      "name": "workspace-target-v1-valid"
+    }
+  ],
+  "format_version": 1,
+  "release_version": "1.0.0"
+}
