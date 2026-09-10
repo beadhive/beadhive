@@ -618,20 +618,15 @@ def test_current_root_descendant_consumes_snapshot_without_global_invalidation()
     assert "certification-artifact-invalid" not in plan["fallback_reasons"]
     assert {
         "closure-not-certified",
-        "current-applicability-not-proven",
-        "input-digest-mismatch",
         "missing-or-stale-coverage",
     } <= set(plan["fallback_reasons"])
+    assert "current-applicability-not-proven" not in plan["fallback_reasons"]
+    assert "input-digest-mismatch" not in plan["fallback_reasons"]
     work_exclusion = next(item for item in plan["exclusions"] if item["closure"] == "module.work")
-    assert work_exclusion["status"] == "inapplicable"
-    assert work_exclusion["reason"] == "current-applicability-not-proven"
-    assert work_exclusion["current_applicability"]["applicable"] is False
-    assert work_exclusion["applicability_fallback_reasons"] == [
-        "current-applicability-not-proven",
-        "current-input-digest-mismatch",
-        "input-digest-mismatch",
-    ]
-    assert "stable" not in json.dumps(work_exclusion)
+    assert work_exclusion["status"] == "unaffected"
+    assert work_exclusion["reason"] == "unaffected-current-digests-stable"
+    assert work_exclusion["current_applicability"]["applicable"] is True
+    assert "applicability_fallback_reasons" not in work_exclusion
 
 
 def test_real_git_snapshot_keeps_unrelated_closure_current_and_invalidates_impacted_one(
