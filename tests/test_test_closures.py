@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
@@ -36,9 +36,22 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert test_closures.validate_registry(registry) == ()
     assert registry.full_gate == "just check"
     assert registry.release_gate == "just check-all"
-    assert len(registry.closures) == 23
-    assert sum(closure.status == "present" for closure in registry.closures) == 23
+    assert len(registry.closures) == 24
+    assert sum(closure.status == "present" for closure in registry.closures) == 24
     assert sum(closure.status == "absent" for closure in registry.closures) == 0
+
+
+def test_canonical_registry_definition_binds_every_declared_closure_field():
+    definition = test_closures.registry_definition(test_closures.load_registry())
+
+    assert set(definition) == {
+        "schema_version",
+        "full_gate",
+        "release_gate",
+        "expected_modules",
+        "closures",
+    }
+    assert set(definition["closures"][0]) == {field.name for field in fields(test_closures.Closure)}
 
 
 def test_capability_module_closures_survive_workstream_composition():
@@ -70,6 +83,20 @@ def test_impact_selection_unions_direct_shared_contract_and_reverse_dependency_t
     assert "tests/unit/testing/test_conformance_testkit.py" in closure.selectors
     assert "tests/test_cli_projection.py" in closure.selectors
     assert len(closure.selectors) == len(set(closure.selectors))
+
+
+def test_telemetry_kernel_has_a_current_contract_and_runtime_closure():
+    closure = test_closures.load_registry().by_id()["kernel.telemetry"]
+
+    assert closure.owner_path == "src/beadhive/kernel/telemetry"
+    assert "src/beadhive/kernel/telemetry/**/*.py" in closure.source_paths
+    assert "tests/test_telemetry_contract.py" in closure.tests
+    assert any(
+        selector.startswith("tests/test_contract_release.py::")
+        for selector in closure.shared_contract_tests
+    )
+    assert "tests/test_semantic_otel_adapter.py" in closure.reverse_dependency_tests
+    assert "tests/test_daemon_telemetry.py" in closure.reverse_dependency_tests
 
 
 def test_herdr_closure_owns_typed_integration_and_compatibility_surfaces():

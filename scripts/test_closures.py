@@ -9,7 +9,7 @@ import re
 import subprocess
 import sys
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,9 +54,14 @@ class Registry:
         return {closure.id: closure for closure in self.closures}
 
 
-def load_registry(path: Path = DEFAULT_REGISTRY) -> Registry:
-    raw = tomllib.loads(path.read_text(encoding="utf-8"))
+def parse_registry(raw: dict[str, object]) -> Registry:
+    """Parse an already-decoded registry document into its typed representation."""
     metadata = raw.get("registry", {})
+    if not isinstance(metadata, dict):
+        raise ValueError("closure registry metadata must be a table")
+    raw_closures = raw.get("closures", ())
+    if not isinstance(raw_closures, list):
+        raise ValueError("closure registry closures must be an array of tables")
     closures = tuple(
         Closure(
             id=str(item.get("id", "")),
@@ -71,7 +76,8 @@ def load_registry(path: Path = DEFAULT_REGISTRY) -> Registry:
             reverse_dependencies=tuple(item.get("reverse_dependencies", ())),
             reverse_dependency_tests=tuple(item.get("reverse_dependency_tests", ())),
         )
-        for item in raw.get("closures", ())
+        for item in raw_closures
+        if isinstance(item, dict)
     )
     if metadata.get("schema_version") != 1:
         raise ValueError("closure registry schema_version must be 1")
@@ -81,6 +87,34 @@ def load_registry(path: Path = DEFAULT_REGISTRY) -> Registry:
         expected_modules=tuple(metadata.get("expected_modules", ())),
         closures=closures,
     )
+
+
+def loads_registry(payload: str) -> Registry:
+    """Parse a registry from TOML text, including immutable Git-object snapshots."""
+    return parse_registry(tomllib.loads(payload))
+
+
+def load_registry(path: Path = DEFAULT_REGISTRY) -> Registry:
+    return loads_registry(path.read_text(encoding="utf-8"))
+
+
+def registry_definition(registry: Registry) -> dict[str, object]:
+    """Return every registry field in a canonical, digestable representation."""
+    closure_fields = tuple(field.name for field in fields(Closure))
+    closures = [
+        {
+            name: list(value) if isinstance(value := getattr(closure, name), tuple) else value
+            for name in closure_fields
+        }
+        for closure in sorted(registry.closures, key=lambda item: item.id)
+    ]
+    return {
+        "schema_version": 1,
+        "full_gate": registry.full_gate,
+        "release_gate": registry.release_gate,
+        "expected_modules": sorted(registry.expected_modules),
+        "closures": closures,
+    }
 
 
 def discover_plugin_sources(root: Path) -> set[str]:

@@ -1,0 +1,105 @@
+[
+  {
+    "name": "module-internal",
+    "changes": [{"status": "M", "path": "src/beadhive/modules/alpha/service.py"}],
+    "decision": "selective",
+    "commands": ["just test-closure module.alpha"],
+    "changed_modules": ["module.alpha"],
+    "fallback_reasons": []
+  },
+  {
+    "name": "plugin-only",
+    "changes": [{"status": "M", "path": "src/beadhive/echo_plugin.py"}],
+    "decision": "selective",
+    "commands": ["just test-closure plugin.echo"],
+    "changed_modules": ["plugin.echo"],
+    "fallback_reasons": []
+  },
+  {
+    "name": "reverse-dependent-tests",
+    "changes": [{"status": "M", "path": "src/beadhive/modules/alpha/contracts.py"}],
+    "decision": "selective",
+    "commands": ["just test-closure module.alpha"],
+    "changed_modules": ["module.alpha"],
+    "fallback_reasons": []
+  },
+  {
+    "name": "schema",
+    "changes": [{"status": "M", "path": "docs/schemas/config/v1.json"}],
+    "decision": "full",
+    "commands": ["just check"],
+    "changed_modules": [],
+    "fallback_reasons": ["schema-or-generated-artifact-change"]
+  },
+  {
+    "name": "transport-facade",
+    "changes": [{"status": "M", "path": "src/beadhive/cli.py"}],
+    "decision": "full",
+    "commands": ["just check"],
+    "changed_modules": [],
+    "fallback_reasons": ["compatibility-facade-or-transport-change"]
+  },
+  {
+    "name": "multi-module",
+    "changes": [
+      {"status": "M", "path": "src/beadhive/modules/alpha/service.py"},
+      {"status": "M", "path": "src/beadhive/modules/beta/service.py"}
+    ],
+    "decision": "full",
+    "commands": ["just check"],
+    "changed_modules": ["module.alpha", "module.beta"],
+    "fallback_reasons": ["multi-module-ambiguity"]
+  },
+  {
+    "name": "shared-global",
+    "changes": [{"status": "M", "path": "src/beadhive/testing/conformance.py"}],
+    "decision": "full",
+    "commands": ["just check"],
+    "changed_modules": ["contracts"],
+    "fallback_reasons": ["shared-contract-change"]
+  },
+  {
+    "name": "unknown",
+    "changes": [{"status": "A", "path": "src/beadhive/new_surface.py"}],
+    "decision": "full",
+    "commands": ["just check"],
+    "changed_modules": [],
+    "fallback_reasons": ["unknown-or-unowned-path"]
+  },
+  {
+    "name": "deleted",
+    "changes": [{"status": "D", "path": "src/beadhive/modules/alpha/service.py"}],
+    "decision": "full",
+    "commands": ["just check"],
+    "changed_modules": ["module.alpha"],
+    "fallback_reasons": ["deleted-or-renamed-path"]
+  },
+  {
+    "name": "renamed",
+    "changes": [
+      {
+        "status": "R100",
+        "old_path": "src/beadhive/modules/alpha/service.py",
+        "path": "src/beadhive/modules/alpha/new_service.py"
+      }
+    ],
+    "decision": "full",
+    "commands": ["just check"],
+    "changed_modules": ["module.alpha"],
+    "fallback_reasons": ["deleted-or-renamed-path"]
+  },
+  {
+    "name": "dynamic-import",
+    "changes": [
+      {
+        "status": "M",
+        "path": "src/beadhive/echo_plugin.py",
+        "signals": ["dynamic-import"]
+      }
+    ],
+    "decision": "full",
+    "commands": ["just check"],
+    "changed_modules": ["plugin.echo"],
+    "fallback_reasons": ["dynamic-import-or-subprocess-ambiguity"]
+  }
+]

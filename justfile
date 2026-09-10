@@ -140,6 +140,10 @@ check-all: require-bd lint lint-md license-check architecture-check transport-ar
 # Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
 architecture-check:
     uv run python scripts/check_import_boundaries.py
+    uv run python scripts/test_closure_certification.py --check
+    uv run python scripts/test_closure_shadow_policy.py --check
+    uv run python scripts/test_closure_promotion_policy.py --check
+    uv run python scripts/test_closure_operational_report.py --check
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
@@ -560,6 +564,22 @@ test-closure closure:
 
 test-closure-check:
     uv run python scripts/test_closures.py check
+
+# Digest-bound prerequisite evidence only; selection and activation remain disabled.
+test-closure-certification-check:
+    uv run python scripts/test_closure_certification.py --check
+
+# Pure policy/evidence check only. It never runs a selected closure or changes a lifecycle gate.
+test-closure-shadow-policy-check:
+    uv run python scripts/test_closure_shadow_policy.py --check
+
+# Promotion scope/evidence check only. The trusted verifier still owns production eligibility.
+test-closure-promotion-policy-check:
+    uv run python scripts/test_closure_promotion_policy.py --check
+
+# Advisory only: emit a machine-readable impacted-test plan; never runs tests or changes policy.
+test-impact-plan base head="HEAD":
+    uv run python scripts/test_impact_selector.py --base {{quote(base)}} --head {{quote(head)}}
 
 test-kernel:
     just test-closure kernel
