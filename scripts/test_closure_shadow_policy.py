@@ -821,7 +821,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for error in errors:
             print(f"error: {error}")
         if not errors:
-            print("shadow policy evidence valid: 23 closures rejected, activation disabled")
+            print("shadow policy evidence valid: 24 closures rejected, activation disabled")
         return 1 if errors else 0
     print(json.dumps(build_checked_evidence(ROOT), indent=2, sort_keys=True))
     return 0

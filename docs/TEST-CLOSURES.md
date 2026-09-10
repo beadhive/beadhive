@@ -226,8 +226,8 @@ Child-epic finish, final workstream submission/review, scheduled validation, and
 run `just check-all`; leaf merge also remains full-only. Every route report names the command and
 tests run, the stable unaffected closures skipped and why, closure and selector digests,
 confidence, and the next complete run. The current production cardinality remains honestly zero:
-none of the 23 historical shadow candidates meets the certification plus 30-change/60-day bar,
-and the newly registered telemetry closure has no forged historical candidate row.
+none of the 24 current shadow candidates meets the certification plus 30-change/60-day bar,
+including the newly registered telemetry closure.
 
 Rollback is one configuration value: change `selective_ci.mode = "certified"` to
 `selective_ci.mode = "full"` in `tests/selective-ci-policy.toml`. Both promoted boundaries then
