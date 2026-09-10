@@ -1,5 +1,49 @@
-"""Transport-neutral telemetry contracts."""
+"""Public transport-neutral semantic telemetry contract."""
 
-from .contracts import TraceVerb
+from .contracts import (
+    EVENT_ENVELOPE_SCHEMA_ID,
+    EVENT_ENVELOPE_SCHEMA_VERSION,
+    MAX_ATTRIBUTES,
+    AttributeKey,
+    EmitDisposition,
+    ErrorClassification,
+    EventEnvelope,
+    EventError,
+    EventIdentity,
+    EventPhase,
+    FlushOutcome,
+    FlushResult,
+    Outcome,
+    Seat,
+    SemanticEventName,
+    TelemetryAttribute,
+    TelemetrySink,
+    TraceVerb,
+    emit_non_fatal,
+    flush_non_fatal,
+)
+from .schema import event_envelope_schema
 
-__all__ = ["TraceVerb"]
+__all__ = [
+    "EVENT_ENVELOPE_SCHEMA_ID",
+    "EVENT_ENVELOPE_SCHEMA_VERSION",
+    "MAX_ATTRIBUTES",
+    "AttributeKey",
+    "EmitDisposition",
+    "ErrorClassification",
+    "EventEnvelope",
+    "EventError",
+    "EventIdentity",
+    "EventPhase",
+    "FlushOutcome",
+    "FlushResult",
+    "Outcome",
+    "Seat",
+    "SemanticEventName",
+    "TelemetryAttribute",
+    "TelemetrySink",
+    "TraceVerb",
+    "emit_non_fatal",
+    "event_envelope_schema",
+    "flush_non_fatal",
+]
