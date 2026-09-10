@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "WorkspaceBindingKind": {
+      "enum": [
+        "managed_bead",
+        "beadless_seat",
+        "batch",
+        "epic_container",
+        "shared_checkout"
+      ],
+      "title": "WorkspaceBindingKind",
+      "type": "string"
+    }
+  },
+  "$id": "urn:beadhive:wire-schema:workspace-target:1",
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Batch Id"
+    },
+    "binding_kind": {
+      "$ref": "#/$defs/WorkspaceBindingKind"
+    },
+    "epic_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Epic Id"
+    },
+    "hive_id": {
+      "title": "Hive Id",
+      "type": "string"
+    },
+    "parent_launch_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent Launch Id"
+    },
+    "requested_bead": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Requested Bead"
+    },
+    "type": {
+      "const": "beadhive.workspace-target",
+      "default": "beadhive.workspace-target",
+      "title": "Type",
+      "type": "string"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "hive_id",
+    "binding_kind"
+  ],
+  "title": "WorkspaceTargetV1",
+  "type": "object",
+  "version": 1
+}
