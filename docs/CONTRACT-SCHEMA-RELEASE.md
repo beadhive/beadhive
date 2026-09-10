@@ -5,6 +5,11 @@ package at `beadhive/schemas/contracts/v1.0.0`. The bundle is a projection of th
 domain and transport owners; it does not become a second registry, start a server, discover
 external plugins, or generate client code.
 
+The [v1.0.0 release notes](releases/official-contracts-v1.0.0.md) define support, negotiation,
+deprecation, redaction, upgrades, and next-version ownership. The generated
+[compatibility report](proof/official-v1-contract-compatibility.json) accounts for every artifact
+declared by the five earlier checked-in wire releases as well as every package candidate artifact.
+
 ## Install and look up an artifact
 
 Pin a Beadhive package release through the normal Python package mechanism, then pin both the
