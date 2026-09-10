@@ -1,0 +1,61 @@
+{
+  "activation": {
+    "eligible_closures": [],
+    "mode": "certified",
+    "production_selective_routes": 0
+  },
+  "boundaries": {
+    "full_only": [
+      "child-epic-finish",
+      "final-workstream-review",
+      "final-workstream-submit",
+      "leaf-merge",
+      "release",
+      "scheduled"
+    ],
+    "promoted": [
+      "commit",
+      "main-integration"
+    ],
+    "safety_gate": "just check-all",
+    "uncertainty_gate": "just check"
+  },
+  "input_digest": "sha256:679e5b0ab82727f6468ff09ce27f889e6c02b5ae6224f466d0602c325b32c6b1",
+  "inputs": {
+    "certification": "sha256:43ab506d5bb01d5f8c817c3d626e26b638e5053d4ac5596ea0cf0f1c21316e9d",
+    "config": "sha256:1e46e37d04f906fa55de0152b7e65edc47f88fd2b3e1dc5431cac2e6245a7515",
+    "policy": "sha256:1c4d7c42f62a05e1b400497339e5d750acaeada5f0195126463bbd96e0d8538e",
+    "registry": "sha256:e1e73848a03e794bb4c2c594455a9983aab71d582df060a3e9ef01cccf1ba093",
+    "selector": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+    "shadow": "sha256:8824e7368e671f81cb01eebe6a94a03686f9a2990968279253455641e6e293fd",
+    "verifier": "sha256:84bb30f642b0679fcf966108e859ccb5a10095338607a253c55e17971f2b5e78"
+  },
+  "note": "The promotion boundary is provisioned but no repository closure currently satisfies the certification and shadow-evidence bar, so every production route remains full.",
+  "output_contract": {
+    "required": [
+      "ran",
+      "skipped",
+      "why",
+      "closure_digests",
+      "selector_digest",
+      "confidence",
+      "next_full"
+    ]
+  },
+  "policy_version": "bh-test-closure-promotion-v1",
+  "rollback": {
+    "change": "selective_ci.mode = 'certified' -> 'full'",
+    "file": "tests/selective-ci-policy.toml"
+  },
+  "schema_version": 1,
+  "telemetry": {
+    "closure": "kernel.telemetry",
+    "closure_digest": "sha256:c5b7cc78674ec65174e2253eb069717e5d74a7ac242fbbf863d294e28b4128c7",
+    "current": true,
+    "fallback_reasons": [],
+    "landed_commit": "071521b05ee16f3069980e6c9dc508e5f9b71974",
+    "molecule": "bh-id9pp",
+    "official_release": "docs/proof/official-v1-contract-compatibility.json",
+    "official_release_digest": "sha256:2a4be46cef5bd365be93ca45f0c3c03a8dc8b915d1b15f7d6dc34cf74b07082c"
+  }
+}

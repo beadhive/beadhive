@@ -48,16 +48,16 @@ def test_unrelated_descendant_does_not_invalidate_the_historical_snapshot() -> N
     assert set(applicability) == {row["id"] for row in evidence["closures"]}
 
 
-def test_receipt_lookup_targets_historical_snapshot_tree(
+def test_receipt_lookup_targets_current_candidate_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     receipt = {
         "schema": 1,
-        "tree": "historical-tree",
+        "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
-        "bead": "bh-ck1t6.1",
+        "bead": "bh-ck1t6.4",
         "phase": "check",
         "lifecycle": "completed",
         "verdict": "green",
@@ -68,17 +68,53 @@ def test_receipt_lookup_targets_historical_snapshot_tree(
     def fake_git(_root: Path, *args: str) -> str:
         if args[0] == "status":
             return ""
-        if args[0] == "log":
-            return "historical-commit"
         if args[0] == "rev-parse":
-            assert args[1] == "historical-commit^{tree}"
-            return "historical-tree"
+            assert args[1] == "HEAD^{tree}"
+            return "candidate-tree"
         raise AssertionError(args)
 
     monkeypatch.setattr(certification, "_git", fake_git)
     monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
 
     assert certification.validate_full_gate_receipt(evidence, ROOT) == ()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("tree", "stale-tree"),
+        ("bead", "bh-ck1t6.1"),
+        ("phase", "submit"),
+        ("command_hash", "0000000000000000"),
+    ),
+)
+def test_receipt_admission_rejects_wrong_candidate_authority_binding(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: str
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    receipt = {
+        "schema": 1,
+        "tree": "candidate-tree",
+        "command": "just check",
+        "command_hash": certification.FULL_GATE_COMMAND_HASH,
+        "bead": "bh-ck1t6.4",
+        "phase": "check",
+        "lifecycle": "completed",
+        "verdict": "green",
+        "exit_code": 0,
+        "signal": None,
+    }
+    receipt[field] = value
+    monkeypatch.setattr(
+        certification,
+        "_git",
+        lambda _root, *args: "" if args[0] == "status" else "candidate-tree",
+    )
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == (
+        "candidate checkout has no authoritative matching full-gate receipt",
+    )
 
 
 @pytest.mark.parametrize(
@@ -287,6 +323,7 @@ def test_full_gate_receipt_is_resolved_from_candidate_tree_not_artifact_claims(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    evidence["same_tree_full_gate_oracle"]["input_identity"]["tree"] = "stale-tree"
 
     def fake_git(_root: Path, *args: str) -> str:
         return "" if args[0] == "status" else "candidate-tree"
@@ -296,7 +333,7 @@ def test_full_gate_receipt_is_resolved_from_candidate_tree_not_artifact_claims(
         "tree": "stale-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
-        "bead": "bh-ck1t6.1",
+        "bead": "bh-ck1t6.4",
         "phase": "check",
         "lifecycle": "completed",
         "verdict": "green",
@@ -359,7 +396,7 @@ def test_running_receipt_requires_exact_live_process_identity(
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
-        "bead": "bh-ck1t6.1",
+        "bead": "bh-ck1t6.4",
         "phase": "check",
         "lifecycle": "running",
         "owner": owner,
@@ -390,7 +427,7 @@ def test_running_receipt_accepts_exact_current_process_identity(
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
-        "bead": "bh-ck1t6.1",
+        "bead": "bh-ck1t6.4",
         "phase": "check",
         "lifecycle": "running",
         "owner": {"host": "current-host", "pid": 1234, "start_token": "current-start"},
@@ -450,7 +487,7 @@ def test_completed_receipt_rejects_nonignored_untracked_source_or_test(
         "tree": tree,
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
-        "bead": "bh-ck1t6.1",
+        "bead": "bh-ck1t6.4",
         "phase": "check",
         "lifecycle": "completed",
         "verdict": "green",
@@ -482,7 +519,7 @@ def test_every_advisory_closure_has_a_complete_digest_bound_record() -> None:
     records = {record["id"]: record for record in evidence["closures"]}
 
     assert set(records) == set(registry.by_id())
-    assert len(records) == 23
+    assert len(records) == 24
     required = {
         "owner",
         "public_ports",

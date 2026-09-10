@@ -383,7 +383,7 @@ def test_checked_current_artifact_rejects_every_real_closure() -> None:
 
     assert shadow.validate_checked_evidence(checked, ROOT) == ()
     assert checked["activation"] == {"enabled": False, "eligible_closures": []}
-    assert len(checked["closure_decisions"]) == 23
+    assert len(checked["closure_decisions"]) == 24
     assert all(not item["eligible"] for item in checked["closure_decisions"])
     for item in checked["closure_decisions"]:
         assert "closure-not-certified" in item["reasons"]

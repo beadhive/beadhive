@@ -275,6 +275,7 @@ PORTS: dict[str, tuple[str, ...]] = {
     "kernel": ("src/beadhive/operation_catalog.py",),
     "kernel.lifecycle": ("src/beadhive/kernel/lifecycle/contracts.py",),
     "kernel.plugins": ("src/beadhive/kernel/plugins/contracts.py",),
+    "kernel.telemetry": ("src/beadhive/kernel/telemetry/contracts.py",),
     "module.agents": ("src/beadhive/modules/agents/contracts/ports.py",),
     "module.config": (
         "src/beadhive/modules/config/contracts.py",
@@ -313,6 +314,7 @@ INDEPENDENCE: dict[str, tuple[str, ...]] = {
     "kernel": ("tests/unit/test_pure_module_independence.py",),
     "kernel.lifecycle": ("tests/unit/kernel/lifecycle/test_independence.py",),
     "kernel.plugins": ("tests/unit/kernel/plugins/test_discovery.py",),
+    "kernel.telemetry": ("tests/test_telemetry_contract.py",),
     "module.agents": ("tests/unit/modules/agents/test_agent_independence.py",),
     "module.config": ("tests/unit/modules/config/test_pure_independence.py",),
     "config.pure": ("tests/unit/modules/config/test_pure_independence.py",),
@@ -326,6 +328,7 @@ INDEPENDENCE: dict[str, tuple[str, ...]] = {
 }
 
 REAL_ADAPTERS: dict[str, tuple[str, ...]] = {
+    "kernel.telemetry": ("tests/test_semantic_otel_adapter.py",),
     "adapters": ("tests/unit/testing/test_real_adapter_conformance_example.py",),
     "plugin.herdr": ("tests/unit/integrations/test_herdr_adapter.py",),
     "plugin.hitch": ("tests/test_hitch_plugin.py",),
@@ -646,9 +649,9 @@ def build_evidence(root: Path = ROOT, *, collect: bool = False) -> dict[str, Any
         "source_tree": input_identity["tree"],
         "certification_input_identity": input_identity,
         "refresh_provenance": {
-            "from": "7055fec76a80c73acbb7ed44a943ea8d80868177",
-            "to": "6025df2248e1cd00ab46325587df52460a2ad740",
-            "kind": "product-native zero-delta stale-child refresh before developer edits",
+            "from": "311d30db44d3a04120d908bc8ce61c40fe7fcdc4",
+            "to": "ced493be87c9b36736cb081906c5ddb97989bd6c",
+            "kind": "telemetry-closure promotion refresh after bh-id9pp landed",
         },
         "policy": {
             "activation": "disabled",
@@ -661,7 +664,7 @@ def build_evidence(root: Path = ROOT, *, collect: bool = False) -> dict[str, Any
             "input_identity": input_identity,
             "receipt_provenance": {
                 "authority": "beadhive-git-private-validation-ledger",
-                "bead": "bh-ck1t6.1",
+                "bead": "bh-ck1t6.4",
                 "phase": "check",
                 "command": FULL_GATE_COMMAND,
                 "command_hash": FULL_GATE_COMMAND_HASH,
@@ -718,7 +721,7 @@ def effective_certification(record: dict[str, Any]) -> dict[str, Any]:
 def _expected_receipt_provenance() -> dict[str, Any]:
     return {
         "authority": "beadhive-git-private-validation-ledger",
-        "bead": "bh-ck1t6.1",
+        "bead": "bh-ck1t6.4",
         "phase": "check",
         "command": FULL_GATE_COMMAND,
         "command_hash": FULL_GATE_COMMAND_HASH,
@@ -819,11 +822,11 @@ def _receipt_manifests(root: Path) -> tuple[dict[str, Any], ...]:
 
 
 def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> tuple[str, ...]:
-    """Resolve the oracle against the immutable snapshot's authoritative run manifest.
+    """Resolve lifecycle admission against the current candidate's authoritative manifest.
 
-    The original certifying checkout may bootstrap from its exact live owner.  Later descendants
-    continue to verify that recorded tree's completed green receipt; current applicability is a
-    separate per-closure digest question.
+    Certification content and input identity remain anchored to the immutable historical snapshot
+    by ``validate_evidence``.  The lifecycle receipt is a separate authority boundary: it admits
+    only this clean candidate's exact tree and may bootstrap only from that run's live owner.
     """
     oracle = evidence.get("same_tree_full_gate_oracle") or {}
     provenance = oracle.get("receipt_provenance") or {}
@@ -831,8 +834,7 @@ def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> t
         return ("same-tree oracle receipt provenance does not match the full gate",)
     if _git(root, "status", "--porcelain", "--untracked-files=all"):
         return ("full-gate receipt lookup requires a clean checkout with no untracked inputs",)
-    snapshot = _historical_snapshot_commit(root)
-    candidate_tree = _git(root, "rev-parse", f"{snapshot}^{{tree}}" if snapshot else "HEAD^{tree}")
+    candidate_tree = _git(root, "rev-parse", "HEAD^{tree}")
     matches = [
         manifest
         for manifest in _receipt_manifests(root)

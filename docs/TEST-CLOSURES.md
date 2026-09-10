@@ -203,6 +203,36 @@ benefit is auditable shadow collection and fast focused developer/reviewer feedb
 exact-tree receipt reuse avoids duplicate full executions, while every configured submit/review
 gate still runs or reuses the authoritative full gate because the candidate set is empty.
 
+## Certified promotion boundary
+
+The provisioned promotion policy is
+[`tests/selective-ci-policy.toml`](../tests/selective-ci-policy.toml), with its digest-bound result
+in [`docs/proof/bh-ck1t6.4-promotion-policy.json`](proof/bh-ck1t6.4-promotion-policy.json). It adds
+two possible production boundaries—ordinary `commit` validation and explicitly eligible
+`main-integration` validation—but it does not turn advisory evidence into authority. A route must
+first pass the existing trusted Git/receipt verifier and the selector must return exactly one
+current, certified affected closure. The selected closure already unions its direct tests,
+shared-contract/schema and compatibility tests, reverse dependents, telemetry coverage, and
+bounded integration/system smoke tests from the registry.
+
+Telemetry readiness is now an explicit `kernel.telemetry` registry closure. Its direct semantic
+contract and instrumentation tests are composed with official contract-release checks and the
+semantic OTel/daemon reverse-dependent tests. The promotion artifact binds that closure, the
+official v1 compatibility artifact, and the landed `bh-id9pp` molecule commit. Shared, unknown,
+renamed, generated, validation-lifecycle, multi-module, stale, or otherwise high-risk selections
+still run `just check`.
+
+Child-epic finish, final workstream submission/review, scheduled validation, and release always
+run `just check-all`; leaf merge also remains full-only. Every route report names the command and
+tests run, the stable unaffected closures skipped and why, closure and selector digests,
+confidence, and the next complete run. The current production cardinality remains honestly zero:
+none of the 24 current shadow candidates meets the certification plus 30-change/60-day bar,
+including the newly registered telemetry closure.
+
+Rollback is one configuration value: change `selective_ci.mode = "certified"` to
+`selective_ci.mode = "full"` in `tests/selective-ci-policy.toml`. Both promoted boundaries then
+ignore selective authority and run `just check`; the full-only boundaries are unchanged.
+
 Any affected digest mismatch, unavailable coverage, unenforceable port, unknown ownership,
 shared contract/schema change, dynamic plugin or subprocess ambiguity, compatibility facade,
 generated artifact, or test-infrastructure change falls back to `just check`. Invalidation is
