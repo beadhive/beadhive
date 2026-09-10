@@ -1,5 +1,14 @@
 # Proposed architecture: pseudonymous product usage telemetry
 
+> **Status and scope:** This remains a proposal for a separately consented product-usage stream;
+> it is not enabled or implemented by the semantic telemetry contract. The canonical
+> transport-neutral operator-observability boundary is the
+> [semantic telemetry and event-envelope v1 ADR](design/semantic-telemetry-event-envelope-v1-adr.md).
+> That envelope permits explicitly configured operator-stream identity for correlation. A future
+> product-usage adapter must construct this document's narrower allowlist and must never forward
+> the semantic envelope wholesale. Its identity exclusions, consent, fixed endpoint, and
+> separation from operator OTel continue to apply.
+
 This design adds a default-on, separately consented product-usage stream for the `bh` CLI,
 daemon, and MCP server. It uses OTLP/HTTP for its standard envelope and transport, while
 remaining completely isolated from bh's existing operator-configured OpenTelemetry
@@ -118,6 +127,11 @@ Prometheus and StatsD are not suitable as client ingestion protocols:
 - Prometheus remains useful for low-cardinality operational metrics derived after ingestion.
 
 ## Required OpenTelemetry dependencies
+
+> This section is a product-telemetry proposal, not a dependency decision for the semantic
+> kernel. `beadhive.kernel.telemetry` is standard-library-only and neither imports nor requires an
+> OpenTelemetry SDK. Dependency promotion, if the product stream is ratified, is owned by that
+> implementation and must preserve the operator/product provider separation described here.
 
 Product telemetry is part of the default product, so its transport dependencies cannot remain an
 optional Python extra. Move the existing OpenTelemetry dependencies into the core project
