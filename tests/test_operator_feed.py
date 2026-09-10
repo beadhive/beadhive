@@ -253,6 +253,133 @@ def test_activity_snapshot_and_delta_keep_epoch_and_sequence_separate_from_revis
     assert delta["activities"][0]["sourceRevision"] == "opaque:second"
 
 
+def test_activity_observers_run_after_the_publication_pin_is_released(tmp_path: Path) -> None:
+    provider = MutableProvider()
+    feed = operator_feed.OperatorFeed(_sources(tmp_path, provider))
+    _journal(tmp_path, [_record("opaque:first", 1)])
+    observer_owned_publication_pin: list[bool] = []
+
+    feed.register_activity_observer(
+        lambda _install: observer_owned_publication_pin.append(
+            feed._admission_condition._is_owned()
+        )
+    )
+
+    feed.activity_with_cursor("run-1")
+
+    assert observer_owned_publication_pin == [False]
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_moved_run_cannot_overtake_its_previous_owner_observer(
+    tmp_path: Path,
+    durable: bool,
+) -> None:
+    other_hive = "github/beadhive/other"
+    provider = MutableProvider()
+    sources = _sources(tmp_path, provider)
+    sources.cfg["managed_repos"].append(
+        {
+            "provider": "github",
+            "org": "beadhive",
+            "repo": "other",
+            "prefix": "other",
+            "kind": "org-native",
+        }
+    )
+    feed = operator_feed.OperatorFeed(sources)
+    if durable:
+        feed.configure_durable_activity_reader(
+            lambda _run_id, _journal, _offset: ((), "durable:empty", True, 0)
+        )
+    hive_journal = _journal(tmp_path, [_record("opaque:first", 1)])
+    (hive_journal.parent / "run-hive-sentinel.jsonl").write_text(
+        json.dumps(_record("opaque:hive-sentinel", 1, run_id="run-hive-sentinel")) + "\n"
+    )
+    other_journal = run_journal.journal_path_for_hive(other_hive, "run-1", base=tmp_path)
+    other_journal.parent.mkdir(parents=True)
+    sentinel_record = {
+        **_record("opaque:sentinel", 1, run_id="run-other"),
+        "hive": other_hive,
+    }
+    (other_journal.parent / "run-other.jsonl").write_text(json.dumps(sentinel_record) + "\n")
+    observer_started = threading.Event()
+    release_observer = threading.Event()
+    other_completed = threading.Event()
+    observer_order: list[str] = []
+
+    def observe(install: operator_feed.ActivityInstall) -> None:
+        if install.hive_id == HIVE:
+            observer_order.append("H-start")
+            observer_started.set()
+            assert release_observer.wait(2)
+            observer_order.append("H-end")
+            return
+        observer_order.append("OTHER-complete")
+        other_completed.set()
+
+    feed.register_activity_observer(observe)
+    responses: list[dict[str, object]] = []
+    failures: list[BaseException] = []
+
+    def read_activity() -> None:
+        try:
+            responses.append(feed.activity_with_cursor("run-1"))
+        except BaseException as exc:
+            failures.append(exc)
+
+    hive_reader = threading.Thread(target=read_activity)
+    hive_reader.start()
+    assert observer_started.wait(2), [
+        (type(failure).__name__, getattr(failure, "code", None), str(failure))
+        for failure in failures
+    ]
+    hive_journal.unlink()
+    other_record = {**_record("opaque:moved", 2), "hive": other_hive}
+    other_journal.write_text(json.dumps(other_record) + "\n")
+
+    other_reader = threading.Thread(target=read_activity)
+    other_reader.start()
+    try:
+        overtook_previous_observer = other_completed.wait(0.5)
+    finally:
+        release_observer.set()
+        hive_reader.join(2)
+        other_reader.join(2)
+
+    assert not overtook_previous_observer
+    assert not hive_reader.is_alive()
+    assert not other_reader.is_alive()
+    assert not failures
+    assert [response["hiveId"] for response in responses] == [HIVE, other_hive]
+    assert observer_order == ["H-start", "H-end", "OTHER-complete"]
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_activity_observer_failure_releases_install_ownership(
+    tmp_path: Path,
+    durable: bool,
+) -> None:
+    feed = operator_feed.OperatorFeed(_sources(tmp_path, MutableProvider()))
+    if durable:
+        feed.configure_durable_activity_reader(
+            lambda _run_id, _journal, _offset: ((), "durable:empty", True, 0)
+        )
+    _journal(tmp_path, [_record("opaque:first", 1)])
+
+    def fail_observer(_install: operator_feed.ActivityInstall) -> None:
+        raise RuntimeError("observer unavailable")
+
+    remove_observer = feed.register_activity_observer(fail_observer)
+    with pytest.raises(RuntimeError, match="observer unavailable"):
+        feed.activity_with_cursor("run-1")
+    remove_observer()
+
+    assert feed.hive_admissions == 0
+    assert not feed._admission_condition._is_owned()
+    assert feed.activity_with_cursor("run-1")["hiveId"] == HIVE
+
+
 def test_activity_rewrite_rotates_epoch_and_expires_old_cursor(tmp_path: Path) -> None:
     provider = MutableProvider()
     feed = operator_feed.OperatorFeed(_sources(tmp_path, provider))

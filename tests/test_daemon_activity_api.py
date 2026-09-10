@@ -630,6 +630,10 @@ def test_activity_is_installed_only_after_durable_append_finishes(tmp_path: Path
     app.state.activity_store.append = delayed_append
 
     async def exercise():
+        async def heartbeat() -> None:
+            await asyncio.sleep(0.02)
+
+        heartbeat_task = asyncio.create_task(heartbeat())
         async with app.router.lifespan_context(app):
             sse_client = app.state.operator_sse.subscribe(
                 HIVE,
@@ -649,6 +653,8 @@ def test_activity_is_installed_only_after_durable_append_finishes(tmp_path: Path
                     )
                 )
                 assert await asyncio.to_thread(entered.wait, 2)
+                await asyncio.wait_for(heartbeat_task, timeout=1)
+                assert not post.done()
                 before = await client.get(
                     f"/api/v1/runs/{run_id}/activity",
                     headers=_authorization(tokens["read"]),

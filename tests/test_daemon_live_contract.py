@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import faulthandler
 import json
 import os
+import signal
 import socket
 import subprocess
 import sys
@@ -93,6 +95,14 @@ async def _await_harness(
         return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
     except TimeoutError as exc:
         raise AssertionError(f"live-contract harness deadline expired: {label}") from exc
+
+
+async def _wait_for_child_heartbeat(diagnostics: dict[str, Any], *, after: int) -> int:
+    """Wait until the child event loop proves progress beyond one observed heartbeat."""
+
+    while int(diagnostics.get("heartbeat_count", 0)) <= after:
+        await asyncio.sleep(0.02)
+    return int(diagnostics["heartbeat_count"])
 
 
 def _run(
@@ -289,6 +299,8 @@ async def _publish_live_scenario_heartbeats(
 ) -> None:
     while True:
         await asyncio.sleep(LIVE_SCENARIO_HEARTBEAT_SECONDS)
+        diagnostics["heartbeat_count"] = int(diagnostics.get("heartbeat_count", 0)) + 1
+        diagnostics["heartbeat_phase"] = diagnostics["phase"]
         _publish_child_diagnostics(
             control,
             diagnostics,
@@ -302,7 +314,10 @@ def _live_contract_scenario_process(tmp_path_text: str, control: Any) -> None:
 
     import traceback
 
+    if hasattr(signal, "SIGUSR1"):
+        faulthandler.register(signal.SIGUSR1, all_threads=True)
     diagnostics: dict[str, Any] = {
+        "heartbeat_count": 0,
         "phase": "child-bootstrap",
         "phase_history": ["child-bootstrap"],
         "task_states": {},
@@ -405,6 +420,10 @@ def _wait_for_live_scenario_process(
                 f"{expiry_kind} watchdog expired"
             ),
         }
+        process_id = getattr(process, "pid", None)
+        if process_id is not None and hasattr(signal, "SIGUSR1"):
+            os.kill(process_id, signal.SIGUSR1)
+            process.join(0.2)
     process.join(5)
     if process.is_alive():
         forced = True
@@ -920,6 +939,17 @@ async def _run_live_contract_scenario_body(
                     assert not durable_ack.is_set()
                     assert not publication.done()
                     assert not sse_delivery.done()
+                    heartbeat_before = int(diagnostics.get("heartbeat_count", 0))
+                    heartbeat_after = await _await_harness(
+                        _wait_for_child_heartbeat(diagnostics, after=heartbeat_before),
+                        label="child heartbeat while activity publication is blocked",
+                        timeout_seconds=LIVE_SCENARIO_HEARTBEAT_SECONDS * 3,
+                    )
+                    diagnostics["blocked_publication_heartbeats"] = (
+                        heartbeat_after - heartbeat_before
+                    )
+                    assert not publication.done()
+                    assert not sse_delivery.done()
                     set_phase("overlap-operations")
                     overlap_tasks = {
                         "overlap-config-mutation": asyncio.create_task(
@@ -976,10 +1006,12 @@ async def _run_live_contract_scenario_body(
                     finally:
                         set_phase("activity-release")
                         allow_append.set()
+                    set_phase("activity-publication")
                     published = await _await_harness(
                         publication,
                         label="activity publication after append release",
                     )
+                    set_phase("sse-delivery")
                     sse_events = await _await_harness(
                         sse_delivery,
                         label="SSE delivery after durable acknowledgement",
@@ -1212,6 +1244,7 @@ def test_real_product_app_composes_concurrent_cli_stdio_http_operator_and_activi
             f"{terminal['traceback']}",
             pytrace=False,
         )
+    assert terminal["diagnostics"]["blocked_publication_heartbeats"] >= 1
     assert not forced_cleanup
     assert not scenario_process.is_alive()
     assert scenario_process.exitcode == 0

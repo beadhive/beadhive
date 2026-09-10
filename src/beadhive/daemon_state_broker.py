@@ -296,7 +296,11 @@ class DaemonStateBroker:
                     self._registry_failures += 1
                 return
             configured = {hive.identity for hive in registered}
-            tracked = self.feed.tracked_hive_ids() | self.relay.tracked_hive_ids()
+            # Tracking shares feed/relay locks with publication.  Broker ownership keeps those
+            # potentially blocking acquisitions off the daemon event loop and inside its drain.
+            feed_tracked = await self._run_feed_call(self.feed.tracked_hive_ids)
+            relay_tracked = await self._run_feed_call(self.relay.tracked_hive_ids)
+            tracked = feed_tracked | relay_tracked
             removed = sorted(tracked - configured)
             for hive_id in removed:
                 await self.remove_hive(hive_id)

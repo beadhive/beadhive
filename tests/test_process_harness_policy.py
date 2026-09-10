@@ -121,6 +121,10 @@ def test_daemon_live_server_isolated_from_the_xdist_worker_thread() -> None:
     assert '"kind": "progress"' in source
     assert '"kind": "heartbeat"' in source
     assert "LIVE_SCENARIO_LIVENESS_SECONDS < LIVE_SCENARIO_WATCHDOG_SECONDS" in source
+    assert 'diagnostics["blocked_publication_heartbeats"]' in source
+    assert 'label="child heartbeat while activity publication is blocked"' in source
+    assert 'label="activity publication after append release"' in source
+    assert 'label="SSE delivery after durable acknowledgement"' in source
 
 
 def test_fork_policy_refuses_an_xdist_worker(monkeypatch) -> None:
