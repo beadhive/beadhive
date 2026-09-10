@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import subprocess
 import sys
-from dataclasses import replace
+from dataclasses import fields, replace
 from pathlib import Path
 
 import pytest
@@ -39,6 +39,19 @@ def test_checked_registry_is_complete_and_keeps_full_gates_authoritative():
     assert len(registry.closures) == 23
     assert sum(closure.status == "present" for closure in registry.closures) == 23
     assert sum(closure.status == "absent" for closure in registry.closures) == 0
+
+
+def test_canonical_registry_definition_binds_every_declared_closure_field():
+    definition = test_closures.registry_definition(test_closures.load_registry())
+
+    assert set(definition) == {
+        "schema_version",
+        "full_gate",
+        "release_gate",
+        "expected_modules",
+        "closures",
+    }
+    assert set(definition["closures"][0]) == {field.name for field in fields(test_closures.Closure)}
 
 
 def test_capability_module_closures_survive_workstream_composition():

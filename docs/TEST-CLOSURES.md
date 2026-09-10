@@ -34,6 +34,7 @@ existing land integration selection, including its two documented `bh-tfapu` des
 | --- | --- |
 | Any registered closure | `just test-closure <closure-id>` |
 | Registry and drift validation | `just test-closure-check` |
+| Advisory impact plan | `just test-impact-plan <base> [head]` |
 | Kernel | `just test-kernel` |
 | Future or migrated module | `just test-module <module>` |
 | Adapters | `just test-adapters` |
@@ -70,8 +71,10 @@ is reported explicitly rather than being mistaken for a successful closure.
 `tests/test_test_closures.py` keeps the drift failures executable. The existing import-boundary
 checker remains part of `just check`; this registry complements it with test-impact ownership.
 `just test-closure-certification-check` verifies the digest-bound evidence and is also composed
-into `architecture-check`, so an owned source, port, shared contract, selector, or certifier change
-cannot silently leave a current-looking record behind.
+into `architecture-check`. It verifies the immutable historical snapshot against the Git objects
+that produced it and that snapshot tree's authoritative completed-green receipt. Current
+applicability is checked separately per closure, so a later unrelated commit cannot make the
+historical proof pretend to be corrupt.
 
 ## Certification semantics
 
@@ -79,40 +82,83 @@ The current evidence uses an explicitly labelled `declared-best-available` mappi
 than a directory-only path filter because each record unions owned source, public ports, shared
 contracts, boundary tests, real-adapter tests, and known reverse-dependent tests. It is not fresh
 dynamic per-test coverage, so every record remains `uncertified` with its prerequisites recorded
-and is ineligible for selective activation. The oracle is bound to a checkout-derived identity of
-every tracked input except the generated evidence JSON itself. Its source revision, source tree,
-and full-gate lookup identity are independently recomputed rather than trusted as artifact
-constants. `--check` resolves the candidate Git tree and `just check` command hash against the
-authoritative git-private Beadhive validation ledger. A live exact-tree check may bootstrap its
-own receipt only when its manifest names this host and its PID is live, non-zombie, and has the
-exact recorded process-start token. Unknown, foreign-host, dead, zombie, or recycled-PID owners
-fail closed. Any non-ignored untracked path also blocks both running and completed receipt use,
-because a source or test outside `git ls-files` could affect execution without entering the
-identity. Git-ignored caches and environments remain irrelevant. Every later check requires the
-completed green receipt. Because the generated JSON is the identity's sole self-reference
-exclusion, the checker re-derives its complete material schema: policy and oracle claims, closure
-certification and eligibility, confidence and timing, boundary and coverage mappings, and the
-current pytest collection count and node-ID digest. Collection wall time is intentionally not a
-stored claim because it cannot be reproduced exactly. Closure rows must also match the registry
-one-for-one in canonical order; duplicate, missing, reordered, or extra rows fail before any
-ID-indexed comparison. This is evidence, not a committed cache or permission to skip the gate.
+and is ineligible for selective activation. The oracle is bound to the historical certifying
+commit's checkout identity, recomputed from immutable Git blobs for every tracked input except the
+generated evidence JSON itself. `--check` resolves that commit's Git tree and `just check` command
+hash against the authoritative git-private Beadhive validation ledger. A live exact-tree check may
+bootstrap its own receipt only while that certifying checkout owns the exact live, non-zombie
+process identity; later descendants require the recorded tree's completed-green receipt. Unknown,
+foreign-host, dead, zombie, or recycled-PID owners fail closed. Any non-ignored untracked path also
+blocks receipt use because it could influence validation without entering Git history. Git-ignored
+caches and environments remain irrelevant. The checked JSON must still match its committed
+snapshot field-for-field, including policy/oracle claims, closure eligibility, confidence, timing,
+boundary and coverage mappings, collection counts and node-ID digests, and canonical row sequence.
+This is historical evidence, not a committed cache or permission to skip the gate.
+
+## Advisory impact selection
+
+`scripts/test_impact_selector.py` takes one Git base/head range and emits canonical JSON. Its pure
+policy core combines exact declared ownership, import and reverse-dependency relationships, shared
+contracts, per-closure applicability digests, and fresh per-test coverage when present. The plan
+names changed closures, dependency paths, exact closure commands and tests, contracts, content
+digests, confidence, digest-stable exclusions, and every fallback reason. The selector's own source
+digest participates in the plan digest, so changing policy invalidates an earlier plan.
+
+The Git adapter performs only local read queries (`rev-parse`, `merge-base`, `diff`, and `show`).
+The selector never executes a test, writes an artifact, contacts a network, or changes the
+configured gate. Its source-only dependency loaders suppress Python bytecode writes and restore
+both the caller's bytecode flag and any prior module-registry entry, including when loading fails.
+Deleted or renamed paths, an ambiguous merge base or ownership relation, multiple
+closures, kernel/schema/build/bootstrap/validation/config surfaces, shared contracts, unknown or
+unowned paths, stale closure or coverage digests, dynamic imports, subprocess edges, compatibility
+facades, generated artifacts, and certification-infrastructure changes all select `just check`.
+Path matching alone is never sufficient: a closure plan additionally requires an enforceable port,
+complete relationship evidence, digest-current inputs, fresh exact per-test contexts, and a
+certified activation-eligible record.
+
+Current applicability binds two independently verified layers. The historical certification row
+is compared in full with the selector material presented to the plan, while a canonical registry
+definition is derived from both the historical Git snapshot and the current checkout. That
+registry digest includes schema and gate metadata plus every closure field: identity, kind,
+status, owner and source patterns, pytest arguments, direct selectors, shared contracts and their
+tests, and reverse dependents and their tests. Thus a relationship change that preserves a
+closure ID—including adding a plugin reverse dependent—fails closed with
+`registry-definition-drift`; forged ports, relationship evidence, fallback triggers, coverage, or
+other certification material fails with `certification-material-drift`. Both recorded and
+observed digests are emitted in the candidate closure's applicability evidence.
+
+Selective planning requires that same canonical applicability proof for every registry row,
+including rows excluded as unaffected. The proof must explicitly say `applicable: true`, carry an
+empty reason list, and provide equal non-empty recorded/observed pairs for the current input,
+registry definition, and certification material digests. Missing, partial, malformed, false, or
+digest-mismatched proofs force `just check`. Exclusions report their current status and complete
+applicability evidence alongside the historical input digest; an inapplicable closure is therefore
+never described as unaffected or stable.
+
+This bead does not provide those final eligibility records: all 23 checked rows remain
+`uncertified`, and activation remains disabled. Consequently current repository plans are
+auditable shadow inputs that still fall back to `just check`. `bh-ck1t6.3` owns shadow comparison,
+escape thresholds, rollback, and any provisional local leaf activation.
 
 Any affected digest mismatch, unavailable coverage, unenforceable port, unknown ownership,
 shared contract/schema change, dynamic plugin or subprocess ambiguity, compatibility facade,
 generated artifact, or test-infrastructure change falls back to `just check`. Invalidation is
 closure-local: changing one module's owned inputs does not expire an unrelated module's digest.
-Changing the certifier or shared test infrastructure intentionally expires every record. A record
-can become activation-eligible only after the later selector and shadow-validation beads add a
-fresh exact per-test trace, zero unexplained escapes, and a matching same-tree oracle.
+Changing the certifier or shared test infrastructure in the selected change range forces the full
+gate. It does not permanently corrupt unrelated historical closure evidence after that change has
+landed and passed its own full gate. A record can become activation-eligible only after the later
+shadow-validation bead adds a fresh exact per-test trace, zero unexplained escapes, and a matching
+same-tree oracle.
 
 ## Certification execution evidence
 
 The prerequisite refresh began from clean source revision `6025df2248e1cd00ab46325587df52460a2ad740`
 after the updated lifecycle CLI product-natively refreshed the zero-delta leaf/container from
 `7055fec` before developer edits. Those hashes describe provenance only; they are not the
-candidate identity. The checked artifact derives its current identity from the candidate
-checkout, excluding only its own generated JSON path to avoid self-reference. The prior refs
-remain in reflogs and no manual reset or rebase occurred.
+candidate identity. The checked artifact derives its historical identity from the certifying
+commit, excluding only its own generated JSON path to avoid self-reference. Later applicability is
+computed from closure-local current inputs rather than by pretending the historical identity is
+current. The prior refs remain in reflogs and no manual reset or rebase occurred.
 
 The selected cadence was **economical**: one shared pytest collection universe plus the
 marker-specific integration collection, focused certification regressions, and the named module

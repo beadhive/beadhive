@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterable
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,23 @@ RELATIONSHIP_EVIDENCE_REFS = {
     "schema": ("implementation_boundary", "mandatory_boundary_tests"),
     "test-infrastructure": ("global_certification_inputs", "fallback_triggers"),
 }
+_MISSING_MODULE = object()
+
+
+def _exec_module_without_bytecode(spec: Any, module: Any) -> None:
+    """Execute one source dependency without leaving bytecode or interpreter state behind."""
+    previous_bytecode = sys.dont_write_bytecode
+    previous_module = sys.modules.get(spec.name, _MISSING_MODULE)
+    try:
+        sys.dont_write_bytecode = True
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = previous_bytecode
+        if previous_module is _MISSING_MODULE:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous_module
 
 
 def _load_test_closures():
@@ -75,8 +93,7 @@ def _load_test_closures():
     spec = importlib.util.spec_from_file_location("closure_registry", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules.setdefault(spec.name, module)
-    spec.loader.exec_module(module)
+    _exec_module_without_bytecode(spec, module)
     return module
 
 
@@ -90,6 +107,13 @@ def _git(root: Path, *args: str) -> str:
     if completed.returncode:
         raise RuntimeError(completed.stderr.strip() or completed.stdout.strip())
     return completed.stdout.strip()
+
+
+def _git_bytes(root: Path, *args: str) -> bytes:
+    completed = subprocess.run(("git", "-C", str(root), *args), check=False, capture_output=True)
+    if completed.returncode:
+        raise RuntimeError((completed.stderr or completed.stdout).decode(errors="replace").strip())
+    return completed.stdout
 
 
 def _tracked_checkout_entries(root: Path) -> tuple[tuple[str, str, bytes], ...]:
@@ -146,6 +170,105 @@ def checkout_input_identity(root: Path = ROOT) -> dict[str, Any]:
         ).hexdigest()
     )
     return {**revision_payload, "revision": revision}
+
+
+def _historical_snapshot_commit(root: Path = ROOT) -> str:
+    """Commit containing the checked artifact whose green receipt anchors certification."""
+    return _git(root, "log", "-1", "--format=%H", "--", EVIDENCE_RELATIVE_PATH)
+
+
+@lru_cache(maxsize=16)
+def _git_tree_snapshot(root: Path, revision: str) -> tuple[tuple[str, str, bytes], ...]:
+    """Read one immutable Git tree in two processes, independent of its file count."""
+    raw = _git_bytes(root, "ls-tree", "-r", "-z", "--full-tree", revision)
+    tree_entries: list[tuple[str, str, str]] = []
+    for item in raw.split(b"\0"):
+        if not item:
+            continue
+        header, encoded_path = item.split(b"\t", 1)
+        mode, object_type, object_id = header.decode().split()
+        relative = encoded_path.decode()
+        tree_entries.append((relative, mode, object_id if object_type == "blob" else ""))
+    object_ids = [object_id for _relative, _mode, object_id in tree_entries if object_id]
+    completed = subprocess.run(
+        ("git", "-C", str(root), "cat-file", "--batch"),
+        input=b"".join(object_id.encode() + b"\n" for object_id in object_ids),
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode:
+        raise RuntimeError((completed.stderr or completed.stdout).decode(errors="replace").strip())
+    contents: dict[str, bytes] = {}
+    offset = 0
+    for expected_object_id in object_ids:
+        header_end = completed.stdout.index(b"\n", offset)
+        header = completed.stdout[offset:header_end].decode().split()
+        if len(header) != 3 or header[0] != expected_object_id or header[1] != "blob":
+            raise RuntimeError("git cat-file returned an unexpected historical object")
+        size = int(header[2])
+        content_start = header_end + 1
+        content_end = content_start + size
+        contents[expected_object_id] = completed.stdout[content_start:content_end]
+        offset = content_end + 1
+    return tuple(
+        (relative, mode, contents[object_id] if object_id else object_id.encode())
+        for relative, mode, object_id in tree_entries
+    )
+
+
+@lru_cache(maxsize=16)
+def checkout_input_identity_at(
+    root: Path,
+    revision: str,
+    certifier_version: str = CERTIFIER_VERSION,
+    excluded_paths: tuple[str, ...] = CHECKOUT_IDENTITY_EXCLUDES,
+) -> dict[str, Any]:
+    """Recompute the certifier identity from immutable Git objects at ``revision``."""
+    excluded = set(excluded_paths)
+    entries = [entry for entry in _git_tree_snapshot(root, revision) if entry[0] not in excluded]
+    tree = hashlib.sha256()
+    for relative, mode, content in sorted(entries):
+        blob = hashlib.sha256(content).hexdigest()
+        tree.update(f"{mode}\0{relative}\0sha256:{blob}\n".encode())
+    tree_digest = "sha256:" + tree.hexdigest()
+    revision_payload = {
+        "algorithm": "sha256",
+        "certifier": certifier_version,
+        "excluded_paths": list(excluded_paths),
+        "file_count": len(entries),
+        "tree": tree_digest,
+    }
+    recorded_revision = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(revision_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+    return {**revision_payload, "revision": recorded_revision}
+
+
+def _historical_evidence(root: Path = ROOT) -> tuple[str, dict[str, Any]]:
+    commit = _historical_snapshot_commit(root)
+    if not commit:
+        raise RuntimeError("certification artifact has no committed historical snapshot")
+    return commit, _historical_evidence_at(root, commit)
+
+
+@lru_cache(maxsize=16)
+def _historical_evidence_at(root: Path, commit: str) -> dict[str, Any]:
+    payload = _git(root, "show", f"{commit}:{EVIDENCE_RELATIVE_PATH}")
+    value = json.loads(payload)
+    if not isinstance(value, dict):
+        raise RuntimeError("historical certification artifact is not an object")
+    return value
+
+
+@lru_cache(maxsize=8192)
+def _git_file_at(root: Path, commit: str, relative: str) -> bytes | None:
+    return next(
+        (content for path, _mode, content in _git_tree_snapshot(root, commit) if path == relative),
+        None,
+    )
 
 
 PORTS: dict[str, tuple[str, ...]] = {
@@ -270,6 +393,11 @@ def _digest(root: Path, metadata: dict[str, Any], paths: Iterable[str]) -> str:
         else:
             digest.update(path.read_bytes())
     return "sha256:" + digest.hexdigest()
+
+
+def _object_digest(value: object) -> str:
+    payload = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
 
 
 def _relationships(closure) -> tuple[str, ...]:
@@ -691,11 +819,11 @@ def _receipt_manifests(root: Path) -> tuple[dict[str, Any], ...]:
 
 
 def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> tuple[str, ...]:
-    """Resolve the oracle against authoritative run manifests, including this live gate.
+    """Resolve the oracle against the immutable snapshot's authoritative run manifest.
 
-    A matching live owner is accepted only while the enclosing ``bh work check`` is executing;
-    its eventual exit code creates the completed receipt. Subsequent checks require the exact
-    candidate Git tree's completed green record. No artifact field can manufacture either fact.
+    The original certifying checkout may bootstrap from its exact live owner.  Later descendants
+    continue to verify that recorded tree's completed green receipt; current applicability is a
+    separate per-closure digest question.
     """
     oracle = evidence.get("same_tree_full_gate_oracle") or {}
     provenance = oracle.get("receipt_provenance") or {}
@@ -703,7 +831,8 @@ def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> t
         return ("same-tree oracle receipt provenance does not match the full gate",)
     if _git(root, "status", "--porcelain", "--untracked-files=all"):
         return ("full-gate receipt lookup requires a clean checkout with no untracked inputs",)
-    candidate_tree = _git(root, "rev-parse", "HEAD^{tree}")
+    snapshot = _historical_snapshot_commit(root)
+    candidate_tree = _git(root, "rev-parse", f"{snapshot}^{{tree}}" if snapshot else "HEAD^{tree}")
     matches = [
         manifest
         for manifest in _receipt_manifests(root)
@@ -729,11 +858,135 @@ def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> t
     return ("candidate checkout has no authoritative matching full-gate receipt",)
 
 
+def current_applicability(evidence: dict[str, Any], root: Path = ROOT) -> dict[str, dict[str, Any]]:
+    """Compare immutable certification material and closure-local inputs with current state."""
+    snapshot, historical_evidence = _historical_evidence(root)
+    historical_rows = {
+        str(record["id"]): record
+        for record in historical_evidence.get("closures", ())
+        if isinstance(record, dict) and "id" in record
+    }
+    supplied_rows = {
+        str(record["id"]): record
+        for record in evidence.get("closures", ())
+        if isinstance(record, dict) and "id" in record
+    }
+    historical_registry_bytes = _git_file_at(root, snapshot, "tests/closures.toml")
+    if historical_registry_bytes is None:
+        raise RuntimeError("historical certification snapshot has no closure registry")
+    historical_registry = test_closures.loads_registry(historical_registry_bytes.decode())
+    historical_definition = test_closures.registry_definition(historical_registry)
+    historical_registry_digest = _object_digest(historical_definition)
+    current_definition: dict[str, object] | None = None
+    current_registry_error: str | None = None
+    try:
+        current_registry = test_closures.load_registry(root / "tests" / "closures.toml")
+        current_definition = test_closures.registry_definition(current_registry)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        current_registry_error = str(exc)
+    current_registry_digest = _object_digest(current_definition)
+    registry_drift = current_definition != historical_definition
+    historical_ids = tuple(closure.id for closure in historical_registry.closures)
+    current_ids = (
+        tuple(str(row["id"]) for row in current_definition["closures"])
+        if current_definition is not None
+        else ()
+    )
+    shape_current = current_ids == tuple(sorted(historical_ids))
+
+    def material(record: dict[str, Any] | None) -> dict[str, Any] | None:
+        if record is None:
+            return None
+        return {key: value for key, value in record.items() if key != "current_applicability"}
+
+    def applicability_inputs(record: dict[str, Any]) -> tuple[str, ...]:
+        paths = {
+            *record.get("implementation_boundary", ()),
+            *record.get("public_ports", ()),
+            *record.get("mandatory_boundary_tests", ()),
+            *record.get("real_adapter_tests", ()),
+            *record.get("reverse_dependent_tests", ()),
+            *(
+                selector.split("::", 1)[0]
+                for selector in (record.get("coverage_mapping") or {}).get("selectors", ())
+            ),
+        }
+        for shared_id in record.get("shared_contracts", ()):
+            shared = historical_rows.get(str(shared_id), {})
+            paths.update(shared.get("implementation_boundary", ()))
+            paths.update(shared.get("public_ports", ()))
+        return tuple(sorted(str(path) for path in paths))
+
+    def applicability_metadata(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "algorithm": "bh-closure-applicability-v1",
+            "id": record.get("id"),
+            "kind": record.get("kind"),
+            "dependency_direction": record.get("dependency_direction"),
+            "relationships": record.get("relationships"),
+            "reverse_dependents": record.get("reverse_dependents"),
+            "shared_contracts": record.get("shared_contracts"),
+        }
+
+    def historical_digest(metadata: dict[str, Any], paths: tuple[str, ...]) -> str:
+        digest = hashlib.sha256()
+        digest.update(json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode())
+        for relative in paths:
+            digest.update(b"\0path\0" + relative.encode() + b"\0")
+            content = _git_file_at(root, snapshot, relative)
+            digest.update(content if content is not None else b"<missing>")
+        return "sha256:" + digest.hexdigest()
+
+    result: dict[str, dict[str, Any]] = {}
+    for closure_id, recorded in historical_rows.items():
+        paths = applicability_inputs(recorded)
+        metadata = applicability_metadata(recorded)
+        recorded_digest = historical_digest(metadata, paths)
+        observed_digest = _digest(root, metadata, paths)
+        recorded_material = material(recorded)
+        observed_material = material(supplied_rows.get(closure_id))
+        reasons: list[str] = []
+        if not shape_current:
+            reasons.append("registry-shape-change")
+        if registry_drift:
+            reasons.append("registry-definition-drift")
+        if observed_material != recorded_material:
+            reasons.append("certification-material-drift")
+        if observed_digest != recorded_digest:
+            reasons.append("input-digest-mismatch")
+        result[closure_id] = {
+            "recorded_input_digest": recorded_digest,
+            "observed_input_digest": observed_digest,
+            "recorded_registry_digest": historical_registry_digest,
+            "observed_registry_digest": current_registry_digest,
+            "recorded_material_digest": _object_digest(recorded_material),
+            "observed_material_digest": _object_digest(observed_material),
+            **(
+                {"registry_error": current_registry_error}
+                if current_registry_error is not None
+                else {}
+            ),
+            "applicable": not reasons,
+            "fallback_reasons": reasons,
+        }
+    return result
+
+
 def validate_evidence(
     evidence: dict[str, Any], root: Path = ROOT, *, verify_receipt: bool = False
 ) -> tuple[str, ...]:
     errors: list[str] = []
-    expected_evidence = build_evidence(root)
+    try:
+        snapshot_commit, expected_evidence = _historical_evidence(root)
+        recorded_identity = expected_evidence.get("certification_input_identity") or {}
+        snapshot_identity = checkout_input_identity_at(
+            root,
+            snapshot_commit,
+            str(recorded_identity.get("certifier", "")),
+            tuple(str(path) for path in recorded_identity.get("excluded_paths", ())),
+        )
+    except (KeyError, OSError, RuntimeError, ValueError) as exc:
+        return (f"certification historical snapshot is unavailable: {exc}",)
     if evidence.get("schema_version") != SCHEMA_VERSION:
         errors.append("certification evidence has the wrong schema version")
     if set(evidence) != set(expected_evidence):
@@ -754,7 +1007,6 @@ def validate_evidence(
     expected_rows = expected_evidence["closures"]
     expected_ids = [record["id"] for record in expected_rows]
     current = {record["id"]: record for record in expected_rows}
-    registry_by_id = test_closures.load_registry(root / "tests" / "closures.toml").by_id()
     rows = evidence.get("closures")
     if not isinstance(rows, list):
         return ("certification evidence closures must be a list",)
@@ -808,6 +1060,7 @@ def validate_evidence(
             if actual.get(field) != expected[field]:
                 errors.append(f"closure {closure_id} {field} drifted")
         collection = actual.get("collection") or {}
+        expected_collection = expected.get("collection") or {}
         if set(collection) != {"count", "kind", "nodeid_digest", "shared_universe"}:
             errors.append(f"closure {closure_id} collection fields drifted")
         count = collection.get("count")
@@ -822,9 +1075,11 @@ def validate_evidence(
             or len(nodeid_digest) != len("sha256:") + 64
         ):
             errors.append(f"closure {closure_id} collection nodeid_digest is invalid")
-        closure = registry_by_id[closure_id]
-        if collection.get("shared_universe") is not (not bool(closure.pytest_args)):
+        if collection.get("shared_universe") is not expected_collection.get("shared_universe"):
             errors.append(f"closure {closure_id} collection shared_universe drifted")
+        for field in ("count", "kind", "nodeid_digest"):
+            if collection.get(field) != expected_collection.get(field):
+                errors.append(f"closure {closure_id} collection {field} drifted")
         if actual.get("observed_input_digest") != actual.get("input_digest"):
             errors.append(f"closure {closure_id} evidence is stale")
     observed = {
@@ -836,27 +1091,18 @@ def validate_evidence(
     policy = evidence.get("policy") or {}
     if policy.get("activation") != "disabled":
         errors.append("bh-ck1t6.1 must not activate selective validation")
-    identity = checkout_input_identity(root)
-    if evidence.get("source_revision") != identity["revision"]:
-        errors.append("certification source revision does not match the candidate checkout")
-    if evidence.get("source_tree") != identity["tree"]:
-        errors.append("certification source tree does not match the candidate checkout")
-    if evidence.get("certification_input_identity") != identity:
-        errors.append("certification input identity does not match the candidate checkout")
+    if evidence.get("source_revision") != snapshot_identity["revision"]:
+        errors.append("certification source revision does not match the historical snapshot")
+    if evidence.get("source_tree") != snapshot_identity["tree"]:
+        errors.append("certification source tree does not match the historical snapshot")
+    if evidence.get("certification_input_identity") != snapshot_identity:
+        errors.append("certification input identity does not match the historical snapshot")
     oracle = evidence.get("same_tree_full_gate_oracle") or {}
-    if oracle.get("input_identity") != identity:
-        errors.append("same-tree oracle input identity does not match the candidate checkout")
+    if oracle.get("input_identity") != snapshot_identity:
+        errors.append("same-tree oracle input identity does not match the historical snapshot")
     if oracle.get("receipt_provenance") != _expected_receipt_provenance():
         errors.append("same-tree oracle receipt provenance does not match the full gate")
     if verify_receipt and not errors:
-        current_collections = _collect_current_collection_records(root)
-        for closure_id, expected_collection in current_collections.items():
-            actual_collection = by_id[closure_id]["collection"]
-            for field in ("count", "kind", "nodeid_digest", "shared_universe"):
-                if actual_collection.get(field) != expected_collection[field]:
-                    errors.append(f"closure {closure_id} collection {field} drifted")
-        if errors:
-            return tuple(errors)
         errors.extend(validate_full_gate_receipt(evidence, root))
     return tuple(errors)
 
