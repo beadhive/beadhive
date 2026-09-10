@@ -396,7 +396,7 @@ def test_running_receipt_requires_exact_live_process_identity(
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
-        "bead": "bh-ck1t6.5",
+        "bead": "bh-j5uyb.1",
         "phase": "check",
         "lifecycle": "running",
         "owner": owner,
@@ -446,6 +446,106 @@ def test_running_receipt_accepts_exact_current_process_identity(
     )
 
     assert certification.validate_full_gate_receipt(evidence, ROOT) == ()
+
+
+def test_running_receipt_accepts_exact_live_downstream_bead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    receipt = {
+        "tree": "candidate-tree",
+        "command": "just check",
+        "command_hash": certification.FULL_GATE_COMMAND_HASH,
+        "bead": "bh-j5uyb.1",
+        "phase": "check",
+        "lifecycle": "running",
+        "owner": {"host": "current-host", "pid": 1234, "start_token": "current-start"},
+    }
+    monkeypatch.setattr(
+        certification,
+        "_git",
+        lambda _root, *args: "" if args[0] == "status" else "candidate-tree",
+    )
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
+    monkeypatch.setattr(certification, "_current_host_id", lambda: "current-host", raising=False)
+    monkeypatch.setattr(certification, "_pid_exists", lambda _pid: True, raising=False)
+    monkeypatch.setattr(certification, "_process_state", lambda _pid: "S", raising=False)
+    monkeypatch.setattr(
+        certification, "_process_start_token", lambda _pid: "current-start", raising=False
+    )
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == ()
+
+
+def test_completed_green_receipt_remains_bound_to_provenance_bead(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    receipt = {
+        "schema": 1,
+        "tree": "candidate-tree",
+        "command": "just check",
+        "command_hash": certification.FULL_GATE_COMMAND_HASH,
+        "bead": "bh-j5uyb.1",
+        "phase": "check",
+        "lifecycle": "completed",
+        "verdict": "green",
+        "exit_code": 0,
+        "signal": None,
+    }
+    monkeypatch.setattr(
+        certification,
+        "_git",
+        lambda _root, *args: "" if args[0] == "status" else "candidate-tree",
+    )
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == (
+        "candidate checkout has no authoritative matching full-gate receipt",
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    (
+        ("tree", "other-tree"),
+        ("command", "just check-all"),
+        ("command_hash", "wrong-command-hash"),
+        ("phase", "submit"),
+    ),
+)
+def test_downstream_running_receipt_rejects_gate_identity_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    wrong_value: str,
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    receipt = {
+        "tree": "candidate-tree",
+        "command": "just check",
+        "command_hash": certification.FULL_GATE_COMMAND_HASH,
+        "bead": "bh-j5uyb.1",
+        "phase": "check",
+        "lifecycle": "running",
+        "owner": {"host": "current-host", "pid": 1234, "start_token": "current-start"},
+    }
+    receipt[field] = wrong_value
+    monkeypatch.setattr(
+        certification,
+        "_git",
+        lambda _root, *args: "" if args[0] == "status" else "candidate-tree",
+    )
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
+    monkeypatch.setattr(certification, "_current_host_id", lambda: "current-host", raising=False)
+    monkeypatch.setattr(certification, "_pid_exists", lambda _pid: True, raising=False)
+    monkeypatch.setattr(certification, "_process_state", lambda _pid: "S", raising=False)
+    monkeypatch.setattr(
+        certification, "_process_start_token", lambda _pid: "current-start", raising=False
+    )
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == (
+        "candidate checkout has no authoritative matching full-gate receipt",
+    )
 
 
 @pytest.mark.parametrize("rogue_path", ("rogue.py", "tests/test_rogue.py"))

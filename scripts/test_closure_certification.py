@@ -835,26 +835,30 @@ def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> t
     if _git(root, "status", "--porcelain", "--untracked-files=all"):
         return ("full-gate receipt lookup requires a clean checkout with no untracked inputs",)
     candidate_tree = _git(root, "rev-parse", "HEAD^{tree}")
-    matches = [
+    identity_matches = [
         manifest
         for manifest in _receipt_manifests(root)
         if manifest.get("tree") == candidate_tree
         and manifest.get("command_hash") == FULL_GATE_COMMAND_HASH
         and manifest.get("command") == FULL_GATE_COMMAND
-        and manifest.get("bead") == provenance["bead"]
         and manifest.get("phase") == provenance["phase"]
     ]
     if any(
         manifest.get("schema") == 1
+        and manifest.get("bead") == provenance["bead"]
         and manifest.get("lifecycle") == "completed"
         and manifest.get("verdict") == "green"
         and manifest.get("exit_code") == 0
         and manifest.get("signal") is None
-        for manifest in matches
+        for manifest in identity_matches
     ):
         return ()
+    # A downstream Beadhive check necessarily records its own bead identity. Permit only its
+    # exact, still-live process owner to bootstrap this same-tree gate; completed reuse remains
+    # bound to the immutable certification bead above.
     if any(
-        manifest.get("lifecycle") == "running" and _owner_is_live(manifest) for manifest in matches
+        manifest.get("lifecycle") == "running" and _owner_is_live(manifest)
+        for manifest in identity_matches
     ):
         return ()
     return ("candidate checkout has no authoritative matching full-gate receipt",)
