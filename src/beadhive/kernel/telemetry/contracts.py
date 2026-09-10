@@ -8,7 +8,8 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -180,8 +181,8 @@ class TelemetryAttribute:
             if type(self.value) is not int or not 0 <= self.value <= 10:
                 raise ValueError("retry.count must be an integer from 0 through 10")
             return
-        if not isinstance(self.value, str):
-            raise TypeError(f"{key.value} must be a string")
+        if type(self.value) is not str:
+            raise TypeError(f"{key.value} must be a built-in string")
         finite = _FINITE_ATTRIBUTE_VALUES.get(key)
         if finite is not None:
             if self.value not in finite:
@@ -382,6 +383,29 @@ class EventEnvelope:
 
 
 @dataclass(frozen=True, slots=True)
+class TelemetryContext:
+    """Transport-neutral correlation propagated through nested semantic work."""
+
+    correlation_id: str
+    causation_id: str | None = None
+    trace_id: str | None = None
+    span_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TelemetryObservation:
+    """Start token used to close one semantic observation exactly once."""
+
+    event_name: SemanticEventName
+    event_version: int
+    start_event_id: str
+    started_at: float
+    context: TelemetryContext
+    identity: EventIdentity
+    attributes: tuple[TelemetryAttribute, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class FlushResult:
     outcome: FlushOutcome | str
     duration_ms: int
@@ -408,12 +432,92 @@ class TelemetrySink(Protocol):
     def flush(self, timeout_seconds: float) -> FlushResult: ...
 
 
+class SemanticTelemetryPort(Protocol):
+    """Minimal semantic observation seam consumed by other kernel owners."""
+
+    @property
+    def identity(self) -> EventIdentity: ...
+
+    def begin(
+        self,
+        event_name: SemanticEventName,
+        *,
+        correlation_id: str | None = None,
+        identity: EventIdentity | None = None,
+        attributes: tuple[TelemetryAttribute, ...] = (),
+    ) -> TelemetryObservation | None: ...
+
+    def activate(
+        self, observation: TelemetryObservation | None
+    ) -> AbstractContextManager[None]: ...
+
+    def complete(
+        self,
+        observation: TelemetryObservation | None,
+        outcome: Outcome,
+        *,
+        error: EventError | None = None,
+    ) -> EmitDisposition: ...
+
+
+@contextmanager
+def activate_non_fatal(
+    telemetry: SemanticTelemetryPort | None,
+    observation: TelemetryObservation | None,
+) -> Iterator[None]:
+    """Activate correlation without allowing a telemetry fault to affect application work."""
+    if telemetry is None:
+        yield
+        return
+
+    activation: object | None = None
+    exit_method: Callable[..., object] | None = None
+    try:
+        activation = telemetry.activate(observation)
+        activation_type = type(activation)
+        exit_method = activation_type.__exit__
+        enter_method = activation_type.__enter__
+        enter_method(activation)
+    except BaseException as activation_error:
+        if activation is not None and exit_method is not None:
+            try:
+                exit_method(
+                    activation,
+                    type(activation_error),
+                    activation_error,
+                    activation_error.__traceback__,
+                )
+            except BaseException:
+                pass
+        yield
+        return
+
+    try:
+        yield
+    except BaseException as application_error:
+        try:
+            exit_method(
+                activation,
+                type(application_error),
+                application_error,
+                application_error.__traceback__,
+            )
+        except BaseException:
+            pass
+        raise
+    else:
+        try:
+            exit_method(activation, None, None, None)
+        except BaseException:
+            pass
+
+
 def emit_non_fatal(sink: TelemetrySink, event: EventEnvelope) -> EmitDisposition:
     """Emit without allowing an adapter failure to affect application behavior."""
     try:
         result = sink.emit(event)
         return EmitDisposition(result)
-    except Exception:
+    except BaseException:
         return EmitDisposition.FAILED
 
 

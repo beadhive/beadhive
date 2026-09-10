@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import sys
@@ -23,7 +24,9 @@ from beadhive.kernel.telemetry import (
     FlushOutcome,
     FlushResult,
     Outcome,
+    RecordingTelemetrySink,
     SemanticEventName,
+    SemanticTelemetry,
     TelemetryAttribute,
     emit_non_fatal,
     event_envelope_schema,
@@ -40,6 +43,43 @@ _COMPAT = importlib.util.module_from_spec(_SPEC)
 sys.modules[_SPEC.name] = _COMPAT
 _SPEC.loader.exec_module(_COMPAT)
 compatibility_errors = _COMPAT.compatibility_errors
+
+
+class _RegistrySpoof(str):
+    """A string whose Python identity disagrees with its serialized bytes."""
+
+    def __new__(cls, raw: str, impersonates: str):
+        value = super().__new__(cls, raw)
+        value.impersonates = impersonates
+        value.hash_calls = 0
+        value.equality_calls = 0
+        value.string_calls = 0
+        return value
+
+    def __hash__(self) -> int:
+        self.hash_calls += 1
+        return hash(self.impersonates)
+
+    def __eq__(self, other: object) -> bool:
+        self.equality_calls += 1
+        return other == self.impersonates
+
+    def __str__(self) -> str:
+        self.string_calls += 1
+        raise AssertionError("registry validation must not coerce caller-owned strings")
+
+
+_FINITE_ATTRIBUTE_CASES = (
+    ("operation.kind", "command"),
+    ("surface", "internal"),
+    ("transport", "in-process"),
+    ("http.method", "GET"),
+    ("http.status-class", "2xx"),
+    ("dependency", "git"),
+    ("reason.code", "invalid"),
+    ("sampling.decision", "recorded"),
+    ("shutdown.phase", "drain"),
+)
 
 
 def _event() -> EventEnvelope:
@@ -68,6 +108,35 @@ def _event() -> EventEnvelope:
             TelemetryAttribute("surface", "cli"),
         ),
     )
+
+
+@pytest.mark.parametrize(("key", "allowed"), _FINITE_ATTRIBUTE_CASES)
+def test_finite_attributes_require_exact_builtin_strings_without_running_spoof_methods(
+    key: str, allowed: str
+) -> None:
+    spoof = _RegistrySpoof(f"tenant-{key.replace('.', '-')}-customersecret", allowed)
+
+    with pytest.raises(TypeError, match="built-in string"):
+        TelemetryAttribute(key, spoof)
+
+    assert (spoof.hash_calls, spoof.equality_calls, spoof.string_calls) == (0, 0, 0)
+    assert TelemetryAttribute(key, allowed).value == allowed
+
+
+@pytest.mark.parametrize(
+    ("key", "allowed"),
+    (("operation.name", "work.issue"), ("lifecycle.event", "plugin.discovered")),
+)
+def test_registry_identity_attributes_require_exact_builtin_strings_without_coercion(
+    key: str, allowed: str
+) -> None:
+    spoof = _RegistrySpoof(f"tenant.customersecret.{key.replace('.', '-')}", allowed)
+
+    with pytest.raises(TypeError, match="built-in string"):
+        TelemetryAttribute(key, spoof)
+
+    assert (spoof.hash_calls, spoof.equality_calls, spoof.string_calls) == (0, 0, 0)
+    assert TelemetryAttribute(key, allowed).value == allowed
 
 
 def test_checked_in_schema_is_valid_and_byte_deterministic() -> None:
@@ -283,6 +352,50 @@ def test_adapter_exceptions_are_contained_at_both_port_operations() -> None:
     sink = _ExplodingSink()
     assert emit_non_fatal(sink, _event()) is EmitDisposition.FAILED
     assert flush_non_fatal(sink, 0.25) == FlushResult(FlushOutcome.FAILED, 0)
+
+
+class _TelemetryControlFlow(BaseException):
+    pass
+
+
+@pytest.mark.parametrize("exception_type", [asyncio.CancelledError, _TelemetryControlFlow])
+def test_emit_contains_telemetry_side_control_flow_exceptions(
+    exception_type: type[BaseException],
+) -> None:
+    class Sink:
+        def emit(self, _event: EventEnvelope) -> EmitDisposition:
+            raise exception_type("telemetry emit failed")
+
+        def flush(self, _timeout_seconds: float) -> FlushResult:
+            return FlushResult(FlushOutcome.NO_OP, 0)
+
+    assert emit_non_fatal(Sink(), _event()) is EmitDisposition.FAILED
+
+
+@pytest.mark.parametrize("seam", ["begin", "complete"])
+@pytest.mark.parametrize("exception_type", [asyncio.CancelledError, _TelemetryControlFlow])
+def test_semantic_telemetry_contains_construction_control_flow_exceptions(
+    monkeypatch, seam: str, exception_type: type[BaseException]
+) -> None:
+    telemetry = SemanticTelemetry(
+        sink=RecordingTelemetrySink(),
+        identity=EventIdentity(service="bh", instance_id="instance-1"),
+        event_id_factory=lambda: "event-id",
+        occurred_at_factory=lambda: "2026-09-10T02:00:00Z",
+        monotonic=lambda: 1.0,
+    )
+
+    def fail() -> float:
+        raise exception_type(f"telemetry {seam} failed")
+
+    if seam == "begin":
+        monkeypatch.setattr(telemetry, "_monotonic", fail)
+        assert telemetry.begin(SemanticEventName.OPERATION_EXECUTION) is None
+    else:
+        observation = telemetry.begin(SemanticEventName.OPERATION_EXECUTION)
+        assert observation is not None
+        monkeypatch.setattr(telemetry, "_monotonic", fail)
+        assert telemetry.complete(observation, Outcome.SUCCEEDED) is EmitDisposition.FAILED
 
 
 def test_flush_receives_one_finite_total_budget_and_validates_its_result() -> None:
