@@ -48,6 +48,36 @@ reverse_dependencies = ["system-smoke"]
 reverse_dependency_tests = ["tests/test_plugins.py"]
 
 [[closures]]
+id = "kernel.telemetry"
+kind = "kernel"
+status = "present"
+owner_path = "src/beadhive/kernel/telemetry"
+source_paths = [
+  "src/beadhive/kernel/telemetry/**/*.py",
+  "src/beadhive/adapters/telemetry.py",
+  "src/beadhive/daemon_telemetry.py",
+  "src/beadhive/otel.py",
+  "src/beadhive/otel_lgtm.py",
+]
+tests = [
+  "tests/test_telemetry_contract.py",
+  "tests/unit/kernel/telemetry/test_instrumentation.py",
+]
+shared_contracts = ["contracts"]
+shared_contract_tests = [
+  "tests/test_contract_release.py::test_bundle_inventory_is_complete_canonical_and_source_owned",
+  "tests/test_contract_release.py::test_checked_release_is_current_and_install_lookup_is_path_safe",
+  "tests/test_contract_release.py::test_compatibility_gate_rejects_removal_rename_and_requiredness",
+  "tests/test_contract_release_evidence.py::test_compatibility_report_accounts_for_every_published_and_candidate_artifact",
+  "tests/test_contract_release_evidence.py::test_checked_compatibility_report_is_canonical_and_current",
+]
+reverse_dependencies = ["adapters", "system-smoke"]
+reverse_dependency_tests = [
+  "tests/test_semantic_otel_adapter.py",
+  "tests/test_daemon_telemetry.py",
+]
+
+[[closures]]
 id = "module.agents"
 kind = "module"
 status = "present"

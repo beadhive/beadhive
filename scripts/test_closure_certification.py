@@ -275,6 +275,7 @@ PORTS: dict[str, tuple[str, ...]] = {
     "kernel": ("src/beadhive/operation_catalog.py",),
     "kernel.lifecycle": ("src/beadhive/kernel/lifecycle/contracts.py",),
     "kernel.plugins": ("src/beadhive/kernel/plugins/contracts.py",),
+    "kernel.telemetry": ("src/beadhive/kernel/telemetry/contracts.py",),
     "module.agents": ("src/beadhive/modules/agents/contracts/ports.py",),
     "module.config": (
         "src/beadhive/modules/config/contracts.py",
@@ -313,6 +314,7 @@ INDEPENDENCE: dict[str, tuple[str, ...]] = {
     "kernel": ("tests/unit/test_pure_module_independence.py",),
     "kernel.lifecycle": ("tests/unit/kernel/lifecycle/test_independence.py",),
     "kernel.plugins": ("tests/unit/kernel/plugins/test_discovery.py",),
+    "kernel.telemetry": ("tests/test_telemetry_contract.py",),
     "module.agents": ("tests/unit/modules/agents/test_agent_independence.py",),
     "module.config": ("tests/unit/modules/config/test_pure_independence.py",),
     "config.pure": ("tests/unit/modules/config/test_pure_independence.py",),
@@ -326,6 +328,7 @@ INDEPENDENCE: dict[str, tuple[str, ...]] = {
 }
 
 REAL_ADAPTERS: dict[str, tuple[str, ...]] = {
+    "kernel.telemetry": ("tests/test_semantic_otel_adapter.py",),
     "adapters": ("tests/unit/testing/test_real_adapter_conformance_example.py",),
     "plugin.herdr": ("tests/unit/integrations/test_herdr_adapter.py",),
     "plugin.hitch": ("tests/test_hitch_plugin.py",),
