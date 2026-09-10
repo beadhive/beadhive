@@ -140,6 +140,7 @@ check-all: require-bd lint lint-md license-check architecture-check transport-ar
 # Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
 architecture-check:
     uv run python scripts/check_import_boundaries.py
+    uv run python scripts/test_closure_certification.py --check
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
@@ -560,6 +561,10 @@ test-closure closure:
 
 test-closure-check:
     uv run python scripts/test_closures.py check
+
+# Digest-bound prerequisite evidence only; selection and activation remain disabled.
+test-closure-certification-check:
+    uv run python scripts/test_closure_certification.py --check
 
 test-kernel:
     just test-closure kernel
