@@ -16,6 +16,12 @@ from joserfc.jwk import RSAKey
 from joserfc.jws import JWSRegistry
 
 from beadhive import remote_gateway
+from beadhive.kernel.telemetry import (
+    EventIdentity,
+    Outcome,
+    RecordingTelemetrySink,
+    SemanticTelemetry,
+)
 
 ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 AUDIENCE = "beadhive-gateway-dev"
@@ -117,7 +123,12 @@ def _refresh_reader(value: dict[str, object]):
     return refresh
 
 
-def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
+def _app(
+    public_key: RSAKey,
+    *,
+    revoked: frozenset[str] = frozenset(),
+    telemetry=None,
+):
     config = remote_gateway.DevelopmentGatewayConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
@@ -143,6 +154,7 @@ def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
         config=config,
         verifier=verifier,
         registry=registry,
+        telemetry=telemetry,
     )
 
 
@@ -1525,3 +1537,36 @@ def test_lifespan_cancels_runtime_work_and_allows_clean_process_restart() -> Non
         timeout=5,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_gateway_exchange_uses_semantic_port_without_request_or_identity_labels() -> None:
+    _private_key, public_key = _keys()
+    sink = RecordingTelemetrySink()
+    semantic = SemanticTelemetry(
+        sink=sink,
+        identity=EventIdentity(service="bh-gateway", instance_id="gateway-one"),
+    )
+    app = _app(public_key, telemetry=semantic)
+
+    async def action(client):
+        return await client.get(
+            "/healthz?token=secret",
+            headers={"Host": "gateway-dev.beadhive.cloud"},
+        )
+
+    response = _exercise(app, action)
+
+    assert response.status_code == 200
+    assert len(sink.events) == 2
+    started, completed = sink.events
+    assert started.correlation_id == completed.correlation_id
+    assert completed.causation_id == started.event_id
+    assert completed.outcome is Outcome.SUCCEEDED
+    assert {attribute.key.value: attribute.value for attribute in started.attributes} == {
+        "http.method": "GET",
+        "operation.kind": "route",
+        "surface": "gateway",
+        "transport": "http",
+    }
+    assert "token=secret" not in repr(sink.events)
+    assert "gateway-dev.beadhive.cloud" not in repr(sink.events)

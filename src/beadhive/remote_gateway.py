@@ -31,6 +31,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from beadhive import gateway_read as gateway_read_mod
+from beadhive.kernel.telemetry import SemanticTelemetryPort
 
 CONTRACT_VERSION = "gateway.v1"
 SCHEMA_VERSION = 1
@@ -864,6 +865,7 @@ def build_development_gateway_application(
     registry: DevelopmentInstanceRegistry,
     runtime_calls: RuntimeCallPolicy | None = None,
     read_source: gateway_read_mod.GatewayReadSource | None = None,
+    telemetry: SemanticTelemetryPort | None = None,
 ) -> Starlette:
     """Build the remote Development read profile without mutating the loopback application."""
     runtime_calls = runtime_calls or RuntimeCallPolicy()
@@ -1635,5 +1637,13 @@ def build_development_gateway_application(
         return response
 
     app.add_middleware(BaseHTTPMiddleware, dispatch=cors_and_read_only)
+    if telemetry is not None:
+        from .adapters.telemetry import SemanticHttpTelemetryMiddleware
+
+        app.add_middleware(
+            SemanticHttpTelemetryMiddleware,
+            telemetry=telemetry,
+            surface="gateway",
+        )
 
     return app

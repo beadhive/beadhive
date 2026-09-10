@@ -259,6 +259,33 @@ def test_domain_import_of_opentelemetry_sdk_fails(tmp_path: Path) -> None:
     )
 
 
+def test_real_opentelemetry_imports_are_confined_to_adapter_and_composition_owners() -> None:
+    _modules, edges, _dynamic = boundaries.collect_imports(_REPO_ROOT / "src")
+    opentelemetry_edges = tuple(
+        edge for edge in edges if edge.imported_module.startswith("opentelemetry")
+    )
+    sdk_edges = tuple(
+        edge
+        for edge in opentelemetry_edges
+        if any(symbol.startswith("opentelemetry.sdk") for symbol in edge.symbols)
+    )
+
+    assert sdk_edges
+    assert {edge.importer for edge in sdk_edges} == {"beadhive.otel"}
+    assert {edge.importer for edge in opentelemetry_edges} <= {
+        "beadhive.otel",
+        "beadhive.log",
+        "beadhive.daemon_telemetry",
+    }
+    assert not [
+        edge
+        for edge in opentelemetry_edges
+        if edge.importer.startswith("beadhive.kernel.")
+        or ".application." in edge.importer
+        or ".domain." in edge.importer
+    ]
+
+
 def test_cross_capability_domain_import_fails_direction_rule(tmp_path: Path) -> None:
     source_root = tmp_path / "src"
     _write_source(

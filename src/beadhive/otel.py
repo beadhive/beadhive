@@ -28,7 +28,9 @@ import inspect
 import logging
 import math
 import os
+import sys
 import time
+import uuid
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -97,6 +99,13 @@ def sdk_importable() -> bool:
 # Module guard: init() is idempotent — once providers are wired we don't re-stamp global
 # providers or stack another LoggingHandler on the root logger.
 _initialized = False
+
+# The semantic coordinator is composed only after the SDK providers exist.  Callers receive the
+# kernel port; this adapter module retains the concrete sink so shutdown can close unfinished
+# spans before provider workers are stopped.
+_semantic_telemetry: Any = None
+_semantic_sink: Any = None
+_semantic_surface = "internal"
 
 
 @dataclass(frozen=True)
@@ -441,6 +450,7 @@ def init(
     every no-op path (disabled, libs absent, or already initialized). Idempotent.
     """
     global _initialized, _providers, _shutdown_ports, _shutdown_timeout_seconds
+    global _semantic_sink, _semantic_surface, _semantic_telemetry
 
     from . import log  # local import: avoid a module-load cycle (log imports config too)
 
@@ -556,6 +566,27 @@ def init(
     _shutdown_ports = tuple(port for port in ports if port is not None)
     _instruments.clear()  # rebind metric instruments to the freshly-wired meter provider
     _initialized = True
+    try:
+        from .adapters.telemetry import OpenTelemetrySink
+        from .kernel.telemetry import EventIdentity, SemanticTelemetry
+
+        semantic_identity = EventIdentity(
+            service=service_name,
+            instance_id=(resource_attributes or {}).get("service.instance.id") or uuid.uuid4().hex,
+            host_id=(resource_attributes or {}).get("bh.host.id"),
+        )
+        _semantic_sink = OpenTelemetrySink(runtime=sys.modules[__name__])
+        _semantic_telemetry = SemanticTelemetry(sink=_semantic_sink, identity=semantic_identity)
+        _semantic_surface = {
+            _SERVICE_NAME: "cli",
+            "bh-host-daemon": "daemon",
+            "bh-gateway": "gateway",
+        }.get(service_name, "internal")
+    except BaseException:
+        # Semantic projection is observational.  Legacy OTel remains available if construction
+        # fails, and callers see no semantic port rather than a partially composed coordinator.
+        _semantic_sink = None
+        _semantic_telemetry = None
     if register_atexit:
         _register_flush_on_exit()
     # debug, not info: at the default level a normal `ws` command with otel on must stay quiet —
@@ -602,6 +633,7 @@ def shutdown(
     The optional callback runs after force-flush and before provider close so daemon final metrics
     can enter the last export batch. Best-effort failures never escape the atexit hook."""
     global _initialized, _providers, _shutdown_ports
+    global _semantic_sink, _semantic_surface, _semantic_telemetry
     started = time.monotonic()
     if not _initialized:
         return ShutdownResult("inactive", 0.0)
@@ -613,6 +645,25 @@ def shutdown(
     timed_out = False
     refused = False
     before_close_called = False
+    flush_observation = None
+    if _semantic_telemetry is not None:
+        try:
+            from .kernel.telemetry import (
+                AttributeKey,
+                SemanticEventName,
+                TelemetryAttribute,
+            )
+
+            flush_observation = _semantic_telemetry.begin(
+                SemanticEventName.TELEMETRY_FLUSH,
+                attributes=(
+                    TelemetryAttribute(AttributeKey.OPERATION_KIND, "internal"),
+                    TelemetryAttribute(AttributeKey.SURFACE, _semantic_surface),
+                    TelemetryAttribute(AttributeKey.SHUTDOWN_PHASE, "flush-telemetry"),
+                ),
+            )
+        except BaseException:
+            flush_observation = None
 
     def summary(status: str) -> ShutdownResult:
         return ShutdownResult(status, time.monotonic() - started, len(errors))
@@ -620,12 +671,50 @@ def shutdown(
     def emit_before_close(status: str) -> None:
         nonlocal before_close_called
         before_close_called = True
-        if before_close is None:
-            return
-        try:
-            before_close(summary(status))
-        except Exception as exc:  # telemetry finalization must never break process exit
-            errors.append(exc)
+        if before_close is not None:
+            try:
+                before_close(summary(status))
+            except Exception as exc:  # telemetry finalization must never break process exit
+                errors.append(exc)
+        if _semantic_telemetry is not None:
+            try:
+                from .kernel.telemetry import (
+                    ErrorClassification,
+                    EventError,
+                    Outcome,
+                )
+
+                if status == "completed":
+                    _semantic_telemetry.complete(flush_observation, Outcome.SUCCEEDED)
+                elif status == "timed_out":
+                    _semantic_telemetry.complete(
+                        flush_observation,
+                        Outcome.TIMED_OUT,
+                        error=EventError(
+                            ErrorClassification.TIMEOUT,
+                            "telemetry.flush.timeout",
+                            True,
+                        ),
+                    )
+                else:
+                    _semantic_telemetry.complete(
+                        flush_observation,
+                        Outcome.FAILED,
+                        error=EventError(
+                            ErrorClassification.DEPENDENCY,
+                            "telemetry.flush.failed",
+                            True,
+                        ),
+                    )
+            except BaseException:
+                pass
+        # Completion callbacks get the final opportunity to close their semantic operation.
+        # Any remainder is abandoned locally before SDK worker shutdown, never on a helper thread.
+        if _semantic_sink is not None:
+            try:
+                _semantic_sink.close_open_spans()
+            except BaseException:
+                pass
 
     # Three sequential final exports plus at most one already-in-flight SDK export must fit the
     # one configured budget.  A larger/invalid operator timeout is visible as refusal rather than
@@ -679,6 +768,9 @@ def shutdown(
     _providers = ()
     _shutdown_ports = ()
     _instruments.clear()
+    _semantic_sink = None
+    _semantic_surface = "internal"
+    _semantic_telemetry = None
     _initialized = False
     status = (
         "refused" if refused else "timed_out" if timed_out else "error" if errors else "completed"
@@ -762,6 +854,12 @@ def is_active() -> bool:
     return _initialized
 
 
+def current_semantic_telemetry():
+    """Return the process-composed semantic port, or ``None`` on every disabled/failure path."""
+
+    return _semantic_telemetry if _initialized else None
+
+
 def get_tracer(name: str = _SERVICE_NAME):
     """The active tracer, or a cheap no-op until ``init()`` wires a real provider. The no-op path
     never imports opentelemetry, so callers stay import-safe without the ``ws[otel]`` extra."""
@@ -808,8 +906,77 @@ def trace_verb(name: str):
         def wrapper(*args, **kwargs):
             if not _initialized:
                 return fn(*args, **kwargs)
-            with get_tracer().start_as_current_span(name):
-                return fn(*args, **kwargs)
+            semantic = current_semantic_telemetry()
+            observation = None
+            if semantic is not None:
+                try:
+                    from .kernel.telemetry import (
+                        AttributeKey,
+                        SemanticEventName,
+                        TelemetryAttribute,
+                    )
+
+                    observation = semantic.begin(
+                        SemanticEventName.OPERATION_EXECUTION,
+                        attributes=(
+                            TelemetryAttribute(AttributeKey.OPERATION_KIND, "command"),
+                            TelemetryAttribute(AttributeKey.OPERATION_NAME, name),
+                            TelemetryAttribute(AttributeKey.SURFACE, "cli"),
+                        ),
+                    )
+                except BaseException:
+                    observation = None
+            try:
+                with get_tracer().start_as_current_span(name):
+                    result = fn(*args, **kwargs)
+            except KeyboardInterrupt:
+                if semantic is not None:
+                    try:
+                        from .kernel.telemetry import (
+                            ErrorClassification,
+                            EventError,
+                            Outcome,
+                        )
+
+                        semantic.complete(
+                            observation,
+                            Outcome.CANCELLED,
+                            error=EventError(
+                                ErrorClassification.CANCELLATION,
+                                "cli.command.cancelled",
+                            ),
+                        )
+                    except BaseException:
+                        pass
+                raise
+            except BaseException:
+                if semantic is not None:
+                    try:
+                        from .kernel.telemetry import (
+                            ErrorClassification,
+                            EventError,
+                            Outcome,
+                        )
+
+                        semantic.complete(
+                            observation,
+                            Outcome.FAILED,
+                            error=EventError(
+                                ErrorClassification.INTERNAL,
+                                "cli.command.failed",
+                            ),
+                        )
+                    except BaseException:
+                        pass
+                raise
+            if semantic is not None:
+                try:
+                    from .kernel.telemetry import Outcome
+
+                    semantic.complete(observation, Outcome.SUCCEEDED)
+                except BaseException:
+                    pass
+            return result
 
         # Machine-checkable marker for the convention lint (every work/plan verb must be traced).
         wrapper.__otel_verb__ = name

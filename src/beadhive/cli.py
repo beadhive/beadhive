@@ -396,6 +396,7 @@ def _init_telemetry_best_effort() -> None:
 
         observaloop_env.load_worktree_env(_cfg)
         otel.init(_cfg)
+        plugins.configure_semantic_telemetry(otel.current_semantic_telemetry())
     except Exception:  # best-effort telemetry; never break the CLI on init/config-load failure
         pass
 
