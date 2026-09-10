@@ -147,6 +147,7 @@ architecture-check:
 wire-schema-compat:
     uv run python scripts/render_telemetry_schema.py --check
     uv run python scripts/generate_contract_release.py --check
+    uv run python scripts/generate_contract_release_evidence.py --check
     uv run python scripts/check_wire_schema_compat.py
 
 # RELEASE ONLY — validates evidence captured by real Darwin, Linux, and container targets.
