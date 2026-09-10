@@ -358,6 +358,34 @@ class _TelemetryControlFlow(BaseException):
     pass
 
 
+@pytest.mark.parametrize("mode", ["sync", "awaited"])
+@pytest.mark.parametrize("exception_type", [asyncio.CancelledError, _TelemetryControlFlow])
+def test_flush_contains_exact_telemetry_side_control_flow_exceptions(
+    mode: str, exception_type: type[BaseException]
+) -> None:
+    failure = exception_type(f"telemetry {mode} flush failed")
+    raised: list[BaseException] = []
+
+    async def fail_after_await() -> FlushResult:
+        await asyncio.sleep(0)
+        raised.append(failure)
+        raise failure
+
+    class Sink:
+        def emit(self, _event: EventEnvelope) -> EmitDisposition:
+            return EmitDisposition.ACCEPTED
+
+        def flush(self, _timeout_seconds: float) -> FlushResult:
+            if mode == "awaited":
+                return asyncio.run(fail_after_await())
+            raised.append(failure)
+            raise failure
+
+    assert flush_non_fatal(Sink(), 0.25) == FlushResult(FlushOutcome.FAILED, 0)
+    assert len(raised) == 1
+    assert raised[0] is failure
+
+
 @pytest.mark.parametrize("exception_type", [asyncio.CancelledError, _TelemetryControlFlow])
 def test_emit_contains_telemetry_side_control_flow_exceptions(
     exception_type: type[BaseException],
@@ -414,6 +442,7 @@ def test_flush_receives_one_finite_total_budget_and_validates_its_result() -> No
     for invalid in (0.0, -1.0, float("inf")):
         with pytest.raises(ValueError, match="finite and greater than zero"):
             flush_non_fatal(Sink(), invalid)
+    assert observed == [0.25]
 
 
 def test_sampling_and_disabled_outcomes_are_bounded_dispositions() -> None:

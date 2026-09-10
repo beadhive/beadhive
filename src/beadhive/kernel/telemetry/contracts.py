@@ -528,7 +528,7 @@ def flush_non_fatal(sink: TelemetrySink, timeout_seconds: float) -> FlushResult:
     try:
         result = sink.flush(timeout_seconds)
         return FlushResult(result.outcome, result.duration_ms)
-    except Exception:
+    except BaseException:
         return FlushResult(FlushOutcome.FAILED, 0)
 
 
