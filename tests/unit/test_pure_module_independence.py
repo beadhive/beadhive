@@ -46,9 +46,13 @@ def test_operation_catalog_import_has_no_ambient_or_runtime_dependencies(monkeyp
         "beadhive.plugins",
         "beadhive.otel",
         "beadhive.run",
+        "beadhive.kernel.telemetry.instrumentation",
+        "beadhive.kernel.telemetry.sinks",
     )
     for name in tuple(sys.modules):
-        if name == "beadhive.operation_catalog" or name.startswith(forbidden_imports):
+        if name == "beadhive.operation_catalog" or name.startswith(
+            ("beadhive.kernel.operations", "beadhive.kernel.telemetry", *forbidden_imports)
+        ):
             monkeypatch.delitem(sys.modules, name, raising=False)
 
     class RefuseOuterLayer(importlib.abc.MetaPathFinder):
