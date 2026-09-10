@@ -1,0 +1,559 @@
+{
+  "boundaries": {
+    "full_only": [
+      "child-epic-finish",
+      "final-workstream-review",
+      "final-workstream-submit",
+      "leaf-merge",
+      "release",
+      "scheduled"
+    ],
+    "promoted": [
+      "commit",
+      "main-integration"
+    ],
+    "safety_gate": "just check-all",
+    "uncertainty_gate": "just check"
+  },
+  "closures": [
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "adapters",
+      "kind": "adapter",
+      "owner": "adapters closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "config.fragments",
+      "kind": "contract",
+      "owner": "config.fragments closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "config.pure",
+      "kind": "contract",
+      "owner": "config.pure closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "config.store",
+      "kind": "contract",
+      "owner": "config.store closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "contract.agent-launch",
+      "kind": "contract",
+      "owner": "contract.agent-launch closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "contracts",
+      "kind": "contract",
+      "owner": "contracts closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "integration",
+      "kind": "integration",
+      "owner": "integration closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "kernel",
+      "kind": "kernel",
+      "owner": "kernel closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "kernel.lifecycle",
+      "kind": "kernel",
+      "owner": "kernel.lifecycle closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "kernel.plugins",
+      "kind": "kernel",
+      "owner": "kernel.plugins closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "kernel.telemetry",
+      "kind": "kernel",
+      "owner": "kernel.telemetry closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "module.agents",
+      "kind": "module",
+      "owner": "module.agents closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "module.config",
+      "kind": "module",
+      "owner": "module.config closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "module.hives",
+      "kind": "module",
+      "owner": "module.hives closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "module.planning",
+      "kind": "module",
+      "owner": "module.planning closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "module.state",
+      "kind": "module",
+      "owner": "module.state closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "module.work",
+      "kind": "module",
+      "owner": "module.work closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "module.worktrees",
+      "kind": "module",
+      "owner": "module.worktrees closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "plugin.herdr",
+      "kind": "plugin",
+      "owner": "plugin.herdr closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "plugin.hitch",
+      "kind": "plugin",
+      "owner": "plugin.hitch closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "plugin.observaloop",
+      "kind": "plugin",
+      "owner": "plugin.observaloop closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "plugin.orca",
+      "kind": "plugin",
+      "owner": "plugin.orca closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "plugin.repowise",
+      "kind": "plugin",
+      "owner": "plugin.repowise closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    },
+    {
+      "certification": "uncertified",
+      "evidence_date": "2026-09-10",
+      "fallback": "just check",
+      "id": "system-smoke",
+      "kind": "system",
+      "owner": "system-smoke closure maintainers",
+      "recertification_triggers": [
+        "compatibility-facade-or-generated-artifact-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "shared-contract-or-schema-change",
+        "test-infrastructure-or-certifier-change",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path"
+      ]
+    }
+  ],
+  "evidence_date": "2026-09-10",
+  "inputs": {
+    "certification": "sha256:8a909107e498262574e50feab2dd359857823f4ae664ece5e44b6cbf0ab97d71",
+    "generator": "sha256:1044e0e6f263de5211b567f011de06ecc1703ce8a102b4d4f8461435b12eab44",
+    "promotion": "sha256:4485b5e44f78050f6911d3d4eaac7151d89e6404b1f57a9e7fe42efbf93d058b",
+    "registry": "sha256:e1e73848a03e794bb4c2c594455a9983aab71d582df060a3e9ef01cccf1ba093",
+    "shadow": "sha256:b4c578846521dfdd5f495a5363d86da233e4477ba86e7433fac98478cef842cb"
+  },
+  "invalidation": {
+    "boundary-change": {
+      "automatic_fallback": "just check",
+      "requires_recertification": true,
+      "source_trigger": "input-digest-mismatch"
+    },
+    "coverage-staleness": {
+      "automatic_fallback": "just check",
+      "requires_recertification": true,
+      "source_trigger": "missing-or-stale-coverage"
+    },
+    "escaped-regression": {
+      "automatic_fallback": "just check",
+      "requires_recertification": true,
+      "source_trigger": "selected-green-full-red-escape"
+    },
+    "schema-change": {
+      "automatic_fallback": "just check",
+      "requires_recertification": true,
+      "source_trigger": "shared-contract-or-schema-change"
+    },
+    "tool-version-change": {
+      "automatic_fallback": "just check",
+      "requires_recertification": true,
+      "source_trigger": "test-infrastructure-or-certifier-change"
+    }
+  },
+  "measurements": {
+    "commit": {
+      "after": {
+        "compute_seconds": null,
+        "queue_seconds": null,
+        "wall_seconds": null
+      },
+      "before": {
+        "compute_seconds": null,
+        "queue_seconds": null,
+        "wall_seconds": null
+      },
+      "flake_rate": null,
+      "full_suite_frequency": null,
+      "measured_savings_seconds": null,
+      "miss_rate": null,
+      "reason": "no-qualifying-production-samples",
+      "sample_count": 0,
+      "status": "unavailable"
+    },
+    "main-integration": {
+      "after": {
+        "compute_seconds": null,
+        "queue_seconds": null,
+        "wall_seconds": null
+      },
+      "before": {
+        "compute_seconds": null,
+        "queue_seconds": null,
+        "wall_seconds": null
+      },
+      "flake_rate": null,
+      "full_suite_frequency": null,
+      "measured_savings_seconds": null,
+      "miss_rate": null,
+      "reason": "no-qualifying-production-samples",
+      "sample_count": 0,
+      "status": "unavailable"
+    },
+    "note": "No qualifying production samples exist. Focused developer timings and receipt reuse are not production selective-CI savings and are not extrapolated here."
+  },
+  "policy_version": "bh-selective-ci-operations-v1",
+  "registration": {
+    "applies_to": [
+      "module",
+      "plugin"
+    ],
+    "behavior": "Discovery rejects a registered module or plugin without a present closure row; the row is its checked ownership and conformance declaration.",
+    "declaration_fields": [
+      "owner_path",
+      "source_paths",
+      "tests",
+      "shared_contracts-and-tests",
+      "reverse_dependencies-and-tests"
+    ],
+    "gate": "just test-closure-check",
+    "requires": [
+      "closure",
+      "conformance-declaration"
+    ]
+  },
+  "rollback": {
+    "change": "selective_ci.mode = 'certified' -> 'full'",
+    "file": "tests/selective-ci-policy.toml"
+  },
+  "schema_version": 1,
+  "summary": {
+    "certified": 0,
+    "production_selective_routes": 0,
+    "total": 24,
+    "uncertified": 24
+  }
+}

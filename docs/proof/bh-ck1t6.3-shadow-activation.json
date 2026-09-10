@@ -9,7 +9,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "kernel",
-      "input_digest": "sha256:b03d72d79beaad7d8937892fc88fafb9407200a644a6257a0337e0aeea61de9a",
+      "input_digest": "sha256:3d380e1e17078465fe29b666bfa0ff33bd2bc1be2859cd0a48e7b49cfd2be6f1",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -50,7 +50,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "kernel.lifecycle",
-      "input_digest": "sha256:17f80a3fb783282634560df94908f7ce76fbd7409ace724d983ab70e9df6ec53",
+      "input_digest": "sha256:1b08b4efb661c5b4054032cea53706f29d3d3cfcfab944ac042d89b8e1870765",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -91,7 +91,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "kernel.plugins",
-      "input_digest": "sha256:4da1fd2d461b3c681bf62a679d9fb8f8fffcc6ab21c9e9b055f06b029f31becc",
+      "input_digest": "sha256:405ff37120a6cdb8f536ca9080f9ce1a2c2a31e2ce211af6c80475c0d94d25e9",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -132,7 +132,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "kernel.telemetry",
-      "input_digest": "sha256:b73ada7a5c59a9c2dcae8ab7ddaf388b5f3c3ad789fe33a9d59106680b7995e3",
+      "input_digest": "sha256:64996606f69489a6a2bdadae3ae81ece2591620e6f625bade1e7628d5d550f31",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -173,7 +173,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.agents",
-      "input_digest": "sha256:b2e013d71ee185fc1b75f0db46ec836864ea5a68791c56f4180d3e703a93434f",
+      "input_digest": "sha256:ab056e01a27d73d52e1db589bddcdc7e5b98fe2a60b747fed8c75902fc6325f7",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -214,7 +214,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.config",
-      "input_digest": "sha256:aedea44d530a425f777f485e9694ec88a253f5e2e4bf8f0ba7b4ab6bebd92ccb",
+      "input_digest": "sha256:ad66a2cfc367e34eecd2b5c883af5de7e65b7a25f60f6f56f478a25b1febc854",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -255,7 +255,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "config.pure",
-      "input_digest": "sha256:64d72c8eb44ece4e6e1f939912668d5d51ba152a76280664283e9cbd9ff0f6a6",
+      "input_digest": "sha256:a82c5b3a50e080564faa2bbdba2a8754518c8f7a569c5827b5953afe1fdc93bc",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -296,7 +296,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "config.store",
-      "input_digest": "sha256:6c04cee6a1001c7497b7f8e30410e761ec4bc53308e2d23a2b3f4d6f4874395e",
+      "input_digest": "sha256:d45f2406c083d8ee97b72845422ad9da8726872118d0671b6456a06e6f141c5d",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -337,7 +337,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "config.fragments",
-      "input_digest": "sha256:f1dc84e56f6921910cac48ebde09c02a0bbf2c1033ac6f4e432c5368a0b98d0b",
+      "input_digest": "sha256:eef6420f0dd8fe5581f3cdcef9bd46454447fd15361acd2b9f1a180519411b56",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -378,7 +378,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.hives",
-      "input_digest": "sha256:f95c58e97fc1dbe427e3ef7e9fe886d28ecc73c73daff1f85872bfb5587c1df8",
+      "input_digest": "sha256:fd73627ecc58404b128819f27be5f7d47f32354c638030168738a4fa4232fd37",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -419,7 +419,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.planning",
-      "input_digest": "sha256:ebce3abe6be12a55abc50bd247013b8f20afed72115fe51613d9d75889dc1f0e",
+      "input_digest": "sha256:cb7d38f9667bc8d412b0823e9ab2d3a5cd6fe4aa26acb4947139f7db500803e5",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -460,7 +460,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.state",
-      "input_digest": "sha256:3a1e8bc1a73df8ddec55d95a3ad8c1afb84b8fb3e5cb6d04b735259ec172e41c",
+      "input_digest": "sha256:b0c374dbb8d7baca9d95e1b87af97766a0c734782680ea1b34ad9c828378538d",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -501,7 +501,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.work",
-      "input_digest": "sha256:1b24276936fa9f8d988d914ecc34b33f4de0ec2663867c9a24204969694886a1",
+      "input_digest": "sha256:12df7c99985cae72e39921d2ec4e8e0e458b596d67b24a0b4152561bd5a5fefe",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -542,7 +542,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.worktrees",
-      "input_digest": "sha256:a4780a65758f5a1b04985c791259e03ff9bbbfe8cf68a9316d25e6ec35b202a3",
+      "input_digest": "sha256:5e523acbf97d0908c23ed28b8e623f50ccd957a6a62ccd89919aee6aab841fed",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -583,7 +583,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "adapters",
-      "input_digest": "sha256:68f124f74389cc0a4b22a165fe20968110b5d54c21e425a56eb14e7d157ac48b",
+      "input_digest": "sha256:9863aa65506494c111cacd5e16d15e3da57205c4ca77c3bcfcf2e1be1e4d25a5",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -625,7 +625,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.herdr",
-      "input_digest": "sha256:e2ccb256435a312ba622d3a5ce8dff609fefe4347931e63ed69ef1a043b5f3fb",
+      "input_digest": "sha256:fd264959a9144a0ab5306b446ebd6c7277c64190391a79a39174a244cc7e1aea",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -666,7 +666,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.hitch",
-      "input_digest": "sha256:a9790ccb6a145677069c720e7c13ec7906eb17e016b875b0d636bea4327f027d",
+      "input_digest": "sha256:171c5e9520a250411f8c3d2a1687c7a5109bac1fc18ccc862b07f96a81324eb9",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -707,7 +707,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.observaloop",
-      "input_digest": "sha256:a715260c3a0e94e5181ef8cfdfb5eea13ae4326ff00553ddd936357b1903cae8",
+      "input_digest": "sha256:8522155f19123a40d0cbf100a38eb3b2ca1012fa54cc5eff30cfd17af51bce4c",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -748,7 +748,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.orca",
-      "input_digest": "sha256:25b7474424516d985dec63c0e3f24668c74698569cb76daf2d7449c32f0e841d",
+      "input_digest": "sha256:88053c840142bef823892798b2a61b664c53e3e27618b59d98650a213aa0288b",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -789,7 +789,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.repowise",
-      "input_digest": "sha256:d8519d3bfa9ba2a73b6eb86a1130761d60ab16cf654455cf979029e89cd74f5b",
+      "input_digest": "sha256:9d6f6e1d0b80206e3301e9240ef7a81d3ce48a93d195217f02ac2ceaad7853e6",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -830,7 +830,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "contract.agent-launch",
-      "input_digest": "sha256:cb532858bb7383e85904ee97d1a020f480ce0e92538d58f5ee935066cb966db2",
+      "input_digest": "sha256:8b13ab558518996052d7b3ce887f3c585f7564864d31db6274136a363ed08ee7",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -871,7 +871,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "contracts",
-      "input_digest": "sha256:69ba1c0b6af3e014855d1a9de7c9b76940b6380ccdc5a52861c65e02f37ceb64",
+      "input_digest": "sha256:aa5d07fad4ed0d97b767c46991aa8535c8aa5436bc1a8b4819d59930ce6ea506",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -912,7 +912,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "integration",
-      "input_digest": "sha256:deee5fa2c6958bc574eeeb8d04f507805fb834dd6f9126ad115e4f0eecf28377",
+      "input_digest": "sha256:185b3db12e92710a6f020577c07531ade0e24b17e00c2d6c4b065680259b7a31",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -954,7 +954,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "system-smoke",
-      "input_digest": "sha256:a3efb03415e6191867324b85dc46bb0e102280ccf22412257c1468c6d15273cd",
+      "input_digest": "sha256:36a4f5cb31e95407a08bf687b6d9da7cbd6696464c347c5285b4327621c5e42b",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -997,10 +997,10 @@
     "command": "just check",
     "receipt_reuse": "exact-tree full-gate receipts may be reused by existing lifecycle policy"
   },
-  "input_digest": "sha256:b1dc7d70fbc1fe9a23d51be14d36acab670b90efa9954495a2731ad948acdfb8",
+  "input_digest": "sha256:36e404fdbe0f55152752e8cc6696ebf3bd0d39bca8037644002e7fed434879f1",
   "inputs": {
     "certification_artifact": {
-      "digest": "sha256:43ab506d5bb01d5f8c817c3d626e26b638e5053d4ac5596ea0cf0f1c21316e9d",
+      "digest": "sha256:8a909107e498262574e50feab2dd359857823f4ae664ece5e44b6cbf0ab97d71",
       "path": "docs/proof/bh-ck1t6.1-test-closure-certification.json"
     },
     "selector": {

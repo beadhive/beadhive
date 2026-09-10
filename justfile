@@ -143,6 +143,7 @@ architecture-check:
     uv run python scripts/test_closure_certification.py --check
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
+    uv run python scripts/test_closure_operational_report.py --check
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.

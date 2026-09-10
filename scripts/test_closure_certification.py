@@ -664,7 +664,7 @@ def build_evidence(root: Path = ROOT, *, collect: bool = False) -> dict[str, Any
             "input_identity": input_identity,
             "receipt_provenance": {
                 "authority": "beadhive-git-private-validation-ledger",
-                "bead": "bh-ck1t6.4",
+                "bead": "bh-ck1t6.5",
                 "phase": "check",
                 "command": FULL_GATE_COMMAND,
                 "command_hash": FULL_GATE_COMMAND_HASH,
@@ -721,7 +721,7 @@ def effective_certification(record: dict[str, Any]) -> dict[str, Any]:
 def _expected_receipt_provenance() -> dict[str, Any]:
     return {
         "authority": "beadhive-git-private-validation-ledger",
-        "bead": "bh-ck1t6.4",
+        "bead": "bh-ck1t6.5",
         "phase": "check",
         "command": FULL_GATE_COMMAND,
         "command_hash": FULL_GATE_COMMAND_HASH,
