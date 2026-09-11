@@ -30,24 +30,28 @@ later implementation bead explicitly owns a contract change.
 
 ## Current structure and evidence
 
-At the named baseline, Beadhive had three installed entry points:
+At the named historical baseline, Beadhive had three installed entry points:
 
 - `bh = beadhive.cli:main`;
 - `bh-mcp = beadhive.mcp:main`; and
-- `beadhive-frame-bridge = beadhive.frame_bridge_runtime:main`.
+- `beadhive-gateway = beadhive.remote_gateway_runtime:main`.
 
-Core does not install a `beadhive-gateway` console command. That name is reserved for the
-multi-frame Beadhive Gateway authored in the sibling `beadhive-gateway` repository; core's Frame
-Bridge projects one host daemon into the Gateway-owned wire contract.
+That list is immutable evidence for revision `739349806ead27c94282219b1befb796ba73b583`,
+not the current command surface. Current source installs
+`beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main` for the core-owned per-frame
+process. It installs no `beadhive-gateway` console command or other legacy alias. The
+`beadhive-gateway` name now belongs to the multi-frame Beadhive Gateway authored in the sibling
+repository; core's Frame Bridge projects one host daemon into the Gateway-owned wire contract.
 
 The Transport composition closeout (`bh-3qkmk.5`) routes the four current console scripts
 through `beadhive.bootstrap.{cli,mcp,host,frame_bridge}:main`. The historical modules remain
 compatibility/runtime adapters behind exact exception-ledger edges until their patch inventories
 permit physical relocation; reusable production code has no dependency back into bootstrap.
 
-The production package contains approximately 177 flat top-level Python modules and 95,000 lines
-of code. The test tree contains approximately 343 Python files and 123,000 lines. The principal
-composition roots are `cli.py`, `mcp.py`, `host_daemon.py`, and `frame_bridge_runtime.py`.
+At that historical baseline, the production package contains approximately 177 flat top-level
+Python modules and 95,000 lines of code. The test tree contains approximately 343 Python files and
+123,000 lines. Its principal composition roots are `cli.py`, `mcp.py`, `host_daemon.py`, and
+`remote_gateway_runtime.py`.
 
 The exact-tip RepoWise index records 771 files. Static dependency evidence shows six cyclic
 strongly connected components spanning 85 production files; the largest contains 65 files,
