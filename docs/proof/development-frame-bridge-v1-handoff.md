@@ -1,8 +1,10 @@
-# Development gateway v1 immutable handoff
+# Development Frame Bridge v1 immutable handoff
 
 This is the core/runtime handoff to infra bead `bh-infra-lum.3`. The machine-readable record is
-[`development-gateway-v1-handoff.json`](development-gateway-v1-handoff.json). Every candidate
-reference below is immutable; no branch name is a deployment input.
+[`development-frame-bridge-v1-handoff.json`](development-frame-bridge-v1-handoff.json). The
+per-frame runtime described here is distinct from the multi-frame Beadhive Gateway authored in
+the sibling `beadhive-gateway` repository. Every candidate reference below is immutable; no branch
+name is a deployment input.
 
 ## Candidate
 
@@ -18,8 +20,10 @@ reference below is immutable; no branch name is a deployment input.
 
 The wheel was built twice from the candidate commit with
 `SOURCE_DATE_EPOCH=1787813110 uv build --wheel`. Both byte streams produced the recorded digest.
-The source tree passed `just check`: 6,560 passed, 41 skipped, zero failed. The focused gateway and
-real loopback runtime profile contributed 56 passing tests.
+The source tree passed `just check`: 6,560 passed, 41 skipped, zero failed. The focused Frame Bridge
+and real loopback runtime profile contributed 56 passing tests. The machine record retains their
+old `test_remote_gateway*` paths because those paths are facts about the immutable candidate, not
+current component names.
 
 ## Conformance map
 
@@ -36,14 +40,14 @@ real loopback runtime profile contributed 56 passing tests.
 
 ## Host operations
 
-Install the wheel by its digest into `/opt/beadhive-gateway`, then use the reviewed
-[`beadhive-gateway-dev.service.example`](../../deploy/systemd/beadhive-gateway-dev.service.example).
+Install the wheel by its digest into `/opt/beadhive-frame-bridge`, then use the reviewed
+[`beadhive-frame-bridge-dev.service.example`](../../deploy/systemd/beadhive-frame-bridge-dev.service.example).
 The launcher binds only loopback port 8787. The service sandbox independently denies every
 non-loopback address. It consumes the existing loopback Beadhive host daemon on port 8420 and
 resolves exactly `github/beadhive/beadhive`; there is no fixture fallback or hive selector.
 Cloudflared owns a separate service and credential.
 
-- Health: use the exact local probe in [`REMOTE_GATEWAY_V1.md`](../REMOTE_GATEWAY_V1.md). An
+- Health: use the exact local probe in [`FRAME_BRIDGE_V1.md`](../FRAME_BRIDGE_V1.md). An
   authenticated discovery result of `offline` is readiness evidence; `/healthz` is liveness only.
 - Capacity: at most 16 live streams; stream opens, commands, availability, and snapshots have
   independent bulkheads and five-second deadlines. Stream policy is rechecked every second.
@@ -52,23 +56,24 @@ Cloudflared owns a separate service and credential.
   joins admitted source work.
 - Redaction: browser shapes are exact allowlists. Work descriptions, local paths, transcripts,
   source coverage details, raw operator events, credentials, and internal exceptions are dropped.
-- Identity rotation: atomically replace the mode-0600 JWKS credential, restart the gateway, and
+- Identity rotation: atomically replace the mode-0600 JWKS credential, restart the Frame Bridge,
+  and
   prove the old signing key is refused and a new signed session succeeds. Subject removal uses the
   same replace-and-restart procedure and closes live streams at the next one-second check.
-- Global disable: stop the gateway and Cloudflared services. The loopback host daemon remains
+- Global disable: stop the Frame Bridge and Cloudflared services. The loopback host daemon remains
   private and the public route has no healthy origin.
-- Rollback: stop the gateway, reinstall the previously accepted wheel by its recorded digest,
+- Rollback: stop the Frame Bridge, reinstall the previously accepted wheel by its recorded digest,
   restore its matching two credential files, restart, and require a fresh snapshot after the
   producer epoch changes.
 
 ## Scan and mutation evidence
 
 The frozen wheel was searched, without printing values, for the three available encrypted
-Development credential values; matches: zero. Candidate gateway source, contract, service unit,
-and conformance fixtures were structurally scanned for deferred-environment origins, audiences,
-instance IDs, secret variable names, state access, and generic external mutation clients;
-matches: zero. The candidate build and tests made zero provider, DNS, Tunnel, identity, or other
-external mutations.
+Development credential values; matches: zero. Candidate Frame Bridge source, Gateway contract,
+service unit, and conformance fixtures were structurally scanned for deferred-environment origins,
+audiences, instance IDs, secret variable names, state access, and generic external mutation
+clients; matches: zero. The candidate build and tests made zero provider, DNS, Tunnel, identity,
+or other external mutations.
 
 Infra must repeat its exact-value scan after materializing the two host credential files and
 before starting either service. It must also verify the installed wheel digest, candidate commit,

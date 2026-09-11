@@ -1,8 +1,8 @@
-"""Authenticated, read-only Development gateway profile.
+"""Authenticated, read-only Beadhive Frame Bridge profile for Development.
 
 This module is deliberately separate from :mod:`beadhive.operator_api`: the local profile keeps
-its loopback-only, unauthenticated contract while this boundary authenticates and projects a
-small, explicitly allowlisted remote representation.
+its loopback-only contract while the Frame Bridge authenticates and projects a small, explicitly
+allowlisted representation into the Gateway-owned ``gateway.v1`` wire contract.
 """
 
 from __future__ import annotations
@@ -53,7 +53,7 @@ _CLERK_JWS_REGISTRY = JWSRegistry(
 
 
 @dataclass(frozen=True)
-class DevelopmentGatewayConfig:
+class DevelopmentFrameBridgeConfig:
     issuer: str
     audience: str
     app_origin: str
@@ -61,16 +61,18 @@ class DevelopmentGatewayConfig:
 
     def __post_init__(self) -> None:
         if self.audience != "beadhive-gateway-dev":
-            raise ValueError("Development gateway audience must be beadhive-gateway-dev")
+            raise ValueError("Development Frame Bridge audience must be beadhive-gateway-dev")
         _require_exact_https_origin(self.issuer, "issuer")
         _require_exact_https_origin(self.app_origin, "application origin")
         _require_exact_https_origin(self.gateway_origin, "gateway origin")
         if self.app_origin != "https://app-dev.beadhive.cloud":
-            raise ValueError("Development gateway requires the canonical Development app origin")
+            raise ValueError(
+                "Development Frame Bridge requires the canonical Development app origin"
+            )
         if self.gateway_origin != "https://gateway-dev.beadhive.cloud":
-            raise ValueError("Development gateway requires the canonical Development host")
+            raise ValueError("Development Frame Bridge requires the canonical Gateway host")
         if self.issuer != DEVELOPMENT_ISSUER:
-            raise ValueError("Development gateway requires the exact Clerk Development issuer")
+            raise ValueError("Development Frame Bridge requires the exact Clerk Development issuer")
 
 
 def _require_exact_https_origin(value: str, label: str) -> None:
@@ -93,7 +95,7 @@ class AuthenticationFailed(Exception):
     """A deliberately detail-free authentication failure."""
 
 
-class RemoteProjectionFailed(Exception):
+class FrameBridgeProjectionFailed(Exception):
     """An internal payload did not satisfy the remote disclosure contract."""
 
 
@@ -119,7 +121,7 @@ class ProducerEpochChanged(StaleEventCursor):
 
 @dataclass(frozen=True)
 class ClerkTokenVerifier:
-    config: DevelopmentGatewayConfig
+    config: DevelopmentFrameBridgeConfig
     key: Any
     revoked_subjects: frozenset[str] = frozenset()
     now: Callable[[], float] = time.time
@@ -441,7 +443,7 @@ def _agent_is_allowlisted(value: object) -> bool:
     )
 
 
-def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
+def frame_bridge_payload_is_allowlisted(kind: str, payload: object) -> bool:
     """Return whether *payload* is exactly one public remote wire shape."""
     if kind == "error":
         return (
@@ -526,8 +528,8 @@ def remote_payload_is_allowlisted(kind: str, payload: object) -> bool:
 
 
 def _response(kind: str, payload: dict[str, object], status_code: int = 200) -> JSONResponse:
-    if not remote_payload_is_allowlisted(kind, payload):
-        raise RemoteProjectionFailed("remote response did not match its disclosure allowlist")
+    if not frame_bridge_payload_is_allowlisted(kind, payload):
+        raise FrameBridgeProjectionFailed("remote response did not match its disclosure allowlist")
     return JSONResponse(
         payload,
         status_code=status_code,
@@ -546,13 +548,13 @@ def _error(code: str, message: str, status_code: int, *, retryable: bool = False
 def _public_snapshot(raw: Mapping[str, object], *, with_events: bool) -> dict[str, object]:
     try:
         if not _schema_version(raw["schemaVersion"]):
-            raise RemoteProjectionFailed("runtime snapshot is incompatible")
+            raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
         revision = raw["revision"]
         generated_at = raw["generatedAt"]
         if not isinstance(revision, str) or not revision:
-            raise RemoteProjectionFailed("runtime snapshot is incompatible")
+            raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
         if not isinstance(generated_at, int) or isinstance(generated_at, bool):
-            raise RemoteProjectionFailed("runtime snapshot is incompatible")
+            raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
         raw_work_items = raw["workItems"]
         raw_agents = raw["agents"]
         if (
@@ -561,13 +563,13 @@ def _public_snapshot(raw: Mapping[str, object], *, with_events: bool) -> dict[st
             or not isinstance(raw_agents, list)
             or len(raw_agents) > _MAX_AGENTS
         ):
-            raise RemoteProjectionFailed("runtime snapshot is incompatible")
+            raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
         work_items = []
         for item in raw_work_items:
             record = item["record"]
             labels = record["labels"]
             if not isinstance(labels, list) or len(labels) > _MAX_LABELS:
-                raise RemoteProjectionFailed("runtime snapshot is incompatible")
+                raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
             work_items.append(
                 {
                     "id": record["id"],
@@ -602,13 +604,13 @@ def _public_snapshot(raw: Mapping[str, object], *, with_events: bool) -> dict[st
         if with_events:
             event_cursor = raw["eventCursor"]
             if not isinstance(event_cursor, str) or _EVENT_CURSOR.fullmatch(event_cursor) is None:
-                raise RemoteProjectionFailed("runtime snapshot is incompatible")
+                raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
             public["eventCursor"] = event_cursor
     except (KeyError, TypeError) as exc:
-        raise RemoteProjectionFailed("runtime snapshot is incompatible") from exc
+        raise FrameBridgeProjectionFailed("runtime snapshot is incompatible") from exc
     expected_keys = _STREAM_SNAPSHOT_KEYS if with_events else _SNAPSHOT_KEYS
     if not _exact_keys(public, expected_keys):
-        raise RemoteProjectionFailed("runtime snapshot is incompatible")
+        raise FrameBridgeProjectionFailed("runtime snapshot is incompatible")
     return public
 
 
@@ -653,57 +655,57 @@ async def _invoke_refresh(
     try:
         public = {"status": raw["status"], "revision": raw["revision"]}
     except (KeyError, TypeError) as exc:
-        raise RemoteProjectionFailed("runtime command result is incompatible") from exc
+        raise FrameBridgeProjectionFailed("runtime command result is incompatible") from exc
     if (
         public["status"] != "completed"
         or not isinstance(public["revision"], str)
         or _REVISION.fullmatch(public["revision"]) is None
     ):
-        raise RemoteProjectionFailed("runtime command result is incompatible")
+        raise FrameBridgeProjectionFailed("runtime command result is incompatible")
     return public
 
 
-def build_development_gateway_application(
+def build_development_frame_bridge_application(
     *,
-    config: DevelopmentGatewayConfig,
+    config: DevelopmentFrameBridgeConfig,
     verifier: ClerkTokenVerifier,
     registry: DevelopmentInstanceRegistry,
     runtime_calls: RuntimeCallPolicy | None = None,
     read_source: gateway_read_mod.GatewayReadSource | None = None,
 ) -> Starlette:
-    """Build the remote Development read profile without mutating the loopback application."""
+    """Build the Frame Bridge without mutating the authoritative loopback application."""
     runtime_calls = runtime_calls or RuntimeCallPolicy()
     gateway_host = urlsplit(config.gateway_origin).netloc
     discovery_availability_calls = _BoundedRuntimeCalls(
         concurrency=runtime_calls.availability_concurrency,
         deadline_seconds=runtime_calls.deadline_seconds,
-        name="beadhive-gateway-discovery-availability",
+        name="beadhive-frame-bridge-discovery-availability",
     )
     snapshot_availability_calls = _BoundedRuntimeCalls(
         concurrency=runtime_calls.availability_concurrency,
         deadline_seconds=runtime_calls.deadline_seconds,
-        name="beadhive-gateway-snapshot-availability",
+        name="beadhive-frame-bridge-snapshot-availability",
     )
     snapshot_calls = _BoundedRuntimeCalls(
         concurrency=runtime_calls.snapshot_concurrency,
         deadline_seconds=runtime_calls.deadline_seconds,
-        name="beadhive-gateway-snapshot",
+        name="beadhive-frame-bridge-snapshot",
     )
     command_calls = _BoundedRuntimeCalls(
         concurrency=runtime_calls.command_concurrency,
         deadline_seconds=runtime_calls.deadline_seconds,
-        name="beadhive-gateway-command",
+        name="beadhive-frame-bridge-command",
     )
     stream_open_calls = _BoundedRuntimeCalls(
         concurrency=runtime_calls.stream_concurrency,
         deadline_seconds=runtime_calls.deadline_seconds,
-        name="beadhive-gateway-stream-open",
+        name="beadhive-frame-bridge-stream-open",
     )
     rich_read_calls = _SubjectBoundedRuntimeCalls(
         process_limit=runtime_calls.rich_read_concurrency,
         subject_limit=runtime_calls.rich_read_concurrency_per_subject,
         deadline_seconds=runtime_calls.deadline_seconds,
-        name="beadhive-gateway-rich-read",
+        name="beadhive-frame-bridge-rich-read",
     )
     stream_admission = _SubjectAdmission(
         process_limit=runtime_calls.stream_concurrency,
@@ -910,7 +912,7 @@ def build_development_gateway_application(
                 ),
             )
             if not hasattr(source, "__aiter__"):
-                raise RemoteProjectionFailed("gateway read event stream is incompatible")
+                raise FrameBridgeProjectionFailed("gateway read event stream is incompatible")
 
             async def stream():
                 owner = asyncio.current_task()
@@ -923,7 +925,7 @@ def build_development_gateway_application(
                 try:
                     iterator = source.__aiter__()
                     next_event = asyncio.create_task(
-                        anext(iterator), name="beadhive-gateway-rich-event-next"
+                        anext(iterator), name="beadhive-frame-bridge-rich-event-next"
                     )
                     while True:
                         done, _ = await asyncio.wait(
@@ -956,12 +958,12 @@ def build_development_gateway_application(
                             or envelope.get("hiveId") != hive_id
                             or envelope.get("detailLevel") != "live"
                         ):
-                            raise RemoteProjectionFailed(
+                            raise FrameBridgeProjectionFailed(
                                 "gateway read event envelope is incompatible"
                             )
                         event = envelope.get("event")
                         if not isinstance(event, Mapping):
-                            raise RemoteProjectionFailed("gateway read event is incompatible")
+                            raise FrameBridgeProjectionFailed("gateway read event is incompatible")
                         epoch = event.get("producerEpoch")
                         sequence = event.get("sequence")
                         base_sequence = event.get("baseSequence")
@@ -978,13 +980,13 @@ def build_development_gateway_application(
                             or event.get("subscriptionId") != subscriptions[0]
                             or event.get("hiveId") != hive_id
                         ):
-                            raise RemoteProjectionFailed("gateway read cursor is incompatible")
+                            raise FrameBridgeProjectionFailed("gateway read cursor is incompatible")
                         expected_epoch = epoch
                         previous_sequence = sequence
                         cursor = f"{epoch}:{sequence}"
                         data = json.dumps(envelope, separators=(",", ":"))
                         next_event = asyncio.create_task(
-                            anext(iterator), name="beadhive-gateway-rich-event-next"
+                            anext(iterator), name="beadhive-frame-bridge-rich-event-next"
                         )
                         yield f"id: {cursor}\nevent: operator-event\ndata: {data}\n\n"
                 except Exception:
@@ -1038,7 +1040,7 @@ def build_development_gateway_application(
     async def read_availability(calls: _BoundedRuntimeCalls, instance: RemoteInstance) -> bool:
         availability = await calls.call(instance.online)
         if type(availability) is not bool:
-            raise RemoteProjectionFailed("runtime availability is incompatible")
+            raise FrameBridgeProjectionFailed("runtime availability is incompatible")
         return availability
 
     async def public_instance(instance_id: str, instance: RemoteInstance) -> dict[str, object]:
@@ -1101,7 +1103,7 @@ def build_development_gateway_application(
             return _error("request_denied", "The request is not allowed.", 403)
         except AuthenticationFailed:
             return _error("authentication_failed", "Authentication failed.", 401)
-        except RemoteProjectionFailed:
+        except FrameBridgeProjectionFailed:
             return _error("runtime_unavailable", "The runtime is unavailable.", 503, retryable=True)
         except Exception:
             return _error("runtime_unavailable", "The runtime is unavailable.", 503, retryable=True)
@@ -1140,7 +1142,7 @@ def build_development_gateway_application(
             return _error("invalid_request", "The request is not valid.", 400)
         except StaleCommandScope:
             return _error("scope_conflict", "The command scope is stale.", 409)
-        except (RemoteProjectionFailed, RuntimeCallTimedOut):
+        except (FrameBridgeProjectionFailed, RuntimeCallTimedOut):
             return _error("runtime_unavailable", "The runtime is unavailable.", 503, retryable=True)
         except Exception:
             return _error("runtime_unavailable", "The runtime is unavailable.", 503, retryable=True)
@@ -1173,7 +1175,7 @@ def build_development_gateway_application(
                 raise
             if not hasattr(source, "__aiter__"):
                 stream_admission.release(subject)
-                raise RemoteProjectionFailed("runtime event stream is incompatible")
+                raise FrameBridgeProjectionFailed("runtime event stream is incompatible")
 
             async def stream():
                 nonlocal sequence
@@ -1185,7 +1187,7 @@ def build_development_gateway_application(
                 try:
                     iterator = source.__aiter__()
                     next_event = asyncio.create_task(
-                        anext(iterator), name="beadhive-gateway-event-next"
+                        anext(iterator), name="beadhive-frame-bridge-event-next"
                     )
                     while True:
                         done, _ = await asyncio.wait(
@@ -1239,7 +1241,7 @@ def build_development_gateway_application(
                             separators=(",", ":"),
                         )
                         next_event = asyncio.create_task(
-                            anext(iterator), name="beadhive-gateway-event-next"
+                            anext(iterator), name="beadhive-frame-bridge-event-next"
                         )
                         yield f"id: {next_cursor}\nevent: snapshot-invalidated\ndata: {data}\n\n"
                 finally:

@@ -1,4 +1,4 @@
-"""Owned-host Development launcher backed by the loopback Beadhive operator daemon."""
+"""Beadhive Frame Bridge launcher backed by one loopback host daemon."""
 
 from __future__ import annotations
 
@@ -14,16 +14,16 @@ import httpx
 from joserfc.jwk import KeySet
 
 from . import gateway_read
-from .remote_gateway import (
+from .frame_bridge import (
     DEVELOPMENT_INSTANCE_ID,
     DEVELOPMENT_ISSUER,
     ClerkTokenVerifier,
-    DevelopmentGatewayConfig,
+    DevelopmentFrameBridgeConfig,
     DevelopmentInstanceRegistry,
     RemoteInstance,
     StaleCommandScope,
     StaleEventCursor,
-    build_development_gateway_application,
+    build_development_frame_bridge_application,
 )
 
 APP_ORIGIN = "https://app-dev.beadhive.cloud"
@@ -153,7 +153,7 @@ class LoopbackDemoRuntime:
 
 def _read_json(path: Path) -> Any:
     if not path.is_file() or path.stat().st_mode & 0o077:
-        raise RuntimeError("gateway credential files must exist with mode 0600")
+        raise RuntimeError("Frame Bridge credential files must exist with mode 0600")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -164,18 +164,23 @@ def _authorized_subjects(path: Path) -> frozenset[str]:
         or not 1 <= len(value) <= 32
         or any(not isinstance(item, str) or _SUBJECT.fullmatch(item) is None for item in value)
     ):
-        raise RuntimeError("gateway subject policy is incompatible")
+        raise RuntimeError("Frame Bridge subject policy is incompatible")
     return frozenset(value)
 
 
 def create_application():
     """Uvicorn factory that verifies all immutable inputs before opening the listener."""
     credentials = Path(os.environ.get("CREDENTIALS_DIRECTORY", "/run/credentials"))
-    jwks_path = Path(os.environ.get("BEADHIVE_GATEWAY_JWKS_FILE", credentials / "clerk-jwks.json"))
-    subjects_path = Path(
-        os.environ.get("BEADHIVE_GATEWAY_SUBJECTS_FILE", credentials / "authorized-subjects.json")
+    jwks_path = Path(
+        os.environ.get("BEADHIVE_FRAME_BRIDGE_JWKS_FILE", credentials / "clerk-jwks.json")
     )
-    config = DevelopmentGatewayConfig(
+    subjects_path = Path(
+        os.environ.get(
+            "BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE",
+            credentials / "authorized-subjects.json",
+        )
+    )
+    config = DevelopmentFrameBridgeConfig(
         issuer=DEVELOPMENT_ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -196,7 +201,7 @@ def create_application():
         events=runtime.events,
         close=runtime.close,
     )
-    return build_development_gateway_application(
+    return build_development_frame_bridge_application(
         config=config,
         verifier=ClerkTokenVerifier(config=config, key=key_set),
         registry=DevelopmentInstanceRegistry(instances={DEVELOPMENT_INSTANCE_ID: instance}),
@@ -209,7 +214,7 @@ def main() -> None:
     import uvicorn
 
     uvicorn.run(
-        "beadhive.remote_gateway_runtime:create_application",
+        "beadhive.frame_bridge_runtime:create_application",
         factory=True,
         host="127.0.0.1",
         port=8787,

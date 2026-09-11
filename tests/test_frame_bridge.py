@@ -1,4 +1,4 @@
-"""Conformance coverage for the authenticated Development gateway profile."""
+"""Conformance coverage for the authenticated Development Frame Bridge."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from joserfc import jwt
 from joserfc.jwk import RSAKey
 from joserfc.jws import JWSRegistry
 
-from beadhive import remote_gateway
+from beadhive import frame_bridge
 
 ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 AUDIENCE = "beadhive-gateway-dev"
@@ -118,20 +118,20 @@ def _refresh_reader(value: dict[str, object]):
 
 
 def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
         gateway_origin=GATEWAY_ORIGIN,
     )
-    verifier = remote_gateway.ClerkTokenVerifier(
+    verifier = frame_bridge.ClerkTokenVerifier(
         config=config,
         key=public_key,
         revoked_subjects=revoked,
     )
-    registry = remote_gateway.DevelopmentInstanceRegistry(
+    registry = frame_bridge.DevelopmentInstanceRegistry(
         instances={
-            INSTANCE_ID: remote_gateway.RemoteInstance(
+            INSTANCE_ID: frame_bridge.RemoteInstance(
                 display_name="Development demo",
                 authorized_subjects=frozenset({SUBJECT}),
                 snapshot=_read_snapshot,
@@ -139,7 +139,7 @@ def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
             )
         }
     )
-    return remote_gateway.build_development_gateway_application(
+    return frame_bridge.build_development_frame_bridge_application(
         config=config,
         verifier=verifier,
         registry=registry,
@@ -224,14 +224,14 @@ def test_authorized_subject_discovers_only_dev_demo_and_reads_redacted_snapshot(
 
 def test_authorized_subject_invokes_advertised_refresh_and_receives_correlated_result() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
         gateway_origin=GATEWAY_ORIGIN,
     )
-    verifier = remote_gateway.ClerkTokenVerifier(config=config, key=public_key)
-    instance = remote_gateway.RemoteInstance(
+    verifier = frame_bridge.ClerkTokenVerifier(config=config, key=public_key)
+    instance = frame_bridge.RemoteInstance(
         display_name="Development demo",
         authorized_subjects=frozenset({SUBJECT}),
         snapshot=_read_snapshot,
@@ -245,10 +245,10 @@ def test_authorized_subject_invokes_advertised_refresh_and_receives_correlated_r
             }
         ),
     )
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
         verifier=verifier,
-        registry=remote_gateway.DevelopmentInstanceRegistry(instances={INSTANCE_ID: instance}),
+        registry=frame_bridge.DevelopmentInstanceRegistry(instances={INSTANCE_ID: instance}),
     )
 
     async def action(client):
@@ -277,7 +277,7 @@ def test_authorized_subject_invokes_advertised_refresh_and_receives_correlated_r
         "correlationId": CORRELATION_ID,
         "result": {"status": "completed", "revision": "sha256:" + "b" * 64},
     }
-    assert remote_gateway.remote_payload_is_allowlisted("commandResult", result.json())
+    assert frame_bridge.frame_bridge_payload_is_allowlisted("commandResult", result.json())
     assert "/Users/" not in str(result.json())
     assert "transcript" not in str(result.json())
     assert "prod" not in str(result.json()).lower()
@@ -290,23 +290,23 @@ def test_refresh_reauthorizes_scope_and_fails_closed_for_hidden_stale_and_revoke
     async def stale_refresh(_expected_revision: str, _correlation_id: str):
         nonlocal calls
         calls += 1
-        raise remote_gateway.StaleCommandScope
+        raise frame_bridge.StaleCommandScope
 
     def app_for(*, subjects=frozenset({SUBJECT}), revoked=frozenset(), refresh=stale_refresh):
-        config = remote_gateway.DevelopmentGatewayConfig(
+        config = frame_bridge.DevelopmentFrameBridgeConfig(
             issuer=ISSUER,
             audience=AUDIENCE,
             app_origin=APP_ORIGIN,
             gateway_origin=GATEWAY_ORIGIN,
         )
-        return remote_gateway.build_development_gateway_application(
+        return frame_bridge.build_development_frame_bridge_application(
             config=config,
-            verifier=remote_gateway.ClerkTokenVerifier(
+            verifier=frame_bridge.ClerkTokenVerifier(
                 config=config, key=public_key, revoked_subjects=revoked
             ),
-            registry=remote_gateway.DevelopmentInstanceRegistry(
+            registry=frame_bridge.DevelopmentInstanceRegistry(
                 instances={
-                    INSTANCE_ID: remote_gateway.RemoteInstance(
+                    INSTANCE_ID: frame_bridge.RemoteInstance(
                         display_name="Development demo",
                         authorized_subjects=subjects,
                         snapshot=_read_snapshot,
@@ -351,14 +351,14 @@ def test_refresh_reauthorizes_scope_and_fails_closed_for_hidden_stale_and_revoke
 
 def test_refresh_rechecks_changed_instance_policy_after_discovery() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
         gateway_origin=GATEWAY_ORIGIN,
     )
     instances = {
-        INSTANCE_ID: remote_gateway.RemoteInstance(
+        INSTANCE_ID: frame_bridge.RemoteInstance(
             display_name="Development demo",
             authorized_subjects=frozenset({SUBJECT}),
             snapshot=_read_snapshot,
@@ -366,10 +366,10 @@ def test_refresh_rechecks_changed_instance_policy_after_discovery() -> None:
             refresh=_refresh_reader({"status": "completed", "revision": "sha256:" + "b" * 64}),
         )
     }
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(instances=instances),
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(instances=instances),
     )
 
     async def action(client):
@@ -377,7 +377,7 @@ def test_refresh_rechecks_changed_instance_policy_after_discovery() -> None:
         discovery = await client.get(
             "/v1/instances", params={"limit": "50"}, headers=_headers(token)
         )
-        instances[INSTANCE_ID] = remote_gateway.RemoteInstance(
+        instances[INSTANCE_ID] = frame_bridge.RemoteInstance(
             display_name="Development demo",
             authorized_subjects=frozenset(),
             snapshot=_read_snapshot,
@@ -462,7 +462,7 @@ def test_invalid_identities_share_one_non_disclosing_failure(token_factory, revo
             "retryable": False,
         }
     }
-    assert remote_gateway.remote_payload_is_allowlisted("error", response.json())
+    assert frame_bridge.frame_bridge_payload_is_allowlisted("error", response.json())
 
 
 def test_clerk_token_category_header_is_supported_and_strictly_validated() -> None:
@@ -503,18 +503,18 @@ def test_wrong_signature_origin_and_instance_fail_before_runtime_access() -> Non
         calls += 1
         return _snapshot()
 
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
         gateway_origin=GATEWAY_ORIGIN,
     )
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=guarded_snapshot,
@@ -593,8 +593,8 @@ def test_exact_cors_preflight_and_response_allowlists_are_closed() -> None:
     assert allowed.headers["access-control-allow-origin"] == APP_ORIGIN
     assert allowed.headers["access-control-allow-headers"] == "Authorization"
     assert (widened.status_code, widened.json()["error"]["code"]) == (403, "request_denied")
-    assert remote_gateway.remote_payload_is_allowlisted("instances", discovery.json())
-    assert remote_gateway.remote_payload_is_allowlisted("snapshot", snapshot.json())
+    assert frame_bridge.frame_bridge_payload_is_allowlisted("instances", discovery.json())
+    assert frame_bridge.frame_bridge_payload_is_allowlisted("snapshot", snapshot.json())
     leaked = str(snapshot.json())
     assert "/Users/" not in leaked
     assert "must-not-leak" not in leaked
@@ -633,7 +633,7 @@ def test_refresh_cors_preflight_allows_only_post_authorization_and_json() -> Non
 
 def test_stream_starts_from_snapshot_cursor_and_delivers_monotonic_redacted_events() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -656,17 +656,17 @@ def test_stream_starts_from_snapshot_cursor_and_delivers_monotonic_redacted_even
 
         return events()
 
-    instance = remote_gateway.RemoteInstance(
+    instance = frame_bridge.RemoteInstance(
         display_name="Development demo",
         authorized_subjects=frozenset({SUBJECT}),
         snapshot=_snapshot_reader(raw_snapshot),
         online=_online,
         events=open_events,
     )
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(instances={INSTANCE_ID: instance}),
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(instances={INSTANCE_ID: instance}),
     )
 
     async def action(client):
@@ -694,7 +694,7 @@ def test_stream_starts_from_snapshot_cursor_and_delivers_monotonic_redacted_even
 
 def test_stream_replay_has_no_duplicates_and_stale_cursor_requires_resnapshot() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -703,7 +703,7 @@ def test_stream_replay_has_no_duplicates_and_stale_cursor_requires_resnapshot() 
 
     async def open_events(cursor: str):
         if cursor.endswith(":0"):
-            raise remote_gateway.StaleEventCursor
+            raise frame_bridge.StaleEventCursor
         sequence = int(cursor.rsplit(":", 1)[1]) + 1
 
         async def events():
@@ -716,12 +716,12 @@ def test_stream_replay_has_no_duplicates_and_stale_cursor_requires_resnapshot() 
 
     raw_snapshot = _snapshot()
     raw_snapshot["eventCursor"] = f"{EVENT_EPOCH}:2"
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_snapshot_reader(raw_snapshot),
@@ -767,7 +767,7 @@ def test_stream_replay_has_no_duplicates_and_stale_cursor_requires_resnapshot() 
 @pytest.mark.parametrize("cursor", [f"{EVENT_EPOCH}:4", "223e4567-e89b-42d3-a456-426614174000:3"])
 def test_stream_gap_or_epoch_change_emits_one_resnapshot_control(cursor) -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -784,12 +784,12 @@ def test_stream_gap_or_epoch_change_emits_one_resnapshot_control(cursor) -> None
 
         return events()
 
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_read_snapshot,
@@ -814,12 +814,12 @@ def test_stream_gap_or_epoch_change_emits_one_resnapshot_control(cursor) -> None
 
 @pytest.mark.parametrize(
     "failure",
-    [remote_gateway.EventRetentionGap, remote_gateway.ProducerEpochChanged],
+    [frame_bridge.EventRetentionGap, frame_bridge.ProducerEpochChanged],
     ids=["retention-gap", "producer-restart"],
 )
 def test_stream_retention_gap_and_restart_require_resnapshot(failure) -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -829,12 +829,12 @@ def test_stream_retention_gap_and_restart_require_resnapshot(failure) -> None:
     async def open_events(_cursor: str):
         raise failure
 
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_read_snapshot,
@@ -860,7 +860,7 @@ def test_stream_retention_gap_and_restart_require_resnapshot(failure) -> None:
 @pytest.mark.parametrize("revocation", ["scope", "identity"])
 def test_idle_stream_closes_promptly_when_authorization_changes(revocation) -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -877,7 +877,7 @@ def test_idle_stream_closes_promptly_when_authorization_changes(revocation) -> N
 
         return idle_events()
 
-    instance = remote_gateway.RemoteInstance(
+    instance = frame_bridge.RemoteInstance(
         display_name="Development demo",
         authorized_subjects=frozenset({SUBJECT}),
         snapshot=_read_snapshot,
@@ -890,13 +890,13 @@ def test_idle_stream_closes_promptly_when_authorization_changes(revocation) -> N
     def subject_is_revoked(_subject: str) -> bool:
         return revoked
 
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(
+        verifier=frame_bridge.ClerkTokenVerifier(
             config=config, key=public_key, subject_is_revoked=subject_is_revoked
         ),
-        registry=remote_gateway.DevelopmentInstanceRegistry(instances=instances),
-        runtime_calls=remote_gateway.RuntimeCallPolicy(stream_reauthorize_seconds=0.05),
+        registry=frame_bridge.DevelopmentInstanceRegistry(instances=instances),
+        runtime_calls=frame_bridge.RuntimeCallPolicy(stream_reauthorize_seconds=0.05),
     )
 
     async def action(client):
@@ -910,7 +910,7 @@ def test_idle_stream_closes_promptly_when_authorization_changes(revocation) -> N
         )
         await asyncio.wait_for(entered.wait(), timeout=0.5)
         if revocation == "scope":
-            instances[INSTANCE_ID] = remote_gateway.RemoteInstance(
+            instances[INSTANCE_ID] = frame_bridge.RemoteInstance(
                 display_name="Development demo",
                 authorized_subjects=frozenset(),
                 snapshot=_read_snapshot,
@@ -927,7 +927,7 @@ def test_idle_stream_closes_promptly_when_authorization_changes(revocation) -> N
 
 def test_development_profile_refuses_a_different_clerk_development_issuer() -> None:
     with pytest.raises(ValueError, match="exact Clerk Development issuer"):
-        remote_gateway.DevelopmentGatewayConfig(
+        frame_bridge.DevelopmentFrameBridgeConfig(
             issuer="https://attacker.clerk.accounts.dev",
             audience=AUDIENCE,
             app_origin=APP_ORIGIN,
@@ -954,7 +954,7 @@ def test_unadvertised_capability_uses_the_stable_allowlisted_not_found_shape() -
             "retryable": False,
         }
     }
-    assert remote_gateway.remote_payload_is_allowlisted("error", response.json())
+    assert frame_bridge.frame_bridge_payload_is_allowlisted("error", response.json())
 
 
 @pytest.mark.parametrize("schema_version", [True, 1.0, "1", -1, 2])
@@ -962,7 +962,7 @@ def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content
     schema_version: object,
 ) -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -970,12 +970,12 @@ def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content
     )
     incompatible = _snapshot()
     incompatible["schemaVersion"] = schema_version
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_snapshot_reader(incompatible),
@@ -1019,7 +1019,7 @@ def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content
 )
 def test_nested_private_values_fail_the_recursive_disclosure_allowlist(mutate) -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -1027,12 +1027,12 @@ def test_nested_private_values_fail_the_recursive_disclosure_allowlist(mutate) -
     )
     malformed = _snapshot()
     mutate(malformed)
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_snapshot_reader(malformed),
@@ -1055,18 +1055,18 @@ def test_nested_private_values_fail_the_recursive_disclosure_allowlist(mutate) -
 
 def test_discovery_rejects_non_scalar_registry_metadata() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
         gateway_origin=GATEWAY_ORIGIN,
     )
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name={"secret": "registry-must-not-leak"},
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_read_snapshot,
@@ -1089,7 +1089,7 @@ def test_discovery_rejects_non_scalar_registry_metadata() -> None:
 
 def test_snapshot_collection_bounds_fail_closed_before_serialization() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -1097,12 +1097,12 @@ def test_snapshot_collection_bounds_fail_closed_before_serialization() -> None:
     )
     oversized = _snapshot()
     oversized["workItems"] = oversized["workItems"] * 1_001
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_snapshot_reader(oversized),
@@ -1124,7 +1124,7 @@ def test_snapshot_collection_bounds_fail_closed_before_serialization() -> None:
 
 def test_snapshot_timestamp_outside_json_safe_integer_range_fails_closed() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -1132,12 +1132,12 @@ def test_snapshot_timestamp_outside_json_safe_integer_range_fails_closed() -> No
     )
     unsafe = _snapshot()
     unsafe["generatedAt"] = 2**53
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_snapshot_reader(unsafe),
@@ -1160,7 +1160,7 @@ def test_snapshot_timestamp_outside_json_safe_integer_range_fails_closed() -> No
 @pytest.mark.parametrize("schema_version", [True, 1.0, "1", -1, 2])
 def test_schema_versions_require_the_exact_supported_integer(schema_version: object) -> None:
     instance_page = {"schemaVersion": schema_version, "items": [], "nextCursor": None}
-    assert not remote_gateway.remote_payload_is_allowlisted("instances", instance_page)
+    assert not frame_bridge.frame_bridge_payload_is_allowlisted("instances", instance_page)
 
     envelope = {
         "schemaVersion": schema_version,
@@ -1174,12 +1174,12 @@ def test_schema_versions_require_the_exact_supported_integer(schema_version: obj
             "agents": [],
         },
     }
-    assert not remote_gateway.remote_payload_is_allowlisted("snapshot", envelope)
+    assert not frame_bridge.frame_bridge_payload_is_allowlisted("snapshot", envelope)
 
 
 def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -1191,12 +1191,12 @@ def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
         await release.wait()
         return _snapshot()
 
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=slow_snapshot,
@@ -1228,7 +1228,7 @@ def test_slow_snapshot_source_does_not_block_other_gateway_requests() -> None:
 
 def test_hung_snapshot_saturation_times_out_without_starving_discovery() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -1242,12 +1242,12 @@ def test_hung_snapshot_saturation_times_out_without_starving_discovery() -> None
         await release.wait()
         return _snapshot()
 
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=hung_snapshot,
@@ -1255,7 +1255,7 @@ def test_hung_snapshot_saturation_times_out_without_starving_discovery() -> None
                 )
             }
         ),
-        runtime_calls=remote_gateway.RuntimeCallPolicy(
+        runtime_calls=frame_bridge.RuntimeCallPolicy(
             deadline_seconds=0.1,
             snapshot_concurrency=1,
             availability_concurrency=1,
@@ -1291,7 +1291,7 @@ def test_hung_snapshot_saturation_times_out_without_starving_discovery() -> None
 
 def test_snapshot_availability_saturation_does_not_starve_discovery() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -1309,12 +1309,12 @@ def test_snapshot_availability_saturation_does_not_starve_discovery() -> None:
             await release.wait()
         return True
 
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_read_snapshot,
@@ -1322,7 +1322,7 @@ def test_snapshot_availability_saturation_does_not_starve_discovery() -> None:
                 )
             }
         ),
-        runtime_calls=remote_gateway.RuntimeCallPolicy(
+        runtime_calls=frame_bridge.RuntimeCallPolicy(
             deadline_seconds=0.1,
             snapshot_concurrency=1,
             availability_concurrency=1,
@@ -1352,7 +1352,7 @@ def test_snapshot_availability_saturation_does_not_starve_discovery() -> None:
 
 def test_discovery_rejects_non_boolean_availability() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -1362,12 +1362,12 @@ def test_discovery_rejects_non_boolean_availability() -> None:
     async def invalid_online():
         return 1
 
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_read_snapshot,
@@ -1389,7 +1389,7 @@ def test_discovery_rejects_non_boolean_availability() -> None:
 
 def test_offline_runtime_is_disclosed_but_snapshot_fails_bounded() -> None:
     private_key, public_key = _keys()
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -1399,12 +1399,12 @@ def test_offline_runtime_is_disclosed_but_snapshot_fails_bounded() -> None:
     async def offline() -> bool:
         return False
 
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                INSTANCE_ID: remote_gateway.RemoteInstance(
+                INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({SUBJECT}),
                     snapshot=_read_snapshot,
@@ -1430,7 +1430,7 @@ def test_offline_runtime_is_disclosed_but_snapshot_fails_bounded() -> None:
 
 def test_runtime_port_rejects_blocking_callbacks() -> None:
     with pytest.raises(TypeError, match="snapshot operation must be async"):
-        remote_gateway.RemoteInstance(
+        frame_bridge.RemoteInstance(
             display_name="Development demo",
             authorized_subjects=frozenset({SUBJECT}),
             snapshot=_snapshot,
@@ -1449,13 +1449,13 @@ def test_lifespan_cancels_runtime_work_and_allows_clean_process_restart() -> Non
         from joserfc import jwt
         from joserfc.jwk import RSAKey
 
-        from beadhive import remote_gateway
+        from beadhive import frame_bridge
 
         async def run_once():
             key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
             private = RSAKey.import_key(key)
             public = RSAKey.import_key(key.public_key())
-            config = remote_gateway.DevelopmentGatewayConfig(
+            config = frame_bridge.DevelopmentFrameBridgeConfig(
                 issuer={ISSUER!r},
                 audience={AUDIENCE!r},
                 app_origin={APP_ORIGIN!r},
@@ -1470,12 +1470,12 @@ def test_lifespan_cancels_runtime_work_and_allows_clean_process_restart() -> Non
                 entered.set()
                 await asyncio.Event().wait()
 
-            app = remote_gateway.build_development_gateway_application(
+            app = frame_bridge.build_development_frame_bridge_application(
                 config=config,
-                verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public),
-                registry=remote_gateway.DevelopmentInstanceRegistry(
+                verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public),
+                registry=frame_bridge.DevelopmentInstanceRegistry(
                     instances={{
-                        {INSTANCE_ID!r}: remote_gateway.RemoteInstance(
+                        {INSTANCE_ID!r}: frame_bridge.RemoteInstance(
                             display_name="Development demo",
                             authorized_subjects=frozenset({{{SUBJECT!r}}}),
                             snapshot=never_returns,
@@ -1483,7 +1483,7 @@ def test_lifespan_cancels_runtime_work_and_allows_clean_process_restart() -> Non
                         )
                     }}
                 ),
-                runtime_calls=remote_gateway.RuntimeCallPolicy(deadline_seconds=5),
+                runtime_calls=frame_bridge.RuntimeCallPolicy(deadline_seconds=5),
             )
             token = jwt.encode(
                 {{"alg": "RS256", "kid": "test"}},
@@ -1507,7 +1507,7 @@ def test_lifespan_cancels_runtime_work_and_allows_clean_process_restart() -> Non
                 assert request.done()
                 assert not [
                     task for task in asyncio.all_tasks()
-                    if task.get_name().startswith("beadhive-gateway")
+                    if task.get_name().startswith("beadhive-frame-bridge")
                 ]
 
         async def main():
