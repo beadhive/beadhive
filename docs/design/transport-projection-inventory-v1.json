@@ -17,18 +17,18 @@
     },
     {
       "callable": "main",
-      "console_script": "beadhive-gateway",
-      "module": "beadhive.bootstrap.gateway",
+      "console_script": "beadhive-frame-bridge",
+      "module": "beadhive.bootstrap.frame_bridge",
       "registration_drift_test": "tests/test_transport_inventory.py::test_gateway_inventory_matches_every_registered_runtime_route",
       "responsibility": "composition-and-process-lifecycle-only",
-      "runtime_factory": "beadhive.remote_gateway_runtime:create_application",
+      "runtime_factory": "beadhive.frame_bridge_runtime:create_application",
       "surface": "gateway",
       "test_closure": [
         "tests/test_transport_composition_roots.py",
         "tests/test_transport_inventory.py",
         "tests/test_gateway_contract.py",
-        "tests/test_remote_gateway.py",
-        "tests/test_remote_gateway_runtime.py"
+        "tests/test_frame_bridge.py",
+        "tests/test_frame_bridge_runtime.py"
       ]
     },
     {
@@ -4120,7 +4120,7 @@
       "transport_owner": "cli-projection"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4139,7 +4139,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [
         {
           "operation": "hive.list",
@@ -4176,7 +4176,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4195,7 +4195,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [
         {
           "operation": "hive.list",
@@ -4222,7 +4222,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4241,7 +4241,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [
         {
           "operation": "work.list",
@@ -4278,7 +4278,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [
         {
           "operation": "work.list",
@@ -4315,7 +4315,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4334,7 +4334,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4353,7 +4353,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4372,7 +4372,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4391,7 +4391,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4410,7 +4410,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4429,7 +4429,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4448,7 +4448,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4467,7 +4467,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4486,7 +4486,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "explicit-exclusion",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
@@ -4505,7 +4505,7 @@
       "transport_owner": "gateway-contract"
     },
     {
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [],
       "classification": "transport-mechanic",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",

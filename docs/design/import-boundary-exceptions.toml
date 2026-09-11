@@ -54,21 +54,21 @@ last_verified_commit = "bh-3qkmk.5"
 expiry_trigger = "Move the q0lol-owned daemon composition adapter behind adapters/operator_api without changing daemon lifecycle ownership."
 
 [[boundary_exception]]
-id = "boundary-bootstrap-gateway-compatibility"
+id = "boundary-bootstrap-frame-bridge-compatibility"
 status = "active"
-importer = "beadhive.bootstrap.gateway"
-importer_path = "src/beadhive/bootstrap/gateway.py"
-imported_module = "beadhive.remote_gateway_runtime"
-symbol = "beadhive.remote_gateway_runtime"
-target_owner_package = "adapters/gateway"
+importer = "beadhive.bootstrap.frame_bridge"
+importer_path = "src/beadhive/bootstrap/frame_bridge.py"
+imported_module = "beadhive.frame_bridge_runtime"
+symbol = "beadhive.frame_bridge_runtime"
+target_owner_package = "adapters/frame_bridge"
 successor = "bh-inqwc"
-reason = "The installed root delegates to the released Development gateway runtime so the bootstrap adds no alternate network or security policy."
-consumer_inventory = { production = "beadhive.bootstrap.gateway console-script root", tests = "tests/test_transport_composition_roots.py and gateway closure", docs = "transport composition proof", external = "installed beadhive-gateway console script and historical runtime imports" }
-executable_test = "tests/test_transport_composition_roots.py; tests/test_remote_gateway_runtime.py"
+reason = "The installed root delegates to the released Development Frame Bridge runtime so the bootstrap adds no alternate network or security policy."
+consumer_inventory = { production = "beadhive.bootstrap.frame_bridge console-script root", tests = "tests/test_transport_composition_roots.py and Frame Bridge closure", docs = "transport composition proof", external = "installed beadhive-frame-bridge console script" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_frame_bridge_runtime.py"
 test_closure = "just architecture-check; just check"
 introduced_commit = "bh-3qkmk.5"
 last_verified_commit = "bh-3qkmk.5"
-expiry_trigger = "Move the released Development gateway runtime behind adapters/gateway after its compatibility consumers reach zero."
+expiry_trigger = "Move the released Development Frame Bridge runtime behind adapters/frame_bridge after its compatibility consumers reach zero."
 
 [cycle_snapshot]
 sha256 = "f60b8e61436c0a28909f9d20ce9c3d1e500fe6961c76c54caae1c1e9969f7b09"

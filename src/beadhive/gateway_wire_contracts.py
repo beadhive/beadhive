@@ -6,7 +6,7 @@ import hashlib
 import json
 from typing import Any, Literal
 
-from . import gateway_read, remote_gateway
+from . import frame_bridge, gateway_read
 
 WireFamily = Literal["gateway.v1", "gateway.read.v1"]
 _CONTRACT_ID_PREFIX = "urn:beadhive:gateway-wire-contract:"
@@ -19,9 +19,9 @@ def _canonical_bytes(value: object) -> bytes:
 def _declarations() -> dict[WireFamily, dict[str, Any]]:
     return {
         "gateway.v1": {
-            "contractVersion": remote_gateway.CONTRACT_VERSION,
-            "schemaVersion": remote_gateway.SCHEMA_VERSION,
-            "schemas": remote_gateway.gateway_wire_schemas(),
+            "contractVersion": frame_bridge.CONTRACT_VERSION,
+            "schemaVersion": frame_bridge.SCHEMA_VERSION,
+            "schemas": frame_bridge.gateway_wire_schemas(),
         },
         "gateway.read.v1": {
             "contractVersion": gateway_read.CONTRACT_VERSION,

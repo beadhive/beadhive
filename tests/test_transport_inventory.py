@@ -15,11 +15,11 @@ from typer.testing import CliRunner
 from beadhive import (
     cli,
     daemon_contract,
+    frame_bridge,
     host_daemon,
     mcp,
     operation_catalog,
     operator_api,
-    remote_gateway,
 )
 from beadhive.transport_inventory import document, projections
 
@@ -190,16 +190,16 @@ def test_operator_inventory_matches_runtime_routes_and_checked_openapi() -> None
 
 
 def test_gateway_inventory_matches_every_registered_runtime_route() -> None:
-    config = remote_gateway.DevelopmentGatewayConfig(
-        issuer=remote_gateway.DEVELOPMENT_ISSUER,
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
+        issuer=frame_bridge.DEVELOPMENT_ISSUER,
         audience="beadhive-gateway-dev",
         app_origin="https://app-dev.beadhive.cloud",
         gateway_origin="https://gateway-dev.beadhive.cloud",
     )
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
         verifier=object(),
-        registry=remote_gateway.DevelopmentInstanceRegistry(instances={}),
+        registry=frame_bridge.DevelopmentInstanceRegistry(instances={}),
     )
     actual = _route_inventory(app.routes)
     declared = {row.identifier for row in projections() if row.surface == "gateway"}
@@ -302,7 +302,7 @@ def test_cli_and_stdio_mcp_do_not_compose_network_transports(monkeypatch) -> Non
 
     monkeypatch.setattr(host_daemon, "build_application", network_transport_is_a_failure)
     monkeypatch.setattr(
-        remote_gateway, "build_development_gateway_application", network_transport_is_a_failure
+        frame_bridge, "build_development_frame_bridge_application", network_transport_is_a_failure
     )
 
     cli_result = CliRunner().invoke(cli.app, ["--version"])

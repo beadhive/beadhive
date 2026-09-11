@@ -1,4 +1,4 @@
-"""Deployable Development gateway runtime profile conformance."""
+"""Deployable Development Frame Bridge runtime conformance."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from beadhive import remote_gateway, remote_gateway_runtime
+from beadhive import frame_bridge, frame_bridge_runtime
 
 EPOCH = "123e4567e89b42d3a456426614174000"
 REVISION = "sha256:" + "a" * 64
@@ -54,12 +54,12 @@ def _operator_app() -> Starlette:
     )
 
 
-def _runtime() -> remote_gateway_runtime.LoopbackDemoRuntime:
+def _runtime() -> frame_bridge_runtime.LoopbackDemoRuntime:
     client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=_operator_app()),
-        base_url=remote_gateway_runtime.LOOPBACK_ORIGIN,
+        base_url=frame_bridge_runtime.LOOPBACK_ORIGIN,
     )
-    return remote_gateway_runtime.LoopbackDemoRuntime(client)
+    return frame_bridge_runtime.LoopbackDemoRuntime(client)
 
 
 def test_real_loopback_profile_maps_snapshot_refresh_and_retained_events() -> None:
@@ -105,23 +105,23 @@ def test_development_projection_selects_only_current_non_operational_work() -> N
         {"record": {"id": "gate", "status": "open", "issueType": "gate"}},
     ]
 
-    selected = remote_gateway_runtime._development_work_items(items)
+    selected = frame_bridge_runtime._development_work_items(items)
 
     assert [item["record"]["id"] for item in selected] == ["active", "running", "blocked"]
 
 
 def test_development_projection_rejects_malformed_work_items() -> None:
     with pytest.raises(RuntimeError, match="work item is incompatible"):
-        remote_gateway_runtime._development_work_items([{"record": {"status": "open"}}])
+        frame_bridge_runtime._development_work_items([{"record": {"status": "open"}}])
 
 
 def test_loopback_profile_rejects_stale_refresh_and_event_cursor() -> None:
     async def exercise():
         runtime = _runtime()
         try:
-            with pytest.raises(remote_gateway.StaleCommandScope):
+            with pytest.raises(frame_bridge.StaleCommandScope):
                 await runtime.refresh("sha256:" + "f" * 64, "ignored-correlation")
-            with pytest.raises(remote_gateway.StaleEventCursor):
+            with pytest.raises(frame_bridge.StaleEventCursor):
                 await runtime.events("123e4567-e89b-42d3-a456-426614174000:0")
         finally:
             await runtime.close()
@@ -133,30 +133,30 @@ def test_subject_policy_file_is_private_bounded_and_exact(tmp_path: Path) -> Non
     policy = tmp_path / "subjects.json"
     policy.write_text('["user_development"]', encoding="utf-8")
     policy.chmod(0o600)
-    assert remote_gateway_runtime._authorized_subjects(policy) == {"user_development"}
+    assert frame_bridge_runtime._authorized_subjects(policy) == {"user_development"}
 
     policy.chmod(0o644)
     with pytest.raises(RuntimeError, match="mode 0600"):
-        remote_gateway_runtime._authorized_subjects(policy)
+        frame_bridge_runtime._authorized_subjects(policy)
 
 
 def test_public_health_is_exact_host_only_and_origin_free() -> None:
-    config = remote_gateway.DevelopmentGatewayConfig(
-        issuer=remote_gateway.DEVELOPMENT_ISSUER,
-        audience=remote_gateway_runtime.AUDIENCE,
-        app_origin=remote_gateway_runtime.APP_ORIGIN,
-        gateway_origin=remote_gateway_runtime.GATEWAY_ORIGIN,
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
+        issuer=frame_bridge.DEVELOPMENT_ISSUER,
+        audience=frame_bridge_runtime.AUDIENCE,
+        app_origin=frame_bridge_runtime.APP_ORIGIN,
+        gateway_origin=frame_bridge_runtime.GATEWAY_ORIGIN,
     )
-    app = remote_gateway.build_development_gateway_application(
+    app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(config=config, key=object()),
-        registry=remote_gateway.DevelopmentInstanceRegistry(instances={}),
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=object()),
+        registry=frame_bridge.DevelopmentInstanceRegistry(instances={}),
     )
 
     async def exercise():
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
-            transport=transport, base_url=remote_gateway_runtime.GATEWAY_ORIGIN
+            transport=transport, base_url=frame_bridge_runtime.GATEWAY_ORIGIN
         ) as client:
             healthy = await client.get("/healthz")
             browser = await client.get(

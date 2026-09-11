@@ -1,8 +1,9 @@
-"""Deterministic catalog projection contract for the Development gateway.
+"""Deterministic catalog projection contract for the Frame Bridge Gateway wire surface.
 
-The gateway continues to own authentication, CORS, admission, rate limits, streaming, runtime
-calls, and its two existing wire families.  This checked document adds the catalog relationship
-without turning the operation catalog into a runtime dispatcher or copying gateway policy into it.
+The sibling Gateway owns the two wire families. The per-frame Bridge owns authentication, CORS,
+admission, rate limits, streaming, and runtime calls at this local projection. This checked
+document adds the catalog relationship without turning the operation catalog into a runtime
+dispatcher or copying transport policy into it.
 """
 
 from __future__ import annotations
@@ -68,9 +69,11 @@ def generate_document() -> dict[str, Any]:
             "wireAuthority": "gateway.v1 and gateway.read.v1 remain gateway-owned",
             "runtimeAuthority": (
                 "authentication, CORS, admission, streaming, rate limits, status, and runtime "
-                "calls remain gateway-owned"
+                "calls at the per-frame projection remain Frame Bridge-owned"
             ),
-            "localCompatibility": "CLI and MCP stdio do not require the gateway or host daemon",
+            "localCompatibility": (
+                "CLI and MCP stdio do not require the Frame Bridge or host daemon"
+            ),
         },
         "wireContracts": list(wire_contract_documents()),
         "operations": [_operation(row) for row in rows],
@@ -84,7 +87,7 @@ def render_document(document: dict[str, Any] | None = None) -> str:
 def checked_document() -> dict[str, Any]:
     value = json.loads(contract_path().read_text(encoding="utf-8"))
     if not isinstance(value, dict):
-        raise RuntimeError("gateway projection contract root must be an object")
+        raise RuntimeError("Gateway wire projection contract root must be an object")
     return value
 
 

@@ -19,7 +19,7 @@
   "non_goals": [
     "move legacy compatibility handler bodies",
     "change public transport behavior or wire contracts",
-    "replace daemon or gateway runtime ownership",
+    "replace daemon or Frame Bridge runtime ownership",
     "graduate a selective merge gate"
   ],
   "north_star": "installed bootstrap depends outward-to-inward on transport adapters and the canonical operation kernel; reusable production code never imports bootstrap",
@@ -580,10 +580,10 @@
         "cycle_member": false,
         "cyclic_edges_touching_root": [],
         "direct_beadhive_dependencies": [
-          "beadhive.remote_gateway_runtime"
+          "beadhive.frame_bridge_runtime"
         ],
         "direct_beadhive_dependency_count": 1,
-        "module": "beadhive.bootstrap.gateway",
+        "module": "beadhive.bootstrap.frame_bridge",
         "nonblank_lines": 6,
         "physical_lines": 10,
         "top_level_classes": 0,
@@ -666,8 +666,8 @@
         "tests/test_transport_composition_roots.py",
         "tests/test_transport_inventory.py",
         "tests/test_gateway_contract.py",
-        "tests/test_remote_gateway.py",
-        "tests/test_remote_gateway_runtime.py"
+        "tests/test_frame_bridge.py",
+        "tests/test_frame_bridge_runtime.py"
       ]
     },
     {

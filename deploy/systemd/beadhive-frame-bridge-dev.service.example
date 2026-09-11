@@ -1,13 +1,13 @@
 [Unit]
-Description=Beadhive Development gateway
+Description=Beadhive Development Frame Bridge
 After=beadhive-host.service
 Requires=beadhive-host.service
 
 [Service]
 Type=simple
-ExecStart=/opt/beadhive-gateway/bin/beadhive-gateway
-LoadCredential=clerk-jwks.json:/etc/beadhive/gateway-dev/clerk-jwks.json
-LoadCredential=authorized-subjects.json:/etc/beadhive/gateway-dev/authorized-subjects.json
+ExecStart=/opt/beadhive-frame-bridge/bin/beadhive-frame-bridge
+LoadCredential=clerk-jwks.json:/etc/beadhive/frame-bridge-dev/clerk-jwks.json
+LoadCredential=authorized-subjects.json:/etc/beadhive/frame-bridge-dev/authorized-subjects.json
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=15s

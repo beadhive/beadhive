@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "handoff": "bh-infra-lum.3",
+  "component": "Beadhive Frame Bridge",
   "contractVersion": "gateway.v1",
   "conformanceVersion": 1,
   "instanceId": "dev/demo",
@@ -17,9 +18,9 @@
     "passed": 6560,
     "skipped": 41,
     "failed": 0,
-    "gatewayTests": 56,
-    "testFile": "tests/test_remote_gateway.py",
-    "runtimeTestFile": "tests/test_remote_gateway_runtime.py"
+    "frameBridgeTests": 56,
+    "historicalTestFile": "tests/test_remote_gateway.py",
+    "historicalRuntimeTestFile": "tests/test_remote_gateway_runtime.py"
   },
   "scans": {
     "encryptedDevelopmentValuesChecked": 3,
