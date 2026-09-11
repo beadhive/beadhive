@@ -195,18 +195,28 @@ def _read_one_sse_event(
     headers: dict[str, str],
     mutate: Callable[[], object],
 ) -> str:
+    event_id: str | None = None
     with client.stream(
         "GET",
         "/v1/instances/dev/demo/events",
         params={"cursor": cursor},
         headers=headers,
     ) as response:
-        assert response.status_code == 200, response.text
+        if response.status_code != 200:
+            response.read()
+            raise AssertionError(f"unexpected SSE status {response.status_code}: {response.text}")
         mutate()
         for line in response.iter_lines():
             if line.startswith("id: "):
-                return line.removeprefix("id: ")
-    raise AssertionError("Frame Bridge SSE ended without an invalidation")
+                event_id = line.removeprefix("id: ")
+                break
+    if event_id is None:
+        raise AssertionError("Frame Bridge SSE ended without an invalidation")
+    # The client context has sent its disconnect, but Uvicorn's ASGI disconnect task releases
+    # the per-subject stream slot asynchronously.  Model an ordinary client's reconnect backoff
+    # so the next request still gets exactly one attempt: a 503 remains a hard failure below.
+    time.sleep(0.2)
+    return event_id
 
 
 def _assert_port_released(port: int) -> None:
