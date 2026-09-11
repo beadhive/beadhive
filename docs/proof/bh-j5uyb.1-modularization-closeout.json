@@ -409,7 +409,7 @@
     "active_cycle_exceptions": 38,
     "active_cycle_exception_ids": ["cycle-edge-001", "cycle-edge-002", "cycle-edge-003", "cycle-edge-004", "cycle-edge-005", "cycle-edge-006", "cycle-edge-007", "cycle-edge-008", "cycle-edge-009", "cycle-edge-010", "cycle-edge-011", "cycle-edge-017", "cycle-edge-018", "cycle-edge-019", "cycle-edge-020", "cycle-edge-021", "cycle-edge-023", "cycle-edge-024", "cycle-edge-025", "cycle-edge-026", "cycle-edge-027", "cycle-edge-028", "cycle-edge-029", "cycle-edge-030", "cycle-edge-031", "cycle-edge-032", "cycle-edge-033", "cycle-edge-034", "cycle-edge-035", "cycle-edge-036", "cycle-edge-037", "cycle-edge-038", "cycle-edge-039", "cycle-edge-040", "cycle-edge-041", "cycle-edge-042", "cycle-edge-043", "cycle-edge-044"],
     "active_boundary_exceptions": 6,
-    "active_boundary_exception_ids": ["boundary-bootstrap-cli-compatibility", "boundary-bootstrap-mcp-compatibility", "boundary-bootstrap-host-compatibility", "boundary-bootstrap-gateway-compatibility", "boundary-config-complexity-tier", "boundary-config-complexity-names"],
+    "active_boundary_exception_ids": ["boundary-bootstrap-cli-compatibility", "boundary-bootstrap-mcp-compatibility", "boundary-bootstrap-host-compatibility", "boundary-bootstrap-frame-bridge-compatibility", "boundary-config-complexity-tier", "boundary-config-complexity-names"],
     "active_facades": 8,
     "active_facade_ids": ["facade-cli-projection", "facade-config-schema", "facade-work", "facade-config", "facade-worktree", "facade-config-partition", "facade-config-store", "facade-config-policy"],
     "ledger_paths": [

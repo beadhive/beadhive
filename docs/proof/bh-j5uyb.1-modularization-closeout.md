@@ -166,7 +166,10 @@ multiple smaller, explicitly owned components. The current digest is
 No compatibility debt is silently retired. The active ledger has 38 cycle
 exceptions, six outward-boundary exceptions, and eight compatibility facades.
 Their exact IDs and the five authoritative ledger paths are in the companion
-JSON. Removal requires separate reviewed changes.
+JSON. The current boundary set includes
+`boundary-bootstrap-frame-bridge-compatibility`; pre-rename Gateway terminology
+inside explicitly immutable historical evidence does not name current active
+debt. Removal requires separate reviewed changes.
 
 ## RepoWise freshness
 
