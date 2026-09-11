@@ -8,7 +8,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "docs/proof/bh-j5uyb.1-modularization-closeout.json"
+CLOSEOUT = ROOT / "docs/proof/bh-j5uyb.1-modularization-closeout.md"
+MODULES = ROOT / "docs/MODULES.md"
 ARCHITECTURE_DEBT_LEDGER = ROOT / "docs/design/import-boundary-exceptions.toml"
+HISTORICAL_BASELINE = "739349806ead27c94282219b1befb796ba73b583"
 EXPECTED_EPICS = {
     "bh-inqwc",
     "bh-qw9oi",
@@ -196,12 +199,60 @@ def test_frame_bridge_ownership_and_follow_up_debt_are_unambiguous() -> None:
         "beadhive.bootstrap.frame_bridge:main"
     )
     assert "beadhive-gateway" not in project["project"]["scripts"]
+
+    historical_project = tomllib.loads(_git("show", f"{HISTORICAL_BASELINE}:pyproject.toml"))
+    assert historical_project["project"]["scripts"]["beadhive-gateway"] == (
+        "beadhive.remote_gateway_runtime:main"
+    )
+    modules = MODULES.read_text(encoding="utf-8")
+    assert "`beadhive-gateway = beadhive.remote_gateway_runtime:main`." in modules
+    assert "That list is immutable evidence" in modules
+    assert "`beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main`" in modules
+    assert "It installs no `beadhive-gateway` console command or other legacy alias" in modules
+
     boundary = report["validation"]["transport_inventory"]["gateway_boundary"]
     assert "sibling beadhive-gateway repository" in boundary
     assert "not a core process" in boundary
 
+    real_process = report["completed_runtime_evidence"]["frame_bridge_real_process"]
+    assert real_process["bead"] == {
+        "id": "bh-uvotu.8",
+        "title": "Authenticate Frame Bridge requests to the host daemon",
+        "status": "closed",
+        "close_reason": "merged",
+    }
+    assert set(real_process["coverage"]) == {
+        "health",
+        "authenticated discovery",
+        "redacted snapshot",
+        "revision-checked refresh",
+        "SSE delivery and reconnect",
+        "credential failure",
+        "secret redaction",
+        "process/socket/credential/temp-state cleanup",
+    }
+    for artifact_key in ("test", "harness"):
+        artifact = real_process[artifact_key]
+        path = ROOT / artifact["path"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == artifact["sha256"]
+    live_test = (ROOT / real_process["test"]["path"]).read_text(encoding="utf-8")
+    assert f"def {real_process['test']['node']}(" in live_test
+    assert "not sibling multi-frame Gateway integration" in real_process["scope"]
+    assert "real-host supervisor certification" in real_process["scope"]
+
     follow_ups = {row["id"] for row in report["remaining_debt"]["follow_up_beads"]}
-    assert {"bh-9ghuh.1", "bh-gw-ywh.1", "bh-gw-ywh.2", "bh-gw-ywh.3"} <= follow_ups
+    assert "bh-9ghuh.1" not in follow_ups
+    assert {"bh-gw-ywh.1", "bh-gw-ywh.2", "bh-gw-ywh.3", "bh-hxbln.1"} <= follow_ups
+    risks = "\n".join(report["known_risks"])
+    assert "Closed bh-uvotu.8 completes the core real-process" in risks
+    assert "does not certify sibling multi-frame Gateway integration" in risks
+    assert "real Darwin/Linux supervisor hosts" in risks
+    closeout = CLOSEOUT.read_text(encoding="utf-8")
+    assert "bh-9ghuh.1" not in closeout
+    assert "Closed `bh-uvotu.8" in closeout
+    normalized_closeout = " ".join(closeout.split())
+    assert "does not exercise the sibling multi-frame Gateway" in normalized_closeout
+    assert "certify real Darwin/Linux supervisor hosts" in normalized_closeout
     historical = report["evidence_inventory"]["immutable_historical"]
     assert historical
     assert all("classification" in row for row in historical)

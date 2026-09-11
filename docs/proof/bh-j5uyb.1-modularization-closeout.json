@@ -405,6 +405,15 @@
     "worst_performer": {"path": "src/beadhive/cli.py", "score": 1.65},
     "freshness_note": "Before the explicit historical refresh, the wrapper reported zero commits behind while native state was pinned to main at 73934980. These values belong only to 6ba52a9c and are retained without rewriting. RepoWise health is a static signal, not correctness evidence, per-test coverage, or a claim about the current remediated candidate."
   },
+  "completed_runtime_evidence": {
+    "frame_bridge_real_process": {
+      "bead": {"id": "bh-uvotu.8", "title": "Authenticate Frame Bridge requests to the host daemon", "status": "closed", "close_reason": "merged"},
+      "scope": "core real-process host-daemon-to-Frame-Bridge validation; not sibling multi-frame Gateway integration or real-host supervisor certification",
+      "coverage": ["health", "authenticated discovery", "redacted snapshot", "revision-checked refresh", "SSE delivery and reconnect", "credential failure", "secret redaction", "process/socket/credential/temp-state cleanup"],
+      "test": {"path": "tests/test_frame_bridge_live.py", "node": "test_authenticated_daemon_to_installed_frame_bridge_real_process_path", "sha256": "d947da2bb921320803dd0ef2352003167eedec4cd7e888c6331a958f8758a480"},
+      "harness": {"path": "tests/harness/frame_bridge_live.py", "sha256": "946ed020bcebbf5f07fe843c062d14a5379b9f9a8f4ad201c5a6c0cb4bc9a81f"}
+    }
+  },
   "remaining_debt": {
     "active_cycle_exceptions": 38,
     "active_cycle_exception_ids": ["cycle-edge-001", "cycle-edge-002", "cycle-edge-003", "cycle-edge-004", "cycle-edge-005", "cycle-edge-006", "cycle-edge-007", "cycle-edge-008", "cycle-edge-009", "cycle-edge-010", "cycle-edge-011", "cycle-edge-017", "cycle-edge-018", "cycle-edge-019", "cycle-edge-020", "cycle-edge-021", "cycle-edge-023", "cycle-edge-024", "cycle-edge-025", "cycle-edge-026", "cycle-edge-027", "cycle-edge-028", "cycle-edge-029", "cycle-edge-030", "cycle-edge-031", "cycle-edge-032", "cycle-edge-033", "cycle-edge-034", "cycle-edge-035", "cycle-edge-036", "cycle-edge-037", "cycle-edge-038", "cycle-edge-039", "cycle-edge-040", "cycle-edge-041", "cycle-edge-042", "cycle-edge-043", "cycle-edge-044"],
@@ -421,7 +430,6 @@
     ],
     "disposition": "All entries are named, owned compatibility debt. Their removal gates require separate reviewed changes; this closeout does not authorize deletion.",
     "follow_up_beads": [
-      {"id": "bh-9ghuh.1", "title": "Exercise a real host daemon through the Beadhive Frame Bridge", "scope": "core real-process daemon-to-Frame-Bridge validation"},
       {"id": "bh-gw-ywh.1", "title": "Refresh the Gateway source lock for Beadhive Frame Bridge", "scope": "sibling beadhive-gateway repository"},
       {"id": "bh-gw-ywh.2", "title": "Certify exact Gateway sources against the renamed Frame Bridge", "scope": "sibling beadhive-gateway repository"},
       {"id": "bh-gw-ywh.3", "title": "Exercise live Gateway aggregation across multiple Frame Bridges", "scope": "sibling beadhive-gateway repository"},
@@ -436,6 +444,7 @@
     "Thirty-eight cycle exceptions, six outward-boundary exceptions, and eight compatibility facades remain active and owned.",
     "The retained 6ba52a9c RepoWise scan reports 4872 untriaged static findings and has no candidate per-test map; it is historical and not correctness evidence for 5e14f142 or the final tree.",
     "The check-all integration-land recipe still quarantines the known bh-tfapu host-fence integration test; an ordinary unquarantined integration run continues to expose that upstream bd limitation.",
+    "Closed bh-uvotu.8 completes the core real-process host-daemon-to-Frame-Bridge proof; it does not certify sibling multi-frame Gateway integration or real Darwin/Linux supervisor hosts.",
     "Unified-host-daemon Darwin LaunchAgent and persistent Linux systemd-user certification remains release-gated by deferred bh-hxbln.1.",
     "The live-ingress matrix passes its deterministic four cells, but genuine provider smoke remains externally blocked by the current non-runnable/nonconformant baml-harness Codex artifact."
   ],

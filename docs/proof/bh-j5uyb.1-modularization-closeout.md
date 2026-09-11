@@ -202,8 +202,13 @@ evidence for the current remediated or final tree.
   deterministic live-ingress cells pass.
 - The active compatibility ledgers and 4,872 untriaged RepoWise findings remain
   follow-up work, not proof failures.
-- `bh-9ghuh.1 — Exercise a real host daemon through the Beadhive Frame Bridge`
-  owns the remaining real-process core integration check.
+- Closed `bh-uvotu.8 — Authenticate Frame Bridge requests to the host daemon`
+  completes the core real-process host-daemon-to-Frame-Bridge check. Its
+  installed-process harness proves health, authenticated discovery, redacted
+  snapshot, revision-checked refresh, SSE delivery and reconnect, credential
+  failure, secret redaction, and process/socket/credential/temp-state cleanup.
+  That proof does not exercise the sibling multi-frame Gateway or certify real
+  Darwin/Linux supervisor hosts.
 - `bh-gw-ywh.1 — Refresh the Gateway source lock for Beadhive Frame Bridge`,
   `bh-gw-ywh.2 — Certify exact Gateway sources against the renamed Frame Bridge`,
   and `bh-gw-ywh.3 — Exercise live Gateway aggregation across multiple Frame
