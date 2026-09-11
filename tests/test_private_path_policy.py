@@ -408,6 +408,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("hub.py", "_retire_legacy_hub", ".beads")
     | _owned("hub.py", "_adopt_cache_identity", ".beads")
     | _owned("hub.py", "_sync_hive", ".beads")
+    | _owned("cache_store.py", "local_checkout_source", ".beads")
     | _owned("hub.py", "sync", ".beads")
     | _owned("hub.py", "bounded_bd", ".beads")
     | _owned("localloop.py", "_default_instructions", ".beads")
@@ -480,6 +481,8 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     # User/workspace config paths, never repository-private state.
     | _owned("config.py", "env_file", ".env")
     | _owned("config_services.py", "archive_dir", ".archived")
+    | _owned("daemon_platform.py", "_systemd_user_dir", ".config")
+    | _owned("identity.py", "_legacy_workspace_populated", ".git")
     | _owned("dispatch_supervisor.py", "_systemd_user_dir", ".config")
     | _owned("doctor.py", "_missing_required_dep_warnings", ".nix-profile")
     | _owned("doctor.py", "_devshell_only_warnings", ".nix-profile")

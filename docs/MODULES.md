@@ -30,19 +30,28 @@ later implementation bead explicitly owns a contract change.
 
 ## Current structure and evidence
 
-At the named baseline, Beadhive has three primary installed entry points:
+At the named historical baseline, Beadhive had three installed entry points:
 
 - `bh = beadhive.cli:main`;
 - `bh-mcp = beadhive.mcp:main`; and
-- `beadhive-frame-bridge = beadhive.frame_bridge_runtime:main`.
+- `beadhive-gateway = beadhive.remote_gateway_runtime:main`.
 
-Core does not install a `beadhive-gateway` console command. That name is reserved for the
-multi-frame Beadhive Gateway authored in the sibling `beadhive-gateway` repository; core's Frame
-Bridge projects one host daemon into the Gateway-owned wire contract.
+That list is immutable evidence for revision `739349806ead27c94282219b1befb796ba73b583`,
+not the current command surface. Current source installs
+`beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main` for the core-owned per-frame
+process. It installs no `beadhive-gateway` console command or other legacy alias. The
+`beadhive-gateway` name now belongs to the multi-frame Beadhive Gateway authored in the sibling
+repository; core's Frame Bridge projects one host daemon into the Gateway-owned wire contract.
 
-The production package contains approximately 177 flat top-level Python modules and 95,000 lines
-of code. The test tree contains approximately 343 Python files and 123,000 lines. The principal
-composition roots are `cli.py`, `mcp.py`, `host_daemon.py`, and `frame_bridge_runtime.py`.
+The Transport composition closeout (`bh-3qkmk.5`) routes the four current console scripts
+through `beadhive.bootstrap.{cli,mcp,host,frame_bridge}:main`. The historical modules remain
+compatibility/runtime adapters behind exact exception-ledger edges until their patch inventories
+permit physical relocation; reusable production code has no dependency back into bootstrap.
+
+At that historical baseline, the production package contains approximately 177 flat top-level
+Python modules and 95,000 lines of code. The test tree contains approximately 343 Python files and
+123,000 lines. Its principal composition roots are `cli.py`, `mcp.py`, `host_daemon.py`, and
+`remote_gateway_runtime.py`.
 
 The exact-tip RepoWise index records 771 files. Static dependency evidence shows six cyclic
 strongly connected components spanning 85 production files; the largest contains 65 files,
@@ -260,6 +269,9 @@ runtime domain dispatcher queried from arbitrary modules.
 
 ### `kernel/plugins`
 
+Plugin authors use [PluginManifest v1 authoring and isolation](PLUGIN-AUTHORING.md) for the
+checked artifact, typed capability, lifecycle, redaction, testing, and deprecation contract.
+
 Separates plugin declaration, capability implementation, lifecycle subscription, and transport
 presentation. It owns:
 
@@ -384,12 +396,25 @@ registration. It declares outbound ports for registries, repository/workspace re
 dependency probes, and optional lifecycle subscribers. Plugin details do not appear in hive
 domain objects.
 
+The implemented public boundary is `beadhive.modules.hives.HiveLifecycleService`, with typed
+request/result contracts and `HiveRegistry`, `WorkspaceRealizer`, `DependencyProbe`, and
+`LifecyclePublisher` ports. Current CLI and MCP commands share the production composition in
+`beadhive.hive_services`; legacy imports and monkeypatch seams remain governed by
+`docs/design/hives-compatibility-removal-ledger.md`.
+
 ### `modules/work`
 
 Owns bead-workflow policy and use cases: assignment, claim, scheduling, validation, submission,
 review, approval, merge, resume, and abandonment. It depends on explicit ports for bead storage,
 worktrees, execution, validation evidence, and identity. Existing `beadhive.work` facade behavior
 and patch points remain stable until consumers migrate.
+
+The implemented public boundary is `beadhive.modules.work.WorkLifecycleService`, with immutable,
+command-specific request/result contracts and `BeadStore`, `WorktreeLifecyclePort`,
+`ExecutionPort`, `ValidationEvidenceStore`, `IdentityProvider`, and `WorkNotifier` ports. The
+uncached production composition in `beadhive.work_services` keeps the established facade patch
+points live; its claim/resume adapter continues through the adopted `modules/worktrees` lifecycle
+composition instead of introducing another Git or filesystem implementation.
 
 ### `modules/planning`
 
@@ -427,6 +452,12 @@ models shared by transports. It does not turn the command path into CQRS infrast
 projections are introduced only where existing consumers need replay, aggregation, or independent
 availability.
 
+The first extraction keeps filesystem, process, Dolt, and transport behavior in outer adapters.
+Immutable validation facts, stream/cursor policy, activity/query models, storage/clock/notification
+ports, and read-side application services live in `beadhive.modules.state`; compatibility facades
+preserve the released imports. Exact boundary and closure evidence is recorded in
+[`docs/proof/bh-bptze.6-state-module.md`](proof/bh-bptze.6-state-module.md).
+
 ### `adapters/cli`
 
 Projects eligible operations into Typer groups and commands. It owns command paths, aliases,
@@ -447,7 +478,7 @@ the transport.
 Composite MCP tools must be explicitly declared over catalog operations. They must not bypass the
 application layer or silently invent a second operation namespace.
 
-### `adapters/operator_api` and `adapters/gateway`
+### `adapters/operator_api` and `adapters/frame_bridge`
 
 The operator API projects appropriate operations and read models into authenticated HTTP/OpenAPI.
 The Frame Bridge retains its explicit Gateway wire/version boundary. It is a per-frame adapter,
@@ -531,6 +562,11 @@ surface and is not silently changed by schema generation.
 
 ## Testing architecture
 
+The supported commands and checked impact registry are documented in
+[Module-local test closures](TEST-CLOSURES.md). Their direct, shared-contract, and
+reverse-dependent selections are advisory while the full submit and land gates remain
+authoritative.
+
 The current root `tests/conftest.py` contains many autouse fixtures that initialize config,
 identity, storage, validation, telemetry, and runtime concerns. That prevents a plugin test from
 proving independence from core infrastructure.
@@ -562,6 +598,19 @@ Rules:
 - Compatibility-facade tests protect old imports and documented monkeypatch seams.
 
 ### Test selection and CI progression
+
+The final checked operational state is published in
+[Selective-CI operational report](SELECTIVE-CI-OPERATIONS.md). A new module or plugin cannot
+register without a present test closure and a conformance declaration. Its `tests/closures.toml`
+row is the declaration: it must name the owner and source scope, direct tests, shared-contract
+tests, and reverse-dependent tests. `just test-closure-check` discovers module directories and
+plugin registrations and fails when the row is missing, absent, or incomplete.
+
+At the 2026-09-10 evidence boundary, all 24 closures are uncertified and there are zero production
+selective routes. Commit and main-integration routing is provisioned but therefore falls back to
+`just check`. Leaf merge, child-epic finish, final workstream submit/review, scheduled validation,
+and release remain full-only on `just check-all`. These retained gates supersede the aspirational
+progression below wherever they are stricter.
 
 The program should not remove the full correctness gate merely because files were moved. CI
 selection evolves in verified stages:
@@ -701,6 +750,10 @@ Use the merged launch work as the first complete vertical module:
 - prove the Herdr plugin tests run without core storage/runtime fixtures.
 
 This epic depends on the plugin/lifecycle kernel and the shared testing harness.
+
+The measured reference-extraction proof, including independent closure counts, import/cycle
+evidence, statement coverage, recent defect characterization, and explicit non-claims, is
+published in `docs/proof/bh-5wuc0.6-agent-extraction.md`.
 
 ### Epic 5 — configuration module and plugin schema fragments
 

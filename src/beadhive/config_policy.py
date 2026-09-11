@@ -1,9 +1,12 @@
-"""Config migrations and operator-facing policy warnings."""
+"""Compatibility collaborators for canonical migration and warning policy."""
 
 from __future__ import annotations
 
-from collections.abc import MutableMapping
+from .modules.config.application.migrations import ConfigMigrationService
+from .modules.config.application.resolution import ConfigResolutionError
+from .modules.config.domain.ports import ConfigScope
 
+# Historical data shapes remain visible on the facade while canonical policy uses KeyMigration.
 HIVE_KEY_MIGRATIONS = (
     ("otel", "rig", "hive"),
     ("git_workspace", "rig_match", "hive_match"),
@@ -11,30 +14,34 @@ HIVE_KEY_MIGRATIONS = (
 LEGACY_KEY_REMOVALS = (("git_workspace", "enabled"),)
 
 
+class _FacadeMigrationStore:
+    def __init__(self, api) -> None:
+        self._api = api
+
+    def load_document(self, scope: ConfigScope, *, missing_ok: bool = False):
+        del missing_ok
+        if scope != ConfigScope.HOST:
+            raise ValueError(f"unsupported migration scope: {scope}")
+        return self._api.load_host()
+
+    def save_document(self, scope: ConfigScope, document) -> None:
+        if scope != ConfigScope.HOST:
+            raise ValueError(f"unsupported migration scope: {scope}")
+        self._api.save(document)
+
+
 def migrate_hive_keys_if_needed(api) -> None:
+    def report(migrated: tuple[str, ...]) -> None:
+        api._warning(
+            "hive_config_keys_migrated",
+            logger_name=api.__name__,
+            migrated=list(migrated),
+        )
+
     try:
-        cfg = api.load_host()
-    except FileNotFoundError:
-        return
-    migrated = []
-    for section, old_key, new_key in HIVE_KEY_MIGRATIONS:
-        section_cfg = cfg.get(section)
-        if not isinstance(section_cfg, MutableMapping) or old_key not in section_cfg:
-            continue
-        if new_key not in section_cfg:
-            section_cfg[new_key] = section_cfg[old_key]
-        del section_cfg[old_key]
-        migrated.append(f"{section}.{old_key} -> {section}.{new_key}")
-    for section, old_key in LEGACY_KEY_REMOVALS:
-        section_cfg = cfg.get(section)
-        if not isinstance(section_cfg, MutableMapping) or old_key not in section_cfg:
-            continue
-        del section_cfg[old_key]
-        migrated.append(f"{section}.{old_key} -> (removed)")
-    if not migrated:
-        return
-    api.save(cfg)
-    api._warning("hive_config_keys_migrated", logger_name=api.__name__, migrated=migrated)
+        ConfigMigrationService(_FacadeMigrationStore(api), report).migrate_host()
+    except ConfigResolutionError as exc:
+        raise api.ConfigError(str(exc)) from None
 
 
 def warn_stale_schema_version_if_needed(api) -> None:
@@ -42,7 +49,7 @@ def warn_stale_schema_version_if_needed(api) -> None:
         cfg = api.load()
     except FileNotFoundError:
         return
-    from .config_schema import SCHEMA_VERSION
+    from .modules.config.contracts import SCHEMA_VERSION
 
     found = cfg.get("schema_version")
     if isinstance(found, int) and found >= SCHEMA_VERSION:

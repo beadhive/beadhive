@@ -43,6 +43,11 @@ SETUP_CHECK_SCHEMA = 1
 #: which is the same object — see `doctor.doctor_payload`).
 DOCTOR_SCHEMA = 1
 
+#: Versions of the two hive lifecycle command contracts published under
+#: ``docs/schemas/wire``.  They are separate contracts even though they currently share v1.
+HIVE_ONBOARD_SCHEMA = 1
+HIVE_READY_SCHEMA = 1
+
 
 def envelope(command: str, schema_version: int, payload: dict[str, Any]) -> dict[str, Any]:
     """*payload* with the version envelope merged in FRONT of it.

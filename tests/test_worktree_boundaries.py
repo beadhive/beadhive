@@ -51,6 +51,9 @@ GIT_OPERATIONS = (
     "base_of",
     "commit_rows",
     "backup_branch",
+    "parse_safety_ref",
+    "safety_refs",
+    "delete_safety_refs",
     "_rebase_env",
     "rebase_squash",
     "rebase_autosquash",
@@ -138,6 +141,7 @@ def test_run_init_failure_summary_matrix(tmp_path, monkeypatch, capsys):
         "worktrees": {
             "init": [
                 {"run": "missing --flag"},
+                {"run": "own-127 --flag"},
                 {"run": "red --flag"},
                 {"run": "green --flag"},
             ]
@@ -146,7 +150,9 @@ def test_run_init_failure_summary_matrix(tmp_path, monkeypatch, capsys):
 
     def fake_run(command, **_kwargs):
         if command[0] == "missing":
-            raise FileNotFoundError(command[0])
+            return SimpleNamespace(returncode=127, bh_missing_binary=command[0])
+        if command[0] == "own-127":
+            return SimpleNamespace(returncode=127)
         return SimpleNamespace(returncode=7 if command[0] == "red" else 0)
 
     monkeypatch.setattr(worktree, "run", fake_run)
@@ -154,9 +160,10 @@ def test_run_init_failure_summary_matrix(tmp_path, monkeypatch, capsys):
 
     stderr = capsys.readouterr().err
     assert "command not found: missing --flag" in stderr
+    assert "'own-127 --flag' exited 127" in stderr
     assert "'red --flag' exited 7" in stderr
-    assert "2 optional provisioning rule(s) failed" in stderr
-    assert "missing --flag; red --flag" in stderr
+    assert "3 optional provisioning rule(s) failed" in stderr
+    assert "missing --flag; own-127 --flag; red --flag" in stderr
     assert "green --flag" not in stderr
 
 

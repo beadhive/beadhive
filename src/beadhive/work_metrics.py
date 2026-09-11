@@ -47,6 +47,7 @@ def emit_delta(record_fn, end, start, attrs) -> None:
 
 
 def flow_events(bead, cwd):
+    # Deliberate prefix read: metrics consume the bead's historical dotted-id event stream.
     rows = bd.json(["list", "--parent", bead, "--include-infra"], cwd)
     if not isinstance(rows, list):
         return None

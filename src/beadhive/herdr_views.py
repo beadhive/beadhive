@@ -77,14 +77,14 @@ def _session_name() -> str:
     """Use the lifecycle plugin's one command-scoped session authority."""
     from . import herdr_plugin
 
-    return herdr_plugin._active_session().name
+    return herdr_plugin.active_session_name()
 
 
 def _session_scoped(fn):
     """Share lifecycle flag/environment/default selection without a second resolver."""
     from . import herdr_plugin
 
-    return herdr_plugin._session_scoped(fn)
+    return herdr_plugin.session_scoped(fn)
 
 
 def _now_ms() -> int:
@@ -1872,7 +1872,7 @@ class ViewBackend:
             return self._snapshot
         from . import herdr_plugin
 
-        self._snapshot = herdr_plugin._session_snapshot()
+        self._snapshot = herdr_plugin.session_snapshot()
         self._snapshot_checked = True
         return self._snapshot
 
@@ -1890,14 +1890,14 @@ class ViewBackend:
                 "warnings": [f"Herdr {_session_name()} session is unavailable."],
             }
         else:
-            self._roster = herdr_plugin._roster_payload(snapshot, self.cfg)
+            self._roster = herdr_plugin.roster_payload(snapshot, self.cfg)
         return self._roster
 
     def launch_preflight(self, hive: str, entry: Mapping[str, object]) -> dict[str, object]:
         """Return Herdr-specific launch capability facts for a generic ready bead."""
         from . import herdr_plugin
 
-        if not herdr_plugin._has_cli():
+        if not herdr_plugin.cli_available():
             return {
                 "availability": "unavailable",
                 "reasonCode": "herdr_cli_unavailable",
@@ -1922,7 +1922,7 @@ class ViewBackend:
                 "reasonCode": "herdr_kind_unavailable",
                 "reason": "No configured or deterministic default Herdr agent kind is available.",
             }
-        integrated, detail = herdr_plugin._integration_ready(kind)
+        integrated, detail = herdr_plugin.integration_ready(kind)
         if not integrated:
             return {
                 "availability": "unavailable",

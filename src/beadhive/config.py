@@ -17,6 +17,16 @@ from . import config_edit as _config_edit
 from . import config_paths as _config_paths
 from . import config_policy as _config_policy
 from . import config_store as _config_store
+from .modules.config.application.resolution import (
+    ConfigResolutionError as _ConfigResolutionError,
+)
+from .modules.config.application.resolution import (
+    SourceLayer as _SourceLayer,
+)
+from .modules.config.application.resolution import (
+    ensure_supported_schema_version as _ensure_supported_schema_version,
+)
+from .modules.config.contracts import known_sections as _known_sections
 
 BINARY_NAME = "beadhive"
 BINARY_ALIAS = "bh"
@@ -44,36 +54,9 @@ class ConfigError(ValueError):
     """The host/fleet layers cannot be resolved into one effective view."""
 
 
-# Schema ownership intentionally remains where bh-1h9h left it. This extraction
-# moves mechanics only and neither derives nor expands the known-section policy.
-KNOWN_SECTIONS = frozenset(
-    {
-        "delimiter",
-        "providers",
-        "orgs",
-        "exclude",
-        "dimensions",
-        "dolt",
-        "beads",
-        "work",
-        "hq",
-        "release",
-        "managed_repos",
-        "log",
-        "otel",
-        "observaloop",
-        "repowise",
-        "worktrees",
-        "archive",
-        "backup",
-        "metadata",
-        "passthrough",
-        "claude",
-        "harness",
-        "hitch",
-        "herdr",
-    }
-)
+# Forward the schema-derived inventory owned by the canonical contracts. ``beads`` remains an
+# explicit compatibility alias there until the backend abstraction gains a typed section.
+KNOWN_SECTIONS = _known_sections()
 
 
 def _facade():
@@ -265,6 +248,14 @@ def _reject_fleet_overrides(host) -> None:
 
 def _reject_fleet_override_for_key(parts: list[str], value) -> None:
     _config_store.reject_fleet_override_for_key(_facade(), parts, value)
+
+
+def _assert_mutable_schema_version(document, scope: str = SCOPE_HOST) -> None:
+    layer = _SourceLayer.FLEET if scope == SCOPE_FLEET else _SourceLayer.HOST
+    try:
+        _ensure_supported_schema_version(document, layer)
+    except _ConfigResolutionError as exc:
+        raise ConfigError(str(exc)) from None
 
 
 def load():

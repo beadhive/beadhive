@@ -12,7 +12,7 @@ from __future__ import annotations
 import pytest
 from typer.testing import CliRunner
 
-from beadhive import cli, otel
+from beadhive import cli, mcp, otel
 from beadhive.cli import app
 
 
@@ -60,3 +60,17 @@ def test_root_callback_survives_missing_config(monkeypatch):
 
     assert res.exit_code == 0
     assert otel.is_active() is False
+
+
+def test_cli_mcp_serve_keeps_single_generic_cli_owner(monkeypatch):
+    """The Typer route calls transport-only ``serve``; it must not enter ``bh-mcp`` main."""
+    cfg = {"otel": {"enabled": True}}
+    initialized = []
+    monkeypatch.setattr(cli.config, "load", lambda: cfg)
+    monkeypatch.setattr(cli.otel, "init", lambda loaded: initialized.append(loaded) or True)
+    monkeypatch.setattr(mcp, "serve", lambda: None)
+
+    res = CliRunner().invoke(app, ["mcp", "serve"])
+
+    assert res.exit_code == 0
+    assert initialized == [cfg]

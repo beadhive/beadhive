@@ -15,10 +15,12 @@ import typer
 
 from . import (
     config,
+    daemon_supervisor,
     dolt_health,
     gitworkspace_plugin,
     hive,
     hive_schema,
+    jsonout,
     observaloop,
     otel,
     plugins,
@@ -28,6 +30,7 @@ from . import (
 )
 from .hive import _is_plugin_installed  # shared with the installer (defined in hive.py)
 from .identity import workspace_identity
+from .modules.hives import HiveDiagnostic, ReadinessCheck, ReadinessResult
 from .run import run
 
 # Same marker hive._ensure_agf_hint writes into AGENTS.md / CLAUDE.md.
@@ -145,14 +148,12 @@ def _plugin_checks(cfg, entry) -> list[Check]:
     is hardcoded here. Disabled plugins are N/A (never live-probed, mirroring the observaloop
     convention); enabled plugins run their live ``readiness`` probe for an ok/missing state."""
     checks: list[Check] = []
-    for p in plugins.registry():
-        if p.readiness is None:
+    for port in plugins.readiness_ports(cfg, entry):
+        if not port.enabled():
+            checks.append(Check(port.plugin_id, False, "na", "disabled"))
             continue
-        if not p.enabled(cfg, entry):
-            checks.append(Check(p.name, False, "na", "disabled"))
-            continue
-        state, detail = p.readiness(cfg, entry) or ("off", "unknown")
-        checks.append(Check(p.name, False, state, detail))
+        state, detail = port.probe(cfg, entry) or ("off", "unknown")
+        checks.append(Check(port.plugin_id, False, state, detail))
     return checks
 
 
@@ -339,6 +340,31 @@ def _dolt_server_check(root: Path) -> Check:
     )
 
 
+def _host_daemon_check(cfg) -> Check:
+    """Optional daemon availability; direct CLI/stdio readiness never depends on it."""
+    if not daemon_supervisor.configured(cfg):
+        return Check("host daemon", False, "na", "disabled (host.daemon.enabled=false)")
+    try:
+        status = daemon_supervisor.daemon_service_status()
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return Check("host daemon", False, "warn", f"diagnostics unavailable: {exc}")
+    readiness_detail = status.payload()["readiness"]["detail"]
+    if status.healthy:
+        return Check("host daemon", False, "ok", readiness_detail)
+    lifecycle = (
+        status.supervisor.start_command
+        if status.supervisor.supported
+        else status.supervisor.handoff
+    )
+    return Check(
+        "host daemon",
+        False,
+        "warn",
+        f"{status.state}: {readiness_detail} — {lifecycle} "
+        "(bh does not auto-start the daemon or fall back)",
+    )
+
+
 def _schema_version_check(entry, root: Path) -> Check:
     """Read-only: this hive's recorded bd schema version vs. THIS host's bd (`bh-wnly`) — read
     from HQ's `hive_schema` record, WITHOUT opening this hive's own store (AC1 + AC5; `root` is
@@ -505,6 +531,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     # ---- Optional: integrations that could be set up ----
     checks.append(_validate_cmd_check(cfg, entry, root))
     checks.append(_dolt_server_check(root))
+    checks.append(_host_daemon_check(cfg))
     checks.append(_schema_version_check(entry, root))
     checks.append(_otel_sdk_check(cfg))
     checks.extend(_observaloop_checks(cfg, entry))
@@ -517,28 +544,34 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     return checks
 
 
-def _line(c: Check) -> None:
+def _line_text(c: Check) -> str:
     detail = f"  {c.detail}" if c.detail else ""
-    typer.echo(f"  {_GLYPH[c.state]} {c.label:<18}{detail}")
+    return f"  {_GLYPH[c.state]} {c.label:<18}{detail}"
 
 
-def _render_verbose(checks: list[Check]) -> None:
-    typer.echo("# Required")
-    for c in (c for c in checks if c.required):
-        _line(c)
-    typer.echo("\n# Optional")
-    for c in (c for c in checks if not c.required):
-        _line(c)
-    typer.echo("")
+def _verbose_text(checks: list[Check]) -> str:
+    required = ["# Required", *(_line_text(c) for c in checks if c.required)]
+    optional = ["# Optional", *(_line_text(c) for c in checks if not c.required)]
+    return "\n".join(required) + "\n\n" + "\n".join(optional) + "\n\n"
 
 
-def run_check(verbose: bool = False, cwd=None) -> None:
-    """Scan the current hive and exit 0 (ready) / 1 (a required check failed)."""
+def probe_readiness(verbose: bool = False, cwd=None) -> ReadinessResult:
+    """Return transport-neutral readiness facts for the hives application service."""
+
     cfg = config.load()
     ident = workspace_identity(cwd)
     if ident is None:
-        typer.echo("✗ not in a git repo under $GIT_WORKSPACE — not an AGF hive.", err=True)
-        raise typer.Exit(1)
+        return ReadinessResult(
+            False,
+            None,
+            diagnostics=(
+                HiveDiagnostic(
+                    "outside_workspace",
+                    "not in a git repo under $GIT_WORKSPACE — not an AGF hive",
+                    error=True,
+                ),
+            ),
+        )
     provider, org, repo = ident
     entry = registry.find_entry(cfg, provider, org, repo)
     root = _repo_root(cwd)
@@ -546,12 +579,72 @@ def run_check(verbose: bool = False, cwd=None) -> None:
 
     checks = scan(cfg, ident, entry, root)
     failed = sum(1 for c in checks if c.required and c.state != "ok")
+    return ReadinessResult(
+        failed == 0,
+        label,
+        tuple(ReadinessCheck(c.label, c.required, c.state, c.detail) for c in checks),
+    )
 
-    if verbose:
-        _render_verbose(checks)
-    if failed:
-        tail = "" if verbose else " (run -v for the breakdown)"
-        typer.echo(f"✗ hive '{label}' not ready for AGF — {failed} required check(s) failed{tail}")
-        raise typer.Exit(1)
-    typer.echo(f"✓ hive '{label}' ready for AGF.")
-    raise typer.Exit(0)
+
+def _readiness_payload(result: ReadinessResult, *, verbose: bool) -> dict:
+    """CLI-owned wire projection of a semantic readiness result."""
+
+    if result.hive is None:
+        text = "✗ not in a git repo under $GIT_WORKSPACE — not an AGF hive.\n"
+        stream = "stderr"
+    else:
+        failed = sum(1 for check in result.checks if check.required and check.state != "ok")
+        text = _verbose_text(list(result.checks)) if verbose else ""
+        if failed:
+            tail = "" if verbose else " (run -v for the breakdown)"
+            text += (
+                f"✗ hive '{result.hive}' not ready for AGF — "
+                f"{failed} required check(s) failed{tail}\n"
+            )
+        else:
+            text += f"✓ hive '{result.hive}' ready for AGF.\n"
+        stream = "stdout"
+    return jsonout.envelope(
+        "hive ready",
+        jsonout.HIVE_READY_SCHEMA,
+        {
+            "ready": result.ready,
+            "exit_code": 0 if result.ready else 1,
+            "hive": result.hive,
+            "checks": [
+                {
+                    "label": check.label,
+                    "required": check.required,
+                    "state": check.state,
+                    "detail": check.detail,
+                    "text": _line_text(check),
+                }
+                for check in result.checks
+            ],
+            "text": text,
+            "stream": stream,
+        },
+    )
+
+
+def ready_payload(verbose: bool = False, cwd=None) -> dict:
+    """Compatibility wire projection retained for direct callers."""
+
+    return _readiness_payload(probe_readiness(verbose, cwd), verbose=verbose)
+
+
+def run_check(verbose: bool = False, cwd=None, *, as_json: bool = False) -> None:
+    """Compatibility facade over the typed hives readiness use case."""
+    from . import hive_services
+    from .modules.hives import ReadinessRequest
+
+    result = hive_services.readiness_result(
+        ReadinessRequest(verbose=verbose, cwd=str(cwd) if cwd is not None else None),
+        probe=probe_readiness,
+    )
+    payload = _readiness_payload(result, verbose=verbose)
+    if as_json:
+        jsonout.emit(dict(payload))
+    else:
+        typer.echo(payload["text"], nl=False, err=payload["stream"] == "stderr")
+    raise typer.Exit(payload["exit_code"])

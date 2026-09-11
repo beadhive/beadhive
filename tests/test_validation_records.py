@@ -34,6 +34,15 @@ def _begin(repo, n=0):
     )
 
 
+def _copy_manifest(repo, source, run_id, **changes):
+    manifest = copy.deepcopy(source)
+    manifest.update(run_id=run_id, **changes)
+    validation_records._atomic_json(
+        repo / ".git/bh/validation/runs" / run_id / "manifest.json", manifest
+    )
+    return manifest
+
+
 def test_validation_root_fails_closed_when_canonical_git_resolution_misses(tmp_path, monkeypatch):
     """A plain .git directory is not authority to create validation control state."""
     hive = tmp_path / "malformed-hive"
@@ -45,6 +54,65 @@ def test_validation_root_fails_closed_when_canonical_git_resolution_misses(tmp_p
     assert validation_records._validation_root(hive, create=True) is None
     assert not (hive / ".git" / "bh").exists()
     assert not (hive / ".bh").exists()
+
+
+def test_manifest_directory_queries_resolve_private_root_once_not_per_manifest(
+    tmp_path, monkeypatch
+):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+    completed = validation_records.finish_run(repo, _begin(repo)["run_id"], exit_code=0)
+    running = _begin(repo, 1)
+    for index in range(24):
+        _copy_manifest(
+            repo,
+            completed,
+            f"run-unrelated-{index:03d}",
+            tree=f"unrelated-tree-{index}",
+            command_hash=f"unrelated-command-{index}",
+        )
+
+    original_metadata = private_paths._metadata
+    probes = []
+
+    def counted_metadata(hive):
+        probes.append(Path(hive))
+        return original_metadata(hive)
+
+    monkeypatch.setattr(private_paths, "_metadata", counted_metadata)
+    queries = (
+        lambda: validation_records.matching_runs(repo, tree="tree", command_hash="hash"),
+        lambda: validation_records.completed_run(repo, tree="tree", command_hash="hash"),
+        lambda: validation_records.latest_run(repo, tree="tree", command_hash="hash"),
+        lambda: validation_records.running_runs(repo),
+        lambda: validation_records.prune_artifacts(repo),
+    )
+    for query in queries:
+        before = len(probes)
+        query()
+        assert len(probes) - before == 1
+
+    assert validation_records.read_run(repo, completed["run_id"]) == completed
+    assert validation_records.read_run(repo, running["run_id"]) == running
+
+
+def test_directory_queries_ignore_corrupt_and_run_id_mismatched_manifests(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    monkeypatch.setattr(host, "host_id", lambda: "host")
+    valid = validation_records.finish_run(repo, _begin(repo)["run_id"], exit_code=0)
+    runs = repo / ".git/bh/validation/runs"
+    corrupt = runs / "run-corrupt" / "manifest.json"
+    corrupt.parent.mkdir()
+    corrupt.write_text("{")
+    mismatched = runs / "run-mismatched" / "manifest.json"
+    mismatched.parent.mkdir()
+    mismatched.write_text(json.dumps({**valid, "run_id": "different-id"}))
+
+    assert validation_records.read_run(repo, "run-corrupt") is None
+    assert validation_records.read_run(repo, "run-mismatched") is None
+    assert validation_records.matching_runs(repo, tree="tree", command_hash="hash") == [valid]
+    assert validation_records.completed_run(repo, tree="tree", command_hash="hash") == valid
+    assert validation_records.latest_run(repo, tree="tree", command_hash="hash") == valid
 
 
 def test_concurrent_runs_and_repeated_uses_have_independent_identity(tmp_path, monkeypatch):

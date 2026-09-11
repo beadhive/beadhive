@@ -1,52 +1,49 @@
-"""Round-trip host/fleet config storage and partition reconciliation."""
+"""Compatibility collaborators for canonical configuration persistence ports."""
 
 from __future__ import annotations
 
-import copy
-import fcntl
-import os
-import tempfile
 import threading
-from collections.abc import Mapping, MutableMapping
-from contextlib import contextmanager
+from collections.abc import Mapping
 from pathlib import Path
 
-from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
+
+from .modules.config.adapters.yaml_store import RoundTripYamlStore, round_trip_yaml
+from .modules.config.application.resolution import deep_merge
+from .modules.config.domain.ports import ConfigScope
 
 _mutation_lock = threading.RLock()
 
-yaml = YAML()
-yaml.preserve_quotes = True
-yaml.indent(mapping=2, sequence=4, offset=2)
-yaml.width = 4096
+# Public compatibility seams. The adapter scopes access with ``yaml_lock``; its standalone
+# default constructs one parser per operation.
+yaml = round_trip_yaml()
 yaml_lock = threading.Lock()
 
 
-@contextmanager
+def _store(api) -> RoundTripYamlStore:
+    return RoundTripYamlStore(
+        path_for=lambda scope: (
+            api.fleet_path() if scope == ConfigScope.FLEET else api.config_path()
+        ),
+        binary_alias=api.BINARY_ALIAS,
+        yaml_factory=lambda: api._yaml,
+        yaml_lock=api._yaml_lock,
+        mutation_lock=_mutation_lock,
+    )
+
+
 def mutation(path: Path):
-    """Serialize a complete read/modify/write transaction across threads and processes."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    lock_path = path.with_name(f".{path.name}.lock")
-    with _mutation_lock, lock_path.open("a+") as stream:
-        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    store = RoundTripYamlStore(
+        path_for=lambda _scope: path,
+        yaml_factory=lambda: yaml,
+        yaml_lock=yaml_lock,
+        mutation_lock=_mutation_lock,
+    )
+    return store.transaction(ConfigScope.HOST)
 
 
 def load_path(api, path: Path, *, missing_ok: bool = False):
-    if not path.is_file():
-        if missing_ok:
-            return CommentedMap()
-        raise FileNotFoundError(
-            f"{api.BINARY_ALIAS} config not found at {path}\n"
-            f"  scaffold it with:  {api.BINARY_ALIAS} config init"
-        )
-    text = path.read_text()
-    with api._yaml_lock:
-        return api._yaml.load(text) or CommentedMap()
+    return _store(api).load_path(path, missing_ok=missing_ok)
 
 
 def leaf_paths(node, prefix: str = ""):
@@ -66,17 +63,6 @@ def fleet_override_violations(host) -> list[str]:
         if config_partition.partition_of(path) == config_partition.FLEET
         and not config_partition.is_host_overridable(path)
     ]
-
-
-def deep_merge(base, over):
-    merged = copy.deepcopy(base)
-    for key, value in over.items():
-        current = merged.get(key)
-        if isinstance(current, MutableMapping) and isinstance(value, Mapping):
-            merged[key] = deep_merge(current, value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
 
 
 def load(api):
@@ -113,42 +99,16 @@ def key_provenance(api) -> dict[str, str]:
 
 
 def atomic_dump(api, data, path: Path) -> None:
-    """Replace one YAML file atomically; a failed dump never truncates the live file."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
-    tmp_name: str | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, prefix=f".{path.name}.", delete=False
-        ) as stream:
-            tmp_name = stream.name
-            with api._yaml_lock:
-                api._yaml.dump(data, stream)
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.chmod(tmp_name, mode)
-        os.replace(tmp_name, path)
-        tmp_name = None
-        try:
-            directory = os.open(path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
-        except OSError:
-            pass
-    finally:
-        if tmp_name is not None:
-            Path(tmp_name).unlink(missing_ok=True)
+    _store(api).save_path(data, path)
 
 
 def save_host(api, data) -> None:
     api._guard_hq_registry_controller()
-    atomic_dump(api, data, api.config_path())
+    _store(api).save_document(ConfigScope.HOST, data)
 
 
 def save_fleet(api, data) -> None:
-    atomic_dump(api, data, api.fleet_path())
+    _store(api).save_document(ConfigScope.FLEET, data)
 
 
 def guard_hq_registry_controller(api) -> None:
@@ -206,3 +166,24 @@ def load_reconciling(api) -> dict:
     except api.ConfigError:
         api.reconcile_host_after_fleet()
         return api.load()
+
+
+__all__ = (
+    "atomic_dump",
+    "deep_merge",
+    "fleet_override_violations",
+    "guard_hq_registry_controller",
+    "key_provenance",
+    "leaf_paths",
+    "load",
+    "load_path",
+    "load_reconciling",
+    "mutation",
+    "reconcile_host_after_fleet",
+    "reject_fleet_override_for_key",
+    "reject_fleet_overrides",
+    "save_fleet",
+    "save_host",
+    "yaml",
+    "yaml_lock",
+)

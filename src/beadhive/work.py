@@ -37,7 +37,6 @@ from . import (
     adopt,  # noqa: F401 - injected merge collaborator
     bd,
     claim_authority,  # noqa: F401 - injected submission collaborator
-    config,
     converge,  # noqa: F401 - injected submission collaborator
     ghpr,  # noqa: F401 - injected merge collaborator
     git_linkage,  # noqa: F401 - injected merge collaborator
@@ -65,12 +64,15 @@ from . import (
     work_next,  # noqa: F401 - injected lifecycle collaborator
     work_reads,
     work_refine,
+    work_services,
     work_show,
     work_submission,
     worktree,
 )
 from . import log as dispatch_log
 from . import schedule as schedule_mod  # noqa: F401 - injected lifecycle collaborator
+from .config_consumer_ports import work_settings as config
+from .modules import work as work_capability
 from .run import missing_binary, run  # noqa: F401 - injected submission collaborator
 from .work_logic import (
     _MARKER,  # noqa: F401 - injected refine collaborator
@@ -122,6 +124,9 @@ class RefineResult:
     branch: str = ""  # applied: the refined branch
     log: str = ""  # applied: the rendered log range
     target: Path | None = None  # applied: worktree path (for the restore hint)
+    noop: bool = False  # no history change requested: no backup and no rebase
+    reaped: list[str] = field(default_factory=list)  # older successful backups removed
+    cleanup_failed: list[str] = field(default_factory=list)  # exact refs git refused to remove
 
 
 # ---- bd plumbing: the shared helpers now live in bd.py / registry.py --------
@@ -314,15 +319,11 @@ _forward_ready_plain = work_reads.forward_ready_plain
 _emit_start_gated_ready = work_reads.emit_start_gated_ready
 
 
-@app.command("brief")
-@otel.trace_verb("work.brief")
 def brief(bead: str = _BEAD, hive: str = _HIVE):
     """Print the bead's requirements/goals and validation command. Read-only."""
     return work_reads.brief(bead, hive)
 
 
-@app.command("readiness")
-@otel.trace_verb("work.readiness")
 def readiness(
     molecule: str = typer.Argument(
         ..., metavar="<molecule-id>", help="persistent or wisp molecule"
@@ -334,22 +335,16 @@ def readiness(
     return work_reads.readiness(molecule, hive, as_json)
 
 
-@app.command("ready", context_settings=_READ_CTX)
-@otel.trace_verb("work.ready")
 def ready(ctx: typer.Context, hive: str = _HIVE):
     """List ready work, preserving bd streams, ordering, and truncation signals."""
     return work_reads.ready(ctx, hive)
 
 
-@app.command("issue", context_settings=_READ_CTX)
-@otel.trace_verb("work.issue")
 def issue(ctx: typer.Context, bead: str = _BEAD, hive: str = _HIVE):
     """Show a single issue's fields through the stable first-class read."""
     return work_reads.issue(ctx, bead, hive)
 
 
-@app.command("list", context_settings=_READ_CTX)
-@otel.trace_verb("work.list")
 def list_(ctx: typer.Context, hive: str = _HIVE):
     """List or filter issues through the stable first-class read."""
     return work_reads.list_(ctx, hive)
@@ -371,8 +366,6 @@ _NO_DUPES = typer.Option(False, "--no-dupes", help="skip the bd find-duplicates 
 _render_disposition = work_intake.render_disposition
 
 
-@app.command("intake")
-@otel.trace_verb("work.intake")
 def intake_cmd(
     hive: str = _HIVE,
     source: str = _SOURCE,
@@ -383,8 +376,6 @@ def intake_cmd(
     return work_intake.intake(hive, source, as_json, no_dupes)
 
 
-@app.command("accept")
-@otel.trace_verb("work.accept")
 def accept_cmd(
     bead: str = _BEAD,
     issue_type: str = typer.Option("", "--type", "-t", help="set the accepted type (type-aware)"),
@@ -396,8 +387,6 @@ def accept_cmd(
     return work_intake.accept(bead, issue_type, priority, as_, hive)
 
 
-@app.command("reject")
-@otel.trace_verb("work.reject")
 def reject_cmd(
     bead: str = _BEAD,
     reason: str = typer.Option(..., "--reason", help="reporter-visible reason (recorded on close)"),
@@ -408,8 +397,6 @@ def reject_cmd(
     return work_intake.reject(bead, reason, as_, hive)
 
 
-@app.command("reroute")
-@otel.trace_verb("work.reroute")
 def reroute_cmd(
     bead: str = _BEAD,
     to: str = typer.Option("", "--to", help="re-file the report into this hive"),
@@ -421,15 +408,11 @@ def reroute_cmd(
     return work_intake.reroute(bead, to, super_, as_, hive)
 
 
-@app.command("promote")
-@otel.trace_verb("work.promote")
 def promote_cmd(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Promote an intake report to the planner."""
     return work_intake.promote(bead, as_, hive)
 
 
-@app.command("assign")
-@otel.trace_verb("work.assign")
 def assign(
     bead: str = _BEAD,
     to: str = typer.Option(..., "--to", help="dev/<name> to assign + provision for"),
@@ -448,7 +431,21 @@ def assign(
     `--preview` (read-only): print the worktree provisioning + `--to` identity this call would
     stamp, without touching `bd` or git — the machine-readable pre-flight for an external
     orchestrator (`--json` for the schema)."""
-    return work_assignment.impl_assign(sys.modules[__name__], bead, to, as_, hive, preview, as_json)
+    return (
+        work_services.work_lifecycle_service(
+            assign=lambda item: work_assignment.impl_assign(
+                sys.modules[__name__],
+                item.bead,
+                item.assignee,
+                item.actor,
+                item.hive,
+                item.preview,
+                as_json,
+            )
+        )
+        .assign(work_capability.AssignmentRequest(bead, to, as_, hive, preview))
+        .value
+    )
 
 
 def _claim_fence(cfg, hive) -> tuple[str, int]:
@@ -477,8 +474,6 @@ def _issue_claim(cfg, entry, bead, actor, target, hive="") -> None:
     )
 
 
-@app.command("claim")
-@otel.trace_verb("work.claim")
 def claim(
     bead: str = _BEAD_OPT,
     as_: str = _AS,
@@ -502,8 +497,21 @@ def claim(
     `--preview` (read-only, single bead only): print the worktree provisioning + identity this
     call would stamp, without touching `bd` or git — the machine-readable pre-flight for an
     external orchestrator (`--json` for the schema)."""
-    return work_assignment.impl_claim(
-        sys.modules[__name__], bead, as_, group, collapse, hive, preview, as_json
+    return (
+        work_services.work_lifecycle_service(
+            claim=lambda item: work_assignment.impl_claim(
+                sys.modules[__name__],
+                item.bead,
+                item.actor,
+                item.group,
+                item.collapse,
+                item.hive,
+                item.preview,
+                as_json,
+            )
+        )
+        .claim(work_capability.ClaimRequest(bead, as_, group, collapse, hive, preview))
+        .value
     )
 
 
@@ -671,8 +679,6 @@ def _provision_claim(cfg, hive, main, bead, actor):
     )
 
 
-@app.command("next")
-@otel.trace_verb("work.next")
 def next_(as_: str = _AS, hive: str = _HIVE, as_json: _NextJson = False, epic: _NextEpic = ""):
     """Atomically take the next ready bead: pick, claim, re-verify — retrying the next candidate
     when another worker won the race. The safe entry point for an unattended driver.
@@ -756,8 +762,6 @@ _LoopBamlRequired = Annotated[
 ]
 
 
-@app.command("loop")
-@otel.trace_verb("work.loop")
 def loop(
     epic: str = typer.Argument(..., help="the epic whose molecule this loop drives"),
     as_: str = _AS,
@@ -815,8 +819,6 @@ def loop(
     )
 
 
-@app.command("check")
-@otel.trace_verb("work.check")
 def check(bead: str = _BEAD, hive: str = _HIVE):
     """Run the hive's validation command against the worktree; propagate its exit code.
 
@@ -827,11 +829,17 @@ def check(bead: str = _BEAD, hive: str = _HIVE):
     A green run against a CLEAN tree also seeds the verdict ledger `submit` reuses from
     (bh-i0p1.4), so the ordinary check-then-submit sequence pays for validation once, not
     twice — see `_record_check_verdict`."""
-    return work_submission.impl_check(sys.modules[__name__], bead, hive)
+    return (
+        work_services.work_lifecycle_service(
+            check=lambda item: work_submission.impl_check(
+                sys.modules[__name__], item.bead, item.hive
+            )
+        )
+        .check(work_capability.CheckRequest(bead, hive))
+        .value
+    )
 
 
-@app.command("artifacts-uploaded")
-@otel.trace_verb("work.artifacts-uploaded")
 def artifacts_uploaded(
     run_id: str = typer.Argument(..., metavar="<run-id>", help="uploaded validation run id"),
     hive: str = _HIVE,
@@ -943,7 +951,15 @@ def schedule_payload(epic: str, cfg, entry, main) -> dict:
     raises ``ValueError`` when ``epic`` is not found in this hive so callers can map the
     error to the appropriate surface (``typer.Exit`` or MCP ``ResourceError``).
     """
-    return work_dispatch.impl_schedule_payload(sys.modules[__name__], epic, cfg, entry, main)
+    return (
+        work_services.work_lifecycle_service(
+            schedule=lambda item: work_dispatch.impl_schedule_payload(
+                sys.modules[__name__], item.epic, cfg, entry, main
+            )
+        )
+        .schedule(work_capability.ScheduleRequest(epic))
+        .plan
+    )
 
 
 def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
@@ -956,8 +972,6 @@ def _apply_start_gating(payload: dict, beads: list, cfg, entry) -> None:
     return work_dispatch.impl__apply_start_gating(sys.modules[__name__], payload, beads, cfg, entry)
 
 
-@app.command("schedule")
-@otel.trace_verb("work.schedule")
 def schedule(
     epic: str = typer.Argument(..., metavar="<epic>", help="molecule epic id"),
     hive: str = _HIVE,
@@ -967,7 +981,16 @@ def schedule(
     (a planner `batch:<group>` or an auto-detected linear chain) vs as singletons (parallel
     wall-time, the default one-per-worktree). Read-only — surfaces the decision; you still
     `bh work claim --group` / `assign` to act on it. See the coordinator skill for the model."""
-    return work_dispatch.impl_schedule(sys.modules[__name__], epic, hive, as_json)
+    return (
+        work_services.work_lifecycle_service(
+            schedule=lambda item: work_dispatch.impl_schedule(
+                sys.modules[__name__], item.epic, item.hive, as_json
+            )
+        )
+        .schedule(work_capability.ScheduleRequest(epic, hive))
+        .plan
+        or None
+    )
 
 
 def _guard_fork_remote(entry, remote) -> None:
@@ -977,8 +1000,6 @@ def _guard_fork_remote(entry, remote) -> None:
     return work_submission.impl__guard_fork_remote(sys.modules[__name__], entry, remote)
 
 
-@app.command("submit")
-@otel.trace_verb("work.submit")
 def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str = _GROUP):
     """Hand off to async review: verify the branch is clean conventional digests, validate the
     proposed hash from a clean checkout, (publish for out-of-process review,) then open a gate.
@@ -987,7 +1008,15 @@ def submit(bead: str = _BEAD_OPT, as_: str = _AS, hive: str = _HIVE, group: str 
     With `--group <ids>`, submits a whole work-group from the shared `wt/batch/<group>` worktree:
     validate it once and open exactly ONE review gate whose reason names every member, so a single
     `approve` on any member clears it before `merge --group`."""
-    return work_submission.impl_submit(sys.modules[__name__], bead, as_, hive, group)
+    return (
+        work_services.work_lifecycle_service(
+            submit=lambda item: work_submission.impl_submit(
+                sys.modules[__name__], item.bead, item.actor, item.hive, item.group
+            )
+        )
+        .submit(work_capability.SubmissionRequest(bead, as_, hive, group))
+        .value
+    )
 
 
 def _record_submit_commits(bead, main, entry, branch, base) -> None:
@@ -1092,8 +1121,6 @@ def _guard_self_review(cfg, entry, data, actor, bead) -> None:
     )
 
 
-@app.command("approve")
-@otel.trace_verb("work.approve")
 def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Reviewer/coordinator: resolve a submitted bead's HUMAN review gate through the bh
     convention layer — the first-class approve step that replaces the gated
@@ -1113,7 +1140,15 @@ def approve(bead: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     Release (bh-k2j8): an open `release-hold:` gate is the releaser's to clear — resolved here when
     run as a releaser (`--as releaser/<name>`) and refused for any other seat, so a release:breaking
     change can't be self-released into the wrong version window."""
-    return work_submission.impl_approve(sys.modules[__name__], bead, as_, hive)
+    return (
+        work_services.work_lifecycle_service(
+            approve=lambda item: work_submission.impl_approve(
+                sys.modules[__name__], item.bead, item.actor, item.hive
+            )
+        )
+        .approve(work_capability.ApprovalRequest(bead, as_, hive))
+        .value
+    )
 
 
 def _approve_security_gate(gates, bead, main, actor, open_review) -> bool:
@@ -1163,15 +1198,21 @@ def _clear_stale_review_state(bead, data, main, actor) -> None:
     )
 
 
-@app.command("bounce")
-@otel.trace_verb("work.bounce")
 def bounce(bead: str = _BEAD, message: str = _BOUNCE_MSG, as_: str = _AS, hive: str = _HIVE):
     """Reviewer: bounce a submitted bead back for changes. Resolves every OPEN review gate (so no
     orphan is left blocking a later merge while `approve` says "no open review gate"), then sets
     review=changes-requested. With no open gate it warns and still records the bounce. Points the
     developer at `bh work resume`. Batch behavior falls out free — the one batch gate names every
     member, so bouncing any member resolves it and blocks `merge --group` (bh-n5z3.6)."""
-    return work_submission.impl_bounce(sys.modules[__name__], bead, message, as_, hive)
+    return (
+        work_services.work_lifecycle_service(
+            bounce=lambda item: work_submission.impl_bounce(
+                sys.modules[__name__], item.bead, item.reason, item.actor, item.hive
+            )
+        )
+        .bounce(work_capability.BounceRequest(bead, message, as_, hive))
+        .value
+    )
 
 
 def _delete_branch(main, branch) -> None:
@@ -1350,8 +1391,6 @@ def _merge_molecule(cfg, epic, hive):
     return work_merge.impl__merge_molecule(sys.modules[__name__], cfg, epic, hive)
 
 
-@app.command("start")
-@otel.trace_verb("work.start")
 def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     """Dispatcher entrypoint: take the seat on a kicked-off epic. Epic-only alias of `claim` —
     guards the bead is an epic, planning-approved (`bh plan approve`), and that you act as a
@@ -1395,8 +1434,6 @@ def start(epic: str = _BEAD, as_: str = _AS, hive: str = _HIVE):
     )
 
 
-@app.command("finish")
-@otel.trace_verb("work.finish")
 def finish(epic: str = _BEAD, hive: str = _HIVE):
     """Coordinator/merger wrap-up: land a whole assembled molecule. Epic-only alias of
     `merge --molecule` — guards the bead is an epic, then validates the assembled `mol/<epic>`,
@@ -1405,8 +1442,6 @@ def finish(epic: str = _BEAD, hive: str = _HIVE):
     return work_merge.impl_finish(sys.modules[__name__], epic, hive)
 
 
-@app.command("land")
-@otel.trace_verb("work.land")
 def land(bead: str = _BEAD, hive: str = _HIVE):
     """Complete a `work.landing: pr` landing after GitHub merges the PR: confirm a MERGED PR
     with head `wt/bead/<type>/<id>` (`gh pr list --state merged --head …`), resolve the gh:pr
@@ -1460,8 +1495,6 @@ def _close_land_origin_reports(bead, main) -> None:
     return work_merge.impl__close_land_origin_reports(sys.modules[__name__], bead, main)
 
 
-@app.command("merge")
-@otel.trace_verb("work.merge")
 def merge(
     bead: str = _BEAD_OPT,
     hive: str = _HIVE,
@@ -1484,7 +1517,20 @@ def merge(
     With `--group <ids>`, lands a whole work-group: validate the shared `wt/batch/<group>` branch
     once, merge it `--no-ff` into the members' molecule as ONE bubble (per-bead commits preserved
     inside, so it stays bisectable), then close every member — release the slot either way."""
-    return work_merge.impl_merge(sys.modules[__name__], bead, hive, rm, molecule, group)
+    return (
+        work_services.work_lifecycle_service(
+            merge=lambda item: work_merge.impl_merge(
+                sys.modules[__name__],
+                item.bead,
+                item.hive,
+                item.remove_worktree,
+                item.molecule,
+                item.group,
+            )
+        )
+        .merge(work_capability.MergeRequest(bead, hive, rm, molecule, group))
+        .value
+    )
 
 
 def _guard_bead_merge_gates(bead, main, landing_pr) -> None:
@@ -1509,7 +1555,9 @@ def already_landed(entry, branch: str, base: str) -> bool:
     return work_merge.impl_already_landed(sys.modules[__name__], entry, branch, base)
 
 
-def _guard_bead_clean_history(entry, branch, base, cfg) -> bool:
+def _guard_bead_clean_history(
+    entry, branch, base, cfg, *, bead="", main=None, bead_data=None
+) -> bool:
     """Guard the branch is a small clean conventional history before it's allowed to merge —
     reuses submit's `_history_ok` check as a merge-time backstop.
 
@@ -1517,7 +1565,14 @@ def _guard_bead_clean_history(entry, branch, base, cfg) -> bool:
     of merging (bh-lvqs); False on the ordinary path. A genuinely empty branch — no commits over
     base and NOT an ancestor of it — still takes the self-refine bounce unchanged."""
     return work_merge.impl__guard_bead_clean_history(
-        sys.modules[__name__], entry, branch, base, cfg
+        sys.modules[__name__],
+        entry,
+        branch,
+        base,
+        cfg,
+        bead=bead,
+        main=main,
+        bead_data=bead_data,
     )
 
 
@@ -1599,9 +1654,7 @@ def _merge_bead(cfg, bead, hive, rm):
     return work_merge.impl__merge_bead(sys.modules[__name__], cfg, bead, hive, rm)
 
 
-@app.command("resume")
-@otel.trace_verb("work.resume")
-def resume(
+def _legacy_resume(
     bead: str = _BEAD,
     as_: str = _AS,
     hive: str = _HIVE,
@@ -1653,6 +1706,28 @@ def resume(
     typer.echo(f"✓ resumed {bead} as {actor}; worktree {target}")
 
 
+def resume(
+    bead: str = _BEAD,
+    as_: str = _AS,
+    hive: str = _HIVE,
+):
+    """After review returns changes-requested, reattach and reassert the typed claim."""
+    # Keep the historical public-facade patch point discoverable here while the callback below
+    # routes through the typed service. The live call remains in `_legacy_resume`:
+    # `_issue_claim(cfg, entry, bead, actor, target, hive)`.
+    request = work_capability.ResumeRequest(bead, as_, hive)
+    return (
+        work_services.work_lifecycle_service(
+            resume=lambda item: _legacy_resume(item.bead, item.actor, item.hive)
+        )
+        .resume(request)
+        .value
+    )
+
+
+resume.__doc__ = _legacy_resume.__doc__
+
+
 def _claim_residue(data) -> str:
     """What of the claim SURVIVED the release write — "" when the bead is genuinely free.
 
@@ -1674,9 +1749,7 @@ def _claim_residue(data) -> str:
     return "; ".join(residue)
 
 
-@app.command("abandon")
-@otel.trace_verb("work.abandon")
-def abandon(
+def _legacy_abandon(
     bead: str = _BEAD,
     hive: str = _HIVE,
     rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
@@ -1723,13 +1796,32 @@ def abandon(
     typer.echo(f"✓ abandoned {bead}" + ("; worktree removed" if rm else "; worktree kept"))
 
 
+def abandon(
+    bead: str = _BEAD,
+    hive: str = _HIVE,
+    rm: bool = typer.Option(False, "--rm", help="also remove the worktree (default: keep it)"),
+):
+    """Release a claim through the typed lifecycle boundary."""
+    request = work_capability.AbandonRequest(bead, hive, rm)
+    return (
+        work_services.work_lifecycle_service(
+            abandon=lambda item: _legacy_abandon(item.bead, item.hive, item.remove_worktree)
+        )
+        .abandon(request)
+        .value
+    )
+
+
+abandon.__doc__ = _legacy_abandon.__doc__
+
+
 # ---- show / review (read-only render verbs; bodies live in work_show) -------
 # Registered onto this app from work_show so the rendering surface sits in one file while the
 # command names stay `ws work show` / `ws work review`. Re-bound here (show = …) so existing
 # callers/tests that invoke `work.show(...)` / `work.review(...)` keep working.
 
-show = app.command("show")(otel.trace_verb("work.show")(work_show.show))
-review = app.command("review")(otel.trace_verb("work.review")(work_show.review))
+show = work_show.show
+review = work_show.review
 
 
 # ---- refine (squash local checkpoint noise) ---------------------------------
@@ -1806,8 +1898,6 @@ def _apply_refine_rebase(entry, target, branch, base, autosquash, rows, groups) 
     )
 
 
-@app.command("refine")
-@otel.trace_verb("work.refine")
 def refine(
     bead: str = _BEAD,
     plan: str = typer.Option("", "--plan", help="squash-plan JSON file or '-' for stdin"),
@@ -1822,3 +1912,83 @@ def refine(
     return work_refine.impl_refine(
         sys.modules[__name__], bead, plan, autosquash, since, dry_run, hive
     )
+
+
+# ---- catalog-derived Typer projection ---------------------------------------
+#
+# Values are the behavior sources and keys are canonical operation identities.  The projection
+# layer derives the shipping verb, hidden state, passthrough settings, and trace wrapper from the
+# catalog, and refuses import if this map misses or invents a catalog-covered work operation.
+
+from .cli_projection import (  # noqa: E402, I001
+    bind_handler as _bind_cli_handler,
+    generated_callbacks as _generated_cli_callbacks,
+    project_cli_group as _project_cli_group,
+)
+
+CLI_HANDLERS = {
+    "work.brief": brief,
+    "work.readiness": readiness,
+    "work.ready": ready,
+    "work.issue": issue,
+    "work.list": list_,
+    "work.intake": intake_cmd,
+    "work.accept": _bind_cli_handler(accept_cmd, type_="issue_type"),
+    "work.reject": reject_cmd,
+    "work.reroute": reroute_cmd,
+    "work.promote": promote_cmd,
+    "work.assign": assign,
+    "work.claim": claim,
+    "work.next": next_,
+    "work.loop": loop,
+    "work.check": check,
+    "work.artifacts-uploaded": artifacts_uploaded,
+    "work.schedule": schedule,
+    "work.submit": submit,
+    "work.approve": approve,
+    "work.bounce": bounce,
+    "work.start": start,
+    "work.finish": finish,
+    "work.land": land,
+    "work.merge": merge,
+    "work.resume": resume,
+    "work.abandon": abandon,
+    "work.show": _bind_cli_handler(show, as_json="json_out"),
+    "work.review": review,
+    "work.refine": refine,
+}
+CLI_PROJECTION = _project_cli_group(app, "work", CLI_HANDLERS)
+_CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)
+
+# Preserve the historical public Python surface: these names were trace-decorated before catalog
+# generation, and direct internal/test callers rely on that span just as CLI callers do.  The raw
+# behavior sources remain held by CLI_HANDLERS for deterministic regeneration.
+brief = _CLI_CALLBACKS["work.brief"]
+readiness = _CLI_CALLBACKS["work.readiness"]
+ready = _CLI_CALLBACKS["work.ready"]
+issue = _CLI_CALLBACKS["work.issue"]
+list_ = _CLI_CALLBACKS["work.list"]
+intake_cmd = _CLI_CALLBACKS["work.intake"]
+accept_cmd = _CLI_CALLBACKS["work.accept"]
+reject_cmd = _CLI_CALLBACKS["work.reject"]
+reroute_cmd = _CLI_CALLBACKS["work.reroute"]
+promote_cmd = _CLI_CALLBACKS["work.promote"]
+assign = _CLI_CALLBACKS["work.assign"]
+claim = _CLI_CALLBACKS["work.claim"]
+next_ = _CLI_CALLBACKS["work.next"]
+loop = _CLI_CALLBACKS["work.loop"]
+check = _CLI_CALLBACKS["work.check"]
+artifacts_uploaded = _CLI_CALLBACKS["work.artifacts-uploaded"]
+schedule = _CLI_CALLBACKS["work.schedule"]
+submit = _CLI_CALLBACKS["work.submit"]
+approve = _CLI_CALLBACKS["work.approve"]
+bounce = _CLI_CALLBACKS["work.bounce"]
+start = _CLI_CALLBACKS["work.start"]
+finish = _CLI_CALLBACKS["work.finish"]
+land = _CLI_CALLBACKS["work.land"]
+merge = _CLI_CALLBACKS["work.merge"]
+resume = _CLI_CALLBACKS["work.resume"]
+abandon = _CLI_CALLBACKS["work.abandon"]
+show = _CLI_CALLBACKS["work.show"]
+review = _CLI_CALLBACKS["work.review"]
+refine = _CLI_CALLBACKS["work.refine"]

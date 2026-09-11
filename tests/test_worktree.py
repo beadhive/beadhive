@@ -104,6 +104,77 @@ def test_session_ids_sort_chronologically():
     assert sorted([later, earlier]) == [earlier, later]
 
 
+def test_safety_ref_parser_owns_only_the_exact_namespace():
+    ref = worktree.parse_safety_ref("wt/bead/issue/bh-a.2.refine-20260902T031122Z", "a" * 40)
+    assert ref is not None
+    assert (ref.branch, ref.bead_id, ref.label, ref.session, ref.sha) == (
+        "wt/bead/issue/bh-a.2",
+        "bh-a.2",
+        "refine",
+        "20260902T031122Z",
+        "a" * 40,
+    )
+    assert worktree.parse_safety_ref("topic.refine-20260902T031122Z") is None
+    assert worktree.parse_safety_ref("wt/bead/issue/bh-a.2.refined-20260902T031122Z") is None
+    assert worktree.parse_safety_ref("wt/bead/issue/bh-a.2.refine-latest") is None
+    custom = worktree.parse_safety_ref("wt/wip/custom.premerge-20260902T031122Z-abcd")
+    assert custom is not None
+    assert custom.branch == "wt/wip/custom" and custom.bead_id == ""
+
+
+def test_delete_safety_refs_is_exact_idempotent_and_keeps_foreign_refs(tmp_path, monkeypatch):
+    _cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    branch = "wt/bead/issue/mr-safe"
+    _git("branch", branch, cwd=repo)
+    owned = f"{branch}.refine-20260902T031122Z"
+    premerge = f"{branch}.premerge-20260902T031123Z-abcd"
+    foreign = f"{branch}.refine-latest"
+    other = "wt/bead/issue/mr-other.refine-20260902T031124Z"
+    custom = "wt/wip/custom.refine-20260902T031125Z-abcd"
+    for name in (owned, premerge, foreign, other, custom):
+        _git("branch", name, cwd=repo)
+
+    deleted, failed = worktree.delete_safety_refs(entry, branch, labels=("refine",))
+    assert deleted == [owned]
+    assert failed == []
+    assert _gitout("branch", "--list", foreign, cwd=repo) == foreign
+    assert _gitout("branch", "--list", premerge, cwd=repo) == premerge
+    assert _gitout("branch", "--list", other, cwd=repo) == other
+    assert worktree.delete_safety_refs(entry, branch, labels=("refine",)) == ([], [])
+
+    deleted, failed = worktree.delete_safety_refs(entry, "wt/wip/custom", labels=("refine",))
+    assert deleted == [custom] and failed == []
+
+
+def test_delete_safety_refs_uses_observed_sha_as_concurrency_fence(monkeypatch):
+    ref = worktree.parse_safety_ref("wt/bead/issue/mr-race.refine-20260902T031122Z", "1" * 40)
+    assert ref is not None
+    entry = {"provider": "github", "org": "myorg", "repo": "myrepo"}
+    monkeypatch.setattr(worktree._worktree_git.registry, "hive_dir", lambda _entry: Path("/repo"))
+    monkeypatch.setattr(worktree._worktree_git, "impl_safety_refs", lambda *a, **k: [ref])
+    calls = []
+
+    def refused(cmd, **_kwargs):
+        calls.append(cmd)
+        return SimpleNamespace(returncode=1, stdout="", stderr="moved")
+
+    monkeypatch.setattr(worktree, "_run_git", refused)
+    deleted, failed = worktree.delete_safety_refs(entry, ref.branch)
+
+    assert deleted == [] and failed == [ref.name]
+    assert calls == [
+        [
+            "git",
+            "-C",
+            "/repo",
+            "update-ref",
+            "-d",
+            f"refs/heads/{ref.name}",
+            ref.sha,
+        ]
+    ]
+
+
 def test_bead_branch_template_override():
     cfg = {"worktrees": {"bead_branch": "wip/{id}"}}  # template is the suffix; wt/ still added
     assert worktree._branch_and_leaf(cfg, bead="x-1") == ("wt/wip/x-1", "x-1")
@@ -223,6 +294,89 @@ def test_run_init_never_runs_toolchain_template_rules(tmp_path):
     }
     worktree.run_init(cfg, {}, tmp_path)
     assert not (tmp_path / "tc.marker").exists()
+
+
+def test_init_rule_fingerprint_is_mapping_order_independent_but_rule_order_sensitive():
+    first = {
+        "worktrees": {
+            "init": [
+                {"run": "echo first", "if_exists": "one"},
+                {"run": "echo second"},
+            ]
+        }
+    }
+    same = {
+        "worktrees": {
+            "init": [
+                {"if_exists": "one", "run": "echo first"},
+                {"run": "echo second"},
+            ]
+        }
+    }
+    reversed_rules = {"worktrees": {"init": list(reversed(first["worktrees"]["init"]))}}
+
+    assert worktree._init_rules_fingerprint(first, {}) == worktree._init_rules_fingerprint(same, {})
+    assert worktree._init_rules_fingerprint(first, {}) != worktree._init_rules_fingerprint(
+        reversed_rules, {}
+    )
+
+
+def test_ensure_warns_on_init_rule_drift_without_running_or_disturbing_wip(
+    tmp_path, monkeypatch, capsys
+):
+    cfg, _entry, _repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"init": [{"run": "touch first.marker"}]}
+    _, target, branch = worktree.ensure(cfg, "mr", "ag-epic.3")
+    (target / "wip.txt").write_text("in progress")
+    capsys.readouterr()
+
+    cfg["worktrees"]["init"] = [{"run": "touch changed.marker"}]
+    _, reused, reused_branch = worktree.ensure(cfg, "mr", "ag-epic.3")
+
+    assert reused == target and reused_branch == branch
+    assert (target / "wip.txt").read_text() == "in progress"
+    assert not (target / "changed.marker").exists(), "reuse only detects; it never runs rules"
+    err = capsys.readouterr().err
+    assert "worktree init rules changed" in err
+    assert f'bh wt init "{target}"' in err
+
+
+def test_explicit_init_refreshes_drift_stamp_and_failed_init_does_not(
+    tmp_path, monkeypatch, capsys
+):
+    cfg, _entry, _repo = _ensure_hive(tmp_path, monkeypatch)
+    cfg["worktrees"] = {"init": [{"run": "touch first.marker"}]}
+    _, target, _branch = worktree.ensure(cfg, "mr", "ag-epic.3")
+    monkeypatch.setattr(config, "load", lambda: cfg)
+
+    cfg["worktrees"]["init"] = [{"run": "touch refreshed.marker"}]
+    worktree.init_existing(target)
+    assert (target / "refreshed.marker").exists()
+    capsys.readouterr()
+    worktree.ensure(cfg, "mr", "ag-epic.3")
+    assert "worktree init rules changed" not in capsys.readouterr().err
+
+    cfg["worktrees"]["init"] = [{"run": "false"}]
+    worktree.init_existing(target)
+    capsys.readouterr()
+    worktree.ensure(cfg, "mr", "ag-epic.3")
+    assert "worktree init rules changed" in capsys.readouterr().err
+
+
+def test_legacy_unstamped_worktree_warns_only_when_rules_are_configured(
+    tmp_path, monkeypatch, capsys
+):
+    cfg, _entry, _repo = _ensure_hive(tmp_path, monkeypatch)
+    _, target, _branch = worktree.ensure(cfg, "mr", "ag-epic.3")
+    _git("config", "--worktree", "--unset-all", "beadhive.initRulesFingerprint", cwd=target)
+
+    worktree.ensure(cfg, "mr", "ag-epic.3")
+    assert "worktree init rules changed" not in capsys.readouterr().err
+
+    cfg["worktrees"] = {"init": [{"run": "touch required.marker"}]}
+    worktree.ensure(cfg, "mr", "ag-epic.3")
+    assert "worktree init rules changed" in capsys.readouterr().err
+    assert not (target / "required.marker").exists()
 
 
 # ---- integration_base climb -------------------------------------------------
@@ -1882,6 +2036,49 @@ def test_clean_checkout_reuses_green_verdict(tmp_path, monkeypatch, capsys):
     assert pointer is not None and pointer.is_file()
 
 
+def test_clean_checkout_reuse_uses_selected_run_without_completed_run_rescan(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    log, cmd = _log_cmd(tmp_path)
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg) == 0
+    monkeypatch.setattr(
+        validation_records,
+        "completed_run",
+        lambda *args, **kwargs: pytest.fail("selected green run must not trigger a rescan"),
+    )
+
+    assert worktree.clean_checkout(entry, "main", cmd, cfg=cfg, reuse=True) == 0
+    assert _run_count(log) == 1
+
+
+def test_reuse_minimal_monkeypatched_green_result_keeps_safe_completed_run_fallback(
+    tmp_path, monkeypatch
+):
+    _cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    fallback = {"run_id": "run-fallback", "verdict": "green"}
+    completed_calls = []
+    uses = []
+    monkeypatch.setattr(
+        validation_ledger,
+        "green_verdict",
+        lambda *args, **kwargs: {"at": time.time(), "tree": "tree", "rc": 0},
+    )
+    monkeypatch.setattr(
+        validation_records,
+        "completed_run",
+        lambda *args, **kwargs: completed_calls.append((args, kwargs)) or fallback,
+    )
+    monkeypatch.setattr(
+        validation_records,
+        "record_use",
+        lambda *args, **kwargs: uses.append(kwargs),
+    )
+    monkeypatch.setattr(worktree.otel, "count_validation_reuse", lambda *args: None)
+
+    assert worktree._reuse_verdict_hit(entry, "main", "just check", cfg={"work": {}}, bead="bh-x")
+    assert len(completed_calls) == 1
+    assert uses[0]["run_id"] == "run-fallback"
+
+
 def test_clean_checkout_reuse_hit_counts_telemetry(tmp_path, monkeypatch):
     """A reuse hit increments the dedicated bh.work.validation.reused counter (tagged with the
     hive) — the series that keeps runs/duration interpretable once reuse is common."""
@@ -2547,8 +2744,12 @@ def test_the_ttl_comes_from_config_as_an_iso8601_duration(tmp_path, monkeypatch)
 def _fake_plugin(
     name, *, enabled=True, wt_create=None, wt_remove=None, wt_creating=None, wt_created=None
 ):
+    # Runtime projections are manifest-authoritative.  Use the built-in IDs that actually
+    # declare the exercised capability/event while retaining ``name`` only as a case label.
+    del name
+    plugin_id = "repowise" if wt_creating is not None or wt_created is not None else "orca"
     return plugins.Plugin(
-        name=name,
+        name=plugin_id,
         cli=typer.Typer(),
         enabled=lambda cfg, entry: enabled,
         wt_create=wt_create,
@@ -2618,7 +2819,7 @@ def test_consult_wt_create_other_exception_warns_and_falls_through(monkeypatch, 
         {}, {}, main=Path("/main"), branch="b", target=Path("/t"), start_point=""
     )
     assert result == Path("/ok")  # fell through to the next plugin
-    assert "boom" in capsys.readouterr().err
+    assert "kaboom" in capsys.readouterr().err
 
 
 def test_notify_wt_created_continues_after_a_raising_plugin(monkeypatch, capsys):
@@ -2640,7 +2841,7 @@ def test_notify_wt_created_continues_after_a_raising_plugin(monkeypatch, capsys)
     )
 
     assert called == [{"main": Path("/main"), "branch": "b", "target": Path("/target")}]
-    assert "boom" in capsys.readouterr().err
+    assert "kaboom" in capsys.readouterr().err
 
 
 def test_consult_wt_remove_false_when_no_plugin_defines_hook(monkeypatch):
@@ -2756,6 +2957,59 @@ def test_do_add_notifies_before_and_after_native_create(tmp_path, monkeypatch):
         ),
         ("after", {"main": repo, "branch": branch, "target": target}),
     ]
+
+
+def test_do_add_uses_one_plugin_snapshot_across_every_create_phase(tmp_path, monkeypatch):
+    cfg, entry, repo = _ensure_hive(tmp_path, monkeypatch)
+    target = worktree.wt_dir(entry, "snapshot-1")
+    branch = "wt/bead/issue/snapshot-1"
+    predicate_calls: list[str] = []
+    source_calls: list[bool] = []
+    phase_calls: list[str] = []
+    original_source = plugins.builtin_manifest_source
+
+    def source():
+        source_calls.append(True)
+        if len(source_calls) > 1:
+            raise AssertionError("manifest source was re-evaluated within one create action")
+        return original_source()
+
+    def mutable_enabled(plugin_id):
+        def enabled(_cfg, _entry):
+            predicate_calls.append(plugin_id)
+            return predicate_calls.count(plugin_id) == 1
+
+        return enabled
+
+    def create(_cfg, _entry, **_kwargs):
+        phase_calls.append("create")
+        target.mkdir(parents=True)
+        return target
+
+    def before(_cfg, _entry, **_kwargs):
+        phase_calls.append("before")
+
+    def after(_cfg, _entry, **_kwargs):
+        phase_calls.append("after")
+
+    orca = _fake_plugin("orca", wt_create=create)
+    repowise = _fake_plugin("repowise", wt_creating=before, wt_created=after)
+    orca = plugins.Plugin(
+        **{**orca.__dict__, "enabled": mutable_enabled("orca")},
+    )
+    repowise = plugins.Plugin(
+        **{**repowise.__dict__, "enabled": mutable_enabled("repowise")},
+    )
+    monkeypatch.setattr(plugins, "registry", lambda: [orca, repowise])
+    monkeypatch.setattr(plugins, "builtin_manifest_source", source)
+    monkeypatch.setattr(worktree, "run_init", lambda *_args: None)
+    monkeypatch.setattr(worktree, "provision_observaloop", lambda *_args: None)
+
+    worktree._do_add(cfg, entry, repo, branch, target, new_branch=True)
+
+    assert phase_calls == ["before", "create", "after"]
+    assert predicate_calls == ["orca", "repowise"]
+    assert source_calls == [True]
 
 
 def test_do_add_new_branch_falls_through_to_native_when_hook_returns_none(tmp_path, monkeypatch):
@@ -3048,6 +3302,57 @@ def test_prune_classifies_hives_concurrently(monkeypatch):
 
     assert safe == []
     assert [status.hive for status in skipped] == ["first", "second"]
+
+
+def test_prune_lists_precious_base_safe_row_in_skipped_set(monkeypatch):
+    """The existing safe-only prune partition automatically withholds precious content."""
+    item = worktree.precious.PreciousFile(".env", 8, "precious", ".env")
+    status = wt_status.WtStatus(
+        hive="mr",
+        leaf="seat",
+        branch="wt/bead/issue/seat",
+        path="/wts/seat",
+        bead_id="seat",
+        classification=wt_status.WtClassification.SAFE,
+        merged=True,
+        dirty=False,
+        safe=False,
+        precious=(item,),
+    )
+    monkeypatch.setattr(worktree, "_classify_entry", lambda _entry, _rows, _cfg: [status])
+
+    safe, skipped = worktree._prune_classify(
+        {}, {"mr": {"prefix": "mr"}}, [("mr", "/wts/seat", "wt/bead/issue/seat")]
+    )
+
+    assert safe == []
+    assert skipped == [status]
+
+
+def test_retained_is_skipped_by_two_consecutive_prune_classifications(monkeypatch):
+    """A deliberate retention is durable policy, not a one-shot skip marker."""
+    retained = wt_status.WtStatus(
+        hive="mr",
+        leaf="old",
+        branch="wt/bead/issue/old",
+        path="/wts/old",
+        bead_id="old",
+        classification=wt_status.WtClassification.RETAINED,
+        merged=False,
+        dirty=False,
+        safe=False,
+        disposition_reason="pivot",
+        citing_bead="port",
+    )
+    monkeypatch.setattr(worktree, "_classify_entry", lambda _entry, _rows, _cfg: [retained])
+    rows = [("mr", "/wts/old", "wt/bead/issue/old")]
+    entries = {"mr": {"prefix": "mr"}}
+
+    first = worktree._prune_classify({}, entries, rows)
+    second = worktree._prune_classify({}, entries, rows)
+
+    assert first == ([], [retained])
+    assert second == ([], [retained])
 
 
 def test_status_rows_classifies_concurrently_but_returns_managed_order(monkeypatch):
@@ -3620,6 +3925,29 @@ def test_an_unknown_row_is_marked_in_the_rendered_tree(capsys):
     out = capsys.readouterr().out
     assert "? u-1" in out
     assert "UNKNOWN" in out
+
+
+def test_retained_row_renders_reason_and_citing_bead_inline(capsys):
+    st = wt_status.WtStatus(
+        hive="mr",
+        leaf="old",
+        branch="wt/bead/issue/old",
+        path="/wts/old",
+        bead_id="old",
+        classification=wt_status.WtClassification.RETAINED,
+        merged=False,
+        dirty=False,
+        safe=False,
+        disposition_reason="pivot",
+        citing_bead="port",
+    )
+
+    worktree._render_status([st])
+
+    out = capsys.readouterr().out
+    assert "RETAINED" in out
+    assert "reason=pivot" in out
+    assert "citing=port" in out
 
 
 def test_a_dirty_row_renders_what_it_is_masking(capsys):

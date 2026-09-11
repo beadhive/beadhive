@@ -1,4 +1,4 @@
-"""Conformance coverage for the authenticated Development Frame Bridge."""
+"""Conformance coverage for the authenticated Development Frame Bridge profile."""
 
 from __future__ import annotations
 
@@ -15,7 +15,13 @@ from joserfc import jwt
 from joserfc.jwk import RSAKey
 from joserfc.jws import JWSRegistry
 
-from beadhive import frame_bridge
+from beadhive import daemon_auth, frame_bridge, frame_bridge_runtime
+from beadhive.kernel.telemetry import (
+    EventIdentity,
+    Outcome,
+    RecordingTelemetrySink,
+    SemanticTelemetry,
+)
 
 ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 AUDIENCE = "beadhive-gateway-dev"
@@ -117,7 +123,12 @@ def _refresh_reader(value: dict[str, object]):
     return refresh
 
 
-def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
+def _app(
+    public_key: RSAKey,
+    *,
+    revoked: frozenset[str] = frozenset(),
+    telemetry=None,
+):
     config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
@@ -143,6 +154,7 @@ def _app(public_key: RSAKey, *, revoked: frozenset[str] = frozenset()):
         config=config,
         verifier=verifier,
         registry=registry,
+        telemetry=telemetry,
     )
 
 
@@ -220,6 +232,76 @@ def test_authorized_subject_discovers_only_dev_demo_and_reads_redacted_snapshot(
     }
     assert discovery.headers["access-control-allow-origin"] == APP_ORIGIN
     assert snapshot.headers["cache-control"] == "no-store"
+
+
+def test_public_caller_bearer_is_never_forwarded_to_the_host_daemon() -> None:
+    private_key, public_key = _keys()
+    caller_bearer = _token(private_key)
+    daemon_bearer = "bh1.frame-bridge." + "d" * 43
+    seen: list[str | None] = []
+
+    async def daemon(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "live", "ready": True})
+        seen.append(request.headers.get("authorization"))
+        if request.headers.get("authorization") != f"Bearer {daemon_bearer}":
+            return httpx.Response(401, json={"error": {"code": "auth_missing"}})
+        return httpx.Response(
+            200,
+            json={
+                "schemaVersion": 1,
+                "revision": "sha256:" + "a" * 64,
+                "generatedAt": 1724716800000,
+                "cursor": {"producerEpoch": EVENT_EPOCH.replace("-", ""), "sequence": 0},
+                "workItems": [],
+                "agents": [],
+            },
+        )
+
+    daemon_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(daemon),
+        base_url=frame_bridge_runtime.LOOPBACK_ORIGIN,
+    )
+    runtime = frame_bridge_runtime.LoopbackDemoRuntime(
+        daemon_bearer=daemon_auth.SecretBearer(daemon_bearer),
+        client=daemon_client,
+    )
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    app = frame_bridge.build_development_frame_bridge_application(
+        config=config,
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: frame_bridge.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=runtime.snapshot,
+                    online=runtime.online,
+                    close=runtime.close,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        try:
+            return await client.get(
+                "/v1/instances/dev/demo/snapshot",
+                headers=_headers(caller_bearer),
+            )
+        finally:
+            await runtime.close()
+
+    response = _exercise(app, action)
+
+    assert response.status_code == 200
+    assert seen == [f"Bearer {daemon_bearer}"]
+    assert caller_bearer not in "".join(value or "" for value in seen)
 
 
 def test_authorized_subject_invokes_advertised_refresh_and_receives_correlated_result() -> None:
@@ -599,6 +681,24 @@ def test_exact_cors_preflight_and_response_allowlists_are_closed() -> None:
     assert "/Users/" not in leaked
     assert "must-not-leak" not in leaked
     assert "private-runtime" not in leaked
+
+
+def test_component_rename_preserves_read_only_gateway_wire_error() -> None:
+    _private_key, public_key = _keys()
+    app = _app(public_key)
+
+    async def action(client):
+        return await client.delete("/v1/instances")
+
+    response = _exercise(app, action)
+    assert response.status_code == 405
+    assert response.json() == {
+        "error": {
+            "code": "read_only_profile",
+            "message": "The gateway is read-only.",
+            "retryable": False,
+        }
+    }
 
 
 def test_refresh_cors_preflight_allows_only_post_authorization_and_json() -> None:
@@ -1525,3 +1625,36 @@ def test_lifespan_cancels_runtime_work_and_allows_clean_process_restart() -> Non
         timeout=5,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+def test_gateway_exchange_uses_semantic_port_without_request_or_identity_labels() -> None:
+    _private_key, public_key = _keys()
+    sink = RecordingTelemetrySink()
+    semantic = SemanticTelemetry(
+        sink=sink,
+        identity=EventIdentity(service="bh-frame-bridge", instance_id="frame-bridge-one"),
+    )
+    app = _app(public_key, telemetry=semantic)
+
+    async def action(client):
+        return await client.get(
+            "/healthz?token=secret",
+            headers={"Host": "gateway-dev.beadhive.cloud"},
+        )
+
+    response = _exercise(app, action)
+
+    assert response.status_code == 200
+    assert len(sink.events) == 2
+    started, completed = sink.events
+    assert started.correlation_id == completed.correlation_id
+    assert completed.causation_id == started.event_id
+    assert completed.outcome is Outcome.SUCCEEDED
+    assert {attribute.key.value: attribute.value for attribute in started.attributes} == {
+        "http.method": "GET",
+        "operation.kind": "route",
+        "surface": "gateway",
+        "transport": "http",
+    }
+    assert "token=secret" not in repr(sink.events)
+    assert "gateway-dev.beadhive.cloud" not in repr(sink.events)

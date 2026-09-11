@@ -1,0 +1,593 @@
+{
+  "$id": "urn:beadhive:wire-catalog:gateway-contracts:1",
+  "contracts": [
+    {
+      "$id": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a",
+      "contractVersion": "gateway.read.v1",
+      "digest": "sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a",
+      "schemaVersion": 1,
+      "schemas": {
+        "eventStreamResponse": {
+          "contentMediaType": "text/event-stream",
+          "type": "string"
+        },
+        "eventsRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "after": {
+              "maxLength": 512,
+              "minLength": 1,
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "factoryId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "hiveId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "subscription": {
+              "maxLength": 512,
+              "minLength": 1,
+              "not": {
+                "pattern": "[\\r\\n\\u2028\\u2029]$"
+              },
+              "pattern": "^\\S(?:[\\s\\S]*\\S)?$",
+              "type": "string"
+            }
+          },
+          "required": [
+            "factoryId",
+            "hiveId",
+            "subscription"
+          ],
+          "type": "object"
+        },
+        "hiveListRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "after": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "limit": {
+              "maximum": 200,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "limit"
+          ],
+          "type": "object"
+        },
+        "hiveListResponse": {
+          "additionalProperties": false,
+          "properties": {
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "detailLevel": {
+              "const": "summary"
+            },
+            "factoryId": {
+              "const": "development"
+            },
+            "instanceId": {
+              "const": "dev/demo"
+            },
+            "items": {
+              "type": "array"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "schemaVersion": {
+              "const": 1
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "instanceId",
+            "factoryId",
+            "detailLevel",
+            "items",
+            "nextCursor"
+          ],
+          "type": "object"
+        },
+        "snapshotRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "detail": {
+              "const": "live"
+            },
+            "factoryId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "hiveId": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "factoryId",
+            "hiveId",
+            "detail"
+          ],
+          "type": "object"
+        },
+        "snapshotResponse": {
+          "additionalProperties": false,
+          "properties": {
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "detailLevel": {
+              "const": "live"
+            },
+            "factoryId": {
+              "const": "development"
+            },
+            "hiveId": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "instanceId": {
+              "const": "dev/demo"
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "snapshot": {
+              "properties": {
+                "advertisedActions": {},
+                "agents": {},
+                "assignments": {},
+                "coverage": {},
+                "cursor": {},
+                "dependencies": {},
+                "epics": {},
+                "evidence": {},
+                "gates": {},
+                "generatedAt": {},
+                "hive": {},
+                "revision": {},
+                "schedules": {},
+                "schemaVersion": {},
+                "workItems": {}
+              },
+              "required": [
+                "advertisedActions",
+                "agents",
+                "assignments",
+                "coverage",
+                "cursor",
+                "dependencies",
+                "epics",
+                "evidence",
+                "gates",
+                "generatedAt",
+                "hive",
+                "revision",
+                "schedules",
+                "schemaVersion",
+                "workItems"
+              ],
+              "type": "object"
+            },
+            "source": {
+              "type": "object"
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "instanceId",
+            "factoryId",
+            "hiveId",
+            "detailLevel",
+            "source",
+            "snapshot"
+          ],
+          "type": "object"
+        }
+      }
+    },
+    {
+      "$id": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9",
+      "contractVersion": "gateway.v1",
+      "digest": "sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9",
+      "schemaVersion": 1,
+      "schemas": {
+        "commandPreflightRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "headers": {
+              "const": [
+                "authorization",
+                "content-type"
+              ]
+            },
+            "method": {
+              "const": "POST"
+            },
+            "origin": {
+              "format": "uri",
+              "type": "string"
+            }
+          },
+          "required": [
+            "origin",
+            "method",
+            "headers"
+          ],
+          "type": "object"
+        },
+        "commandResponse": {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "const": "refresh"
+            },
+            "contractVersion": {
+              "const": "gateway.v1"
+            },
+            "correlationId": {
+              "pattern": "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\Z",
+              "type": "string"
+            },
+            "instanceId": {
+              "const": "dev/demo"
+            },
+            "result": {
+              "additionalProperties": false,
+              "properties": {
+                "revision": {
+                  "pattern": "sha256:[0-9a-f]{64}\\Z",
+                  "type": "string"
+                },
+                "status": {
+                  "const": "completed"
+                }
+              },
+              "required": [
+                "revision",
+                "status"
+              ],
+              "type": "object"
+            },
+            "schemaVersion": {
+              "const": 1
+            }
+          },
+          "required": [
+            "command",
+            "contractVersion",
+            "correlationId",
+            "instanceId",
+            "result",
+            "schemaVersion"
+          ],
+          "type": "object"
+        },
+        "emptyRequest": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "emptyResponse": {
+          "const": ""
+        },
+        "errorResponse": {
+          "additionalProperties": false,
+          "properties": {
+            "error": {
+              "additionalProperties": false,
+              "properties": {
+                "code": {
+                  "maxLength": 128,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "message": {
+                  "maxLength": 512,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "retryable": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "code",
+                "message",
+                "retryable"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "error"
+          ],
+          "type": "object"
+        },
+        "eventStreamResponse": {
+          "contentMediaType": "text/event-stream",
+          "type": "string"
+        },
+        "eventsRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "cursor": {
+              "not": {
+                "pattern": "[\\r\\n\\u2028\\u2029]"
+              },
+              "pattern": "^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}):(0|[1-9][0-9]{0,15})$",
+              "type": "string"
+            },
+            "slug": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "stage": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "stage",
+            "slug",
+            "cursor"
+          ],
+          "type": "object"
+        },
+        "fallbackRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "path": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "type": "object"
+        },
+        "healthResponse": {
+          "additionalProperties": false,
+          "properties": {
+            "contractVersion": {
+              "const": "gateway.v1"
+            },
+            "live": {
+              "const": true
+            }
+          },
+          "required": [
+            "contractVersion",
+            "live"
+          ],
+          "type": "object"
+        },
+        "instancesRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "limit": {
+              "const": 50
+            }
+          },
+          "required": [
+            "limit"
+          ],
+          "type": "object"
+        },
+        "instancesResponse": {
+          "additionalProperties": false,
+          "properties": {
+            "items": {
+              "items": {
+                "additionalProperties": false,
+                "properties": {
+                  "availability": {
+                    "enum": [
+                      "online",
+                      "offline"
+                    ]
+                  },
+                  "capabilities": {
+                    "enum": [
+                      [
+                        "snapshot"
+                      ],
+                      [
+                        "snapshot",
+                        "refresh"
+                      ],
+                      [
+                        "snapshot",
+                        "events"
+                      ],
+                      [
+                        "snapshot",
+                        "refresh",
+                        "events"
+                      ]
+                    ]
+                  },
+                  "displayName": {
+                    "maxLength": 256,
+                    "minLength": 1,
+                    "type": "string"
+                  },
+                  "id": {
+                    "const": "dev/demo"
+                  }
+                },
+                "required": [
+                  "availability",
+                  "capabilities",
+                  "displayName",
+                  "id"
+                ],
+                "type": "object"
+              },
+              "maxItems": 1,
+              "type": "array"
+            },
+            "nextCursor": {
+              "type": "null"
+            },
+            "schemaVersion": {
+              "const": 1
+            }
+          },
+          "required": [
+            "items",
+            "nextCursor",
+            "schemaVersion"
+          ],
+          "type": "object"
+        },
+        "readPreflightRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "headers": {
+              "const": [
+                "authorization"
+              ]
+            },
+            "method": {
+              "const": "GET"
+            },
+            "origin": {
+              "format": "uri",
+              "type": "string"
+            }
+          },
+          "required": [
+            "origin",
+            "method",
+            "headers"
+          ],
+          "type": "object"
+        },
+        "refreshRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "correlationId": {
+              "pattern": "[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\Z",
+              "type": "string"
+            },
+            "expectedRevision": {
+              "pattern": "sha256:[0-9a-f]{64}\\Z",
+              "type": "string"
+            },
+            "schemaVersion": {
+              "const": 1
+            }
+          },
+          "required": [
+            "correlationId",
+            "expectedRevision",
+            "schemaVersion"
+          ],
+          "type": "object"
+        },
+        "snapshotRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "slug": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "stage": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "stage",
+            "slug"
+          ],
+          "type": "object"
+        },
+        "snapshotResponse": {
+          "additionalProperties": false,
+          "properties": {
+            "contractVersion": {
+              "const": "gateway.v1"
+            },
+            "instanceId": {
+              "const": "dev/demo"
+            },
+            "schemaVersion": {
+              "const": 1
+            },
+            "snapshot": {
+              "additionalProperties": false,
+              "properties": {
+                "agents": {},
+                "eventCursor": {},
+                "generatedAt": {},
+                "revision": {},
+                "schemaVersion": {},
+                "workItems": {}
+              },
+              "required": [
+                "agents",
+                "generatedAt",
+                "revision",
+                "schemaVersion",
+                "workItems"
+              ],
+              "type": "object"
+            }
+          },
+          "required": [
+            "contractVersion",
+            "instanceId",
+            "schemaVersion",
+            "snapshot"
+          ],
+          "type": "object"
+        },
+        "unavailableCommandRequest": {
+          "additionalProperties": false,
+          "properties": {
+            "command": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "slug": {
+              "minLength": 1,
+              "type": "string"
+            },
+            "stage": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "stage",
+            "slug",
+            "command"
+          ],
+          "type": "object"
+        }
+      }
+    }
+  ],
+  "format_version": 1,
+  "version": 1
+}

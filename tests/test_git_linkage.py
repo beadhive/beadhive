@@ -107,6 +107,13 @@ def test_read_commits_never_reads_the_nested_shape(store):
     assert git_linkage.read_commits("mr-1", "/hive") == []
 
 
+def test_commits_from_data_parses_an_existing_snapshot_without_bd_read(store):
+    row = {"id": "mr-1", "metadata": {"git.commits": json.dumps([_SHA_A, _SHA_B])}}
+
+    assert git_linkage.commits_from_data(row) == [_SHA_A, _SHA_B]
+    assert store.calls == []
+
+
 # ---- record_commits: first write / accumulate / idempotent --------------------------------
 
 

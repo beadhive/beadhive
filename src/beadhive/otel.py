@@ -24,13 +24,19 @@ from __future__ import annotations
 
 import atexit
 import functools
+import inspect
 import logging
+import math
 import os
+import sys
+import time
+import uuid
+from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any
 
-from . import config
+from .config_consumer_ports import telemetry_settings as config
 
 _SERVICE_NAME = config.BINARY_ALIAS
 
@@ -94,11 +100,32 @@ def sdk_importable() -> bool:
 # providers or stack another LoggingHandler on the root logger.
 _initialized = False
 
+# The semantic coordinator is composed only after the SDK providers exist.  Callers receive the
+# kernel port; this adapter module retains the concrete sink so shutdown can close unfinished
+# spans before provider workers are stopped.
+_semantic_telemetry: Any = None
+_semantic_sink: Any = None
+_semantic_surface = "internal"
+
+
+@dataclass(frozen=True)
+class _ShutdownPort:
+    """A provider adapter whose blocking ceiling is known when it is registered."""
+
+    name: str
+    export_timeout_seconds: float
+    force_flush: Callable[[int], bool]
+    close: Callable[[int], None]
+    worker_alive: Callable[[], bool]
+
+
 # Providers wired by init(), retained so the flush-on-exit handler can reach them. ws is a
 # short-lived CLI and the batch span/log processors + periodic metric reader export on an interval,
 # so without an explicit shutdown() (which force-flushes) the process exits before the batch drains
 # and spans/metrics/logs are silently dropped.
 _providers: tuple[Any, ...] = ()
+_shutdown_ports: tuple[_ShutdownPort, ...] = ()
+_shutdown_timeout_seconds = 2.0
 
 # The atexit flush hook is registered at most once across re-inits: tests reset _initialized to
 # re-wire, but this guard means we never stack duplicate handlers on the same shutdown() callable.
@@ -216,7 +243,13 @@ def _ws_version() -> str:
         return "0.0.0"
 
 
-def _resource_attributes(cfg) -> dict[str, str]:
+def _resource_attributes(
+    cfg,
+    *,
+    service_name: str = _SERVICE_NAME,
+    extra: dict[str, str] | None = None,
+    enrich: bool = True,
+) -> dict[str, str]:
     """The Resource identity, stamped once at ``init()`` and shared by every signal
     (spans/metrics/logs). Always carries ``service.name``/``service.version``; enriches with the
     process's low-cardinality identity (the ``ws.provider``/``ws.org``/``ws.repo`` triplet,
@@ -224,10 +257,13 @@ def _resource_attributes(cfg) -> dict[str, str]:
     enrichment attribute is **omitted when empty** — never a blank value. Built only inside ``init``
     (gated), so the off-path stays zero-cost and free of the worktree/identity import."""
     attrs = {
-        "service.name": _SERVICE_NAME,
+        "service.name": service_name,
         "service.version": _ws_version(),
     }
-    _enrich_resource(attrs, cfg)
+    if enrich:
+        _enrich_resource(attrs, cfg)
+    if extra:
+        attrs.update({str(key): str(value) for key, value in extra.items() if value})
     return attrs
 
 
@@ -279,6 +315,69 @@ def _derived_hive(cfg, triplet) -> str:
 # the endpoint from ``OTEL_EXPORTER_OTLP_ENDPOINT`` itself), so a bare base would POST to ``/`` and
 # 404. grpc has no per-signal path and keeps the bare base.
 _OTLP_SIGNAL_PATHS = {"traces": "/v1/traces", "metrics": "/v1/metrics", "logs": "/v1/logs"}
+_MISSING = object()
+
+
+def _signal_export_timeout(cfg, signal: str) -> float:
+    """Resolve the exporter's real request ceiling, including standard env precedence."""
+    specific = os.environ.get(f"OTEL_EXPORTER_OTLP_{signal.upper()}_TIMEOUT")
+    generic = os.environ.get("OTEL_EXPORTER_OTLP_TIMEOUT")
+    raw: object = specific if specific is not None else generic
+    if raw is None:
+        raw = config.otel_export_timeout(cfg)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return math.inf
+    return value if math.isfinite(value) and value > 0 else math.inf
+
+
+def _known_worker_alive(worker: Any) -> bool:
+    """Inspect an SDK worker without treating loose mocks as real live workers."""
+    if worker is None:
+        return False
+    try:
+        return worker.is_alive() is True
+    except Exception:
+        return True
+
+
+def _accepts_timeout_millis(method: Any) -> bool:
+    if not callable(method):
+        return False
+    try:
+        parameters = inspect.signature(method).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    return any(
+        parameter.name == "timeout_millis" or parameter.kind is parameter.VAR_KEYWORD
+        for parameter in parameters
+    )
+
+
+def _shutdown_port(
+    *,
+    name: str,
+    export_timeout_seconds: float,
+    processor: Any,
+    close_owner: Any,
+    worker: Any,
+) -> _ShutdownPort | None:
+    force_flush = getattr(processor, "force_flush", None)
+    close = getattr(close_owner, "shutdown", None)
+    if (
+        not _accepts_timeout_millis(force_flush)
+        or not _accepts_timeout_millis(close)
+        or worker is _MISSING
+    ):
+        return None
+    return _ShutdownPort(
+        name=name,
+        export_timeout_seconds=export_timeout_seconds,
+        force_flush=lambda timeout_millis: force_flush(timeout_millis=timeout_millis),
+        close=lambda timeout_millis: close(timeout_millis=timeout_millis),
+        worker_alive=lambda: _known_worker_alive(worker),
+    )
 
 
 def _signal_endpoint(base: str, protocol: str, signal: str) -> str:
@@ -336,13 +435,22 @@ def _metric_exporter_kwargs(cfg, otel: _Otel, base: dict[str, Any]) -> dict[str,
     return kwargs
 
 
-def init(cfg=None) -> bool:
+def init(
+    cfg=None,
+    *,
+    service_name: str = _SERVICE_NAME,
+    resource_attributes: dict[str, str] | None = None,
+    enrich_resource: bool = True,
+    shutdown_timeout_seconds: float | None = None,
+    register_atexit: bool = True,
+) -> bool:
     """Initialize the OTel SDK **iff** enabled and the libs are present; else graceful no-op.
 
     Returns ``True`` when providers + OTLP exporters + the log bridge were wired, ``False`` for
     every no-op path (disabled, libs absent, or already initialized). Idempotent.
     """
-    global _initialized, _providers
+    global _initialized, _providers, _shutdown_ports, _shutdown_timeout_seconds
+    global _semantic_sink, _semantic_surface, _semantic_telemetry
 
     from . import log  # local import: avoid a module-load cycle (log imports config too)
 
@@ -368,7 +476,6 @@ def init(cfg=None) -> bool:
     if protocol == config.OTEL_PROTOCOL_GRPC:
         os.environ.setdefault("GRPC_ENABLE_FORK_SUPPORT", "1")
         os.environ.setdefault("GRPC_VERBOSITY", "ERROR")
-
     try:
         otel = _load_otel(protocol)
     except ImportError:
@@ -377,16 +484,33 @@ def init(cfg=None) -> bool:
         logger.warning("otel_install_hint", hint=_INSTALL_HINT)
         return False
 
-    resource = otel.Resource.create(_resource_attributes(cfg))
+    # Exporters consume the standard timeout environment themselves.  Seed a short finite value
+    # only when the operator did not provide one, preserving their standard per-signal overrides.
+    os.environ.setdefault("OTEL_EXPORTER_OTLP_TIMEOUT", str(config.otel_export_timeout(cfg)))
+    _shutdown_timeout_seconds = (
+        config.otel_flush_timeout(cfg)
+        if shutdown_timeout_seconds is None
+        else float(shutdown_timeout_seconds)
+    )
+
+    resource = otel.Resource.create(
+        _resource_attributes(
+            cfg,
+            service_name=service_name,
+            extra=resource_attributes,
+            enrich=enrich_resource,
+        )
+    )
     # endpoint + headers, per signal: headers are identical, but for http/protobuf each signal's
     # endpoint gets its own /v1/<signal> path (the http exporter uses an explicit endpoint
     # verbatim); grpc keeps the bare base for all three. See _signal_endpoint.
 
     # Traces: provider → BatchSpanProcessor(OTLP) → set as global tracer provider.
-    tracer_provider = otel.TracerProvider(resource=resource)
-    tracer_provider.add_span_processor(
-        otel.BatchSpanProcessor(otel.OTLPSpanExporter(**_exporter_kwargs(cfg, protocol, "traces")))
+    tracer_provider = otel.TracerProvider(resource=resource, shutdown_on_exit=False)
+    span_processor = otel.BatchSpanProcessor(
+        otel.OTLPSpanExporter(**_exporter_kwargs(cfg, protocol, "traces"))
     )
+    tracer_provider.add_span_processor(span_processor)
     otel.trace.set_tracer_provider(tracer_provider)
 
     # Metrics: provider with a periodic reader over the OTLP metric exporter (the metrics
@@ -394,16 +518,19 @@ def init(cfg=None) -> bool:
     # to DELTA temporality (this CLI is short-lived; see _metric_exporter_kwargs).
     metric_kwargs = _metric_exporter_kwargs(cfg, otel, _exporter_kwargs(cfg, protocol, "metrics"))
     metric_reader = otel.PeriodicExportingMetricReader(otel.OTLPMetricExporter(**metric_kwargs))
-    meter_provider = otel.MeterProvider(resource=resource, metric_readers=[metric_reader])
+    meter_provider = otel.MeterProvider(
+        resource=resource,
+        metric_readers=[metric_reader],
+        shutdown_on_exit=False,
+    )
     otel.metrics.set_meter_provider(meter_provider)
 
     # Logs: provider → BatchLogRecordProcessor(OTLP) → set as global logger provider, then
     # bridge cit.1's stdlib root logger (which structlog feeds) into OTel logs via a handler.
-    logger_provider = otel.LoggerProvider(resource=resource)
+    logger_provider = otel.LoggerProvider(resource=resource, shutdown_on_exit=False)
     log_kwargs = _exporter_kwargs(cfg, protocol, "logs")
-    logger_provider.add_log_record_processor(
-        otel.BatchLogRecordProcessor(otel.OTLPLogExporter(**log_kwargs))
-    )
+    log_processor = otel.BatchLogRecordProcessor(otel.OTLPLogExporter(**log_kwargs))
+    logger_provider.add_log_record_processor(log_processor)
     otel.logs.set_logger_provider(logger_provider)
     handler = otel.LoggingHandler(level=logging.NOTSET, logger_provider=logger_provider)
     logging.getLogger().addHandler(handler)
@@ -411,9 +538,57 @@ def init(cfg=None) -> bool:
     # Retain the providers + register a flush-on-exit hook so this short-lived CLI drains its
     # batched spans/metrics/logs before the process exits (otherwise they're silently dropped).
     _providers = (tracer_provider, meter_provider, logger_provider)
+    span_batch = getattr(span_processor, "_batch_processor", None)
+    log_batch = getattr(log_processor, "_batch_processor", None)
+    ports = (
+        _shutdown_port(
+            name="traces",
+            export_timeout_seconds=_signal_export_timeout(cfg, "traces"),
+            processor=span_processor,
+            close_owner=span_batch,
+            worker=getattr(span_batch, "_worker_thread", _MISSING),
+        ),
+        _shutdown_port(
+            name="metrics",
+            export_timeout_seconds=_signal_export_timeout(cfg, "metrics"),
+            processor=meter_provider,
+            close_owner=meter_provider,
+            worker=getattr(metric_reader, "_daemon_thread", _MISSING),
+        ),
+        _shutdown_port(
+            name="logs",
+            export_timeout_seconds=_signal_export_timeout(cfg, "logs"),
+            processor=log_processor,
+            close_owner=log_batch,
+            worker=getattr(log_batch, "_worker_thread", _MISSING),
+        ),
+    )
+    _shutdown_ports = tuple(port for port in ports if port is not None)
     _instruments.clear()  # rebind metric instruments to the freshly-wired meter provider
     _initialized = True
-    _register_flush_on_exit()
+    try:
+        from .adapters.telemetry import OpenTelemetrySink
+        from .kernel.telemetry import EventIdentity, SemanticTelemetry
+
+        semantic_identity = EventIdentity(
+            service=service_name,
+            instance_id=(resource_attributes or {}).get("service.instance.id") or uuid.uuid4().hex,
+            host_id=(resource_attributes or {}).get("bh.host.id"),
+        )
+        _semantic_sink = OpenTelemetrySink(runtime=sys.modules[__name__])
+        _semantic_telemetry = SemanticTelemetry(sink=_semantic_sink, identity=semantic_identity)
+        _semantic_surface = {
+            _SERVICE_NAME: "cli",
+            "bh-host-daemon": "daemon",
+            "bh-gateway": "gateway",
+        }.get(service_name, "internal")
+    except BaseException:
+        # Semantic projection is observational.  Legacy OTel remains available if construction
+        # fails, and callers see no semantic port rather than a partially composed coordinator.
+        _semantic_sink = None
+        _semantic_telemetry = None
+    if register_atexit:
+        _register_flush_on_exit()
     # debug, not info: at the default level a normal `ws` command with otel on must stay quiet —
     # this per-invocation line is diagnostic, available when the level is raised (bh-sb9l).
     logger.debug(
@@ -437,25 +612,170 @@ def _register_flush_on_exit() -> None:
     _atexit_registered = True
 
 
-def shutdown() -> None:
+@dataclass(frozen=True)
+class ShutdownResult:
+    status: str
+    duration_seconds: float
+    provider_errors: int = 0
+
+
+def shutdown(
+    *,
+    timeout_seconds: float | None = None,
+    before_close: Callable[[ShutdownResult], None] | None = None,
+) -> ShutdownResult:
     """Flush + shut down the wired providers so batched telemetry isn't dropped on exit.
 
-    ``provider.shutdown()`` force-flushes the BatchSpanProcessor / PeriodicExportingMetricReader /
-    BatchLogRecordProcessor, so a quick ``ws`` command's spans/metrics/logs reach the collector
-    before the process exits. A no-op when ``init`` never wired real providers (off / libs-absent).
-    Best-effort: an exporter failure on exit must not raise out of the atexit hook. Resets the init
-    state so a fresh ``init`` can re-wire (useful for tests)."""
-    global _initialized, _providers
+    Only adapters registered while constructing the supported SDK providers may execute here.
+    Their exporter request ceiling is known, their close API accepts a timeout, and their combined
+    worst case fits the configured total budget. Unknown providers are refused without invocation:
+    shutdown never creates an unkillable helper thread merely to impose a caller-side timeout.
+    The optional callback runs after force-flush and before provider close so daemon final metrics
+    can enter the last export batch. Best-effort failures never escape the atexit hook."""
+    global _initialized, _providers, _shutdown_ports
+    global _semantic_sink, _semantic_surface, _semantic_telemetry
+    started = time.monotonic()
     if not _initialized:
-        return
-    for provider in _providers:
+        return ShutdownResult("inactive", 0.0)
+    budget = _shutdown_timeout_seconds if timeout_seconds is None else float(timeout_seconds)
+    budget = max(0.0, budget) if budget == budget and budget < float("inf") else 0.0
+    providers = _providers
+    ports = _shutdown_ports
+    errors: list[BaseException] = []
+    timed_out = False
+    refused = False
+    before_close_called = False
+    flush_observation = None
+    if _semantic_telemetry is not None:
         try:
-            provider.shutdown()
-        except Exception:  # pragma: no cover - never raise from the exit hook
-            pass
+            from .kernel.telemetry import (
+                AttributeKey,
+                SemanticEventName,
+                TelemetryAttribute,
+            )
+
+            flush_observation = _semantic_telemetry.begin(
+                SemanticEventName.TELEMETRY_FLUSH,
+                attributes=(
+                    TelemetryAttribute(AttributeKey.OPERATION_KIND, "internal"),
+                    TelemetryAttribute(AttributeKey.SURFACE, _semantic_surface),
+                    TelemetryAttribute(AttributeKey.SHUTDOWN_PHASE, "flush-telemetry"),
+                ),
+            )
+        except BaseException:
+            flush_observation = None
+
+    def summary(status: str) -> ShutdownResult:
+        return ShutdownResult(status, time.monotonic() - started, len(errors))
+
+    def emit_before_close(status: str) -> None:
+        nonlocal before_close_called
+        before_close_called = True
+        if before_close is not None:
+            try:
+                before_close(summary(status))
+            except Exception as exc:  # telemetry finalization must never break process exit
+                errors.append(exc)
+        if _semantic_telemetry is not None:
+            try:
+                from .kernel.telemetry import (
+                    ErrorClassification,
+                    EventError,
+                    Outcome,
+                )
+
+                if status == "completed":
+                    _semantic_telemetry.complete(flush_observation, Outcome.SUCCEEDED)
+                elif status == "timed_out":
+                    _semantic_telemetry.complete(
+                        flush_observation,
+                        Outcome.TIMED_OUT,
+                        error=EventError(
+                            ErrorClassification.TIMEOUT,
+                            "telemetry.flush.timeout",
+                            True,
+                        ),
+                    )
+                else:
+                    _semantic_telemetry.complete(
+                        flush_observation,
+                        Outcome.FAILED,
+                        error=EventError(
+                            ErrorClassification.DEPENDENCY,
+                            "telemetry.flush.failed",
+                            True,
+                        ),
+                    )
+            except BaseException:
+                pass
+        # Completion callbacks get the final opportunity to close their semantic operation.
+        # Any remainder is abandoned locally before SDK worker shutdown, never on a helper thread.
+        if _semantic_sink is not None:
+            try:
+                _semantic_sink.close_open_spans()
+            except BaseException:
+                pass
+
+    # Three sequential final exports plus at most one already-in-flight SDK export must fit the
+    # one configured budget.  A larger/invalid operator timeout is visible as refusal rather than
+    # silently creating an unbounded worker or pretending the deadline can be enforced externally.
+    known_worst_case = sum(port.export_timeout_seconds for port in ports) + max(
+        (port.export_timeout_seconds for port in ports), default=0.0
+    )
+    if len(ports) != len(providers) or known_worst_case > budget or budget <= 0:
+        refused = bool(providers)
+        errors.extend(
+            RuntimeError("provider has no cooperative shutdown port") for _provider in providers
+        )
+    else:
+        deadline = started + budget
+        for port in ports:
+            remaining_millis = max(0, int((deadline - time.monotonic()) * 1000))
+            if remaining_millis <= 0:
+                timed_out = True
+                break
+            try:
+                if port.force_flush(remaining_millis) is False:
+                    timed_out = True
+            except BaseException as exc:
+                errors.append(exc)
+
+        flush_status = "timed_out" if timed_out else "error" if errors else "completed"
+        emit_before_close(flush_status)
+
+        for port in ports:
+            remaining_millis = max(0, int((deadline - time.monotonic()) * 1000))
+            if remaining_millis <= 0:
+                timed_out = True
+                break
+            try:
+                port.close(remaining_millis)
+            except BaseException as exc:
+                errors.append(exc)
+        if any(port.worker_alive() for port in ports):
+            timed_out = True
+
+    if not before_close_called:
+        emit_before_close(
+            "refused"
+            if refused
+            else "timed_out"
+            if timed_out
+            else "error"
+            if errors
+            else "completed"
+        )
     _providers = ()
+    _shutdown_ports = ()
     _instruments.clear()
+    _semantic_sink = None
+    _semantic_surface = "internal"
+    _semantic_telemetry = None
     _initialized = False
+    status = (
+        "refused" if refused else "timed_out" if timed_out else "error" if errors else "completed"
+    )
+    return ShutdownResult(status, time.monotonic() - started, len(errors))
 
 
 # ---- emission surface (cit.3): gated tracer / meter + lifecycle metrics ------
@@ -534,6 +854,12 @@ def is_active() -> bool:
     return _initialized
 
 
+def current_semantic_telemetry():
+    """Return the process-composed semantic port, or ``None`` on every disabled/failure path."""
+
+    return _semantic_telemetry if _initialized else None
+
+
 def get_tracer(name: str = _SERVICE_NAME):
     """The active tracer, or a cheap no-op until ``init()`` wires a real provider. The no-op path
     never imports opentelemetry, so callers stay import-safe without the ``ws[otel]`` extra."""
@@ -580,8 +906,77 @@ def trace_verb(name: str):
         def wrapper(*args, **kwargs):
             if not _initialized:
                 return fn(*args, **kwargs)
-            with get_tracer().start_as_current_span(name):
-                return fn(*args, **kwargs)
+            semantic = current_semantic_telemetry()
+            observation = None
+            if semantic is not None:
+                try:
+                    from .kernel.telemetry import (
+                        AttributeKey,
+                        SemanticEventName,
+                        TelemetryAttribute,
+                    )
+
+                    observation = semantic.begin(
+                        SemanticEventName.OPERATION_EXECUTION,
+                        attributes=(
+                            TelemetryAttribute(AttributeKey.OPERATION_KIND, "command"),
+                            TelemetryAttribute(AttributeKey.OPERATION_NAME, name),
+                            TelemetryAttribute(AttributeKey.SURFACE, "cli"),
+                        ),
+                    )
+                except BaseException:
+                    observation = None
+            try:
+                with get_tracer().start_as_current_span(name):
+                    result = fn(*args, **kwargs)
+            except KeyboardInterrupt:
+                if semantic is not None:
+                    try:
+                        from .kernel.telemetry import (
+                            ErrorClassification,
+                            EventError,
+                            Outcome,
+                        )
+
+                        semantic.complete(
+                            observation,
+                            Outcome.CANCELLED,
+                            error=EventError(
+                                ErrorClassification.CANCELLATION,
+                                "cli.command.cancelled",
+                            ),
+                        )
+                    except BaseException:
+                        pass
+                raise
+            except BaseException:
+                if semantic is not None:
+                    try:
+                        from .kernel.telemetry import (
+                            ErrorClassification,
+                            EventError,
+                            Outcome,
+                        )
+
+                        semantic.complete(
+                            observation,
+                            Outcome.FAILED,
+                            error=EventError(
+                                ErrorClassification.INTERNAL,
+                                "cli.command.failed",
+                            ),
+                        )
+                    except BaseException:
+                        pass
+                raise
+            if semantic is not None:
+                try:
+                    from .kernel.telemetry import Outcome
+
+                    semantic.complete(observation, Outcome.SUCCEEDED)
+                except BaseException:
+                    pass
+            return result
 
         # Machine-checkable marker for the convention lint (every work/plan verb must be traced).
         wrapper.__otel_verb__ = name

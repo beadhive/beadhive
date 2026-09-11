@@ -31,6 +31,7 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 from beadhive import gateway_read as gateway_read_mod
+from beadhive.kernel.telemetry import SemanticTelemetryPort
 
 CONTRACT_VERSION = "gateway.v1"
 SCHEMA_VERSION = 1
@@ -385,10 +386,204 @@ _CORRELATION_ID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\Z"
 )
 _REVISION = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_EVENT_CURSOR = re.compile(
-    r"(?P<epoch>[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
-    r":(?P<sequence>0|[1-9][0-9]{0,15})\Z"
+_EVENT_CURSOR_PATTERN = (
+    r"^([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})"
+    r":(0|[1-9][0-9]{0,15})$"
 )
+_EVENT_CURSOR = re.compile(_EVENT_CURSOR_PATTERN)
+_EVENT_CURSOR_SCHEMA = {
+    "type": "string",
+    "pattern": _EVENT_CURSOR_PATTERN,
+    # ECMA-262 ``$`` can match before a final line terminator. Excluding its four line
+    # terminators keeps JSON Schema search semantics identical to Python ``fullmatch``.
+    "not": {"pattern": r"[\r\n\u2028\u2029]"},
+}
+
+
+def gateway_wire_schemas() -> dict[str, dict[str, object]]:
+    """Return the ``gateway.v1`` schemas owned by this disclosure boundary.
+
+    The projection artifact consumes this declaration instead of reverse-engineering handler
+    names. Required response keys come from the same allowlists that reject runtime payloads.
+    """
+
+    schema_version = {"const": SCHEMA_VERSION}
+    contract_version = {"const": CONTRACT_VERSION}
+    stage_slug = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["stage", "slug"],
+        "properties": {
+            "stage": {"type": "string", "minLength": 1},
+            "slug": {"type": "string", "minLength": 1},
+        },
+    }
+    error_response = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": sorted(_ERROR_KEYS),
+        "properties": {
+            "error": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": sorted(_ERROR_DETAIL_KEYS),
+                "properties": {
+                    "code": {"type": "string", "minLength": 1, "maxLength": 128},
+                    "message": {"type": "string", "minLength": 1, "maxLength": 512},
+                    "retryable": {"type": "boolean"},
+                },
+            }
+        },
+    }
+    return {
+        "emptyRequest": {"type": "object", "additionalProperties": False},
+        "emptyResponse": {"const": ""},
+        "healthResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["contractVersion", "live"],
+            "properties": {
+                "contractVersion": contract_version,
+                "live": {"const": True},
+            },
+        },
+        "instancesRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["limit"],
+            "properties": {"limit": {"const": 50}},
+        },
+        "instancesResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_INSTANCE_PAGE_KEYS),
+            "properties": {
+                "schemaVersion": schema_version,
+                "items": {
+                    "type": "array",
+                    "maxItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": sorted(_INSTANCE_KEYS),
+                        "properties": {
+                            "id": {"const": DEVELOPMENT_INSTANCE_ID},
+                            "displayName": {
+                                "type": "string",
+                                "minLength": 1,
+                                "maxLength": 256,
+                            },
+                            "availability": {"enum": ["online", "offline"]},
+                            "capabilities": {
+                                "enum": [
+                                    ["snapshot"],
+                                    ["snapshot", "refresh"],
+                                    ["snapshot", "events"],
+                                    ["snapshot", "refresh", "events"],
+                                ]
+                            },
+                        },
+                    },
+                },
+                "nextCursor": {"type": "null"},
+            },
+        },
+        "snapshotRequest": stage_slug,
+        "snapshotResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_ENVELOPE_KEYS),
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "instanceId": {"const": DEVELOPMENT_INSTANCE_ID},
+                "snapshot": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": sorted(_SNAPSHOT_KEYS),
+                    "properties": {key: {} for key in sorted(_SNAPSHOT_KEYS | {"eventCursor"})},
+                },
+            },
+        },
+        "eventsRequest": {
+            **stage_slug,
+            "required": ["stage", "slug", "cursor"],
+            "properties": {
+                **stage_slug["properties"],  # type: ignore[dict-item]
+                "cursor": _EVENT_CURSOR_SCHEMA,
+            },
+        },
+        "eventStreamResponse": {
+            "type": "string",
+            "contentMediaType": "text/event-stream",
+        },
+        "refreshRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_COMMAND_INPUT_KEYS),
+            "properties": {
+                "schemaVersion": schema_version,
+                "correlationId": {"type": "string", "pattern": _CORRELATION_ID.pattern},
+                "expectedRevision": {"type": "string", "pattern": _REVISION.pattern},
+            },
+        },
+        "commandResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": sorted(_COMMAND_ENVELOPE_KEYS),
+            "properties": {
+                "schemaVersion": schema_version,
+                "contractVersion": contract_version,
+                "instanceId": {"const": DEVELOPMENT_INSTANCE_ID},
+                "command": {"const": "refresh"},
+                "correlationId": {"type": "string", "pattern": _CORRELATION_ID.pattern},
+                "result": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": sorted(_COMMAND_RESULT_KEYS),
+                    "properties": {
+                        "status": {"const": "completed"},
+                        "revision": {"type": "string", "pattern": _REVISION.pattern},
+                    },
+                },
+            },
+        },
+        "unavailableCommandRequest": {
+            **stage_slug,
+            "required": ["stage", "slug", "command"],
+            "properties": {
+                **stage_slug["properties"],  # type: ignore[dict-item]
+                "command": {"type": "string", "minLength": 1},
+            },
+        },
+        "errorResponse": error_response,
+        "readPreflightRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["origin", "method", "headers"],
+            "properties": {
+                "origin": {"type": "string", "format": "uri"},
+                "method": {"const": "GET"},
+                "headers": {"const": ["authorization"]},
+            },
+        },
+        "commandPreflightRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["origin", "method", "headers"],
+            "properties": {
+                "origin": {"type": "string", "format": "uri"},
+                "method": {"const": "POST"},
+                "headers": {"const": ["authorization", "content-type"]},
+            },
+        },
+        "fallbackRequest": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["path"],
+            "properties": {"path": {"type": "string"}},
+        },
+    }
 
 
 def _exact_keys(value: object, expected: frozenset[str]) -> bool:
@@ -672,8 +867,9 @@ def build_development_frame_bridge_application(
     registry: DevelopmentInstanceRegistry,
     runtime_calls: RuntimeCallPolicy | None = None,
     read_source: gateway_read_mod.GatewayReadSource | None = None,
+    telemetry: SemanticTelemetryPort | None = None,
 ) -> Starlette:
-    """Build the Frame Bridge without mutating the authoritative loopback application."""
+    """Build the Frame Bridge read profile without mutating the loopback application."""
     runtime_calls = runtime_calls or RuntimeCallPolicy()
     gateway_host = urlsplit(config.gateway_origin).netloc
     discovery_availability_calls = _BoundedRuntimeCalls(
@@ -883,7 +1079,7 @@ def build_development_frame_bridge_application(
             subscriptions = request.query_params.getlist("subscription")
             if (
                 len(subscriptions) != 1
-                or not 1 <= len(subscriptions[0]) <= 512
+                or not 1 <= len(subscriptions[0]) <= gateway_read_mod._EVENT_SUBSCRIPTION_MAX_LENGTH
                 or subscriptions[0].strip() != subscriptions[0]
             ):
                 raise gateway_read_mod.ReadSourceInvalidRequest
@@ -894,7 +1090,10 @@ def build_development_frame_bridge_application(
             if after_values and header_values and after_values[0] != header_values[0]:
                 raise gateway_read_mod.ReadSourceInvalidRequest
             after = after_values[0] if after_values else header_values[0] if header_values else None
-            if after is not None and not 1 <= len(after) <= 512:
+            if (
+                after is not None
+                and not 1 <= len(after) <= gateway_read_mod._EVENT_AFTER_MAX_LENGTH
+            ):
                 raise gateway_read_mod.ReadSourceInvalidRequest
             if not stream_admission.acquire(subject):
                 return rich_error(
@@ -1162,8 +1361,8 @@ def build_development_frame_bridge_application(
             cursor = cursors[0]
             match = _EVENT_CURSOR.fullmatch(cursor)
             assert match is not None
-            epoch = match.group("epoch")
-            sequence = int(match.group("sequence"))
+            epoch = match.group(1)
+            sequence = int(match.group(2))
             if not stream_admission.acquire(subject):
                 return _error(
                     "runtime_unavailable", "The runtime is unavailable.", 503, retryable=True
@@ -1219,8 +1418,8 @@ def build_development_frame_bridge_application(
                         )
                         if (
                             next_match is None
-                            or next_match.group("epoch") != epoch
-                            or int(next_match.group("sequence")) != sequence + 1
+                            or next_match.group(1) != epoch
+                            or int(next_match.group(2)) != sequence + 1
                             or not isinstance(revision, str)
                             or _REVISION.fullmatch(revision) is None
                         ):
@@ -1428,6 +1627,7 @@ def build_development_frame_bridge_application(
         if request.method not in {"GET", "OPTIONS"} and not (
             request.method == "POST" and is_command
         ):
+            # This message is part of the stable Gateway wire contract, not the component name.
             response = _error("read_only_profile", "The gateway is read-only.", 405)
         else:
             response = await call_next(request)
@@ -1440,5 +1640,13 @@ def build_development_frame_bridge_application(
         return response
 
     app.add_middleware(BaseHTTPMiddleware, dispatch=cors_and_read_only)
+    if telemetry is not None:
+        from .adapters.telemetry import SemanticHttpTelemetryMiddleware
+
+        app.add_middleware(
+            SemanticHttpTelemetryMiddleware,
+            telemetry=telemetry,
+            surface="gateway",
+        )
 
     return app

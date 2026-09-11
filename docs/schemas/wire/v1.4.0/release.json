@@ -1,0 +1,93 @@
+{
+  "format_version": 1,
+  "release_version": "1.4.0",
+  "schema_draft": "https://json-schema.org/draft/2020-12/schema",
+  "artifacts": [
+    {
+      "id": "urn:beadhive:wire-schema:bh.hive-onboard:1",
+      "contract_version": 1,
+      "path": "bh-hive-onboard-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:bh.hive-ready:1",
+      "contract_version": 1,
+      "path": "bh-hive-ready-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:bh.hive-status:1",
+      "contract_version": 1,
+      "path": "bh-hive-status-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:bh.hive-survey:1",
+      "contract_version": 1,
+      "path": "bh-hive-survey-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:config:1",
+      "contract_version": 1,
+      "path": "config-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:factory.bead-node:1",
+      "contract_version": 1,
+      "path": "factory-bead-node-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:factory.hive-info:1",
+      "contract_version": 1,
+      "path": "factory-hive-info-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "contract_version": 1,
+      "path": "factory-snapshot-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:json-value:1",
+      "contract_version": 1,
+      "path": "json-value-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:operation-catalog:1",
+      "contract_version": 1,
+      "path": "operation-catalog-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-manifest:1",
+      "contract_version": 1,
+      "path": "plugin-manifest-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+      "contract_version": 1,
+      "path": "plugin-config-herdr-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+      "contract_version": 1,
+      "path": "plugin-config-hitch-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+      "contract_version": 1,
+      "path": "plugin-config-observaloop-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+      "contract_version": 1,
+      "path": "plugin-config-orca-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+      "contract_version": 1,
+      "path": "plugin-config-repowise-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-catalog:operations:1",
+      "contract_version": 1,
+      "path": "operation-catalog-v1.json"
+    }
+  ],
+  "conformance_fixtures": "conformance.json"
+}

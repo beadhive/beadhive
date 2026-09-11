@@ -521,6 +521,8 @@ you find out:
 bh backup usage              # size + policy for all three roots, this host
 bh backup usage --json       # machine-readable
 bh backup reclaim --dry-run  # preview what a reclaim would free, all roots
+bh backup reclaim --root cache --dry-run   # show SUPERSEDED vs RETAINED per-hive caches
+bh backup reclaim --root cache --confirm   # remove only caches superseded by local .beads
 bh backup reclaim --root hq --confirm            # prune HQ's dated dirs to backup.hq_keep
 bh backup reclaim --root hive --confirm          # rotate the CURRENT hive's bd backup once over cap
 bh config set backup.hq_keep 3                   # keep fewer HQ snapshots

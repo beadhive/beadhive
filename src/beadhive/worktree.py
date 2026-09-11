@@ -41,12 +41,12 @@ import typer
 
 from . import (
     bd,
-    config,
     converge,  # noqa: F401 - compatibility patch seam
     ghpr,  # noqa: F401 - compatibility patch seam
     host,  # noqa: F401 - compatibility patch seam
     otel,
     plugins,
+    precious,  # noqa: F401 - compatibility patch seam
     registry,
     test_report,  # noqa: F401 - compatibility patch seam
     triage_store,  # noqa: F401 - compatibility patch seam
@@ -54,8 +54,32 @@ from . import (
     worktree_merge,
     wt_status,  # noqa: F401 - compatibility patch seam
 )  # noqa: F401 - compatibility patch seams retained on the facade
+from .config_consumer_ports import work_settings as config
 from .identity import workspace_identity
+from .modules.worktrees import (
+    BATCH_BRANCH_PREFIX as _BATCH_BRANCH_PREFIX,
+)
+from .modules.worktrees import (
+    BATCH_LEAF_PREFIX as _BATCH_LEAF_PREFIX,
+)
+from .modules.worktrees import (
+    WT_PREFIX,
+    CreateWorktreeRequest,
+    NativeGitWorktreeProvisioner,
+    PluginWorktreeProvisioner,
+    WorktreeBranchPolicy,
+    WorktreeLifecycleService,
+    bind_worktree,
+    branch_suffix,
+    leaf_for_branch,
+)
+from .modules.worktrees import (
+    apply_prefix as _policy_apply_prefix,
+)
 from .run import missing_binary, retry_on_index_lock, run  # noqa: F401 - compatibility patch seams
+
+BATCH_BRANCH_PREFIX = _BATCH_BRANCH_PREFIX
+BATCH_LEAF_PREFIX = _BATCH_LEAF_PREFIX
 
 # Re-export the integration-merge tier (in worktree_merge) so ws.worktree.<name> still works.
 merge_no_ff = worktree_merge.merge_no_ff
@@ -81,7 +105,6 @@ def _run_git(args, **kw):
 # ---- naming -----------------------------------------------------------------
 
 
-WT_PREFIX = "wt/"  # every managed-worktree branch starts here, whatever the mode
 VERIFY_LEAF_PREFIX = "verify-"  # ephemeral clean-checkout worktrees (clean_checkout); not a seat
 # Per-invocation verify- dirs (bh-nikb): each clean_checkout gets its own
 # verify-<branch-leaf>-<rand6> dir, so two processes validating the same branch never share (and
@@ -101,9 +124,6 @@ _VERIFY_TTL_SECONDS = 24 * 60 * 60  # hard age backstop (reboots / cross-host / 
 # seat is `wt/bead/epic/<epic>` — a bare-`<epic>` leaf, i.e. the SAME dir the batch would want.
 # Without the prefix `ensure` returns the pre-existing seat worktree and commits land on the seat
 # branch instead of `wt/batch/<epic>`, breaking `merge --group`.
-BATCH_BRANCH_PREFIX = "batch/"  # branch namespace: wt/batch/<group>
-BATCH_LEAF_PREFIX = "batch-"  # worktree-dir namespace: <root>/.../batch-<group>
-
 # Every bead branch is wt/bead/<type>/<id>. <type> is a legible role assertion in the ref path:
 # CONTAINER_TYPES are landing targets — an epic at ANY tier (a workstream is an epic-of-epics, per
 # xn3o.7) opens its own container/integration line; a leaf `issue` is never a landing target. The
@@ -138,10 +158,7 @@ def _leaf(branch: str) -> str:
     the epic id, whose seat `wt/bead/epic/<epic>` would otherwise be the same dir (ev1l).
     Idempotent on an already-computed leaf (`batch-<group>` has no `batch/` segment).
     """
-    body = branch.removeprefix(WT_PREFIX)
-    if body.startswith(BATCH_BRANCH_PREFIX):
-        return BATCH_LEAF_PREFIX + registry.sanitize(body[len(BATCH_BRANCH_PREFIX) :])
-    return registry.sanitize(branch.rsplit("/", 1)[-1])
+    return leaf_for_branch(branch)
 
 
 def _suffix(cfg, bead="", branch="", kind="issue", now=None, rand=None) -> str:
@@ -150,19 +167,26 @@ def _suffix(cfg, bead="", branch="", kind="issue", now=None, rand=None) -> str:
     A bead branch carries its `<type>` segment (`bead/{kind}/{id}`); callers resolve `kind`
     (`_bead_kind`) — the leaf default 'issue' keeps a bare template call well-formed."""
     wcfg = config.worktrees_cfg(cfg)
-    if bead:
-        tmpl = str(wcfg.get("bead_branch", "bead/{kind}/{id}"))
-        return tmpl.format(id=bead, kind=kind or "issue")
-    if branch:
-        return branch
-    ts, rnd = _ts_rand(now=now, rand=rand)
-    tmpl = str(wcfg.get("session_branch", "session/{ts}-{rand}"))
-    return tmpl.format(ts=ts, rand=rnd, id=f"{ts}-{rnd}")
+    policy = WorktreeBranchPolicy(
+        bead_template=str(wcfg.get("bead_branch", "bead/{kind}/{id}")),
+        session_template=str(wcfg.get("session_branch", "session/{ts}-{rand}")),
+    )
+    ts = rnd = ""
+    if not bead and not branch:
+        ts, rnd = _ts_rand(now=now, rand=rand)
+    return branch_suffix(
+        policy,
+        bead=bead,
+        branch=branch,
+        kind=kind,
+        timestamp=ts,
+        random_token=rnd,
+    )
 
 
 def apply_prefix(suffix: str) -> str:
     """Prepend the managed wt/ prefix to a branch suffix, never doubling an existing wt/."""
-    return WT_PREFIX + suffix.removeprefix(WT_PREFIX).lstrip("/")
+    return _policy_apply_prefix(suffix)
 
 
 def _branch_and_leaf(cfg, bead="", branch="", kind="issue", now=None, rand=None):
@@ -170,8 +194,8 @@ def _branch_and_leaf(cfg, bead="", branch="", kind="issue", now=None, rand=None)
     worktree is obvious from the branch), normalizing to never double a wt/wt/. The leaf is
     the last path segment — for a bead branch that is `<id>` regardless of `<type>`, so a
     worktree dir is named the same under the new namespace as before."""
-    br = apply_prefix(_suffix(cfg, bead=bead, branch=branch, kind=kind, now=now, rand=rand))
-    return br, _leaf(br)
+    binding = bind_worktree(_suffix(cfg, bead=bead, branch=branch, kind=kind, now=now, rand=rand))
+    return binding.branch, binding.leaf
 
 
 def _bead_kind(main: Path, bead: str, kind: str = "") -> str:
@@ -254,6 +278,26 @@ def _rules(cfg, entry):
 def run_init(cfg, entry, path: Path, verify_only: bool = False):
     """Compatibility facade for ``worktree_verify.impl_run_init``."""
     return _worktree_verify.impl_run_init(cfg, entry, path, verify_only)
+
+
+def _init_rules_fingerprint(cfg, entry) -> str:
+    """Compatibility facade for ``worktree_verify.impl__init_rules_fingerprint``."""
+    return _worktree_verify.impl__init_rules_fingerprint(cfg, entry)
+
+
+def _read_init_rules_fingerprint(path: Path) -> str | None:
+    """Compatibility facade for ``worktree_verify.impl__read_init_rules_fingerprint``."""
+    return _worktree_verify.impl__read_init_rules_fingerprint(path)
+
+
+def record_init_rules(cfg, entry, path: Path) -> bool:
+    """Compatibility facade for ``worktree_verify.impl_record_init_rules``."""
+    return _worktree_verify.impl_record_init_rules(cfg, entry, path)
+
+
+def warn_init_rules_drift(cfg, entry, path: Path) -> bool:
+    """Compatibility facade for ``worktree_verify.impl_warn_init_rules_drift``."""
+    return _worktree_verify.impl_warn_init_rules_drift(cfg, entry, path)
 
 
 def provision_observaloop(cfg, entry, target: Path) -> None:
@@ -460,25 +504,30 @@ def _record_wt_op_duration(
 
 
 def _consult_wt_create(
-    cfg, entry, *, main: Path, branch: str, target: Path, start_point: str
+    cfg,
+    entry,
+    *,
+    main: Path,
+    branch: str,
+    target: Path,
+    start_point: str,
+    composition=None,
 ) -> Path | None:
     """Generic delegation seam for a worktree *create*: the first enabled plugin (registry
     order) defining ``wt_create`` wins. ``None`` (or no enabled plugin defining the hook) means
     "not handled" — the native `git worktree add` runs instead. A ``typer.Exit`` raised by the
     hook is the plugin's own hard-fail policy and PROPAGATES; any other exception is best-effort
     (warn + fall through to native), mirroring retire.py's plugin-notify fence."""
-    for p in plugins.registry():
-        if p.wt_create is None or not p.enabled(cfg, entry):
-            continue
+    request = plugins.WorktreeCreateRequest(main, branch, target, start_point)
+    for port in plugins.worktree_create_ports(cfg, entry, composition=composition):
         try:
-            result = p.wt_create(
-                cfg, entry, main=main, branch=branch, target=target, start_point=start_point
-            )
+            result = port.create(cfg, entry, request)
         except typer.Exit:
             raise
         except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts create
             typer.echo(
-                f"⚠ plugin {p.name} wt_create failed, falling back to native: {exc}", err=True
+                f"⚠ plugin {port.plugin_id} wt_create failed, falling back to native: {exc}",
+                err=True,
             )
             continue
         if result is not None:
@@ -487,7 +536,15 @@ def _consult_wt_create(
 
 
 def _notify_wt_create(
-    hook: str, cfg, entry, *, main: Path, branch: str, target: Path, start_point: str = ""
+    hook: str,
+    cfg,
+    entry,
+    *,
+    main: Path,
+    branch: str,
+    target: Path,
+    start_point: str = "",
+    composition=None,
 ) -> None:
     """Run an observing worktree-create hook for every enabled plugin.
 
@@ -495,17 +552,14 @@ def _notify_wt_create(
     deliberately best-effort: one failed observer must not prevent either creation or a later
     observer from running.
     """
-    for p in plugins.registry():
-        callback = getattr(p, hook)
-        if callback is None or not p.enabled(cfg, entry):
-            continue
-        try:
-            kwargs = {"main": main, "branch": branch, "target": target}
-            if hook == "wt_creating":
-                kwargs["start_point"] = start_point
-            callback(cfg, entry, **kwargs)
-        except Exception as exc:  # noqa: BLE001 - observers never abort worktree creation
-            typer.echo(f"⚠ plugin {p.name} {hook} failed, continuing: {exc}", err=True)
+    request = plugins.WorktreeCreateRequest(main, branch, target, start_point)
+    for observer in plugins.worktree_observers(hook, cfg, entry, composition=composition):
+        report = observer.deliver(cfg, entry, request)
+        if not plugins.delivery_succeeded(report):
+            error = report.deliveries[-1].attempts[-1].error
+            typer.echo(
+                f"⚠ plugin {observer.plugin_id} {hook} failed, continuing: {error}", err=True
+            )
 
 
 def _consult_wt_remove(
@@ -516,23 +570,69 @@ def _consult_wt_remove(
     "not handled" — the native `git worktree remove` runs instead. Same propagation contract as
     ``_consult_wt_create``: a ``typer.Exit`` PROPAGATES, any other exception warns and falls
     through to native."""
-    for p in plugins.registry():
-        if p.wt_remove is None or not p.enabled(cfg, entry):
-            continue
+    request = plugins.WorktreeRemoveRequest(main, target, force, keep_branch)
+    for port in plugins.worktree_remove_ports(cfg, entry):
         try:
-            result = p.wt_remove(
-                cfg, entry, main=main, target=target, force=force, keep_branch=keep_branch
-            )
+            result = port.remove(cfg, entry, request)
         except typer.Exit:
             raise
         except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts remove
             typer.echo(
-                f"⚠ plugin {p.name} wt_remove failed, falling back to native: {exc}", err=True
+                f"⚠ plugin {port.plugin_id} wt_remove failed, falling back to native: {exc}",
+                err=True,
             )
             continue
         if result:
             return True
     return False
+
+
+def _worktree_lifecycle_service(cfg, entry, *, composition=None) -> WorktreeLifecycleService:
+    """Compose typed adapters over the facade's established dynamic patch seams."""
+    plugin = PluginWorktreeProvisioner(
+        preparing=lambda request: _notify_wt_create(
+            "wt_creating",
+            cfg,
+            entry,
+            main=request.main,
+            branch=request.branch,
+            target=request.target,
+            start_point=request.start_point,
+            composition=composition,
+        ),
+        create_delegate=lambda request: _consult_wt_create(
+            cfg,
+            entry,
+            main=request.main,
+            branch=request.branch,
+            target=request.target,
+            start_point=request.start_point,
+            composition=composition,
+        ),
+        created_observer=lambda request, result: _notify_wt_create(
+            "wt_created",
+            cfg,
+            entry,
+            main=request.main,
+            branch=request.branch,
+            target=result.target,
+            composition=composition,
+        ),
+        remove_delegate=lambda request: _consult_wt_remove(
+            cfg,
+            entry,
+            main=request.main,
+            target=request.target,
+            force=request.force,
+            keep_branch=request.keep_branch,
+        ),
+        supports_create=lambda: bool(
+            plugins.worktree_create_ports(cfg, entry, composition=composition)
+        ),
+        warn=lambda message: typer.echo(f"⚠ {message}", err=True),
+    )
+    native = NativeGitWorktreeProvisioner(_run_git)
+    return WorktreeLifecycleService(native=native, plugin=plugin)
 
 
 def _do_add(
@@ -548,46 +648,27 @@ def _do_add(
     (see `_consult_wt_create`) — attach stays native even when a delegating plugin is enabled
     (bh's `wt/` branch conventions are authoritative for an existing branch; there's no naming
     decision left to delegate), with a one-line warning noting the fallthrough."""
-    target.parent.mkdir(parents=True, exist_ok=True)
     hive = str(entry.get("prefix", ""))
     started = time.monotonic()
-    delegated_target: Path | None = None
-    _notify_wt_create(
-        "wt_creating", cfg, entry, main=main, branch=br, target=target, start_point=start_point
-    )
-    if new_branch:
-        delegated_target = _consult_wt_create(
-            cfg, entry, main=main, branch=br, target=target, start_point=start_point
-        )
-    elif any(p.wt_create is not None and p.enabled(cfg, entry) for p in plugins.registry()):
-        typer.echo(
-            "⚠ worktree attach stays native (delegation only covers new-branch create)", err=True
-        )
+    composition = plugins.action_composition(cfg, entry)
+    service = _worktree_lifecycle_service(cfg, entry, composition=composition)
+    request = CreateWorktreeRequest(main, br, target, new_branch, start_point)
+    result = service.create(request)
 
     # Time + tag the create. The error path used to raise BEFORE any emission (always-"ok" gap), so
     # a failed create recorded nothing — now both the events counter AND the op.duration histogram
     # fire with outcome=error before the re-raise. Best-effort + gated (verify- trees never reach
     # this chokepoint; clean_checkout bypasses _do_add entirely).
-    if delegated_target is None:
-        if new_branch:
-            cmd = ["git", "-C", str(main), "worktree", "add", "-b", br, str(target)]
-            if start_point:
-                cmd.append(start_point)
-        else:
-            _run_git(["git", "-C", str(main), "worktree", "prune"], check=False)
-            cmd = ["git", "-C", str(main), "worktree", "add", str(target), br]
-        res = _run_git(cmd, check=False)
-        if res.returncode != 0:
-            elapsed = time.monotonic() - started
-            _record_wt_event("create", "error", hive=hive, leaf=target.name)
-            _record_wt_op_duration("create", elapsed, "error", hive=hive, leaf=target.name)
-            raise typer.Exit(res.returncode)
-    else:
-        target = delegated_target
-    _notify_wt_create("wt_created", cfg, entry, main=main, branch=br, target=target)
+    if not result.succeeded:
+        elapsed = time.monotonic() - started
+        _record_wt_event("create", "error", hive=hive, leaf=target.name)
+        _record_wt_op_duration("create", elapsed, "error", hive=hive, leaf=target.name)
+        raise typer.Exit(result.returncode)
+    target = result.target
     elapsed = time.monotonic() - started
     _record_wt_op_duration("create", elapsed, "ok", hive=hive, leaf=target.name)
-    run_init(cfg, entry, target)
+    if run_init(cfg, entry, target):
+        record_init_rules(cfg, entry, target)
     provision_observaloop(cfg, entry, target)
     _record_wt_event("create", hive=hive, leaf=target.name)
 
@@ -893,6 +974,7 @@ def ensure(cfg, hive, bead="", branch="", base_bead="", kind=""):
     if target.exists():
         if bead:  # only a single-bead child branch tracks a refreshable container tip
             _repoint_if_stale(cfg, entry, main, br, target, base_bead or bead)
+        warn_init_rules_drift(cfg, entry, target)
         return entry, target, br
     new_branch = not _branch_exists(main, br)
     start_point = ""
@@ -1189,6 +1271,27 @@ def backup_branch(entry, branch, ts: str, label: str = "refine") -> str:
     return _worktree_git.impl_backup_branch(entry, branch, ts, label)
 
 
+def parse_safety_ref(name: str, sha: str = ""):
+    """Compatibility facade for ``worktree_git.impl_parse_safety_ref``."""
+    return _worktree_git.impl_parse_safety_ref(name, sha)
+
+
+def safety_refs(entry, branch: str = "", labels: tuple[str, ...] = ("refine", "premerge")):
+    """Compatibility facade for ``worktree_git.impl_safety_refs``."""
+    return _worktree_git.impl_safety_refs(entry, branch, labels)
+
+
+def delete_safety_refs(
+    entry,
+    branch: str,
+    *,
+    labels: tuple[str, ...] = ("refine", "premerge"),
+    keep: tuple[str, ...] = (),
+):
+    """Compatibility facade for ``worktree_git.impl_delete_safety_refs``."""
+    return _worktree_git.impl_delete_safety_refs(entry, branch, labels=labels, keep=keep)
+
+
 def _rebase_env(**extra) -> dict:
     """Compatibility facade for ``worktree_git.impl__rebase_env``."""
     return _worktree_git.impl__rebase_env(**extra)
@@ -1328,7 +1431,8 @@ def init_existing(path):
         typer.echo(f"✗ no such path: {p}", err=True)
         raise typer.Exit(1)
     entry = _entry_for_path(cfg, p)
-    run_init(cfg, entry, p)
+    if run_init(cfg, entry, p):
+        record_init_rules(cfg, entry, p)
     typer.echo(f"✓ re-ran init for {p}")
 
 
@@ -1348,6 +1452,7 @@ def remove(hive, ref, force=False, as_json=False):
 
 
 _LANDED_REASONS = ("merged", "molecule landed")  # the close_reasons is_landed treats as landed
+_ABANDONED_REASONS = frozenset({"pivot", "superseded", "obsolete"})
 
 
 def mark_landed(hive: str, ref: str) -> None:
@@ -1384,6 +1489,149 @@ def mark_landed(hive: str, ref: str) -> None:
     typer.echo(
         f"✓ marked {bead} landed (close_reason: merged) — "
         f"`{config.BINARY_ALIAS} worktree prune` can now reap {branch}"
+    )
+
+
+def _has_disposition_edge(data: dict, target: str, relation_type: str) -> bool:
+    return any(
+        isinstance(dep, dict)
+        and str(dep.get("type") or dep.get("dependency_type") or "") == relation_type
+        and str(dep.get("depends_on_id") or dep.get("id") or "") == target
+        for dep in (data.get("dependencies") or [])
+    )
+
+
+def _has_any_edge(data: dict, target: str) -> bool:
+    return any(
+        isinstance(dep, dict) and str(dep.get("depends_on_id") or dep.get("id") or "") == target
+        for dep in (data.get("dependencies") or [])
+    )
+
+
+def _restore_closed_reason(bead: str, close_reason: str, main: Path) -> bool:
+    args = ["close", bead]
+    if close_reason:
+        args.extend(["--reason", close_reason])
+    return bd.run(args, main).returncode == 0
+
+
+def mark_abandoned(
+    hive: str,
+    ref: str,
+    reason: str,
+    *,
+    retained_for: str = "",
+    superseded_by: str = "",
+) -> None:
+    """Record an authoritative non-landing disposition and its queryable relation.
+
+    Mutation is ordered relation-first, close_reason-second.  A newly-created relation is
+    compensated if reopen/reclose fails; a previously closed bead is reclosed with its original
+    reason as part of that compensation.  Pre-existing relations are never removed.
+    """
+    if reason not in _ABANDONED_REASONS:
+        typer.echo(
+            f"✗ unsupported reason '{reason}' (choose pivot, superseded, or obsolete)",
+            err=True,
+        )
+        raise typer.Exit(2)
+    if retained_for and superseded_by:
+        typer.echo("✗ --retained-for and --superseded-by are mutually exclusive", err=True)
+        raise typer.Exit(2)
+    if superseded_by and reason != "superseded":
+        typer.echo("✗ --superseded-by requires --reason superseded", err=True)
+        raise typer.Exit(2)
+
+    cfg = config.load()
+    bead = (_bead_id_from_branch(ref) or "") if ref.startswith(WT_PREFIX) else ref
+    if not bead:
+        typer.echo(f"✗ cannot parse a bead id from {ref}", err=True)
+        raise typer.Exit(1)
+    entry, main, _target, branch = locate(cfg, hive, bead)
+    data = bd.show(bead, main)
+    if data is None:
+        typer.echo(f"✗ no such bead: {bead}", err=True)
+        raise typer.Exit(1)
+
+    if retained_for:
+        state, citing = "retained", retained_for
+        edge_source, edge_target, edge_type = bead, citing, "relates-to"
+    elif superseded_by:
+        state, citing = "superseded", superseded_by
+        edge_source, edge_target, edge_type = citing, bead, "supersedes"
+    else:
+        state, citing = "stale", ""
+        edge_source = edge_target = edge_type = ""
+
+    if citing:
+        if citing == bead:
+            typer.echo("✗ a terminal disposition cannot cite its own bead", err=True)
+            raise typer.Exit(2)
+        citing_data = bd.show(citing, main)
+        if citing_data is None:
+            typer.echo(f"✗ no such citing bead: {citing}", err=True)
+            raise typer.Exit(1)
+    else:
+        citing_data = {}
+
+    close_reason = wt_status.format_disposition(state, reason, citing)
+    edge_data = data if edge_source == bead else citing_data
+    edge_existed = bool(edge_type) and _has_disposition_edge(edge_data, edge_target, edge_type)
+    if edge_type and not edge_existed and _has_any_edge(edge_data, edge_target):
+        typer.echo(
+            f"✗ {edge_source} already has a different relation to {edge_target}; "
+            "refusing an ambiguous disposition edge",
+            err=True,
+        )
+        raise typer.Exit(1)
+    already_stamped = (
+        str(data.get("status") or "") == "closed"
+        and str(data.get("close_reason") or "") == close_reason
+    )
+    if already_stamped and (not edge_type or edge_existed):
+        typer.echo(f"• {bead} already records {state} ({reason}) — nothing to do")
+        return
+
+    edge_added = False
+    if edge_type and not edge_existed:
+        added = bd.run(["dep", "add", edge_source, edge_target, "-t", edge_type], main)
+        if added.returncode != 0:
+            typer.echo(f"✗ failed to record {edge_type} relation for {bead}", err=True)
+            raise typer.Exit(1)
+        edge_added = True
+
+    was_closed = str(data.get("status") or "") == "closed"
+    old_reason = str(data.get("close_reason") or "")
+    if not already_stamped:
+        if was_closed and bd.run(["reopen", bead], main).returncode != 0:
+            compensated = True
+            if edge_added:
+                compensated = (
+                    bd.run(["dep", "remove", edge_source, edge_target], main).returncode == 0
+                )
+            detail = "" if compensated else "; relation compensation also failed"
+            typer.echo(f"✗ cannot reopen {bead} to restamp its close_reason{detail}", err=True)
+            raise typer.Exit(1)
+        if bd.run(["close", bead, "--reason", close_reason], main).returncode != 0:
+            edge_restored = True
+            if edge_added:
+                edge_restored = (
+                    bd.run(["dep", "remove", edge_source, edge_target], main).returncode == 0
+                )
+            restored = not was_closed or _restore_closed_reason(bead, old_reason, main)
+            failures = []
+            if not edge_restored:
+                failures.append("relation compensation failed")
+            if not restored:
+                failures.append("original close_reason restoration failed")
+            detail = f"; {'; '.join(failures)}" if failures else ""
+            typer.echo(f"✗ failed to record terminal disposition for {bead}{detail}", err=True)
+            raise typer.Exit(1)
+
+    relation = f", citing {citing}" if citing else ""
+    typer.echo(
+        f"✓ marked {bead} {state} (reason: {reason}{relation}) — "
+        f"`{config.BINARY_ALIAS} worktree status` now explains {branch}"
     )
 
 
@@ -1469,6 +1717,13 @@ def _bead_statuses_for_entry(
 ) -> tuple[dict[str, str], dict[str, str], dict[str, str], str]:
     """Compatibility facade for ``worktree_inventory.impl__bead_statuses_for_entry``."""
     return _worktree_inventory.impl__bead_statuses_for_entry(entry, rows)
+
+
+def _bead_disposition_relations_for_entry(
+    entry, bead_close_reasons: dict[str, str]
+) -> dict[str, frozenset[tuple[str, str]]]:
+    """Compatibility facade for disposition-relation inventory readback."""
+    return _worktree_inventory.impl__bead_disposition_relations_for_entry(entry, bead_close_reasons)
 
 
 def _classify_entry(entry, rows: list[tuple[str, str, str]], cfg) -> list:

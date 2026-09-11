@@ -381,6 +381,38 @@ def impl__merge_molecule(api, cfg, epic, hive):
     if api.already_landed(entry, mol_branch, base):
         api._reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, base, hive)
         return
+    policy = api.work_logic.epic_history_policy(
+        entry,
+        main,
+        epic,
+        mol_branch,
+        base,
+        api.config.max_commits(cfg, entry),
+        integration,
+    )
+    if not policy["valid"]:
+        api.typer.echo(
+            "✗ epic history topology is not fully attributable to reviewed direct-child "
+            "integrations:\n  "
+            + "\n  ".join(policy["errors"])
+            + "\n  Repair the container integration graph; do not refine away reviewed "
+            "merge bubbles.",
+            err=True,
+        )
+        raise api.typer.Exit(1)
+    count, subjects = api.worktree.history(entry, mol_branch, base)
+    ok, msg = api._history_ok(count, subjects, int(policy["effective_max_commits"]))
+    if not ok:
+        api.typer.echo(
+            f"✗ {msg} — repair the container integration graph; do not refine reviewed "
+            "merge history",
+            err=True,
+        )
+        raise api.typer.Exit(1)
+    api.typer.echo(
+        f"· epic history policy: {policy['basis']} (configured leaf max "
+        f"{policy['configured_max_commits']})"
+    )
     api._guard_signed_history(entry, mol_branch, base, cfg)
     mode = api.config.validation_mode(cfg, entry)
     if base == integration and api.config.work_landing(cfg, entry) == "pr":
@@ -656,7 +688,27 @@ def impl_already_landed(api, entry, branch, base):
     return api.worktree.landed_via_merge(entry, branch, base)
 
 
-def impl__guard_bead_clean_history(api, entry, branch, base, cfg):
+def _has_linked_landing_bubble(api, entry, branch, base, bead, bead_data):
+    """Whether this bead owns a recorded no-ff bubble in ``branch..base``.
+
+    Ancestry alone cannot identify the owner of a commit: two reviewed children can produce the
+    same commit object when their tree, parent, identity, message, and second-resolution timestamp
+    match.  Merge records its no-ff bubble before closing the bead, so that bead-specific linkage
+    is the durable provenance needed by the idempotent reconciliation path.
+    """
+    linked = set(api.git_linkage.commits_from_data(bead_data))
+    expected_subject = f"chore(merge): bead {bead}"
+    return any(
+        row.get("sha") in linked
+        and row.get("subject") == expected_subject
+        and len(row.get("parents") or []) == 2
+        for row in api.worktree.commit_rows(entry, branch, base)
+    )
+
+
+def impl__guard_bead_clean_history(
+    api, entry, branch, base, cfg, *, bead="", main=None, bead_data=None
+):
     """Guard the branch is a small clean conventional history before it's allowed to merge —
     reuses submit's `_history_ok` check as a merge-time backstop.
 
@@ -665,7 +717,16 @@ def impl__guard_bead_clean_history(api, entry, branch, base, cfg):
     base and NOT an ancestor of it — still takes the self-refine bounce unchanged."""
     count, subjects = api.worktree.history(entry, branch, base)
     if count == 0 and api.already_landed(entry, branch, base):
-        return True
+        if not bead or _has_linked_landing_bubble(api, entry, branch, base, bead, bead_data):
+            return True
+        api.work_logic.record_merge_conflict(entry, branch, base, main, [bead], "merge")
+        api.typer.echo(
+            f"✗ zero-delta merge for {bead}: {branch} is reachable from {base}, but no "
+            "bead-linked no-ff integration bubble attributes that history to this child; "
+            "bounced to review=changes-requested instead of closing another child's work",
+            err=True,
+        )
+        raise api.typer.Exit(1)
     ok, msg = api._history_ok(count, subjects, api.config.max_commits(cfg, entry))
     if not ok:
         api.typer.echo(f"✗ {msg} — bounce back for self-refine", err=True)
@@ -703,6 +764,7 @@ def impl__reconcile_landed_bead(api, cfg, entry, main, bead, bead_data, branch, 
             err=True,
         )
         raise api.typer.Exit(1)
+    _reap_accepted_safety_refs(api, entry, branch, boundary="merge reconcile")
     api.typer.echo(
         f"✓ {bead} was already merged ({branch} → {base}) — reconciled bookkeeping "
         "(closed the bead; no re-merge)"
@@ -828,6 +890,24 @@ def impl__record_merge_commit(api, bead, main, base):
         api.typer.echo(f"⚠ failed to record commit linkage for {bead}: {exc}", err=True)
 
 
+def _record_rebased_commits(api, bead, main, entry, branch, base_before, how):
+    """Persist the final child SHAs produced by successful merge-time replay.
+
+    Submit linked the reviewed pre-rebase identities.  ``try_merge_rebase`` may replay those
+    commits onto a newer container tip before landing, so the assembled epic needs both identities
+    as durable provenance.  Record only after combined validation accepts the merge; like the
+    existing merge-bubble linkage, metadata failure is non-fatal once code has landed.
+    """
+    if how != "rebased":
+        return
+    try:
+        shas = api.worktree.commit_shas(entry, branch, base_before)
+        if shas:
+            api.git_linkage.record_commits(bead, main, shas)
+    except Exception as exc:
+        api.typer.echo(f"⚠ failed to record post-rebase commit linkage for {bead}: {exc}", err=True)
+
+
 def impl__merge_bead(api, cfg, bead, hive, rm):
     """Serialize the land of a single approved bead onto its integration base: guard open + review
     resolved + a small clean conventional history, hold the merge slot, rebase-retry merge
@@ -841,7 +921,15 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
     api._guard_bead_merge_gates(bead, main, landing_pr)
     integration = api.config.integration_branch(cfg, entry)
     base = api._guard_bead_land_base(entry, bead, integration)
-    if api._guard_bead_clean_history(entry, branch, base, cfg):
+    if api._guard_bead_clean_history(
+        entry,
+        branch,
+        base,
+        cfg,
+        bead=bead,
+        main=main,
+        bead_data=bead_data,
+    ):
         api._reconcile_landed_bead(cfg, entry, main, bead, bead_data, branch, base, hive, rm)
         return
     api._guard_signed_history(entry, branch, base, cfg)
@@ -854,9 +942,11 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
     revalidate = mode == "conservative" or (on_main and mode != "loose")
     pre = api.worktree._ref_sha(main, base) if revalidate else ""
     with api.work_group.merge_slot(main, slot_attrs):
+        base_before = api.worktree._ref_sha(main, base)
         how = api._merge_bead_no_ff(entry, branch, base, target, cfg, bead, main, slot_attrs)
         if revalidate:
             api._postland_revalidate_bead(cfg, entry, main, base, pre, bead, slot_attrs, on_main)
+        _record_rebased_commits(api, bead, main, entry, branch, base_before, how)
         api._record_merge_commit(bead, main, base)
         api.otel.count_merge_outcome({**slot_attrs, "bh.merge.how": how})
         try:
@@ -875,6 +965,8 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
                 err=True,
             )
             raise
+        if closed:
+            _reap_accepted_safety_refs(api, entry, branch, boundary="merge close")
     api.otel.record_merge_duration(
         api.time.perf_counter() - started, {"bh.merge.kind": "bead", "bh.merge.how": how}
     )
@@ -901,3 +993,15 @@ def impl__merge_bead(api, cfg, bead, hive, rm):
         )
         raise api.typer.Exit(1)
     api.typer.echo(f"✓ merged {bead} ({branch} --no-ff → {base}){note} and closed it")
+
+
+def _reap_accepted_safety_refs(api, entry, branch, *, boundary):
+    """Best-effort exact cleanup only after merge bookkeeping accepts the landed branch."""
+    reaped, failed = api.worktree.delete_safety_refs(entry, branch)
+    if reaped:
+        api.typer.echo(f"  reaped {len(reaped)} accepted safety ref(s) after {boundary}")
+    if failed:
+        api.typer.echo(
+            f"⚠ {boundary} succeeded but safety ref cleanup was refused for: " + ", ".join(failed),
+            err=True,
+        )

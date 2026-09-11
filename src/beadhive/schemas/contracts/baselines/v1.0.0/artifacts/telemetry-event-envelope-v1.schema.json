@@ -1,0 +1,629 @@
+{
+  "$defs": {
+    "error": {
+      "additionalProperties": false,
+      "properties": {
+        "classification": {
+          "enum": [
+            "validation",
+            "configuration",
+            "authorization",
+            "conflict",
+            "dependency",
+            "timeout",
+            "cancellation",
+            "internal",
+            "unavailable"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        },
+        "code": {
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9]*(?:[._-][a-z0-9]+){0,7}$",
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "classification",
+        "code",
+        "retryable"
+      ],
+      "type": "object"
+    },
+    "identity": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "plugin_version": {
+                "type": "string"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "plugin_id": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ],
+      "dependentRequired": {
+        "plugin_version": [
+          "plugin_id"
+        ]
+      },
+      "properties": {
+        "actor": {
+          "oneOf": [
+            {
+              "pattern": "^[a-z][a-z0-9-]*/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "bead_id": {
+          "oneOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9]+(?:\\.[0-9]+)?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hive_id": {
+          "oneOf": [
+            {
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "host_id": {
+          "oneOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "instance_id": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        "plugin_id": {
+          "oneOf": [
+            {
+              "pattern": "^[a-z][a-z0-9-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "plugin_version": {
+          "oneOf": [
+            {
+              "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "run_id": {
+          "oneOf": [
+            {
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seat": {
+          "oneOf": [
+            {
+              "enum": [
+                "developer",
+                "dispatcher",
+                "reviewer",
+                "merger",
+                "planner",
+                "supervisor",
+                "director",
+                "custodian",
+                "controller"
+              ],
+              "type": "string",
+              "x-beadhive-closed-union": true
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "service": {
+          "pattern": "^[a-z][a-z0-9-]{0,63}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "service",
+        "instance_id",
+        "host_id",
+        "hive_id",
+        "bead_id",
+        "run_id",
+        "actor",
+        "seat",
+        "plugin_id",
+        "plugin_version"
+      ],
+      "type": "object"
+    },
+    "outcome": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "timed-out",
+        "cancelled",
+        "no-op"
+      ],
+      "type": "string",
+      "x-beadhive-closed-union": true
+    },
+    "phase": {
+      "enum": [
+        "started",
+        "completed",
+        "observed"
+      ],
+      "type": "string",
+      "x-beadhive-closed-union": true
+    }
+  },
+  "$id": "urn:beadhive:wire-schema:telemetry.event-envelope:1",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "span_id": {
+            "type": "string"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "trace_id": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "const": "completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "duration_ms": {
+            "minimum": 0,
+            "type": "integer"
+          },
+          "outcome": {
+            "$ref": "#/$defs/outcome"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "enum": [
+              "started",
+              "observed"
+            ],
+            "x-beadhive-closed-union": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "duration_ms": {
+            "type": "null"
+          },
+          "error": {
+            "type": "null"
+          },
+          "outcome": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "succeeded",
+              "no-op"
+            ],
+            "x-beadhive-closed-union": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "type": "null"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "enum": [
+              "failed",
+              "timed-out",
+              "cancelled"
+            ],
+            "x-beadhive-closed-union": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "$ref": "#/$defs/error"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "timed-out"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/error"
+              },
+              {
+                "properties": {
+                  "classification": {
+                    "const": "timeout"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "const": "cancelled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "error": {
+            "allOf": [
+              {
+                "$ref": "#/$defs/error"
+              },
+              {
+                "properties": {
+                  "classification": {
+                    "const": "cancellation"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  ],
+  "description": "Transport-neutral, allowlisted semantic observation. Adapter and collector wire formats are projections of this contract, not part of it.",
+  "properties": {
+    "attributes": {
+      "additionalProperties": false,
+      "maxProperties": 16,
+      "properties": {
+        "dependency": {
+          "enum": [
+            "beads",
+            "collector",
+            "dolt",
+            "git",
+            "hq",
+            "other",
+            "plugin"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        },
+        "http.method": {
+          "enum": [
+            "DELETE",
+            "GET",
+            "OTHER",
+            "PATCH",
+            "POST",
+            "PUT"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        },
+        "http.status-class": {
+          "enum": [
+            "1xx",
+            "2xx",
+            "3xx",
+            "4xx",
+            "5xx",
+            "none"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        },
+        "lifecycle.event": {
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*){1,7}$",
+          "type": "string"
+        },
+        "operation.kind": {
+          "enum": [
+            "command",
+            "internal",
+            "lifecycle",
+            "resource",
+            "route",
+            "tool"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        },
+        "operation.name": {
+          "maxLength": 128,
+          "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*){1,7}$",
+          "type": "string"
+        },
+        "reason.code": {
+          "enum": [
+            "already-satisfied",
+            "auth-expired",
+            "auth-revoked",
+            "auth-rotated",
+            "cancelled",
+            "client-closed",
+            "conflict",
+            "daemon-shutdown",
+            "deadline-exceeded",
+            "invalid",
+            "not-configured",
+            "other",
+            "source-discontinuity",
+            "timeout",
+            "unavailable",
+            "unknown"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        },
+        "retry.count": {
+          "maximum": 10,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sampling.decision": {
+          "enum": [
+            "capacity-dropped",
+            "disabled",
+            "recorded",
+            "sampled-out"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        },
+        "shutdown.phase": {
+          "enum": [
+            "cancel-processes",
+            "close-resources",
+            "close-sessions",
+            "drain",
+            "flush-telemetry"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        },
+        "surface": {
+          "enum": [
+            "cli",
+            "daemon",
+            "gateway",
+            "internal",
+            "mcp-http",
+            "mcp-stdio"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        },
+        "transport": {
+          "enum": [
+            "grpc",
+            "http",
+            "in-process",
+            "other",
+            "otlp-http",
+            "sse",
+            "stdio",
+            "websocket"
+          ],
+          "type": "string",
+          "x-beadhive-closed-union": true
+        }
+      },
+      "type": "object"
+    },
+    "causation_id": {
+      "oneOf": [
+        {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "correlation_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "type": "string"
+    },
+    "duration_ms": {
+      "oneOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "error": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "event_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "type": "string"
+    },
+    "event_name": {
+      "maxLength": 128,
+      "pattern": "^beadhive(?:\\.[a-z][a-z0-9-]*){2,7}$",
+      "type": "string"
+    },
+    "event_version": {
+      "minimum": 1,
+      "type": "integer"
+    },
+    "identity": {
+      "$ref": "#/$defs/identity"
+    },
+    "occurred_at": {
+      "pattern": "^(?:(?:[0-9]{3}[1-9]|[0-9]{2}[1-9][0-9]|[0-9][1-9][0-9]{2}|[1-9][0-9]{3})-(?:(?:01|03|05|07|08|10|12)-(?:0[1-9]|[12][0-9]|3[01])|(?:04|06|09|11)-(?:0[1-9]|[12][0-9]|30)|02-(?:0[1-9]|1[0-9]|2[0-8]))|(?:[0-9]{2}(?:0[48]|[2468][048]|[13579][26])|(?:0[48]|[2468][048]|[13579][26])00)-02-29)T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](?:\\.[0-9]{1,6})?Z$",
+      "type": "string"
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/outcome"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "phase": {
+      "$ref": "#/$defs/phase"
+    },
+    "schema_version": {
+      "const": 1
+    },
+    "span_id": {
+      "oneOf": [
+        {
+          "maxLength": 16,
+          "minLength": 16,
+          "pattern": "^[0-9a-f]*[1-9a-f][0-9a-f]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "trace_id": {
+      "oneOf": [
+        {
+          "maxLength": 32,
+          "minLength": 32,
+          "pattern": "^[0-9a-f]*[1-9a-f][0-9a-f]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "event_name",
+    "event_version",
+    "event_id",
+    "occurred_at",
+    "phase",
+    "correlation_id",
+    "causation_id",
+    "trace_id",
+    "span_id",
+    "identity",
+    "outcome",
+    "duration_ms",
+    "error",
+    "attributes"
+  ],
+  "title": "Beadhive semantic telemetry event envelope v1",
+  "type": "object",
+  "version": 1
+}

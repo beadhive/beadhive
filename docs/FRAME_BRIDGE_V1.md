@@ -77,8 +77,8 @@ token, claim, policy membership, path, command input, or internal exception.
 
 The executable conformance contract is in `tests/test_frame_bridge.py`; response construction
 is guarded by a recursive exact-value and wire-type `frame_bridge_payload_is_allowlisted` check
-before JSON serialization. Runtime sources implement an async, cancellation-aware port and must
-move any blocking storage access behind their own cancellable boundary. Discovery availability,
+before JSON serialization. Runtime sources implement an async, cancellation-aware port and must move
+any blocking storage access behind their own cancellable boundary. Discovery availability,
 snapshot availability, snapshot reads, commands, and stream opens have independent concurrency
 bulkheads. Calls have a five-second deadline, saturation fails unavailable immediately instead
 of creating an internal queue, and ASGI shutdown cancels and joins every admitted runtime
@@ -96,13 +96,17 @@ refresh of that authoritative source. The Development demo projection includes c
 `gate` records. The Frame Bridge's independent 1,000-item fail-closed bound still applies after this
 selection.
 
-The launcher accepts Clerk public JWKS and the authorized Development subject list only through
-mode-0600 service credential files. Under systemd, the default names are
-`clerk-jwks.json` and `authorized-subjects.json` below `CREDENTIALS_DIRECTORY`; optional explicit
-paths exist for other service managers. The process never accepts keys, subjects, origins,
-audiences, instance IDs, listener addresses, or local source locations as command arguments.
-The preferred environment variables are `BEADHIVE_FRAME_BRIDGE_JWKS_FILE` and
-`BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE`.
+The launcher accepts Clerk public JWKS, the authorized Development subject list, and one
+independently scoped host-daemon bearer only through mode-0600 service credential files. Under
+systemd, the default names are `clerk-jwks.json`, `authorized-subjects.json`, and `daemon-bearer`
+below `CREDENTIALS_DIRECTORY`; optional explicit paths exist for other service managers. The
+daemon bearer requires only `operator:read`, is attached only to the fixed loopback daemon
+snapshot and event requests, and is never derived from or replaced by a remote caller token.
+The process never accepts keys, subjects, bearer values, origins, audiences, instance IDs,
+listener addresses, or local source locations as command arguments. The optional environment
+variables `BEADHIVE_FRAME_BRIDGE_JWKS_FILE`, `BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE`, and
+`BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE` carry file paths only; the unreleased
+`BEADHIVE_GATEWAY_*` aliases are absent.
 
 [`deploy/systemd/beadhive-frame-bridge-dev.service.example`](../deploy/systemd/beadhive-frame-bridge-dev.service.example)
 is the least-privilege user-service template. It has no capabilities, writable home, device

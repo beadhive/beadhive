@@ -1,5 +1,10 @@
 # Integrations
 
+Authors of new optional integrations should start with the
+[PluginManifest v1 authoring and isolation guide](PLUGIN-AUTHORING.md). This page documents the
+current built-in operator surfaces; the authoring guide owns the kernel contract, conformance
+workflow, and compatibility-facade removal ledger.
+
 `bh` layers on external tools two ways: **deps** (`deps.py`) are required for this version of
 bh — always present, no on/off flag — and **plugins** are optional integrations gated by an
 `enabled` flag, with a generic `enabled`/`readiness`/lifecycle-hook contract the onboard /

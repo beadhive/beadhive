@@ -354,12 +354,17 @@ class FakeBd:
             return _CP(0, json.dumps(rows), "")
         if sub == "list":
             # `bd list --parent <epic>` — ONE level, exactly as bd serves it. The molecule scope
-            # (`--epic`) is defined against this read, so a fake that recursed would test a
-            # membership rule the product does not have.
+            # (`--epic`) edge-filters this raw prefix result, so a fake that recursed would test
+            # a membership rule the product does not have.
             self.list_args.append(list(args))
             parent = args[args.index("--parent") + 1] if "--parent" in args else ""
             kids = self.children.get(parent, [])
-            return _CP(0, json.dumps([self.beads.get(k) or {"id": k} for k in kids]), "")
+            rows = []
+            for kid in kids:
+                row = dict(self.beads.get(kid) or {"id": kid})
+                row.setdefault("parent", parent)
+                rows.append(row)
+            return _CP(0, json.dumps(rows), "")
         if sub == "show":
             row = self.beads.get(args[1])
             return _CP(0 if row else 1, json.dumps(row) if row else "", "")
@@ -1042,6 +1047,23 @@ def test_next_epic_scope_never_claims_a_bead_outside_the_molecule(nexthive, monk
     assert fake.beads["other-2"]["status"] == "open"
 
 
+def test_next_epic_scope_excludes_a_detached_dotted_prefix_match(nexthive, monkeypatch, capsys):
+    """bd's raw parent query also returns dotted-id matches without a parent edge; they are not
+    molecule members and must never enter the scoped claim candidates."""
+    attached = _open("e1.1", parent="e1")
+    detached = _open("e1.2", parent="elsewhere")
+    fake = _fake_bd(
+        monkeypatch,
+        FakeBd(ready=[detached, attached], children={"e1": ["e1.2", "e1.1"]}),
+    )
+
+    code, payload = _run_next(capsys, epic="e1")
+
+    assert (code, payload["bead"]) == (0, "e1.1")
+    assert fake.claims == ["e1.1"]
+    assert fake.beads["e1.2"]["status"] == "open"
+
+
 def test_next_epic_scope_admits_the_epic_itself(nexthive, monkeypatch, capsys):
     """The molecule is the epic PLUS its children — `start` / `finish` name the epic, so a scope
     that admitted only children would lock the loop out of its own container bead."""
@@ -1105,14 +1127,15 @@ def test_next_without_epic_is_unchanged_and_reads_no_membership(nexthive, monkey
 def test_next_epic_scope_reads_membership_one_level_matching_the_loop_s_own_molecule(
     nexthive, monkeypatch, capsys
 ):
-    """Membership is `bd list --parent <epic> --include-infra --all` — byte-for-byte the query
-    `localloop.LoopDriver.load_molecule` feeds the decision table. If the two ever diverge the
-    loop decides against one set and claims against another, which is this bug one tier down."""
+    """Membership is one edge-filtered parent read with the same options LocalLoop uses. If the
+    two ever diverge the loop decides against one set and claims against another."""
     fake = _molecule_hive(monkeypatch)
 
     _run_next(capsys, epic="e1")
 
-    assert fake.list_args == [["list", "--parent", "e1", "--include-infra", "--all"]], (
+    assert fake.list_args == [
+        ["list", "--parent", "e1", "--limit", "0", "--include-infra", "--all"]
+    ], (
         "exactly ONE membership read: `_molecule_members` shells out to `bd`, so resolving it "
         "per candidate row would spawn a subprocess per ready bead"
     )

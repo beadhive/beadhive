@@ -63,7 +63,8 @@ import shlex
 
 import typer
 
-from . import config, config_schema, otel, test_report, triage_store, validation_ledger
+from . import config, otel, test_report, triage_store, validation_ledger
+from .modules.config import contracts as config_schema
 from .run import run
 
 #: The single required placeholder in `work.validate_subset`. One source, shared with the schema

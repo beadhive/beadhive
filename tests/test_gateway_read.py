@@ -739,12 +739,16 @@ def test_runtime_factory_installs_validated_catalog_before_serving(tmp_path, mon
     jwk.update({"kid": "development-test", "use": "sig", "alg": "RS256"})
     jwks = tmp_path / "clerk-jwks.json"
     subjects = tmp_path / "authorized-subjects.json"
+    daemon_bearer = tmp_path / "daemon-bearer"
     jwks.write_text(json.dumps({"keys": [jwk]}), encoding="utf-8")
     subjects.write_text(json.dumps([SUBJECT]), encoding="utf-8")
+    daemon_bearer.write_text("bh1.frame-bridge." + "d" * 43, encoding="ascii")
     jwks.chmod(0o600)
     subjects.chmod(0o600)
+    daemon_bearer.chmod(0o600)
     monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_JWKS_FILE", str(jwks))
     monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE", str(subjects))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE", str(daemon_bearer))
 
     app = frame_bridge_runtime.create_application()
 

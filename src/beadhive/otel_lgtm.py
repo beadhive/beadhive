@@ -12,7 +12,8 @@ machine, different service.
 
 from __future__ import annotations
 
-from . import compose, config
+from . import compose
+from .config_consumer_ports import telemetry_settings as config
 
 
 def _compose(backend, *args):

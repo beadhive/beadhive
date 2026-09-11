@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import typer
 
-from . import config, identity, otel, registry, triage
+from . import identity, otel, registry, triage
+from .config_consumer_ports import work_settings as config
 
 
 def render_disposition(code, error, message):

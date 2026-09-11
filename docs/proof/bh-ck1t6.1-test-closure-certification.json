@@ -1,0 +1,3218 @@
+{
+  "certification_input_identity": {
+    "algorithm": "sha256",
+    "certifier": "bh-test-closure-prerequisites-v2",
+    "excluded_paths": [
+      "docs/proof/bh-ck1t6.1-test-closure-certification.json"
+    ],
+    "file_count": 1234,
+    "revision": "sha256:c1d6690e29ef6aa0f045681e2e801b1bc4536a94a1c872ae90758f4d5ffe2247",
+    "tree": "sha256:3ec5ecfb3ddf2efe21fd46e39bb2ad3a8ce6508c58015df59706aa4c14f691be"
+  },
+  "closures": [
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 79,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:92492dfd84945115d9f769cdf84ed0e668f49ea8dab0116e0bf8ab9b826f2429",
+        "shared_universe": true
+      },
+      "command": "just test-closure kernel",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/operation_catalog.py",
+          "src/beadhive/testing/__init__.py",
+          "src/beadhive/testing/conformance.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/test_operation_catalog.py",
+          "tests/unit/test_pure_module_independence.py",
+          "tests/unit/testing/test_conformance_testkit.py",
+          "tests/test_cli_projection.py",
+          "tests/test_mcp_catalog_projection.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/modules/adapters -> public kernel contract -> kernel implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "kernel",
+      "implementation_boundary": [
+        "src/beadhive/operation_catalog.py",
+        "src/beadhive/testing/__init__.py",
+        "src/beadhive/testing/conformance.py"
+      ],
+      "independence_tests": [
+        "tests/unit/test_pure_module_independence.py"
+      ],
+      "input_digest": "sha256:3d380e1e17078465fe29b666bfa0ff33bd2bc1be2859cd0a48e7b49cfd2be6f1",
+      "kind": "kernel",
+      "mandatory_boundary_tests": [
+        "tests/unit/testing/test_conformance_testkit.py",
+        "tests/unit/test_pure_module_independence.py"
+      ],
+      "observed_input_digest": "sha256:3d380e1e17078465fe29b666bfa0ff33bd2bc1be2859cd0a48e7b49cfd2be6f1",
+      "owner": "kernel closure maintainers",
+      "public_ports": [
+        "src/beadhive/operation_catalog.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_cli_projection.py",
+        "tests/test_mcp_catalog_projection.py"
+      ],
+      "reverse_dependents": [
+        "adapters"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 32.14,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 68,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:4c9b873ec540e60190253b9b8035aab6e0afb78a6002609fbc499975a989ef4e",
+        "shared_universe": true
+      },
+      "command": "just test-closure kernel.lifecycle",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/kernel/lifecycle/__init__.py",
+          "src/beadhive/kernel/lifecycle/contracts.py",
+          "src/beadhive/kernel/lifecycle/dispatcher.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/kernel/lifecycle/test_contracts.py",
+          "tests/unit/kernel/lifecycle/test_dispatcher.py",
+          "tests/unit/kernel/lifecycle/test_independence.py",
+          "tests/test_host_daemon.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/modules/adapters -> public kernel contract -> kernel implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "kernel.lifecycle",
+      "implementation_boundary": [
+        "src/beadhive/kernel/lifecycle/__init__.py",
+        "src/beadhive/kernel/lifecycle/contracts.py",
+        "src/beadhive/kernel/lifecycle/dispatcher.py"
+      ],
+      "independence_tests": [
+        "tests/unit/kernel/lifecycle/test_independence.py"
+      ],
+      "input_digest": "sha256:1b08b4efb661c5b4054032cea53706f29d3d3cfcfab944ac042d89b8e1870765",
+      "kind": "kernel",
+      "mandatory_boundary_tests": [
+        "tests/unit/kernel/lifecycle/test_independence.py"
+      ],
+      "observed_input_digest": "sha256:1b08b4efb661c5b4054032cea53706f29d3d3cfcfab944ac042d89b8e1870765",
+      "owner": "kernel.lifecycle closure maintainers",
+      "public_ports": [
+        "src/beadhive/kernel/lifecycle/contracts.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_host_daemon.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "unavailable",
+        "seconds": null,
+        "source_revision": null
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 62,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:ce515ff727285e7a2b0fee30d3b74ee76351980a1787e1e75f2a0f001c35634b",
+        "shared_universe": true
+      },
+      "command": "just test-closure kernel.plugins",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/kernel/plugins/__init__.py",
+          "src/beadhive/kernel/plugins/binding.py",
+          "src/beadhive/kernel/plugins/builtins.py",
+          "src/beadhive/kernel/plugins/contracts.py",
+          "src/beadhive/kernel/plugins/discovery.py",
+          "src/beadhive/kernel/plugins/manifests/__init__.py",
+          "src/beadhive/kernel/plugins/manifests/herdr.json",
+          "src/beadhive/kernel/plugins/manifests/hitch.json",
+          "src/beadhive/kernel/plugins/manifests/observaloop.json",
+          "src/beadhive/kernel/plugins/manifests/orca.json",
+          "src/beadhive/kernel/plugins/manifests/repowise.json"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/kernel/plugins/test_binding.py",
+          "tests/unit/kernel/plugins/test_discovery.py",
+          "tests/contracts/test_plugin_discovery_contract.py",
+          "tests/contracts/test_sample_plugin_authoring.py",
+          "tests/test_plugins.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/modules/adapters -> public kernel contract -> kernel implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "kernel.plugins",
+      "implementation_boundary": [
+        "src/beadhive/kernel/plugins/__init__.py",
+        "src/beadhive/kernel/plugins/binding.py",
+        "src/beadhive/kernel/plugins/builtins.py",
+        "src/beadhive/kernel/plugins/contracts.py",
+        "src/beadhive/kernel/plugins/discovery.py",
+        "src/beadhive/kernel/plugins/manifests/__init__.py",
+        "src/beadhive/kernel/plugins/manifests/herdr.json",
+        "src/beadhive/kernel/plugins/manifests/hitch.json",
+        "src/beadhive/kernel/plugins/manifests/observaloop.json",
+        "src/beadhive/kernel/plugins/manifests/orca.json",
+        "src/beadhive/kernel/plugins/manifests/repowise.json"
+      ],
+      "independence_tests": [
+        "tests/unit/kernel/plugins/test_discovery.py"
+      ],
+      "input_digest": "sha256:405ff37120a6cdb8f536ca9080f9ce1a2c2a31e2ce211af6c80475c0d94d25e9",
+      "kind": "kernel",
+      "mandatory_boundary_tests": [
+        "tests/contracts/test_plugin_discovery_contract.py",
+        "tests/contracts/test_sample_plugin_authoring.py",
+        "tests/unit/kernel/plugins/test_discovery.py"
+      ],
+      "observed_input_digest": "sha256:405ff37120a6cdb8f536ca9080f9ce1a2c2a31e2ce211af6c80475c0d94d25e9",
+      "owner": "kernel.plugins closure maintainers",
+      "public_ports": [
+        "src/beadhive/kernel/plugins/contracts.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "dynamic-discovery": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "plugin-registration": [
+          "implementation_boundary",
+          "real_adapter_tests"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "dynamic-discovery",
+        "plugin-registration",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_plugins.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "unavailable",
+        "seconds": null,
+        "source_revision": null
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 97,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:5b52c37f1c6d895acf6547ae62d3becbe9091309bcb821a0da32a7622934947c",
+        "shared_universe": true
+      },
+      "command": "just test-closure kernel.telemetry",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/adapters/telemetry.py",
+          "src/beadhive/daemon_telemetry.py",
+          "src/beadhive/kernel/telemetry/__init__.py",
+          "src/beadhive/kernel/telemetry/contracts.py",
+          "src/beadhive/kernel/telemetry/instrumentation.py",
+          "src/beadhive/kernel/telemetry/schema.py",
+          "src/beadhive/kernel/telemetry/sinks.py",
+          "src/beadhive/otel.py",
+          "src/beadhive/otel_lgtm.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/test_telemetry_contract.py",
+          "tests/unit/kernel/telemetry/test_instrumentation.py",
+          "tests/test_contract_release.py::test_bundle_inventory_is_complete_canonical_and_source_owned",
+          "tests/test_contract_release.py::test_checked_release_is_current_and_install_lookup_is_path_safe",
+          "tests/test_contract_release.py::test_compatibility_gate_rejects_removal_rename_and_requiredness",
+          "tests/test_contract_release_evidence.py::test_compatibility_report_accounts_for_every_published_and_candidate_artifact",
+          "tests/test_contract_release_evidence.py::test_checked_compatibility_report_is_canonical_and_current",
+          "tests/test_semantic_otel_adapter.py",
+          "tests/test_daemon_telemetry.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/modules/adapters -> public kernel contract -> kernel implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "kernel.telemetry",
+      "implementation_boundary": [
+        "src/beadhive/adapters/telemetry.py",
+        "src/beadhive/daemon_telemetry.py",
+        "src/beadhive/kernel/telemetry/__init__.py",
+        "src/beadhive/kernel/telemetry/contracts.py",
+        "src/beadhive/kernel/telemetry/instrumentation.py",
+        "src/beadhive/kernel/telemetry/schema.py",
+        "src/beadhive/kernel/telemetry/sinks.py",
+        "src/beadhive/otel.py",
+        "src/beadhive/otel_lgtm.py"
+      ],
+      "independence_tests": [
+        "tests/test_telemetry_contract.py"
+      ],
+      "input_digest": "sha256:64996606f69489a6a2bdadae3ae81ece2591620e6f625bade1e7628d5d550f31",
+      "kind": "kernel",
+      "mandatory_boundary_tests": [
+        "tests/test_contract_release.py::test_bundle_inventory_is_complete_canonical_and_source_owned",
+        "tests/test_contract_release.py::test_checked_release_is_current_and_install_lookup_is_path_safe",
+        "tests/test_contract_release.py::test_compatibility_gate_rejects_removal_rename_and_requiredness",
+        "tests/test_contract_release_evidence.py::test_compatibility_report_accounts_for_every_published_and_candidate_artifact",
+        "tests/test_contract_release_evidence.py::test_checked_compatibility_report_is_canonical_and_current",
+        "tests/test_telemetry_contract.py"
+      ],
+      "observed_input_digest": "sha256:64996606f69489a6a2bdadae3ae81ece2591620e6f625bade1e7628d5d550f31",
+      "owner": "kernel.telemetry closure maintainers",
+      "public_ports": [
+        "src/beadhive/kernel/telemetry/contracts.py"
+      ],
+      "real_adapter_tests": [
+        "tests/test_semantic_otel_adapter.py"
+      ],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_semantic_otel_adapter.py",
+        "tests/test_daemon_telemetry.py"
+      ],
+      "reverse_dependents": [
+        "adapters",
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "unavailable",
+        "seconds": null,
+        "source_revision": null
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 292,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:094e805e5a18c173d156a03b8fed1598a3319c84722f2c60869823582e5c8d53",
+        "shared_universe": true
+      },
+      "command": "just test-closure module.agents",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/agents/__init__.py",
+          "src/beadhive/modules/agents/application/__init__.py",
+          "src/beadhive/modules/agents/application/services.py",
+          "src/beadhive/modules/agents/contracts/__init__.py",
+          "src/beadhive/modules/agents/contracts/ports.py",
+          "src/beadhive/modules/agents/domain/__init__.py",
+          "src/beadhive/modules/agents/domain/profile.py",
+          "src/beadhive/modules/agents/domain/seat.py",
+          "src/beadhive/modules/agents/domain/transaction.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/agents/test_agent_contracts.py",
+          "tests/unit/modules/agents/test_agent_services.py",
+          "tests/unit/modules/agents/test_agent_independence.py",
+          "tests/contracts/test_agent_launch_compatibility.py",
+          "tests/test_herdr_plugin.py",
+          "tests/test_role.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/adapters -> public capability port -> application/domain",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "module.agents",
+      "implementation_boundary": [
+        "src/beadhive/modules/agents/__init__.py",
+        "src/beadhive/modules/agents/application/__init__.py",
+        "src/beadhive/modules/agents/application/services.py",
+        "src/beadhive/modules/agents/contracts/__init__.py",
+        "src/beadhive/modules/agents/contracts/ports.py",
+        "src/beadhive/modules/agents/domain/__init__.py",
+        "src/beadhive/modules/agents/domain/profile.py",
+        "src/beadhive/modules/agents/domain/seat.py",
+        "src/beadhive/modules/agents/domain/transaction.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/agents/test_agent_independence.py"
+      ],
+      "input_digest": "sha256:ab056e01a27d73d52e1db589bddcdc7e5b98fe2a60b747fed8c75902fc6325f7",
+      "kind": "module",
+      "mandatory_boundary_tests": [
+        "tests/contracts/test_agent_launch_compatibility.py",
+        "tests/unit/modules/agents/test_agent_independence.py"
+      ],
+      "observed_input_digest": "sha256:ab056e01a27d73d52e1db589bddcdc7e5b98fe2a60b747fed8c75902fc6325f7",
+      "owner": "module.agents closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/agents/contracts/ports.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_herdr_plugin.py",
+        "tests/test_role.py"
+      ],
+      "reverse_dependents": [
+        "plugin.herdr",
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contract.agent-launch"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 31.35,
+        "source_revision": "ad4077d7ee5ae40c966f089920ca794006538090"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 283,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:9ca0572cc86f518ac929fb0c678591efaee1e9bbaa9bdc3fb272649cde83eecc",
+        "shared_universe": true
+      },
+      "command": "just test-closure module.config",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/config/__init__.py",
+          "src/beadhive/modules/config/adapters/__init__.py",
+          "src/beadhive/modules/config/adapters/environment.py",
+          "src/beadhive/modules/config/adapters/yaml_store.py",
+          "src/beadhive/modules/config/api.py",
+          "src/beadhive/modules/config/application/__init__.py",
+          "src/beadhive/modules/config/application/consumer_settings.py",
+          "src/beadhive/modules/config/application/migrations.py",
+          "src/beadhive/modules/config/application/partition.py",
+          "src/beadhive/modules/config/application/plugin_fragments.py",
+          "src/beadhive/modules/config/application/resolution.py",
+          "src/beadhive/modules/config/application/schema_artifacts.py",
+          "src/beadhive/modules/config/contracts.py",
+          "src/beadhive/modules/config/domain/__init__.py",
+          "src/beadhive/modules/config/domain/ports.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/config/test_config_contracts.py",
+          "tests/unit/modules/config/test_consumer_settings.py",
+          "tests/unit/modules/config/test_dependency_ledger.py",
+          "tests/unit/modules/config/test_migrations.py",
+          "tests/unit/modules/config/test_module_evidence.py",
+          "tests/unit/modules/config/test_resolution.py",
+          "tests/unit/modules/config/test_schema_artifacts.py",
+          "tests/unit/modules/config/test_structural_metrics.py",
+          "tests/unit/modules/config/test_plugin_fragments.py",
+          "tests/unit/modules/config/test_pure_independence.py",
+          "tests/unit/modules/config/test_yaml_store.py",
+          "tests/contracts/test_config_contract_compatibility.py",
+          "tests/contracts/test_config_resolution_compatibility.py",
+          "tests/test_config_schema.py",
+          "tests/test_config_validate.py",
+          "tests/test_config_dotted.py",
+          "tests/test_config_boundaries.py",
+          "tests/test_config_fleet_merge.py",
+          "tests/test_config_scope.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/adapters -> public capability port -> application/domain",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "module.config",
+      "implementation_boundary": [
+        "src/beadhive/modules/config/__init__.py",
+        "src/beadhive/modules/config/adapters/__init__.py",
+        "src/beadhive/modules/config/adapters/environment.py",
+        "src/beadhive/modules/config/adapters/yaml_store.py",
+        "src/beadhive/modules/config/api.py",
+        "src/beadhive/modules/config/application/__init__.py",
+        "src/beadhive/modules/config/application/consumer_settings.py",
+        "src/beadhive/modules/config/application/migrations.py",
+        "src/beadhive/modules/config/application/partition.py",
+        "src/beadhive/modules/config/application/plugin_fragments.py",
+        "src/beadhive/modules/config/application/resolution.py",
+        "src/beadhive/modules/config/application/schema_artifacts.py",
+        "src/beadhive/modules/config/contracts.py",
+        "src/beadhive/modules/config/domain/__init__.py",
+        "src/beadhive/modules/config/domain/ports.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/config/test_pure_independence.py"
+      ],
+      "input_digest": "sha256:ad66a2cfc367e34eecd2b5c883af5de7e65b7a25f60f6f56f478a25b1febc854",
+      "kind": "module",
+      "mandatory_boundary_tests": [
+        "tests/contracts/test_config_contract_compatibility.py",
+        "tests/contracts/test_config_resolution_compatibility.py",
+        "tests/unit/modules/config/test_pure_independence.py"
+      ],
+      "observed_input_digest": "sha256:ad66a2cfc367e34eecd2b5c883af5de7e65b7a25f60f6f56f478a25b1febc854",
+      "owner": "module.config closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/config/contracts.py",
+        "src/beadhive/modules/config/domain/ports.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "compatibility-facade": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "generated-artifact": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "schema": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "compatibility-facade",
+        "generated-artifact",
+        "schema",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_config_schema.py",
+        "tests/test_config_validate.py",
+        "tests/test_config_dotted.py",
+        "tests/test_config_boundaries.py",
+        "tests/test_config_fleet_merge.py",
+        "tests/test_config_scope.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 51.495,
+        "source_revision": "ad4077d7ee5ae40c966f089920ca794006538090"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 82,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:97faf9f7839369d83ca524624e7982bcfeebfa590e320fa7440e50f2ac6acac7",
+        "shared_universe": true
+      },
+      "command": "just test-closure config.pure",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/config/application/migrations.py",
+          "src/beadhive/modules/config/application/resolution.py",
+          "src/beadhive/modules/config/contracts.py",
+          "src/beadhive/modules/config/domain/__init__.py",
+          "src/beadhive/modules/config/domain/ports.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/config/test_config_contracts.py",
+          "tests/unit/modules/config/test_resolution.py",
+          "tests/unit/modules/config/test_migrations.py",
+          "tests/unit/modules/config/test_pure_independence.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "consumers/implementations -> shared public contract",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "config.pure",
+      "implementation_boundary": [
+        "src/beadhive/modules/config/application/migrations.py",
+        "src/beadhive/modules/config/application/resolution.py",
+        "src/beadhive/modules/config/contracts.py",
+        "src/beadhive/modules/config/domain/__init__.py",
+        "src/beadhive/modules/config/domain/ports.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/config/test_pure_independence.py"
+      ],
+      "input_digest": "sha256:a82c5b3a50e080564faa2bbdba2a8754518c8f7a569c5827b5953afe1fdc93bc",
+      "kind": "contract",
+      "mandatory_boundary_tests": [
+        "tests/unit/modules/config/test_pure_independence.py"
+      ],
+      "observed_input_digest": "sha256:a82c5b3a50e080564faa2bbdba2a8754518c8f7a569c5827b5953afe1fdc93bc",
+      "owner": "config.pure closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/config/contracts.py",
+        "src/beadhive/modules/config/domain/ports.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [],
+      "reverse_dependents": [],
+      "shared_contracts": [],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "unavailable",
+        "seconds": null,
+        "source_revision": null
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 96,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:2a1fd7510557105249af08409bb0f9560f3184a9da1b6bc0877f71149d5d6ed8",
+        "shared_universe": true
+      },
+      "command": "just test-closure config.store",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/config/adapters/yaml_store.py",
+          "src/beadhive/modules/config/domain/ports.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/config/test_yaml_store.py",
+          "tests/test_config_boundaries.py",
+          "tests/test_config_dotted.py",
+          "tests/test_config_fleet_merge.py",
+          "tests/test_config_scope.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "consumers/implementations -> shared public contract",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "config.store",
+      "implementation_boundary": [
+        "src/beadhive/modules/config/adapters/yaml_store.py",
+        "src/beadhive/modules/config/domain/ports.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/config/test_yaml_store.py"
+      ],
+      "input_digest": "sha256:d45f2406c083d8ee97b72845422ad9da8726872118d0671b6456a06e6f141c5d",
+      "kind": "contract",
+      "mandatory_boundary_tests": [
+        "tests/unit/modules/config/test_yaml_store.py"
+      ],
+      "observed_input_digest": "sha256:d45f2406c083d8ee97b72845422ad9da8726872118d0671b6456a06e6f141c5d",
+      "owner": "config.store closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/config/domain/ports.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_config_boundaries.py",
+        "tests/test_config_dotted.py",
+        "tests/test_config_fleet_merge.py",
+        "tests/test_config_scope.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "unavailable",
+        "seconds": null,
+        "source_revision": null
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 26,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:925209a248dbb408b52ebc17102dcb59f9ada199ab64e8e4f10d271b1f1a7b86",
+        "shared_universe": true
+      },
+      "command": "just test-closure config.fragments",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/config/application/plugin_fragments.py",
+          "src/beadhive/modules/config/application/schema_artifacts.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/config/test_plugin_fragments.py",
+          "tests/unit/modules/config/test_schema_artifacts.py",
+          "tests/contracts/test_builtin_plugin_manifests.py",
+          "tests/contracts/test_config_contract_compatibility.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "consumers/implementations -> shared public contract",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "config.fragments",
+      "implementation_boundary": [
+        "src/beadhive/modules/config/application/plugin_fragments.py",
+        "src/beadhive/modules/config/application/schema_artifacts.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/config/test_plugin_fragments.py"
+      ],
+      "input_digest": "sha256:eef6420f0dd8fe5581f3cdcef9bd46454447fd15361acd2b9f1a180519411b56",
+      "kind": "contract",
+      "mandatory_boundary_tests": [
+        "tests/contracts/test_builtin_plugin_manifests.py",
+        "tests/contracts/test_config_contract_compatibility.py",
+        "tests/unit/modules/config/test_plugin_fragments.py"
+      ],
+      "observed_input_digest": "sha256:eef6420f0dd8fe5581f3cdcef9bd46454447fd15361acd2b9f1a180519411b56",
+      "owner": "config.fragments closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/config/contracts.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "generated-artifact": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "schema": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "shared-contract",
+        "generated-artifact",
+        "schema",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [],
+      "reverse_dependents": [],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "unavailable",
+        "seconds": null,
+        "source_revision": null
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 195,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:e52b2c4b6ebe2266457c3ea300cb492aab18226c9a66f91c5819a03101c02fd3",
+        "shared_universe": true
+      },
+      "command": "just test-closure module.hives",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/hives/__init__.py",
+          "src/beadhive/modules/hives/application/__init__.py",
+          "src/beadhive/modules/hives/application/services.py",
+          "src/beadhive/modules/hives/contracts/__init__.py",
+          "src/beadhive/modules/hives/contracts/ports.py",
+          "src/beadhive/modules/hives/domain/__init__.py",
+          "src/beadhive/modules/hives/domain/identity.py",
+          "src/beadhive/modules/hives/domain/models.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/hives/test_hive_identity.py",
+          "tests/unit/modules/hives/test_hive_services.py",
+          "tests/unit/modules/hives/test_hive_independence.py",
+          "tests/contracts/test_hive_lifecycle_compatibility.py",
+          "tests/unit/kernel/lifecycle/test_dispatcher.py",
+          "tests/test_hive_identity_json.py",
+          "tests/test_hive_lifecycle_json.py",
+          "tests/test_hive_ready.py",
+          "tests/test_hive_onboard.py",
+          "tests/test_hive_retire.py",
+          "tests/test_hive_reclaim.py",
+          "tests/test_mcp_hives_resources.py",
+          "tests/test_plugins.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/adapters -> public capability port -> application/domain",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "module.hives",
+      "implementation_boundary": [
+        "src/beadhive/modules/hives/__init__.py",
+        "src/beadhive/modules/hives/application/__init__.py",
+        "src/beadhive/modules/hives/application/services.py",
+        "src/beadhive/modules/hives/contracts/__init__.py",
+        "src/beadhive/modules/hives/contracts/ports.py",
+        "src/beadhive/modules/hives/domain/__init__.py",
+        "src/beadhive/modules/hives/domain/identity.py",
+        "src/beadhive/modules/hives/domain/models.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/hives/test_hive_independence.py"
+      ],
+      "input_digest": "sha256:fd73627ecc58404b128819f27be5f7d47f32354c638030168738a4fa4232fd37",
+      "kind": "module",
+      "mandatory_boundary_tests": [
+        "tests/contracts/test_hive_lifecycle_compatibility.py",
+        "tests/unit/kernel/lifecycle/test_dispatcher.py",
+        "tests/unit/modules/hives/test_hive_independence.py"
+      ],
+      "observed_input_digest": "sha256:fd73627ecc58404b128819f27be5f7d47f32354c638030168738a4fa4232fd37",
+      "owner": "module.hives closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/hives/contracts/ports.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_hive_identity_json.py",
+        "tests/test_hive_lifecycle_json.py",
+        "tests/test_hive_ready.py",
+        "tests/test_hive_onboard.py",
+        "tests/test_hive_retire.py",
+        "tests/test_hive_reclaim.py",
+        "tests/test_mcp_hives_resources.py",
+        "tests/test_plugins.py"
+      ],
+      "reverse_dependents": [
+        "adapters",
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts",
+        "kernel.lifecycle"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 35.169,
+        "source_revision": "ad4077d7ee5ae40c966f089920ca794006538090"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 176,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:f3797fc206cf02b2d7f54b82037ea28b5be94771d474f09fd6a60d8b3d9edbe6",
+        "shared_universe": true
+      },
+      "command": "just test-closure module.planning",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/planning/__init__.py",
+          "src/beadhive/modules/planning/application/__init__.py",
+          "src/beadhive/modules/planning/application/services.py",
+          "src/beadhive/modules/planning/contracts/__init__.py",
+          "src/beadhive/modules/planning/contracts/ports.py",
+          "src/beadhive/modules/planning/domain/__init__.py",
+          "src/beadhive/modules/planning/domain/models.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/planning/test_planning_services.py",
+          "tests/unit/modules/planning/test_planning_independence.py",
+          "tests/contracts/test_planning_capability_adapters.py",
+          "tests/test_plan.py",
+          "tests/test_plan_repair.py",
+          "tests/test_cli_projection.py",
+          "tests/test_mcp.py",
+          "tests/test_mcp_plans_resources.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/adapters -> public capability port -> application/domain",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "module.planning",
+      "implementation_boundary": [
+        "src/beadhive/modules/planning/__init__.py",
+        "src/beadhive/modules/planning/application/__init__.py",
+        "src/beadhive/modules/planning/application/services.py",
+        "src/beadhive/modules/planning/contracts/__init__.py",
+        "src/beadhive/modules/planning/contracts/ports.py",
+        "src/beadhive/modules/planning/domain/__init__.py",
+        "src/beadhive/modules/planning/domain/models.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/planning/test_planning_independence.py"
+      ],
+      "input_digest": "sha256:cb7d38f9667bc8d412b0823e9ab2d3a5cd6fe4aa26acb4947139f7db500803e5",
+      "kind": "module",
+      "mandatory_boundary_tests": [
+        "tests/contracts/test_planning_capability_adapters.py",
+        "tests/unit/modules/planning/test_planning_independence.py"
+      ],
+      "observed_input_digest": "sha256:cb7d38f9667bc8d412b0823e9ab2d3a5cd6fe4aa26acb4947139f7db500803e5",
+      "owner": "module.planning closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/planning/contracts/ports.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_plan.py",
+        "tests/test_plan_repair.py",
+        "tests/test_cli_projection.py",
+        "tests/test_mcp.py",
+        "tests/test_mcp_plans_resources.py"
+      ],
+      "reverse_dependents": [
+        "adapters",
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 127.998,
+        "source_revision": "ad4077d7ee5ae40c966f089920ca794006538090"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 90,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:5b009141d0af2bb653153ba08fbdfb674de083e76c2e4f318d0ee84a6b440b49",
+        "shared_universe": true
+      },
+      "command": "just test-closure module.state",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/state/__init__.py",
+          "src/beadhive/modules/state/application/__init__.py",
+          "src/beadhive/modules/state/application/services.py",
+          "src/beadhive/modules/state/contracts/__init__.py",
+          "src/beadhive/modules/state/contracts/ports.py",
+          "src/beadhive/modules/state/domain/__init__.py",
+          "src/beadhive/modules/state/domain/activity.py",
+          "src/beadhive/modules/state/domain/projections.py",
+          "src/beadhive/modules/state/domain/stream.py",
+          "src/beadhive/modules/state/domain/validation.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/state/test_state_services.py",
+          "tests/unit/modules/state/test_state_independence.py",
+          "tests/contracts/test_state_capability_adapters.py",
+          "tests/test_agent_run_summary.py",
+          "tests/test_operator_api.py",
+          "tests/test_public_readers.py",
+          "tests/test_state_stream.py",
+          "tests/test_stream_cli.py",
+          "tests/test_validation_records.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/adapters -> public capability port -> application/domain",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "module.state",
+      "implementation_boundary": [
+        "src/beadhive/modules/state/__init__.py",
+        "src/beadhive/modules/state/application/__init__.py",
+        "src/beadhive/modules/state/application/services.py",
+        "src/beadhive/modules/state/contracts/__init__.py",
+        "src/beadhive/modules/state/contracts/ports.py",
+        "src/beadhive/modules/state/domain/__init__.py",
+        "src/beadhive/modules/state/domain/activity.py",
+        "src/beadhive/modules/state/domain/projections.py",
+        "src/beadhive/modules/state/domain/stream.py",
+        "src/beadhive/modules/state/domain/validation.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/state/test_state_independence.py"
+      ],
+      "input_digest": "sha256:b0c374dbb8d7baca9d95e1b87af97766a0c734782680ea1b34ad9c828378538d",
+      "kind": "module",
+      "mandatory_boundary_tests": [
+        "tests/contracts/test_state_capability_adapters.py",
+        "tests/unit/modules/state/test_state_independence.py"
+      ],
+      "observed_input_digest": "sha256:b0c374dbb8d7baca9d95e1b87af97766a0c734782680ea1b34ad9c828378538d",
+      "owner": "module.state closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/state/contracts/ports.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_agent_run_summary.py",
+        "tests/test_operator_api.py",
+        "tests/test_public_readers.py",
+        "tests/test_state_stream.py",
+        "tests/test_stream_cli.py",
+        "tests/test_validation_records.py"
+      ],
+      "reverse_dependents": [
+        "adapters",
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 17.102,
+        "source_revision": "ad4077d7ee5ae40c966f089920ca794006538090"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 508,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:39fbbecefadb0d88379b62395c80d4546104e339013e46a117bb4c0b7f475b54",
+        "shared_universe": true
+      },
+      "command": "just test-closure module.work",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/work/__init__.py",
+          "src/beadhive/modules/work/application/__init__.py",
+          "src/beadhive/modules/work/application/services.py",
+          "src/beadhive/modules/work/contracts/__init__.py",
+          "src/beadhive/modules/work/contracts/ports.py",
+          "src/beadhive/modules/work/domain/__init__.py",
+          "src/beadhive/modules/work/domain/models.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/work/test_work_lifecycle_services.py",
+          "tests/unit/modules/work/test_work_independence.py",
+          "tests/contracts/test_work_capability_adapters.py",
+          "tests/unit/kernel/lifecycle/test_contracts.py",
+          "tests/test_mcp_work_schedule_resource.py",
+          "tests/test_work.py",
+          "tests/test_work_assignment_boundaries.py",
+          "tests/test_work_flow.py",
+          "tests/test_work_merge_boundaries.py",
+          "tests/test_work_reads.py",
+          "tests/test_work_submission_boundaries.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/adapters -> public capability port -> application/domain",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "module.work",
+      "implementation_boundary": [
+        "src/beadhive/modules/work/__init__.py",
+        "src/beadhive/modules/work/application/__init__.py",
+        "src/beadhive/modules/work/application/services.py",
+        "src/beadhive/modules/work/contracts/__init__.py",
+        "src/beadhive/modules/work/contracts/ports.py",
+        "src/beadhive/modules/work/domain/__init__.py",
+        "src/beadhive/modules/work/domain/models.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/work/test_work_independence.py"
+      ],
+      "input_digest": "sha256:12df7c99985cae72e39921d2ec4e8e0e458b596d67b24a0b4152561bd5a5fefe",
+      "kind": "module",
+      "mandatory_boundary_tests": [
+        "tests/contracts/test_work_capability_adapters.py",
+        "tests/unit/kernel/lifecycle/test_contracts.py",
+        "tests/unit/modules/work/test_work_independence.py"
+      ],
+      "observed_input_digest": "sha256:12df7c99985cae72e39921d2ec4e8e0e458b596d67b24a0b4152561bd5a5fefe",
+      "owner": "module.work closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/work/contracts/ports.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "compatibility-facade": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "subprocess": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "subprocess",
+        "compatibility-facade",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_mcp_work_schedule_resource.py",
+        "tests/test_work.py",
+        "tests/test_work_assignment_boundaries.py",
+        "tests/test_work_flow.py",
+        "tests/test_work_merge_boundaries.py",
+        "tests/test_work_reads.py",
+        "tests/test_work_submission_boundaries.py"
+      ],
+      "reverse_dependents": [
+        "adapters",
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts",
+        "kernel.lifecycle"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 227.467,
+        "source_revision": "ad4077d7ee5ae40c966f089920ca794006538090"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 453,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:bd52fbfcc04a1347c7ac590442b8122a265a71819735a7abe4b6192750ecc419",
+        "shared_universe": true
+      },
+      "command": "just test-closure module.worktrees",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/modules/worktrees/__init__.py",
+          "src/beadhive/modules/worktrees/adapters/__init__.py",
+          "src/beadhive/modules/worktrees/adapters/inventory.py",
+          "src/beadhive/modules/worktrees/adapters/native_git.py",
+          "src/beadhive/modules/worktrees/adapters/plugin.py",
+          "src/beadhive/modules/worktrees/application/__init__.py",
+          "src/beadhive/modules/worktrees/application/services.py",
+          "src/beadhive/modules/worktrees/contracts/__init__.py",
+          "src/beadhive/modules/worktrees/contracts/ports.py",
+          "src/beadhive/modules/worktrees/domain/__init__.py",
+          "src/beadhive/modules/worktrees/domain/models.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/worktrees/test_policy.py",
+          "tests/unit/modules/worktrees/test_services.py",
+          "tests/unit/modules/worktrees/test_adapters.py",
+          "tests/unit/modules/worktrees/test_worktrees_independence.py",
+          "tests/contracts/test_worktree_capability_compatibility.py",
+          "tests/unit/kernel/lifecycle/test_contracts.py",
+          "tests/test_config_worktrees.py",
+          "tests/test_workspace_config_inheritance.py",
+          "tests/test_worktree.py",
+          "tests/test_worktree_boundaries.py",
+          "tests/test_worktree_inventory_boundaries.py",
+          "tests/test_worktree_inventory_json.py",
+          "tests/test_wt_status.py",
+          "tests/test_mcp.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/adapters -> public capability port -> application/domain",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "module.worktrees",
+      "implementation_boundary": [
+        "src/beadhive/modules/worktrees/__init__.py",
+        "src/beadhive/modules/worktrees/adapters/__init__.py",
+        "src/beadhive/modules/worktrees/adapters/inventory.py",
+        "src/beadhive/modules/worktrees/adapters/native_git.py",
+        "src/beadhive/modules/worktrees/adapters/plugin.py",
+        "src/beadhive/modules/worktrees/application/__init__.py",
+        "src/beadhive/modules/worktrees/application/services.py",
+        "src/beadhive/modules/worktrees/contracts/__init__.py",
+        "src/beadhive/modules/worktrees/contracts/ports.py",
+        "src/beadhive/modules/worktrees/domain/__init__.py",
+        "src/beadhive/modules/worktrees/domain/models.py"
+      ],
+      "independence_tests": [
+        "tests/unit/modules/worktrees/test_worktrees_independence.py"
+      ],
+      "input_digest": "sha256:5e523acbf97d0908c23ed28b8e623f50ccd957a6a62ccd89919aee6aab841fed",
+      "kind": "module",
+      "mandatory_boundary_tests": [
+        "tests/contracts/test_worktree_capability_compatibility.py",
+        "tests/unit/kernel/lifecycle/test_contracts.py",
+        "tests/unit/modules/worktrees/test_worktrees_independence.py"
+      ],
+      "observed_input_digest": "sha256:5e523acbf97d0908c23ed28b8e623f50ccd957a6a62ccd89919aee6aab841fed",
+      "owner": "module.worktrees closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/worktrees/contracts/ports.py"
+      ],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "compatibility-facade": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "subprocess": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "subprocess",
+        "compatibility-facade",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_config_worktrees.py",
+        "tests/test_workspace_config_inheritance.py",
+        "tests/test_worktree.py",
+        "tests/test_worktree_boundaries.py",
+        "tests/test_worktree_inventory_boundaries.py",
+        "tests/test_worktree_inventory_json.py",
+        "tests/test_wt_status.py",
+        "tests/test_mcp.py"
+      ],
+      "reverse_dependents": [
+        "module.hives",
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts",
+        "kernel.lifecycle"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 57.824,
+        "source_revision": "ad4077d7ee5ae40c966f089920ca794006538090"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "the closure has no single enforceable public port",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 131,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:3dc49ead25235db375110e3f1df5475aec786af34df331aadac7d1a4c2ddfaa6",
+        "shared_universe": true
+      },
+      "command": "just test-closure adapters",
+      "confidence": "low",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/cli.py",
+          "src/beadhive/mcp.py",
+          "src/beadhive/state_stream_polling.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/test_cli.py",
+          "tests/test_mcp.py",
+          "tests/test_state_stream_polling.py",
+          "tests/unit/testing/test_real_adapter_conformance_example.py",
+          "tests/test_state_stream.py",
+          "tests/unit/testing/test_conformance_testkit.py",
+          "tests/test_help_hygiene.py",
+          "tests/test_stream_cli.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap -> adapter -> public capability/kernel ports",
+      "enforceable_port": false,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "adapters",
+      "implementation_boundary": [
+        "src/beadhive/cli.py",
+        "src/beadhive/mcp.py",
+        "src/beadhive/state_stream_polling.py"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:9863aa65506494c111cacd5e16d15e3da57205c4ca77c3bcfcf2e1be1e4d25a5",
+      "kind": "adapter",
+      "mandatory_boundary_tests": [
+        "tests/test_state_stream.py",
+        "tests/unit/testing/test_conformance_testkit.py"
+      ],
+      "observed_input_digest": "sha256:9863aa65506494c111cacd5e16d15e3da57205c4ca77c3bcfcf2e1be1e4d25a5",
+      "owner": "adapters closure maintainers",
+      "public_ports": [
+        "src/beadhive/state_stream.py"
+      ],
+      "real_adapter_tests": [
+        "tests/unit/testing/test_real_adapter_conformance_example.py"
+      ],
+      "relationship_evidence": {
+        "compatibility-facade": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "subprocess": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "subprocess",
+        "compatibility-facade",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_help_hygiene.py",
+        "tests/test_stream_cli.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 33.0,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 318,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:6779efc2e9d53fc5486ca618860e8821640cf1e5b40e78ba49c6e1756b7545a8",
+        "shared_universe": true
+      },
+      "command": "just test-closure plugin.herdr",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/herdr_plugin.py",
+          "src/beadhive/herdr_views.py",
+          "src/beadhive/integrations/herdr/__init__.py",
+          "src/beadhive/integrations/herdr/agent_adapter.py",
+          "src/beadhive/integrations/herdr/application_contracts.py",
+          "src/beadhive/integrations/herdr/application_runtime.py",
+          "src/beadhive/integrations/herdr/application_services.py",
+          "src/beadhive/integrations/herdr/cli.py",
+          "src/beadhive/integrations/herdr/cli_application.py",
+          "src/beadhive/integrations/herdr/identity.py",
+          "src/beadhive/integrations/herdr/production_runtime.py",
+          "src/beadhive/integrations/herdr/topology.py",
+          "src/beadhive/integrations/herdr/transport.py",
+          "src/beadhive/integrations/herdr/transport_types.py",
+          "src/beadhive/kernel/plugins/manifests/herdr.json"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/integrations/test_herdr_adapter.py",
+          "tests/unit/integrations/test_herdr_agent_lifecycle_adapter.py",
+          "tests/unit/integrations/test_herdr_independence.py",
+          "tests/test_herdr_plugin.py",
+          "tests/test_herdr_presentation.py",
+          "tests/test_herdr_views.py",
+          "tests/unit/testing/test_conformance_testkit.py",
+          "tests/contracts/test_builtin_plugin_manifests.py",
+          "tests/contracts/test_agent_launch_compatibility.py",
+          "tests/test_plugins.py",
+          "tests/test_plugin_cli.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/plugin kernel -> plugin contract -> integration implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "plugin.herdr",
+      "implementation_boundary": [
+        "src/beadhive/herdr_plugin.py",
+        "src/beadhive/herdr_views.py",
+        "src/beadhive/integrations/herdr/__init__.py",
+        "src/beadhive/integrations/herdr/agent_adapter.py",
+        "src/beadhive/integrations/herdr/application_contracts.py",
+        "src/beadhive/integrations/herdr/application_runtime.py",
+        "src/beadhive/integrations/herdr/application_services.py",
+        "src/beadhive/integrations/herdr/cli.py",
+        "src/beadhive/integrations/herdr/cli_application.py",
+        "src/beadhive/integrations/herdr/identity.py",
+        "src/beadhive/integrations/herdr/production_runtime.py",
+        "src/beadhive/integrations/herdr/topology.py",
+        "src/beadhive/integrations/herdr/transport.py",
+        "src/beadhive/integrations/herdr/transport_types.py",
+        "src/beadhive/kernel/plugins/manifests/herdr.json"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:fd264959a9144a0ab5306b446ebd6c7277c64190391a79a39174a244cc7e1aea",
+      "kind": "plugin",
+      "mandatory_boundary_tests": [
+        "tests/unit/testing/test_conformance_testkit.py",
+        "tests/contracts/test_builtin_plugin_manifests.py",
+        "tests/contracts/test_agent_launch_compatibility.py"
+      ],
+      "observed_input_digest": "sha256:fd264959a9144a0ab5306b446ebd6c7277c64190391a79a39174a244cc7e1aea",
+      "owner": "plugin.herdr closure maintainers",
+      "public_ports": [
+        "src/beadhive/kernel/plugins/contracts.py",
+        "src/beadhive/integrations/herdr/application_contracts.py"
+      ],
+      "real_adapter_tests": [
+        "tests/unit/integrations/test_herdr_adapter.py"
+      ],
+      "relationship_evidence": {
+        "compatibility-facade": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "dynamic-discovery": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "plugin-registration": [
+          "implementation_boundary",
+          "real_adapter_tests"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "dynamic-discovery",
+        "plugin-registration",
+        "compatibility-facade",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_plugins.py",
+        "tests/test_plugin_cli.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts",
+        "contract.agent-launch"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 23.58,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 148,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:f94218896945f82f697fc34b044e073451037d032350d80168107555a0a7f207",
+        "shared_universe": true
+      },
+      "command": "just test-closure plugin.hitch",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/hitch_plugin.py",
+          "src/beadhive/kernel/plugins/manifests/hitch.json"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/test_hitch_plugin.py",
+          "tests/unit/testing/test_conformance_testkit.py",
+          "tests/contracts/test_builtin_plugin_manifests.py",
+          "tests/test_plugins.py",
+          "tests/test_plugin_cli.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/plugin kernel -> plugin contract -> integration implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "plugin.hitch",
+      "implementation_boundary": [
+        "src/beadhive/hitch_plugin.py",
+        "src/beadhive/kernel/plugins/manifests/hitch.json"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:171c5e9520a250411f8c3d2a1687c7a5109bac1fc18ccc862b07f96a81324eb9",
+      "kind": "plugin",
+      "mandatory_boundary_tests": [
+        "tests/unit/testing/test_conformance_testkit.py",
+        "tests/contracts/test_builtin_plugin_manifests.py"
+      ],
+      "observed_input_digest": "sha256:171c5e9520a250411f8c3d2a1687c7a5109bac1fc18ccc862b07f96a81324eb9",
+      "owner": "plugin.hitch closure maintainers",
+      "public_ports": [
+        "src/beadhive/kernel/plugins/contracts.py"
+      ],
+      "real_adapter_tests": [
+        "tests/test_hitch_plugin.py"
+      ],
+      "relationship_evidence": {
+        "dynamic-discovery": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "plugin-registration": [
+          "implementation_boundary",
+          "real_adapter_tests"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "dynamic-discovery",
+        "plugin-registration",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_plugins.py",
+        "tests/test_plugin_cli.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 7.68,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 94,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:57f4d6dd09cd8d1b218515da23d0208ff2c2d4dc5fc1f8e481fcbcd95bf16845",
+        "shared_universe": true
+      },
+      "command": "just test-closure plugin.observaloop",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/kernel/plugins/manifests/observaloop.json",
+          "src/beadhive/observaloop.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/test_observaloop.py",
+          "tests/unit/testing/test_conformance_testkit.py",
+          "tests/contracts/test_builtin_plugin_manifests.py",
+          "tests/test_plugins.py",
+          "tests/test_plugin_cli.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/plugin kernel -> plugin contract -> integration implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "plugin.observaloop",
+      "implementation_boundary": [
+        "src/beadhive/kernel/plugins/manifests/observaloop.json",
+        "src/beadhive/observaloop.py"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:8522155f19123a40d0cbf100a38eb3b2ca1012fa54cc5eff30cfd17af51bce4c",
+      "kind": "plugin",
+      "mandatory_boundary_tests": [
+        "tests/unit/testing/test_conformance_testkit.py",
+        "tests/contracts/test_builtin_plugin_manifests.py"
+      ],
+      "observed_input_digest": "sha256:8522155f19123a40d0cbf100a38eb3b2ca1012fa54cc5eff30cfd17af51bce4c",
+      "owner": "plugin.observaloop closure maintainers",
+      "public_ports": [
+        "src/beadhive/kernel/plugins/contracts.py"
+      ],
+      "real_adapter_tests": [
+        "tests/test_observaloop.py"
+      ],
+      "relationship_evidence": {
+        "dynamic-discovery": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "plugin-registration": [
+          "implementation_boundary",
+          "real_adapter_tests"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "dynamic-discovery",
+        "plugin-registration",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_plugins.py",
+        "tests/test_plugin_cli.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 7.1,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 126,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:d2a05267e291d3ec2e5255648c48562c0006e06633f58dfe60ae74537cb619a1",
+        "shared_universe": true
+      },
+      "command": "just test-closure plugin.orca",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/kernel/plugins/manifests/orca.json",
+          "src/beadhive/orca.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/test_orca.py",
+          "tests/unit/testing/test_conformance_testkit.py",
+          "tests/contracts/test_builtin_plugin_manifests.py",
+          "tests/test_plugins.py",
+          "tests/test_plugin_cli.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/plugin kernel -> plugin contract -> integration implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "plugin.orca",
+      "implementation_boundary": [
+        "src/beadhive/kernel/plugins/manifests/orca.json",
+        "src/beadhive/orca.py"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:88053c840142bef823892798b2a61b664c53e3e27618b59d98650a213aa0288b",
+      "kind": "plugin",
+      "mandatory_boundary_tests": [
+        "tests/unit/testing/test_conformance_testkit.py",
+        "tests/contracts/test_builtin_plugin_manifests.py"
+      ],
+      "observed_input_digest": "sha256:88053c840142bef823892798b2a61b664c53e3e27618b59d98650a213aa0288b",
+      "owner": "plugin.orca closure maintainers",
+      "public_ports": [
+        "src/beadhive/kernel/plugins/contracts.py"
+      ],
+      "real_adapter_tests": [
+        "tests/test_orca.py"
+      ],
+      "relationship_evidence": {
+        "dynamic-discovery": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "plugin-registration": [
+          "implementation_boundary",
+          "real_adapter_tests"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "dynamic-discovery",
+        "plugin-registration",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_plugins.py",
+        "tests/test_plugin_cli.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 6.2,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 79,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:3963785a47b9e031602755e92fe590c73a0dfcce3bbb1c845bb06513945bcfeb",
+        "shared_universe": true
+      },
+      "command": "just test-closure plugin.repowise",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/kernel/plugins/manifests/repowise.json",
+          "src/beadhive/repowise_plugin.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/test_repowise_plugin.py",
+          "tests/unit/testing/test_conformance_testkit.py",
+          "tests/contracts/test_builtin_plugin_manifests.py",
+          "tests/test_plugins.py",
+          "tests/test_plugin_cli.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "bootstrap/plugin kernel -> plugin contract -> integration implementation",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "plugin.repowise",
+      "implementation_boundary": [
+        "src/beadhive/kernel/plugins/manifests/repowise.json",
+        "src/beadhive/repowise_plugin.py"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:9d6f6e1d0b80206e3301e9240ef7a81d3ce48a93d195217f02ac2ceaad7853e6",
+      "kind": "plugin",
+      "mandatory_boundary_tests": [
+        "tests/unit/testing/test_conformance_testkit.py",
+        "tests/contracts/test_builtin_plugin_manifests.py"
+      ],
+      "observed_input_digest": "sha256:9d6f6e1d0b80206e3301e9240ef7a81d3ce48a93d195217f02ac2ceaad7853e6",
+      "owner": "plugin.repowise closure maintainers",
+      "public_ports": [
+        "src/beadhive/kernel/plugins/contracts.py"
+      ],
+      "real_adapter_tests": [
+        "tests/test_repowise_plugin.py"
+      ],
+      "relationship_evidence": {
+        "dynamic-discovery": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "plugin-registration": [
+          "implementation_boundary",
+          "real_adapter_tests"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "shared-contract",
+        "dynamic-discovery",
+        "plugin-registration",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_plugins.py",
+        "tests/test_plugin_cli.py"
+      ],
+      "reverse_dependents": [
+        "system-smoke"
+      ],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 6.18,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 369,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:f657bd2404ca87962d608e465353963b8cf92f4cb27482d061601c964e6369e6",
+        "shared_universe": true
+      },
+      "command": "just test-closure contract.agent-launch",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "docs/design/agent-launch-boundary-characterization.md",
+          "src/beadhive/agent_launch_profile.py",
+          "src/beadhive/herdr_launch_profile.py",
+          "src/beadhive/modules/agents/__init__.py",
+          "src/beadhive/modules/agents/application/__init__.py",
+          "src/beadhive/modules/agents/application/services.py",
+          "src/beadhive/modules/agents/contracts/__init__.py",
+          "src/beadhive/modules/agents/contracts/ports.py",
+          "src/beadhive/modules/agents/domain/__init__.py",
+          "src/beadhive/modules/agents/domain/profile.py",
+          "src/beadhive/modules/agents/domain/seat.py",
+          "src/beadhive/modules/agents/domain/transaction.py",
+          "src/beadhive/seat_contracts.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/modules/agents/test_agent_contracts.py",
+          "tests/unit/modules/agents/test_agent_services.py",
+          "tests/test_agent_launch_profile.py",
+          "tests/test_herdr_launch_profile.py",
+          "tests/test_herdr_managed_matrix.py",
+          "tests/contracts/test_agent_launch_compatibility.py",
+          "tests/test_herdr_plugin.py",
+          "tests/test_role.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "consumers/implementations -> shared public contract",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "contract.agent-launch",
+      "implementation_boundary": [
+        "docs/design/agent-launch-boundary-characterization.md",
+        "src/beadhive/agent_launch_profile.py",
+        "src/beadhive/herdr_launch_profile.py",
+        "src/beadhive/modules/agents/__init__.py",
+        "src/beadhive/modules/agents/application/__init__.py",
+        "src/beadhive/modules/agents/application/services.py",
+        "src/beadhive/modules/agents/contracts/__init__.py",
+        "src/beadhive/modules/agents/contracts/ports.py",
+        "src/beadhive/modules/agents/domain/__init__.py",
+        "src/beadhive/modules/agents/domain/profile.py",
+        "src/beadhive/modules/agents/domain/seat.py",
+        "src/beadhive/modules/agents/domain/transaction.py",
+        "src/beadhive/seat_contracts.py"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:8b13ab558518996052d7b3ce887f3c585f7564864d31db6274136a363ed08ee7",
+      "kind": "contract",
+      "mandatory_boundary_tests": [],
+      "observed_input_digest": "sha256:8b13ab558518996052d7b3ce887f3c585f7564864d31db6274136a363ed08ee7",
+      "owner": "contract.agent-launch closure maintainers",
+      "public_ports": [
+        "src/beadhive/modules/agents/contracts/ports.py",
+        "src/beadhive/seat_contracts.py"
+      ],
+      "real_adapter_tests": [
+        "tests/contracts/test_agent_launch_compatibility.py"
+      ],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_herdr_plugin.py",
+        "tests/test_role.py"
+      ],
+      "reverse_dependents": [
+        "plugin.herdr",
+        "system-smoke"
+      ],
+      "shared_contracts": [],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "unavailable",
+        "seconds": null,
+        "source_revision": null
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "fresh dynamic per-test trace is not available; selector-to-source mapping is advisory",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 170,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:8982bd4ab01f7e2346c17aa54d5771b38da4df9da1bee25faa6a2efeb39dba08",
+        "shared_universe": true
+      },
+      "command": "just test-closure contracts",
+      "confidence": "medium",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "docs/schemas/beadhive-agent-facts-v1.schema.json",
+          "docs/schemas/beadhive-stream-operator-entities-v1.schema.json",
+          "docs/schemas/herdr-agent-roster-v1.schema.json",
+          "docs/schemas/herdr-lifecycle-receipt-v1.schema.json",
+          "docs/schemas/herdr-presentation-v1.schema.json",
+          "docs/schemas/herdr-view-v1.schema.json",
+          "docs/schemas/hq-status-v1.schema.json",
+          "docs/schemas/report-channel.example.json",
+          "docs/schemas/report-channel.schema.json",
+          "docs/schemas/run-journal-v1.schema.json",
+          "docs/schemas/telemetry-event-envelope-v1.schema.json",
+          "docs/schemas/wire/index.json",
+          "docs/schemas/wire/v1.0.0/bh-hive-status-v1.schema.json",
+          "docs/schemas/wire/v1.0.0/bh-hive-survey-v1.schema.json",
+          "docs/schemas/wire/v1.0.0/conformance.json",
+          "docs/schemas/wire/v1.0.0/factory-bead-node-v1.schema.json",
+          "docs/schemas/wire/v1.0.0/factory-hive-info-v1.schema.json",
+          "docs/schemas/wire/v1.0.0/factory-snapshot-v1.schema.json",
+          "docs/schemas/wire/v1.0.0/release.json",
+          "docs/schemas/wire/v1.1.0/bh-hive-onboard-v1.schema.json",
+          "docs/schemas/wire/v1.1.0/bh-hive-ready-v1.schema.json",
+          "docs/schemas/wire/v1.1.0/bh-hive-status-v1.schema.json",
+          "docs/schemas/wire/v1.1.0/bh-hive-survey-v1.schema.json",
+          "docs/schemas/wire/v1.1.0/conformance.json",
+          "docs/schemas/wire/v1.1.0/factory-bead-node-v1.schema.json",
+          "docs/schemas/wire/v1.1.0/factory-hive-info-v1.schema.json",
+          "docs/schemas/wire/v1.1.0/factory-snapshot-v1.schema.json",
+          "docs/schemas/wire/v1.1.0/release.json",
+          "docs/schemas/wire/v1.2.0/bh-hive-onboard-v1.schema.json",
+          "docs/schemas/wire/v1.2.0/bh-hive-ready-v1.schema.json",
+          "docs/schemas/wire/v1.2.0/bh-hive-status-v1.schema.json",
+          "docs/schemas/wire/v1.2.0/bh-hive-survey-v1.schema.json",
+          "docs/schemas/wire/v1.2.0/conformance.json",
+          "docs/schemas/wire/v1.2.0/factory-bead-node-v1.schema.json",
+          "docs/schemas/wire/v1.2.0/factory-hive-info-v1.schema.json",
+          "docs/schemas/wire/v1.2.0/factory-snapshot-v1.schema.json",
+          "docs/schemas/wire/v1.2.0/json-value-v1.schema.json",
+          "docs/schemas/wire/v1.2.0/operation-catalog-v1.json",
+          "docs/schemas/wire/v1.2.0/operation-catalog-v1.schema.json",
+          "docs/schemas/wire/v1.2.0/release.json",
+          "docs/schemas/wire/v1.3.0/bh-hive-onboard-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/bh-hive-ready-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/bh-hive-status-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/bh-hive-survey-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/conformance.json",
+          "docs/schemas/wire/v1.3.0/factory-bead-node-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/factory-hive-info-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/factory-snapshot-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/json-value-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/operation-catalog-v1.json",
+          "docs/schemas/wire/v1.3.0/operation-catalog-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/plugin-manifest-v1.schema.json",
+          "docs/schemas/wire/v1.3.0/release.json",
+          "docs/schemas/wire/v1.4.0/bh-hive-onboard-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/bh-hive-ready-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/bh-hive-status-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/bh-hive-survey-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/config-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/conformance.json",
+          "docs/schemas/wire/v1.4.0/factory-bead-node-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/factory-hive-info-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/factory-snapshot-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/json-value-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/operation-catalog-v1.json",
+          "docs/schemas/wire/v1.4.0/operation-catalog-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/plugin-config-herdr-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/plugin-config-hitch-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/plugin-config-observaloop-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/plugin-config-orca-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/plugin-config-repowise-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/plugin-manifest-v1.schema.json",
+          "docs/schemas/wire/v1.4.0/release.json",
+          "src/beadhive/state_stream.py",
+          "src/beadhive/testing/__init__.py",
+          "src/beadhive/testing/conformance.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/unit/testing/test_conformance_testkit.py",
+          "tests/test_state_stream.py",
+          "tests/test_operation_catalog.py",
+          "tests/test_config_schema_drift.py",
+          "tests/test_report_channel.py",
+          "tests/test_state_stream_polling.py",
+          "tests/unit/testing/test_real_adapter_conformance_example.py",
+          "tests/test_cli_projection.py",
+          "tests/test_mcp_catalog_projection.py",
+          "tests/test_plugins.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "consumers/implementations -> shared public contract",
+      "enforceable_port": true,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "contracts",
+      "implementation_boundary": [
+        "docs/schemas/beadhive-agent-facts-v1.schema.json",
+        "docs/schemas/beadhive-stream-operator-entities-v1.schema.json",
+        "docs/schemas/herdr-agent-roster-v1.schema.json",
+        "docs/schemas/herdr-lifecycle-receipt-v1.schema.json",
+        "docs/schemas/herdr-presentation-v1.schema.json",
+        "docs/schemas/herdr-view-v1.schema.json",
+        "docs/schemas/hq-status-v1.schema.json",
+        "docs/schemas/report-channel.example.json",
+        "docs/schemas/report-channel.schema.json",
+        "docs/schemas/run-journal-v1.schema.json",
+        "docs/schemas/telemetry-event-envelope-v1.schema.json",
+        "docs/schemas/wire/index.json",
+        "docs/schemas/wire/v1.0.0/bh-hive-status-v1.schema.json",
+        "docs/schemas/wire/v1.0.0/bh-hive-survey-v1.schema.json",
+        "docs/schemas/wire/v1.0.0/conformance.json",
+        "docs/schemas/wire/v1.0.0/factory-bead-node-v1.schema.json",
+        "docs/schemas/wire/v1.0.0/factory-hive-info-v1.schema.json",
+        "docs/schemas/wire/v1.0.0/factory-snapshot-v1.schema.json",
+        "docs/schemas/wire/v1.0.0/release.json",
+        "docs/schemas/wire/v1.1.0/bh-hive-onboard-v1.schema.json",
+        "docs/schemas/wire/v1.1.0/bh-hive-ready-v1.schema.json",
+        "docs/schemas/wire/v1.1.0/bh-hive-status-v1.schema.json",
+        "docs/schemas/wire/v1.1.0/bh-hive-survey-v1.schema.json",
+        "docs/schemas/wire/v1.1.0/conformance.json",
+        "docs/schemas/wire/v1.1.0/factory-bead-node-v1.schema.json",
+        "docs/schemas/wire/v1.1.0/factory-hive-info-v1.schema.json",
+        "docs/schemas/wire/v1.1.0/factory-snapshot-v1.schema.json",
+        "docs/schemas/wire/v1.1.0/release.json",
+        "docs/schemas/wire/v1.2.0/bh-hive-onboard-v1.schema.json",
+        "docs/schemas/wire/v1.2.0/bh-hive-ready-v1.schema.json",
+        "docs/schemas/wire/v1.2.0/bh-hive-status-v1.schema.json",
+        "docs/schemas/wire/v1.2.0/bh-hive-survey-v1.schema.json",
+        "docs/schemas/wire/v1.2.0/conformance.json",
+        "docs/schemas/wire/v1.2.0/factory-bead-node-v1.schema.json",
+        "docs/schemas/wire/v1.2.0/factory-hive-info-v1.schema.json",
+        "docs/schemas/wire/v1.2.0/factory-snapshot-v1.schema.json",
+        "docs/schemas/wire/v1.2.0/json-value-v1.schema.json",
+        "docs/schemas/wire/v1.2.0/operation-catalog-v1.json",
+        "docs/schemas/wire/v1.2.0/operation-catalog-v1.schema.json",
+        "docs/schemas/wire/v1.2.0/release.json",
+        "docs/schemas/wire/v1.3.0/bh-hive-onboard-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/bh-hive-ready-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/bh-hive-status-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/bh-hive-survey-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/conformance.json",
+        "docs/schemas/wire/v1.3.0/factory-bead-node-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/factory-hive-info-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/factory-snapshot-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/json-value-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/operation-catalog-v1.json",
+        "docs/schemas/wire/v1.3.0/operation-catalog-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/plugin-manifest-v1.schema.json",
+        "docs/schemas/wire/v1.3.0/release.json",
+        "docs/schemas/wire/v1.4.0/bh-hive-onboard-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/bh-hive-ready-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/bh-hive-status-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/bh-hive-survey-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/config-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/conformance.json",
+        "docs/schemas/wire/v1.4.0/factory-bead-node-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/factory-hive-info-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/factory-snapshot-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/json-value-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/operation-catalog-v1.json",
+        "docs/schemas/wire/v1.4.0/operation-catalog-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/plugin-config-herdr-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/plugin-config-hitch-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/plugin-config-observaloop-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/plugin-config-orca-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/plugin-config-repowise-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/plugin-manifest-v1.schema.json",
+        "docs/schemas/wire/v1.4.0/release.json",
+        "src/beadhive/state_stream.py",
+        "src/beadhive/testing/__init__.py",
+        "src/beadhive/testing/conformance.py"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:aa5d07fad4ed0d97b767c46991aa8535c8aa5436bc1a8b4819d59930ce6ea506",
+      "kind": "contract",
+      "mandatory_boundary_tests": [],
+      "observed_input_digest": "sha256:aa5d07fad4ed0d97b767c46991aa8535c8aa5436bc1a8b4819d59930ce6ea506",
+      "owner": "contracts closure maintainers",
+      "public_ports": [
+        "src/beadhive/testing",
+        "src/beadhive/state_stream.py"
+      ],
+      "real_adapter_tests": [
+        "tests/unit/testing/test_real_adapter_conformance_example.py"
+      ],
+      "relationship_evidence": {
+        "generated-artifact": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "reverse-dependency": [
+          "reverse_dependents",
+          "reverse_dependent_tests"
+        ],
+        "schema": [
+          "implementation_boundary",
+          "mandatory_boundary_tests"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "reverse-dependency",
+        "generated-artifact",
+        "schema",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [
+        "tests/test_state_stream_polling.py",
+        "tests/unit/testing/test_real_adapter_conformance_example.py",
+        "tests/test_cli_projection.py",
+        "tests/test_mcp_catalog_projection.py",
+        "tests/test_plugins.py"
+      ],
+      "reverse_dependents": [
+        "adapters",
+        "plugin.herdr",
+        "plugin.hitch",
+        "plugin.observaloop",
+        "plugin.orca",
+        "plugin.repowise"
+      ],
+      "shared_contracts": [],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 33.15,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "the closure has no single enforceable public port",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 88,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:e640cb777c8f5ea0b4bf2da239e00847252975df021feb3d9f5178bb85c8929f",
+        "shared_universe": false
+      },
+      "command": "just test-closure integration",
+      "confidence": "low",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "tests/test_coordination_int.py",
+          "tests/test_dolt_embedded_engine_int.py",
+          "tests/test_dolt_health_int.py",
+          "tests/test_dolt_health_real_server_int.py",
+          "tests/test_host_fence_int.py",
+          "tests/test_hq_backup_server_mode_int.py",
+          "tests/test_hub_bulk_int.py",
+          "tests/test_localloop_int.py",
+          "tests/test_onboard_server_mode_int.py",
+          "tests/test_state_stream_integration.py",
+          "tests/test_storage_migrate_int.py",
+          "tests/test_work_readiness_int.py",
+          "tests/test_work_refine_int.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests",
+          "tests/unit/testing/test_conformance_testkit.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "full-system tests -> composed public product surface",
+      "enforceable_port": false,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "integration",
+      "implementation_boundary": [
+        "tests/test_coordination_int.py",
+        "tests/test_dolt_embedded_engine_int.py",
+        "tests/test_dolt_health_int.py",
+        "tests/test_dolt_health_real_server_int.py",
+        "tests/test_host_fence_int.py",
+        "tests/test_hq_backup_server_mode_int.py",
+        "tests/test_hub_bulk_int.py",
+        "tests/test_localloop_int.py",
+        "tests/test_onboard_server_mode_int.py",
+        "tests/test_state_stream_integration.py",
+        "tests/test_storage_migrate_int.py",
+        "tests/test_work_readiness_int.py",
+        "tests/test_work_refine_int.py"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:185b3db12e92710a6f020577c07531ade0e24b17e00c2d6c4b065680259b7a31",
+      "kind": "integration",
+      "mandatory_boundary_tests": [
+        "tests/unit/testing/test_conformance_testkit.py"
+      ],
+      "observed_input_digest": "sha256:185b3db12e92710a6f020577c07531ade0e24b17e00c2d6c4b065680259b7a31",
+      "owner": "integration closure maintainers",
+      "public_ports": [],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "subprocess": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "shared-contract",
+        "subprocess",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [],
+      "reverse_dependents": [],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 138.84,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    },
+    {
+      "certification": {
+        "eligible_for_selective_activation": false,
+        "gate": "just check",
+        "prerequisites": "recorded",
+        "reason": "the closure has no single enforceable public port",
+        "status": "uncertified"
+      },
+      "collection": {
+        "count": 26,
+        "kind": "current-pytest-nodeids",
+        "nodeid_digest": "sha256:65914875d310fad9cd1e664becec367703009251746977cd1325bd2ebeb673e4",
+        "shared_universe": true
+      },
+      "command": "just test-closure system-smoke",
+      "confidence": "low",
+      "coverage_mapping": {
+        "granularity": "selector-to-owned-source-scope",
+        "mode": "declared-best-available",
+        "owned_sources": [
+          "src/beadhive/cli.py",
+          "src/beadhive/mcp.py",
+          "src/beadhive/stream_cli.py"
+        ],
+        "per_test_contexts": [],
+        "selectors": [
+          "tests/test_help_hygiene.py::test_subcommand_help_stdout_has_no_stale_schema_warning",
+          "tests/test_mcp.py::test_in_memory_lists_exactly_the_selected_tools",
+          "tests/test_stream_cli.py::test_cli_emits_snapshot_then_delta_as_stdout_only_ndjson",
+          "tests/unit/testing/test_conformance_testkit.py"
+        ],
+        "uncertainty": "No fresh dynamic per-test contexts exist at this digest. The checked registry, static import boundary, explicit shared contracts, and reverse-dependent tests are the best available mapping and cannot alone prove execution coverage."
+      },
+      "dependency_direction": "full-system tests -> composed public product surface",
+      "enforceable_port": false,
+      "fallback_triggers": [
+        "input-digest-mismatch",
+        "missing-or-stale-coverage",
+        "unenforceable-public-port",
+        "unknown-or-unowned-path",
+        "shared-contract-or-schema-change",
+        "dynamic-discovery-or-subprocess-ambiguity",
+        "compatibility-facade-or-generated-artifact-change",
+        "test-infrastructure-or-certifier-change"
+      ],
+      "id": "system-smoke",
+      "implementation_boundary": [
+        "src/beadhive/cli.py",
+        "src/beadhive/mcp.py",
+        "src/beadhive/stream_cli.py"
+      ],
+      "independence_tests": [],
+      "input_digest": "sha256:36a4f5cb31e95407a08bf687b6d9da7cbd6696464c347c5285b4327621c5e42b",
+      "kind": "system",
+      "mandatory_boundary_tests": [
+        "tests/unit/testing/test_conformance_testkit.py"
+      ],
+      "observed_input_digest": "sha256:36a4f5cb31e95407a08bf687b6d9da7cbd6696464c347c5285b4327621c5e42b",
+      "owner": "system-smoke closure maintainers",
+      "public_ports": [],
+      "real_adapter_tests": [],
+      "relationship_evidence": {
+        "import": [
+          "implementation_boundary",
+          "public_ports",
+          "dependency_direction"
+        ],
+        "shared-contract": [
+          "shared_contracts",
+          "mandatory_boundary_tests"
+        ],
+        "subprocess": [
+          "implementation_boundary",
+          "fallback_triggers"
+        ],
+        "test-infrastructure": [
+          "global_certification_inputs",
+          "fallback_triggers"
+        ]
+      },
+      "relationships": [
+        "import",
+        "shared-contract",
+        "subprocess",
+        "test-infrastructure"
+      ],
+      "reverse_dependent_tests": [],
+      "reverse_dependents": [],
+      "shared_contracts": [
+        "contracts"
+      ],
+      "status": "present",
+      "timing": {
+        "current_digest_measurement": false,
+        "kind": "historical-wall",
+        "seconds": 6.98,
+        "source_revision": "dd6c75e1a847c1d3f9886c1343f52f1277807e57"
+      }
+    }
+  ],
+  "focused_boundary_oracle": {
+    "note": "Focused implementation evidence only; it does not replace just check or add dynamic per-test coverage contexts.",
+    "passed": 323,
+    "pytest_seconds": 13.55,
+    "scope": "module isolation sentinels plus focused real-adapter contract tests",
+    "skipped": 1,
+    "verdict": "green",
+    "warnings": 1
+  },
+  "global_certification_inputs": [
+    "scripts/test_closures.py",
+    "scripts/test_closure_certification.py",
+    "tests/closures.toml",
+    "tests/test_test_closures.py",
+    "tests/test_test_closure_certification.py"
+  ],
+  "policy": {
+    "activation": "disabled",
+    "activation_owner": "bh-ck1t6.3",
+    "ordinary_full_gate": "just check",
+    "release_gate": "just check-all",
+    "selection_owner": "bh-ck1t6.2"
+  },
+  "recertification": {
+    "affected_stale_or_unenforceable_gate": "just check",
+    "certifier_or_test_infrastructure_change_invalidates_all_records": true,
+    "rule": "Recompute only records whose own input digest or referenced shared boundary changed; stale, missing, or unenforceable affected records use just check.",
+    "unrelated_closure_digests_remain_valid": true
+  },
+  "refresh_provenance": {
+    "from": "311d30db44d3a04120d908bc8ce61c40fe7fcdc4",
+    "kind": "telemetry-closure promotion refresh after bh-id9pp landed",
+    "to": "ced493be87c9b36736cb081906c5ddb97989bd6c"
+  },
+  "required_relationship_classes": [
+    "import",
+    "reverse-dependency",
+    "shared-contract",
+    "dynamic-discovery",
+    "plugin-registration",
+    "subprocess",
+    "compatibility-facade",
+    "generated-artifact",
+    "schema",
+    "test-infrastructure"
+  ],
+  "same_tree_full_gate_oracle": {
+    "input_identity": {
+      "algorithm": "sha256",
+      "certifier": "bh-test-closure-prerequisites-v2",
+      "excluded_paths": [
+        "docs/proof/bh-ck1t6.1-test-closure-certification.json"
+      ],
+      "file_count": 1234,
+      "revision": "sha256:c1d6690e29ef6aa0f045681e2e801b1bc4536a94a1c872ae90758f4d5ffe2247",
+      "tree": "sha256:3ec5ecfb3ddf2efe21fd46e39bb2ad3a8ce6508c58015df59706aa4c14f691be"
+    },
+    "note": "The checked JSON declares the receipt lookup identity, not a self-asserted run. --check resolves the candidate's Git tree against the authoritative git-private ledger; the matching in-flight work-check is accepted only to bootstrap that same gate, and later checks require its completed green receipt.",
+    "receipt_provenance": {
+      "authority": "beadhive-git-private-validation-ledger",
+      "bead": "bh-ck1t6.5",
+      "command": "just check",
+      "command_hash": "017092419ea31d5d",
+      "lookup_tree": "candidate HEAD^{tree}",
+      "phase": "check",
+      "required_lifecycle": "completed",
+      "required_verdict": "green"
+    }
+  },
+  "schema_version": 2,
+  "scope": "bh-ck1t6.1 digest-bound test-closure prerequisite certification",
+  "source_revision": "sha256:c1d6690e29ef6aa0f045681e2e801b1bc4536a94a1c872ae90758f4d5ffe2247",
+  "source_tree": "sha256:3ec5ecfb3ddf2efe21fd46e39bb2ad3a8ce6508c58015df59706aa4c14f691be"
+}

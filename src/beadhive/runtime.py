@@ -33,7 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
-from . import config
+from .config_consumer_ports import work_settings as config
 
 # The bead's own no-runtime-only-state invariant (ADR Decision 1) means nothing in this module
 # may persist scheduling state anywhere but beads. `RoleHandle`/`RoleOutcome` below are transient

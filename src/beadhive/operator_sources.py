@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import copy
+import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from . import config, dispatch_log, public_readers, registry, run_journal
-from .public_readers import AgentRunSnapshot, RunJournalFrame
-from .state_stream import ProviderSnapshot, StreamRequest, StreamScope
+from . import config, dispatch_log, public_readers, registry, run_journal, state_services
+from .modules.state import (
+    AgentRunSnapshot,
+    ProviderSnapshot,
+    RunJournalFrame,
+    StreamRequest,
+    StreamScope,
+)
+from .public_readers import (
+    RunDirectoryEntry,
+    RunDirectoryInventory,
+)
 from .state_stream_polling import PollingStateStreamProvider
 from .state_stream_process import StreamProcessScope
 
@@ -51,22 +61,11 @@ class RefreshingProvider(Protocol):
 
 
 SummaryReader = Callable[[Path, str, str], AgentRunSnapshot]
-JournalReader = Callable[[Path, str, str, str], RunJournalFrame]
+JournalReader = Callable[[int, str, str, str], RunJournalFrame]
 
 
 def _default_summary_reader(path: Path, host_id: str, source_id: str) -> AgentRunSnapshot:
     return public_readers.read_agent_run_snapshot(path, host_id=host_id, source_id=source_id)
-
-
-def _default_journal_reader(
-    path: Path, run_id: str, host_id: str, source_id: str
-) -> RunJournalFrame:
-    return public_readers.RunJournalTailReader(
-        path=path,
-        run_id=run_id,
-        host_id=host_id,
-        source_id=source_id,
-    ).snapshot()[0]
 
 
 def validate_canonical_identity(value: str) -> tuple[str, str, str]:
@@ -111,16 +110,28 @@ class OperatorSources:
         host_id: str,
         provider: RefreshingProvider | None = None,
         summary_reader: SummaryReader = _default_summary_reader,
-        journal_reader: JournalReader = _default_journal_reader,
+        journal_reader: JournalReader | None = None,
         journal_base: Path | None = None,
         dispatch_sink_for_entry: Callable[[dict, Mapping[str, object]], Path] | None = None,
         process_timeout: float = DEFAULT_PROCESS_TIMEOUT,
         process_term_grace: float = DEFAULT_PROCESS_TERM_GRACE,
+        max_records_per_read: int = public_readers.DEFAULT_MAX_JOURNAL_RECORDS,
+        max_record_bytes: int = public_readers.DEFAULT_MAX_JOURNAL_RECORD_BYTES,
+        max_read_bytes: int = public_readers.DEFAULT_MAX_JOURNAL_READ_BYTES,
+        max_inventory_roots: int = public_readers.DEFAULT_MAX_INVENTORY_ROOTS,
+        max_inventory_entries: int = public_readers.DEFAULT_MAX_INVENTORY_ENTRIES,
+        max_inventory_bytes: int = public_readers.DEFAULT_MAX_INVENTORY_BYTES,
     ) -> None:
         self.cfg = cfg if cfg is not None else config.load()
         self.host_id = host_id
         self._summary_reader = summary_reader
         self._journal_reader = journal_reader
+        self.max_records_per_read = max_records_per_read
+        self.max_record_bytes = max_record_bytes
+        self.max_read_bytes = max_read_bytes
+        self.max_inventory_roots = max_inventory_roots
+        self.max_inventory_entries = max_inventory_entries
+        self.max_inventory_bytes = max_inventory_bytes
         self._journal_base = journal_base
         self._dispatch_sink_for_entry = dispatch_sink_for_entry or dispatch_log.sink_path
         self._process_scope: StreamProcessScope | None = None
@@ -141,6 +152,12 @@ class OperatorSources:
                 process_scope=self._process_scope,
             )
         self.provider = provider
+        self._projections = state_services.read_projection_service(
+            snapshot=self.provider.refresh,
+            agent_runs=lambda source, host_id, source_id: self._summary_reader(
+                Path(source), host_id, source_id
+            ),
+        )
 
     def close(self) -> None:
         """Cancel production polling process trees; injected providers remain caller-owned."""
@@ -196,8 +213,8 @@ class OperatorSources:
 
         sink = self._dispatch_sink_for_entry(self.cfg, hive.entry)
         try:
-            runtime_state = self._summary_reader(
-                sink,
+            runtime_state = self._projections.agent_runs(
+                str(sink),
                 self.host_id,
                 f"beadhive.dispatch-summary:{self.host_id}:{hive.identity}",
             )
@@ -220,7 +237,7 @@ class OperatorSources:
 
         request = StreamRequest(StreamScope.HIVE, hive=hive.identity)
         try:
-            bead_state = self.provider.refresh(request)
+            bead_state = self._projections.snapshot(request)
         except Exception as exc:
             raise OperatorSourceError(
                 "snapshot_source_unavailable",
@@ -250,49 +267,129 @@ class OperatorSources:
             )
         return bead_state
 
-    def locate_run(self, run_id: str) -> tuple[ExactHive, Path]:
-        # Reuse the writer's exact path-safe validation rather than maintaining another regex.
-        candidates: list[tuple[ExactHive, Path]] = []
-        for hive in self.registered_hives():
-            try:
-                path = run_journal.journal_path_for_hive(
-                    hive.identity, run_id, base=self._journal_base
-                )
-            except ValueError as exc:
-                raise OperatorSourceError(
-                    "invalid_run_id",
-                    "Run identity must be one path-safe outer run token.",
-                    status_code=400,
-                ) from exc
-            if path.exists():
-                candidates.append((hive, path))
-        if not candidates:
-            raise OperatorSourceError(
-                "run_not_found", "The exact outer run was not found.", status_code=404
-            )
-        if len(candidates) > 1:
-            raise OperatorSourceError(
-                "ambiguous_run_id",
-                "The outer run identity exists in more than one hive.",
-                status_code=409,
-            )
-        hive, path = candidates[0]
-        if path.is_symlink() or not path.is_file():
-            raise OperatorSourceError(
-                "invalid_run_source",
-                "The outer run source is not a regular host-local journal.",
-                status_code=409,
-            )
-        return hive, path
-
-    def read_run(self, hive: ExactHive, path: Path, run_id: str) -> RunJournalFrame:
+    def locate_run(self, run_id: str) -> tuple[ExactHive, RunDirectoryEntry]:
+        # Reuse the writer's exact validation, then resolve through one host-wide inventory.
         try:
-            frame = self._journal_reader(
-                path,
-                run_id,
-                self.host_id,
-                f"beadhive.run-journal:{self.host_id}:{hive.identity}:{run_id}",
+            run_journal.journal_path_for_hive("validation/only/hive", run_id)
+        except ValueError as exc:
+            raise OperatorSourceError(
+                "invalid_run_id",
+                "Run identity must be one path-safe outer run token.",
+                status_code=400,
+            ) from exc
+        hives = self.registered_hives()
+        inventory = self.run_directory(hives)
+        try:
+            entry = inventory.resolve(run_id)
+        except public_readers.RunDirectoryError as exc:
+            status_by_code = {
+                "run_not_found": 404,
+                "ambiguous_run_id": 409,
+                "invalid_run_source": 409,
+                "multiply_linked_run_source": 409,
+                "hive_identity_mismatch": 409,
+                "run_source_unavailable": 503,
+                "run_directory_unavailable": 503,
+                "journal_root_collision": 409,
+            }
+            messages = {
+                "run_not_found": "The exact outer run was not found.",
+                "ambiguous_run_id": "The outer run identity exists in more than one hive.",
+                "invalid_run_source": ("The outer run source is not a regular host-local journal."),
+                "multiply_linked_run_source": (
+                    "The outer run source has more than one filesystem identity."
+                ),
+                "hive_identity_mismatch": (
+                    "The outer run source disagrees with its authoritative hive identity."
+                ),
+                "run_source_unavailable": "The outer run source is unavailable.",
+                "run_directory_unavailable": "The authoritative run directory is unavailable.",
+                "journal_root_collision": (
+                    "More than one hive identity maps to the same run-journal source."
+                ),
+            }
+            code = exc.code
+            raise OperatorSourceError(
+                code,
+                messages.get(code, "The authoritative run directory is unavailable."),
+                status_code=status_by_code.get(code, 503),
+                retryable=status_by_code.get(code, 503) == 503,
+            ) from None
+        by_identity = {hive.identity: hive for hive in hives}
+        hive = by_identity.get(entry.hive_id)
+        if hive is None:
+            raise OperatorSourceError(
+                "run_hive_unknown",
+                "The outer run belongs to an unknown hive identity.",
+                status_code=409,
             )
+        return hive, entry
+
+    def run_directory(self, hives: tuple[ExactHive, ...] | None = None) -> RunDirectoryInventory:
+        """Read the public host-wide journal inventory outside per-hive sequence domains."""
+
+        exact_hives = hives if hives is not None else self.registered_hives()
+        roots = (
+            (
+                hive.identity,
+                run_journal.journal_root_for_hive(hive.identity, base=self._journal_base),
+            )
+            for hive in exact_hives
+        )
+        return public_readers.read_run_directory(
+            roots,
+            max_records_per_read=self.max_records_per_read,
+            max_record_bytes=self.max_record_bytes,
+            max_read_bytes=self.max_read_bytes,
+            max_inventory_roots=self.max_inventory_roots,
+            max_inventory_entries=self.max_inventory_entries,
+            max_inventory_bytes=self.max_inventory_bytes,
+        )
+
+    def read_run(self, hive: ExactHive, source: RunDirectoryEntry, run_id: str) -> RunJournalFrame:
+        if (
+            source.hive_id != hive.identity
+            or source.run_id != run_id
+            or source.device is None
+            or source.inode is None
+        ):
+            raise OperatorSourceError(
+                "activity_source_changed",
+                "The authoritative run activity source changed after discovery.",
+                status_code=503,
+                retryable=True,
+            )
+        descriptor: int | None = None
+        try:
+            descriptor = public_readers.open_run_journal_descriptor(source)
+            source_id = f"beadhive.run-journal:{self.host_id}:{hive.identity}:{run_id}"
+            if self._journal_reader is None:
+                frame = public_readers.read_run_journal_descriptor(
+                    descriptor,
+                    run_id=run_id,
+                    host_id=self.host_id,
+                    source_id=source_id,
+                    expected_hive_id=hive.identity,
+                    max_records_per_read=self.max_records_per_read,
+                    max_record_bytes=self.max_record_bytes,
+                    max_read_bytes=self.max_read_bytes,
+                )
+            else:
+                frame = self._journal_reader(descriptor, run_id, self.host_id, source_id)
+        except public_readers.RunJournalSourceChanged as exc:
+            raise OperatorSourceError(
+                "activity_source_changed",
+                "The authoritative run activity source changed after discovery.",
+                status_code=503,
+                retryable=True,
+            ) from exc
+        except OSError as exc:
+            raise OperatorSourceError(
+                "activity_source_changed",
+                "The authoritative run activity source changed after discovery.",
+                status_code=503,
+                retryable=True,
+            ) from exc
         except Exception as exc:
             raise OperatorSourceError(
                 "activity_source_unavailable",
@@ -300,6 +397,9 @@ class OperatorSources:
                 status_code=503,
                 retryable=True,
             ) from exc
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
         if frame.run_id != run_id:
             raise OperatorSourceError(
                 "activity_run_mismatch",
@@ -319,6 +419,7 @@ class OperatorSources:
             )
         if frame.coverage_reason in {
             "run_id_mismatch",
+            "hive_identity_mismatch",
             "identity_drift",
             "provider_continuation_aliases_run_id",
             "provider_continuation_drift",

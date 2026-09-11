@@ -12,17 +12,23 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from beadhive import frame_bridge, frame_bridge_runtime
+from beadhive import daemon_auth, frame_bridge, frame_bridge_runtime
 
 EPOCH = "123e4567e89b42d3a456426614174000"
 REVISION = "sha256:" + "a" * 64
+DAEMON_BEARER = "bh1.frame-bridge." + "d" * 43
 
 
-def _operator_app() -> Starlette:
+def _operator_app(seen_authorizations: list[str | None] | None = None) -> Starlette:
     async def health(_request):
-        return JSONResponse({"live": True, "ready": True})
+        return JSONResponse({"status": "live", "ready": True})
 
-    async def snapshot(_request):
+    async def snapshot(request):
+        authorization = request.headers.get("authorization")
+        if seen_authorizations is not None:
+            seen_authorizations.append(authorization)
+        if authorization != f"Bearer {DAEMON_BEARER}":
+            return JSONResponse({"error": {"code": "auth_missing"}}, status_code=401)
         return JSONResponse(
             {
                 "schemaVersion": 1,
@@ -36,6 +42,11 @@ def _operator_app() -> Starlette:
         )
 
     async def events(request):
+        authorization = request.headers.get("authorization")
+        if seen_authorizations is not None:
+            seen_authorizations.append(authorization)
+        if authorization != f"Bearer {DAEMON_BEARER}":
+            return JSONResponse({"error": {"code": "auth_missing"}}, status_code=401)
         if request.query_params["cursor"].endswith(":0"):
             return JSONResponse({"action": "resnapshot"}, status_code=409)
 
@@ -59,7 +70,10 @@ def _runtime() -> frame_bridge_runtime.LoopbackDemoRuntime:
         transport=httpx.ASGITransport(app=_operator_app()),
         base_url=frame_bridge_runtime.LOOPBACK_ORIGIN,
     )
-    return frame_bridge_runtime.LoopbackDemoRuntime(client)
+    return frame_bridge_runtime.LoopbackDemoRuntime(
+        daemon_bearer=daemon_auth.SecretBearer(DAEMON_BEARER),
+        client=client,
+    )
 
 
 def test_real_loopback_profile_maps_snapshot_refresh_and_retained_events() -> None:
@@ -92,6 +106,32 @@ def test_real_loopback_profile_maps_snapshot_refresh_and_retained_events() -> No
         }
     ]
     assert "private" not in str(events)
+
+
+def test_loopback_profile_sends_only_its_private_daemon_bearer() -> None:
+    seen: list[str | None] = []
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=_operator_app(seen)),
+        base_url=frame_bridge_runtime.LOOPBACK_ORIGIN,
+    )
+    runtime = frame_bridge_runtime.LoopbackDemoRuntime(
+        daemon_bearer=daemon_auth.SecretBearer(DAEMON_BEARER),
+        client=client,
+    )
+
+    async def exercise() -> None:
+        try:
+            assert await runtime.online()
+            await runtime.snapshot()
+            source = await runtime.events("123e4567-e89b-42d3-a456-426614174000:1")
+            assert [event async for event in source]
+        finally:
+            await runtime.close()
+
+    asyncio.run(exercise())
+
+    assert seen == [f"Bearer {DAEMON_BEARER}"] * 3
+    assert all("caller" not in value for value in seen if value is not None)
 
 
 def test_development_projection_selects_only_current_non_operational_work() -> None:

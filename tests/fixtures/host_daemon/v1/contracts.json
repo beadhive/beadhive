@@ -1,0 +1,168 @@
+{
+  "factory": {
+    "schemaVersion": 1,
+    "contractVersion": "beadhive.host-daemon/v1",
+    "generatedAt": 1777000000000,
+    "host": {
+      "hostId": "host-fixture",
+      "serviceInstanceId": "instance-fixture"
+    },
+    "status": {
+      "readiness": "degraded",
+      "acceptingWork": true,
+      "startedAt": 1776999999000,
+      "dependencies": [
+        {"name": "hq", "status": "ready", "reasonCode": null},
+        {"name": "dolt", "status": "ready", "reasonCode": null},
+        {"name": "bead-state", "status": "ready", "reasonCode": null},
+        {"name": "run-journals", "status": "degraded", "reasonCode": "partial_coverage"}
+      ]
+    },
+    "hives": [
+      {
+        "hiveId": "github/beadhive/beadhive",
+        "encodedHiveId": "github%2Fbeadhive%2Fbeadhive",
+        "provider": "github",
+        "org": "beadhive",
+        "repo": "beadhive",
+        "prefix": "bh",
+        "kind": "org-native",
+        "readiness": "ready"
+      }
+    ],
+    "relationships": [],
+    "assignments": [
+      {
+        "hiveId": "github/beadhive/beadhive",
+        "hostId": "host-fixture",
+        "role": "executor",
+        "state": "held",
+        "leaseExpiresAt": 1777000300000
+      }
+    ],
+    "capabilities": [
+      {"name": "snapshot", "available": true, "reasonCode": null},
+      {"name": "events", "available": true, "reasonCode": null},
+      {"name": "activity-read", "available": true, "reasonCode": null},
+      {"name": "activity-publish", "available": true, "reasonCode": null},
+      {"name": "terminal", "available": false, "reasonCode": "pty_verdict_pending"}
+    ],
+    "coverage": {
+      "state": "partial",
+      "generatedAt": 1777000000000,
+      "sources": {
+        "registry": {"state": "complete", "detail": null, "generatedAt": 1777000000000},
+        "run-journals": {"state": "partial", "detail": "partial_coverage", "generatedAt": 1777000000000}
+      }
+    }
+  },
+  "factoryHives": {
+    "schemaVersion": 1,
+    "revision": "factory-hives-fixture-1",
+    "generatedAt": 1777000000000,
+    "items": [
+      {
+        "id": "github/beadhive/beadhive",
+        "displayLabel": "beadhive",
+        "opaqueRef": "hive-sha256-0000000000000000000000000000000000000000000000000000000000000000",
+        "prefix": "bh",
+        "provider": "github",
+        "org": "beadhive",
+        "repo": "beadhive",
+        "kind": "org-native",
+        "availability": {"state": "available", "reason": null},
+        "counts": {"open": 2, "ready": 1, "active": 1, "blocked": 1},
+        "revision": "opaque:hive-1",
+        "asOf": 1777000000000,
+        "coverage": {"state": "complete", "reason": null},
+        "advertisedActions": [
+          {
+            "id": "hive.inspect",
+            "capability": "inspect",
+            "target": {
+              "hiveId": "github/beadhive/beadhive",
+              "kind": "hive",
+              "id": "github/beadhive/beadhive"
+            },
+            "availability": "allowed",
+            "reasonCode": null,
+            "reason": "the hive is registered",
+            "consequence": "navigate",
+            "advertisedAt": 1777000000000,
+            "sourceRevision": "opaque:hive-1",
+            "preconditions": {"sourceRevision": "opaque:hive-1", "mustMatch": false},
+            "input": {"transport": "none", "required": false, "schema": null}
+          }
+        ]
+      }
+    ],
+    "returnedCount": 1,
+    "limit": 50,
+    "truncated": false,
+    "nextCursor": null,
+    "warnings": []
+  },
+  "snapshot": {
+    "schemaVersion": 1,
+    "hive": {"prefix": "bh", "provider": "github", "org": "beadhive", "repo": "beadhive", "kind": "org-native"},
+    "revision": "opaque:snapshot-1",
+    "generatedAt": 1777000000000,
+    "cursor": {"subscriptionId": "hive-bh", "producerEpoch": "epoch-1", "sequence": 0, "observedAt": 1777000000000},
+    "coverage": {
+      "state": "complete",
+      "generatedAt": 1777000000000,
+      "sources": {
+        "beads": {
+          "state": "complete",
+          "requested": 0,
+          "returned": 0,
+          "fromCache": 0,
+          "detail": null,
+          "generatedAt": 1777000000000,
+          "provenance": {"system": "beadhive", "instance": "host-fixture", "runId": null, "documentRef": null}
+        }
+      }
+    },
+    "workItems": [],
+    "dependencies": [],
+    "epics": [],
+    "gates": [],
+    "agents": [],
+    "assignments": [],
+    "schedules": [],
+    "evidence": [],
+    "advertisedActions": []
+  },
+  "event": {
+    "schemaVersion": 1,
+    "hiveId": "github/beadhive/beadhive",
+    "subscriptionId": "hive-bh",
+    "producerEpoch": "epoch-1",
+    "sequence": 1,
+    "baseSequence": null,
+    "observedAt": 1777000000000,
+    "generatedAt": 1777000000001,
+    "source": "beads",
+    "revision": "opaque:event-1",
+    "entity": null,
+    "payload": {"kind": "reset", "reason": "source_reset"}
+  },
+  "activityAppend": {
+    "schemaVersion": 1,
+    "runId": "run-fixture-1",
+    "idempotencyKey": "baml:event-1",
+    "source": "baml",
+    "kind": "provider.progress",
+    "occurredAt": 1777000000000,
+    "expiresAt": 1777000300000,
+    "payload": {"phase": "running"}
+  },
+  "terminalUnavailable": {
+    "schemaVersion": 1,
+    "type": "terminal.unavailable",
+    "code": "pty_verdict_pending",
+    "message": "Terminal attachment is not available on this host.",
+    "retryable": false,
+    "verdictBead": "bh-lx6e.3"
+  }
+}

@@ -852,6 +852,10 @@ def _fully_wired_host(monkeypatch, *, role="executor", fleet_hives=""):
     host config carrying `managed_repos` alongside a real fleet.yaml is the partition conflict
     `_reconcile_host_config_after_clone` exists to clear, and it would fail `verify` for an
     unrelated reason."""
+    # This helper promises a fully green host, including the host-global Dolt inventory. Do
+    # not let a real server from another xdist worker (or the developer's machine) leak into
+    # that synthetic state; production status() and its zombie-specific tests stay real.
+    monkeypatch.setattr(host_provision.dolt_health, "zombies", lambda servers=None: [])
     host_provision._step_config_init(dry_run=False)
     cfg = config.load()
     cfg["hq"] = {"remote": "acme/beadhive-hq"}
@@ -885,6 +889,30 @@ def _fully_wired_host(monkeypatch, *, role="executor", fleet_hives=""):
     host_provision._step_git_identity(dry_run=False)
     host_provision._step_host_init(role=role, force=False, dry_run=False)
     host_provision._step_fix_permissions(dry_run=False)
+
+
+def test_fully_wired_host_fixture_isolated_from_ambient_zombie_inventory(monkeypatch):
+    ambient_calls = []
+
+    def ambient_zombies(servers=None):
+        ambient_calls.append(servers)
+        return [
+            host_provision.dolt_health.RunningServer(
+                pid=9191,
+                datadir="/tmp/unrelated-deleted-store",
+                datadir_exists=False,
+                config_path="/tmp/unrelated-dolt-server-config.yaml",
+                role="shared",
+            )
+        ]
+
+    monkeypatch.setattr(host_provision.dolt_health, "zombies", ambient_zombies)
+
+    _fully_wired_host(monkeypatch, role="viewer")
+    result = host_provision._step_verify()
+
+    assert result.status == "done", result.detail
+    assert ambient_calls == []
 
 
 def test_verify_does_not_claim_usable_on_a_host_with_zero_hive_clones(world, monkeypatch):

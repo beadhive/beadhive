@@ -1,0 +1,1060 @@
+{
+  "activation": {
+    "eligible_closures": [],
+    "enabled": false
+  },
+  "closure_decisions": [
+    {
+      "command": "just test-closure kernel",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "kernel",
+      "input_digest": "sha256:3d380e1e17078465fe29b666bfa0ff33bd2bc1be2859cd0a48e7b49cfd2be6f1",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure kernel.lifecycle",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "kernel.lifecycle",
+      "input_digest": "sha256:1b08b4efb661c5b4054032cea53706f29d3d3cfcfab944ac042d89b8e1870765",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure kernel.plugins",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "kernel.plugins",
+      "input_digest": "sha256:405ff37120a6cdb8f536ca9080f9ce1a2c2a31e2ce211af6c80475c0d94d25e9",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure kernel.telemetry",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "kernel.telemetry",
+      "input_digest": "sha256:64996606f69489a6a2bdadae3ae81ece2591620e6f625bade1e7628d5d550f31",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure module.agents",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "module.agents",
+      "input_digest": "sha256:ab056e01a27d73d52e1db589bddcdc7e5b98fe2a60b747fed8c75902fc6325f7",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure module.config",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "module.config",
+      "input_digest": "sha256:ad66a2cfc367e34eecd2b5c883af5de7e65b7a25f60f6f56f478a25b1febc854",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure config.pure",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "config.pure",
+      "input_digest": "sha256:a82c5b3a50e080564faa2bbdba2a8754518c8f7a569c5827b5953afe1fdc93bc",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure config.store",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "config.store",
+      "input_digest": "sha256:d45f2406c083d8ee97b72845422ad9da8726872118d0671b6456a06e6f141c5d",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure config.fragments",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "config.fragments",
+      "input_digest": "sha256:eef6420f0dd8fe5581f3cdcef9bd46454447fd15361acd2b9f1a180519411b56",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure module.hives",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "module.hives",
+      "input_digest": "sha256:fd73627ecc58404b128819f27be5f7d47f32354c638030168738a4fa4232fd37",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure module.planning",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "module.planning",
+      "input_digest": "sha256:cb7d38f9667bc8d412b0823e9ab2d3a5cd6fe4aa26acb4947139f7db500803e5",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure module.state",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "module.state",
+      "input_digest": "sha256:b0c374dbb8d7baca9d95e1b87af97766a0c734782680ea1b34ad9c828378538d",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure module.work",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "module.work",
+      "input_digest": "sha256:12df7c99985cae72e39921d2ec4e8e0e458b596d67b24a0b4152561bd5a5fefe",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure module.worktrees",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "module.worktrees",
+      "input_digest": "sha256:5e523acbf97d0908c23ed28b8e623f50ccd957a6a62ccd89919aee6aab841fed",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure adapters",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "adapters",
+      "input_digest": "sha256:9863aa65506494c111cacd5e16d15e3da57205c4ca77c3bcfcf2e1be1e4d25a5",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met",
+        "unenforceable-public-port"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure plugin.herdr",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "plugin.herdr",
+      "input_digest": "sha256:fd264959a9144a0ab5306b446ebd6c7277c64190391a79a39174a244cc7e1aea",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure plugin.hitch",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "plugin.hitch",
+      "input_digest": "sha256:171c5e9520a250411f8c3d2a1687c7a5109bac1fc18ccc862b07f96a81324eb9",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure plugin.observaloop",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "plugin.observaloop",
+      "input_digest": "sha256:8522155f19123a40d0cbf100a38eb3b2ca1012fa54cc5eff30cfd17af51bce4c",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure plugin.orca",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "plugin.orca",
+      "input_digest": "sha256:88053c840142bef823892798b2a61b664c53e3e27618b59d98650a213aa0288b",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure plugin.repowise",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "plugin.repowise",
+      "input_digest": "sha256:9d6f6e1d0b80206e3301e9240ef7a81d3ce48a93d195217f02ac2ceaad7853e6",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure contract.agent-launch",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "contract.agent-launch",
+      "input_digest": "sha256:8b13ab558518996052d7b3ce887f3c585f7564864d31db6274136a363ed08ee7",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure contracts",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "contracts",
+      "input_digest": "sha256:aa5d07fad4ed0d97b767c46991aa8535c8aa5436bc1a8b4819d59930ce6ea506",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure integration",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "integration",
+      "input_digest": "sha256:185b3db12e92710a6f020577c07531ade0e24b17e00c2d6c4b065680259b7a31",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met",
+        "unenforceable-public-port"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    },
+    {
+      "command": "just test-closure system-smoke",
+      "eligible": false,
+      "evidence_mode": "none",
+      "id": "system-smoke",
+      "input_digest": "sha256:36a4f5cb31e95407a08bf687b6d9da7cbd6696464c347c5285b4327621c5e42b",
+      "measurements": {
+        "fallback_count": 0,
+        "fallback_rate": null,
+        "flake_count": 0,
+        "full_compute_median_seconds": null,
+        "full_wall_median_seconds": null,
+        "miss_count": 0,
+        "qualifying_count": 0,
+        "queue_median_seconds": null,
+        "sample_count": 0,
+        "selected_compute_median_seconds": null,
+        "selected_wall_median_seconds": null,
+        "status": "unavailable",
+        "wall_ratio": null,
+        "wall_savings_median_seconds": null,
+        "window_days": null
+      },
+      "reasons": [
+        "closure-input-digest-mismatch",
+        "closure-not-activation-eligible",
+        "closure-not-certified",
+        "confidence-below-high",
+        "current-applicability-not-proven",
+        "dynamic-trace-revision-mismatch",
+        "insufficient-qualifying-shadow-samples",
+        "missing-or-stale-dynamic-trace",
+        "representative-change-classes-missing",
+        "shadow-window-too-young",
+        "timing-target-not-met",
+        "unenforceable-public-port"
+      ],
+      "selector": {
+        "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+        "version": "bh-test-impact-selector-v1"
+      }
+    }
+  ],
+  "current_gate": {
+    "applies_to": "all check, submit, review, merge, epic, workstream, scheduled, and release boundaries",
+    "command": "just check",
+    "receipt_reuse": "exact-tree full-gate receipts may be reused by existing lifecycle policy"
+  },
+  "input_digest": "sha256:36e404fdbe0f55152752e8cc6696ebf3bd0d39bca8037644002e7fed434879f1",
+  "inputs": {
+    "certification_artifact": {
+      "digest": "sha256:8a909107e498262574e50feab2dd359857823f4ae664ece5e44b6cbf0ab97d71",
+      "path": "docs/proof/bh-ck1t6.1-test-closure-certification.json"
+    },
+    "selector": {
+      "digest": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
+      "path": "scripts/test_impact_selector.py",
+      "version": "bh-test-impact-selector-v1"
+    },
+    "shadow_policy": {
+      "digest": "sha256:4bbbf5d22a61675e9a06696a424cd16e1f17ab8ede17d202a5d3a6fb8cc40036",
+      "path": "scripts/test_closure_shadow_policy.py",
+      "version": "bh-test-closure-shadow-policy-v1"
+    },
+    "shadow_verifier": {
+      "digest": "sha256:84bb30f642b0679fcf966108e859ccb5a10095338607a253c55e17971f2b5e78",
+      "path": "scripts/test_closure_shadow_verifier.py"
+    }
+  },
+  "observations": {
+    "note": "No real shadow result is claimed; simulation-only controls live in tests.",
+    "samples": [],
+    "status": "not-started-no-certified-candidates"
+  },
+  "policy": {
+    "full_only_boundaries": [
+      "epic-finish",
+      "leaf-merge",
+      "release",
+      "scheduled",
+      "workstream-review",
+      "workstream-submit"
+    ],
+    "local_leaf_boundaries": [
+      "check",
+      "pristine-review",
+      "submit"
+    ],
+    "maximum_selected_to_full_wall_ratio": 0.5,
+    "minimum_median_wall_savings_seconds": 30.0,
+    "minimum_qualifying_merged_changes": 30,
+    "minimum_window_days": 60,
+    "required_change_classes": [
+      "owned-implementation",
+      "public-port-or-contract",
+      "reverse-dependent-or-multi-file"
+    ],
+    "rollback": [
+      "local-activation-disabled",
+      "selected-green-full-red-escape",
+      "selector-or-input-digest-drift",
+      "ownership-or-confidence-degradation",
+      "uncertain-or-full-selector-plan"
+    ],
+    "zero_selected_green_full_red_escapes": true
+  },
+  "schema_version": 1,
+  "scope": "local-leaf-shadow-policy-only"
+}

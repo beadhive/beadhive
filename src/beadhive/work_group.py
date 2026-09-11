@@ -21,7 +21,8 @@ from contextlib import contextmanager
 
 import typer
 
-from . import config, host, identity, otel, worktree
+from . import host, identity, otel, worktree
+from .config_consumer_ports import work_settings as config
 
 BATCH_PREFIX = "batch/"  # a work-group's shared worktree branch is wt/batch/<group>
 
@@ -233,7 +234,7 @@ def ready_children(epic, main) -> list[str]:
     runnable-empty collapse rather than crashing."""
     from . import bd  # lazy: avoids a circular import at module level
 
-    kids = bd.json(["list", "--parent", epic], main)
+    kids = bd.children(epic, main)
     if not isinstance(kids, list):
         return []
     return [str(k["id"]) for k in kids if k.get("id") and str(k.get("status", "")) != "closed"]
