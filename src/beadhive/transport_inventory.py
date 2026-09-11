@@ -89,10 +89,10 @@ def composition_roots() -> tuple[CompositionRootSpec, ...]:
         ),
         CompositionRootSpec(
             surface="gateway",
-            console_script="beadhive-gateway",
-            module="beadhive.bootstrap.gateway",
+            console_script="beadhive-frame-bridge",
+            module="beadhive.bootstrap.frame_bridge",
             callable="main",
-            runtime_factory="beadhive.remote_gateway_runtime:create_application",
+            runtime_factory="beadhive.frame_bridge_runtime:create_application",
             responsibility="composition-and-process-lifecycle-only",
             registration_drift_test=(
                 "tests/test_transport_inventory.py::"
@@ -102,8 +102,8 @@ def composition_roots() -> tuple[CompositionRootSpec, ...]:
                 "tests/test_transport_composition_roots.py",
                 "tests/test_transport_inventory.py",
                 "tests/test_gateway_contract.py",
-                "tests/test_remote_gateway.py",
-                "tests/test_remote_gateway_runtime.py",
+                "tests/test_frame_bridge.py",
+                "tests/test_frame_bridge_runtime.py",
             ),
         ),
         CompositionRootSpec(
@@ -519,7 +519,7 @@ def catalog_projection_extension(row: ProjectionSpec) -> dict[str, Any]:
     }
 
 
-_GATEWAY_AVAILABILITY = "Development gateway profile only; local CLI/stdio remain independent"
+_GATEWAY_AVAILABILITY = "Development Frame Bridge only; local CLI/stdio remain independent"
 _GATEWAY_COMPATIBILITY = "gateway.read.v1 and recursive disclosure allowlists"
 
 

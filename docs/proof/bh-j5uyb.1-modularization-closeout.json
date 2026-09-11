@@ -1,6 +1,6 @@
 {
-  "schema_version": 1,
-  "generated_at_utc": "2026-09-10T22:03:39Z",
+  "schema_version": 2,
+  "generated_at_utc": "2026-09-11T06:45:00Z",
   "bead": {
     "id": "bh-j5uyb.1",
     "title": "Assemble final modularization validation and operator review packet"
@@ -8,13 +8,23 @@
   "workstream": {
     "id": "bh-j5uyb",
     "title": "Workstream: modular Beadhive core, plugins, contracts, transports, and test closures",
-    "implementation_assembly_tip": "6ba52a9c1d36cb05df08f804cd3cf2e43fef8ca7",
-    "implementation_assembly_tree": "1c2dfd72b70001fd1e1e2dff88593e4b5f9e1973",
+    "current_candidate_tip": "5e14f142e4fa7610514e87fceb0d179601c4c23f",
+    "current_candidate_tree": "0447133176cee14dbb0ffb5c91ac32c367c36fe0",
+    "current_candidate_scope": "Exact remediated implementation parent of this evidence-only bead after receipt authority repair, standalone process proof, and Frame Bridge replay. It is current source proof, but it is not a receipt for the later closeout-inclusive tree.",
+    "candidate_lineage": [
+      {"bead": "bh-j5uyb.1", "merge": "071ebdf28937a9822ad60de91738bdd8d4fd593a", "tree": "83ade84b29c759250edc152e4501170bdc3ba24d", "change": "historical closeout packet"},
+      {"bead": "bh-uvotu.1", "merge": "0b5749d060775033ad5d85f551bb07cd0bd5d8ec", "tree": "229cbe7f404223d1d9e1883f14170d095f583d26", "change": "canonical exact-tree receipt authority"},
+      {"bead": "bh-uvotu.2", "merge": "a886eefc4207c0cddbaa169db0f25a38d5c47eb9", "tree": "1b5d80b9bf45f81c00922d24e106455b5a9c3c5a", "change": "standalone validation-process proof"},
+      {"bead": "bh-uvotu.3", "merge": "5e14f142e4fa7610514e87fceb0d179601c4c23f", "tree": "0447133176cee14dbb0ffb5c91ac32c367c36fe0", "change": "Beadhive Frame Bridge semantic replay"}
+    ],
+    "historical_assembly_tip": "6ba52a9c1d36cb05df08f804cd3cf2e43fef8ca7",
+    "historical_assembly_tree": "1c2dfd72b70001fd1e1e2dff88593e4b5f9e1973",
+    "historical_assembly_classification": "immutable historical evidence; never proof of the remediated or closeout-inclusive tree",
     "main_anchor": "739349806ead27c94282219b1befb796ba73b583",
     "main_tree": "8fb6984bb1a4cf1ed598e71d6a3f9da41fbc8b88",
     "rollback_point": "739349806ead27c94282219b1befb796ba73b583",
-    "main_untouched_at_measurement": true,
-    "tip_semantics": "The implementation assembly tip is the immutable workstream parent of this evidence-only closeout child. The closeout commit and its later no-ff integration necessarily produce later SHAs; their exact-tree validation belongs to Beadhive receipts and the final operator gate."
+    "rollback_scope": "Decline the top-level workstream before merge; after merge, revert only its top-level no-ff bubble with mainline parent 1.",
+    "final_tree_authority": "The bh-uvotu.4 work-check and submission receipts, followed by final bh-j5uyb review, must each resolve the exact closeout-inclusive candidate tree from the git-private validation ledger. No SHA or receipt recorded before this evidence commit can prove that later tree."
   },
   "first_tier_epics": [
     {
@@ -214,7 +224,8 @@
     ]
   },
   "validation": {
-    "assembled_tree_full_gate": {
+    "historical_assembly_full_gate": {
+      "classification": "immutable historical receipt for 1c2dfd72 only; not final-candidate proof",
       "command": "just check-all",
       "verdict": "green",
       "run_id": "run-0f98b0032d26017943d65bad457e2d19",
@@ -228,7 +239,7 @@
       "integration_land": {"passed": 63, "skipped": 2, "warnings": 0, "pytest_seconds": 138.81},
       "local_loop_demo": {"status": "passed", "wall_seconds": 104.3},
       "live_ingress_demo": {"status": "passed", "cells": 4},
-      "note": "The merge wrapper 6ba52a9c has the byte-identical tree attested by the child epic finish. The final workstream submit must validate the later closeout-inclusive tree again."
+      "note": "The merge wrapper 6ba52a9c has the byte-identical tree attested by the child epic finish. Receipt repair, process proof, Frame Bridge replay, and this closeout all produce later trees that require their own exact-tree receipts."
     },
     "epic_full_gates": [
       {"id": "bh-inqwc", "run_id": "run-5258589f41320bb8ce8b457059a0e2ee", "wall_seconds": 429.863, "unit": "7135 passed, 11 skipped in 153.19s", "integration": "61 passed, 1 skipped in 135.91s"},
@@ -242,20 +253,25 @@
     ],
     "focused_closeout": {
       "architecture": "green: 327 files, 2912 import edges, 8 owned SCCs / 155 cyclic edges",
-      "plugin_conformance": "green: 74 passed in 1.01s",
-      "transport_artifacts": "green: catalog, projection inventory, OpenAPI, gateway, and composition evidence current",
-      "schema_drift": "green: telemetry, official v1 bundle, release evidence, and wire compatibility generators current",
+      "transport_artifacts": "green at current candidate: catalog, projection inventory, OpenAPI, Gateway wire contracts, and Frame Bridge composition evidence current",
+      "schema_drift": "green at current candidate: telemetry, official v1 bundle, release evidence, and wire compatibility generators current",
+      "package_and_entry_point": "green at current candidate: wheel contains Frame Bridge modules and only the beadhive-frame-bridge console script for the core bridge process",
       "closeout_contract": "Recorded by this bead's final focused run and Beadhive check receipt; not self-referenced here."
     },
     "receipt_bootstrap_remediation": {
-      "status": "focused-green-awaiting-full-gate",
+      "status": "implemented-and-process-proven; exact closeout tree still requires its own gate",
       "discovery": "A downstream exact-tree work check produced its own bead identity, but the selective-closure verifier filtered live bootstrap receipts to the historical certification bead before checking the exact process owner.",
       "red_runs": [
         "run-42e5b4142657e17a70709f50a0a5ec28",
         "run-5bea33e53bd6d131cfa7ec4511c19ee1"
       ],
-      "fix": "Completed GREEN receipt reuse remains bound to bh-ck1t6.5; only an exact-tree, exact-command, exact-hash, exact-phase running receipt with a verified live host, PID, and process-start token may bootstrap from a downstream bead.",
-      "focused_result": "44 passed in 2.29s across certification and closeout suites"
+      "completed_policy": "Accept a completed GREEN receipt only when its tree, canonical full-gate command and hash, lifecycle shape, phase, managed bead/branch binding (for check or submit), exit code, and signal state all match. The historical bh-ck1t6.5 bead identity is not authority and cannot override an exact-tree mismatch.",
+      "in_flight_policy": "Bootstrap only from a canonical receipt for this exact tree and exact current worktree whose lifecycle is running, verdict is none, result fields are unset, and owner host, PID, non-zombie state, and process-start token identify the live process.",
+      "standalone_process_proof": "tests/test_test_closure_certification_process.py::test_real_gate_receipts_authorize_only_their_exact_candidate_process",
+      "implementation_merges": [
+        "0b5749d060775033ad5d85f551bb07cd0bd5d8ec",
+        "a886eefc4207c0cddbaa169db0f25a38d5c47eb9"
+      ]
     },
     "schema_compatibility": {
       "status": "compatible",
@@ -271,7 +287,9 @@
       "status": "current",
       "command": "just transport-artifact-check",
       "proof": "docs/proof/bh-3qkmk.5-transport-composition.json",
-      "composition_roots": 4
+      "composition_roots": 4,
+      "frame_bridge_root": "beadhive.bootstrap.frame_bridge:main",
+      "gateway_boundary": "Gateway wire identifiers remain stable, but the multi-frame Beadhive Gateway is owned by the sibling beadhive-gateway repository and is not a core process."
     },
     "selective_ci": {
       "status": "fail-closed",
@@ -282,6 +300,60 @@
       "full_only_boundaries": ["child-epic-finish", "final-workstream-review", "final-workstream-submit", "leaf-merge", "release", "scheduled"],
       "proof": "docs/proof/bh-ck1t6.5-selective-ci-operations.json"
     }
+  },
+  "evidence_inventory": {
+    "digest_algorithm": "sha256",
+    "digest_reproduction": "sha256sum <path>; tests/test_modularization_closeout.py recomputes every current-candidate digest from repository bytes",
+    "current_candidate": {
+      "transport_composition": {
+        "check": "just transport-artifact-check",
+        "artifacts": [
+          {"path": "docs/schemas/wire/v1.2.0/operation-catalog-v1.json", "sha256": "8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8"},
+          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "a6f04333c61cc2c735b2928a4a21976eb6b599c26d917094553cc5573719ac0f"},
+          {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "29046c0b29b1a6aa9dfd8ad1ca1f0f3f3356d0ef35da01dfa319d4885d1c293d"},
+          {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "570d759d9a640c717a27a66d900b308f29aac5be65b34bc47291dc9eba17a85a"},
+          {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
+          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "240abc836706bfd88dc31c72daf54e61b8081c0718a6311b691c120c7c0bfc65"}
+        ]
+      },
+      "import_boundary": {
+        "check": "uv run python scripts/check_import_boundaries.py",
+        "ledger": {"path": "docs/design/import-boundary-exceptions.toml", "sha256": "260b340385c9c923e555ae26749f94e447bd4e657dd7e3ff891fa348d590b5e7"},
+        "observed": {"python_files": 327, "import_edges": 2912, "owned_sccs": 8, "cyclic_edges": 155, "unowned_errors": 0}
+      },
+      "schema_release": {
+        "check": "just wire-schema-compat",
+        "artifacts": [
+          {"path": "docs/schemas/telemetry-event-envelope-v1.schema.json", "sha256": "1bf34e38b60d8e9cdf7b5c60477cb93f9dd24dac970e5c89a8d3b2695cd2d3c6"},
+          {"path": "docs/schemas/wire/v1.0.0/release.json", "sha256": "c69fb7f1567f16e6f76549ef1c9c53b1f32f7cfde79fc8b0d2cc652a01b727e1"},
+          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "2a4be46cef5bd365be93ca45f0c3c03a8dc8b915d1b15f7d6dc34cf74b07082c"}
+        ]
+      },
+      "selective_ci": {
+        "check": "just architecture-check",
+        "classification": "Canonical historical certification plus current applicability checks; all closures remain uncertified and every production route fails closed to the full lane.",
+        "artifacts": [
+          {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "8a909107e498262574e50feab2dd359857823f4ae664ece5e44b6cbf0ab97d71"},
+          {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "b4c578846521dfdd5f495a5363d86da233e4477ba86e7433fac98478cef842cb"},
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "4485b5e44f78050f6911d3d4eaac7151d89e6404b1f57a9e7fe42efbf93d058b"},
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "5b9d67304e0ad06dcd7f304bb8e43c6c41e58a6610757b46657bc90764e23fa2"}
+        ]
+      },
+      "package_and_entry_point": {
+        "manifest": {"path": "pyproject.toml", "sha256": "88fefa0c183baa6c56cc8f3a23488e5a458dd8fc34274241e648ce59765ed829"},
+        "wheel_test": "tests/test_frame_bridge_handoff.py::test_wheel_contains_only_the_frame_bridge_core_entry_point",
+        "console_script": "beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main",
+        "packaged_modules": ["beadhive/bootstrap/frame_bridge.py", "beadhive/frame_bridge.py", "beadhive/frame_bridge_runtime.py"],
+        "legacy_absent": ["beadhive-gateway", "beadhive/remote_gateway.py", "beadhive/remote_gateway_runtime.py"]
+      }
+    },
+    "immutable_historical": [
+      {"path": "docs/design/capability-module-dependency-map.json", "classification": "exact 287061f0 capability-baseline measurement; pre-Frame-Bridge path names are historical facts"},
+      {"path": "docs/proof/bh-bptze.7-capability-closeout.json", "classification": "closed capability extraction evidence; not regenerated for this candidate"},
+      {"path": "docs/proof/development-frame-bridge-v1-handoff.json", "sha256": "2a4973688c66deb7bf46cbdef693af3e93c76db819b6c89d3481c4a57e2411db", "classification": "renamed wrapper around the immutable pre-replay handoff candidate; historical test paths are intentionally retained"},
+      {"receipt": "run-0f98b0032d26017943d65bad457e2d19", "tree": "1c2dfd72b70001fd1e1e2dff88593e4b5f9e1973", "classification": "green historical assembly receipt only"},
+      {"receipts": ["run-42e5b4142657e17a70709f50a0a5ec28", "run-5bea33e53bd6d131cfa7ec4511c19ee1"], "classification": "red diagnostic receipts retained only in the git-private ledger"}
+    ]
   },
   "structural": {
     "foundation_baseline": {
@@ -296,7 +368,7 @@
       "source": "docs/proof/bh-inqwc.6-modular-baseline.md"
     },
     "current": {
-      "revision": "6ba52a9c1d36cb05df08f804cd3cf2e43fef8ca7",
+      "revision": "5e14f142e4fa7610514e87fceb0d179601c4c23f",
       "python_modules": 327,
       "import_edges": 2912,
       "nonliteral_dynamic_sites": 3,
@@ -318,6 +390,7 @@
     }
   },
   "repowise": {
+    "classification": "historical exact-6ba52a9c static signal; not current-candidate proof",
     "version": "0.45.0",
     "mode": "index-only, no workspace, no cost tracking, no managed-agent generation",
     "last_sync_commit": "6ba52a9c1d36cb05df08f804cd3cf2e43fef8ca7",
@@ -330,13 +403,13 @@
     "maintainability_average": 8.73,
     "performance_average": 9.74,
     "worst_performer": {"path": "src/beadhive/cli.py", "score": 1.65},
-    "freshness_note": "Before the explicit worktree refresh, the wrapper reported zero commits behind while native state was pinned to main at 73934980. The recorded after values come from a candidate-tip index-only refresh. RepoWise health is a static signal, not a correctness score or per-test coverage map."
+    "freshness_note": "Before the explicit historical refresh, the wrapper reported zero commits behind while native state was pinned to main at 73934980. These values belong only to 6ba52a9c and are retained without rewriting. RepoWise health is a static signal, not correctness evidence, per-test coverage, or a claim about the current remediated candidate."
   },
   "remaining_debt": {
     "active_cycle_exceptions": 38,
     "active_cycle_exception_ids": ["cycle-edge-001", "cycle-edge-002", "cycle-edge-003", "cycle-edge-004", "cycle-edge-005", "cycle-edge-006", "cycle-edge-007", "cycle-edge-008", "cycle-edge-009", "cycle-edge-010", "cycle-edge-011", "cycle-edge-017", "cycle-edge-018", "cycle-edge-019", "cycle-edge-020", "cycle-edge-021", "cycle-edge-023", "cycle-edge-024", "cycle-edge-025", "cycle-edge-026", "cycle-edge-027", "cycle-edge-028", "cycle-edge-029", "cycle-edge-030", "cycle-edge-031", "cycle-edge-032", "cycle-edge-033", "cycle-edge-034", "cycle-edge-035", "cycle-edge-036", "cycle-edge-037", "cycle-edge-038", "cycle-edge-039", "cycle-edge-040", "cycle-edge-041", "cycle-edge-042", "cycle-edge-043", "cycle-edge-044"],
     "active_boundary_exceptions": 6,
-    "active_boundary_exception_ids": ["boundary-bootstrap-cli-compatibility", "boundary-bootstrap-mcp-compatibility", "boundary-bootstrap-host-compatibility", "boundary-bootstrap-gateway-compatibility", "boundary-config-complexity-tier", "boundary-config-complexity-names"],
+    "active_boundary_exception_ids": ["boundary-bootstrap-cli-compatibility", "boundary-bootstrap-mcp-compatibility", "boundary-bootstrap-host-compatibility", "boundary-bootstrap-frame-bridge-compatibility", "boundary-config-complexity-tier", "boundary-config-complexity-names"],
     "active_facades": 8,
     "active_facade_ids": ["facade-cli-projection", "facade-config-schema", "facade-work", "facade-config", "facade-worktree", "facade-config-partition", "facade-config-store", "facade-config-policy"],
     "ledger_paths": [
@@ -346,28 +419,48 @@
       "docs/design/herdr-compatibility-removal-ledger.md",
       "docs/design/hives-compatibility-removal-ledger.md"
     ],
-    "disposition": "All entries are named, owned compatibility debt. Their removal gates require separate reviewed changes; this closeout does not authorize deletion."
+    "disposition": "All entries are named, owned compatibility debt. Their removal gates require separate reviewed changes; this closeout does not authorize deletion.",
+    "follow_up_beads": [
+      {"id": "bh-9ghuh.1", "title": "Exercise a real host daemon through the Beadhive Frame Bridge", "scope": "core real-process daemon-to-Frame-Bridge validation"},
+      {"id": "bh-gw-ywh.1", "title": "Refresh the Gateway source lock for Beadhive Frame Bridge", "scope": "sibling beadhive-gateway repository"},
+      {"id": "bh-gw-ywh.2", "title": "Certify exact Gateway sources against the renamed Frame Bridge", "scope": "sibling beadhive-gateway repository"},
+      {"id": "bh-gw-ywh.3", "title": "Exercise live Gateway aggregation across multiple Frame Bridges", "scope": "sibling beadhive-gateway repository"},
+      {"id": "bh-hxbln.1", "title": "Run the unified daemon real-host release certification matrix", "scope": "deferred real Darwin/Linux release hosts"},
+      {"id": "bh-tfapu", "title": "[bug] the epoch fence is inoperable: bd dolt push no longer fires git hooks in the transport repo", "scope": "known quarantined upstream bd integration limitation"}
+    ]
   },
   "known_risks": [
-    "The checked closeout files change the tree after the implementation assembly tip; the final workstream submission must run just check-all on the closeout-inclusive pristine tree.",
+    "The current source candidate 5e14f142 predates this evidence-only change; bh-uvotu.4 check/submit and final workstream review must resolve their own exact closeout-inclusive tree receipts rather than reuse any receipt named in this report.",
     "All 24 selective closures remain uncertified and every production route remains full; no production CI savings are claimed.",
     "The wire check reports an initial release relative to main because main predates the official v1 bundle; the checked compatibility proof separately compares five immutable historical wire releases.",
     "Thirty-eight cycle exceptions, six outward-boundary exceptions, and eight compatibility facades remain active and owned.",
-    "RepoWise reports 4872 untriaged static findings and has no candidate per-test map; its health values are not correctness evidence.",
+    "The retained 6ba52a9c RepoWise scan reports 4872 untriaged static findings and has no candidate per-test map; it is historical and not correctness evidence for 5e14f142 or the final tree.",
     "The check-all integration-land recipe still quarantines the known bh-tfapu host-fence integration test; an ordinary unquarantined integration run continues to expose that upstream bd limitation.",
     "Unified-host-daemon Darwin LaunchAgent and persistent Linux systemd-user certification remains release-gated by deferred bh-hxbln.1.",
     "The live-ingress matrix passes its deterministic four cells, but genuine provider smoke remains externally blocked by the current non-runnable/nonconformant baml-harness Codex artifact."
   ],
   "rollback": {
     "commit": "739349806ead27c94282219b1befb796ba73b583",
-    "current_action": "Do not merge the submitted workstream; main already remains at the rollback point.",
+    "current_action": "Do not merge the submitted workstream; the rollback point is the workstream main anchor, independent of unrelated later main commits.",
     "after_future_merge": "If the operator later merges the top-level no-ff bubble and must roll back, revert that single top-level merge commit with mainline parent 1; do not replay or revert individual child bubbles independently."
   },
   "operator_review": {
     "commands": [
-      "bh work review bh-j5uyb --run --demo --view stat",
+      "bh work review bh-j5uyb --run --view stat",
+      "just demo-local-loop",
       "bh work review bh-j5uyb --view diff"
     ],
+    "demo_authority": {
+      "authoritative_command": "just demo-local-loop",
+      "isolation": "The just recipe runs scripts/demo_local_loop.py through scripts/hermetic.sh with a private HOME; only this fenced execution is acceptable demo evidence.",
+      "ambient_diagnostic": {
+        "command": "bh work review bh-j5uyb --run --demo --view stat",
+        "run_id": "run-4146531c0d2a8c7c5ec79dcbf02ffdc7",
+        "verdict": "red",
+        "classification": "expected ambient-write diagnostic, not authoritative candidate evidence",
+        "cause": "The managed demo command invokes the bare demo script outside the private-HOME fence; the functional scenario completed before ambient ~/.beadhive writers tripped the isolation assertion."
+      }
+    },
     "expected_state": "The root dispatcher submits bh-j5uyb with a human review gate after integrating this reviewed closeout bead. The operator owns approval and final merge; this bead does neither.",
     "local_only": true
   }

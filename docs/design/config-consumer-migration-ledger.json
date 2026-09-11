@@ -1963,6 +1963,7 @@
       "src/beadhive/dolt_health.py",
       "src/beadhive/engine.py",
       "src/beadhive/escalate.py",
+      "src/beadhive/frame_bridge_runtime.py",
       "src/beadhive/git.py",
       "src/beadhive/git_identity.py",
       "src/beadhive/gitworkspace.py",
@@ -1998,7 +1999,6 @@
       "src/beadhive/publish_export.py",
       "src/beadhive/registry.py",
       "src/beadhive/release.py",
-      "src/beadhive/remote_gateway_runtime.py",
       "src/beadhive/report.py",
       "src/beadhive/report_target.py",
       "src/beadhive/retire.py",
@@ -2142,6 +2142,11 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/escalate.py",
+        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
+      },
+      {
+        "owner": "bh-18hud.5 compatibility migration ledger",
+        "path": "src/beadhive/frame_bridge_runtime.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {
@@ -2317,11 +2322,6 @@
       {
         "owner": "bh-18hud.5 compatibility migration ledger",
         "path": "src/beadhive/release.py",
-        "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
-      },
-      {
-        "owner": "bh-18hud.5 compatibility migration ledger",
-        "path": "src/beadhive/remote_gateway_runtime.py",
         "rationale": "retained legacy capability outside the work/telemetry/plugin migration batch; removal requires a separately bounded port and its reverse-dependent compatibility closure"
       },
       {

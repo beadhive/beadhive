@@ -22,7 +22,7 @@ ROOTS = {
     "cli": ("bh", "beadhive.bootstrap.cli:main"),
     "mcp": ("bh-mcp", "beadhive.bootstrap.mcp:main"),
     "operator-api": ("bh-host-daemon", "beadhive.bootstrap.host:main"),
-    "gateway": ("beadhive-gateway", "beadhive.bootstrap.gateway:main"),
+    "gateway": ("beadhive-frame-bridge", "beadhive.bootstrap.frame_bridge:main"),
 }
 
 

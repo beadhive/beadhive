@@ -27,6 +27,7 @@ from harness import processes
 
 AUDIENCE = "beadhive-host"
 PRINCIPAL = "operator:alice"
+CLIENT_BEARER = "bh1.frame-bridge." + "d" * 43
 
 
 def _process_add_credential(path: str, credential_id: str, start, results) -> None:
@@ -367,6 +368,40 @@ def test_insecure_malformed_and_duplicate_credential_files_fail_closed(tmp_path:
     link.symlink_to(target)
     with pytest.raises(daemon_auth.CredentialFileError, match="unavailable"):
         daemon_auth.load_credential_file(link)
+
+
+def test_client_bearer_file_is_private_bounded_and_redacted(tmp_path: Path) -> None:
+    credential = (tmp_path / "daemon-bearer").absolute()
+    credential.write_text(f"{CLIENT_BEARER}\n", encoding="ascii")
+    credential.chmod(0o600)
+
+    loaded = daemon_auth.load_bearer_file(credential)
+
+    assert loaded.reveal_for_authority() == CLIENT_BEARER
+    assert CLIENT_BEARER not in repr(loaded)
+    assert CLIENT_BEARER not in str(loaded)
+
+
+@pytest.mark.parametrize(
+    ("payload", "mode"),
+    [
+        ("not-a-bearer\n", 0o600),
+        (f"{CLIENT_BEARER}\nextra\n", 0o600),
+        ("x" * 257, 0o600),
+        (f"{CLIENT_BEARER}\n", 0o644),
+    ],
+)
+def test_client_bearer_file_fails_closed_without_reflecting_payload(
+    tmp_path: Path, payload: str, mode: int
+) -> None:
+    credential = (tmp_path / "daemon-bearer").absolute()
+    credential.write_text(payload, encoding="ascii")
+    credential.chmod(mode)
+
+    with pytest.raises(daemon_auth.CredentialFileError) as raised:
+        daemon_auth.load_bearer_file(credential)
+
+    assert payload.strip() not in str(raised.value)
 
 
 def _test_app(authority: daemon_auth.CredentialAuthority) -> Starlette:

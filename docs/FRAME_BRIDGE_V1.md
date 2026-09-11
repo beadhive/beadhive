@@ -1,7 +1,13 @@
-# Development gateway contract
+# Beadhive Frame Bridge Development profile
 
-`gateway.v1` is the authenticated browser contract for the initial Development
-runtime. It is a separate application profile from the unchanged loopback Operator API.
+The **Beadhive Frame Bridge** is the per-frame adapter implemented in this repository. It exposes
+one host daemon through the Gateway-owned `gateway.v1` contract. The multi-frame
+**Beadhive Gateway**, its public route semantics, and cross-repository conformance package are
+authored in the sibling `beadhive-gateway` repository.
+
+The names describe different scopes: the Frame Bridge projects one Bead Frame; the Gateway
+discovers and aggregates multiple frames. This Development profile remains separate from the
+host daemon's loopback Operator API.
 
 ## Fixed boundary
 
@@ -12,7 +18,7 @@ runtime. It is a separate application profile from the unchanged loopback Operat
 - logical instance: `dev/demo`
 - JWS algorithm: RS256
 
-The gateway verifies signature, exact issuer and audience, expiry, optional not-before, and a
+The Frame Bridge verifies signature, exact issuer and audience, expiry, optional not-before, and a
 non-empty subject. It then resolves that subject against the server-owned instance registry.
 Tokens do not carry or select an instance scope. Revoked subjects and subjects absent from the
 registry receive no runtime access.
@@ -30,8 +36,8 @@ registry receive no runtime access.
   discovery advertises `refresh`. Its exact JSON input is schema version 1, a browser-generated
   correlation ID restricted to a canonical lowercase UUIDv4, and the
   expected `sha256:<64 lowercase hex>` snapshot revision. The runtime command authority checks
-  that revision atomically and returns only `completed` plus its resulting revision. The gateway
-  correlates the receipt with the input ID; runtime extras are discarded.
+  that revision atomically and returns only `completed` plus its resulting revision. The Frame
+  Bridge correlates the receipt with the input ID; runtime extras are discarded.
 - `GET /v1/instances/dev/demo/events?cursor=<cursor>` is fetch-compatible SSE when discovery
   advertises `events`. A stream-capable snapshot carries its starting `eventCursor` as a
   canonical lowercase UUIDv4 producer epoch plus a non-negative sequence. Each emitted
@@ -45,10 +51,10 @@ and Content-Type. All responses are `no-store`; the profile exposes no generic w
 transcript, local-path, or event-stream capability in this version.
 
 The command body is bounded to 2 KiB and has no free-form argument. At invocation time the
-gateway verifies the token again, resolves the subject against the server-owned instance policy
-again, and verifies that the resolved instance still advertises `refresh`. Hidden commands and
-instances share the stable not-found response. A runtime may revoke the subject or remove the
-capability without trusting an earlier discovery response. Command execution has its own
+Frame Bridge verifies the token again, resolves the subject against the server-owned instance
+policy again, and verifies that the resolved instance still advertises `refresh`. Hidden commands
+and instances share the stable not-found response. A runtime may revoke the subject or remove
+the capability without trusting an earlier discovery response. Command execution has its own
 deadline and concurrency bulkhead, separate from discovery and snapshots.
 
 Event replay is owned by the runtime port. A reconnect supplies the last event cursor and the
@@ -56,9 +62,9 @@ runtime returns only retained successors. A stale cursor, retention gap, or prod
 returns the fixed `resnapshot_required` response before streaming begins. An epoch change,
 sequence gap, or malformed event observed after streaming begins emits one fixed
 `resnapshot-required` control event and closes. Stream opens have a deadline, live streams have a
-separate concurrency limit, and the gateway re-verifies the token and current instance policy at
-least once per second even while the source is idle. Scope or identity loss closes the stream
-without disclosing which policy changed.
+separate concurrency limit, and the Frame Bridge re-verifies the token and current instance
+policy at least once per second even while the source is idle. Scope or identity loss closes the
+stream without disclosing which policy changed.
 
 ## Stable errors
 
@@ -69,9 +75,9 @@ unauthorized resources use `resource_not_found` (404), and unusable internal sna
 shape; an unusable event cursor uses fixed `resnapshot_required` (409). No failure reflects a
 token, claim, policy membership, path, command input, or internal exception.
 
-The executable conformance contract is in `tests/test_remote_gateway.py`; response construction
-is guarded by a recursive exact-value and wire-type `remote_payload_is_allowlisted` check before
-JSON serialization. Runtime sources implement an async, cancellation-aware port and must move
+The executable conformance contract is in `tests/test_frame_bridge.py`; response construction
+is guarded by a recursive exact-value and wire-type `frame_bridge_payload_is_allowlisted` check
+before JSON serialization. Runtime sources implement an async, cancellation-aware port and must move
 any blocking storage access behind their own cancellable boundary. Discovery availability,
 snapshot availability, snapshot reads, commands, and stream opens have independent concurrency
 bulkheads. Calls have a five-second deadline, saturation fails unavailable immediately instead
@@ -80,22 +86,29 @@ operation or event read.
 
 ## Owned-host Development profile
 
-The `beadhive-gateway` entry point is the deployable `dev/demo` profile. It binds only
-`127.0.0.1:8787` and reads the real registered `github/beadhive/beadhive` snapshot and retained
-event stream from the existing loopback host daemon at `127.0.0.1:8420`. It never reads a fixture
-or accepts a browser-selected hive. Its `refresh` command performs a revision-checked refresh of
-that authoritative source. The Development demo projection includes current `open`,
+The `beadhive-frame-bridge` entry point is the deployable `dev/demo` profile. Core does not install
+a `beadhive-gateway` command; that name is reserved for the multi-frame Gateway. The Frame Bridge
+binds only `127.0.0.1:8787` and reads the real registered `github/beadhive/beadhive` snapshot and
+retained event stream from the existing loopback host daemon at `127.0.0.1:8420`. It never reads
+a fixture or accepts a browser-selected hive. Its `refresh` command performs a revision-checked
+refresh of that authoritative source. The Development demo projection includes current `open`,
 `in_progress`, and `blocked` work while omitting closed/deferred history and internal `event` and
-`gate` records. The gateway's independent 1,000-item fail-closed bound still applies after this
+`gate` records. The Frame Bridge's independent 1,000-item fail-closed bound still applies after this
 selection.
 
-The launcher accepts Clerk public JWKS and the authorized Development subject list only through
-mode-0600 service credential files. Under systemd, the default names are
-`clerk-jwks.json` and `authorized-subjects.json` below `CREDENTIALS_DIRECTORY`; optional explicit
-paths exist for other service managers. The process never accepts keys, subjects, origins,
-audiences, instance IDs, listener addresses, or local source locations as command arguments.
+The launcher accepts Clerk public JWKS, the authorized Development subject list, and one
+independently scoped host-daemon bearer only through mode-0600 service credential files. Under
+systemd, the default names are `clerk-jwks.json`, `authorized-subjects.json`, and `daemon-bearer`
+below `CREDENTIALS_DIRECTORY`; optional explicit paths exist for other service managers. The
+daemon bearer requires only `operator:read`, is attached only to the fixed loopback daemon
+snapshot and event requests, and is never derived from or replaced by a remote caller token.
+The process never accepts keys, subjects, bearer values, origins, audiences, instance IDs,
+listener addresses, or local source locations as command arguments. The optional environment
+variables `BEADHIVE_FRAME_BRIDGE_JWKS_FILE`, `BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE`, and
+`BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE` carry file paths only; the unreleased
+`BEADHIVE_GATEWAY_*` aliases are absent.
 
-[`deploy/systemd/beadhive-gateway-dev.service.example`](../deploy/systemd/beadhive-gateway-dev.service.example)
+[`deploy/systemd/beadhive-frame-bridge-dev.service.example`](../deploy/systemd/beadhive-frame-bridge-dev.service.example)
 is the least-privilege user-service template. It has no capabilities, writable home, device
 access, or mutable system paths. Cloudflared remains a separate service and credential boundary.
 The local health probe is:

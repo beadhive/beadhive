@@ -1,4 +1,4 @@
-"""Owned-host Development launcher backed by the loopback Beadhive operator daemon."""
+"""Beadhive Frame Bridge launcher backed by one loopback host daemon."""
 
 from __future__ import annotations
 
@@ -14,17 +14,17 @@ import httpx
 from joserfc.jwk import KeySet
 
 from . import config as bh_config
-from . import gateway_read, otel
-from .remote_gateway import (
+from . import daemon_auth, gateway_read, otel
+from .frame_bridge import (
     DEVELOPMENT_INSTANCE_ID,
     DEVELOPMENT_ISSUER,
     ClerkTokenVerifier,
-    DevelopmentGatewayConfig,
+    DevelopmentFrameBridgeConfig,
     DevelopmentInstanceRegistry,
     RemoteInstance,
     StaleCommandScope,
     StaleEventCursor,
-    build_development_gateway_application,
+    build_development_frame_bridge_application,
 )
 
 APP_ORIGIN = "https://app-dev.beadhive.cloud"
@@ -36,6 +36,17 @@ _HIVE_PATH = "/api/v1/hives/github%2Fbeadhive%2Fbeadhive"
 _SUBJECT = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _DEMO_STATUSES = frozenset({"open", "in_progress", "blocked"})
 _INTERNAL_WORK_ITEM_TYPES = frozenset({"event", "gate"})
+
+
+class _LoopbackDaemonAuth(httpx.Auth):
+    """Reveal the daemon bearer only while authorizing one fixed loopback request."""
+
+    def __init__(self, bearer: daemon_auth.SecretBearer) -> None:
+        self._bearer = bearer
+
+    def auth_flow(self, request: httpx.Request):
+        request.headers["Authorization"] = f"Bearer {self._bearer.reveal_for_authority()}"
+        yield request
 
 
 def _remote_cursor(local: Mapping[str, object]) -> str:
@@ -71,22 +82,37 @@ def _development_work_items(value: object) -> list[Mapping[str, object]]:
 class LoopbackDemoRuntime:
     """Redacted async adapter over the real host daemon's exact registered hive."""
 
-    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        daemon_bearer: daemon_auth.SecretBearer,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if not isinstance(daemon_bearer, daemon_auth.SecretBearer):
+            raise TypeError("daemon_bearer must be a SecretBearer")
         self._client = client or httpx.AsyncClient(
             base_url=LOOPBACK_ORIGIN,
             timeout=httpx.Timeout(5.0, read=None),
             trust_env=False,
         )
+        if str(self._client.base_url).rstrip("/") != LOOPBACK_ORIGIN:
+            raise ValueError("Frame Bridge daemon client must use the fixed loopback origin")
+        self._daemon_auth = _LoopbackDaemonAuth(daemon_bearer)
 
     async def online(self) -> bool:
         response = await self._client.get("/health")
         if response.status_code != 200:
             return False
         value = response.json()
-        return isinstance(value, dict) and value.get("live") is True and value.get("ready") is True
+        return (
+            isinstance(value, dict) and value.get("status") == "live" and value.get("ready") is True
+        )
 
     async def snapshot(self) -> Mapping[str, object]:
-        response = await self._client.get(f"{_HIVE_PATH}/snapshot")
+        response = await self._client.get(
+            f"{_HIVE_PATH}/snapshot",
+            auth=self._daemon_auth,
+        )
         response.raise_for_status()
         value = response.json()
         if not isinstance(value, dict) or not isinstance(value.get("cursor"), dict):
@@ -112,6 +138,7 @@ class LoopbackDemoRuntime:
             "GET",
             f"{_HIVE_PATH}/events",
             params={"cursor": _local_cursor(cursor), "subscription": f"hive:{HIVE_ID}"},
+            auth=self._daemon_auth,
         )
         response = await context.__aenter__()
         if response.status_code == 409:
@@ -154,7 +181,7 @@ class LoopbackDemoRuntime:
 
 def _read_json(path: Path) -> Any:
     if not path.is_file() or path.stat().st_mode & 0o077:
-        raise RuntimeError("gateway credential files must exist with mode 0600")
+        raise RuntimeError("Frame Bridge credential files must exist with mode 0600")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -165,18 +192,29 @@ def _authorized_subjects(path: Path) -> frozenset[str]:
         or not 1 <= len(value) <= 32
         or any(not isinstance(item, str) or _SUBJECT.fullmatch(item) is None for item in value)
     ):
-        raise RuntimeError("gateway subject policy is incompatible")
+        raise RuntimeError("Frame Bridge subject policy is incompatible")
     return frozenset(value)
 
 
 def create_application():
     """Uvicorn factory that verifies all immutable inputs before opening the listener."""
     credentials = Path(os.environ.get("CREDENTIALS_DIRECTORY", "/run/credentials"))
-    jwks_path = Path(os.environ.get("BEADHIVE_GATEWAY_JWKS_FILE", credentials / "clerk-jwks.json"))
-    subjects_path = Path(
-        os.environ.get("BEADHIVE_GATEWAY_SUBJECTS_FILE", credentials / "authorized-subjects.json")
+    jwks_path = Path(
+        os.environ.get("BEADHIVE_FRAME_BRIDGE_JWKS_FILE", credentials / "clerk-jwks.json")
     )
-    config = DevelopmentGatewayConfig(
+    subjects_path = Path(
+        os.environ.get(
+            "BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE",
+            credentials / "authorized-subjects.json",
+        )
+    )
+    daemon_bearer_path = Path(
+        os.environ.get(
+            "BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE",
+            credentials / "daemon-bearer",
+        )
+    )
+    config = DevelopmentFrameBridgeConfig(
         issuer=DEVELOPMENT_ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -187,7 +225,7 @@ def create_application():
         authorized_subjects=authorized_subjects
     )
     key_set = KeySet.import_key_set(_read_json(jwks_path))
-    runtime = LoopbackDemoRuntime()
+    runtime = LoopbackDemoRuntime(daemon_bearer=daemon_auth.load_bearer_file(daemon_bearer_path))
     instance = RemoteInstance(
         display_name="Development demo",
         authorized_subjects=authorized_subjects,
@@ -202,14 +240,14 @@ def create_application():
         raw_config = bh_config.load()
         otel.init(
             raw_config,
-            service_name="bh-gateway",
+            service_name="bh-frame-bridge",
             enrich_resource=False,
         )
         telemetry = otel.current_semantic_telemetry()
     except BaseException:
-        # Gateway correctness and listener construction never depend on observability.
+        # Frame Bridge correctness and listener construction never depend on observability.
         pass
-    return build_development_gateway_application(
+    return build_development_frame_bridge_application(
         config=config,
         verifier=ClerkTokenVerifier(config=config, key=key_set),
         registry=DevelopmentInstanceRegistry(instances={DEVELOPMENT_INSTANCE_ID: instance}),
@@ -223,7 +261,7 @@ def main() -> None:
     import uvicorn
 
     uvicorn.run(
-        "beadhive.remote_gateway_runtime:create_application",
+        "beadhive.frame_bridge_runtime:create_application",
         factory=True,
         host="127.0.0.1",
         port=8787,

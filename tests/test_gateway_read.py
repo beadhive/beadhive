@@ -15,7 +15,7 @@ from joserfc import jwt
 from joserfc.jwk import RSAKey
 from joserfc.jws import JWSRegistry
 
-from beadhive import gateway_read, remote_gateway, remote_gateway_runtime
+from beadhive import frame_bridge, frame_bridge_runtime, gateway_read
 
 ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 AUDIENCE = "beadhive-gateway-dev"
@@ -51,9 +51,9 @@ def _application(
     authorized_subjects: frozenset[str] = frozenset({SUBJECT}),
     verifier_now=lambda: time.time(),
     subject_is_revoked=lambda _subject: False,
-    runtime_calls: remote_gateway.RuntimeCallPolicy | None = None,
+    runtime_calls: frame_bridge.RuntimeCallPolicy | None = None,
 ):
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -76,17 +76,17 @@ def _application(
             raise AssertionError("rich request touched the legacy runtime")
         return True
 
-    return remote_gateway.build_development_gateway_application(
+    return frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=remote_gateway.ClerkTokenVerifier(
+        verifier=frame_bridge.ClerkTokenVerifier(
             config=config,
             key=public_key,
             now=verifier_now,
             subject_is_revoked=subject_is_revoked,
         ),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                "dev/demo": remote_gateway.RemoteInstance(
+                "dev/demo": frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=authorized_subjects,
                     snapshot=snapshot,
@@ -249,7 +249,7 @@ def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_s
         public_key,
         source,
         subject_is_revoked=lambda _subject: revoked,
-        runtime_calls=remote_gateway.RuntimeCallPolicy(stream_reauthorize_seconds=0.05),
+        runtime_calls=frame_bridge.RuntimeCallPolicy(stream_reauthorize_seconds=0.05),
     )
 
     async def exercise():
@@ -321,7 +321,7 @@ def test_zero_event_generated_sse_stays_open_and_continuously_reauthorizes(
         source,
         verifier_now=lambda: auth["now"],
         subject_is_revoked=lambda _subject: auth["revoked"],
-        runtime_calls=remote_gateway.RuntimeCallPolicy(stream_reauthorize_seconds=0.05),
+        runtime_calls=frame_bridge.RuntimeCallPolicy(stream_reauthorize_seconds=0.05),
     )
 
     async def exercise():
@@ -424,7 +424,7 @@ def test_rich_read_admission_is_partitioned_by_authenticated_subject() -> None:
         public_key,
         BlockingSource(),
         authorized_subjects=frozenset({SUBJECT, other}),
-        runtime_calls=remote_gateway.RuntimeCallPolicy(
+        runtime_calls=frame_bridge.RuntimeCallPolicy(
             deadline_seconds=1,
             rich_read_concurrency=2,
             rich_read_concurrency_per_subject=1,
@@ -495,7 +495,7 @@ def test_sse_admission_is_partitioned_by_authenticated_subject() -> None:
         ObservedSource(),
         authorized_subjects=frozenset({SUBJECT, other, third}),
         subject_is_revoked=lambda subject: subject in revoked,
-        runtime_calls=remote_gateway.RuntimeCallPolicy(
+        runtime_calls=frame_bridge.RuntimeCallPolicy(
             stream_concurrency=2,
             stream_concurrency_per_subject=1,
             stream_reauthorize_seconds=0.05,
@@ -739,14 +739,18 @@ def test_runtime_factory_installs_validated_catalog_before_serving(tmp_path, mon
     jwk.update({"kid": "development-test", "use": "sig", "alg": "RS256"})
     jwks = tmp_path / "clerk-jwks.json"
     subjects = tmp_path / "authorized-subjects.json"
+    daemon_bearer = tmp_path / "daemon-bearer"
     jwks.write_text(json.dumps({"keys": [jwk]}), encoding="utf-8")
     subjects.write_text(json.dumps([SUBJECT]), encoding="utf-8")
+    daemon_bearer.write_text("bh1.frame-bridge." + "d" * 43, encoding="ascii")
     jwks.chmod(0o600)
     subjects.chmod(0o600)
-    monkeypatch.setenv("BEADHIVE_GATEWAY_JWKS_FILE", str(jwks))
-    monkeypatch.setenv("BEADHIVE_GATEWAY_SUBJECTS_FILE", str(subjects))
+    daemon_bearer.chmod(0o600)
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_JWKS_FILE", str(jwks))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE", str(subjects))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE", str(daemon_bearer))
 
-    app = remote_gateway_runtime.create_application()
+    app = frame_bridge_runtime.create_application()
 
     async def exercise():
         async with httpx.AsyncClient(
@@ -791,7 +795,7 @@ def test_rich_requests_use_only_prevalidated_memory(monkeypatch) -> None:
 def test_legacy_gateway_v1_routes_remain_byte_compatible_with_bridge_installed() -> None:
     private_key, public_key = _keys()
     source = gateway_read.load_packaged_development_source(authorized_subjects=frozenset({SUBJECT}))
-    config = remote_gateway.DevelopmentGatewayConfig(
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
         app_origin=APP_ORIGIN,
@@ -827,12 +831,12 @@ def test_legacy_gateway_v1_routes_remain_byte_compatible_with_bridge_installed()
         return stream()
 
     def build(read_source):
-        return remote_gateway.build_development_gateway_application(
+        return frame_bridge.build_development_frame_bridge_application(
             config=config,
-            verifier=remote_gateway.ClerkTokenVerifier(config=config, key=public_key),
-            registry=remote_gateway.DevelopmentInstanceRegistry(
+            verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+            registry=frame_bridge.DevelopmentInstanceRegistry(
                 instances={
-                    "dev/demo": remote_gateway.RemoteInstance(
+                    "dev/demo": frame_bridge.RemoteInstance(
                         display_name="Development demo",
                         authorized_subjects=frozenset({SUBJECT}),
                         snapshot=snapshot,

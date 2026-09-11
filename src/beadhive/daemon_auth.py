@@ -49,6 +49,7 @@ _TOKEN_SECRET = re.compile(r"^[A-Za-z0-9_-]{43,128}$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _TEXT = re.compile(r"^[^\x00-\x1f\x7f]{1,256}$")
 _MAX_CREDENTIAL_FILE_BYTES = 1_048_576
+_MAX_BEARER_FILE_BYTES = 256
 _MAX_RAW_URL_BYTES = 16_384
 _TOKEN_IN_URL = re.compile(rb"bh1\.[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.[A-Za-z0-9_-]{43,128}")
 _PERCENT_ESCAPE = re.compile(rb"%[0-9A-Fa-f]{2}")
@@ -230,7 +231,7 @@ def _parse_token(token: str) -> tuple[str, str]:
     return credential_id, secret
 
 
-def _secure_file_bytes(path: Path) -> bytes:
+def _secure_file_bytes(path: Path, *, max_bytes: int = _MAX_CREDENTIAL_FILE_BYTES) -> bytes:
     if not path.is_absolute():
         raise CredentialFileError("credential file path must be absolute")
     flags = os.O_RDONLY
@@ -249,8 +250,8 @@ def _secure_file_bytes(path: Path) -> bytes:
         if stat.S_IMODE(info.st_mode) != 0o600:
             raise CredentialFileError("credential file must have mode 0600")
         with os.fdopen(fd, "rb", closefd=False) as stream:
-            payload = stream.read(_MAX_CREDENTIAL_FILE_BYTES + 1)
-        if not payload or len(payload) > _MAX_CREDENTIAL_FILE_BYTES:
+            payload = stream.read(max_bytes + 1)
+        if not payload or len(payload) > max_bytes:
             raise CredentialFileError("credential file size is invalid")
         return payload
     finally:
@@ -264,6 +265,22 @@ def load_credential_file(path: Path) -> CredentialFile:
         raise
     except (ValueError, TypeError) as exc:
         raise CredentialFileError("credential file schema is invalid") from exc
+
+
+def load_bearer_file(path: Path) -> SecretBearer:
+    """Load one client bearer from a bounded owner-only service credential file."""
+
+    try:
+        payload = _secure_file_bytes(path, max_bytes=_MAX_BEARER_FILE_BYTES)
+        if payload.endswith(b"\n"):
+            payload = payload[:-1]
+        token = payload.decode("ascii")
+        _parse_token(token)
+    except CredentialFileError:
+        raise
+    except (AuthenticationError, UnicodeDecodeError):
+        raise CredentialFileError("bearer credential file is malformed") from None
+    return SecretBearer(token)
 
 
 def _ensure_credential_parent(path: Path) -> None:
