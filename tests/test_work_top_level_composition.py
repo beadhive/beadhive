@@ -8,13 +8,14 @@ import subprocess
 import pytest
 import typer
 
-from beadhive import host
+from beadhive import host, registry, work_logic, worktree
 from test_work import (
     CONFIG_YAML,
     _commit,
     _git,
     _minted_host_identity,
     _start_and_land_children,
+    _wt_of,
     fakebd,
     hive,
     work,
@@ -93,6 +94,47 @@ def _wrap_reviewed_top_level_epic_over_advanced_integration(
     return seat
 
 
+def _wrap_reviewed_side_that_absorbed_advanced_main(hive, fakebd, *, epic: str):
+    """Reproduce the real bh-j5uyb graph: old first-parent spine, new main via a child side."""
+    seat = _start_and_land_children(hive, fakebd, epic=epic, count=2)
+    branch = f"wt/bead/epic/{epic}"
+    boundary = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    child = f"{epic}.3"
+    fakebd.seed(child, title="main ancestry reconciliation", parent=epic)
+    work.claim(bead=child, as_="dev/reconcile", hive="myrepo")
+    child_seat = _wt_of(hive, child)
+
+    _commit(hive.main, "feat: advance integration after epic start", fname="advanced-main.txt")
+    integration_tip = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    _commit(child_seat, "fix: reconcile reviewed work with main", fname="reconciled.txt")
+    _git(
+        "merge",
+        "--no-ff",
+        "main",
+        "-m",
+        "chore(test): absorb advanced main lineage",
+        cwd=child_seat,
+    )
+    work.submit(bead=child, as_="dev/reconcile", hive="myrepo")
+    work.approve(bead=child, as_="review/main-ancestry-audit", hive="myrepo")
+    work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+    reviewed_tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    _git("checkout", "-q", "--detach", reviewed_tip, cwd=seat)
+    _git("branch", "-f", branch, integration_tip, cwd=hive.main)
+    _git("checkout", "-q", branch, cwd=seat)
+    _git(
+        "merge",
+        "--no-ff",
+        reviewed_tip,
+        "-m",
+        f"chore(merge): compose {epic} onto main",
+        cwd=seat,
+    )
+    return seat, boundary, integration_tip, reviewed_tip
+
+
 def test_top_level_epic_submit_accepts_root_first_wrapper_over_configured_main(
     hive, fakebd, capsys
 ):
@@ -116,6 +158,60 @@ def test_top_level_epic_submit_accepts_root_first_wrapper_over_configured_main(
 
     work.submit(bead=epic, as_="disp/lead", hive="myrepo")
     assert fakebd.states[epic]["review"] == "pending"
+
+
+def test_top_level_epic_accepts_reviewed_first_parent_boundary_ancestral_to_advanced_main(
+    hive, fakebd, capsys
+):
+    """The bh-j5uyb shape audits only commits above main despite its older reviewed spine."""
+    epic = "mr-top-level-reviewed-main-ancestry"
+    seat, boundary, integration_tip, reviewed_tip = _wrap_reviewed_side_that_absorbed_advanced_main(
+        hive, fakebd, epic=epic
+    )
+    wrapper = _git("rev-parse", f"wt/bead/epic/{epic}", cwd=hive.main).stdout.strip()
+
+    assert _git("show", "-s", "--format=%P", wrapper, cwd=hive.main).stdout.split() == [
+        integration_tip,
+        reviewed_tip,
+    ]
+    assert _git("merge-base", "--is-ancestor", boundary, integration_tip, cwd=hive.main)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy["valid"], policy["errors"]
+    assert policy["integrated_children"] == 3
+    assert policy["direct_children"] == 3
+    assert "linked/topology" in policy["basis"]
+
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    assert fakebd.states[epic]["review"] == "pending"
+    assert seat.exists()
+
+
+def test_reviewed_side_rejects_excluded_boundary_not_ancestral_to_exact_integration_base(hive):
+    """A missing range row is not trusted merely because it terminates the first-parent walk."""
+    entry = registry.resolve_hive(work_logic.config.load(), "myrepo")
+    integration_base = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    tree = _git("rev-parse", f"{integration_base}^{{tree}}", cwd=hive.main).stdout.strip()
+    unrelated_boundary = _git(
+        "commit-tree", tree, "-m", "chore: unrelated boundary", cwd=hive.main
+    ).stdout.strip()
+    reviewed_tip = _git(
+        "commit-tree",
+        tree,
+        "-p",
+        unrelated_boundary,
+        "-m",
+        "feat: reviewed side",
+        cwd=hive.main,
+    ).stdout.strip()
+    rows = worktree.commit_rows(entry, unrelated_boundary, reviewed_tip)
+
+    spine, errors = work_logic._reviewed_side_spine(entry, rows, reviewed_tip, integration_base)
+
+    assert spine == []
+    assert errors == [f"first-parent spine leaves the review range at {unrelated_boundary[:8]}"]
 
 
 def test_top_level_epic_composition_target_comes_from_nondefault_integration_branch(

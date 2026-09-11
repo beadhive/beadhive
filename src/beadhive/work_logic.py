@@ -243,9 +243,21 @@ def _direct_work_children(epic: str, main) -> tuple[list[dict], list[str]]:
 
 
 def _first_parent_spine(
-    rows: list[dict], branch_sha: str, base: str
+    rows: list[dict],
+    branch_sha: str,
+    base: str,
+    *,
+    ancestor_boundary=None,
 ) -> tuple[list[dict], list[str]]:
-    """Oldest-first rows on ``branch``'s own spine, or an exact structural error."""
+    """Oldest-first rows on ``branch``'s own spine, or an exact structural error.
+
+    ``ancestor_boundary`` is a deliberately narrow reviewed-side escape hatch.  A range such as
+    ``integration_base..reviewed_tip`` excludes every ancestor of the integration base, even when
+    the reviewed tip reaches that exact base through a non-first-parent merge.  In that shape the
+    reviewed side's first-parent line legitimately stops at the first excluded ancestor.  Callers
+    which opt in must prove that boundary against the exact integration base; ordinary outer
+    spines retain the strict requirement to reach ``base`` itself.
+    """
     by_sha = {str(row.get("sha") or ""): row for row in rows}
     newest_first: list[dict] = []
     seen: set[str] = set()
@@ -256,6 +268,8 @@ def _first_parent_spine(
         seen.add(cursor)
         row = by_sha.get(cursor)
         if not row:
+            if ancestor_boundary is not None and ancestor_boundary(cursor):
+                return list(reversed(newest_first)), []
             return [], [f"first-parent spine leaves the review range at {cursor[:8]}"]
         newest_first.append(row)
         parents = row.get("parents") or []
@@ -265,6 +279,21 @@ def _first_parent_spine(
     if cursor != base:
         return [], [f"cannot connect first-parent spine to base {base[:8]}"]
     return list(reversed(newest_first)), []
+
+
+def _reviewed_side_spine(
+    entry, rows: list[dict], branch_sha: str, integration_base: str
+) -> tuple[list[dict], list[str]]:
+    """Walk only reviewed-side range rows, accepting one proven excluded ancestor boundary."""
+
+    return _first_parent_spine(
+        rows,
+        branch_sha,
+        integration_base,
+        ancestor_boundary=lambda boundary: (
+            worktree.base_of(entry, boundary, integration_base) == boundary
+        ),
+    )
 
 
 def _batch_members(group: str, merge_sha: str, children: list[dict]) -> list[dict]:
@@ -490,7 +519,7 @@ def _reviewed_epic_spine(
     nested_rows = worktree.commit_rows(entry, nested_base, parents[1])
     if not nested_rows:
         return [], set(), [f"composition wrapper {short} has an empty reviewed side"]
-    nested_spine, nested_errors = _first_parent_spine(nested_rows, parents[1], nested_base)
+    nested_spine, nested_errors = _reviewed_side_spine(entry, nested_rows, parents[1], nested_base)
     if nested_errors:
         return (
             [],
@@ -613,7 +642,10 @@ def epic_history_policy(
             repeated = ", ".join(sorted(integrated & member_ids))
             errors.append(f"direct child integrated more than once: {repeated}")
             continue
-        introduced = set(worktree.commit_shas(entry, parents[1], parents[0])) | {sha}
+        # A reviewed child may itself have absorbed commits which are already part of the exact
+        # integration base.  Those commits are outside this epic's review range by definition;
+        # require linkage only for the commits this composition actually introduces.
+        introduced = (set(worktree.commit_shas(entry, parents[1], parents[0])) | {sha}) & range_shas
         linked = set().union(*(linked_by_child.get(member_id, set()) for member_id in member_ids))
         missing = introduced - linked
         if missing:
