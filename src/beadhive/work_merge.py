@@ -382,7 +382,13 @@ def impl__merge_molecule(api, cfg, epic, hive):
         api._reconcile_landed_molecule(cfg, entry, main, epic, epic_data, mol_branch, base, hive)
         return
     policy = api.work_logic.epic_history_policy(
-        entry, main, epic, mol_branch, base, api.config.max_commits(cfg, entry)
+        entry,
+        main,
+        epic,
+        mol_branch,
+        base,
+        api.config.max_commits(cfg, entry),
+        integration,
     )
     if not policy["valid"]:
         api.typer.echo(
