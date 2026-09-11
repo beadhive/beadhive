@@ -1,4 +1,4 @@
-"""Deterministic catalog projection contract for the live Development gateway."""
+"""Deterministic catalog projection contract for the Frame Bridge Gateway wire surface."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 from starlette.routing import Route
 
-from beadhive import gateway_contract, gateway_read, remote_gateway
+from beadhive import frame_bridge, gateway_contract, gateway_read
 
 
 def _canonical_digest(value: object) -> str:
@@ -33,15 +33,15 @@ def _resolve_wire_schema(document: dict[str, object], reference: str) -> dict[st
 
 
 def _gateway_app():
-    return remote_gateway.build_development_gateway_application(
-        config=remote_gateway.DevelopmentGatewayConfig(
-            issuer=remote_gateway.DEVELOPMENT_ISSUER,
+    return frame_bridge.build_development_frame_bridge_application(
+        config=frame_bridge.DevelopmentFrameBridgeConfig(
+            issuer=frame_bridge.DEVELOPMENT_ISSUER,
             audience="beadhive-gateway-dev",
             app_origin="https://app-dev.beadhive.cloud",
             gateway_origin="https://gateway-dev.beadhive.cloud",
         ),
         verifier=object(),
-        registry=remote_gateway.DevelopmentInstanceRegistry(instances={}),
+        registry=frame_bridge.DevelopmentInstanceRegistry(instances={}),
     )
 
 
@@ -70,15 +70,15 @@ def _success_gateway_app():
         assert correlation_id == "123e4567-e89b-42d3-a456-426614174000"
         return {"status": "completed", "revision": "sha256:" + "b" * 64}
 
-    config = remote_gateway.DevelopmentGatewayConfig(
-        issuer=remote_gateway.DEVELOPMENT_ISSUER,
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
+        issuer=frame_bridge.DEVELOPMENT_ISSUER,
         audience="beadhive-gateway-dev",
         app_origin="https://app-dev.beadhive.cloud",
         gateway_origin="https://gateway-dev.beadhive.cloud",
     )
-    registry = remote_gateway.DevelopmentInstanceRegistry(
+    registry = frame_bridge.DevelopmentInstanceRegistry(
         instances={
-            remote_gateway.DEVELOPMENT_INSTANCE_ID: remote_gateway.RemoteInstance(
+            frame_bridge.DEVELOPMENT_INSTANCE_ID: frame_bridge.RemoteInstance(
                 display_name="Development demo",
                 authorized_subjects=frozenset({subject}),
                 snapshot=snapshot,
@@ -87,7 +87,7 @@ def _success_gateway_app():
             )
         }
     )
-    return remote_gateway.build_development_gateway_application(
+    return frame_bridge.build_development_frame_bridge_application(
         config=config,
         verifier=Verifier(),
         registry=registry,
@@ -131,17 +131,17 @@ def _event_gateway_app(calls: list[str], *, read_source=None):
 
         return stream()
 
-    return remote_gateway.build_development_gateway_application(
-        config=remote_gateway.DevelopmentGatewayConfig(
-            issuer=remote_gateway.DEVELOPMENT_ISSUER,
+    return frame_bridge.build_development_frame_bridge_application(
+        config=frame_bridge.DevelopmentFrameBridgeConfig(
+            issuer=frame_bridge.DEVELOPMENT_ISSUER,
             audience="beadhive-gateway-dev",
             app_origin="https://app-dev.beadhive.cloud",
             gateway_origin="https://gateway-dev.beadhive.cloud",
         ),
         verifier=Verifier(),
-        registry=remote_gateway.DevelopmentInstanceRegistry(
+        registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
-                remote_gateway.DEVELOPMENT_INSTANCE_ID: remote_gateway.RemoteInstance(
+                frame_bridge.DEVELOPMENT_INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
                     authorized_subjects=frozenset({subject}),
                     snapshot=snapshot,
@@ -180,8 +180,11 @@ def test_gateway_contract_is_deterministic_checked_and_schema_valid() -> None:
     assert first["policy"]["wireAuthority"] == (
         "gateway.v1 and gateway.read.v1 remain gateway-owned"
     )
+    assert first["policy"]["runtimeAuthority"].endswith(
+        "calls at the per-frame projection remain Frame Bridge-owned"
+    )
     assert first["policy"]["localCompatibility"] == (
-        "CLI and MCP stdio do not require the gateway or host daemon"
+        "CLI and MCP stdio do not require the Frame Bridge or host daemon"
     )
 
 
@@ -341,7 +344,7 @@ def test_gateway_wire_references_resolve_to_versioned_digested_owned_contracts()
         ),
     )
     assert legacy_snapshot["properties"]["snapshot"]["required"] == sorted(
-        remote_gateway._SNAPSHOT_KEYS
+        frame_bridge._SNAPSHOT_KEYS
     )
 
     rich_snapshot = _resolve_wire_schema(
@@ -368,7 +371,7 @@ def test_checked_legacy_event_cursor_schema_matches_runtime_grammar() -> None:
     request_schema = _resolve_wire_schema(document, events["wireRequestSchema"])
     cursor_schema = request_schema["properties"]["cursor"]
 
-    assert cursor_schema["pattern"] == remote_gateway._EVENT_CURSOR.pattern
+    assert cursor_schema["pattern"] == frame_bridge._EVENT_CURSOR.pattern
 
     values = (
         "123e4567-e89b-42d3-a456-426614174000:0",
@@ -382,7 +385,7 @@ def test_checked_legacy_event_cursor_schema_matches_runtime_grammar() -> None:
     )
     validator = Draft202012Validator(cursor_schema)
     assert [not validator.is_valid(value) for value in values] == [
-        remote_gateway._EVENT_CURSOR.fullmatch(value) is None for value in values
+        frame_bridge._EVENT_CURSOR.fullmatch(value) is None for value in values
     ]
 
     calls: list[str] = []
@@ -547,12 +550,12 @@ def test_gateway_owned_wire_version_and_required_shape_drift_changes_artifact(
     rich_snapshot = "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot"
 
     mutations = (
-        (remote_gateway, "CONTRACT_VERSION", "gateway.v1-review-drift", legacy_snapshot),
+        (frame_bridge, "CONTRACT_VERSION", "gateway.v1-review-drift", legacy_snapshot),
         (gateway_read, "CONTRACT_VERSION", "gateway.read.v1-review-drift", rich_snapshot),
         (
-            remote_gateway,
+            frame_bridge,
             "_SNAPSHOT_KEYS",
-            remote_gateway._SNAPSHOT_KEYS | {"reviewRequired"},
+            frame_bridge._SNAPSHOT_KEYS | {"reviewRequired"},
             legacy_snapshot,
         ),
         (

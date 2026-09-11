@@ -34,16 +34,20 @@ At the named baseline, Beadhive had three installed entry points:
 
 - `bh = beadhive.cli:main`;
 - `bh-mcp = beadhive.mcp:main`; and
-- `beadhive-gateway = beadhive.remote_gateway_runtime:main`.
+- `beadhive-frame-bridge = beadhive.frame_bridge_runtime:main`.
+
+Core does not install a `beadhive-gateway` console command. That name is reserved for the
+multi-frame Beadhive Gateway authored in the sibling `beadhive-gateway` repository; core's Frame
+Bridge projects one host daemon into the Gateway-owned wire contract.
 
 The Transport composition closeout (`bh-3qkmk.5`) routes the four current console scripts
-through `beadhive.bootstrap.{cli,mcp,host,gateway}:main`. The historical modules remain
+through `beadhive.bootstrap.{cli,mcp,host,frame_bridge}:main`. The historical modules remain
 compatibility/runtime adapters behind exact exception-ledger edges until their patch inventories
 permit physical relocation; reusable production code has no dependency back into bootstrap.
 
 The production package contains approximately 177 flat top-level Python modules and 95,000 lines
 of code. The test tree contains approximately 343 Python files and 123,000 lines. The principal
-composition roots are `cli.py`, `mcp.py`, `host_daemon.py`, and `remote_gateway_runtime.py`.
+composition roots are `cli.py`, `mcp.py`, `host_daemon.py`, and `frame_bridge_runtime.py`.
 
 The exact-tip RepoWise index records 771 files. Static dependency evidence shows six cyclic
 strongly connected components spanning 85 production files; the largest contains 65 files,
@@ -470,12 +474,13 @@ the transport.
 Composite MCP tools must be explicitly declared over catalog operations. They must not bypass the
 application layer or silently invent a second operation namespace.
 
-### `adapters/operator_api` and `adapters/gateway`
+### `adapters/operator_api` and `adapters/frame_bridge`
 
 The operator API projects appropriate operations and read models into authenticated HTTP/OpenAPI.
-The remote gateway retains its explicit wire/version boundary. Neither transport is required to
-expose every catalog operation. Streaming, session, and authentication concerns remain transport
-or host-runtime responsibilities.
+The Frame Bridge retains its explicit Gateway wire/version boundary. It is a per-frame adapter,
+not the multi-frame Beadhive Gateway authored in the sibling `beadhive-gateway` repository.
+Neither transport is required to expose every catalog operation. Streaming, session, and
+authentication concerns remain transport or host-runtime responsibilities.
 
 ### `adapters/persistence`
 
@@ -531,7 +536,7 @@ The first official schema release should deterministically generate and check in
 5. CLI command-structure schema and generated command inventory v1.
 6. MCP tool/resource schema and generated surface inventory v1.
 7. Operator API OpenAPI v1.
-8. Remote gateway wire schema v1.
+8. Gateway wire schema v1, consumed by the per-frame Beadhive Frame Bridge.
 9. Lifecycle and telemetry event-envelope schemas v1.
 10. Seat-contract, launch-profile, workspace-binding, prepared-launch, commit-result,
     launch-receipt, and abort-receipt schemas v1.

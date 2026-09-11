@@ -6,8 +6,8 @@
   "policy": {
     "catalogRole": "operation identity, request/result contracts, privilege, side effects",
     "wireAuthority": "gateway.v1 and gateway.read.v1 remain gateway-owned",
-    "runtimeAuthority": "authentication, CORS, admission, streaming, rate limits, status, and runtime calls remain gateway-owned",
-    "localCompatibility": "CLI and MCP stdio do not require the gateway or host daemon"
+    "runtimeAuthority": "authentication, CORS, admission, streaming, rate limits, status, and runtime calls at the per-frame projection remain Frame Bridge-owned",
+    "localCompatibility": "CLI and MCP stdio do not require the Frame Bridge or host daemon"
   },
   "wireContracts": [
     {
@@ -611,7 +611,7 @@
       "transportPrivilege": "public-liveness",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "gateway liveness mechanic"
     },
@@ -643,7 +643,7 @@
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "authorized remote directory composite"
     },
@@ -660,7 +660,7 @@
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
       "streaming": true,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "legacy coarse SSE compatibility mechanic"
     },
@@ -685,7 +685,7 @@
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "richer remote projection of the canonical hive list"
     },
@@ -702,7 +702,7 @@
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
       "streaming": true,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "remote SSE cursor/replay mechanic"
     },
@@ -734,7 +734,7 @@
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "bounded remote state composite"
     },
@@ -766,7 +766,7 @@
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "legacy coarse snapshot composes canonical work reads behind gateway.v1"
     },
@@ -783,7 +783,7 @@
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "closed-world not-found fallback"
     },
@@ -800,7 +800,7 @@
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "exact credentialed CORS preflight allowlist"
     },
@@ -817,7 +817,7 @@
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "exact credentialed command CORS preflight allowlist"
     },
@@ -834,7 +834,7 @@
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "exact credentialed CORS preflight allowlist"
     },
@@ -851,7 +851,7 @@
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "exact credentialed CORS preflight allowlist"
     },
@@ -868,7 +868,7 @@
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "exact credentialed CORS preflight allowlist"
     },
@@ -885,7 +885,7 @@
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "exact credentialed CORS preflight allowlist"
     },
@@ -902,7 +902,7 @@
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "exact credentialed CORS preflight allowlist"
     },
@@ -919,7 +919,7 @@
       "transportPrivilege": "network-admission",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "closed-world preflight fallback"
     },
@@ -936,7 +936,7 @@
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "bounded-runtime-refresh",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "runtime refresh is not canonical sync and has no canonical operation"
     },
@@ -953,7 +953,7 @@
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
       "streaming": false,
-      "availability": "Development gateway profile only; local CLI/stdio remain independent",
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "stable unavailable-command response prevents undeclared mutation exposure"
     }

@@ -29,6 +29,7 @@ TARGET = ROOT / "docs" / "proof" / "bh-3qkmk.5-transport-composition.json"
 INTEGRATION_BASE = "6461a048c1b81ae2e3cf9071cb9384d8579f9ac2"
 BEFORE_MODULES = {
     "cli": "beadhive.cli",
+    # Historical baseline at INTEGRATION_BASE, before the Frame Bridge rename.
     "gateway": "beadhive.remote_gateway_runtime",
     "mcp": "beadhive.mcp",
     "operator-api": "beadhive.host_daemon_entrypoint",
@@ -147,7 +148,7 @@ def _registration_comparison(surface: str, declared_count: int) -> dict[str, Any
 def _observed_registration_sets() -> dict[str, frozenset[str]]:
     from typer.main import get_command
 
-    from beadhive import cli, host_daemon, mcp, operator_api, remote_gateway
+    from beadhive import cli, frame_bridge, host_daemon, mcp, operator_api
 
     def cli_inventory() -> frozenset[str]:
         found: set[str] = set()
@@ -189,15 +190,15 @@ def _observed_registration_sets() -> dict[str, frozenset[str]]:
     operator_app = host_daemon.build_application(
         runtime=host_daemon.DaemonRuntime(), routes=operator.routes()
     )
-    gateway_app = remote_gateway.build_development_gateway_application(
-        config=remote_gateway.DevelopmentGatewayConfig(
-            issuer=remote_gateway.DEVELOPMENT_ISSUER,
+    gateway_app = frame_bridge.build_development_frame_bridge_application(
+        config=frame_bridge.DevelopmentFrameBridgeConfig(
+            issuer=frame_bridge.DEVELOPMENT_ISSUER,
             audience="beadhive-gateway-dev",
             app_origin="https://app-dev.beadhive.cloud",
             gateway_origin="https://gateway-dev.beadhive.cloud",
         ),
         verifier=object(),
-        registry=remote_gateway.DevelopmentInstanceRegistry(instances={}),
+        registry=frame_bridge.DevelopmentInstanceRegistry(instances={}),
     )
     return {
         "cli": cli_inventory(),
@@ -258,7 +259,7 @@ def document() -> dict[str, Any]:
         "non_goals": [
             "move legacy compatibility handler bodies",
             "change public transport behavior or wire contracts",
-            "replace daemon or gateway runtime ownership",
+            "replace daemon or Frame Bridge runtime ownership",
             "graduate a selective merge gate",
         ],
         "current_graph": {

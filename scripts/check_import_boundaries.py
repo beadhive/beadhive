@@ -84,7 +84,7 @@ _FORBIDDEN_LEGACY_PREFIXES = (
     "beadhive.operator_sse",
     "beadhive.otel",
     "beadhive.plugins",
-    "beadhive.remote_gateway",
+    "beadhive.frame_bridge",
 )
 
 

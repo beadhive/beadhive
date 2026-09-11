@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:beadhive:gateway-projection-contract-schema:1",
-  "title": "Beadhive Development gateway catalog projection contract v1",
+  "title": "Beadhive Frame Bridge Gateway wire projection contract v1",
   "type": "object",
   "additionalProperties": false,
   "required": [

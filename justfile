@@ -65,7 +65,7 @@ transport-artifact-check:
 openapi-check:
     uv run python -m beadhive.daemon_openapi --check
 
-# Catalog relationship for every Development gateway route; wire/runtime policy stays gateway-owned.
+# Catalog relationship for every Frame Bridge route; Gateway wire policy remains stable.
 gateway-contract-check:
     uv run python -m beadhive.gateway_contract --check
 
