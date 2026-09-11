@@ -27,6 +27,8 @@ SCHEMA_VERSION = 2
 CERTIFIER_VERSION = "bh-test-closure-prerequisites-v2"
 FULL_GATE_COMMAND = "just check"
 FULL_GATE_COMMAND_HASH = hashlib.sha256(FULL_GATE_COMMAND.encode()).hexdigest()[:16]
+RELEASE_GATE_COMMAND = "just check-all"
+RELEASE_GATE_COMMAND_HASH = hashlib.sha256(RELEASE_GATE_COMMAND.encode()).hexdigest()[:16]
 CHECKOUT_IDENTITY_EXCLUDES = (EVIDENCE_RELATIVE_PATH,)
 REQUIRED_RELATIONSHIPS = (
     "import",
@@ -811,14 +813,86 @@ def _receipt_manifests(root: Path) -> tuple[dict[str, Any], ...]:
     common = Path(_git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     directory = common / "bh" / "validation" / "runs"
     manifests: list[dict[str, Any]] = []
-    for path in directory.glob("*/manifest.json") if directory.is_dir() else ():
+    for child in (
+        sorted(directory.iterdir(), key=lambda path: path.name) if directory.is_dir() else ()
+    ):
+        if not child.is_dir():
+            continue
+        path = child / "manifest.json"
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
-        if isinstance(value, dict):
+        if isinstance(value, dict) and value.get("run_id") == child.name:
             manifests.append(value)
     return tuple(manifests)
+
+
+def _managed_bead_binding(manifest: dict[str, Any]) -> bool:
+    bead = manifest.get("bead")
+    branch = manifest.get("branch")
+    return (
+        isinstance(bead, str)
+        and bool(bead)
+        and branch
+        in {
+            f"wt/bead/issue/{bead}",
+            f"wt/bead/epic/{bead}",
+        }
+    )
+
+
+def _canonical_gate_binding(manifest: dict[str, Any]) -> bool:
+    """Admit only lifecycle shapes that can execute this repository's two full gates."""
+    command = manifest.get("command")
+    command_hash = manifest.get("command_hash")
+    phase = manifest.get("phase")
+    if command == FULL_GATE_COMMAND and command_hash == FULL_GATE_COMMAND_HASH:
+        if phase in {"check", "submit"}:
+            return _managed_bead_binding(manifest)
+        return phase == "validation" and manifest.get("bead") is None
+    return (
+        command == RELEASE_GATE_COMMAND
+        and command_hash == RELEASE_GATE_COMMAND_HASH
+        and phase == "validation"
+        and manifest.get("bead") is None
+    )
+
+
+def _completed_green_receipt(manifest: dict[str, Any]) -> bool:
+    return (
+        type(manifest.get("schema")) is int
+        and manifest.get("schema") == 1
+        and isinstance(manifest.get("run_id"), str)
+        and bool(manifest.get("run_id"))
+        and manifest.get("lifecycle") == "completed"
+        and manifest.get("verdict") == "green"
+        and type(manifest.get("exit_code")) is int
+        and manifest.get("exit_code") == 0
+        and manifest.get("signal") is None
+    )
+
+
+def _running_receipt_owned_by_checkout(manifest: dict[str, Any], root: Path) -> bool:
+    worktree_value = manifest.get("worktree")
+    if not isinstance(worktree_value, str) or not worktree_value:
+        return False
+    try:
+        worktree = Path(worktree_value).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
+    return (
+        type(manifest.get("schema")) is int
+        and manifest.get("schema") == 1
+        and isinstance(manifest.get("run_id"), str)
+        and bool(manifest.get("run_id"))
+        and manifest.get("lifecycle") == "running"
+        and manifest.get("verdict") == "none"
+        and manifest.get("exit_code") is None
+        and manifest.get("signal") is None
+        and worktree == root.resolve()
+        and _owner_is_live(manifest)
+    )
 
 
 def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> tuple[str, ...]:
@@ -838,28 +912,11 @@ def validate_full_gate_receipt(evidence: dict[str, Any], root: Path = ROOT) -> t
     identity_matches = [
         manifest
         for manifest in _receipt_manifests(root)
-        if manifest.get("tree") == candidate_tree
-        and manifest.get("command_hash") == FULL_GATE_COMMAND_HASH
-        and manifest.get("command") == FULL_GATE_COMMAND
-        and manifest.get("phase") == provenance["phase"]
+        if manifest.get("tree") == candidate_tree and _canonical_gate_binding(manifest)
     ]
-    if any(
-        manifest.get("schema") == 1
-        and manifest.get("bead") == provenance["bead"]
-        and manifest.get("lifecycle") == "completed"
-        and manifest.get("verdict") == "green"
-        and manifest.get("exit_code") == 0
-        and manifest.get("signal") is None
-        for manifest in identity_matches
-    ):
+    if any(_completed_green_receipt(manifest) for manifest in identity_matches):
         return ()
-    # A downstream Beadhive check necessarily records its own bead identity. Permit only its
-    # exact, still-live process owner to bootstrap this same-tree gate; completed reuse remains
-    # bound to the immutable certification bead above.
-    if any(
-        manifest.get("lifecycle") == "running" and _owner_is_live(manifest)
-        for manifest in identity_matches
-    ):
+    if any(_running_receipt_owned_by_checkout(manifest, root) for manifest in identity_matches):
         return ()
     return ("candidate checkout has no authoritative matching full-gate receipt",)
 
