@@ -279,7 +279,7 @@ def _batch_members(group: str, merge_sha: str, children: list[dict]) -> list[dic
     ]
 
 
-def _composition_identity_errors(row: dict, epic: str, parent: str) -> list[str]:
+def _composition_identity_errors(row: dict, epic: str, target: str) -> list[str]:
     """Validate the two identities named by one syntactically canonical composition wrapper."""
     subject = str(row.get("subject") or "")
     match = _COMPOSITION_BUBBLE.fullmatch(subject)
@@ -294,11 +294,13 @@ def _composition_identity_errors(row: dict, epic: str, parent: str) -> list[str]
         errors.append(
             f"composition wrapper {short} names {composed_epic}, expected current epic {epic}"
         )
-    if not parent:
-        errors.append(f"composition wrapper {short} cannot resolve the bd parent of {epic}")
-    elif composed_parent != parent:
+    if not target:
         errors.append(
-            f"composition wrapper {short} names parent {composed_parent}, expected {parent}"
+            f"composition wrapper {short} cannot resolve the integration target of {epic}"
+        )
+    elif composed_parent != target:
+        errors.append(
+            f"composition wrapper {short} names parent {composed_parent}, expected {target}"
         )
     return errors
 
@@ -343,14 +345,14 @@ def _reversed_composition_spine(
     base: str,
     wrapper: dict,
     epic: str,
-    parent: str,
+    composition_target: str,
 ) -> tuple[list[dict], set[str], list[str]]:
     """Audit both reviewed sides of a rejected reversed composition boundary."""
     sha = str(wrapper.get("sha") or "")
     short = str(wrapper.get("short") or sha[:8])
     parents = [str(value) for value in (wrapper.get("parents") or [])]
 
-    errors = _composition_identity_errors(wrapper, epic, parent)
+    errors = _composition_identity_errors(wrapper, epic, composition_target)
     if not errors:
         if len(parents) != 2:
             errors.append(f"composition wrapper {short} must have exactly two parents")
@@ -404,13 +406,15 @@ def _reviewed_epic_spine(
     branch_sha: str,
     base: str,
     epic: str,
-    parent: str,
+    composition_target: str,
 ) -> tuple[list[dict], set[str], list[str]]:
     """Return the child-integration spine behind one explicit root-first composition wrapper.
 
     Ordinary assembled epics return their existing spine unchanged.  A composition is accepted
     only when exactly one wrapper is the oldest commit on the outer first-parent spine, names the
-    current epic and its exact bd parent, and uses the canonical integration base as parent one.
+    current epic and its canonical composition target, and uses the canonical integration base as
+    parent one.  Nested epics target their exact bd parent; parentless top-level epics target the
+    configured integration branch.
     Parent two is then audited from its merge-base with parent one.  Newer outer rows remain on
     the returned spine so the normal child-integration audit accounts their reviewed suffix.
     Neither nested nor suffix history gets a subject-only allowance: the caller still proves
@@ -433,7 +437,9 @@ def _reviewed_epic_spine(
         )
     if reversed_wrappers:
         wrapper = reversed_wrappers[0]
-        return _reversed_composition_spine(entry, rows, branch_sha, base, wrapper, epic, parent)
+        return _reversed_composition_spine(
+            entry, rows, branch_sha, base, wrapper, epic, composition_target
+        )
 
     spine, errors = _first_parent_spine(rows, branch_sha, base)
     if errors:
@@ -470,7 +476,7 @@ def _reviewed_epic_spine(
     parents = [str(value) for value in (wrapper.get("parents") or [])]
     if len(parents) != 2:
         return [], set(), [f"composition wrapper {short} must have exactly two parents"]
-    errors.extend(_composition_identity_errors(wrapper, epic, parent))
+    errors.extend(_composition_identity_errors(wrapper, epic, composition_target))
     if parents[0] != base:
         errors.append(
             f"composition wrapper {short} must use the exact integration base as first parent"
@@ -521,7 +527,15 @@ def _reviewed_epic_spine(
     return [*nested_spine, *spine[1:]], {sha}, []
 
 
-def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_commits: int) -> dict:
+def epic_history_policy(
+    entry,
+    main,
+    epic: str,
+    branch: str,
+    base: str,
+    max_commits: int,
+    integration_branch: str,
+) -> dict:
     """Audit an assembled epic without flattening its reviewed child graph.
 
     ``max_commits`` remains the unchanged leaf budget.  Epic capacity is instead the exact union
@@ -547,8 +561,9 @@ def epic_history_policy(entry, main, epic: str, branch: str, base: str, max_comm
     branch_sha = worktree._branch_sha(entry, branch)
     epic_data = bd.show(epic, main) or {}
     parent = str(epic_data.get("parent") or "")
+    composition_target = parent or integration_branch
     spine, topology_commits, spine_errors = _reviewed_epic_spine(
-        entry, rows, branch_sha, base, epic, parent
+        entry, rows, branch_sha, base, epic, composition_target
     )
     errors.extend(spine_errors)
     accounted: set[str] = set(topology_commits)

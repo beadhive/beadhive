@@ -44,7 +44,13 @@ def show_payload(cfg, entry, bead: str, branch: str, main) -> dict:
     }
     if base and branch.startswith(f"{worktree._BEAD_PREFIX}epic/"):
         payload["history_policy"] = work_logic.epic_history_policy(
-            entry, main, bead, branch, base, config.max_commits(cfg, entry)
+            entry,
+            main,
+            bead,
+            branch,
+            base,
+            config.max_commits(cfg, entry),
+            config.integration_branch(cfg, entry),
         )
     return payload
 
@@ -192,7 +198,13 @@ def show(
     rows = flag_rows(worktree.commit_rows(entry, base, branch)) if base else []
     policy = (
         work_logic.epic_history_policy(
-            entry, main, bead, branch, base, config.max_commits(cfg, entry)
+            entry,
+            main,
+            bead,
+            branch,
+            base,
+            config.max_commits(cfg, entry),
+            integration,
         )
         if base and branch.startswith(f"{worktree._BEAD_PREFIX}epic/")
         else None
@@ -281,7 +293,13 @@ def _legacy_review(
             typer.echo(f"\n## Change ({branch} vs {integration})")
             policy = (
                 work_logic.epic_history_policy(
-                    entry, main, bead, branch, base, config.max_commits(cfg, entry)
+                    entry,
+                    main,
+                    bead,
+                    branch,
+                    base,
+                    config.max_commits(cfg, entry),
+                    integration,
                 )
                 if molecule
                 else None

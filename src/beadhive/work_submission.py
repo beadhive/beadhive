@@ -351,7 +351,13 @@ def impl__guard_submit_ready(api, entry, target, branch, bead, cfg):
     data = api.bd.show(bead, api.registry.hive_dir(entry))
     if api._is_epic(data):
         policy = api.work_logic.epic_history_policy(
-            entry, api.registry.hive_dir(entry), bead, branch, base, limit
+            entry,
+            api.registry.hive_dir(entry),
+            bead,
+            branch,
+            base,
+            limit,
+            api.config.integration_branch(cfg, entry),
         )
         if not policy["valid"]:
             api.typer.echo(
