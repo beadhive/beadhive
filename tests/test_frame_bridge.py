@@ -15,7 +15,7 @@ from joserfc import jwt
 from joserfc.jwk import RSAKey
 from joserfc.jws import JWSRegistry
 
-from beadhive import frame_bridge
+from beadhive import daemon_auth, frame_bridge, frame_bridge_runtime
 from beadhive.kernel.telemetry import (
     EventIdentity,
     Outcome,
@@ -232,6 +232,76 @@ def test_authorized_subject_discovers_only_dev_demo_and_reads_redacted_snapshot(
     }
     assert discovery.headers["access-control-allow-origin"] == APP_ORIGIN
     assert snapshot.headers["cache-control"] == "no-store"
+
+
+def test_public_caller_bearer_is_never_forwarded_to_the_host_daemon() -> None:
+    private_key, public_key = _keys()
+    caller_bearer = _token(private_key)
+    daemon_bearer = "bh1.frame-bridge." + "d" * 43
+    seen: list[str | None] = []
+
+    async def daemon(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "live", "ready": True})
+        seen.append(request.headers.get("authorization"))
+        if request.headers.get("authorization") != f"Bearer {daemon_bearer}":
+            return httpx.Response(401, json={"error": {"code": "auth_missing"}})
+        return httpx.Response(
+            200,
+            json={
+                "schemaVersion": 1,
+                "revision": "sha256:" + "a" * 64,
+                "generatedAt": 1724716800000,
+                "cursor": {"producerEpoch": EVENT_EPOCH.replace("-", ""), "sequence": 0},
+                "workItems": [],
+                "agents": [],
+            },
+        )
+
+    daemon_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(daemon),
+        base_url=frame_bridge_runtime.LOOPBACK_ORIGIN,
+    )
+    runtime = frame_bridge_runtime.LoopbackDemoRuntime(
+        daemon_bearer=daemon_auth.SecretBearer(daemon_bearer),
+        client=daemon_client,
+    )
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=APP_ORIGIN,
+        gateway_origin=GATEWAY_ORIGIN,
+    )
+    app = frame_bridge.build_development_frame_bridge_application(
+        config=config,
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: frame_bridge.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=runtime.snapshot,
+                    online=runtime.online,
+                    close=runtime.close,
+                )
+            }
+        ),
+    )
+
+    async def action(client):
+        try:
+            return await client.get(
+                "/v1/instances/dev/demo/snapshot",
+                headers=_headers(caller_bearer),
+            )
+        finally:
+            await runtime.close()
+
+    response = _exercise(app, action)
+
+    assert response.status_code == 200
+    assert seen == [f"Bearer {daemon_bearer}"]
+    assert caller_bearer not in "".join(value or "" for value in seen)
 
 
 def test_authorized_subject_invokes_advertised_refresh_and_receives_correlated_result() -> None:
