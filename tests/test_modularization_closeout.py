@@ -8,6 +8,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "docs/proof/bh-j5uyb.1-modularization-closeout.json"
+ARCHITECTURE_DEBT_LEDGER = ROOT / "docs/design/import-boundary-exceptions.toml"
 EXPECTED_EPICS = {
     "bh-inqwc",
     "bh-qw9oi",
@@ -128,10 +129,21 @@ def test_closeout_records_review_validation_debt_and_operator_commands() -> None
     )
 
     debt = report["remaining_debt"]
-    assert len(debt["active_cycle_exception_ids"]) == debt["active_cycle_exceptions"]
-    assert len(debt["active_boundary_exception_ids"]) == debt["active_boundary_exceptions"]
-    assert len(debt["active_facade_ids"]) == debt["active_facades"]
-    assert debt["ledger_paths"]
+    architecture_debt = tomllib.loads(ARCHITECTURE_DEBT_LEDGER.read_text(encoding="utf-8"))
+    debt_sections = (
+        ("cycle_exception", "active_cycle_exception_ids", "active_cycle_exceptions"),
+        ("boundary_exception", "active_boundary_exception_ids", "active_boundary_exceptions"),
+        ("facade", "active_facade_ids", "active_facades"),
+    )
+    for ledger_key, report_ids_key, report_count_key in debt_sections:
+        authoritative_ids = {
+            row["id"] for row in architecture_debt[ledger_key] if row["status"] == "active"
+        }
+        reported_ids = debt[report_ids_key]
+        assert set(reported_ids) == authoritative_ids
+        assert len(reported_ids) == len(authoritative_ids)
+        assert debt[report_count_key] == len(authoritative_ids)
+    assert ARCHITECTURE_DEBT_LEDGER.relative_to(ROOT).as_posix() in debt["ledger_paths"]
 
     repowise = report["repowise"]
     assert repowise["last_sync_commit"] == report["workstream"]["historical_assembly_tip"]
