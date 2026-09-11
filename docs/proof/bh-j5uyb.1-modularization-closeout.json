@@ -410,8 +410,8 @@
       "bead": {"id": "bh-uvotu.8", "title": "Authenticate Frame Bridge requests to the host daemon", "status": "closed", "close_reason": "merged"},
       "scope": "core real-process host-daemon-to-Frame-Bridge validation; not sibling multi-frame Gateway integration or real-host supervisor certification",
       "coverage": ["health", "authenticated discovery", "redacted snapshot", "revision-checked refresh", "SSE delivery and reconnect", "credential failure", "secret redaction", "process/socket/credential/temp-state cleanup"],
-      "test": {"path": "tests/test_frame_bridge_live.py", "node": "test_authenticated_daemon_to_installed_frame_bridge_real_process_path", "sha256": "d947da2bb921320803dd0ef2352003167eedec4cd7e888c6331a958f8758a480"},
-      "harness": {"path": "tests/harness/frame_bridge_live.py", "sha256": "946ed020bcebbf5f07fe843c062d14a5379b9f9a8f4ad201c5a6c0cb4bc9a81f"}
+      "test": {"path": "tests/test_frame_bridge_live.py", "node": "test_authenticated_daemon_to_installed_frame_bridge_real_process_path", "sha256": "c441f3b9574420a759de1e231f1df9b8debc03082b6dc3db96a414018c851db7"},
+      "harness": {"path": "tests/harness/frame_bridge_live.py", "sha256": "b244733042eea45027bd05dcfac9e6473f3a190f6ea9dc23d39713a2ff7ca960"}
     }
   },
   "remaining_debt": {

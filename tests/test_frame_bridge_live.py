@@ -41,4 +41,14 @@ def test_authenticated_daemon_to_installed_frame_bridge_real_process_path(tmp_pa
     assert json.loads(completed.stdout.strip()) == {
         "status": "ok",
         "contractVersion": "gateway.v1",
+        "coverage": [
+            "SSE delivery and reconnect",
+            "authenticated discovery",
+            "credential failure",
+            "health",
+            "process/socket/credential/temp-state cleanup",
+            "redacted snapshot",
+            "revision-checked refresh",
+            "secret redaction",
+        ],
     }

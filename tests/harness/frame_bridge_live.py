@@ -282,6 +282,7 @@ def main() -> None:
     handles: list[Any] = []
     child_pids: list[int] = []
     observed_payloads: list[str] = []
+    coverage: set[str] = set()
     try:
         daemon, daemon_log = _start(
             executable_dir / "bh-host-daemon",
@@ -306,6 +307,7 @@ def main() -> None:
         bridge_health = _wait_for_http(f"{BRIDGE_ORIGIN}/healthz", headers={"Host": GATEWAY_HOST})
         assert bridge_health.json() == {"live": True, "contractVersion": "gateway.v1"}
         observed_payloads.append(bridge_health.text)
+        coverage.add("health")
 
         caller_headers = {
             "Authorization": f"Bearer {caller_token}",
@@ -316,6 +318,7 @@ def main() -> None:
             discovery = client.get("/v1/instances", params={"limit": "50"}, headers=caller_headers)
             assert discovery.status_code == 200, discovery.text
             assert discovery.json()["items"][0]["availability"] == "online"
+            coverage.add("authenticated discovery")
             snapshot = client.get("/v1/instances/dev/demo/snapshot", headers=caller_headers)
             assert snapshot.status_code == 200, snapshot.text
             snapshot_body = snapshot.json()
@@ -345,6 +348,7 @@ def main() -> None:
             )
             assert stale_refresh.status_code == 409
             assert stale_refresh.json()["error"]["code"] == "scope_conflict"
+            coverage.add("revision-checked refresh")
             first_cursor = _read_one_sse_event(
                 client,
                 cursor=cursor,
@@ -363,6 +367,7 @@ def main() -> None:
             )
             assert second_cursor.rsplit(":", 1)[0] == first_cursor.rsplit(":", 1)[0]
             assert int(second_cursor.rsplit(":", 1)[1]) == int(first_cursor.rsplit(":", 1)[1]) + 1
+            coverage.add("SSE delivery and reconnect")
             observed_payloads.extend(
                 [
                     discovery.text,
@@ -430,25 +435,38 @@ def main() -> None:
         handles.append(missing_log)
         assert missing.wait(timeout=8) != 0
         bridge = None
+        coverage.add("credential failure")
     finally:
         _stop(bridge)
         _stop(daemon)
         for handle in handles:
             handle.close()
 
+    assert bearer not in snapshot.text
+    coverage.add("redacted snapshot")
     assert bearer not in "".join(observed_payloads)
     for log_path in logs.iterdir():
         assert bearer.encode() not in log_path.read_bytes()
     for path in root.rglob("*"):
         if path.is_file() and path != bearer_file:
             assert bearer.encode() not in path.read_bytes()
+    coverage.add("secret redaction")
     assert not [path for path in root.rglob("*.sock")]
     assert not [pid for pid in child_pids if Path(f"/proc/{pid}").exists()]
     _assert_port_released(8420)
     _assert_port_released(8787)
     shutil.rmtree(root)
     assert not root.exists()
-    print(json.dumps({"status": "ok", "contractVersion": "gateway.v1"}))
+    coverage.add("process/socket/credential/temp-state cleanup")
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "contractVersion": "gateway.v1",
+                "coverage": sorted(coverage),
+            }
+        )
+    )
 
 
 if __name__ == "__main__":
