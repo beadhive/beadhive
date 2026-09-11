@@ -1,8 +1,10 @@
 # Modularization closeout review packet
 
-This packet closes the evidence work for
+This packet originated with
 `bh-j5uyb.1 — Assemble final modularization validation and operator review
-packet`. It is a local-only operator handoff for
+packet` and is refreshed by
+`bh-uvotu.4 — Refresh modularization closeout and generated architecture
+evidence`. It is a local-only operator handoff for
 `bh-j5uyb — Workstream: modular Beadhive core, plugins, contracts,
 transports, and test closures`; it is not an approval or merge decision.
 
@@ -10,24 +12,32 @@ The machine-readable companion
 [`bh-j5uyb.1-modularization-closeout.json`](bh-j5uyb.1-modularization-closeout.json)
 is the canonical inventory. It records every relevant direct child, the nested
 foundation prerequisites, all review-transition event IDs, the active exception
-IDs, and the validation receipts summarized below.
+IDs, and the current-versus-historical evidence classification summarized
+below.
 
-## Immutable assembly point
+## Exact remediated candidate lineage
 
-- Implementation assembly tip:
-  `6ba52a9c1d36cb05df08f804cd3cf2e43fef8ca7`
-- Implementation assembly tree:
-  `1c2dfd72b70001fd1e1e2dff88593e4b5f9e1973`
+- Current remediated source candidate:
+  `5e14f142e4fa7610514e87fceb0d179601c4c23f`
+- Current remediated source tree:
+  `0447133176cee14dbb0ffb5c91ac32c367c36fe0`
 - Main and rollback anchor:
   `739349806ead27c94282219b1befb796ba73b583`
 - Main tree at measurement:
   `8fb6984bb1a4cf1ed598e71d6a3f9da41fbc8b88`
 
-The closeout evidence itself changes the tree after the implementation assembly
-tip. The final submission therefore needs a new exact-tree full validation; the
-older receipt is evidence for the byte-identical implementation assembly tree,
-not a substitute for that final gate. Main was untouched while this packet was
-assembled.
+The remediated candidate descends through the original closeout merge
+`071ebdf2`, exact-tree receipt-authority repair `0b5749d0`, standalone process
+proof `a886eefc`, and Beadhive Frame Bridge replay `5e14f142`. This packet changes
+that tree again. Its `bh-uvotu.4` check and submit receipts, and the later final
+`bh-j5uyb` review receipt, must each resolve their own exact tree. No SHA or
+receipt written into this self-changing packet can prove the later
+closeout-inclusive tree.
+
+The earlier `6ba52a9c` / `1c2dfd72` implementation assembly and its receipts are
+immutable **historical evidence only**. They establish the original modularized
+baseline, not the receipt repair, process proof, Frame Bridge replay, this
+closeout, or the final review tree.
 
 ## First-tier epic topology
 
@@ -62,7 +72,7 @@ operator can reconcile the summary without relying on prose.
 
 ## Validation evidence
 
-The implementation assembly tree has a green `just check-all` receipt:
+The historical implementation assembly tree has a green `just check-all` receipt:
 `run-0f98b0032d26017943d65bad457e2d19`. It ran for 601.899 seconds from
 2026-09-10 21:37:40 UTC through 21:47:42 UTC and reported:
 
@@ -82,24 +92,55 @@ Closeout-focused verification is green:
   155 cyclic edges, and zero unowned architecture errors;
 - plugin conformance: 74 passed in 1.01 seconds;
 - transport artifacts: operation catalog, projection inventory, OpenAPI,
-  gateway contract, and composition evidence are current;
+  Gateway wire contract, and Frame Bridge composition evidence are current;
 - schema compatibility: telemetry, official v1 bundle, release evidence, and
   generators are current; v1.0.0 validates as the initial release relative to
   main and the proof compares five immutable historical releases;
 - selective CI: all 24 closures remain uncertified, activation is fail-closed,
-  and there are zero production routes.
+  and there are zero production routes;
+- package and entry point: an offline wheel contains the Frame Bridge bootstrap,
+  application, and runtime modules, exports
+  `beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main`, and contains
+  neither the old core command nor old modules.
 
 The closeout gate exposed a downstream receipt-bootstrap defect after formatting
 lint was corrected: a live exact-tree validation manifest was rejected solely
 because its bead identity differed from the historical certification bead. The
-narrow remediation keeps completed GREEN reuse bound to
-`bh-ck1t6.5 — Prove operational closure telemetry and document the graduation
-gate`; only an exact-tree, exact-command, exact-hash, exact-phase in-flight
-receipt with a verified live host, PID, and process-start token may cross bead
-identity. The certification and closeout regression suites pass 44 tests in
-2.29 seconds. The two RED diagnostic receipts are preserved in the private
-ledger as `run-42e5b4142657e17a70709f50a0a5ec28` and
+repair does not treat that old bead identity as authority. A completed receipt
+is reusable only when the exact tree, canonical full-gate command and hash,
+lifecycle shape, phase, managed bead/branch binding, exit code, and signal state
+all match. An in-flight receipt additionally must name this exact worktree and a
+verified live host, PID, non-zombie state, and process-start token. The
+standalone process test proves both paths and rejects stale, dead, wrong-tree,
+wrong-command, and malformed receipts. The two original RED diagnostics remain
+private historical records: `run-42e5b4142657e17a70709f50a0a5ec28` and
 `run-5bea33e53bd6d131cfa7ec4511c19ee1`.
+
+## Current generated evidence and immutable history
+
+The companion JSON records reproducible SHA-256 values for every current
+transport, import-boundary ledger, schema/release, selective-CI, package, and
+entry-point input claimed here. `tests/test_modularization_closeout.py`
+recomputes those values from repository bytes. The canonical checks are:
+
+```console
+just architecture-check
+just transport-artifact-check
+just wire-schema-compat
+uv run pytest -q tests/test_modularization_closeout.py tests/test_frame_bridge_handoff.py
+```
+
+`docs/design/capability-module-dependency-map.json`,
+`docs/proof/bh-bptze.7-capability-closeout.json`, the original Frame Bridge
+handoff candidate, and all receipt IDs printed above remain explicitly
+classified as immutable historical evidence. Their pre-rename paths and old
+trees are facts about those snapshots; they are not regenerated or presented as
+current-candidate proof.
+
+The core owns one per-frame **Beadhive Frame Bridge**. It preserves the Gateway
+wire contract and audience but does not aggregate frames. The multi-frame
+**Beadhive Gateway** is owned by the sibling `beadhive-gateway` repository; core
+does not install a `beadhive-gateway` process command.
 
 ## Structural before and after
 
@@ -107,7 +148,7 @@ The foundation baseline is revision `adf182bc4fc9c628a23b9b76c55f5291ec337b7a`.
 Repository growth increased the module and import-edge totals, while cyclic
 coupling fell materially.
 
-| Measure | Foundation | Assembly tip | Change |
+| Measure | Foundation | Current candidate | Change |
 | --- | ---: | ---: | ---: |
 | Python modules | 182 | 327 | +145 |
 | Import edges | 2,029 | 2,912 | +883 |
@@ -129,21 +170,22 @@ JSON. Removal requires separate reviewed changes.
 
 ## RepoWise freshness
 
-RepoWise 0.45.0 was refreshed at the exact assembly tip in index-only mode,
+RepoWise 0.45.0 was refreshed at the historical `6ba52a9c` assembly tip in index-only mode,
 without a workspace, cost tracking, managed-agent generation, or model tokens.
 It indexed 1,203 files into 159,405,396 bytes and reported average health 7.85,
 hotspot health 5.91, maintainability 8.73, performance 9.74, and 4,872 open
 findings. The lowest score was `src/beadhive/cli.py` at 1.65.
 
-Before the explicit refresh, the wrapper claimed zero commits behind while its
-native state was still pinned to main. The values above are from the corrected
-candidate-tip refresh. They are static architecture signals, not correctness or
-per-test coverage evidence.
+Before that historical refresh, the wrapper claimed zero commits behind while
+its native state was still pinned to main. The retained values are static
+architecture signals for `6ba52a9c`, not correctness, per-test coverage, or
+evidence for the current remediated or final tree.
 
 ## Known risks and rollback
 
-- The closeout-inclusive tree still requires its own pristine `just check-all`
-  receipt before submission.
+- The `5e14f142` source candidate predates this closeout. This bead's check and
+  submit and the final workstream review must each use an authoritative receipt
+  for their exact closeout-inclusive tree.
 - Selective CI claims no production savings: all 24 closures are uncertified and
   every production boundary still takes the full lane.
 - The integration-land recipe quarantines the known `bh-tfapu` host-fence test;
@@ -157,10 +199,17 @@ per-test coverage evidence.
   deterministic live-ingress cells pass.
 - The active compatibility ledgers and 4,872 untriaged RepoWise findings remain
   follow-up work, not proof failures.
+- `bh-9ghuh.1 — Exercise a real host daemon through the Beadhive Frame Bridge`
+  owns the remaining real-process core integration check.
+- `bh-gw-ywh.1 — Refresh the Gateway source lock for Beadhive Frame Bridge`,
+  `bh-gw-ywh.2 — Certify exact Gateway sources against the renamed Frame Bridge`,
+  and `bh-gw-ywh.3 — Exercise live Gateway aggregation across multiple Frame
+  Bridges` own the sibling Gateway integration sequence.
 
-Before merge, rollback means declining the submitted workstream; main is already
-at `739349806ead27c94282219b1befb796ba73b583`. If an operator later merges the
-top-level no-ff bubble and must undo it, revert that single top-level merge with
+The workstream rollback anchor remains
+`739349806ead27c94282219b1befb796ba73b583`; unrelated later commits on main do
+not change the workstream's ancestry. Before merge, rollback means declining the
+submitted workstream. After merge, revert its single top-level no-ff bubble with
 mainline parent 1. Do not independently replay or revert child bubbles.
 
 ## Reproducible operator review
@@ -168,9 +217,19 @@ mainline parent 1. Do not independently replay or revert child bubbles.
 From the hive repository, the operator-owned final gate is:
 
 ```console
-bh work review bh-j5uyb --run --demo --view stat
+bh work review bh-j5uyb --run --view stat
+just demo-local-loop
 bh work review bh-j5uyb --view diff
 ```
+
+The explicit `just demo-local-loop` step is load-bearing: its recipe runs the
+demo through `scripts/hermetic.sh` with a private `HOME`. Do not replace it with
+the review command's `--demo` flag while this hive's managed demo command points
+to the bare script. The independent reviewer did that once and recorded
+`run-4146531c0d2a8c7c5ec79dcbf02ffdc7` as RED after the functional scenario
+completed but ambient `~/.beadhive` writers tripped the isolation assertion.
+That is an expected ambient-write diagnostic, not candidate evidence. The
+separate fenced `just demo-local-loop` run is the authoritative green demo.
 
 The expected next state is a human review gate opened by the root dispatcher
 after this reviewed closeout bead is integrated. Approval and final merge remain
