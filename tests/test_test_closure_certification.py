@@ -48,16 +48,36 @@ def test_unrelated_descendant_does_not_invalidate_the_historical_snapshot() -> N
     assert set(applicability) == {row["id"] for row in evidence["closures"]}
 
 
+def test_receipt_reader_rejects_manifest_outside_its_run_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    common = tmp_path / "common"
+    runs = common / "bh" / "validation" / "runs"
+    trusted = runs / "run-trusted"
+    foreign = runs / "run-foreign"
+    trusted.mkdir(parents=True)
+    foreign.mkdir()
+    (trusted / "manifest.json").write_text(json.dumps({"run_id": "run-trusted"}), encoding="utf-8")
+    (foreign / "manifest.json").write_text(
+        json.dumps({"run_id": "run-somewhere-else"}), encoding="utf-8"
+    )
+    monkeypatch.setattr(certification, "_git", lambda *_args: str(common))
+
+    assert certification._receipt_manifests(tmp_path) == ({"run_id": "run-trusted"},)
+
+
 def test_receipt_lookup_targets_current_candidate_tree(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     receipt = {
         "schema": 1,
+        "run_id": "run-check",
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
         "bead": "bh-ck1t6.5",
+        "branch": "wt/bead/issue/bh-ck1t6.5",
         "phase": "check",
         "lifecycle": "completed",
         "verdict": "green",
@@ -84,7 +104,7 @@ def test_receipt_lookup_targets_current_candidate_tree(
     (
         ("tree", "stale-tree"),
         ("bead", "bh-ck1t6.4"),
-        ("phase", "submit"),
+        ("phase", "release"),
         ("command_hash", "0000000000000000"),
     ),
 )
@@ -94,10 +114,12 @@ def test_receipt_admission_rejects_wrong_candidate_authority_binding(
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     receipt = {
         "schema": 1,
+        "run_id": "run-check",
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
         "bead": "bh-ck1t6.5",
+        "branch": "wt/bead/issue/bh-ck1t6.5",
         "phase": "check",
         "lifecycle": "completed",
         "verdict": "green",
@@ -330,10 +352,12 @@ def test_full_gate_receipt_is_resolved_from_candidate_tree_not_artifact_claims(
 
     receipt = {
         "schema": 1,
+        "run_id": "run-check",
         "tree": "stale-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
         "bead": "bh-ck1t6.5",
+        "branch": "wt/bead/issue/bh-ck1t6.5",
         "phase": "check",
         "lifecycle": "completed",
         "verdict": "green",
@@ -393,12 +417,19 @@ def test_running_receipt_requires_exact_live_process_identity(
 ) -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     receipt = {
+        "schema": 1,
+        "run_id": "run-live",
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
         "bead": "bh-j5uyb.1",
+        "branch": "wt/bead/issue/bh-j5uyb.1",
         "phase": "check",
         "lifecycle": "running",
+        "verdict": "none",
+        "exit_code": None,
+        "signal": None,
+        "worktree": str(ROOT),
         "owner": owner,
     }
     monkeypatch.setattr(
@@ -424,12 +455,19 @@ def test_running_receipt_accepts_exact_current_process_identity(
 ) -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     receipt = {
+        "schema": 1,
+        "run_id": "run-live",
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
         "bead": "bh-ck1t6.5",
+        "branch": "wt/bead/issue/bh-ck1t6.5",
         "phase": "check",
         "lifecycle": "running",
+        "verdict": "none",
+        "exit_code": None,
+        "signal": None,
+        "worktree": str(ROOT),
         "owner": {"host": "current-host", "pid": 1234, "start_token": "current-start"},
     }
     monkeypatch.setattr(
@@ -453,12 +491,19 @@ def test_running_receipt_accepts_exact_live_downstream_bead(
 ) -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     receipt = {
+        "schema": 1,
+        "run_id": "run-live",
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
         "bead": "bh-j5uyb.1",
+        "branch": "wt/bead/issue/bh-j5uyb.1",
         "phase": "check",
         "lifecycle": "running",
+        "verdict": "none",
+        "exit_code": None,
+        "signal": None,
+        "worktree": str(ROOT),
         "owner": {"host": "current-host", "pid": 1234, "start_token": "current-start"},
     }
     monkeypatch.setattr(
@@ -477,16 +522,46 @@ def test_running_receipt_accepts_exact_live_downstream_bead(
     assert certification.validate_full_gate_receipt(evidence, ROOT) == ()
 
 
-def test_completed_green_receipt_remains_bound_to_provenance_bead(
+def test_completed_green_receipt_accepts_exact_downstream_candidate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     receipt = {
         "schema": 1,
+        "run_id": "run-check",
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
         "bead": "bh-j5uyb.1",
+        "branch": "wt/bead/issue/bh-j5uyb.1",
+        "phase": "check",
+        "lifecycle": "completed",
+        "verdict": "green",
+        "exit_code": 0,
+        "signal": None,
+    }
+    monkeypatch.setattr(
+        certification,
+        "_git",
+        lambda _root, *args: "" if args[0] == "status" else "candidate-tree",
+    )
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == ()
+
+
+def test_completed_green_receipt_rejects_foreign_bead_branch_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    receipt = {
+        "schema": 1,
+        "run_id": "run-foreign",
+        "tree": "candidate-tree",
+        "command": "just check",
+        "command_hash": certification.FULL_GATE_COMMAND_HASH,
+        "bead": "bh-foreign",
+        "branch": "wt/bead/issue/bh-candidate",
         "phase": "check",
         "lifecycle": "completed",
         "verdict": "green",
@@ -505,13 +580,139 @@ def test_completed_green_receipt_remains_bound_to_provenance_bead(
     )
 
 
+@pytest.mark.parametrize("lifecycle", ("running", "completed"))
+def test_check_all_receipt_admits_exact_lifecycle_authority(
+    monkeypatch: pytest.MonkeyPatch, lifecycle: str
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    receipt = {
+        "schema": 1,
+        "run_id": "run-check-all",
+        "tree": "candidate-tree",
+        "command": "just check-all",
+        "command_hash": certification.RELEASE_GATE_COMMAND_HASH,
+        "bead": None,
+        "branch": "wt/bead/epic/bh-j5uyb",
+        "phase": "validation",
+        "lifecycle": lifecycle,
+        "verdict": "none" if lifecycle == "running" else "green",
+        "exit_code": None if lifecycle == "running" else 0,
+        "signal": None,
+        "worktree": str(ROOT),
+        "owner": {"host": "current-host", "pid": 1234, "start_token": "current-start"},
+    }
+    monkeypatch.setattr(
+        certification,
+        "_git",
+        lambda _root, *args: "" if args[0] == "status" else "candidate-tree",
+    )
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
+    monkeypatch.setattr(certification, "_current_host_id", lambda: "current-host")
+    monkeypatch.setattr(certification, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(certification, "_process_state", lambda _pid: "S")
+    monkeypatch.setattr(certification, "_process_start_token", lambda _pid: "current-start")
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == ()
+
+
+@pytest.mark.parametrize(
+    ("field", "wrong_value"),
+    (
+        ("bead", "bh-foreign"),
+        ("phase", "check"),
+        ("command_hash", "wrong-command-hash"),
+    ),
+)
+def test_check_all_receipt_rejects_wrong_lifecycle_binding(
+    monkeypatch: pytest.MonkeyPatch, field: str, wrong_value: str
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    receipt = {
+        "schema": 1,
+        "run_id": "run-check-all",
+        "tree": "candidate-tree",
+        "command": "just check-all",
+        "command_hash": certification.RELEASE_GATE_COMMAND_HASH,
+        "bead": None,
+        "branch": "wt/bead/epic/bh-j5uyb",
+        "phase": "validation",
+        "lifecycle": "completed",
+        "verdict": "green",
+        "exit_code": 0,
+        "signal": None,
+    }
+    receipt[field] = wrong_value
+    monkeypatch.setattr(
+        certification,
+        "_git",
+        lambda _root, *args: "" if args[0] == "status" else "candidate-tree",
+    )
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == (
+        "candidate checkout has no authoritative matching full-gate receipt",
+    )
+
+
+def test_artifact_cannot_self_authorize_a_different_gate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    provenance = evidence["same_tree_full_gate_oracle"]["receipt_provenance"]
+    provenance.update(
+        bead=None,
+        phase="validation",
+        command="just check-all",
+        command_hash=certification.RELEASE_GATE_COMMAND_HASH,
+    )
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: ())
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == (
+        "same-tree oracle receipt provenance does not match the full gate",
+    )
+
+
+def test_running_receipt_rejects_foreign_worktree(monkeypatch: pytest.MonkeyPatch) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    receipt = {
+        "schema": 1,
+        "run_id": "run-live",
+        "tree": "candidate-tree",
+        "command": "just check",
+        "command_hash": certification.FULL_GATE_COMMAND_HASH,
+        "bead": "bh-j5uyb.1",
+        "branch": "wt/bead/issue/bh-j5uyb.1",
+        "phase": "check",
+        "lifecycle": "running",
+        "verdict": "none",
+        "exit_code": None,
+        "signal": None,
+        "worktree": str(ROOT.parent),
+        "owner": {"host": "current-host", "pid": 1234, "start_token": "current-start"},
+    }
+    monkeypatch.setattr(
+        certification,
+        "_git",
+        lambda _root, *args: "" if args[0] == "status" else "candidate-tree",
+    )
+    monkeypatch.setattr(certification, "_receipt_manifests", lambda _root: (receipt,))
+    monkeypatch.setattr(certification, "_current_host_id", lambda: "current-host")
+    monkeypatch.setattr(certification, "_pid_exists", lambda _pid: True)
+    monkeypatch.setattr(certification, "_process_state", lambda _pid: "S")
+    monkeypatch.setattr(certification, "_process_start_token", lambda _pid: "current-start")
+
+    assert certification.validate_full_gate_receipt(evidence, ROOT) == (
+        "candidate checkout has no authoritative matching full-gate receipt",
+    )
+
+
 @pytest.mark.parametrize(
     ("field", "wrong_value"),
     (
         ("tree", "other-tree"),
         ("command", "just check-all"),
         ("command_hash", "wrong-command-hash"),
-        ("phase", "submit"),
+        ("phase", "release"),
     ),
 )
 def test_downstream_running_receipt_rejects_gate_identity_mismatch(
@@ -521,12 +722,19 @@ def test_downstream_running_receipt_rejects_gate_identity_mismatch(
 ) -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     receipt = {
+        "schema": 1,
+        "run_id": "run-live",
         "tree": "candidate-tree",
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
         "bead": "bh-j5uyb.1",
+        "branch": "wt/bead/issue/bh-j5uyb.1",
         "phase": "check",
         "lifecycle": "running",
+        "verdict": "none",
+        "exit_code": None,
+        "signal": None,
+        "worktree": str(ROOT),
         "owner": {"host": "current-host", "pid": 1234, "start_token": "current-start"},
     }
     receipt[field] = wrong_value
@@ -584,10 +792,12 @@ def test_completed_receipt_rejects_nonignored_untracked_source_or_test(
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     receipt = {
         "schema": 1,
+        "run_id": "run-check",
         "tree": tree,
         "command": "just check",
         "command_hash": certification.FULL_GATE_COMMAND_HASH,
         "bead": "bh-ck1t6.5",
+        "branch": "wt/bead/issue/bh-ck1t6.5",
         "phase": "check",
         "lifecycle": "completed",
         "verdict": "green",
