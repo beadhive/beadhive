@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -36,24 +38,40 @@ def test_closeout_snapshot_is_complete_and_pinned() -> None:
     report = _load_report()
     workstream = report["workstream"]
 
-    assert report["schema_version"] == 1
+    assert report["schema_version"] == 2
     assert report["bead"]["id"] == "bh-j5uyb.1"
     assert workstream["id"] == "bh-j5uyb"
-    assert len(workstream["implementation_assembly_tip"]) == 40
-    assert _git("cat-file", "-t", workstream["implementation_assembly_tip"]) == "commit"
+    assert len(workstream["current_candidate_tip"]) == 40
+    assert _git("cat-file", "-t", workstream["current_candidate_tip"]) == "commit"
     assert (
-        _git("rev-parse", f"{workstream['implementation_assembly_tip']}^{{tree}}")
-        == workstream["implementation_assembly_tree"]
+        _git("rev-parse", f"{workstream['current_candidate_tip']}^{{tree}}")
+        == workstream["current_candidate_tree"]
     )
     assert (
         _git(
             "merge-base",
             workstream["main_anchor"],
-            workstream["implementation_assembly_tip"],
+            workstream["current_candidate_tip"],
         )
         == workstream["main_anchor"]
     )
+    assert (
+        _git("merge-base", workstream["current_candidate_tip"], "HEAD")
+        == workstream["current_candidate_tip"]
+    )
+    lineage = workstream["candidate_lineage"]
+    assert lineage[-1]["merge"] == workstream["current_candidate_tip"]
+    assert lineage[-1]["tree"] == workstream["current_candidate_tree"]
+    assert [row["bead"] for row in lineage] == [
+        "bh-j5uyb.1",
+        "bh-uvotu.1",
+        "bh-uvotu.2",
+        "bh-uvotu.3",
+    ]
+    for row in lineage:
+        assert _git("rev-parse", f"{row['merge']}^{{tree}}") == row["tree"]
     assert workstream["rollback_point"] == workstream["main_anchor"]
+    assert "No SHA or receipt recorded before" in workstream["final_tree_authority"]
 
 
 def test_all_eight_first_tier_epics_have_closed_no_ff_bubbles() -> None:
@@ -84,11 +102,20 @@ def test_closeout_records_review_validation_debt_and_operator_commands() -> None
     assert review["bounce_event_ids"]
 
     validation = report["validation"]
-    assert validation["assembled_tree_full_gate"]["verdict"] == "green"
-    assert validation["assembled_tree_full_gate"]["command"] == "just check-all"
+    historical_gate = validation["historical_assembly_full_gate"]
+    assert historical_gate["verdict"] == "green"
+    assert historical_gate["command"] == "just check-all"
+    assert historical_gate["tree"] == report["workstream"]["historical_assembly_tree"]
+    assert "not final-candidate proof" in historical_gate["classification"]
     assert validation["schema_compatibility"]["status"] == "compatible"
     assert validation["transport_inventory"]["status"] == "current"
     assert validation["selective_ci"]["production_routes"] == 0
+    receipt = validation["receipt_bootstrap_remediation"]
+    assert "historical bh-ck1t6.5 bead identity is not authority" in receipt["completed_policy"]
+    assert all(
+        token in receipt["in_flight_policy"]
+        for token in ("exact current worktree", "host", "PID", "process-start token")
+    )
 
     structural = report["structural"]
     assert structural["current"]["unowned_architecture_errors"] == 0
@@ -107,11 +134,62 @@ def test_closeout_records_review_validation_debt_and_operator_commands() -> None
     assert debt["ledger_paths"]
 
     repowise = report["repowise"]
-    assert repowise["last_sync_commit"] == report["workstream"]["implementation_assembly_tip"]
+    assert repowise["last_sync_commit"] == report["workstream"]["historical_assembly_tip"]
+    assert repowise["classification"].startswith("historical")
     assert repowise["model_tokens"] == 0
 
     commands = report["operator_review"]["commands"]
-    assert "bh work review bh-j5uyb --run --demo --view stat" in commands
-    assert "bh work review bh-j5uyb --view diff" in commands
+    assert commands == [
+        "bh work review bh-j5uyb --run --view stat",
+        "just demo-local-loop",
+        "bh work review bh-j5uyb --view diff",
+    ]
+    assert not any("--demo" in command for command in commands)
+    demo = report["operator_review"]["demo_authority"]
+    assert demo["authoritative_command"] == "just demo-local-loop"
+    assert "scripts/hermetic.sh" in demo["isolation"]
+    diagnostic = demo["ambient_diagnostic"]
+    assert diagnostic["run_id"] == "run-4146531c0d2a8c7c5ec79dcbf02ffdc7"
+    assert diagnostic["verdict"] == "red"
+    assert "not authoritative" in diagnostic["classification"]
     assert report["known_risks"]
     assert report["rollback"]["commit"] == report["workstream"]["rollback_point"]
+
+
+def test_current_candidate_artifact_digests_are_reproducible() -> None:
+    report = _load_report()
+    current = report["evidence_inventory"]["current_candidate"]
+    rows = [
+        *current["transport_composition"]["artifacts"],
+        current["import_boundary"]["ledger"],
+        *current["schema_release"]["artifacts"],
+        *current["selective_ci"]["artifacts"],
+        current["package_and_entry_point"]["manifest"],
+    ]
+
+    assert len({row["path"] for row in rows}) == len(rows)
+    for row in rows:
+        path = ROOT / row["path"]
+        assert path.is_file(), row["path"]
+        assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"], row["path"]
+
+
+def test_frame_bridge_ownership_and_follow_up_debt_are_unambiguous() -> None:
+    report = _load_report()
+    current = report["evidence_inventory"]["current_candidate"]
+    package = current["package_and_entry_point"]
+    project = tomllib.loads((ROOT / package["manifest"]["path"]).read_text(encoding="utf-8"))
+
+    assert project["project"]["scripts"]["beadhive-frame-bridge"] == (
+        "beadhive.bootstrap.frame_bridge:main"
+    )
+    assert "beadhive-gateway" not in project["project"]["scripts"]
+    boundary = report["validation"]["transport_inventory"]["gateway_boundary"]
+    assert "sibling beadhive-gateway repository" in boundary
+    assert "not a core process" in boundary
+
+    follow_ups = {row["id"] for row in report["remaining_debt"]["follow_up_beads"]}
+    assert {"bh-9ghuh.1", "bh-gw-ywh.1", "bh-gw-ywh.2", "bh-gw-ywh.3"} <= follow_ups
+    historical = report["evidence_inventory"]["immutable_historical"]
+    assert historical
+    assert all("classification" in row for row in historical)

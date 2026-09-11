@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import configparser
 import json
 import re
+import shutil
+import subprocess
 import tomllib
+import zipfile
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).parents[1]
 HANDOFF = ROOT / "docs/proof/development-frame-bridge-v1-handoff.json"
@@ -73,6 +79,38 @@ def test_frame_bridge_is_the_only_core_bridge_process_command() -> None:
     assert "multi-frame" in contract
     assert "**Beadhive Gateway**" in contract
     assert "sibling `beadhive-gateway` repository" in contract
+
+
+@pytest.mark.skipif(shutil.which("uv") is None, reason="wheel build needs the uv binary")
+def test_wheel_contains_only_the_frame_bridge_core_entry_point(tmp_path: Path) -> None:
+    """Prove the installed artifact, not only the source manifest, carries the rename."""
+    output = tmp_path / "dist"
+    subprocess.run(
+        ["uv", "build", "--offline", "--wheel", "--out-dir", str(output)],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    )
+    (wheel,) = output.glob("*.whl")
+    with zipfile.ZipFile(wheel) as archive:
+        shipped = set(archive.namelist())
+        (entry_points_path,) = (
+            path for path in shipped if path.endswith(".dist-info/entry_points.txt")
+        )
+        parser = configparser.ConfigParser()
+        parser.read_string(archive.read(entry_points_path).decode())
+
+    assert {
+        "beadhive/bootstrap/frame_bridge.py",
+        "beadhive/frame_bridge.py",
+        "beadhive/frame_bridge_runtime.py",
+    } <= shipped
+    assert "beadhive/remote_gateway.py" not in shipped
+    assert "beadhive/remote_gateway_runtime.py" not in shipped
+    assert parser["console_scripts"]["beadhive-frame-bridge"] == (
+        "beadhive.bootstrap.frame_bridge:main"
+    )
+    assert "beadhive-gateway" not in parser["console_scripts"]
 
 
 def test_legacy_gateway_modules_and_environment_aliases_are_absent() -> None:
