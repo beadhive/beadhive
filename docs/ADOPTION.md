@@ -146,8 +146,13 @@ On the VM, with `bh` installed:
 bh host provision --role executor    # clones HQ from the wired remote, then adopts this host
 ```
 
-From a checkout, `just local-install posture=host answers=host.yaml` runs the same path
-unattended.
+From a checkout, `just local-install posture=host` runs the same path unattended with the
+shipped [`docs/examples/host-provision.yaml`](examples/host-provision.yaml) plan. It defaults to
+the `executor` role, clones all registered hives, and adopts no primary leases. Copy and edit the
+example, then pass `answers=/path/to/plan.yaml`, when this host needs a different role, a narrower
+set of hives, or explicit lease adoption. The answers plan is distinct from
+`~/.beadhive/host.yaml`, which is machine identity created by `bh config init` and is not a
+provisioning plan.
 
 ### Roles — one axis
 

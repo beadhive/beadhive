@@ -27,6 +27,8 @@ from pathlib import Path
 
 import pytest
 
+from beadhive import host_answers
+
 ROOT = Path(__file__).resolve().parents[1]
 JUSTFILE = (ROOT / "justfile").read_text()
 PIN_SCRIPT = ROOT / "scripts" / "release-pin.sh"
@@ -265,6 +267,30 @@ def test_from_source_installs_the_checkout_and_the_default_installs_the_release(
     default = _just(tmp_path, "local-install", "plan=1")
     assert "uv tool install .[otel]" in source.stdout
     assert re.search(r"uv tool install beadhive\[otel\]==\d", default.stdout), default.stdout
+
+
+@needs_just
+@always_run
+def test_documented_host_install_uses_a_shipped_valid_answers_plan(tmp_path):
+    """The default host path must be runnable from a fresh checkout. In particular, its
+    answers plan is not the unrelated ``~/.beadhive/host.yaml`` identity file."""
+    plan = ROOT / "docs" / "examples" / "host-provision.yaml"
+    answers = host_answers.load(plan)
+
+    result = _just(
+        tmp_path,
+        "local-install",
+        "posture=host",
+        "mode=native",
+        "from_source=0",
+        "plan=1",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert f"host provision --answers {plan.relative_to(ROOT)}" in result.stdout
+    assert answers.role == "executor"
+    assert answers.hives is None
+    assert answers.adopt == []
 
 
 @needs_just
