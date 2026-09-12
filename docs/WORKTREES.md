@@ -35,6 +35,30 @@ dir* outside the workspace means:
 - "ours vs hand-made" is a pure path-prefix test (`bh worktree list` filters on it),
 - bulk cleanup is one subtree — `bh worktree prune`.
 
+## Never copy a linked worktree as a scratch directory
+
+> **Warning:** `cp -r` of a linked worktree is not an isolated copy. In a linked worktree,
+> `.git` is a **file** containing a `gitdir: <path>` pointer. `cp -r` duplicates that pointer, so
+> the apparent copy shares the real repository's refs, index, and `HEAD`; commits, resets, and
+> `git clean` in the copy affect the real branch.
+
+Recognize the condition before a destructive experiment:
+
+```sh
+test -f .git
+```
+
+Instead, create a real detached worktree or export a plain directory with no Git wiring:
+
+```sh
+# Option 1: an independent, detached Git worktree.
+git worktree add --detach <scratch> HEAD
+
+# Option 2: an exported directory with no Git metadata.
+mkdir -p <scratch>
+git archive HEAD | tar -x -C <scratch>
+```
+
 Override the root with `$WS_WORKTREES`, or (persistent mode) `worktrees.path` in `config.yaml`.
 
 ## Naming
