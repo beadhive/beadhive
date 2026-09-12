@@ -53,7 +53,7 @@ FLEET_PREFIXES: frozenset[str] = frozenset(
     }
 )
 
-FLEET_HOST_OVERRIDE_ALLOWLIST: frozenset[str] = frozenset()
+FLEET_HOST_OVERRIDE_ALLOWLIST: frozenset[str] = frozenset({"worktrees.ephemeral"})
 
 assert HOST_PREFIXES.isdisjoint(FLEET_PREFIXES), (
     "a prefix cannot be both fleet and host — fix HOST_PREFIXES/FLEET_PREFIXES"
@@ -90,6 +90,19 @@ def is_host_overridable(
     return _prefix_match_len(path, allowlist) >= 0
 
 
+def host_override_value_allowed(path: str, value: object) -> bool:
+    """Return whether a host may set *value* for an allowlisted fleet key.
+
+    ``worktrees.ephemeral`` is a one-way escape hatch: a host may retain
+    persistent worktrees when the fleet default is ephemeral, but may not make
+    itself more ephemeral than a fleet that requires persistence.
+    """
+
+    if not is_host_overridable(path):
+        return False
+    return path != "worktrees.ephemeral" or value is False
+
+
 def schema_leaf_paths() -> list[str]:
     """Return the canonical model's settable leaf paths."""
 
@@ -113,6 +126,7 @@ __all__ = (
     "HOST",
     "HOST_KEYS",
     "HOST_PREFIXES",
+    "host_override_value_allowed",
     "is_host_overridable",
     "partition_of",
     "schema_leaf_paths",

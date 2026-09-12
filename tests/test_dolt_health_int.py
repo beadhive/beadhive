@@ -24,6 +24,7 @@ import pytest
 
 from beadhive import dolt_health, store_locator
 from beadhive.run import run
+from harness.beads import embedded_env
 
 pytestmark = [
     pytest.mark.integration,
@@ -40,6 +41,7 @@ def test_real_bd_store_schema_version_is_not_the_json_envelope_decoy(tmp_path):
         capture=True,
         cwd=str(tmp_path),
         timeout=60,
+        env=embedded_env(),
     )
     assert init.returncode == 0, init.stderr
 
@@ -57,6 +59,7 @@ def test_real_bd_store_schema_version_is_not_the_json_envelope_decoy(tmp_path):
         check=True,
         capture=True,
         timeout=30,
+        env=embedded_env(),
     )
     decoy = json.loads(status.stdout)["schema_version"]
     assert decoy == 1
@@ -81,6 +84,7 @@ def test_local_bd_schema_version_matches_a_fresh_store_directly(tmp_path, monkey
         capture=True,
         cwd=str(control_dir),
         timeout=60,
+        env=embedded_env(),
     )
     control = dolt_health.probe_embedded_schema_version(
         store_locator.embedded_database_dir(control_dir, database=prefix)

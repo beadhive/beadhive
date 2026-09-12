@@ -24,8 +24,9 @@ ISOLATION IS THE FIRST THING IT DOES, AND IT IS ASSERTED, NOT ASSUMED
 ---------------------------------------------------------------------
 This demo must never touch `~/.beadhive`, any registered hive's `.beads/`, or this repo's own
 beads. That discipline is what made the `bh-00cq` spike evidence trustworthy, so it is checked
-rather than promised: :func:`verify_isolation` re-points every root bh reads (`BH_HOME`,
-`BH_CONFIG`, `BH_WORKTREES`, `GIT_WORKSPACE`, `GIT_CONFIG_GLOBAL`, the bd shared-server dir),
+rather than promised: :func:`verify_isolation` re-points every root bh/bd reads (`BH_HOME`,
+`BH_CONFIG`, `BH_WORKTREES`, `HOME`, `XDG_CONFIG_HOME`, `GIT_WORKSPACE`, `GIT_CONFIG_GLOBAL`,
+the bd shared-server dir),
 proves each resolved path lands inside the scratch root, and takes a **tripwire snapshot** of the
 real `~/.beadhive` which is re-checked at the end. This repo's own `.beads/` is guarded the
 stronger way when the run is fenced — the fence binds it READ-ONLY, so :class:`WriteBarrier`
@@ -87,6 +88,9 @@ DISPATCH_CANCELLED_LABEL = f"{DISPATCH_DIM}:{CAUSE_RUN_CANCELLED}"
 
 REPO = Path(__file__).resolve().parents[1]
 STUB_SEAT = REPO / "tests" / "fixtures" / "stub_seat.py"
+# Retain the operator's home before ``isolate`` replaces HOME.  The tripwire must watch the
+# real hive, not the demo's deliberately-private home.
+_OPERATOR_HOME = Path.home()
 
 ORG, REPO_NAME, PREFIX = "demo-org", "demo-hive", "dm"
 
@@ -422,6 +426,11 @@ def isolate(root: Path) -> dict:
         "BH_HOME": str(root / "bh-home"),
         "BH_CONFIG": str(root / "bh-home" / "config.yaml"),
         "BH_WORKTREES": str(root / "worktrees"),
+        # bd reads its own global config from HOME/XDG_CONFIG_HOME, independently of BH_HOME.
+        # Without both redirects an operator's `dolt.shared-server: true` can turn this
+        # disposable embedded fixture into a port-3308 shared-server invocation.
+        "HOME": str(root / "home"),
+        "XDG_CONFIG_HOME": str(root / "xdg-config"),
         "GIT_WORKSPACE": str(root / "workspace"),
         "GIT_CONFIG_GLOBAL": str(root / "gitconfig"),
         "GIT_CONFIG_SYSTEM": os.devnull,
@@ -435,6 +444,8 @@ def isolate(root: Path) -> dict:
     for key, value in env.items():
         os.environ[key] = value
     (root / "bh-home").mkdir(parents=True, exist_ok=True)
+    (root / "home").mkdir(parents=True, exist_ok=True)
+    (root / "xdg-config").mkdir(parents=True, exist_ok=True)
     (root / "workspace").mkdir(parents=True, exist_ok=True)
     (root / "gitconfig").write_text("[core]\n\texcludesFile = /dev/null\n")
     return env
@@ -448,6 +459,8 @@ def verify_isolation(root: Path) -> list[Tripwire | WriteBarrier]:
     checks = {
         "config.home()": Path(config.home()).resolve(),
         "config.config_path()": Path(config.config_path()).resolve(),
+        "$HOME": Path(os.environ["HOME"]).resolve(),
+        "$XDG_CONFIG_HOME": Path(os.environ["XDG_CONFIG_HOME"]).resolve(),
         "$GIT_WORKSPACE": Path(os.environ["GIT_WORKSPACE"]).resolve(),
         "$BH_WORKTREES": Path(os.environ["BH_WORKTREES"]).resolve(),
     }
@@ -456,7 +469,7 @@ def verify_isolation(root: Path) -> list[Tripwire | WriteBarrier]:
             raise SystemExit(f"ISOLATION FAILURE: {label} resolves to {path}, outside {root}")
         print(f"  ✓ {label:<22} → {path}")
 
-    real_home = Path.home() / ".beadhive"
+    real_home = _OPERATOR_HOME / ".beadhive"
     repo_beads = REPO / ".beads"
     for label, path in (("~/.beadhive", real_home), ("this repo's .beads/", repo_beads)):
         if path.exists() and (path == root or path in root.parents):
@@ -586,10 +599,17 @@ def _bounded_bd_init(main: Path) -> None:
         except ProcessLookupError:
             pass
         try:
-            stdout, stderr = process.communicate(timeout=BD_INIT_DIAGNOSTIC_GRACE_SECONDS)
+            quit_stdout, quit_stderr = process.communicate(timeout=BD_INIT_DIAGNOSTIC_GRACE_SECONDS)
+            stdout = _timeout_output(quit_stdout) or stdout
+            stderr = _timeout_output(quit_stderr) or stderr
         except subprocess.TimeoutExpired as quit_timeout:
             stdout = _timeout_output(quit_timeout.stdout) or stdout
             stderr = _timeout_output(quit_timeout.stderr) or stderr
+        finally:
+            # The direct child can exit on SIGQUIT while one of its descendants ignores it.
+            # `communicate()` then returns early, but that is not evidence that its process
+            # group is empty.  The timeout contract is group cleanup, so always issue the hard
+            # group kill after the diagnostic window; a vanished group is harmless.
             try:
                 if grouped:
                     os.killpg(process.pid, signal.SIGKILL)
@@ -597,20 +617,22 @@ def _bounded_bd_init(main: Path) -> None:
                     process.kill()
             except ProcessLookupError:
                 pass
+        try:
+            kill_stdout, kill_stderr = process.communicate(timeout=BD_INIT_KILL_DRAIN_SECONDS)
+            stdout = _timeout_output(kill_stdout) or stdout
+            stderr = _timeout_output(kill_stderr) or stderr
+        except subprocess.TimeoutExpired as kill_timeout:
+            # A descendant that escaped the process group can retain an inherited pipe even
+            # after the direct child is dead.  Never let that turn the final drain into the
+            # same forever-hang this helper exists to prevent: retain what was read, close
+            # our pipe ends, and bound the direct-child reap independently.
+            stdout = _timeout_output(kill_timeout.stdout) or stdout
+            stderr = _timeout_output(kill_timeout.stderr) or stderr
+            _close_process_pipes(process)
             try:
-                stdout, stderr = process.communicate(timeout=BD_INIT_KILL_DRAIN_SECONDS)
-            except subprocess.TimeoutExpired as kill_timeout:
-                # A descendant that escaped the process group can retain an inherited pipe even
-                # after the direct child is dead.  Never let that turn the final drain into the
-                # same forever-hang this helper exists to prevent: retain what was read, close
-                # our pipe ends, and bound the direct-child reap independently.
-                stdout = _timeout_output(kill_timeout.stdout) or stdout
-                stderr = _timeout_output(kill_timeout.stderr) or stderr
-                _close_process_pipes(process)
-                try:
-                    process.wait(timeout=BD_INIT_REAP_SECONDS)
-                except subprocess.TimeoutExpired:
-                    reaped = False
+                process.wait(timeout=BD_INIT_REAP_SECONDS)
+            except subprocess.TimeoutExpired:
+                reaped = False
         raise BdInitTimedOut(
             BD_INIT_TIMEOUT_SECONDS,
             stdout or "",

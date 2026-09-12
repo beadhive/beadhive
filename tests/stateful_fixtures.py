@@ -208,6 +208,15 @@ def _sandbox_bh_home(tmp_path_factory, monkeypatch):
     home = tmp_path_factory.mktemp("bh-home")
     monkeypatch.setenv("BH_HOME", str(home))
     monkeypatch.delenv("WS_HOME", raising=False)
+    # `bd` loads its own global config from HOME (and XDG_CONFIG_HOME), independently of
+    # Beadhive's BH_HOME. Keep a developer's global Beads configuration from changing fixture
+    # behavior, particularly embedded-vs-shared-server initialization.
+    # The outer bubblewrap fence already replaces HOME with its own tmpfs mount. Preserve that
+    # mount (and the UV cache it explicitly rebinds) when fenced; direct pytest runs need the
+    # per-test HOME because they have no process-level isolation.
+    if os.environ.get("BH_HERMETIC_FENCE") != "1":
+        monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
     # Same reasoning for the in-image component manifest: running the suite INSIDE a Beadhive
     # image must not change what `bh setup check` does under test. Point it at a path that does
     # not exist, so live probing stays the default everywhere; the manifest tests set their own.

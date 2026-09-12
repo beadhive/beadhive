@@ -649,14 +649,16 @@ def test_bd_dolt_state_never_absent_for_any_measured_bd_mode_shape(
     assert result.status != "absent"
 
 
-def test_bd_has_dolt_remote_true_with_configured_remote() -> None:
+def test_bd_has_dolt_remote_true_with_configured_remote(monkeypatch) -> None:
     from beadhive import safety
 
     fake = subprocess.CompletedProcess(
         args=[], returncode=0, stdout='[{"name": "origin", "url": "git+ssh://x"}]', stderr=""
     )
-    with patch("beadhive.safety.subprocess.run", return_value=fake):
+    monkeypatch.setenv("HOME", "/isolated/home")
+    with patch("beadhive.safety.subprocess.run", return_value=fake) as run:
         assert safety._bd_has_dolt_remote("/some/path") is True
+    assert run.call_args.kwargs["env"]["HOME"] == "/isolated/home"
 
 
 def test_bd_has_dolt_remote_false_with_empty_list() -> None:

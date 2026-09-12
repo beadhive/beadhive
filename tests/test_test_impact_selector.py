@@ -589,7 +589,7 @@ def test_checked_evidence_remains_uncertified_and_disabled() -> None:
     )
 
 
-def test_current_root_descendant_consumes_snapshot_without_global_invalidation() -> None:
+def test_current_root_descendant_consumes_snapshot_and_reports_other_closure_drift() -> None:
     checked = json.loads(
         (ROOT / "docs/proof/bh-ck1t6.1-test-closure-certification.json").read_text(encoding="utf-8")
     )
@@ -620,8 +620,14 @@ def test_current_root_descendant_consumes_snapshot_without_global_invalidation()
         "closure-not-certified",
         "missing-or-stale-coverage",
     } <= set(plan["fallback_reasons"])
-    assert "current-applicability-not-proven" not in plan["fallback_reasons"]
-    assert "input-digest-mismatch" not in plan["fallback_reasons"]
+    # The remote config-policy change intentionally invalidates the historical config-store
+    # closure. Selective validation is still disabled, and the selector must report that
+    # unrelated current drift instead of implying the whole historical snapshot is current.
+    assert {
+        "current-applicability-not-proven",
+        "current-input-digest-mismatch",
+        "input-digest-mismatch",
+    } <= set(plan["fallback_reasons"])
     work_exclusion = next(item for item in plan["exclusions"] if item["closure"] == "module.work")
     assert work_exclusion["status"] == "unaffected"
     assert work_exclusion["reason"] == "unaffected-current-digests-stable"

@@ -21,6 +21,10 @@ from beadhive import config, identity
 from beadhive.validation_admission import slot_root
 from harness.world import _is_git_repository_env
 
+# Captured while pytest imports this module, before the autouse fixture replaces HOME for an
+# individual test.  `Path.home()` inside a test is deliberately the isolated home.
+_OPERATOR_HOME = Path.home()
+
 
 def _is_sandboxed(path: Path, basetemp: Path) -> bool:
     """Whether `path` is under pytest's own tmp root — positive proof it came from a
@@ -80,8 +84,8 @@ def test_the_sandbox_check_still_rejects_the_real_home(tmp_path_factory):
     paths these tests exist to catch, so name them."""
     base = tmp_path_factory.getbasetemp()
 
-    assert not _is_sandboxed(Path.home(), base)
-    assert not _is_sandboxed(Path.home() / "workspace", base)
+    assert not _is_sandboxed(_OPERATOR_HOME, base)
+    assert not _is_sandboxed(_OPERATOR_HOME / "workspace", base)
 
 
 def test_the_shared_server_target_is_sandboxed_away_from_the_real_one(tmp_path_factory):

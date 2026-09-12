@@ -1,4 +1,4 @@
-"""Compatibility facade for canonical fleet/host configuration policy."""
+"""Compatibility facade for the canonical configuration ownership policy."""
 
 from __future__ import annotations
 
@@ -16,15 +16,17 @@ def _prefix_match_len(path: str, prefixes) -> int:
 
 
 def partition_of(path: str) -> str | None:
-    return _policy.partition_of(
-        path,
-        host_prefixes=HOST_PREFIXES,
-        fleet_prefixes=FLEET_PREFIXES,
-    )
+    return _policy.partition_of(path, host_prefixes=HOST_PREFIXES, fleet_prefixes=FLEET_PREFIXES)
 
 
 def is_host_overridable(path: str) -> bool:
     return _policy.is_host_overridable(path, allowlist=FLEET_HOST_OVERRIDE_ALLOWLIST)
+
+
+def host_override_value_allowed(path: str, value: object) -> bool:
+    if not is_host_overridable(path):
+        return False
+    return path != "worktrees.ephemeral" or value is False
 
 
 def schema_leaf_paths() -> list[str]:
@@ -42,6 +44,7 @@ __all__ = (
     "HOST",
     "HOST_KEYS",
     "HOST_PREFIXES",
+    "host_override_value_allowed",
     "is_host_overridable",
     "partition_of",
     "schema_leaf_paths",

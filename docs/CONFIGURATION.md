@@ -41,8 +41,9 @@ keeps the fleet's `worktrees.ephemeral`; scalars and lists are replaced wholesal
 
 Which keys belong to which side is **data**, not branching: `config_partition.py` owns the
 fleet/host split (`FLEET_PREFIXES` / `HOST_PREFIXES`, longest match wins) plus
-`FLEET_HOST_OVERRIDE_ALLOWLIST` — the explicit, currently-empty list of fleet keys a host may
-still override.
+`FLEET_HOST_OVERRIDE_ALLOWLIST` — the explicit narrow list of fleet keys a host may still
+override. It currently contains only `worktrees.ephemeral`, allowing a machine to retain
+persistent worktrees when the fleet default is ephemeral.
 
 | Situation | Behavior |
 |---|---|
@@ -241,6 +242,10 @@ the default merged/default view:
 - A **host**-scope `set` of a key that belongs to the fleet partition and isn't in
   `FLEET_HOST_OVERRIDE_ALLOWLIST` is refused immediately with the same `ConfigError` message
   `load()` would raise for it — not deferred to the next read.
+- `worktrees.ephemeral` is the sole allowlisted exception, so a host can opt into persistent
+  worktrees with `bh config set worktrees.ephemeral false --scope host` without changing the
+  fleet policy. This is one-way: a host cannot set it to `true` when the fleet requires
+  persistent worktrees.
 
 ```sh
 bh config get work.validate_cmd --scope fleet    # read straight from fleet.yaml

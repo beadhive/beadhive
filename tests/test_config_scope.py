@@ -33,6 +33,8 @@ managed_repos: []
 exclude:
   orgs: []
   repos: []
+worktrees:
+  ephemeral: true
 work:
   validate_cmd: just check
   review_gate: human
@@ -195,6 +197,19 @@ def test_cli_set_scope_fleet_and_host_roundtrip(bh_home):
     r = runner.invoke(app, ["config", "set", "release.strategy", "cadence", "--scope", "fleet"])
     assert r.exit_code == 0
     assert config.get_value("release.strategy", scope=config.SCOPE_FLEET)["value"] == "cadence"
+
+
+def test_cli_set_scope_host_can_override_worktrees_ephemeral(bh_home):
+    _write_fleet(bh_home, FLEET_YAML)
+    _write_host(bh_home, HOST_YAML)
+
+    result = CliRunner().invoke(
+        app, ["config", "set", "worktrees.ephemeral", "false", "--scope", "host"]
+    )
+
+    assert result.exit_code == 0
+    assert config.get_value("worktrees.ephemeral", scope=config.SCOPE_HOST)["value"] is False
+    assert config.get_value("worktrees.ephemeral")["value"] is False
 
 
 # ---- unset --scope -------------------------------------------------------------
