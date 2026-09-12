@@ -68,6 +68,20 @@ def managed_repos(cfg=None):
     return cfg.get("managed_repos", []) or []
 
 
+def managed_repo_path(root, entry) -> Path:
+    """Derive one managed repository's clone path below an arbitrary candidate root.
+
+    Keeping the root explicit lets identity's legacy guard inspect the legacy workspace
+    without recursively consulting the live workspace resolver.
+    """
+    return (
+        Path(root)
+        / str(entry.get("provider", ""))
+        / str(entry.get("org", ""))
+        / str(entry.get("repo", ""))
+    )
+
+
 # ---- hq (Factory HQ remote, bh-e0y8.1) --------------------------------------
 
 
@@ -302,6 +316,16 @@ def otel_headers(cfg=None) -> dict[str, str]:
     YAML-numeric token still passes through cleanly."""
     headers = otel_cfg(cfg).get("headers", {}) or {}
     return {str(k): str(v) for k, v in dict(headers).items()}
+
+
+def otel_export_timeout(cfg=None) -> float:
+    """Finite timeout for each OTLP exporter request."""
+    return float(otel_cfg(cfg).get("export_timeout_seconds", 0.5))
+
+
+def otel_flush_timeout(cfg=None) -> float:
+    """Finite total budget for process-exit telemetry flush and provider shutdown."""
+    return float(otel_cfg(cfg).get("flush_timeout_seconds", 2.0))
 
 
 # Preferred OTLP *metric* temporality. The OTel-standard env that pre-selects it (the SDK reads
@@ -787,6 +811,7 @@ __all__ = [
     "beads_engine",
     "worktrees_cfg",
     "managed_repos",
+    "managed_repo_path",
     "hq_cfg",
     "gh_login",
     "hq_remote",
@@ -815,6 +840,8 @@ __all__ = [
     "OTEL_PROTOCOLS",
     "otel_protocol",
     "otel_headers",
+    "otel_export_timeout",
+    "otel_flush_timeout",
     "OTEL_METRICS_TEMPORALITY_ENV",
     "OTEL_TEMPORALITY_DELTA",
     "OTEL_TEMPORALITY_CUMULATIVE",

@@ -1,0 +1,1099 @@
+# Reviewed architecture-debt ledger. The checker rejects wildcard values and exact-edge drift.
+format_version = 1
+verified_commit = "ad4077d7ee5ae40c966f089920ca794006538090"
+
+[[boundary_exception]]
+id = "boundary-bootstrap-cli-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.cli"
+importer_path = "src/beadhive/bootstrap/cli.py"
+imported_module = "beadhive.cli"
+symbol = "beadhive.cli"
+target_owner_package = "adapters/cli"
+successor = "bh-inqwc"
+reason = "The installed root delegates to the released CLI compatibility module until its inventoried command-handler patch surface is empty; the root itself owns only process composition."
+consumer_inventory = { production = "beadhive.bootstrap.cli console-script root", tests = "tests/test_transport_composition_roots.py plus CLI compatibility closure", docs = "CLI compatibility removal ledger and transport composition proof", external = "installed bh console script" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_cli.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the released beadhive.cli implementation behind adapters/cli after its patch inventory reaches zero."
+
+[[boundary_exception]]
+id = "boundary-bootstrap-mcp-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.mcp"
+importer_path = "src/beadhive/bootstrap/mcp.py"
+imported_module = "beadhive.mcp"
+symbol = "beadhive.mcp"
+target_owner_package = "adapters/mcp"
+successor = "bh-inqwc"
+reason = "The installed root delegates to the released FastMCP compatibility module while preserving its public construction and telemetry seams."
+consumer_inventory = { production = "beadhive.bootstrap.mcp console-script root", tests = "tests/test_transport_composition_roots.py and MCP closure", docs = "transport composition proof", external = "installed bh-mcp console script and historical beadhive.mcp imports" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_mcp.py; tests/test_mcp_catalog_projection.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the released beadhive.mcp implementation behind adapters/mcp after its compatibility consumer inventory reaches zero."
+
+[[boundary_exception]]
+id = "boundary-bootstrap-host-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.host"
+importer_path = "src/beadhive/bootstrap/host.py"
+imported_module = "beadhive.host_daemon_entrypoint"
+symbol = "beadhive.host_daemon_entrypoint"
+target_owner_package = "adapters/operator_api"
+successor = "bh-inqwc"
+reason = "The installed root retains the released host-daemon entrypoint as its concrete adapter while daemon runtime ownership remains with bh-q0lol."
+consumer_inventory = { production = "beadhive.bootstrap.host console-script root", tests = "tests/test_transport_composition_roots.py and daemon closure", docs = "transport composition proof", external = "installed bh-host-daemon console script and historical entrypoint imports" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_host_daemon.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the q0lol-owned daemon composition adapter behind adapters/operator_api without changing daemon lifecycle ownership."
+
+[[boundary_exception]]
+id = "boundary-bootstrap-frame-bridge-compatibility"
+status = "active"
+importer = "beadhive.bootstrap.frame_bridge"
+importer_path = "src/beadhive/bootstrap/frame_bridge.py"
+imported_module = "beadhive.frame_bridge_runtime"
+symbol = "beadhive.frame_bridge_runtime"
+target_owner_package = "adapters/frame_bridge"
+successor = "bh-inqwc"
+reason = "The installed root delegates to the released Development Frame Bridge runtime so the bootstrap adds no alternate network or security policy."
+consumer_inventory = { production = "beadhive.bootstrap.frame_bridge console-script root", tests = "tests/test_transport_composition_roots.py and Frame Bridge closure", docs = "transport composition proof", external = "installed beadhive-frame-bridge console script" }
+executable_test = "tests/test_transport_composition_roots.py; tests/test_frame_bridge_runtime.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.5"
+last_verified_commit = "bh-3qkmk.5"
+expiry_trigger = "Move the released Development Frame Bridge runtime behind adapters/frame_bridge after its compatibility consumers reach zero."
+
+[cycle_snapshot]
+sha256 = "f60b8e61436c0a28909f9d20ce9c3d1e500fe6961c76c54caae1c1e9969f7b09"
+components = 8
+modules = 59
+edges = 155
+symbols = 172
+
+[[cycle_exception]]
+id = "cycle-edge-001"
+status = "active"
+importer = "beadhive.deps"
+importer_path = "src/beadhive/deps.py"
+imported_module = "beadhive.config"
+symbols = ["beadhive.config"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-002"
+status = "active"
+importer = "beadhive.engine"
+importer_path = "src/beadhive/engine.py"
+imported_module = "beadhive.bd"
+symbols = ["beadhive.bd"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-003"
+status = "active"
+importer = "beadhive.guard"
+importer_path = "src/beadhive/guard.py"
+imported_module = "beadhive.config"
+symbols = ["beadhive.config"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-004"
+status = "active"
+importer = "beadhive.herdr_views"
+importer_path = "src/beadhive/herdr_views.py"
+imported_module = "beadhive.herdr_plugin"
+symbols = ["beadhive.herdr_plugin"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-005"
+status = "active"
+importer = "beadhive.host"
+importer_path = "src/beadhive/host.py"
+imported_module = "beadhive.config"
+symbols = ["beadhive.config"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-006"
+status = "active"
+importer = "beadhive.host_provision"
+importer_path = "src/beadhive/host_provision.py"
+imported_module = "beadhive.host_cli"
+symbols = ["beadhive.host_cli"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-007"
+status = "active"
+importer = "beadhive.host_retire"
+importer_path = "src/beadhive/host_retire.py"
+imported_module = "beadhive.host_cli"
+symbols = ["beadhive.host_cli"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-008"
+status = "active"
+importer = "beadhive.log"
+importer_path = "src/beadhive/log.py"
+imported_module = "beadhive.config"
+symbols = ["beadhive.config"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-009"
+status = "active"
+importer = "beadhive.onboard"
+importer_path = "src/beadhive/onboard.py"
+imported_module = "beadhive.hive"
+symbols = ["beadhive.hive"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-010"
+status = "active"
+importer = "beadhive.onboard"
+importer_path = "src/beadhive/onboard.py"
+imported_module = "beadhive.hub"
+symbols = ["beadhive.hub"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-011"
+status = "active"
+importer = "beadhive.operator_sse"
+importer_path = "src/beadhive/operator_sse.py"
+imported_module = "beadhive.host_daemon"
+symbols = ["beadhive.host_daemon.DaemonRuntime", "beadhive.host_daemon.LifespanComponent", "beadhive.host_daemon.ShutdownPhase", "beadhive.host_daemon.StartupPhase"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-012"
+status = "removed"
+importer = "beadhive.plan_repair"
+importer_path = "src/beadhive/plan_repair.py"
+imported_module = "beadhive.plan"
+symbols = ["beadhive.plan"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-bptze.5"
+reason = "Removed when planning repair moved behind the typed planning application boundary."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "5f0abfde3196381523faf216eb455607670bb43f"
+expiry_trigger = "Completed by bh-bptze.5; keep the compatibility facade one-way."
+
+[[cycle_exception]]
+id = "cycle-edge-013"
+status = "removed"
+importer = "beadhive.plugins"
+importer_path = "src/beadhive/plugins.py"
+imported_module = "beadhive.herdr_plugin"
+symbols = ["beadhive.herdr_plugin"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-bptze.14"
+reason = "Removed when the compatibility registry began resolving the ordered runtime catalog instead of statically importing built-in implementations."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "9dc7c10549712c42b5a38b020dcb75c26e7652c1"
+expiry_trigger = "Completed by bh-bptze.14; retain the runtime catalog as the one-way replacement path."
+
+[[cycle_exception]]
+id = "cycle-edge-014"
+status = "removed"
+importer = "beadhive.plugins"
+importer_path = "src/beadhive/plugins.py"
+imported_module = "beadhive.hitch_plugin"
+symbols = ["beadhive.hitch_plugin"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-bptze.14"
+reason = "Removed when the compatibility registry began resolving the ordered runtime catalog instead of statically importing built-in implementations."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "9dc7c10549712c42b5a38b020dcb75c26e7652c1"
+expiry_trigger = "Completed by bh-bptze.14; retain the runtime catalog as the one-way replacement path."
+
+[[cycle_exception]]
+id = "cycle-edge-015"
+status = "removed"
+importer = "beadhive.plugins"
+importer_path = "src/beadhive/plugins.py"
+imported_module = "beadhive.observaloop"
+symbols = ["beadhive.observaloop"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-bptze.14"
+reason = "Removed when the compatibility registry began resolving the ordered runtime catalog instead of statically importing built-in implementations."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "9dc7c10549712c42b5a38b020dcb75c26e7652c1"
+expiry_trigger = "Completed by bh-bptze.14; retain the runtime catalog as the one-way replacement path."
+
+[[cycle_exception]]
+id = "cycle-edge-016"
+status = "removed"
+importer = "beadhive.plugins"
+importer_path = "src/beadhive/plugins.py"
+imported_module = "beadhive.orca"
+symbols = ["beadhive.orca"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-bptze.14"
+reason = "Removed when the compatibility registry began resolving the ordered runtime catalog instead of statically importing built-in implementations."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "9dc7c10549712c42b5a38b020dcb75c26e7652c1"
+expiry_trigger = "Completed by bh-bptze.14; retain the runtime catalog as the one-way replacement path."
+
+[[cycle_exception]]
+id = "cycle-edge-017"
+status = "active"
+importer = "beadhive.registry"
+importer_path = "src/beadhive/registry.py"
+imported_module = "beadhive.bd"
+symbols = ["beadhive.bd"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-018"
+status = "active"
+importer = "beadhive.registry"
+importer_path = "src/beadhive/registry.py"
+imported_module = "beadhive.config"
+symbols = ["beadhive.config"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-019"
+status = "active"
+importer = "beadhive.registry"
+importer_path = "src/beadhive/registry.py"
+imported_module = "beadhive.gitworkspace"
+symbols = ["beadhive.gitworkspace"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-020"
+status = "active"
+importer = "beadhive.registry"
+importer_path = "src/beadhive/registry.py"
+imported_module = "beadhive.guard"
+symbols = ["beadhive.guard"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-021"
+status = "active"
+importer = "beadhive.registry"
+importer_path = "src/beadhive/registry.py"
+imported_module = "beadhive.metadata"
+symbols = ["beadhive.metadata"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-022"
+status = "removed"
+importer = "beadhive.repowise_plugin"
+importer_path = "src/beadhive/repowise_plugin.py"
+imported_module = "beadhive.plugins"
+symbols = ["beadhive.plugins"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-bptze.14"
+reason = "The import remains a compatibility dependency but stopped being a feedback edge when the registry removed its inverse static implementation imports."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "9dc7c10549712c42b5a38b020dcb75c26e7652c1"
+expiry_trigger = "Completed by bh-bptze.14; retain the compatibility import until its separately owned facade-removal trigger is met."
+
+[[cycle_exception]]
+id = "cycle-edge-023"
+status = "active"
+importer = "beadhive.run"
+importer_path = "src/beadhive/run.py"
+imported_module = "beadhive.credentials"
+symbols = ["beadhive.credentials"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-024"
+status = "active"
+importer = "beadhive.run"
+importer_path = "src/beadhive/run.py"
+imported_module = "beadhive.identity"
+symbols = ["beadhive.identity.workspace_root"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-025"
+status = "active"
+importer = "beadhive.run"
+importer_path = "src/beadhive/run.py"
+imported_module = "beadhive.otel"
+symbols = ["beadhive.otel"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-026"
+status = "active"
+importer = "beadhive.runtime"
+importer_path = "src/beadhive/runtime.py"
+imported_module = "beadhive.localloop"
+symbols = ["beadhive.localloop"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-027"
+status = "active"
+importer = "beadhive.setup"
+importer_path = "src/beadhive/setup.py"
+imported_module = "beadhive.compose"
+symbols = ["beadhive.compose.in_container"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-028"
+status = "active"
+importer = "beadhive.setup"
+importer_path = "src/beadhive/setup.py"
+imported_module = "beadhive.config"
+symbols = ["beadhive.config"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-029"
+status = "active"
+importer = "beadhive.setup"
+importer_path = "src/beadhive/setup.py"
+imported_module = "beadhive.deps"
+symbols = ["beadhive.deps"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-030"
+status = "active"
+importer = "beadhive.setup"
+importer_path = "src/beadhive/setup.py"
+imported_module = "beadhive.dolt_health"
+symbols = ["beadhive.dolt_health"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-031"
+status = "active"
+importer = "beadhive.setup"
+importer_path = "src/beadhive/setup.py"
+imported_module = "beadhive.repowise_plugin"
+symbols = ["beadhive.repowise_plugin"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-032"
+status = "active"
+importer = "beadhive.setup"
+importer_path = "src/beadhive/setup.py"
+imported_module = "beadhive.run"
+symbols = ["beadhive.run.run"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-033"
+status = "active"
+importer = "beadhive.state_stream_polling"
+importer_path = "src/beadhive/state_stream_polling.py"
+imported_module = "beadhive.state_stream_epic_schedule"
+symbols = ["beadhive.state_stream_epic_schedule.project_epic_schedules"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-034"
+status = "active"
+importer = "beadhive.storage_migrate"
+importer_path = "src/beadhive/storage_migrate.py"
+imported_module = "beadhive.backup"
+symbols = ["beadhive.backup"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-035"
+status = "active"
+importer = "beadhive.storage_migrate"
+importer_path = "src/beadhive/storage_migrate.py"
+imported_module = "beadhive.hq"
+symbols = ["beadhive.hq.BackupPlan", "beadhive.hq.BackupTarget"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-036"
+status = "active"
+importer = "beadhive.triage"
+importer_path = "src/beadhive/triage.py"
+imported_module = "beadhive.report"
+symbols = ["beadhive.report"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-037"
+status = "active"
+importer = "beadhive.work_show"
+importer_path = "src/beadhive/work_show.py"
+imported_module = "beadhive.work"
+symbols = ["beadhive.work"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-038"
+status = "active"
+importer = "beadhive.worktree"
+importer_path = "src/beadhive/worktree.py"
+imported_module = "beadhive.converge"
+symbols = ["beadhive.converge"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-039"
+status = "active"
+importer = "beadhive.worktree"
+importer_path = "src/beadhive/worktree.py"
+imported_module = "beadhive.observaloop"
+symbols = ["beadhive.observaloop"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-040"
+status = "active"
+importer = "beadhive.worktree"
+importer_path = "src/beadhive/worktree.py"
+imported_module = "beadhive.observaloop_env"
+symbols = ["beadhive.observaloop_env"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-041"
+status = "active"
+importer = "beadhive.worktree"
+importer_path = "src/beadhive/worktree.py"
+imported_module = "beadhive.otel"
+symbols = ["beadhive.otel"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-042"
+status = "active"
+importer = "beadhive.worktree"
+importer_path = "src/beadhive/worktree.py"
+imported_module = "beadhive.triage_store"
+symbols = ["beadhive.triage_store"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-043"
+status = "active"
+importer = "beadhive.worktree"
+importer_path = "src/beadhive/worktree.py"
+imported_module = "beadhive.validation_ledger"
+symbols = ["beadhive.validation_ledger"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[cycle_exception]]
+id = "cycle-edge-044"
+status = "active"
+importer = "beadhive.worktree_merge"
+importer_path = "src/beadhive/worktree_merge.py"
+imported_module = "beadhive.worktree"
+symbols = ["beadhive.worktree"]
+target_owner_package = "src/beadhive (legacy flat package)"
+successor = "bh-inqwc"
+reason = "Exact feedback edge required by the frozen pre-module import graph."
+consumer_inventory = { production = "the named importer", tests = "architecture checker plus existing suite", docs = "import-boundary ledger", external = "none declared" }
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Remove this exact edge during bh-inqwc legacy-package migration."
+
+[[boundary_exception]]
+id = "boundary-config-complexity-tier"
+status = "active"
+importer = "beadhive.modules.config.contracts"
+importer_path = "src/beadhive/modules/config/contracts.py"
+imported_module = "beadhive.complexity"
+symbol = "beadhive.complexity.ComplexityTier"
+target_owner_package = "shared complexity contracts"
+successor = "bh-inqwc"
+reason = "RoutingTierConfig preserves the existing public ComplexityTier identity while configuration contracts move inward; duplicating the enum would split serialized and runtime type identity."
+consumer_inventory = { production = "RoutingTierConfig validation and serialization", tests = "tests/unit/modules/config/test_config_contracts.py; tests/test_config_routing.py", docs = "configuration ownership ADR and this ledger", external = "existing config_schema consumers receive the same forwarded type identity" }
+executable_test = "tests/test_config_routing.py; tests/test_import_boundaries.py"
+test_closure = "module.config; just architecture-check; just check"
+introduced_commit = "bh-18hud.2"
+last_verified_commit = "bh-18hud.2"
+expiry_trigger = "Move ComplexityTier to an inward shared contract and forward beadhive.complexity without changing its public identity."
+
+[[boundary_exception]]
+id = "boundary-config-complexity-names"
+status = "active"
+importer = "beadhive.modules.config.contracts"
+importer_path = "src/beadhive/modules/config/contracts.py"
+imported_module = "beadhive.complexity"
+symbol = "beadhive.complexity.tier_names"
+target_owner_package = "shared complexity contracts"
+successor = "bh-inqwc"
+reason = "RoutingTierConfig preserves the established validation diagnostic from the canonical complexity vocabulary rather than restating its ordered names."
+consumer_inventory = { production = "RoutingTierConfig validation diagnostics", tests = "tests/unit/modules/config/test_config_contracts.py; tests/test_config_routing.py", docs = "configuration ownership ADR and this ledger", external = "existing config_schema consumers receive unchanged diagnostics" }
+executable_test = "tests/test_config_routing.py; tests/test_import_boundaries.py"
+test_closure = "module.config; just architecture-check; just check"
+introduced_commit = "bh-18hud.2"
+last_verified_commit = "bh-18hud.2"
+expiry_trigger = "Move tier_names with ComplexityTier to an inward shared contract and forward beadhive.complexity."
+
+[[boundary_exception]]
+id = "boundary-cli-declarations-operation-spec"
+status = "removed"
+importer = "beadhive.adapters.cli.declarations"
+importer_path = "src/beadhive/adapters/cli/declarations.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.OperationSpec"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The CLI adapter consumes the canonical catalog contract while that already-released contract still has a flat compatibility home."
+consumer_inventory = { production = "catalog-derived CLI command declarations", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "canonical operation catalog ADR and this ledger", external = "none; this is an internal adapter edge" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move the canonical operation declarations to kernel/operations and leave beadhive.operation_catalog as a one-way facade."
+
+[[boundary_exception]]
+id = "boundary-cli-declarations-parents"
+status = "removed"
+importer = "beadhive.adapters.cli.declarations"
+importer_path = "src/beadhive/adapters/cli/declarations.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.cli_parents"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "CLI parent metadata is canonical catalog data and must not be recopied into the Typer adapter while its owner remains flat."
+consumer_inventory = { production = "catalog-derived Typer parent declarations", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "canonical operation catalog ADR and this ledger", external = "none; this is an internal adapter edge" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move CLI parent declarations with the canonical catalog to kernel/operations."
+
+[[boundary_exception]]
+id = "boundary-cli-declarations-operations"
+status = "removed"
+importer = "beadhive.adapters.cli.declarations"
+importer_path = "src/beadhive/adapters/cli/declarations.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.operations"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The CLI adapter projects the existing canonical operations function without creating a second registry."
+consumer_inventory = { production = "catalog-derived CLI command declarations", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "canonical operation catalog ADR and this ledger", external = "none; this is an internal adapter edge" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move operations to kernel/operations and preserve the flat catalog only as a one-way facade."
+
+[[boundary_exception]]
+id = "boundary-cli-projection-operation-spec"
+status = "removed"
+importer = "beadhive.adapters.cli.projection"
+importer_path = "src/beadhive/adapters/cli/projection.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.OperationSpec"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The focused compatibility projector types catalog input through the established flat catalog contract."
+consumer_inventory = { production = "work and plan CLI compatibility projection", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "CLI compatibility removal ledger and this ledger", external = "none; public callers enter through the flat CLI projection facade" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move OperationSpec to kernel/operations and remove this exact adapter-to-flat edge."
+
+[[boundary_exception]]
+id = "boundary-cli-projection-operations"
+status = "removed"
+importer = "beadhive.adapters.cli.projection"
+importer_path = "src/beadhive/adapters/cli/projection.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.operations"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The focused compatibility projector consumes the one canonical operations registry while its released path remains flat."
+consumer_inventory = { production = "work and plan CLI compatibility projection", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "CLI compatibility removal ledger and this ledger", external = "none; public callers enter through the flat CLI projection facade" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move operations to kernel/operations and remove this exact adapter-to-flat edge."
+
+[[boundary_exception]]
+id = "boundary-cli-projection-otel"
+status = "removed"
+importer = "beadhive.adapters.cli.projection"
+importer_path = "src/beadhive/adapters/cli/projection.py"
+imported_module = "beadhive.otel"
+symbol = "beadhive.otel"
+target_owner_package = "kernel/telemetry/contracts"
+successor = "bh-3qkmk.5"
+reason = "Generated callbacks preserve the released trace_verb wrapper and its public monkeypatch seam until telemetry exposes an inward contract."
+consumer_inventory = { production = "work and plan generated callback tracing", tests = "tests/test_cli_projection.py::test_generator_refuses_a_dropped_trace_wrapper; tests/test_import_boundaries.py", docs = "CLI compatibility removal ledger and this ledger", external = "beadhive.cli_projection.otel monkeypatch consumers are not separately enumerable" }
+executable_test = "tests/test_cli_projection.py::test_generator_refuses_a_dropped_trace_wrapper; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Introduce a public inward telemetry trace contract and empty the cli_projection.otel patch inventory."
+
+[[boundary_exception]]
+id = "boundary-cli-tree-operation-spec"
+status = "removed"
+importer = "beadhive.adapters.cli.tree"
+importer_path = "src/beadhive/adapters/cli/tree.py"
+imported_module = "beadhive.operation_catalog"
+symbol = "beadhive.operation_catalog.OperationSpec"
+target_owner_package = "kernel/operations"
+successor = "bh-3qkmk.5"
+reason = "The root Typer composition accepts injected catalog specs through the released catalog type while its kernel migration is pending."
+consumer_inventory = { production = "assembled CLI tree composition", tests = "tests/test_cli_projection.py; tests/test_import_boundaries.py", docs = "canonical operation catalog ADR and this ledger", external = "none; this is an internal adapter edge" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "bh-3qkmk.2"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "Move OperationSpec to kernel/operations and remove this exact adapter-to-flat edge."
+
+[[facade]]
+id = "facade-cli-projection"
+status = "active"
+facade_path = "src/beadhive/cli_projection.py"
+preserved_symbols = ["HAND_AUTHORED_CLI_GROUPS", "MIGRATED_CLI_GROUPS", "CatalogProjectionError", "HandlerBinding", "ProjectionReport", "bind_handler", "catalog_cli_groups", "generated_callbacks", "otel", "project_cli_group", "validate_catalog_generation_rules", "validate_migration_inventory"]
+target_owner_package = "adapters/cli"
+successor = "bh-3qkmk.5"
+reason = "Preserve work/plan imports and the otel monkeypatch seam while the implementation moves to the explicit CLI adapter package."
+consumer_inventory = { production = "beadhive.work and beadhive.plan", tests = "tests/test_cli_projection.py; tests/test_naming_conventions.py", docs = "CLI compatibility removal ledger and this ledger", external = "existing beadhive.cli_projection consumers; not separately enumerable" }
+executable_test = "tests/test_cli_projection.py; tests/test_import_boundaries.py"
+test_closure = "just architecture-check; just check"
+introduced_commit = "26a3a84b"
+last_verified_commit = "322c3e4573aee6dc2ee3870af462dc4ab935941f"
+expiry_trigger = "All production imports target beadhive.adapters.cli and the otel patch inventory is empty."
+
+[[facade]]
+id = "facade-config-schema"
+status = "active"
+facade_path = "src/beadhive/config_schema.py"
+preserved_symbols = ["AlertsConfig", "ArchiveConfig", "BackupConfig", "BeadhiveConfig", "ClaudeConfig", "ConflictConfig", "CONFIG_SECTION_COMPATIBILITY_ALIASES", "DevIdentity", "DimensionConfig", "DispatchConfig", "DoltConfig", "ExcludeConfig", "GenaiConfig", "GitWorkspaceConfig", "HerdrConfig", "HitchConfig", "HostConfig", "HostDispatchConfig", "HostLeaseConfig", "HqConfig", "IdentityConfig", "LogConfig", "ManagedRepoEntry", "MetadataConfig", "ObservaloopConfig", "OrcaConfig", "OrcaWorktreesConfig", "OrgEntry", "OtelConfig", "PassthroughConfig", "ReleaseConfig", "RepowiseConfig", "RoutingConfig", "RoutingTierConfig", "SCHEMA_VERSION", "SUBSET_PLACEHOLDER", "SchemaField", "WorkConfig", "WorktreeInitRule", "WorktreesConfig", "field_default", "iter_schema_fields", "known_keys", "known_sections", "literal_choices", "suggest_key", "_DEFAULT_WORKTREE_INIT"]
+target_owner_package = "modules/config/contracts"
+successor = "bh-18hud.5"
+reason = "Preserve public typed-setting imports and the characterized private default patch seam while callers migrate to the canonical contract module."
+consumer_inventory = { production = "config validation, routing, partition, editing, CLI and typed settings callers", tests = "tests/contracts/test_config_contract_compatibility.py plus config reverse-dependent closure", docs = "configuration ownership ADR migration ledger", external = "existing beadhive.config_schema consumers; not separately enumerable" }
+executable_test = "tests/contracts/test_config_contract_compatibility.py"
+test_closure = "module.config; just check"
+introduced_commit = "bh-18hud.2"
+last_verified_commit = "bh-18hud.2"
+expiry_trigger = "bh-18hud.5 produces an empty caller and monkeypatch ledger and bh-18hud.6 proves the replacement closure."
+
+[[facade]]
+id = "facade-work"
+status = "active"
+facade_path = "src/beadhive/work.py"
+preserved_symbols = ["app", "brief", "ready", "issue", "list_", "assign", "claim", "check", "submit", "approve", "merge", "resume", "WorkError", "RefineResult"]
+target_owner_package = "modules/work"
+successor = "bh-inqwc"
+reason = "Preserve the characterized import and patch surface while implementation migrates."
+consumer_inventory = { production = "CLI, MCP, and internal callers named by the structural baseline", tests = "tests/test_structural_facade_contracts.py; tests/test_work_reads.py; tests/test_work.py", docs = "docs/design/structural-quality-baseline.md", external = "existing package consumers; not separately enumerable" }
+executable_test = "tests/test_structural_facade_contracts.py; tests/test_work_reads.py; tests/test_work.py"
+test_closure = "just check"
+introduced_commit = "712ac29580d1f1873380bdfad80c35e067c33721"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Completion of the work capability migration and removal of every inventoried consumer."
+
+[[facade]]
+id = "facade-config"
+status = "active"
+facade_path = "src/beadhive/config.py"
+preserved_symbols = ["home", "config_path", "fleet_path", "load_host", "load_fleet", "load", "save", "save_fleet", "get_value", "set_value", "unset_value"]
+target_owner_package = "modules/config"
+successor = "bh-inqwc"
+reason = "Preserve the characterized import and patch surface while implementation migrates."
+consumer_inventory = { production = "CLI, MCP, and internal callers named by the structural baseline", tests = "tests/test_structural_facade_contracts.py; tests/test_config.py", docs = "docs/design/structural-quality-baseline.md", external = "existing package consumers; not separately enumerable" }
+executable_test = "tests/test_structural_facade_contracts.py; tests/test_config.py"
+test_closure = "just check"
+introduced_commit = "712ac29580d1f1873380bdfad80c35e067c33721"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Completion of the config capability migration and removal of every inventoried consumer."
+
+[[facade]]
+id = "facade-worktree"
+status = "active"
+facade_path = "src/beadhive/worktree.py"
+preserved_symbols = ["run_init", "ensure", "locate", "clean_checkout", "status_rows", "integration_base", "base_of", "commit_rows", "_classify_entry", "_pid_start"]
+target_owner_package = "modules/worktrees"
+successor = "bh-inqwc"
+reason = "Preserve the characterized import and patch surface while implementation migrates."
+consumer_inventory = { production = "CLI, MCP, and internal callers named by the structural baseline", tests = "tests/test_structural_facade_contracts.py; tests/test_worktree.py; tests/test_wt_status.py", docs = "docs/design/structural-quality-baseline.md", external = "existing package consumers; not separately enumerable" }
+executable_test = "tests/test_structural_facade_contracts.py; tests/test_worktree.py; tests/test_wt_status.py"
+test_closure = "just check"
+introduced_commit = "712ac29580d1f1873380bdfad80c35e067c33721"
+last_verified_commit = "8e00e5994c2ed83894741f3e28d3cb55aaff19ef"
+expiry_trigger = "Completion of the worktree capability migration and removal of every inventoried consumer."
+
+[[facade]]
+id = "facade-config-partition"
+status = "active"
+facade_path = "src/beadhive/config_partition.py"
+preserved_symbols = ["FLEET", "HOST", "HOST_PREFIXES", "FLEET_PREFIXES", "FLEET_HOST_OVERRIDE_ALLOWLIST", "FLEET_KEYS", "HOST_KEYS", "_prefix_match_len", "partition_of", "is_host_overridable", "schema_leaf_paths"]
+target_owner_package = "modules/config/application/partition"
+successor = "bh-18hud.5"
+reason = "Preserve fleet/host policy imports and the supported allowlist monkeypatch seam while canonical policy moves inward."
+consumer_inventory = { production = "config persistence, split migration, config CLI", tests = "tests/test_config_partition.py; tests/test_config_fleet_merge.py; tests/test_config_scope.py", docs = "configuration ownership ADR and this ledger", external = "existing beadhive.config_partition imports; not separately enumerable" }
+executable_test = "tests/test_config_partition.py; tests/test_config_fleet_merge.py"
+test_closure = "module.config; just check"
+introduced_commit = "bh-18hud.3"
+last_verified_commit = "bh-18hud.3"
+expiry_trigger = "bh-18hud.5 empties the caller and patch ledger and bh-18hud.6 proves the replacement closure."
+
+[[facade]]
+id = "facade-config-store"
+status = "active"
+facade_path = "src/beadhive/config_store.py"
+preserved_symbols = ["yaml", "yaml_lock", "mutation", "load_path", "leaf_paths", "fleet_override_violations", "deep_merge", "load", "key_provenance", "atomic_dump", "save_host", "save_fleet", "guard_hq_registry_controller", "reject_fleet_overrides", "reject_fleet_override_for_key", "reconcile_host_after_fleet", "load_reconciling"]
+target_owner_package = "modules/config/adapters/yaml_store and modules/config/application/resolution"
+successor = "bh-18hud.5"
+reason = "Preserve collaborator lookup, parser patch points, raw YAML behavior, and result/error shapes while the real persistence implementation moves behind document ports."
+consumer_inventory = { production = "beadhive.config facade storage, scope editing, reconciliation", tests = "tests/test_config_boundaries.py; tests/test_structural_facade_contracts.py; tests/contracts/test_config_resolution_compatibility.py", docs = "configuration ownership ADR and this ledger", external = "supported config facade monkeypatch seams; not separately enumerable" }
+executable_test = "tests/test_config_boundaries.py; tests/contracts/test_config_resolution_compatibility.py"
+test_closure = "module.config; just check"
+introduced_commit = "bh-18hud.3"
+last_verified_commit = "bh-18hud.3"
+expiry_trigger = "bh-18hud.5 migrates callers and patch points and bh-18hud.6 proves no facade dependency remains."
+
+[[facade]]
+id = "facade-config-policy"
+status = "active"
+facade_path = "src/beadhive/config_policy.py"
+preserved_symbols = ["HIVE_KEY_MIGRATIONS", "LEGACY_KEY_REMOVALS", "migrate_hive_keys_if_needed", "warn_stale_schema_version_if_needed", "hq_has_remote", "warn_missing_fleet_config_if_needed"]
+target_owner_package = "modules/config/application/migrations"
+successor = "bh-18hud.5"
+reason = "Preserve migration and warning patch points while versioned migration behavior depends inward on document ports."
+consumer_inventory = { production = "beadhive.config migration and CLI startup warnings", tests = "tests/test_config.py; tests/test_config_validate_cli.py; tests/contracts/test_config_resolution_compatibility.py", docs = "configuration ownership ADR and this ledger", external = "existing beadhive.config_policy imports; not separately enumerable" }
+executable_test = "tests/test_config.py; tests/contracts/test_config_resolution_compatibility.py"
+test_closure = "module.config; just check"
+introduced_commit = "bh-18hud.3"
+last_verified_commit = "bh-18hud.3"
+expiry_trigger = "bh-18hud.5 migrates warning/migration callers and bh-18hud.6 proves the replacement closure."

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import datetime
+import hashlib
 import json
 import os
 import secrets
@@ -21,7 +22,6 @@ from pathlib import Path
 import typer
 
 from . import (
-    config,
     converge,
     host,
     otel,
@@ -32,6 +32,7 @@ from . import (
     validation_ledger,
     validation_records,
 )
+from .config_consumer_ports import work_settings as config
 
 VERIFY_LEAF_PREFIX = "verify-"
 VERIFY_MARKER = ".bh-verify.json"  # legacy in-checkout marker; read-only since bh-odqgy
@@ -41,6 +42,8 @@ _VERIFY_CREATE_ATTEMPTS = 8
 _VERIFY_GRACE_SECONDS = 5 * 60
 _VERIFY_TTL_SECONDS = 24 * 60 * 60
 _COLOR_FORCE_ENV_KEYS = ("FORCE_COLOR", "CLICOLOR_FORCE")
+_INIT_RULES_CONFIG_KEY = "beadhive.initRulesFingerprint"
+_INIT_RULES_FINGERPRINT_VERSION = "v1"
 _BARE_CHECKOUT_HINT = (
     "  ↳ the command ran in a bare clean checkout: only worktree init rules flagged "
     "`verify: true` were applied. If this failure doesn't reproduce in your dev worktree, "
@@ -170,6 +173,84 @@ def impl__rules(cfg, entry):
     return out
 
 
+def impl__init_rules_fingerprint(cfg, entry) -> str:
+    """Stable identity for the ordered effective seat-init rule set.
+
+    The order is part of the contract (global rules precede hive rules), while mapping key order
+    is not.  Version the digest so a future canonicalization change reports drift once instead of
+    silently treating an old stamp as current.
+    """
+    payload = json.dumps(_rules(cfg, entry), sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(payload.encode()).hexdigest()
+    return f"{_INIT_RULES_FINGERPRINT_VERSION}:{digest}"
+
+
+def impl__read_init_rules_fingerprint(path: Path) -> str | None:
+    """Read this Git worktree incarnation's init-rule stamp without mutating it."""
+    res = run(
+        ["git", "-C", str(path), "config", "--worktree", "--get", _INIT_RULES_CONFIG_KEY],
+        check=False,
+        capture=True,
+    )
+    value = (res.stdout or "").strip()
+    return value if res.returncode == 0 and value else None
+
+
+def impl_record_init_rules(cfg, entry, path: Path) -> bool:
+    """Persist the current rule fingerprint in Git-owned per-worktree config.
+
+    The stamp follows a linked worktree across ``git worktree move`` and disappears with that
+    incarnation.  A write failure is non-fatal, matching init's best-effort contract; leaving the
+    stamp absent makes the next reuse warn instead of falsely claiming provisioning is current.
+    """
+    enabled = run(
+        ["git", "-C", str(path), "config", "extensions.worktreeConfig", "true"],
+        check=False,
+        capture=True,
+    )
+    if enabled.returncode != 0:
+        typer.echo(f"  ⚠ init: could not record the provisioning rule set for {path}", err=True)
+        return False
+    written = run(
+        [
+            "git",
+            "-C",
+            str(path),
+            "config",
+            "--worktree",
+            _INIT_RULES_CONFIG_KEY,
+            impl__init_rules_fingerprint(cfg, entry),
+        ],
+        check=False,
+        capture=True,
+    )
+    if written.returncode != 0:
+        typer.echo(f"  ⚠ init: could not record the provisioning rule set for {path}", err=True)
+        return False
+    return True
+
+
+def impl_warn_init_rules_drift(cfg, entry, path: Path) -> bool:
+    """Warn when an existing seat was provisioned under a different rule set.
+
+    Legacy worktrees have no stamp.  They warn only when rules are currently configured: an
+    unstamped checkout with no provisioning to miss is byte-compatible with the old quiet path.
+    This detector never re-runs operator commands or modifies the checkout.
+    """
+    rules = _rules(cfg, entry)
+    recorded = impl__read_init_rules_fingerprint(path)
+    current = impl__init_rules_fingerprint(cfg, entry)
+    if recorded == current or (recorded is None and not rules):
+        return False
+    typer.echo(
+        "WARNING: worktree init rules changed since this checkout was provisioned; "
+        f"re-attaching without re-running them: {path}\n"
+        f'  → {config.BINARY_ALIAS} wt init "{path}"',
+        err=True,
+    )
+    return True
+
+
 def impl_run_init(cfg, entry, path: Path, verify_only: bool = False):
     """Evaluate init rules in `path`: run each whose if_exists glob matches (or has none).
     Best-effort — a failing/absent command warns and we keep going.
@@ -205,9 +286,8 @@ def impl_run_init(cfg, entry, path: Path, verify_only: bool = False):
         if cond and not any(path.glob(cond)):
             continue
         typer.echo(f"  → {cmd}")
-        try:
-            res = run(shlex.split(cmd), cwd=str(path), check=False)
-        except FileNotFoundError:
+        res = run(shlex.split(cmd), cwd=str(path), check=False)
+        if missing_binary(res):
             typer.echo(f"  ⚠ init: command not found: {cmd}", err=True)
             failed.append(cmd)
             continue
@@ -220,6 +300,7 @@ def impl_run_init(cfg, entry, path: Path, verify_only: bool = False):
             f"(worktree is otherwise ready): {'; '.join(failed)}",
             err=True,
         )
+    return not failed
 
 
 def impl__pid_alive(pid: int) -> bool:
@@ -605,8 +686,13 @@ def impl__reuse_verdict_hit(
     # monkeypatch seam above, then attach provenance here at the clean-checkout boundary.
     main = registry.hive_dir(entry)
     tree = validation_ledger.tree_of(entry, sha)
-    original = validation_records.completed_run(
-        main, tree=tree, command_hash=validation_ledger.cmd_hash(cmd)
+    selected_run_id = hit.get("run_id")
+    original = (
+        hit
+        if isinstance(selected_run_id, str) and selected_run_id
+        else validation_records.completed_run(
+            main, tree=tree, command_hash=validation_ledger.cmd_hash(cmd)
+        )
     )
     if original is not None:
         # The flat 0.15.1 index may still say green after a later `work check` observed red/none:

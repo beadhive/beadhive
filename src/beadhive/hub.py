@@ -19,7 +19,7 @@ from pathlib import Path
 
 import typer
 
-from . import bd, config, engine, gitworkspace, guard, hive, registry, store_locator
+from . import bd, cache_store, config, engine, gitworkspace, guard, hive, registry, store_locator
 from .run import ChildTimeout, run
 from .run import bounded as run_bounded
 
@@ -143,13 +143,28 @@ def _registered_repo_paths(hub) -> list[str]:
     ]
 
 
+def cache_path(entry) -> Path:
+    """The canonical minimal-clone cache path for one registered hive."""
+    return cache_store.cache_path(config.cache_dir(), entry)
+
+
+def local_checkout_source(entry) -> Path | None:
+    """Return the live checkout exactly when it supersedes this hive's cache.
+
+    This is the single predicate shared by hub hydration and cache reclaim.  A directory that
+    merely resembles a checkout is not enough: ``.beads/`` must exist, matching the source
+    selection contract documented by :func:`sync`.
+    """
+    return cache_store.local_checkout_source(registry.hive_dir(entry))
+
+
 def _managed_repo_paths(cfg, managed) -> set[str]:
     """Every path a managed hive can be registered under — its live checkout (hive_dir)
     and its blobless cache — so a registration matching neither is genuinely stale."""
     desired: set[str] = set()
     for e in managed:
         desired.add(str(registry.hive_dir(e)))
-        desired.add(str(config.cache_dir() / e["provider"] / e["org"] / e["repo"]))
+        desired.add(str(cache_path(e)))
     return desired
 
 
@@ -529,7 +544,7 @@ def _fetch_cache(cfg, entry):
     `bd bootstrap` declines outright on a store that already exists ("Database already exists.
     Nothing to do", measured), and the repair path only runs when the store is not usable as it
     stands."""
-    cache = config.cache_dir() / entry["provider"] / entry["org"] / entry["repo"]
+    cache = cache_path(entry)
     prefix = str(entry.get("prefix") or "?")
     database = cache_database(entry)
     from . import hub_bulk
@@ -869,8 +884,7 @@ def sync():
     for i, e in enumerate(managed, 1):
         prefix = str(e["prefix"])
         typer.echo(f"• syncing {prefix} ({i}/{n})", err=True)
-        path = registry.hive_dir(e)
-        src = path if (path / ".beads").is_dir() else _fetch_cache(cfg, e)
+        src = local_checkout_source(e) or _fetch_cache(cfg, e)
         if src is None:
             typer.echo(f"  ⚠ skip {prefix}: not cloned and no remote beads data", err=True)
             skipped.append(prefix)

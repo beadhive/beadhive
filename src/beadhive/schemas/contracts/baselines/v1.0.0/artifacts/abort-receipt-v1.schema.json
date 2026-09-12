@@ -1,0 +1,193 @@
+{
+  "$defs": {
+    "CompensationStatus": {
+      "enum": [
+        "not_needed",
+        "completed",
+        "failed"
+      ],
+      "title": "CompensationStatus",
+      "type": "string"
+    },
+    "WorkspaceBindingKind": {
+      "enum": [
+        "managed_bead",
+        "beadless_seat",
+        "batch",
+        "epic_container",
+        "shared_checkout"
+      ],
+      "title": "WorkspaceBindingKind",
+      "type": "string"
+    },
+    "WorkspaceBindingV1": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Batch Id"
+        },
+        "binding_kind": {
+          "$ref": "#/$defs/WorkspaceBindingKind"
+        },
+        "branch": {
+          "title": "Branch",
+          "type": "string"
+        },
+        "epic_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Epic Id"
+        },
+        "hive_id": {
+          "title": "Hive Id",
+          "type": "string"
+        },
+        "parent_launch_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Launch Id"
+        },
+        "requested_bead": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Requested Bead"
+        },
+        "type": {
+          "const": "beadhive.workspace-binding",
+          "default": "beadhive.workspace-binding",
+          "title": "Type",
+          "type": "string"
+        },
+        "version": {
+          "const": "1",
+          "default": "1",
+          "title": "Version",
+          "type": "string"
+        },
+        "worktree_id": {
+          "title": "Worktree Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "hive_id",
+        "binding_kind",
+        "branch",
+        "worktree_id"
+      ],
+      "title": "WorkspaceBindingV1",
+      "type": "object"
+    }
+  },
+  "$id": "urn:beadhive:wire-schema:abort-receipt:1",
+  "additionalProperties": false,
+  "properties": {
+    "abort_operation_id": {
+      "title": "Abort Operation Id",
+      "type": "string"
+    },
+    "compensated_allocation_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Compensated Allocation Id"
+    },
+    "compensation": {
+      "$ref": "#/$defs/CompensationStatus"
+    },
+    "failed_operation_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failed Operation Id"
+    },
+    "launch_id": {
+      "title": "Launch Id",
+      "type": "string"
+    },
+    "reason_code": {
+      "title": "Reason Code",
+      "type": "string"
+    },
+    "state": {
+      "const": "aborted",
+      "default": "aborted",
+      "title": "State",
+      "type": "string"
+    },
+    "type": {
+      "const": "beadhive.launch-abort",
+      "default": "beadhive.launch-abort",
+      "title": "Type",
+      "type": "string"
+    },
+    "version": {
+      "const": "1",
+      "default": "1",
+      "title": "Version",
+      "type": "string"
+    },
+    "workspace_binding": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/WorkspaceBindingV1"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "launch_id",
+    "abort_operation_id",
+    "reason_code",
+    "compensation"
+  ],
+  "title": "AbortReceiptV1",
+  "type": "object",
+  "version": 1
+}

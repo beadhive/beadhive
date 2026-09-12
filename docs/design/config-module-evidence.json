@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "scope": "bh-18hud.6 configuration module isolation and compatibility evidence",
+  "baseline_revision": "5e47c61107a67a26676fc5890a89f0fd0b715c78",
+  "artifacts": {
+    "dependency_ledger": "docs/design/config-consumer-migration-ledger.json",
+    "structural_metrics": "docs/design/config-module-structural-metrics.json",
+    "closure_registry": "tests/closures.toml"
+  },
+  "fan_in": {
+    "production_config_importers_before": 95,
+    "production_config_importers_after": 77,
+    "production_config_schema_importers_before": 8,
+    "production_config_schema_importers_after": 3,
+    "remaining_dependency_owner": "bh-18hud.5 compatibility migration ledger",
+    "remaining_dependency_rationale": "Every remaining path is enumerated in the dependency ledger with an owner and a separately bounded port plus reverse-dependent closure as its removal gate."
+  },
+  "static_test_blast_radius": {
+    "historical_documented_files": 129,
+    "exact_ast_files_at_baseline": 135,
+    "exact_ast_files_after": 141,
+    "delta_explanation": "The historical 129 used an older static graph snapshot. Re-running the checked AST definition at the exact implementation base finds 135 after repository growth; the config module candidate and later workspace, precious-worktree, and host-daemon compatibility suites account for the current exact AST inventory. This static count does not claim a smaller dynamic closure.",
+    "owner": "configuration compatibility suite and bh-18hud.5 migration ledger"
+  },
+  "import_graph": {
+    "before": {
+      "python_files": 208,
+      "import_edges": 2150,
+      "owned_legacy_cycles": 6,
+      "cyclic_modules": 85,
+      "cyclic_edges": 288,
+      "cyclic_symbols": 318
+    },
+    "after": {
+      "python_files": 210,
+      "import_edges": 2157,
+      "owned_legacy_cycles": 6,
+      "cyclic_modules": 85,
+      "cyclic_edges": 278,
+      "cyclic_symbols": 308
+    },
+    "reviewed_change": "Exactly ten config feedback edges were removed; no cycle edge was added."
+  },
+  "measured_closures": {
+    "config.pure": {
+      "passed": 82,
+      "skipped": 0,
+      "pytest_seconds": 0.47,
+      "wall_seconds": 2.68,
+      "isolation": "Fails closed on direct builtins.open, Path open/read/write/query/mutation methods, and os open/stat/listing/mutation entry points; socket.create_connection and socket.socket.connect/connect_ex; plugin discovery; outer telemetry, CLI, and MCP imports; subprocess and multiprocessing starts; and runtime threads. Python's external import-loader and dependency filesystem calls are deliberately allowed only while loading, while direct repository calls remain denied."
+    },
+    "config.store": {
+      "passed": 96,
+      "skipped": 0,
+      "pytest_seconds": 8.01,
+      "wall_seconds": 10.12
+    },
+    "config.fragments": {
+      "passed": 26,
+      "skipped": 0,
+      "warnings": 1,
+      "pytest_seconds": 2.34,
+      "wall_seconds": 4.39,
+      "warning_rationale": "Expected Pydantic serializer warning from the invalid-default rejection test."
+    },
+    "cli_mcp_yaml_env_schema_facade": {
+      "passed": 516,
+      "skipped": 0,
+      "pytest_seconds": 41.08,
+      "wall_seconds": 51.33
+    },
+    "integration": {
+      "passed": 84,
+      "skipped": 1,
+      "pytest_seconds": 153.66,
+      "wall_seconds": 156.87
+    }
+  },
+  "unit_coverage": {
+    "passed": 102,
+    "statements": 1059,
+    "missed": 95,
+    "percent": 91,
+    "pytest_seconds": 36.79,
+    "wall_seconds": 38.36,
+    "warning": "Coverage is characterization evidence, not a selective-CI graduation gate."
+  },
+  "full_gate": {
+    "command": "just check",
+    "status": "green before authoritative group submit",
+    "passed": 7344,
+    "skipped": 11,
+    "warnings": 1,
+    "pytest_seconds": 151.06,
+    "wall_seconds": 167.56,
+    "warning_rationale": "Expected Pydantic serializer warning from the invalid plugin-fragment default rejection test."
+  },
+  "selective_ci_graduation_claimed": false,
+  "graduation_note": "No closure is promoted to authoritative CI selection solely from this extraction; just check remains the submission decision."
+}

@@ -6,7 +6,7 @@
 # just a label edit).
 
 # Config schema version this file was written for (see BeadhiveConfig / SCHEMA_VERSION in
-# src/beadhive/config_schema.py). Only a breaking change (rename/removal/type change) bumps
+# src/beadhive/modules/config/contracts.py). Only a breaking change (rename/removal/type change) bumps
 # this; don't hand-edit it down.
 schema_version: 1
 
@@ -19,6 +19,10 @@ delimiter: ":"
 # on-disk folder — and the group's `path`, not its `provider`, is a hive's identity triplet
 # first segment (<group>/<account>/<repo>). Reads $GIT_WORKSPACE/workspace*.toml (or `path`).
 # git_workspace:
+#   # mode: external        # internal (default unless populated ~/workspace is found): bh owns
+#   #                       # <BH_HOME>/ws. external: use $GIT_WORKSPACE/root/~/workspace.
+#   # root: ~/workspace     # external-only; rejected with internal. Move $BH_HOME to relocate
+#   #                       # the internal ws root.
 #   # path: ~/workspace/workspace.toml   # default: glob $GIT_WORKSPACE/workspace*.toml
 #   # hive_match: flexible  # how `bh -r <id> …` resolves a hive:
 #   #                       #   flexible (prefix→triplet→org/repo→repo) | prefix | triplet
@@ -252,6 +256,31 @@ worktrees:
 #                                  # Needs a real gpg.ssh.allowedsignersfile: without one git
 #                                  # reports even a correctly signed commit as N and this gate
 #                                  # refuses everything. `bh host identity` wires that up.
+#   precious_globs:                # local-only content protected regardless of size; a per-hive
+#     - .env                       # list replaces this global list (it does not append)
+#     - .env.*
+#     - "*.db"
+#     - "*.sqlite*"
+#     - "*.duckdb"
+#     - dumps/**
+#     - data/**
+#     - "*.dump"
+#     - "*.sql"
+#     - downloads/**
+#     - outputs/**
+#     - "*.pem"
+#     - "*.key"
+#   junk_globs:                    # dropped before stat or directory traversal
+#     - node_modules/**
+#     - .venv/**
+#     - __pycache__/**
+#     - "*.pyc"
+#     - .pytest_cache/**
+#     - .ruff_cache/**
+#     - dist/**
+#     - build/**
+#     - .mypy_cache/**
+#   precious_min_bytes: 1048576   # unknown ignored/untracked paths at least this large need review
 #   dispatch:                      # How the dispatcher dispatches ready beads
 #     mode: fanout                 # fanout (one dev per bead) | collapsed (batch beads) | auto (choose by budget)
 #     max_depth: 2                 # Max nesting depth for sub-agent dispatch: 0 | 1 | 2

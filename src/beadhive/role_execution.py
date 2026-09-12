@@ -777,4 +777,6 @@ def create_role_journal(artifact: QualifiedArtifact, *, hive: str, bead: str):
         provider=artifact.provider,
         manifest_digest=artifact.manifest_digest,
     )
-    return run_journal.RunJournal.create(identity, writer="beadhive.role")
+    # This is the provider-qualified BAML adapter, so its source-side activity must bind to
+    # BAML's writer authority rather than the generic role observer.
+    return run_journal.RunJournal.create(identity, writer=run_journal.WRITER_BAML)

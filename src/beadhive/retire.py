@@ -37,11 +37,13 @@ from __future__ import annotations
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 import typer
 
 from . import config, plugins, registry, safety, worktree
 from .identity import workspace_root
+from .modules.hives import RetireEvent
 from .safety import RetireVerdict
 
 
@@ -146,7 +148,7 @@ class RetirePlan:
     """Structured outcome of ``retire_hive``/``reclaim_hive`` — what happened (or would happen
     on dry-run).
 
-    Mirrors the printed summary so callers/tests can assert without parsing stdout.
+    Carries semantic events so callers/tests can assert without parsing stdout.
     ``unregistered`` is only ever set ``True`` by ``retire_hive``'s fleet-wide path;
     ``reclaim_hive`` never sets it (it never calls ``registry.unregister``).
     """
@@ -162,6 +164,118 @@ class RetirePlan:
     archived_to: str | None = None
     purged: bool = False
     plugins_notified: list[str] = field(default_factory=list)
+    events: list[RetireEvent] = field(default_factory=list)
+    successful: bool = True
+
+
+class _RetireRefused(Exception):
+    def __init__(self, plan: RetirePlan) -> None:
+        super().__init__("retire refused")
+        self.plan = plan
+
+
+def _note(plan: RetirePlan, code: str, *, error: bool = False, render: bool, **facts) -> None:
+    event = RetireEvent(code, MappingProxyType(facts), error)
+    plan.events.append(event)
+    if render:
+        typer.echo(_event_text(plan, event), err=error)
+
+
+def _event_text(plan: RetirePlan, event: RetireEvent) -> str:
+    """Render a semantic retirement event for the legacy direct-call adapter."""
+
+    facts = event.facts
+    action = "retire" if facts.get("fleet", False) else "reclaim"
+    prefix = "DRY-RUN " if plan.dry_run else ""
+    code = event.code
+    if code == "operation":
+        return f"{prefix}{action} {facts['identity']}"
+    if code == "clone":
+        return f"  clone: {facts['path']}"
+    if code == "scope":
+        return (
+            "  scope: host-local — managed_repos is untouched; "
+            f"{facts['identity']} stays registered for the fleet"
+        )
+    if code == "clone_missing":
+        return f"✗ clone path does not exist: {facts['path']}"
+    if code == "assessment":
+        return f"  assess: {facts['verdict']}"
+    if code in {"assessment_reason", "backup_reason", "dirty_worktree", "failed_worktree"}:
+        return f"    - {facts['reason']}"
+    if code == "worktree_removed":
+        verb = "would remove" if plan.dry_run else "removed"
+        return f"  worktree: {verb} {facts['path']}"
+    if code == "purge":
+        verb = "would rm -rf" if plan.dry_run else "rm -rf"
+        return f"  purge: {verb} {facts['path']}"
+    if code == "archive":
+        verb = "would move" if plan.dry_run else "moved"
+        return f"  archive: {verb} {facts['source']} → {facts['destination']}"
+    if code == "archive_exists":
+        return f"✗ archive destination already exists: {facts['path']}"
+    if code == "unregister":
+        return (
+            f"  unregister: would drop {facts['identity']} from the registry "
+            "(fleet-wide — every host loses this hive)"
+        )
+    if code == "registry_retained":
+        return f"  registry: left untouched — {facts['identity']} remains registered for the fleet"
+    if code == "plugin_preview":
+        return f"  plugin {facts['plugin']}: would notify of retire (manual removal)"
+    if code == "plugin_failed":
+        return f"  plugin {facts['plugin']}: notify failed ({facts['reason']})"
+    if code == "complete":
+        return "✓ dry-run complete — nothing changed" if plan.dry_run else f"✓ {action} complete"
+    if code == "backup_failed":
+        return f"✗ backup failed: {facts['reason']}"
+    if code == "nothing_deleted":
+        return "  nothing was deleted — resolve the error and retry"
+    if code == "backup_incomplete_accepted":
+        return "  backup: incomplete — --confirm accepts the remaining loss"
+    if code == "backup_unsafe":
+        return "✗ refusing: backup did not make the repository safe:"
+    if code == "confirm_hint":
+        hints = {
+            "remaining_loss": "  pass --confirm to accept the remaining loss",
+            "blocked": "  pass --confirm to override and proceed anyway",
+            "teardown": "  resolve the failure, or pass --confirm to proceed anyway",
+        }
+        return hints[facts["kind"]]
+    if code == "backup_skipped":
+        return "  backup: skipped — --confirm accepts the data loss"
+    if code == "unbacked_work":
+        return "✗ refusing: repository has unbacked work that would be lost"
+    if code == "backup_hint":
+        noun = facts["subject"]
+        return (
+            "  pass --backup to snapshot it durably, or --confirm to accept the loss"
+            if noun == "repository"
+            else "  pass --backup to snapshot them, or --confirm to accept the loss"
+        )
+    if code == "blocked_overridden":
+        return "  assess: BLOCKED overridden by --confirm"
+    if code == "assessment_blocked":
+        return "✗ refusing: assessment is BLOCKED (see reasons above)"
+    if code == "dirty_worktree_accepted":
+        return f"  worktree: keeping dirty {facts['path']} — --confirm accepts the loss"
+    if code == "dirty_worktrees":
+        return "✗ refusing: dirty worktrees hold unbacked work:"
+    if code == "teardown_failed_accepted":
+        return f"  worktree: FAILED to remove {facts['path']} — --confirm proceeds anyway"
+    if code == "teardown_failed":
+        return "✗ refusing: worktree teardown failed (live worktrees remain):"
+    if code == "backup":
+        verb = "would back up" if plan.dry_run else "backed up"
+        return f"  backup: {verb} {facts['label']} {facts['path']}"
+    if code == "backup_action":
+        return f"    · {facts['action']}"
+    raise ValueError(f"unknown retirement event: {code}")
+
+
+def _refuse(plan: RetirePlan) -> None:
+    plan.successful = False
+    raise _RetireRefused(plan)
 
 
 def _archive_dir(cfg) -> Path:
@@ -207,9 +321,37 @@ def retire_hive(
     Returns a ``RetirePlan`` describing what happened (or would happen). Raises ``typer.Exit``
     on a refused gate or an unresolvable/absent clone.
     """
-    return _teardown_and_dispose(
-        hive, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge, unregister=True
-    )
+    try:
+        return _teardown_and_dispose(
+            hive,
+            dry_run=dry_run,
+            backup=backup,
+            confirm=confirm,
+            purge=purge,
+            unregister=True,
+            render=True,
+        )
+    except _RetireRefused as exc:
+        raise typer.Exit(1) from exc
+
+
+def execute_retire_hive(
+    hive: str, *, dry_run: bool, backup: bool, confirm: bool, purge: bool
+) -> RetirePlan:
+    """Transport-neutral fleet retirement used by the hives application adapter."""
+
+    try:
+        return _teardown_and_dispose(
+            hive,
+            dry_run=dry_run,
+            backup=backup,
+            confirm=confirm,
+            purge=purge,
+            unregister=True,
+            render=False,
+        )
+    except _RetireRefused as exc:
+        return exc.plan
 
 
 def reclaim_hive(
@@ -236,9 +378,37 @@ def reclaim_hive(
     is always ``False`` — this path never calls ``registry.unregister``. Raises ``typer.Exit``
     on a refused gate or an unresolvable/absent clone.
     """
-    return _teardown_and_dispose(
-        hive, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge, unregister=False
-    )
+    try:
+        return _teardown_and_dispose(
+            hive,
+            dry_run=dry_run,
+            backup=backup,
+            confirm=confirm,
+            purge=purge,
+            unregister=False,
+            render=True,
+        )
+    except _RetireRefused as exc:
+        raise typer.Exit(1) from exc
+
+
+def execute_reclaim_hive(
+    hive: str, *, dry_run: bool, backup: bool, confirm: bool, purge: bool
+) -> RetirePlan:
+    """Transport-neutral host reclaim used by the hives application adapter."""
+
+    try:
+        return _teardown_and_dispose(
+            hive,
+            dry_run=dry_run,
+            backup=backup,
+            confirm=confirm,
+            purge=purge,
+            unregister=False,
+            render=False,
+        )
+    except _RetireRefused as exc:
+        return exc.plan
 
 
 def _teardown_and_dispose(
@@ -249,6 +419,7 @@ def _teardown_and_dispose(
     confirm: bool,
     purge: bool,
     unregister: bool,
+    render: bool,
 ) -> RetirePlan:
     """Shared core behind ``retire_hive`` (``unregister=True``, fleet-wide) and
     ``reclaim_hive`` (``unregister=False``, host-local). Every step through the archive/purge
@@ -261,73 +432,110 @@ def _teardown_and_dispose(
     provider, org, repo = str(entry["provider"]), str(entry["org"]), str(entry["repo"])
     clone_path = Path(workspace_root()) / provider / org / repo
 
-    tag = "DRY-RUN " if dry_run else ""
-    action = "retire" if unregister else "reclaim"
-    typer.echo(f"{tag}{action} {provider}/{org}/{repo}")
-    typer.echo(f"  clone: {clone_path}")
-    if not unregister:
-        typer.echo(
-            "  scope: host-local — managed_repos is untouched; "
-            f"{org}/{repo} stays registered for the fleet"
-        )
-
-    # --- Step 1: clone must exist on disk ---
-    if not clone_path.exists():
-        typer.echo(f"✗ clone path does not exist: {clone_path}", err=True)
-        raise typer.Exit(1)
-
     plan = RetirePlan(
         hive=hive,
         clone_path=str(clone_path),
         verdict=RetireVerdict.SAFE,
         dry_run=dry_run,
     )
+    _note(
+        plan,
+        "operation",
+        identity=f"{provider}/{org}/{repo}",
+        fleet=unregister,
+        render=render,
+    )
+    _note(plan, "clone", path=str(clone_path), render=render)
+    if not unregister:
+        _note(
+            plan,
+            "scope",
+            identity=f"{org}/{repo}",
+            render=render,
+        )
+
+    # --- Step 1: clone must exist on disk ---
+    if not clone_path.exists():
+        _note(
+            plan,
+            "clone_missing",
+            path=str(clone_path),
+            error=True,
+            render=render,
+        )
+        _refuse(plan)
 
     # --- Step 2: safety gate ---
     assessment = safety.assess_retire(clone_path)
     plan.verdict = assessment.verdict
-    typer.echo(f"  assess: {assessment.verdict}")
+    _note(plan, "assessment", verdict=str(assessment.verdict), render=render)
     for reason in assessment.reasons:
-        typer.echo(f"    - {reason}")
+        _note(plan, "assessment_reason", reason=reason, render=render)
 
-    _gate_backup(clone_path, assessment, plan, backup=backup, confirm=confirm, dry_run=dry_run)
+    _gate_backup(
+        clone_path,
+        assessment,
+        plan,
+        backup=backup,
+        confirm=confirm,
+        dry_run=dry_run,
+        render=render,
+    )
 
     # --- Step 3: worktree teardown ---
     # Gate-first: probe with dry_run=True to discover the dirty set WITHOUT mutating, so the
     # dirty gate fires before any clean worktree is removed. This preserves the keystone
     # "assess fully, then act" contract — a real run against a hive with both clean and dirty
     # worktrees must never remove the clean ones and *then* refuse on the dirty ones.
-    _gate_dirty_worktrees(hive, plan, backup=backup, confirm=confirm, dry_run=dry_run)
+    _gate_dirty_worktrees(
+        hive, plan, backup=backup, confirm=confirm, dry_run=dry_run, render=render
+    )
 
     # Gate passed — only now do the REAL teardown (still zero-mutation under --dry-run).
     # The real run removes the clean worktrees and still skips any dirty ones, which by now
     # are either backed up or explicitly accepted via --confirm.
     teardown = teardown_worktrees(hive, dry_run=dry_run)
     plan.teardown = teardown
-    verb = "would remove" if dry_run else "removed"
     for path in teardown.removed:
-        typer.echo(f"  worktree: {verb} {path}")
+        _note(plan, "worktree_removed", path=path, render=render)
 
     # --- Gate: a clean worktree that FAILED to remove still points at the clone. ---
     # Do not move/delete a clone out from under a live worktree.
-    _gate_failed_teardown(teardown, confirm=confirm)
+    _gate_failed_teardown(teardown, plan, confirm=confirm, render=render)
 
     # --- Step 4: the IRREVERSIBLE filesystem step FIRST (archive/purge). ---
     # Unregister (fleet-wide path only) happens only AFTER this succeeds, so a failed
     # move/purge can never leave the hive unregistered-but-on-disk (it would propagate before
     # the unregister below).
     if purge:
-        typer.echo(f"  purge: {'would rm -rf' if dry_run else 'rm -rf'} {clone_path}")
+        _note(
+            plan,
+            "purge",
+            path=str(clone_path),
+            render=render,
+        )
         if not dry_run:
             shutil.rmtree(clone_path)
         plan.purged = True
     else:
         dest = _archive_dir(cfg) / provider / org / repo
-        typer.echo(f"  archive: {'would move' if dry_run else 'moved'} {clone_path} → {dest}")
+        _note(
+            plan,
+            "archive",
+            source=str(clone_path),
+            destination=str(dest),
+            render=render,
+        )
         if not dry_run:
             if dest.exists():
-                typer.echo(f"✗ archive destination already exists: {dest}", err=True)
-                raise typer.Exit(1)
+                _note(
+                    plan,
+                    "archive_exists",
+                    path=str(dest),
+                    error=True,
+                    render=render,
+                )
+                _refuse(plan)
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(clone_path), str(dest))
         plan.archived_to = str(dest)
@@ -337,41 +545,58 @@ def _teardown_and_dispose(
     # touches it at all — that's the whole point, not merely a deferral.
     if unregister:
         if dry_run:
-            typer.echo(
-                f"  unregister: would drop {org}/{repo} from the registry "
-                "(fleet-wide — every host loses this hive)"
+            _note(
+                plan,
+                "unregister",
+                identity=f"{org}/{repo}",
+                render=render,
             )
         else:
             registry.unregister(provider, org, repo)
             plan.unregistered = True
     else:
-        typer.echo(f"  registry: left untouched — {org}/{repo} remains registered for the fleet")
+        _note(
+            plan,
+            "registry_retained",
+            identity=f"{org}/{repo}",
+            render=render,
+        )
 
     # --- Generic plugin notify: WARN-ONLY. Plugins have no de-registration verb (see orca),
     # so this only reminds; it never mutates any plugin's state. Loops the registry generically
     # so no integration is hardcoded here. Dry-run previews but does NOT record (mutation
     # contract). Runs for BOTH scopes: THIS host's clone is disappearing either way.
-    for p in plugins.registry():
-        if p.on_retire is None or not p.enabled(cfg, entry):
-            continue
+    for observer in plugins.retire_observers(cfg, entry):
         if dry_run:
-            typer.echo(f"  plugin {p.name}: would notify of retire (manual removal)")
+            _note(
+                plan,
+                "plugin_preview",
+                plugin=observer.plugin_id,
+                render=render,
+            )
             continue
-        try:
-            p.on_retire(str(clone_path), cfg, entry)
-        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts retire
-            typer.echo(f"  plugin {p.name}: notify failed ({exc})", err=True)
+        report = observer.deliver(str(clone_path), cfg, entry)
+        if not plugins.delivery_succeeded(report):
+            error = report.deliveries[-1].attempts[-1].error
+            _note(
+                plan,
+                "plugin_failed",
+                plugin=observer.plugin_id,
+                reason=error,
+                error=True,
+                render=render,
+            )
             continue
-        plan.plugins_notified.append(p.name)
+        plan.plugins_notified.append(observer.plugin_id)
 
     if dry_run:
-        typer.echo("✓ dry-run complete — nothing changed")
+        _note(plan, "complete", fleet=unregister, render=render)
     else:
-        typer.echo(f"✓ {action} complete")
+        _note(plan, "complete", fleet=unregister, render=render)
     return plan
 
 
-def _gate_backup(clone_path, assessment, plan, *, backup, confirm, dry_run):
+def _gate_backup(clone_path, assessment, plan, *, backup, confirm, dry_run, render):
     """Consent gate for the safety assessment (data-loss critical). NEEDS_BACKUP proceeds only with
     --backup (verified to make the clone SAFE — else --confirm accepts the remainder) or --confirm
     (accept the loss); BLOCKED proceeds only with --confirm. Mutates ``plan.backed_up``; raises
@@ -379,13 +604,24 @@ def _gate_backup(clone_path, assessment, plan, *, backup, confirm, dry_run):
     if assessment.verdict == RetireVerdict.NEEDS_BACKUP:
         if backup:
             try:
-                _backup_path(clone_path, plan, dry_run=dry_run, label="clone")
+                _backup_path(clone_path, plan, dry_run=dry_run, label="clone", render=render)
             except (RuntimeError, ValueError) as exc:
                 # Backup raised (e.g. a push failed) BEFORE anything was torn down —
                 # nothing is deleted; refuse so the operator can resolve and retry.
-                typer.echo(f"✗ backup failed: {exc}", err=True)
-                typer.echo("  nothing was deleted — resolve the error and retry", err=True)
-                raise typer.Exit(1) from exc
+                _note(
+                    plan,
+                    "backup_failed",
+                    reason=str(exc),
+                    error=True,
+                    render=render,
+                )
+                _note(
+                    plan,
+                    "nothing_deleted",
+                    error=True,
+                    render=render,
+                )
+                _refuse(plan)
             if dry_run:
                 plan.backed_up = True
             else:
@@ -396,34 +632,82 @@ def _gate_backup(clone_path, assessment, plan, *, backup, confirm, dry_run):
                 if recheck.verdict == RetireVerdict.SAFE:
                     plan.backed_up = True
                 elif confirm:
-                    typer.echo("  backup: incomplete — --confirm accepts the remaining loss")
+                    _note(
+                        plan,
+                        "backup_incomplete_accepted",
+                        render=render,
+                    )
                     for reason in recheck.reasons:
-                        typer.echo(f"    - {reason}")
+                        _note(plan, "backup_reason", reason=reason, render=render)
                 else:
-                    typer.echo("✗ refusing: backup did not make the repository safe:", err=True)
+                    _note(
+                        plan,
+                        "backup_unsafe",
+                        error=True,
+                        render=render,
+                    )
                     for reason in recheck.reasons:
-                        typer.echo(f"    - {reason}", err=True)
-                    typer.echo("  pass --confirm to accept the remaining loss", err=True)
-                    raise typer.Exit(1)
+                        _note(
+                            plan,
+                            "backup_reason",
+                            reason=reason,
+                            error=True,
+                            render=render,
+                        )
+                    _note(
+                        plan,
+                        "confirm_hint",
+                        kind="remaining_loss",
+                        error=True,
+                        render=render,
+                    )
+                    _refuse(plan)
         elif confirm:
-            typer.echo("  backup: skipped — --confirm accepts the data loss")
-        else:
-            typer.echo("✗ refusing: repository has unbacked work that would be lost", err=True)
-            typer.echo(
-                "  pass --backup to snapshot it durably, or --confirm to accept the loss",
-                err=True,
+            _note(
+                plan,
+                "backup_skipped",
+                render=render,
             )
-            raise typer.Exit(1)
+        else:
+            _note(
+                plan,
+                "unbacked_work",
+                error=True,
+                render=render,
+            )
+            _note(
+                plan,
+                "backup_hint",
+                subject="repository",
+                error=True,
+                render=render,
+            )
+            _refuse(plan)
     elif assessment.verdict == RetireVerdict.BLOCKED:
         if confirm:
-            typer.echo("  assess: BLOCKED overridden by --confirm")
+            _note(
+                plan,
+                "blocked_overridden",
+                render=render,
+            )
         else:
-            typer.echo("✗ refusing: assessment is BLOCKED (see reasons above)", err=True)
-            typer.echo("  pass --confirm to override and proceed anyway", err=True)
-            raise typer.Exit(1)
+            _note(
+                plan,
+                "assessment_blocked",
+                error=True,
+                render=render,
+            )
+            _note(
+                plan,
+                "confirm_hint",
+                kind="blocked",
+                error=True,
+                render=render,
+            )
+            _refuse(plan)
 
 
-def _gate_dirty_worktrees(hive, plan, *, backup, confirm, dry_run):
+def _gate_dirty_worktrees(hive, plan, *, backup, confirm, dry_run, render):
     """Consent gate for dirty worktrees (unbacked work). Probe the dirty set WITHOUT mutating, then
     require --backup (snapshot each) or --confirm (accept the loss) before any real teardown — so
     the gate fires before any clean worktree is removed. Mutates ``plan.backed_up``; raises
@@ -432,38 +716,82 @@ def _gate_dirty_worktrees(hive, plan, *, backup, confirm, dry_run):
     if probe.dirty:
         if backup:
             for path in probe.dirty:
-                _backup_path(Path(path), plan, dry_run=dry_run, label="worktree")
+                _backup_path(Path(path), plan, dry_run=dry_run, label="worktree", render=render)
                 plan.backed_up = True
         elif confirm:
             for path in probe.dirty:
-                typer.echo(f"  worktree: keeping dirty {path} — --confirm accepts the loss")
+                _note(
+                    plan,
+                    "dirty_worktree_accepted",
+                    path=path,
+                    render=render,
+                )
         else:
-            typer.echo("✗ refusing: dirty worktrees hold unbacked work:", err=True)
-            for path in probe.dirty:
-                typer.echo(f"    - {path}", err=True)
-            typer.echo(
-                "  pass --backup to snapshot them, or --confirm to accept the loss", err=True
+            _note(
+                plan,
+                "dirty_worktrees",
+                error=True,
+                render=render,
             )
-            raise typer.Exit(1)
+            for path in probe.dirty:
+                _note(
+                    plan,
+                    "dirty_worktree",
+                    reason=path,
+                    error=True,
+                    render=render,
+                )
+            _note(
+                plan,
+                "backup_hint",
+                subject="worktrees",
+                error=True,
+                render=render,
+            )
+            _refuse(plan)
 
 
-def _gate_failed_teardown(teardown, *, confirm):
+def _gate_failed_teardown(teardown, plan, *, confirm, render):
     """Consent gate for a clean worktree that FAILED to remove (a live worktree still points at the
     clone): refuse to move/delete the clone out from under it unless --confirm proceeds anyway.
     Raises ``typer.Exit(1)`` on refusal. Semantics preserved byte-for-byte."""
     if teardown.failed:
         if confirm:
             for path in teardown.failed:
-                typer.echo(f"  worktree: FAILED to remove {path} — --confirm proceeds anyway")
+                _note(
+                    plan,
+                    "teardown_failed_accepted",
+                    path=path,
+                    render=render,
+                )
         else:
-            typer.echo("✗ refusing: worktree teardown failed (live worktrees remain):", err=True)
+            _note(
+                plan,
+                "teardown_failed",
+                error=True,
+                render=render,
+            )
             for path in teardown.failed:
-                typer.echo(f"    - {path}", err=True)
-            typer.echo("  resolve the failure, or pass --confirm to proceed anyway", err=True)
-            raise typer.Exit(1)
+                _note(
+                    plan,
+                    "failed_worktree",
+                    reason=path,
+                    error=True,
+                    render=render,
+                )
+            _note(
+                plan,
+                "confirm_hint",
+                kind="teardown",
+                error=True,
+                render=render,
+            )
+            _refuse(plan)
 
 
-def _backup_path(path: Path, plan: RetirePlan, *, dry_run: bool, label: str) -> safety.BackupResult:
+def _backup_path(
+    path: Path, plan: RetirePlan, *, dry_run: bool, label: str, render: bool
+) -> safety.BackupResult:
     """Back up unpushed work at ``path`` via ``backup_unpushed`` and record it on the plan.
 
     Does NOT set ``plan.backed_up`` — the caller owns that, setting it only once the work is
@@ -471,8 +799,7 @@ def _backup_path(path: Path, plan: RetirePlan, *, dry_run: bool, label: str) -> 
     """
     result = safety.backup_unpushed(path, dry_run=dry_run)
     plan.backup_actions.extend(result.actions)
-    prefix = "would back up" if dry_run else "backed up"
-    typer.echo(f"  backup: {prefix} {label} {path}")
+    _note(plan, "backup", label=label, path=str(path), render=render)
     for action in result.actions:
-        typer.echo(f"    · {action}")
+        _note(plan, "backup_action", action=action, render=render)
     return result

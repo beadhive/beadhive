@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import unicodedata
 from pathlib import Path
@@ -20,6 +21,20 @@ SCHEMA = json.loads(
         Path(__file__).parents[1] / "docs" / "schemas" / "herdr-presentation-v1.schema.json"
     ).read_text()
 )
+
+
+def test_view_adapter_uses_only_named_public_herdr_compatibility_hooks() -> None:
+    source = Path(herdr_views.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    private = {
+        node.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "herdr_plugin"
+        and node.attr.startswith("_")
+    }
+    assert private == set()
 
 
 def _identity() -> dict:

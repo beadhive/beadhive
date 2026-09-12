@@ -50,7 +50,7 @@ is the `config.py` (or module-local) function that resolves its path — `doctor
 |---|---|---|---|
 | `hq/` | durable | `config.hq_dir()` | The Factory HQ store: a git repo + `.beads/`, fully replicated to every host that adopts it. A fresh host obtains this via `bh hq clone`. |
 | `hub/` | regenerable | `config.hub_dir()` | THE cross-hive aggregate — per-host, derived, prefix-less, never pushed. `bh sync` rebuilds it from each hive; `hub.py`'s `hub_target` resolves here unconditionally since bh-89wxf.2 (it used to prefer `hq/`, which put two databases on one remote path). |
-| `cache/` | regenerable | `config.cache_dir()` | Minimal-clone caches for hives that aren't locally checked out. `bh sync` / hub hydration re-fetch on demand. |
+| `cache/` | regenerable | `config.cache_dir()` | Minimal-clone caches for hives that aren't locally checked out. `bh sync` / hub hydration re-fetch on demand. Once a hive has a local checkout containing `.beads/`, the matching cache is `SUPERSEDED`; inspect the `RETAINED` (only-copy) / `SUPERSEDED` / `STALE` split with `bh backup reclaim --root cache --dry-run`, and remove only `SUPERSEDED` entries with `--confirm`. |
 | `hitch/` | machine-local | `config.hitch_config_dir_root()` | Holds Claude Code's OAuth session state (`.claude.json`) — "nothing regenerates" it (the function's own docstring). Not durable in the shared sense: it's *this host's* login, not fleet truth. |
 | `wt/` (or wherever `worktrees.path` points) | machine-local | `config.worktrees_root()` | Persistent worktree checkouts, only relevant when `worktrees.ephemeral: false`. Not "regenerable" in the low-stakes sense — a worktree can hold uncommitted work — but it is also never synced; treat it like other host-local working state. |
 | `worktrees/` | **legacy — see Migration** | — | The *old* default `worktrees_root()` fallback (`config.home() / "worktrees"`, still literally in `config.py`) from before a host set an explicit `worktrees.path`. Not a distinct class of its own; it's drift, addressed below. |
@@ -77,6 +77,12 @@ else in the table. **Everything else** a fresh host either mints locally
 being opposite ends of the durable/machine-local axis — the table above is the missing
 label; `bh doctor`'s layout check (below) is what keeps a host from silently drifting from
 it.
+
+Cache reclaim removes one duplicated primary only: the obsolete per-hive minimal clone. The
+remaining derived duplicate is the hub aggregate at `config.hub_dir()`, governed by its own
+wipe-and-rebuild contract; the shared-server database remains the live store, while the Dolt
+dropped-database copy tracked by bh-2hvmd and the verified migrate set retain their separate
+recovery lifecycles.
 
 ## Migration: `wt/` vs `worktrees/` drift
 

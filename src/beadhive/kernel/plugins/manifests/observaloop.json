@@ -1,0 +1,18 @@
+{
+  "capabilities": {"provides": [{"api_version": 1, "id": "observability.loop"}]},
+  "compatibility": {
+    "beadhive": {"maximum_exclusive": "1.0.0", "minimum_inclusive": "0.15.0"},
+    "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}
+  },
+  "configuration": {"legacy_namespaces": ["observaloop"], "namespace": "plugins.observaloop", "schema_artifact": "urn:beadhive:wire-schema:plugin-config:observaloop:1"},
+  "lifecycle": {"subscriptions": []},
+  "manifest_version": 1,
+  "plugin_id": "observaloop",
+  "plugin_version": "1.0.0",
+  "presentation": {"cli": [{"capability_id": "observability.loop", "command": "plugin observaloop"}]},
+  "security": {
+    "credentials": [],
+    "executables": [{"name": "observaloop", "required": false, "version": {"maximum_exclusive": "999.0.0", "minimum_inclusive": "0.0.0"}}],
+    "permissions": [{"id": "process.observer.connect", "purpose": "connect to the optional observation service", "required": false}]
+  }
+}

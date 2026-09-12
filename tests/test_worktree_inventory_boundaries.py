@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import ast
 import inspect
+import subprocess
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -31,6 +33,7 @@ INVENTORY_OPERATIONS = (
     "_store_readable",
     "_probe_store",
     "_bead_statuses_for_entry",
+    "_bead_disposition_relations_for_entry",
     "_classify_entry",
     "_status_tags",
     "_render_status",
@@ -81,7 +84,7 @@ def test_inventory_and_cleanup_have_one_implementation_behind_the_facade(
 
 
 def test_related_policy_and_creation_boundaries_remain_owned_by_their_existing_modules():
-    for operation in ("add", "ensure", "mark_landed"):
+    for operation in ("add", "ensure", "mark_landed", "mark_abandoned"):
         assert getattr(worktree, operation).__module__ == "beadhive.worktree"
         assert not hasattr(worktree_inventory, operation)
         assert not hasattr(worktree_cleanup, operation)
@@ -156,7 +159,22 @@ def test_classify_entry_partial_state_outcome_matrix(
     monkeypatch.setattr(metadata, "read_fleet", lambda cfg, keys, ttl: metadata_rows)
     monkeypatch.setattr(worktree.config, "integration_branch", lambda cfg, _entry: "main")
     monkeypatch.setattr(worktree, "_bead_statuses_for_entry", lambda _entry, _rows: bead_state)
+    monkeypatch.setattr(
+        worktree,
+        "_bead_disposition_relations_for_entry",
+        lambda _entry, _reasons: {},
+    )
     monkeypatch.setattr(worktree, "_wt_dirty", lambda path: path in dirty_paths)
+    monkeypatch.setattr(worktree.config, "precious_globs", lambda _cfg, _entry: [".secret"])
+    monkeypatch.setattr(worktree.config, "junk_globs", lambda _cfg, _entry: ["cache/**"])
+    monkeypatch.setattr(worktree.config, "precious_min_bytes", lambda _cfg, _entry: 42)
+    scan_calls = []
+
+    def scan_precious(path, **kwargs):
+        scan_calls.append((path, kwargs))
+        return []
+
+    monkeypatch.setattr(worktree.precious, "scan_precious", scan_precious)
     monkeypatch.setattr(worktree, "is_merged", lambda _entry, branch, base: (branch, base))
     monkeypatch.setattr(
         worktree,
@@ -184,10 +202,214 @@ def test_classify_entry_partial_state_outcome_matrix(
     assert captured["bead_statuses"] == expected_statuses
     assert captured["bead_unknown_reasons"] == expected_unknown
     assert captured["store_unreadable_reason"] == expected_store_reason
+    assert captured["bead_disposition_relations"] == {}
     assert captured["dirty_by_path"] == {path: path in dirty_paths for _, path, _ in rows}
+    assert captured["precious_by_path"] == {path: [] for _, path, _ in rows}
+    assert scan_calls == [
+        (
+            path,
+            {
+                "precious_globs": [".secret"],
+                "junk_globs": ["cache/**"],
+                "min_bytes": 42,
+            },
+        )
+        for _, path, _ in rows
+    ]
     assert captured["merged_result"] == ("topic", "main")
     assert captured["parent_result"] == ("/wt/a", "main", "topic")
     assert captured["landed_result"] == ("topic", "main", "merged")
+
+
+def _git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True)
+
+
+def test_classify_entry_scans_real_configured_ignored_content(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / ".gitignore").write_text(".env\n")
+    _git(repo, "add", ".gitignore")
+    _git(
+        repo,
+        "-c",
+        "user.name=Test",
+        "-c",
+        "user.email=test@example.invalid",
+        "commit",
+        "-qm",
+        "test: ignore environment",
+    )
+    (repo / ".env").write_text("TOKEN=secret\n")
+    entry = {"prefix": "mr"}
+    rows = [("mr", str(repo), "wt/bead/issue/a")]
+    cfg = {
+        "work": {
+            "precious_globs": [".env"],
+            "junk_globs": [],
+            "precious_min_bytes": 1024,
+        }
+    }
+
+    monkeypatch.setattr(worktree.registry, "hive_key", lambda _entry: "github/acme/repo")
+    monkeypatch.setattr(metadata, "read_fleet", lambda _cfg, _keys, ttl: {})
+    monkeypatch.setattr(worktree.config, "integration_branch", lambda _cfg, _entry: "main")
+    monkeypatch.setattr(
+        worktree,
+        "_bead_statuses_for_entry",
+        lambda _entry, _rows: ({"a": "closed"}, {"a": "merged"}, {}, ""),
+    )
+    monkeypatch.setattr(worktree, "_wt_dirty", lambda _path: False)
+    monkeypatch.setattr(worktree, "is_merged", lambda _entry, _branch, _base: True)
+    monkeypatch.setattr(
+        worktree,
+        "bead_and_parent",
+        lambda _entry, _path, integration, branch="": ("a", integration),
+    )
+
+    [status] = worktree._classify_entry(entry, rows, cfg)
+
+    assert status.classification is wt_status.WtClassification.SAFE
+    assert status.safe is False
+    assert status.precious == (worktree.precious.PreciousFile(".env", 13, "precious", ".env"),)
+
+
+def test_classify_entry_propagates_precious_scan_failure_before_classification(monkeypatch):
+    entry = {"prefix": "mr"}
+    rows = [("mr", "/not-a-repository", "wt/bead/issue/a")]
+    error = subprocess.CalledProcessError(128, ["git", "status"])
+
+    monkeypatch.setattr(worktree.registry, "hive_key", lambda _entry: "github/acme/repo")
+    monkeypatch.setattr(metadata, "read_fleet", lambda _cfg, _keys, ttl: {})
+    monkeypatch.setattr(worktree.config, "integration_branch", lambda _cfg, _entry: "main")
+    monkeypatch.setattr(
+        worktree,
+        "_bead_statuses_for_entry",
+        lambda _entry, _rows: ({"a": "closed"}, {"a": "merged"}, {}, ""),
+    )
+    monkeypatch.setattr(worktree, "_wt_dirty", lambda _path: False)
+    monkeypatch.setattr(
+        worktree.precious, "scan_precious", lambda *_args, **_kwargs: (_ for _ in ()).throw(error)
+    )
+    monkeypatch.setattr(
+        worktree.wt_status,
+        "classify",
+        lambda **_kwargs: pytest.fail(
+            "classification must not run after an incomplete safety scan"
+        ),
+    )
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        worktree._classify_entry(entry, rows, {})
+
+    assert caught.value is error
+
+
+def test_disposition_relation_readback_normalizes_exact_storage_directions(monkeypatch):
+    entry = {"prefix": "mr"}
+    reasons = {
+        "old-retained": wt_status.format_disposition("retained", "pivot", "consumer"),
+        "old-superseded": wt_status.format_disposition("superseded", "superseded", "replacement"),
+    }
+    records = {
+        "old-retained": {"dependencies": [{"depends_on_id": "consumer", "type": "relates-to"}]},
+        "replacement": {
+            "dependencies": [{"depends_on_id": "old-superseded", "type": "supersedes"}]
+        },
+    }
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
+    monkeypatch.setattr(worktree.bd, "show", lambda bead, _main: records.get(bead))
+
+    result = worktree._bead_disposition_relations_for_entry(entry, reasons)
+
+    assert result == {
+        "old-retained": frozenset({("retained", "consumer")}),
+        "old-superseded": frozenset({("superseded", "replacement")}),
+    }
+
+
+def test_disposition_relation_readback_rejects_reversed_or_wrong_typed_edges(monkeypatch):
+    entry = {"prefix": "mr"}
+    reasons = {
+        "old-retained": wt_status.format_disposition("retained", "pivot", "consumer"),
+        "old-superseded": wt_status.format_disposition("superseded", "superseded", "replacement"),
+    }
+    records = {
+        "old-retained": {"dependencies": [{"depends_on_id": "consumer", "type": "supersedes"}]},
+        "replacement": {
+            "dependencies": [{"depends_on_id": "old-superseded", "type": "relates-to"}]
+        },
+    }
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
+    monkeypatch.setattr(worktree.bd, "show", lambda bead, _main: records.get(bead))
+
+    assert worktree._bead_disposition_relations_for_entry(entry, reasons) == {}
+
+
+def test_batch_evidence_uses_one_complete_label_snapshot_and_shared_member_parent(monkeypatch):
+    entry = {"prefix": "mr"}
+    rows = [("mr", "/wt/batch-g", "wt/batch/g")]
+    calls = []
+    issues = [
+        {"id": "mr-1.2", "status": "closed", "labels": ["batch:g"]},
+        {"id": "mr-1.1", "status": "closed", "labels": ["batch:g", "size:s"]},
+        {"id": "mr-2.1", "status": "open", "labels": ["batch:other"]},
+    ]
+
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
+
+    def list_issues(args, cwd):
+        calls.append((args, cwd))
+        return issues
+
+    monkeypatch.setattr(worktree_inventory.bd, "json", list_issues)
+    monkeypatch.setattr(
+        worktree,
+        "integration_base",
+        lambda _entry, bead, integration: "wt/bead/epic/mr-1",
+    )
+
+    evidence = worktree_inventory._batch_evidence_for_entry(entry, rows, "main")
+
+    assert calls == [(["list", "--all", "--include-infra", "--limit", "0"], "/repo")]
+    assert evidence == {
+        "wt/batch/g": wt_status.BatchEvidence(
+            member_statuses=(("mr-1.1", "closed"), ("mr-1.2", "closed")),
+            parent="wt/bead/epic/mr-1",
+        )
+    }
+
+
+@pytest.mark.parametrize(
+    "issues,parent_by_bead",
+    [
+        (None, {}),
+        ([], {}),
+        ([{"id": "mr-1.1", "status": "closed", "labels": ["batch:g", "batch:x"]}], {}),
+        (
+            [
+                {"id": "mr-1.1", "status": "closed", "labels": ["batch:g"]},
+                {"id": "mr-2.1", "status": "closed", "labels": ["batch:g"]},
+            ],
+            {"mr-1.1": "wt/bead/epic/mr-1", "mr-2.1": "wt/bead/epic/mr-2"},
+        ),
+    ],
+)
+def test_batch_evidence_fails_closed_on_missing_ambiguous_or_mixed_parent_data(
+    monkeypatch, issues, parent_by_bead
+):
+    entry = {"prefix": "mr"}
+    rows = [("mr", "/wt/batch-g", "wt/batch/g")]
+    monkeypatch.setattr(worktree.registry, "hive_dir", lambda _entry: "/repo")
+    monkeypatch.setattr(worktree_inventory.bd, "json", lambda args, cwd: issues)
+    monkeypatch.setattr(
+        worktree,
+        "integration_base",
+        lambda _entry, bead, integration: parent_by_bead.get(bead, integration),
+    )
+
+    assert worktree_inventory._batch_evidence_for_entry(entry, rows, "main") == {}
 
 
 def test_concurrent_classification_streams_completion_order_but_flattens_entry_order(monkeypatch):

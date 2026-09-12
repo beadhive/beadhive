@@ -45,3 +45,23 @@ retain the timeout output, identify the worker and child that stopped progressin
 focused selection with `-n 2` and `-n 6`, then use `-n 0` only as a comparison. A serial pass does
 not waive a parallel failure. A live multiprocessing `resource_tracker` is expected until its
 worker exits; it is not evidence of a deadlock by itself.
+
+## Selective-CI policy
+
+The checked [Selective-CI operational report](SELECTIVE-CI-OPERATIONS.md) is the authoritative
+closure inventory and measurement ledger. As of 2026-09-10, production selective routes: **0**.
+All 24 closures are uncertified, so no before/after wall time, compute time, queue delay,
+full-suite frequency, miss rate, flake rate, or savings measurement is available. Focused
+developer timings and exact-tree receipt reuse are not extrapolated into production savings.
+
+Commit and main-integration are the only provisioned selective boundaries. They run a closure only
+after exact current certification, qualifying shadow evidence, and trusted route verification;
+otherwise they run `just check`. `leaf-merge`, `child-epic-finish`,
+`final-workstream-submit`, `final-workstream-review`, `scheduled`, and `release` are permanently
+full-only at this policy version and run `just check-all`.
+
+An escaped regression, boundary change, stale coverage, tool-version change, or schema change
+automatically restores `just check` and requires recertification before selective use. A new module
+or plugin must add a checked closure/conformance declaration before registration. To disable the
+provisioned routes in one change, set `selective_ci.mode = "full"` in
+`tests/selective-ci-policy.toml`.

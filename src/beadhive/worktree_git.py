@@ -7,13 +7,16 @@ here and resolve patchable collaborators through that facade.
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
 
-from . import config, ghpr, registry
+from . import ghpr, registry
+from .config_consumer_ports import work_settings as config
 from .run import retry_on_index_lock
 
 UPSTREAM_REMOTE = "upstream"
@@ -22,6 +25,24 @@ _BEAD_PREFIX = "wt/bead/"
 _ROW_RS = "\x1e"
 _ROW_FS = "\x1f"
 _ROW_FMT = _ROW_RS + _ROW_FS.join(["%H", "%h", "%P", "%an", "%ae", "%ad", "%G?", "%GS", "%s"])
+_SAFETY_REF_RE = re.compile(
+    r"^(?P<branch>wt/.+)\."
+    r"(?P<label>refine|premerge)-"
+    r"(?P<session>\d{8}T\d{6}Z(?:-[0-9A-Za-z]+)?)$"
+)
+_CANONICAL_BEAD_BRANCH_RE = re.compile(r"^wt/bead/(?:epic|issue)/(?P<bead>.+)$")
+
+
+@dataclass(frozen=True)
+class SafetyRef:
+    """One exact, bh-owned recovery ref for a history-rewriting operation."""
+
+    name: str
+    branch: str
+    bead_id: str
+    label: str
+    session: str
+    sha: str
 
 
 def _facade():
@@ -88,6 +109,18 @@ def commit_rows(*args, **kwargs):
 
 def backup_branch(*args, **kwargs):
     return _call_facade("backup_branch", *args, **kwargs)
+
+
+def parse_safety_ref(*args, **kwargs):
+    return _call_facade("parse_safety_ref", *args, **kwargs)
+
+
+def safety_refs(*args, **kwargs):
+    return _call_facade("safety_refs", *args, **kwargs)
+
+
+def delete_safety_refs(*args, **kwargs):
+    return _call_facade("delete_safety_refs", *args, **kwargs)
 
 
 def _rebase_env(*args, **kwargs):
@@ -390,6 +423,98 @@ def impl_backup_branch(entry, branch, ts: str, label: str = "refine") -> str:
         typer.echo(f"✗ could not create backup branch {name}: {res.stderr or res.stdout}", err=True)
         raise typer.Exit(1)
     return name
+
+
+def impl_parse_safety_ref(name: str, sha: str = "") -> SafetyRef | None:
+    """Parse only the exact namespace minted by :func:`backup_branch`.
+
+    Similar-looking user branches deliberately fail closed: lifecycle cleanup must never infer
+    ownership from a loose ``'.refine-' in name`` test.
+    """
+    match = _SAFETY_REF_RE.fullmatch(name)
+    if match is None:
+        return None
+    branch = match.group("branch")
+    bead_match = _CANONICAL_BEAD_BRANCH_RE.fullmatch(branch)
+    return SafetyRef(
+        name=name,
+        branch=branch,
+        bead_id=bead_match.group("bead") if bead_match is not None else "",
+        label=match.group("label"),
+        session=match.group("session"),
+        sha=sha,
+    )
+
+
+def impl_safety_refs(
+    entry,
+    branch: str = "",
+    labels: tuple[str, ...] = ("refine", "premerge"),
+) -> list[SafetyRef]:
+    """List parsed safety refs, optionally narrowed to one exact owner branch and label set."""
+    main = registry.hive_dir(entry)
+    res = _run_git(
+        [
+            "git",
+            "-C",
+            str(main),
+            "for-each-ref",
+            "--format=%(refname:short)%09%(objectname)",
+            "refs/heads/wt/",
+        ],
+        check=False,
+        capture=True,
+    )
+    if res.returncode != 0:
+        return []
+    wanted = frozenset(labels)
+    found: list[SafetyRef] = []
+    for line in (res.stdout or "").splitlines():
+        name, sep, sha = line.partition("\t")
+        if not sep:
+            continue
+        ref = impl_parse_safety_ref(name, sha)
+        if ref is None or (branch and ref.branch != branch) or ref.label not in wanted:
+            continue
+        found.append(ref)
+    return sorted(found, key=lambda ref: (ref.branch, ref.label, ref.session, ref.name))
+
+
+def impl_delete_safety_refs(
+    entry,
+    branch: str,
+    *,
+    labels: tuple[str, ...] = ("refine", "premerge"),
+    keep: tuple[str, ...] = (),
+) -> tuple[list[str], list[str]]:
+    """Atomically delete exact owned refs for ``branch``; return ``(deleted, failed)``.
+
+    Every ``update-ref -d`` supplies the SHA observed by :func:`safety_refs`. If another process
+    moves a ref between the list and delete, git refuses rather than deleting changed recovery
+    state. Repeating the call is therefore both idempotent and concurrency-safe.
+    """
+    kept = frozenset(keep)
+    deleted: list[str] = []
+    failed: list[str] = []
+    main = registry.hive_dir(entry)
+    for ref in impl_safety_refs(entry, branch, labels):
+        if ref.name in kept:
+            continue
+        res = _run_git(
+            [
+                "git",
+                "-C",
+                str(main),
+                "update-ref",
+                "-d",
+                f"refs/heads/{ref.name}",
+                ref.sha,
+            ],
+            check=False,
+            capture=True,
+        )
+        (deleted if res.returncode == 0 else failed).append(ref.name)
+    return deleted, failed
 
 
 def impl__rebase_env(**extra) -> dict:

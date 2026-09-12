@@ -12,7 +12,7 @@
 # so it is configuration and needs no bh code:
 #
 #   volume         mount             variable             role
-#   bh-hq          ~/.beadhive       BH_HOME / BH_HQ      durable, git-backed
+#   bh-hq          ~/.beadhive       BH_HOME              durable, git-backed
 #   bh-workspace   /workspace        GIT_WORKSPACE        rebuildable managed clones
 #   bh-worktrees   /worktrees        BH_WORKTREES         scratch, prunable, capped
 #   bh-harness     ~/.claude         CLAUDE_CONFIG_DIR    durable, secret-bearing
@@ -27,7 +27,7 @@
 # No single command prints all four, so watch each one where it is actually consumed:
 #
 #   bh config show               config path is under BH_HOME; workspace root IS GIT_WORKSPACE
-#   bh hq init                   reports the store it stood up, at BH_HQ
+#   bh hq init                   reports the store it stood up, below BH_HOME
 #   bh worktree add --dry-run    prints the BH_WORKTREES-rooted path it would create
 #   docker system df -v          per-area sizes, which is the point of splitting them
 #
@@ -37,8 +37,8 @@ name: beadhive
 
 services:
   bh:
-    # One knob, because `beadhive/core:dev` is the whole alternative: core is the same image
-    # without the agent harness (the scheduler / HQ-sync shape).
+    # The interactive shell includes the agent harness. The headless daemon service below has
+    # its own image knob and defaults to the smaller core image.
     image: ${BH_IMAGE:-beadhive/agent:dev}
     pull_policy: never
 
@@ -62,10 +62,6 @@ services:
       # two home-relative ones track BH_AGENT_USER so an AGENT_USER-overridden image still
       # points bh at the directories that image actually created.
       BH_HOME: /home/${BH_AGENT_USER:-bees}/.beadhive
-      # Redundant with BH_HOME's own default (<home>/hq), and stated anyway: the hq store is
-      # the durable, git-backed thing this volume exists for, so its path should be readable
-      # here rather than inferred.
-      BH_HQ: /home/${BH_AGENT_USER:-bees}/.beadhive/hq
       # Wins over worktrees.ephemeral in either mode, so scratch lands on the prunable volume
       # instead of the container's own OS temp dir (which no `docker system df -v` can size).
       BH_WORKTREES: /worktrees
@@ -169,6 +165,49 @@ services:
     # knob — steady state is single digits at rest and low hundreds under a dolt server plus a
     # node harness (Go and node threads each count as tasks), so it never binds on real work.
     # Observe it with: docker compose exec bh cat /sys/fs/cgroup/pids.current
+    deploy:
+      resources:
+        limits:
+          cpus: "${BH_CPUS:-4}"
+          memory: ${BH_MEMORY:-4g}
+          pids: ${BH_PIDS_LIMIT:-1024}
+
+  # The unified listener is a separate, explicit plane from the interactive agent shell.
+  # Compose is its supervisor and bh-host-daemon is PID 1's main workload; there is no
+  # supervisord/systemd child inside the image. Enable with `docker compose --profile daemon
+  # up -d daemon` after configuring host.daemon in the persistent BH_HOME below.
+  daemon:
+    profiles: [daemon]
+    image: ${BH_DAEMON_IMAGE:-beadhive/core:dev}
+    pull_policy: never
+    hostname: ${BH_HOSTNAME:-beadhive}
+    command: [bh-host-daemon]
+    init: true
+    restart: unless-stopped
+    # HostDaemonConfig permits up to 300s. Five seconds of manager headroom keeps this
+    # compose contract >= every valid configured graceful shutdown budget.
+    stop_grace_period: 305s
+    working_dir: /workspace
+    environment:
+      BH_HOME: /home/${BH_AGENT_USER:-bees}/.beadhive
+      BH_WORKTREES: /worktrees
+      GIT_WORKSPACE: /workspace
+    volumes:
+      - ${BH_HQ_MOUNT:-bh-hq}:/home/${BH_AGENT_USER:-bees}/.beadhive
+      - ${BH_WORKSPACE_MOUNT:-bh-workspace}:/workspace
+      - ${BH_WORKTREES_MOUNT:-bh-worktrees}:/worktrees
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          urllib.request.urlopen('http://127.0.0.1:8737/health', timeout=2).read()
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
     deploy:
       resources:
         limits:

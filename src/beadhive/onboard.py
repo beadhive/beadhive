@@ -41,8 +41,8 @@ from typing import Any, NamedTuple
 import typer
 
 from . import bd as bd_mod
+from . import jsonout, registry, safety, store_locator
 from . import plugins as _plugins
-from . import registry, safety, store_locator
 from .storage_migrate import SHARED_SERVER_CONFIG_KEY, SHARED_SERVER_FLAG
 from .storage_migrate import origin_has_dolt_data as _probe_origin_has_dolt_data
 
@@ -122,6 +122,16 @@ class OnboardPlan:
     installers_run: list[str] = field(default_factory=list)
     hub_synced: bool = False
     warnings: list[str] = field(default_factory=list)  # fenced step failures (non-fatal)
+    prefix: str = ""
+    kind: str = ""
+
+    @property
+    def failures(self) -> list[CheckResult]:
+        return [result for result in self.checks if not result.ok and not result.skipped]
+
+    @property
+    def successful(self) -> bool:
+        return not self.failures
 
 
 @dataclass
@@ -170,7 +180,6 @@ class Ctx:
     # `--hub-sync`, the pre-bh-d5jhc.1 behavior); False = skip the hub step entirely (`hive
     # init`'s default, or explicit `--no-hub-sync`).
     hub_sync: bool | None = False
-
     # ---- derived once by _ensure_derived, read by checks + actions ----
     existing: Any = None
     upstream: str = ""
@@ -214,6 +223,10 @@ def _topo_order(steps: Sequence[Step]) -> list[Step]:
     return out
 
 
+class _OnboardRejected(Exception):
+    """Internal structured short-circuit after a failed preflight batch."""
+
+
 def _gate(batch: list[CheckResult], plan: OnboardPlan) -> None:
     """Record a preflight batch onto the plan and fast-fail as a group.
 
@@ -225,8 +238,7 @@ def _gate(batch: list[CheckResult], plan: OnboardPlan) -> None:
     failures = _record_batch(batch, plan)
     if not failures:
         return
-    _print_failures(failures)
-    raise typer.Exit(1)
+    raise _OnboardRejected
 
 
 def _record_batch(batch: list[CheckResult], plan: OnboardPlan) -> list[CheckResult]:
@@ -271,7 +283,9 @@ def _run_action(step: Step, ctx: Ctx, dry_run: bool) -> bool:
     return True
 
 
-def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] = ()) -> OnboardPlan:
+def execute_onboard(
+    ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] = ()
+) -> OnboardPlan:
     """Two-phase onboarding: batch preflight (fast-fail), then topological execute.
 
     Phase A evaluates every applicable check as a batch and refuses (printing ALL failures)
@@ -294,16 +308,21 @@ def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] =
     # ---- Phase A: preflight (batched, with the clone/acquire carve-out) ----
     batch: list[CheckResult] = []
     phase_b: list[Step] = []
-    for step in ordered:
-        _evaluate(step, ctx, skip, batch)
-        if step.preflight:
-            _gate(batch, plan)  # gate the pre-acquire batch before the acquire mutation
-            batch = []
-            if _run_action(step, ctx, dry_run):
-                ctx.cloned = True
-        else:
-            phase_b.append(step)
-    _gate(batch, plan)  # gate the repo-level batch before Phase B
+    try:
+        for step in ordered:
+            _evaluate(step, ctx, skip, batch)
+            if step.preflight:
+                _gate(batch, plan)  # gate the pre-acquire batch before the acquire mutation
+                batch = []
+                if _run_action(step, ctx, dry_run):
+                    ctx.cloned = True
+            else:
+                phase_b.append(step)
+        _gate(batch, plan)  # gate the repo-level batch before Phase B
+    except _OnboardRejected:
+        plan.prefix = ctx.prefix
+        plan.kind = ctx.kind
+        return plan
 
     plan.cloned = ctx.cloned
 
@@ -311,25 +330,99 @@ def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] =
     for step in phase_b:
         _run_action(step, ctx, dry_run)
 
+    plan.prefix = ctx.prefix
+    plan.kind = ctx.kind
+    return plan
+
+
+def run_onboard(ctx: Ctx, *, dry_run: bool = False, skip_checks: Iterable[str] = ()) -> OnboardPlan:
+    """Compatibility entry that renders and exits around structured execution."""
+
+    plan = execute_onboard(ctx, dry_run=dry_run, skip_checks=skip_checks)
+    if not plan.successful:
+        _print_failures(plan.failures)
+        raise typer.Exit(1)
     _render(plan)
     return plan
 
 
-def _render(plan: OnboardPlan) -> None:
-    """Print the preflight results + executed steps (tests assert on the plan, not this)."""
+def _summary_text(plan: OnboardPlan) -> str:
+    """Return the exact final plan summary historically printed by :func:`_render`."""
     tag = "DRY-RUN " if plan.dry_run else ""
-    typer.echo(f"{tag}onboard {plan.target}")
+    lines = [f"{tag}onboard {plan.target}"]
     for res in plan.checks:
         # Render the check id (targetable by --skip-check) + human label + detail.
         detail = f"  {res.detail}" if res.detail else ""
-        typer.echo(f"  {res.glyph} {res.id} ({res.label}){detail}")
+        lines.append(f"  {res.glyph} {res.id} ({res.label}){detail}")
     for sid in plan.steps_run:
         verb = "would run" if plan.dry_run else "ran"
-        typer.echo(f"  {_GLYPH_INFO} {verb} {sid}")
+        lines.append(f"  {_GLYPH_INFO} {verb} {sid}")
     for warning in plan.warnings:
         # Fenced step failures: summarized here so they survive the step-by-step scroll,
         # but never fail the onboard (exit stays 0 for this class of failure).
-        typer.echo(f"  ⚠ {warning}")
+        lines.append(f"  ⚠ {warning}")
+    return "\n".join(lines) + "\n"
+
+
+def onboard_payload(
+    plan: OnboardPlan | None,
+    *,
+    text: str | None = None,
+    exit_code: int = 0,
+    hive: str = "",
+    target: str = "",
+    dry_run: bool = False,
+) -> dict:
+    """Build the versioned onboarding result consumed by both CLI renderings.
+
+    The normal completed path derives every structured field from ``OnboardPlan``.  ``plan`` may
+    be absent only when input validation fails before a plan can be built; identity and target
+    remain explicit in that error envelope.  ``text`` is bh's own complete transcript in JSON
+    mode and the exact historical summary in human mode.
+    """
+    if plan is not None:
+        hive = plan.hive
+        target = plan.target
+        dry_run = plan.dry_run
+    checks = plan.checks if plan is not None else []
+    return jsonout.envelope(
+        "hive onboard",
+        jsonout.HIVE_ONBOARD_SCHEMA,
+        {
+            "success": exit_code == 0,
+            "exit_code": exit_code,
+            "hive": hive,
+            "target": target,
+            "dry_run": dry_run,
+            "cloned": plan.cloned if plan is not None else False,
+            "checks": [
+                {
+                    "id": result.id,
+                    "label": result.label,
+                    "ok": result.ok,
+                    "detail": result.detail,
+                    "overridable": result.overridable,
+                    "skipped": result.skipped,
+                    "text": (
+                        f"  {result.glyph} {result.id} ({result.label})"
+                        f"{'  ' + result.detail if result.detail else ''}"
+                    ),
+                }
+                for result in checks
+            ],
+            "steps": list(plan.steps_run) if plan is not None else [],
+            "registered": plan.registered if plan is not None else False,
+            "installers": list(plan.installers_run) if plan is not None else [],
+            "hub_synced": plan.hub_synced if plan is not None else False,
+            "warnings": list(plan.warnings) if plan is not None else [],
+            "text": _summary_text(plan) if text is None and plan is not None else (text or ""),
+        },
+    )
+
+
+def _render(plan: OnboardPlan, *, text: str | None = None) -> None:
+    """Print the human text from the same pure payload builder used by ``--json``."""
+    typer.echo(onboard_payload(plan, text=text)["text"], nl=False)
 
 
 # ===========================================================================
@@ -1231,7 +1324,7 @@ def _do_observaloop(ctx: Ctx) -> None:
 
 
 def _plugin_step(p) -> Step:
-    """A GENERIC onboard step for a plugin's ``on_onboard`` hook — fenced warn-and-continue,
+    """A generic typed lifecycle participant — fenced warn-and-continue,
     recording ``plan.installers_run`` on success (mirrors ``_do_observaloop``'s fence).
 
     Enabled when the plugin was forced on via ``--plugin <name>`` (``ctx.plugins``) OR the
@@ -1239,24 +1332,25 @@ def _plugin_step(p) -> Step:
     ``onboard_requires_opt_in`` so runtime availability can never trigger code installation."""
 
     def action(ctx: Ctx) -> None:
-        try:
-            p.on_onboard(ctx)
-        except Exception as exc:  # noqa: BLE001 - defensive fence: a plugin never aborts onboard
-            typer.echo(f"• plugin {p.name}: skipped ({exc}) — onboarding continues.", err=True)
+        report = p.deliver(ctx)
+        if not report.deliveries:
+            return
+        if not _plugins.delivery_succeeded(report):
+            error = report.deliveries[-1].attempts[-1].error
+            typer.echo(
+                f"• plugin {p.plugin_id}: skipped ({error}) — onboarding continues.", err=True
+            )
             return
         if ctx.plan is not None:
-            ctx.plan.installers_run.append(f"plugin-{p.name}")
+            ctx.plan.installers_run.append(f"plugin-{p.plugin_id}")
 
     return Step(
-        f"plugin-{p.name}",
-        f"plugin {p.name}",
+        f"plugin-{p.plugin_id}",
+        f"plugin {p.plugin_id}",
         action,
         requires=["register"],
         mutates=True,
-        enabled=lambda c, _p=p: (
-            _p.name in c.plugins
-            or (not _p.onboard_requires_opt_in and _p.enabled(c.cfg, c.existing))
-        ),
+        enabled=lambda c: p.enabled(forced=p.plugin_id in c.plugins),
     )
 
 
@@ -1545,7 +1639,20 @@ def build_steps(ctx: Ctx) -> list[Step]:
 
     # Generic plugin steps: one per registered plugin that declares an on_onboard hook. When
     # the registry is empty, no plugin step is built (integrations are not hardcoded here).
-    plugin_steps = [_plugin_step(p) for p in _plugins.registry() if p.on_onboard is not None]
+    plugin_entry = (
+        registry.find_entry(ctx.cfg, ctx.provider, ctx.org, ctx.repo)
+        if ctx.cfg is not None
+        else None
+    )
+    plugin_composition = _plugins.action_composition(
+        ctx.cfg,
+        plugin_entry,
+        force_enabled=frozenset(ctx.plugins),
+    )
+    plugin_steps = [
+        _plugin_step(participant)
+        for participant in _plugins.onboard_participants(plugin_composition)
+    ]
 
     return [
         resolve,

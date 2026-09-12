@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 from pathlib import Path
 
@@ -28,6 +29,7 @@ from . import (
     bd,
     channels,
     config,
+    daemon_supervisor,
     dolt_health,
     fleet,
     gitauth,
@@ -51,7 +53,7 @@ from . import (
     validate_probe,
     worktree,
 )
-from .identity import workspace_root
+from .identity import workspace_mode, workspace_root
 from .run import run
 
 
@@ -101,16 +103,20 @@ def _scan(root: Path, providers):
 
 
 def _data_config(cfg, root) -> dict:
-    """Config section: config path, workspace root, git-workspace sources.
+    """Config section: root ownership, seed state, and git-workspace sources.
 
     `git_workspace.enabled` was a manual on/off flag; bh-hsus.4 deleted it (git-workspace is
     now a required dep, always active), so `"enabled"` here means "at least one
     `workspace*.toml` source resolved" rather than a config toggle — the JSON shape is
-    unchanged, only what the field measures is."""
+    unchanged, only what the field measures is. Seed state is actionable only for an internal
+    root; external roots remain operator-owned and are never offered for mutation."""
     sources = [str(p) for p in gitworkspace.config_paths(cfg)]
+    mode = workspace_mode(str(root))
     return {
         "config_path": str(config.config_path()),
         "workspace_root": str(root),
+        "workspace_mode": mode,
+        "workspace_seeded": mode != "internal" or gitworkspace.is_seeded(root),
         "git_workspace": {"enabled": bool(sources), "sources": sources},
     }
 
@@ -118,7 +124,11 @@ def _data_config(cfg, root) -> dict:
 def _render_config(d: dict) -> None:
     typer.echo("# Config")
     typer.echo(f"  config: {d['config_path']}")
-    typer.echo(f"  workspace root: {d['workspace_root']}")
+    typer.echo(f"  workspace root: {d['workspace_root']} ({d['workspace_mode']})")
+    if d["workspace_mode"] == "internal" and not d["workspace_seeded"]:
+        typer.echo(
+            "  ⚠ managed workspace root missing or unseeded — `bh doctor` offers to create it"
+        )
     if d["git_workspace"]["enabled"]:
         src = ", ".join(d["git_workspace"]["sources"])
         typer.echo(f"  git-workspace: {src}")
@@ -251,7 +261,7 @@ def _render_literal_value(dotted: str, cfg) -> str:
     outside its schema Literal's range (bh-aidze) — never rendered plainly as if it were in
     effect, the exact confusion that let `dolt.backend: shared-server` read as applied while
     doing nothing."""
-    from . import config_schema
+    from .modules.config import contracts as config_schema
 
     found, value = config._descend(cfg, dotted.split("."))
     declared = value if found else "(unset)"
@@ -481,6 +491,39 @@ def _render_molecules(d: dict) -> None:
 def _section_molecules(cfg):
     """Render the molecule-branches section."""
     _render_molecules(_data_molecules(cfg))
+
+
+def _orphan_safety_ref_warnings(cfg) -> list[str]:
+    """Name recovery refs whose encoded bead no longer resolves.
+
+    This is deliberately diagnostic only. A missing bead never turns a ref into prune authority;
+    it makes the ref harder to reason about, so doctor surfaces the exact name for a human.
+    """
+
+    def _scan(entry) -> list[str]:
+        main = registry.hive_dir(entry)
+        refs = worktree.safety_refs(entry)
+        if not any(ref.bead_id for ref in refs):
+            return []
+        # One complete snapshot per hive, then O(1) lookups regardless of ref count. A failed
+        # store read is inconclusive, so it emits no orphan claim rather than manufacturing one.
+        rows = bd.json(["list", "--all", "--include-infra", "--limit", "0"], main)
+        if not isinstance(rows, list):
+            return []
+        resolved = {
+            str(row.get("id") or "") for row in rows if isinstance(row, dict) and row.get("id")
+        }
+        prefix = str(entry.get("prefix") or f"{entry.get('org')}/{entry.get('repo')}")
+        return [
+            f"hive '{prefix}' has orphaned safety ref {ref.name} at {ref.sha[:12]}: "
+            f"encoded bead {ref.bead_id} does not resolve. Diagnostic only — this is not "
+            "prune authority; inspect the recovery ref before deleting it"
+            for ref in refs
+            if ref.bead_id and ref.bead_id not in resolved
+        ]
+
+    entries = cfg.get("managed_repos", []) or []
+    return [warning for group in fleet.fanout(_scan, entries) for warning in group]
 
 
 # ---- prefix mismatches section (bh-6h1m) ------------------------------------
@@ -949,6 +992,51 @@ def _render_dispatch(d: dict) -> None:
 def _section_dispatch(cfg):
     """Render the dispatch section."""
     _render_dispatch(_data_dispatch(cfg))
+
+
+def _data_host_daemon(cfg) -> dict:
+    """Host-wide daemon diagnostics, separate from per-hive dispatch supervision."""
+    if not daemon_supervisor.configured(cfg):
+        return {
+            "configured": False,
+            "state": "not-configured",
+            "healthy": False,
+            "detail": "host.daemon.enabled=false",
+        }
+    try:
+        return {"configured": True, **daemon_supervisor.daemon_service_status().payload()}
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        return {
+            "configured": True,
+            "state": "diagnostics-unavailable",
+            "healthy": False,
+            "detail": str(exc),
+        }
+
+
+def _render_host_daemon(d: dict) -> None:
+    typer.echo("\n# Host Daemon")
+    if not d["configured"]:
+        typer.echo(f"  - {d['detail']}")
+        return
+    if d["state"] == "diagnostics-unavailable":
+        typer.echo(f"  ! diagnostics unavailable: {d['detail']}")
+        return
+    glyph = "✓" if d["healthy"] else "!"
+    readiness = d["readiness"]
+    typer.echo(f"  {glyph} {d['state']}: {readiness['detail']}")
+    supervisor = d["supervisor"]
+    typer.echo(
+        f"    supervisor: {supervisor['backend']} ({supervisor['capability']}) — "
+        f"{supervisor['detail']}"
+    )
+    if supervisor["supported"]:
+        typer.echo(f"    start: {d['guidance']['start']}")
+    else:
+        typer.echo(f"    lifecycle handoff: {supervisor['handoff']}")
+    typer.echo(f"    status: {d['guidance']['status']}")
+    typer.echo(f"    logs: {d['guidance']['logs']}")
+    typer.echo(f"    control: {d['guidance']['control']}")
 
 
 # ---- per-group auth section (bh-4y0r.3) -------------------------------------
@@ -1896,6 +1984,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
     warns += _disarmed_signing_gate_warnings(cfg, hives)
     warns += _orphaned_dolt_server_warnings()
     warns += _channel_drift_warnings(cfg, hives)
+    warns += _orphan_safety_ref_warnings(cfg)
     return warns
 
 
@@ -2519,6 +2608,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "beads_role": _timed(timings, "beads_role", _data_beads_role, cfg),
         "store_engine": _timed(timings, "store_engine", _data_store_engine, cfg),
         "dispatch": _timed(timings, "dispatch", _data_dispatch, cfg),
+        "host_daemon": _timed(timings, "host_daemon", _data_host_daemon, cfg),
         "group_auth": _timed(timings, "group_auth", _data_group_auth, cfg),
         "mcp": _timed(timings, "mcp", _data_mcp, cfg),
         "harness_plugin": _timed(timings, "harness_plugin", _data_harness_plugin, cfg),
@@ -2601,6 +2691,26 @@ def _render_timings(timings: dict) -> None:
         typer.echo(f"  {total:>8.1f}  total")
 
 
+def _is_interactive() -> bool:
+    return sys.stdin.isatty()
+
+
+def _offer_workspace_init(d: dict) -> None:
+    """Offer an explicit, interactive seed for an uninitialized bh-owned root."""
+    if d["workspace_mode"] != "internal" or d["workspace_seeded"]:
+        return
+    if not _is_interactive():
+        return
+    root = d["workspace_root"]
+    if not typer.confirm(
+        f"internal workspace root {root} is missing or unseeded — create it now?",
+        default=True,
+    ):
+        return
+    gitworkspace.ensure_seeded(Path(root))
+    typer.echo(f"  ✓ created {root}")
+
+
 def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     """Render the full `ws doctor` report from the structured payload.
 
@@ -2629,6 +2739,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_beads_role(data["beads_role"])
     _render_store_engine(data["store_engine"])
     _render_dispatch(data["dispatch"])
+    _render_host_daemon(data["host_daemon"])
     _render_group_auth(data["group_auth"])
     _render_mcp(data["mcp"])
     _render_harness_plugin(data["harness_plugin"])
@@ -2636,5 +2747,6 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_install(data["install"])
     _render_observability(data["observability"])
     _render_warnings(data["warnings"])
+    _offer_workspace_init(data["config"])
     if verbose:
         _render_timings(data["timings"])

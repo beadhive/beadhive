@@ -3,6 +3,24 @@
 `bh` emits structured logs and — when opted in — OpenTelemetry traces, metrics, and logs.
 Everything is **disabled or no-op by default**; nothing exports without explicit configuration.
 
+## Semantic telemetry ownership
+
+The kernel-owned contract is `beadhive.kernel.telemetry`: it owns event meaning, correlation,
+redaction, and bounded-cardinality attributes, but imports no OpenTelemetry code. Application and
+domain code emit only through `SemanticTelemetryPort`. `beadhive.adapters.telemetry` owns the OTel
+projection, including semantic span lifetime, correlation attributes, identity-free metric labels,
+and delegation to the single finite provider-shutdown budget. `beadhive.otel` is the process
+composition and legacy-dashboard compatibility seam; existing `bh.*` metric names remain stable
+while the semantic adapter also publishes `beadhive.semantic.events` and
+`beadhive.semantic.duration`.
+
+CLI catalog operations, daemon routes/sessions/SSE and dependency probes, gateway exchanges, and
+plugin lifecycle deliveries enter through that semantic port. Adapter failure is observational and
+cannot change their results. Shutdown closes unfinished semantic spans, zeros daemon current-state
+gauges, and asks each exporter to finish within one finite total budget. Collector processes,
+deployment, storage, retry durability, and the separate proposed product-usage pipeline remain
+outside core and are not started or managed by `bh`.
+
 Run-scoped process/provider activity has a separate, host-local contract: the
 [run-journal correlation contract](design/run-journal-correlation-contract.md). Its journal is
 append-only observability, never bead lifecycle state, and a sink failure is diagnosed without
@@ -83,6 +101,8 @@ otel:
   headers:                          # optional: auth/routing headers for hosted collectors
     Authorization: "Bearer <token>"
   hive: workspace                   # stamped as bh.hive on every OTel Resource (optional)
+  export_timeout_seconds: 0.5       # finite budget for one OTLP exporter request
+  flush_timeout_seconds: 2.0        # finite total CLI/stdio exit flush budget
 ```
 
 The `OTEL_EXPORTER_OTLP_ENDPOINT` environment variable takes precedence over `otel.endpoint`
@@ -100,6 +120,22 @@ When both are unset, the OTLP exporter uses its built-in default (`localhost:431
 `otel.headers` is a string-to-string map threaded into every OTLP exporter (traces, metrics,
 and logs). Use it to pass authentication tokens or routing keys required by hosted collectors
 such as Grafana Cloud, Honeycomb, or Datadog's OTLP intake.
+
+`otel.export_timeout_seconds` seeds the standard `OTEL_EXPORTER_OTLP_TIMEOUT` setting when the
+operator has not supplied it. `otel.flush_timeout_seconds` bounds the complete CLI or stdio
+provider drain. Initialization registers only the SDK's known timeout-aware processor/reader
+shutdown ports. Their three exporter ceilings plus one possible in-flight export must fit the
+total flush budget; an unsafe operator override or unknown provider is refused with a visible
+`refused` outcome instead of running in an abandoned helper thread. Thus an unreachable collector
+cannot serialize unbounded retry windows or delay command exit.
+
+The host daemon keeps this operator-configured stream independent from CLI and stdio. It creates
+one provider per outer lifespan with `service.name=bh-host-daemon`, stable `bh.host.id`, and the
+control record's changing `service.instance.id`. Its final flush uses
+`host.daemon.shutdown.telemetry_flush_seconds` and remains inside the daemon's total graceful
+shutdown budget. The supported `bh host daemon serve` entrypoint defers generic CLI telemetry so
+the daemon-scoped provider owns that process; ordinary CLI and stdio commands keep their generic
+provider. Export durability belongs in the collector, not an in-memory daemon queue.
 
 ### Bring-your-own collector
 
@@ -154,6 +190,16 @@ Unhandled exceptions at either boundary are observed across all three signals: a
 `cli_command_error` or `mcp_tool_error` event (always, even otel-off), the active span's
 status set to ERROR with the exception recorded, and `bh.errors` incremented. The user sees
 a concise `✗ ExcType: message` line on stderr — never a raw traceback.
+
+### Host-daemon metrics
+
+The daemon records request RED by the finite route template (never a raw hive or run path), exact
+MCP-session and SSE-subscription totals/current counts, cancellations, bounded SSE queue depth and
+backpressure, replay gaps/resets, uptime/restarts/shutdown, flush outcome, and the real HQ/Dolt
+dependency probes used by the authenticated factory view. Observable request, connection, queue,
+and uptime gauges are zeroed during shutdown. Metric labels use only the fixed route, method,
+protocol, outcome, dependency, and reason vocabularies; tokens, paths, IDs, task text, and event
+content never become labels.
 
 ### Bead lifecycle metrics
 

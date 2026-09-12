@@ -1,0 +1,372 @@
+{
+  "$id": "urn:beadhive:wire-catalog:lifecycle-events:1",
+  "closed_unions": {
+    "compensation": [
+      "none",
+      "required"
+    ],
+    "criticality": [
+      "best-effort",
+      "blocking"
+    ],
+    "idempotency": [
+      "not-applicable",
+      "required"
+    ]
+  },
+  "events": [
+    {
+      "context": {
+        "fields": [
+          "plugin_id",
+          "correlation_id"
+        ],
+        "type": "PluginLifecycleContext"
+      },
+      "family": "plugin",
+      "id": "plugin.discovered",
+      "order": 10,
+      "phase": "discovered"
+    },
+    {
+      "context": {
+        "fields": [
+          "plugin_id",
+          "correlation_id"
+        ],
+        "type": "PluginLifecycleContext"
+      },
+      "family": "plugin",
+      "id": "plugin.validated",
+      "order": 20,
+      "phase": "validated"
+    },
+    {
+      "context": {
+        "fields": [
+          "plugin_id",
+          "correlation_id"
+        ],
+        "type": "PluginLifecycleContext"
+      },
+      "family": "plugin",
+      "id": "plugin.configured",
+      "order": 30,
+      "phase": "configured"
+    },
+    {
+      "context": {
+        "fields": [
+          "plugin_id",
+          "correlation_id"
+        ],
+        "type": "PluginLifecycleContext"
+      },
+      "family": "plugin",
+      "id": "plugin.started",
+      "order": 40,
+      "phase": "started"
+    },
+    {
+      "context": {
+        "fields": [
+          "plugin_id",
+          "correlation_id"
+        ],
+        "type": "PluginLifecycleContext"
+      },
+      "family": "plugin",
+      "id": "plugin.ready",
+      "order": 50,
+      "phase": "ready"
+    },
+    {
+      "context": {
+        "fields": [
+          "plugin_id",
+          "correlation_id"
+        ],
+        "type": "PluginLifecycleContext"
+      },
+      "family": "plugin",
+      "id": "plugin.stopping",
+      "order": 60,
+      "phase": "stopping"
+    },
+    {
+      "context": {
+        "fields": [
+          "plugin_id",
+          "correlation_id"
+        ],
+        "type": "PluginLifecycleContext"
+      },
+      "family": "plugin",
+      "id": "plugin.stopped",
+      "order": 70,
+      "phase": "stopped"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "correlation_id"
+        ],
+        "type": "HiveLifecycleContext"
+      },
+      "family": "hive",
+      "id": "hive.onboarding",
+      "order": 10,
+      "phase": "onboarding"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "correlation_id"
+        ],
+        "type": "HiveLifecycleContext"
+      },
+      "family": "hive",
+      "id": "hive.onboarded",
+      "order": 20,
+      "phase": "onboarded"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "correlation_id"
+        ],
+        "type": "HiveLifecycleContext"
+      },
+      "family": "hive",
+      "id": "hive.retiring",
+      "order": 30,
+      "phase": "retiring"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "correlation_id"
+        ],
+        "type": "HiveLifecycleContext"
+      },
+      "family": "hive",
+      "id": "hive.retired",
+      "order": 40,
+      "phase": "retired"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "worktree_id",
+          "correlation_id"
+        ],
+        "type": "WorktreeLifecycleContext"
+      },
+      "family": "worktree",
+      "id": "worktree.prepare",
+      "order": 10,
+      "phase": "prepare"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "worktree_id",
+          "correlation_id"
+        ],
+        "type": "WorktreeLifecycleContext"
+      },
+      "family": "worktree",
+      "id": "worktree.creating",
+      "order": 20,
+      "phase": "creating"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "worktree_id",
+          "correlation_id"
+        ],
+        "type": "WorktreeLifecycleContext"
+      },
+      "family": "worktree",
+      "id": "worktree.created",
+      "order": 30,
+      "phase": "created"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "worktree_id",
+          "correlation_id"
+        ],
+        "type": "WorktreeLifecycleContext"
+      },
+      "family": "worktree",
+      "id": "worktree.removing",
+      "order": 40,
+      "phase": "removing"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "worktree_id",
+          "correlation_id"
+        ],
+        "type": "WorktreeLifecycleContext"
+      },
+      "family": "worktree",
+      "id": "worktree.removed",
+      "order": 50,
+      "phase": "removed"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "bead_id",
+          "launch_id",
+          "correlation_id"
+        ],
+        "type": "AgentLaunchLifecycleContext"
+      },
+      "family": "agent-launch",
+      "id": "agent-launch.prepare",
+      "order": 10,
+      "phase": "prepare"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "bead_id",
+          "launch_id",
+          "correlation_id"
+        ],
+        "type": "AgentLaunchLifecycleContext"
+      },
+      "family": "agent-launch",
+      "id": "agent-launch.adapter-commit",
+      "order": 20,
+      "phase": "adapter-commit"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "bead_id",
+          "launch_id",
+          "correlation_id"
+        ],
+        "type": "AgentLaunchLifecycleContext"
+      },
+      "family": "agent-launch",
+      "id": "agent-launch.core-commit",
+      "order": 30,
+      "phase": "core-commit"
+    },
+    {
+      "context": {
+        "fields": [
+          "hive_id",
+          "bead_id",
+          "launch_id",
+          "correlation_id"
+        ],
+        "type": "AgentLaunchLifecycleContext"
+      },
+      "family": "agent-launch",
+      "id": "agent-launch.abort",
+      "order": 40,
+      "phase": "abort"
+    },
+    {
+      "context": {
+        "fields": [
+          "host_id",
+          "correlation_id"
+        ],
+        "type": "HostLifecycleContext"
+      },
+      "family": "host",
+      "id": "host.configure",
+      "order": 10,
+      "phase": "configure"
+    },
+    {
+      "context": {
+        "fields": [
+          "host_id",
+          "correlation_id"
+        ],
+        "type": "HostLifecycleContext"
+      },
+      "family": "host",
+      "id": "host.startup",
+      "order": 20,
+      "phase": "startup"
+    },
+    {
+      "context": {
+        "fields": [
+          "host_id",
+          "correlation_id"
+        ],
+        "type": "HostLifecycleContext"
+      },
+      "family": "host",
+      "id": "host.readiness",
+      "order": 30,
+      "phase": "readiness"
+    },
+    {
+      "context": {
+        "fields": [
+          "host_id",
+          "correlation_id"
+        ],
+        "type": "HostLifecycleContext"
+      },
+      "family": "host",
+      "id": "host.drain",
+      "order": 40,
+      "phase": "drain"
+    },
+    {
+      "context": {
+        "fields": [
+          "host_id",
+          "correlation_id"
+        ],
+        "type": "HostLifecycleContext"
+      },
+      "family": "host",
+      "id": "host.shutdown",
+      "order": 50,
+      "phase": "shutdown"
+    },
+    {
+      "context": {
+        "fields": [
+          "host_id",
+          "correlation_id"
+        ],
+        "type": "HostLifecycleContext"
+      },
+      "family": "host",
+      "id": "host.telemetry-flush",
+      "order": 60,
+      "phase": "telemetry-flush"
+    }
+  ],
+  "format_version": 1,
+  "version": 1
+}

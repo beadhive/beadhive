@@ -16,7 +16,8 @@ import shlex
 
 import typer
 
-from . import bd, config, identity, worktree
+from . import adopt, bd, git_linkage, identity, worktree
+from .config_consumer_ports import work_settings as config
 
 # Conventional-commit subject — type(scope)!: summary. Used by the submit cleanliness guard.
 _CONVENTIONAL = re.compile(
@@ -31,6 +32,17 @@ _MARKER = re.compile(r"^(fixup|squash)! ")
 # and the trailing hex-sha requirement is what separates a real review gate from an ad-hoc human
 # gate whose reason merely starts with the word "review" (e.g. "review the rollout plan with ops").
 _REVIEW_REASON = re.compile(r"reason: (?:bh:)?review [0-9a-f]{7,40}\b")
+
+# Integration bubbles written by the three lifecycle merge paths.  An epic may contain many
+# commits, but its own first-parent spine is made only of these no-ff bubbles; all other commits
+# must be attributable to the linked direct child named by the bubble.
+_INTEGRATION_BUBBLE = re.compile(r"^chore\(merge\): (bead|molecule|batch) (.+)$")
+
+# Recovery may need to compose an already-reviewed epic over a parent workstream that advanced
+# independently.  The safe shape is deliberately directional: parent/root first, reviewed epic
+# second.  It is infrastructure around the epic's existing child bubbles, never a substitute for
+# auditing them.
+_COMPOSITION_BUBBLE = re.compile(r"^chore\(merge\): compose (.+) onto (.+)$")
 
 
 def is_review_gate_desc(desc: str) -> bool:
@@ -166,12 +178,24 @@ def validate_plan(plan: dict, rows: list[dict]) -> tuple[bool, list[str], list[d
     errors: list[str] = []
     resolved: list[dict] = []
     seen: dict[str, int] = {}  # full sha -> first group index that owns it
+    by_sha = {str(row.get("sha") or ""): row for row in rows}
     for gi, g in enumerate(plan.get("groups") or []):
         keep_raw = g.get("keep")
         keep = _resolve_sha(rows, keep_raw) if keep_raw else None
         if not keep:
             errors.append(f"group {gi}: keep {keep_raw!r} is not a commit in range")
         folds = _resolve_fold_shas(g, gi, rows, errors)
+        if keep and len(by_sha.get(keep, {}).get("parents") or []) > 1:
+            errors.append(
+                f"group {gi}: keep {str(keep_raw)!r} is a merge commit; refine cannot "
+                "rewrite reviewed merge topology"
+            )
+        for raw, sha in zip(g.get("fold") or [], folds, strict=False):
+            if len(by_sha.get(sha, {}).get("parents") or []) > 1:
+                errors.append(
+                    f"group {gi}: fold {str(raw)!r} is a merge commit; refine cannot "
+                    "rewrite reviewed merge topology"
+                )
         if keep and keep in set(folds):  # set: O(1) membership, not an O(n) list scan
             errors.append(f"group {gi}: keep {keep_raw!r} also appears in its own fold")
         for sha in dict.fromkeys([keep, *folds]):  # unique within group
@@ -192,6 +216,492 @@ def validate_plan(plan: dict, rows: list[dict]) -> tuple[bool, list[str], list[d
                 }
             )
     return (not errors, errors, resolved)
+
+
+def _landed_child(data: dict) -> bool:
+    """Whether a direct child reached one of the lifecycle's code-landing dispositions."""
+    if str(data.get("status") or "") != "closed":
+        return False
+    reason = str(data.get("close_reason") or "")
+    return (
+        reason == "merged" or reason == "molecule landed" or reason.startswith("merged in batch ")
+    )
+
+
+def _direct_work_children(epic: str, main) -> tuple[list[dict], list[str]]:
+    """One authoritative direct-child snapshot, excluding infrastructure/provenance rows."""
+    rows = bd.children(epic, main, ["--include-infra", "--all"])
+    if not isinstance(rows, list):
+        return [], [f"cannot read direct children for {epic}"]
+    children = [
+        row
+        for row in rows
+        if str(row.get("issue_type") or "") not in ("gate", "molecule")
+        and not adopt.is_origin_report(row.get("labels"))
+    ]
+    return children, []
+
+
+def _first_parent_spine(
+    rows: list[dict],
+    branch_sha: str,
+    base: str,
+    *,
+    ancestor_boundary=None,
+) -> tuple[list[dict], list[str]]:
+    """Oldest-first rows on ``branch``'s own spine, or an exact structural error.
+
+    ``ancestor_boundary`` is a deliberately narrow reviewed-side escape hatch.  A range such as
+    ``integration_base..reviewed_tip`` excludes every ancestor of the integration base, even when
+    the reviewed tip reaches that exact base through a non-first-parent merge.  In that shape the
+    reviewed side's first-parent line legitimately stops at the first excluded ancestor.  Callers
+    which opt in must prove that boundary against the exact integration base; ordinary outer
+    spines retain the strict requirement to reach ``base`` itself.
+    """
+    by_sha = {str(row.get("sha") or ""): row for row in rows}
+    newest_first: list[dict] = []
+    seen: set[str] = set()
+    cursor = branch_sha
+    while cursor and cursor != base:
+        if cursor in seen:
+            return [], [f"first-parent cycle at {cursor[:8]}"]
+        seen.add(cursor)
+        row = by_sha.get(cursor)
+        if not row:
+            if ancestor_boundary is not None and ancestor_boundary(cursor):
+                return list(reversed(newest_first)), []
+            return [], [f"first-parent spine leaves the review range at {cursor[:8]}"]
+        newest_first.append(row)
+        parents = row.get("parents") or []
+        if not parents:
+            return [], [f"first-parent spine ends before base at {cursor[:8]}"]
+        cursor = str(parents[0])
+    if cursor != base:
+        return [], [f"cannot connect first-parent spine to base {base[:8]}"]
+    return list(reversed(newest_first)), []
+
+
+def _reviewed_side_spine(
+    entry, rows: list[dict], branch_sha: str, integration_base: str
+) -> tuple[list[dict], list[str]]:
+    """Walk only reviewed-side range rows, accepting one proven excluded ancestor boundary."""
+
+    return _first_parent_spine(
+        rows,
+        branch_sha,
+        integration_base,
+        ancestor_boundary=lambda boundary: (
+            worktree.base_of(entry, boundary, integration_base) == boundary
+        ),
+    )
+
+
+def _batch_members(group: str, merge_sha: str, children: list[dict]) -> list[dict]:
+    """Direct members actually recorded against this particular batch bubble."""
+    label = f"batch:{group}"
+    return [
+        child
+        for child in children
+        if label in (child.get("labels") or [])
+        and merge_sha in git_linkage.commits_from_data(child)
+        and _landed_child(child)
+    ]
+
+
+def _composition_identity_errors(row: dict, epic: str, target: str) -> list[str]:
+    """Validate the two identities named by one syntactically canonical composition wrapper."""
+    subject = str(row.get("subject") or "")
+    match = _COMPOSITION_BUBBLE.fullmatch(subject)
+    if match is None:
+        return []
+
+    sha = str(row.get("sha") or "")
+    short = str(row.get("short") or sha[:8])
+    composed_epic, composed_parent = match.groups()
+    errors = []
+    if composed_epic != epic:
+        errors.append(
+            f"composition wrapper {short} names {composed_epic}, expected current epic {epic}"
+        )
+    if not target:
+        errors.append(
+            f"composition wrapper {short} cannot resolve the integration target of {epic}"
+        )
+    elif composed_parent != target:
+        errors.append(
+            f"composition wrapper {short} names parent {composed_parent}, expected {target}"
+        )
+    return errors
+
+
+def _reversed_composition_wrappers(rows: list[dict], branch_sha: str, base: str) -> list[dict]:
+    """Find reversed wrappers on the outer first-parent path, including below suffix merges.
+
+    A reversed wrapper cannot connect to ``base`` through parent one, so
+    :func:`_first_parent_spine` necessarily fails before the ordinary wrapper audit can inspect
+    it.  Walk only rows actually reached from the branch tip and recognize an integration base
+    among the non-first parents.  The caller distinguishes an exact two-parent reversal from a
+    malformed parent count.  This is diagnostic discovery only; every discovered topology is
+    rejected.
+    """
+    by_sha = {str(row.get("sha") or ""): row for row in rows}
+    wrappers: list[dict] = []
+    cursor = branch_sha
+    seen: set[str] = set()
+    while cursor and cursor != base and cursor not in seen:
+        seen.add(cursor)
+        row = by_sha.get(cursor)
+        if row is None:
+            break
+        parents = [str(value) for value in (row.get("parents") or [])]
+        if (
+            _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+            and parents
+            and parents[0] != base
+            and base in parents[1:]
+        ):
+            wrappers.append(row)
+        if not parents:
+            break
+        cursor = parents[0]
+    return wrappers
+
+
+def _reversed_composition_spine(
+    entry,
+    rows: list[dict],
+    branch_sha: str,
+    base: str,
+    wrapper: dict,
+    epic: str,
+    composition_target: str,
+) -> tuple[list[dict], set[str], list[str]]:
+    """Audit both reviewed sides of a rejected reversed composition boundary."""
+    sha = str(wrapper.get("sha") or "")
+    short = str(wrapper.get("short") or sha[:8])
+    parents = [str(value) for value in (wrapper.get("parents") or [])]
+
+    errors = _composition_identity_errors(wrapper, epic, composition_target)
+    if not errors:
+        if len(parents) != 2:
+            errors.append(f"composition wrapper {short} must have exactly two parents")
+        else:
+            errors.append(
+                f"composition wrapper {short} must use the exact integration base as first parent"
+            )
+
+    suffix_spine, suffix_errors = _first_parent_spine(rows, branch_sha, sha)
+    errors.extend(suffix_errors)
+
+    nested_base = worktree.base_of(entry, parents[0], base)
+    if not nested_base:
+        errors.append(f"composition wrapper {short} has no merge base between its parents")
+        return suffix_spine, {sha}, errors
+    nested_rows = worktree.commit_rows(entry, nested_base, parents[0])
+    if not nested_rows:
+        errors.append(f"composition wrapper {short} has an empty reviewed side")
+        return suffix_spine, {sha}, errors
+    nested_spine, nested_errors = _first_parent_spine(nested_rows, parents[0], nested_base)
+    if nested_errors:
+        errors.extend(
+            f"composition wrapper {short} has invalid reviewed-side topology: {error}"
+            for error in nested_errors
+        )
+        return suffix_spine, {sha}, errors
+
+    nested_wrappers = [
+        str(row.get("short") or str(row.get("sha") or "")[:8])
+        for row in nested_spine
+        if _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+    ]
+    if nested_wrappers:
+        errors.append(
+            f"composition wrapper {short} has stacked reviewed-side wrapper(s): "
+            + ", ".join(nested_wrappers)
+        )
+        return suffix_spine, {sha}, errors
+
+    outer_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
+    nested_shas = {str(row.get("sha") or "") for row in nested_rows if row.get("sha")}
+    if not (nested_shas | {sha}) <= outer_shas:
+        errors.append(f"composition wrapper {short} reviewed side leaves the outer review range")
+        return suffix_spine, {sha}, errors
+    return [*nested_spine, *suffix_spine], {sha}, errors
+
+
+def _reviewed_epic_spine(
+    entry,
+    rows: list[dict],
+    branch_sha: str,
+    base: str,
+    epic: str,
+    composition_target: str,
+) -> tuple[list[dict], set[str], list[str]]:
+    """Return the child-integration spine behind one explicit root-first composition wrapper.
+
+    Ordinary assembled epics return their existing spine unchanged.  A composition is accepted
+    only when exactly one wrapper is the oldest commit on the outer first-parent spine, names the
+    current epic and its canonical composition target, and uses the canonical integration base as
+    parent one.  Nested epics target their exact bd parent; parentless top-level epics target the
+    configured integration branch.
+    Parent two is then audited from its merge-base with parent one.  Newer outer rows remain on
+    the returned spine so the normal child-integration audit accounts their reviewed suffix.
+    Neither nested nor suffix history gets a subject-only allowance: the caller still proves
+    every introduced commit through durable direct-child linkage.
+    """
+    # A reversed canonical wrapper cannot reach ``base`` by following parent one, so the generic
+    # first-parent walk below would otherwise hide the more useful trust-boundary diagnostic.
+    # Inspect the actual outer path before that walk, including a wrapper buried below ordinary
+    # reviewed suffix merges.  This is never an allowance: every recognized shape returns an
+    # error, while wrappers off the outer path remain subject to the normal provenance audit.
+    reversed_wrappers = _reversed_composition_wrappers(rows, branch_sha, base)
+    if len(reversed_wrappers) > 1:
+        shorts = ", ".join(
+            str(row.get("short") or str(row.get("sha") or "")[:8]) for row in reversed_wrappers
+        )
+        return (
+            [],
+            set(),
+            [f"composition wrapper appears more than once on the epic spine: {shorts}"],
+        )
+    if reversed_wrappers:
+        wrapper = reversed_wrappers[0]
+        return _reversed_composition_spine(
+            entry, rows, branch_sha, base, wrapper, epic, composition_target
+        )
+
+    spine, errors = _first_parent_spine(rows, branch_sha, base)
+    if errors:
+        return spine, set(), errors
+
+    wrappers = [
+        (index, row)
+        for index, row in enumerate(spine)
+        if _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+    ]
+    if not wrappers:
+        return spine, set(), errors
+    if len(wrappers) != 1:
+        shorts = ", ".join(
+            str(row.get("short") or str(row.get("sha") or "")[:8]) for _, row in wrappers
+        )
+        return (
+            [],
+            set(),
+            [f"composition wrapper appears more than once on the epic spine: {shorts}"],
+        )
+
+    wrapper_index, wrapper = wrappers[0]
+    if wrapper_index != 0:
+        short = str(wrapper.get("short") or str(wrapper.get("sha") or "")[:8])
+        return [], set(), [f"composition wrapper {short} must be the oldest epic boundary row"]
+
+    subject = str(wrapper.get("subject") or "")
+    match = _COMPOSITION_BUBBLE.fullmatch(subject)
+    assert match is not None
+
+    sha = str(wrapper.get("sha") or "")
+    short = str(wrapper.get("short") or sha[:8])
+    parents = [str(value) for value in (wrapper.get("parents") or [])]
+    if len(parents) != 2:
+        return [], set(), [f"composition wrapper {short} must have exactly two parents"]
+    errors.extend(_composition_identity_errors(wrapper, epic, composition_target))
+    if parents[0] != base:
+        errors.append(
+            f"composition wrapper {short} must use the exact integration base as first parent"
+        )
+    if errors:
+        return [], set(), errors
+
+    nested_base = worktree.base_of(entry, parents[1], parents[0])
+    if not nested_base:
+        return [], set(), [f"composition wrapper {short} has no merge base between its parents"]
+    nested_rows = worktree.commit_rows(entry, nested_base, parents[1])
+    if not nested_rows:
+        return [], set(), [f"composition wrapper {short} has an empty reviewed side"]
+    nested_spine, nested_errors = _reviewed_side_spine(entry, nested_rows, parents[1], nested_base)
+    if nested_errors:
+        return (
+            [],
+            set(),
+            [
+                f"composition wrapper {short} has invalid reviewed-side topology: {error}"
+                for error in nested_errors
+            ],
+        )
+
+    nested_wrappers = [
+        str(row.get("short") or str(row.get("sha") or "")[:8])
+        for row in nested_spine
+        if _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
+    ]
+    if nested_wrappers:
+        return (
+            [],
+            set(),
+            [
+                f"composition wrapper {short} has stacked reviewed-side wrapper(s): "
+                + ", ".join(nested_wrappers)
+            ],
+        )
+
+    outer_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
+    nested_shas = {str(row.get("sha") or "") for row in nested_rows if row.get("sha")}
+    if not (nested_shas | {sha}) <= outer_shas:
+        return (
+            [],
+            set(),
+            [f"composition wrapper {short} reviewed side leaves the outer review range"],
+        )
+    return [*nested_spine, *spine[1:]], {sha}, []
+
+
+def epic_history_policy(
+    entry,
+    main,
+    epic: str,
+    branch: str,
+    base: str,
+    max_commits: int,
+    integration_branch: str,
+) -> dict:
+    """Audit an assembled epic without flattening its reviewed child graph.
+
+    ``max_commits`` remains the unchanged leaf budget.  Epic capacity is instead the exact union
+    of commits already linked to landed direct children and reachable in ``base..branch``.  The
+    numeric allowance therefore cannot admit noise: every commit must be linked, and the epic's
+    own first-parent spine must consist solely of lifecycle no-ff bubbles that name those direct
+    children.  Child/batch limits were enforced at their own submit+merge boundaries; this guard
+    preserves their graph and verifies the durable provenance they recorded there.
+    """
+    # Submit/finish historically pass the integration ref (for example ``main``), while show
+    # passes its already-resolved merge base.  Canonicalize both forms before walking parent SHAs;
+    # comparing an actual parent SHA to the literal ref name would make a valid spine appear to
+    # leave the range at its base commit.
+    base = worktree.base_of(entry, branch, base)
+    rows = worktree.commit_rows(entry, base, branch)
+    range_shas = {str(row.get("sha") or "") for row in rows if row.get("sha")}
+    children, errors = _direct_work_children(epic, main)
+    direct = {str(child.get("id") or ""): child for child in children if child.get("id")}
+    linked_by_child = {
+        child_id: set(git_linkage.commits_from_data(child)) & range_shas
+        for child_id, child in direct.items()
+    }
+    branch_sha = worktree._branch_sha(entry, branch)
+    epic_data = bd.show(epic, main) or {}
+    parent = str(epic_data.get("parent") or "")
+    composition_target = parent or integration_branch
+    spine, topology_commits, spine_errors = _reviewed_epic_spine(
+        entry, rows, branch_sha, base, epic, composition_target
+    )
+    errors.extend(spine_errors)
+    accounted: set[str] = set(topology_commits)
+    integrated: set[str] = set()
+
+    for row in spine:
+        sha = str(row.get("sha") or "")
+        short = str(row.get("short") or sha[:8])
+        parents = [str(parent) for parent in (row.get("parents") or [])]
+        subject = str(row.get("subject") or "")
+        if len(parents) != 2:
+            errors.append(
+                f"unaccounted direct epic commit {short} {subject!r}; expected a lifecycle "
+                "no-ff child integration bubble"
+            )
+            continue
+        match = _INTEGRATION_BUBBLE.fullmatch(subject)
+        if not match:
+            errors.append(
+                f"unaccounted epic merge {short} {subject!r}; expected chore(merge) naming "
+                "a direct child integration"
+            )
+            continue
+        kind, name = match.groups()
+        members: list[dict]
+        if kind == "batch":
+            members = _batch_members(name, sha, children)
+            if not members:
+                errors.append(
+                    f"batch bubble {short} names {name!r} but no landed direct child links "
+                    "that merge commit"
+                )
+                continue
+        else:
+            child = direct.get(name)
+            expected_epic = kind == "molecule"
+            if child is None:
+                errors.append(f"{kind} bubble {short} names non-child {name}")
+                continue
+            if (str(child.get("issue_type") or "") == "epic") != expected_epic:
+                errors.append(f"{kind} bubble {short} has the wrong child type for {name}")
+                continue
+            members = [child]
+
+        member_ids = {str(member.get("id") or "") for member in members}
+        if integrated & member_ids:
+            repeated = ", ".join(sorted(integrated & member_ids))
+            errors.append(f"direct child integrated more than once: {repeated}")
+            continue
+        # A reviewed child may itself have absorbed commits which are already part of the exact
+        # integration base.  Those commits are outside this epic's review range by definition;
+        # require linkage only for the commits this composition actually introduces.
+        introduced = (set(worktree.commit_shas(entry, parents[1], parents[0])) | {sha}) & range_shas
+        linked = set().union(*(linked_by_child.get(member_id, set()) for member_id in member_ids))
+        missing = introduced - linked
+        if missing:
+            errors.append(
+                f"{kind} integration {short} for {', '.join(sorted(member_ids))} has "
+                f"{len(missing)} commit(s) not linked to those reviewed direct children"
+            )
+            continue
+        if not all(_landed_child(member) for member in members):
+            errors.append(
+                f"{kind} integration {short} names a direct child without a landed disposition"
+            )
+            continue
+        integrated.update(member_ids)
+        accounted.update(introduced)
+
+    landed = {child_id for child_id, child in direct.items() if _landed_child(child)}
+    missing_integrations = landed - integrated
+    if missing_integrations:
+        errors.append(
+            "landed direct child missing a reviewed lifecycle integration: "
+            + ", ".join(sorted(missing_integrations))
+        )
+    if topology_commits and not integrated:
+        errors.append("composition wrapper contains no proven landed direct-child integration")
+
+    unaccounted = range_shas - accounted
+    if unaccounted and not any("unaccounted" in error for error in errors):
+        examples = [
+            f"{row.get('short')} {row.get('subject')}"
+            for row in rows
+            if row.get("sha") in unaccounted
+        ][:4]
+        errors.append(
+            f"{len(unaccounted)} unaccounted commit(s) outside reviewed direct-child linkage: "
+            + "; ".join(examples)
+        )
+    effective = len(accounted)
+    count = len(range_shas)
+    if count > effective and not errors:
+        errors.append(f"{count} commits exceed the linked epic allowance {effective}")
+    provenance = "linked/topology" if topology_commits else "linked"
+    basis = (
+        f"{effective} {provenance} commit(s) from "
+        f"{len(integrated)} reviewed direct-child integration(s)"
+    )
+    return {
+        "kind": "epic-reviewed-topology",
+        "configured_max_commits": max_commits,
+        "effective_max_commits": effective,
+        "direct_children": len(children),
+        "integrated_children": len(integrated),
+        "basis": basis,
+        "valid": not errors,
+        "errors": errors,
+    }
 
 
 def plan_from_since(rows: list[dict]) -> dict:

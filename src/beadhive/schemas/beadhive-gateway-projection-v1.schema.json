@@ -1,0 +1,143 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:beadhive:gateway-projection-contract-schema:1",
+  "title": "Beadhive Frame Bridge Gateway wire projection contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$id",
+    "formatVersion",
+    "contractVersion",
+    "profile",
+    "policy",
+    "wireContracts",
+    "operations"
+  ],
+  "properties": {
+    "$id": {"const": "urn:beadhive:gateway-projection-contract:1"},
+    "formatVersion": {"const": 1},
+    "contractVersion": {"const": "1.3.0"},
+    "profile": {"const": "Development"},
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "catalogRole",
+        "wireAuthority",
+        "runtimeAuthority",
+        "localCompatibility"
+      ],
+      "properties": {
+        "catalogRole": {"type": "string", "minLength": 1},
+        "wireAuthority": {"type": "string", "minLength": 1},
+        "runtimeAuthority": {"type": "string", "minLength": 1},
+        "localCompatibility": {"type": "string", "minLength": 1}
+      }
+    },
+    "wireContracts": {
+      "type": "array",
+      "minItems": 2,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/wireContract"}
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/operation"}
+    }
+  },
+  "$defs": {
+    "wireContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["$id", "digest", "contractVersion", "schemaVersion", "schemas"],
+      "properties": {
+        "$id": {
+          "type": "string",
+          "pattern": "^urn:beadhive:gateway-wire-contract:.+:sha256:[0-9a-f]{64}$"
+        },
+        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "contractVersion": {"type": "string", "minLength": 1},
+        "schemaVersion": {"type": "integer", "minimum": 1},
+        "schemas": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"type": "object"}
+        }
+      }
+    },
+    "canonicalContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operation",
+        "requestSchema",
+        "resultSchema",
+        "privilege",
+        "sideEffects"
+      ],
+      "properties": {
+        "operation": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+(?:\\.[a-z0-9-]+)*$"
+        },
+        "requestSchema": {"type": "string", "minLength": 1},
+        "resultSchema": {"type": "string", "minLength": 1},
+        "privilege": {"type": "string", "minLength": 1},
+        "sideEffects": {"type": "string", "minLength": 1}
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identifier",
+        "method",
+        "path",
+        "classification",
+        "shape",
+        "canonicalContracts",
+        "wireRequestSchema",
+        "wireResultSchema",
+        "transportOwner",
+        "transportPrivilege",
+        "sideEffects",
+        "streaming",
+        "availability",
+        "compatibility",
+        "reason"
+      ],
+      "properties": {
+        "identifier": {"type": "string", "minLength": 1},
+        "method": {"enum": ["GET", "POST", "OPTIONS"]},
+        "path": {"type": "string", "pattern": "^/"},
+        "classification": {
+          "enum": ["catalog-entry", "composite", "transport-mechanic", "explicit-exclusion"]
+        },
+        "shape": {
+          "enum": ["exact", "richer", "coarser", "transport-only", "excluded"]
+        },
+        "canonicalContracts": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/canonicalContract"}
+        },
+        "wireRequestSchema": {
+          "type": "string",
+          "pattern": "^urn:beadhive:gateway-wire-contract:.+:sha256:[0-9a-f]{64}#/schemas/[A-Za-z][A-Za-z0-9]*$"
+        },
+        "wireResultSchema": {
+          "type": "string",
+          "pattern": "^urn:beadhive:gateway-wire-contract:.+:sha256:[0-9a-f]{64}#/schemas/[A-Za-z][A-Za-z0-9]*$"
+        },
+        "transportOwner": {"const": "gateway-contract"},
+        "transportPrivilege": {"type": "string", "minLength": 1},
+        "sideEffects": {"type": "string", "minLength": 1},
+        "streaming": {"type": "boolean"},
+        "availability": {"type": "string", "minLength": 1},
+        "compatibility": {"type": "string", "minLength": 1},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

@@ -1,11 +1,9 @@
-"""Convention done-gate (bh-2l1m.9).
+"""Naming-ADR generator checks and live compatibility assertions.
 
-Asserts — mechanically — that the CLI + MCP surface conforms to the decided naming/flag ADR
-(``docs/design/cli-mcp-naming-conventions-adr.md``), so the surface cannot silently drift back.
-Covers: singular group names, a rich_help_panel on every visible group/command, the 6-panel
-scheme, every ``work``/``plan`` verb ``@otel.trace_verb``-wrapped, MCP tool == derived
-``group_verb`` for the 1:1 cases, no ``ws``/``rig`` residue in tool names / resource URIs / the
-health probe, and the ``beadhive://<group>/<view>`` resource-URI scheme.
+The eight conventions are enforced by :mod:`beadhive.cli_projection` while catalog rows become
+Typer commands.  This suite proves that the shipping ``work``/``plan`` callbacks are that
+generator's output, then keeps presentation-only compatibility checks (panels and hidden groups)
+beside the generated surface.
 """
 
 from __future__ import annotations
@@ -18,6 +16,13 @@ import pytest
 from typer.models import DefaultPlaceholder
 
 from beadhive import cli, plan, work
+from beadhive.cli_projection import (
+    HAND_AUTHORED_CLI_GROUPS,
+    MIGRATED_CLI_GROUPS,
+    catalog_cli_groups,
+    validate_catalog_generation_rules,
+    validate_migration_inventory,
+)
 
 # ---- CLI introspection helpers ----------------------------------------------
 
@@ -112,6 +117,14 @@ def _read_probe():
 
 
 # ---- convention 1/2: singular group names -----------------------------------
+
+
+def test_naming_adr_rules_and_migration_inventory_are_generator_checked():
+    validate_catalog_generation_rules()
+    validate_migration_inventory()
+    assert set(MIGRATED_CLI_GROUPS) == set(catalog_cli_groups())
+    assert HAND_AUTHORED_CLI_GROUPS == ()
+    assert set(MIGRATED_CLI_GROUPS) | set(HAND_AUTHORED_CLI_GROUPS) == set(catalog_cli_groups())
 
 
 def test_visible_groups_are_singular():
@@ -209,10 +222,18 @@ def test_otel_and_dolt_are_hidden():
 
 def test_every_work_and_plan_verb_is_trace_wrapped():
     for group_name, app in (("work", work.app), ("plan", plan.app)):
+        projection = work.CLI_PROJECTION if group_name == "work" else plan.CLI_PROJECTION
+        assert (
+            tuple(
+                f"{group_name}.{c.name or c.callback.__name__.rstrip('_')}"
+                for c in app.registered_commands
+            )
+            == projection.operations
+        )
         for c in app.registered_commands:
             verb = c.name or c.callback.__name__
-            assert getattr(c.callback, "__otel_verb__", None), (
-                f"`{group_name} {verb}` is not @otel.trace_verb-wrapped"
+            assert getattr(c.callback, "__otel_verb__", None) == f"{group_name}.{verb}", (
+                f"`{group_name} {verb}` did not retain its generated trace marker"
             )
 
 

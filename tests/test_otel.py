@@ -14,8 +14,13 @@ import io
 import json
 import logging
 import os
+import subprocess
 import sys
+import threading
+import time
+import tomllib
 import types
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,6 +28,7 @@ import pytest
 from beadhive import config, log, otel
 
 _ENDPOINT_ENV = "OTEL_EXPORTER_OTLP_ENDPOINT"
+_TIMEOUT_ENV = "OTEL_EXPORTER_OTLP_TIMEOUT"
 
 
 @pytest.fixture(autouse=True)
@@ -37,8 +43,12 @@ def _reset(monkeypatch):
 
     otel._initialized = False
     otel._providers = ()
+    otel._shutdown_ports = ()
+    otel._semantic_sink = None
+    otel._semantic_telemetry = None
     otel._atexit_registered = False
     monkeypatch.delenv(_ENDPOINT_ENV, raising=False)
+    monkeypatch.delenv(_TIMEOUT_ENV, raising=False)
     monkeypatch.delenv("BH_ROLE", raising=False)
     monkeypatch.delenv("WS_ROLE", raising=False)
     monkeypatch.delenv("BH_OBSERVALOOP_PROFILE", raising=False)
@@ -53,6 +63,9 @@ def _reset(monkeypatch):
     log._configured = False
     otel._initialized = False
     otel._providers = ()
+    otel._shutdown_ports = ()
+    otel._semantic_sink = None
+    otel._semantic_telemetry = None
     otel._atexit_registered = False
     root.handlers.clear()
     root.handlers.extend(saved)
@@ -151,7 +164,7 @@ def test_enabled_present_wires_providers_exporters_and_bridge(monkeypatch):
     resource = fake.Resource.create.return_value
 
     # Traces: provider(resource) → BatchSpanProcessor(OTLP(endpoint)) → set global.
-    fake.TracerProvider.assert_called_once_with(resource=resource)
+    fake.TracerProvider.assert_called_once_with(resource=resource, shutdown_on_exit=False)
     fake.OTLPSpanExporter.assert_called_once_with(endpoint="http://collector:4317")
     fake.BatchSpanProcessor.assert_called_once_with(fake.OTLPSpanExporter.return_value)
     fake.TracerProvider.return_value.add_span_processor.assert_called_once_with(
@@ -166,13 +179,16 @@ def test_enabled_present_wires_providers_exporters_and_bridge(monkeypatch):
     )
     fake.PeriodicExportingMetricReader.assert_called_once_with(fake.OTLPMetricExporter.return_value)
     fake.MeterProvider.assert_called_once_with(
-        resource=resource, metric_readers=[fake.PeriodicExportingMetricReader.return_value]
+        resource=resource,
+        metric_readers=[fake.PeriodicExportingMetricReader.return_value],
+        shutdown_on_exit=False,
     )
     fake.metrics.set_meter_provider.assert_called_once_with(fake.MeterProvider.return_value)
 
     # Logs: provider → BatchLogRecordProcessor(OTLP) → set global → LoggingHandler on root.
     fake.OTLPLogExporter.assert_called_once_with(endpoint="http://collector:4317")
     fake.BatchLogRecordProcessor.assert_called_once_with(fake.OTLPLogExporter.return_value)
+    fake.LoggerProvider.assert_called_once_with(resource=resource, shutdown_on_exit=False)
     fake.LoggerProvider.return_value.add_log_record_processor.assert_called_once_with(
         fake.BatchLogRecordProcessor.return_value
     )
@@ -225,6 +241,22 @@ def test_triplet_present_when_in_managed_repo(monkeypatch):
     assert attrs["bh.provider"] == "github"
     assert attrs["bh.org"] == "acme"
     assert attrs["bh.repo"] == "widgets"
+
+
+def test_daemon_resource_can_disable_cwd_and_single_hive_enrichment(monkeypatch):
+    _patch_cwd_identity(monkeypatch, ("github", "secret-org", "secret-repo"), "private-seat")
+    attrs = otel._resource_attributes(
+        {"otel": {"enabled": True, "hive": "single-hive"}},
+        service_name="bh-host-daemon",
+        extra={"bh.host.id": "host-1", "service.instance.id": "instance-1"},
+        enrich=False,
+    )
+    assert attrs == {
+        "service.name": "bh-host-daemon",
+        "service.version": attrs["service.version"],
+        "bh.host.id": "host-1",
+        "service.instance.id": "instance-1",
+    }
 
 
 def test_triplet_omitted_outside_managed_repo(monkeypatch):
@@ -760,9 +792,9 @@ def test_shutdown_flushes_all_three_providers(monkeypatch):
 
     otel.shutdown()
 
-    fake.TracerProvider.return_value.shutdown.assert_called_once_with()
-    fake.MeterProvider.return_value.shutdown.assert_called_once_with()
-    fake.LoggerProvider.return_value.shutdown.assert_called_once_with()
+    fake.BatchSpanProcessor.return_value._batch_processor.shutdown.assert_called_once()
+    fake.MeterProvider.return_value.shutdown.assert_called_once()
+    fake.BatchLogRecordProcessor.return_value._batch_processor.shutdown.assert_called_once()
     assert otel.is_active() is False  # state reset so a fresh init() can re-wire
 
 
@@ -811,15 +843,162 @@ def test_flush_hook_registered_once_across_reinit(monkeypatch):
 def test_shutdown_swallows_provider_errors(monkeypatch):
     # An exporter failure on exit must not raise out of the atexit hook (best-effort flush).
     fake = _fake_otel()
-    fake.TracerProvider.return_value.shutdown.side_effect = RuntimeError("collector unreachable")
+    fake.BatchSpanProcessor.return_value._batch_processor.shutdown.side_effect = RuntimeError(
+        "collector unreachable"
+    )
     monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
     assert otel.init({"otel": {"enabled": True}}) is True
 
     otel.shutdown()  # must not raise despite the tracer provider blowing up
 
     # The later providers are still flushed — one failure doesn't abort the rest.
-    fake.MeterProvider.return_value.shutdown.assert_called_once_with()
-    fake.LoggerProvider.return_value.shutdown.assert_called_once_with()
+    fake.MeterProvider.return_value.shutdown.assert_called_once()
+    fake.BatchLogRecordProcessor.return_value._batch_processor.shutdown.assert_called_once()
+
+
+def test_shutdown_refuses_three_noncooperative_providers_without_workers(monkeypatch):
+    release = threading.Event()
+    calls = []
+
+    class BlockedProvider:
+        def force_flush(self, *, timeout_millis):
+            calls.append(("flush", timeout_millis))
+            assert 0 < timeout_millis <= 50
+            release.wait(1)
+            return False
+
+        def shutdown(self):
+            calls.append(("shutdown", None))
+            release.wait(1)
+
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(
+        otel, "_providers", (BlockedProvider(), BlockedProvider(), BlockedProvider())
+    )
+    result = []
+    caller = threading.Thread(
+        target=lambda: result.append(otel.shutdown(timeout_seconds=0.05)),
+        name="test-otel-shutdown-caller",
+    )
+    caller.start()
+    caller.join(0.2)
+
+    assert caller.is_alive() is False
+    assert result[0].status == "refused"
+    assert result[0].provider_errors == 3
+    assert otel.is_active() is False
+    assert calls == []
+    assert not [thread for thread in threading.enumerate() if thread.name == "bh-otel-shutdown"]
+    release.set()
+
+
+def test_cli_flush_semantics_share_one_budget_and_report_dead_collector_timeout(
+    monkeypatch,
+) -> None:
+    from beadhive.kernel.telemetry import EventIdentity, RecordingTelemetrySink, SemanticTelemetry
+
+    calls: list[tuple[str, int]] = []
+    recording = RecordingTelemetrySink()
+    semantic = SemanticTelemetry(
+        sink=recording,
+        identity=EventIdentity(service="bh", instance_id="cli-one"),
+    )
+
+    class Pending:
+        def close_open_spans(self) -> None:
+            calls.append(("close-spans", 0))
+
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(otel, "_providers", (object(),))
+    monkeypatch.setattr(
+        otel,
+        "_shutdown_ports",
+        (
+            otel._ShutdownPort(
+                name="traces",
+                export_timeout_seconds=0.01,
+                force_flush=lambda timeout_millis: calls.append(("flush", timeout_millis)) or False,
+                close=lambda timeout_millis: calls.append(("shutdown", timeout_millis)),
+                worker_alive=lambda: False,
+            ),
+        ),
+    )
+    monkeypatch.setattr(otel, "_semantic_sink", Pending())
+    monkeypatch.setattr(otel, "_semantic_telemetry", semantic)
+    monkeypatch.setattr(otel, "_semantic_surface", "cli")
+
+    started = time.monotonic()
+    result = otel.shutdown(timeout_seconds=0.05)
+
+    assert time.monotonic() - started < 0.1
+    assert result.status == "timed_out"
+    assert calls[0][0] == "flush"
+    assert 0 < calls[0][1] <= 50
+    assert [name for name, _budget in calls] == ["flush", "close-spans", "shutdown"]
+    assert [event.event_name.value for event in recording.events] == [
+        "beadhive.telemetry.flush",
+        "beadhive.telemetry.flush",
+    ]
+    assert recording.events[-1].outcome.value == "timed-out"
+    assert (
+        dict(
+            (attribute.key.value, attribute.value) for attribute in recording.events[0].attributes
+        )["surface"]
+        == "cli"
+    )
+    assert not [thread for thread in threading.enumerate() if thread.name == "bh-otel-shutdown"]
+
+
+def test_otel_extra_declares_the_verified_cooperative_sdk_floor():
+    project = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    dependencies = set(project["project"]["optional-dependencies"]["otel"])
+
+    assert "opentelemetry-sdk>=1.37,<2" in dependencies
+    assert "opentelemetry-exporter-otlp>=1.37,<2" in dependencies
+
+
+def test_real_sdk_dead_collector_closes_all_owned_workers_within_budget():
+    pytest.importorskip("opentelemetry.sdk", reason="beadhive[otel] extra is not installed")
+    script = """
+import json
+import threading
+import time
+from beadhive import otel
+
+cfg = {
+    "otel": {
+        "enabled": True,
+        "protocol": "http/protobuf",
+        "endpoint": "http://127.0.0.1:1",
+        "export_timeout_seconds": 0.05,
+        "flush_timeout_seconds": 0.5,
+    }
+}
+assert otel.init(cfg)
+otel.record_cli_invocation("dead-collector-proof", "ok", 0.01)
+started = time.monotonic()
+result = otel.shutdown()
+print(json.dumps({
+    "status": result.status,
+    "elapsed": time.monotonic() - started,
+    "workers": [
+        thread.name
+        for thread in threading.enumerate()
+        if thread is not threading.main_thread()
+    ],
+}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=3,
+    )
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+    assert payload["status"] == "completed"
+    assert payload["elapsed"] < 0.75
+    assert payload["workers"] == []
 
 
 # ---- config accessors -------------------------------------------------------
@@ -829,6 +1008,20 @@ def test_config_otel_defaults():
     assert config.otel_enabled({}) is False
     assert config.otel_endpoint({}) == ""
     assert config.otel_hive({}) == ""
+    assert config.otel_export_timeout({}) == 0.5
+    assert config.otel_flush_timeout({}) == 2.0
+
+
+def test_init_seeds_finite_standard_export_timeout_without_overriding_operator(monkeypatch):
+    fake = _fake_otel()
+    monkeypatch.setattr(otel, "_load_otel", lambda *_a, **_k: fake)
+    assert otel.init({"otel": {"enabled": True, "export_timeout_seconds": 0.25}})
+    assert os.environ[_TIMEOUT_ENV] == "0.25"
+
+    otel.shutdown()
+    monkeypatch.setenv(_TIMEOUT_ENV, "7")
+    assert otel.init({"otel": {"enabled": True, "export_timeout_seconds": 0.25}})
+    assert os.environ[_TIMEOUT_ENV] == "7"
 
 
 def test_config_otel_endpoint_env_wins(monkeypatch):

@@ -8,6 +8,7 @@ orchestration, registry/validation logic, and path-derived identity.
 
 from __future__ import annotations
 
+import contextlib
 import importlib.metadata
 import json
 import os
@@ -24,7 +25,6 @@ from . import (
     checkpoint,
     complexity_backfill,
     config,
-    config_schema,
     dep_cli,
     dolt,
     gitworkspace_plugin,
@@ -43,12 +43,14 @@ from . import (
     work,
 )
 from . import bd as bd_mod
+from .adapters.cli.tree import project_cli_tree as _project_cli_tree
+from .modules.config import contracts as config_schema
+from .plugin_runtime_catalog import PLUGIN_RUNTIME_CATALOG
 from .run import run
 
 app = typer.Typer(no_args_is_help=True, help="Workspace CLI.")
 
-# Help panels — the 6-panel scheme reflecting the plane model (see
-# docs/design/cli-mcp-naming-conventions-adr.md §5a), ordered by lifecycle.
+# Help panels — the plane model's 6-panel lifecycle ordering (naming-conventions ADR §5a).
 PLANNING_PANEL = "Planning plane"
 INTEGRATION_PANEL = "Integration plane"
 HIVE_PANEL = "Hive"
@@ -128,10 +130,36 @@ app.add_typer(config_app, name="config", rich_help_panel=ADMIN_PANEL)
 app.add_typer(mcp_app, name="mcp", rich_help_panel=ADMIN_PANEL)
 hive_app.add_typer(contrib_profile_app, name="contrib-profile")
 
-# Mount each registered plugin's own Typer sub-app: `bh plugin <name> …` (e.g.
-# `bh plugin orca sync`). Generic — new integrations appear here just by joining the registry.
-for _plugin in plugins.registry():
-    plugin_app.add_typer(_plugin.cli, name=_plugin.name)
+
+def _plugin_config_snapshot() -> dict:
+    """Load optional-plugin policy once; a pre-setup host retains the legacy CLI inventory."""
+
+    try:
+        return config.load()
+    except FileNotFoundError:
+        return {}
+
+
+# Mount each selected plugin's own Typer sub-app: `bh plugin <name> …` (e.g.
+# `bh plugin orca sync`).  The outer adapter snapshots canonical policy once; static registry
+# inventory alone cannot make a disabled command executable.
+_PLUGIN_CONFIG = _plugin_config_snapshot()
+_PLUGIN_MOUNTS = plugins.cli_mounts(_PLUGIN_CONFIG, None)
+for _mount in _PLUGIN_MOUNTS:
+    plugin_app.add_typer(_mount.app, name=_mount.plugin_id)
+
+
+def _canonically_disabled_optional_plugins(cfg: dict) -> frozenset[str]:
+    """Return optional plugin ids explicitly disabled by canonical kernel policy."""
+
+    kernel = cfg.get("plugin_kernel", {})
+    enabled = kernel.get("enabled", {}) if isinstance(kernel, dict) else {}
+    return frozenset(
+        entry.plugin_id
+        for entry in PLUGIN_RUNTIME_CATALOG
+        if isinstance(enabled, dict) and enabled.get(entry.plugin_id) is False
+    )
+
 
 # git-workspace is a required dep (deps.py, required=ALWAYS), not an optional plugin — it has
 # no `enabled` flag to loop over, so it is not in plugins.registry() (bh-hsus.4). It is however
@@ -368,11 +396,12 @@ def _init_telemetry_best_effort() -> None:
 
         observaloop_env.load_worktree_env(_cfg)
         otel.init(_cfg)
+        plugins.configure_semantic_telemetry(otel.current_semantic_telemetry())
     except Exception:  # best-effort telemetry; never break the CLI on init/config-load failure
         pass
 
 
-def _instrument_command_entry(ctx: typer.Context) -> None:
+def _instrument_command_entry(ctx: typer.Context, *, command_name: str | None = None) -> None:
     """Instrument the command-entry seam: register a call_on_close hook that emits a counter +
     histogram tagged with the invoked subcommand name + outcome (ok/error). Gated on
     is_active() so the off-path (default: otel disabled) is a single bool read — zero SDK
@@ -380,7 +409,7 @@ def _instrument_command_entry(ctx: typer.Context) -> None:
     if not otel.is_active():
         return
     _start = time.monotonic()
-    _cmd = ctx.invoked_subcommand or ""
+    _cmd = command_name if command_name is not None else ctx.invoked_subcommand or ""
     # Open a root ws.cli {command} span so all child spans (trace_verb + subprocess) nest
     # under it. The context manager is entered here (making the span current) and exited in
     # call_on_close after the subcommand completes. otel.span() delegates to get_tracer(),
@@ -401,6 +430,9 @@ def _instrument_command_entry(ctx: typer.Context) -> None:
         otel.record_cli_invocation(_cmd, outcome, time.monotonic() - _start)
 
     ctx.call_on_close(_record_invocation)
+
+
+host_cli.configure_cli_telemetry(_init_telemetry_best_effort, _instrument_command_entry)
 
 
 def _resolve_hive_routing_mode(ctx: typer.Context, all_hives: bool, hive: str) -> str:
@@ -439,8 +471,13 @@ def _root(
     _warn_stale_schema_version_best_effort(ctx)
     _warn_missing_fleet_config_best_effort(ctx)
     _warn_literal_violations_best_effort(ctx)
-    _init_telemetry_best_effort()
-    _instrument_command_entry(ctx)
+    # ``host daemon serve`` owns a daemon-scoped provider for its entire outer lifespan.  Defer
+    # generic CLI telemetry through the nested host/daemon callbacks so that supported entrypoint
+    # does not consume the process-global SDK first.  Every other command still initializes the
+    # ordinary short-lived CLI provider before its handler runs.
+    if ctx.invoked_subcommand != "host":
+        _init_telemetry_best_effort()
+        _instrument_command_entry(ctx)
     # Same informational-only exemption as the schema-staleness nudge above (bh-sn9q): a
     # subcommand's `--help`/`-h` or shell-completion must never be blocked by the setup gate
     # (it would otherwise swallow the help text entirely on a fresh, ungated install).
@@ -1675,9 +1712,13 @@ def hive_add(
     kind: str = typer.Option("", help="org-native|personal|prototype|fork|external"),
     upstream: str = typer.Option("", help="upstream org/repo (for forks)"),
 ):
-    from . import hive
+    from . import hive_services
+    from .modules.hives import RegisterHiveRequest
 
-    hive.add(hive_id, prefix=prefix, kind=kind, upstream=upstream)
+    identity = hive_services.identity_from_legacy_triplet(hive_id)
+    hive_services.hive_lifecycle_service().register(
+        RegisterHiveRequest(identity, prefix=prefix, kind=kind, upstream=upstream)
+    )
 
 
 @hive_app.command(
@@ -1726,9 +1767,22 @@ def hive_retire(
         False, "--purge", help="hard-delete the clone instead of soft-archiving it (still gated)"
     ),
 ):
-    from . import retire
+    from . import hive_services
+    from .modules.hives import RetireHiveRequest, RetireScope
 
-    retire.retire_hive(hive_id, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
+    result = hive_services.hive_lifecycle_service().retire(
+        RetireHiveRequest(
+            hive_id,
+            scope=RetireScope.FLEET,
+            dry_run=dry_run,
+            backup=backup,
+            confirm=confirm,
+            purge=purge,
+        )
+    )
+    _render_retire_result(result)
+    if not result.successful:
+        raise typer.Exit(1)
 
 
 @hive_app.command(
@@ -1756,9 +1810,118 @@ def hive_reclaim(
         False, "--purge", help="hard-delete the clone instead of soft-archiving it (still gated)"
     ),
 ):
-    from . import retire
+    from . import hive_services
+    from .modules.hives import RetireHiveRequest, RetireScope
 
-    retire.reclaim_hive(hive_id, dry_run=dry_run, backup=backup, confirm=confirm, purge=purge)
+    result = hive_services.hive_lifecycle_service().retire(
+        RetireHiveRequest(
+            hive_id,
+            scope=RetireScope.HOST,
+            dry_run=dry_run,
+            backup=backup,
+            confirm=confirm,
+            purge=purge,
+        )
+    )
+    _render_retire_result(result)
+    if not result.successful:
+        raise typer.Exit(1)
+
+
+def _render_retire_result(result) -> None:
+    for event in result.events:
+        typer.echo(_retire_event_text(result, event), err=event.error)
+
+
+def _retire_event_text(result, event) -> str:
+    """Project semantic retirement facts into the established CLI text."""
+
+    facts = event.facts
+    action = "retire" if result.scope.value == "fleet" else "reclaim"
+    prefix = "DRY-RUN " if result.dry_run else ""
+    code = event.code
+    if code == "operation":
+        return f"{prefix}{action} {facts['identity']}"
+    if code == "clone":
+        return f"  clone: {facts['path']}"
+    if code == "scope":
+        return (
+            "  scope: host-local — managed_repos is untouched; "
+            f"{facts['identity']} stays registered for the fleet"
+        )
+    if code == "clone_missing":
+        return f"✗ clone path does not exist: {facts['path']}"
+    if code == "assessment":
+        return f"  assess: {facts['verdict']}"
+    if code in {"assessment_reason", "backup_reason", "dirty_worktree", "failed_worktree"}:
+        return f"    - {facts['reason']}"
+    if code == "worktree_removed":
+        verb = "would remove" if result.dry_run else "removed"
+        return f"  worktree: {verb} {facts['path']}"
+    if code == "purge":
+        verb = "would rm -rf" if result.dry_run else "rm -rf"
+        return f"  purge: {verb} {facts['path']}"
+    if code == "archive":
+        verb = "would move" if result.dry_run else "moved"
+        return f"  archive: {verb} {facts['source']} → {facts['destination']}"
+    if code == "archive_exists":
+        return f"✗ archive destination already exists: {facts['path']}"
+    if code == "unregister":
+        return (
+            f"  unregister: would drop {facts['identity']} from the registry "
+            "(fleet-wide — every host loses this hive)"
+        )
+    if code == "registry_retained":
+        return f"  registry: left untouched — {facts['identity']} remains registered for the fleet"
+    if code == "plugin_preview":
+        return f"  plugin {facts['plugin']}: would notify of retire (manual removal)"
+    if code == "plugin_failed":
+        return f"  plugin {facts['plugin']}: notify failed ({facts['reason']})"
+    if code == "complete":
+        return "✓ dry-run complete — nothing changed" if result.dry_run else f"✓ {action} complete"
+    if code == "backup_failed":
+        return f"✗ backup failed: {facts['reason']}"
+    if code == "nothing_deleted":
+        return "  nothing was deleted — resolve the error and retry"
+    if code == "backup_incomplete_accepted":
+        return "  backup: incomplete — --confirm accepts the remaining loss"
+    if code == "backup_unsafe":
+        return "✗ refusing: backup did not make the repository safe:"
+    if code == "confirm_hint":
+        hints = {
+            "remaining_loss": "  pass --confirm to accept the remaining loss",
+            "blocked": "  pass --confirm to override and proceed anyway",
+            "teardown": "  resolve the failure, or pass --confirm to proceed anyway",
+        }
+        return hints[facts["kind"]]
+    if code == "backup_skipped":
+        return "  backup: skipped — --confirm accepts the data loss"
+    if code == "unbacked_work":
+        return "✗ refusing: repository has unbacked work that would be lost"
+    if code == "backup_hint":
+        return (
+            "  pass --backup to snapshot it durably, or --confirm to accept the loss"
+            if facts["subject"] == "repository"
+            else "  pass --backup to snapshot them, or --confirm to accept the loss"
+        )
+    if code == "blocked_overridden":
+        return "  assess: BLOCKED overridden by --confirm"
+    if code == "assessment_blocked":
+        return "✗ refusing: assessment is BLOCKED (see reasons above)"
+    if code == "dirty_worktree_accepted":
+        return f"  worktree: keeping dirty {facts['path']} — --confirm accepts the loss"
+    if code == "dirty_worktrees":
+        return "✗ refusing: dirty worktrees hold unbacked work:"
+    if code == "teardown_failed_accepted":
+        return f"  worktree: FAILED to remove {facts['path']} — --confirm proceeds anyway"
+    if code == "teardown_failed":
+        return "✗ refusing: worktree teardown failed (live worktrees remain):"
+    if code == "backup":
+        verb = "would back up" if result.dry_run else "backed up"
+        return f"  backup: {verb} {facts['label']} {facts['path']}"
+    if code == "backup_action":
+        return f"    · {facts['action']}"
+    raise ValueError(f"unknown retirement event: {code}")
 
 
 # ---- hive sync: remotes (bd dolt push/pull) + peers (bd federation sync) -----------------
@@ -2068,31 +2231,140 @@ def hive_onboard(
         "synchronously); --hub-sync waits for the full fleet-wide sync to complete; --no-hub-sync "
         "skips the hub entirely",
     ),
+    as_json: bool = typer.Option(
+        False,
+        "--json",
+        help="emit the versioned onboarding result as JSON (bh progress is carried in text)",
+    ),
 ):
-    from . import hive
+    from . import hive, hive_services, jsonout
+    from .modules.hives import OnboardHiveRequest
 
-    _reject_claude_skills_conflict_in_plugin_mode(claude, skills)
-    _reject_global_without_claude_or_codex(global_grant, claude, codex)
+    transcript: list[str] = []
+    capture = hive._capture_onboard_transcript(transcript) if as_json else contextlib.nullcontext()
+    result = None
+    exit_code = 0
+    with capture:
+        try:
+            _reject_claude_skills_conflict_in_plugin_mode(claude, skills)
+            _reject_global_without_claude_or_codex(global_grant, claude, codex)
+            request = OnboardHiveRequest(
+                hive_services.identity_from_legacy_triplet(hive_id),
+                clone_url=clone_url,
+                furnish=furnish,
+                claude=claude,
+                skills=skills,
+                observaloop=observaloop,
+                agents=agents,
+                opencode=opencode,
+                codex=codex,
+                global_grant=global_grant,
+                plugins=tuple(plugin),
+                force=force,
+                kind=kind,
+                prefix=prefix,
+                yes=yes,
+                dry_run=dry_run,
+                skip_check=skip_check,
+                hub_sync=hub_sync,
+            )
+            result = hive_services.hive_lifecycle_service().onboard(request)
+            _render_onboard_result(result)
+            if not result.successful:
+                raise typer.Exit(1)
+        except typer.Exit as exc:
+            if not as_json:
+                raise
+            exit_code = int(exc.exit_code or 0)
+        except ValueError as exc:
+            if not as_json:
+                raise
+            typer.echo(f"✗ invalid hive identity: {exc}", err=True)
+            exit_code = 1
+    if as_json:
+        jsonout.emit(
+            _onboard_payload(
+                result,
+                transcript[0],
+                hive_id=hive_id,
+                dry_run=dry_run,
+                exit_code=exit_code,
+            )
+        )
+        if exit_code:
+            raise typer.Exit(exit_code)
 
-    hive.onboard(
-        hive_id,
-        clone_url=clone_url,
-        furnish=furnish,
-        claude=claude,
-        skills=skills,
-        observaloop=observaloop,
-        agents=agents,
-        opencode=opencode,
-        codex=codex,
-        global_grant=global_grant,
-        plugins=plugin,
-        force=force,
-        kind=kind,
-        prefix=prefix,
-        yes=yes,
-        dry_run=dry_run,
-        skip_check=skip_check,
-        hub_sync=hub_sync,
+
+def _onboard_check_text(check) -> str:
+    glyph = "✓" if check.ok else ("⚠" if check.skipped else "✗")
+    detail = f"  {check.detail}" if check.detail else ""
+    return f"  {glyph} {check.id} ({check.label}){detail}"
+
+
+def _render_onboard_result(result) -> None:
+    if not result.successful:
+        typer.echo("✗ onboarding preflight failed:", err=True)
+        failures = [check for check in result.checks if not check.ok and not check.skipped]
+        for check in failures:
+            typer.echo(f"  ✗ {check.id}: {check.detail}", err=True)
+        overridable = [check.id for check in failures if check.overridable]
+        if overridable:
+            typer.echo(f"  override with --skip-check {','.join(overridable)}", err=True)
+        return
+    tag = "DRY-RUN " if result.dry_run else ""
+    lines = [f"{tag}onboard {result.target}"]
+    lines.extend(_onboard_check_text(check) for check in result.checks)
+    verb = "would run" if result.dry_run else "ran"
+    lines.extend(f"  • {verb} {step}" for step in result.steps)
+    lines.extend(f"  ⚠ {warning}" for warning in result.warnings)
+    typer.echo("\n".join(lines) + "\n", nl=False)
+    if not result.dry_run:
+        typer.echo(f"✓ hive '{result.prefix}' ready ({result.kind}).")
+
+
+def _onboard_payload(
+    result,
+    text: str,
+    *,
+    hive_id: str = "",
+    dry_run: bool = False,
+    exit_code: int = 0,
+) -> dict:
+    from . import jsonout
+
+    if result is not None:
+        hive_id = result.identity.canonical_id
+        dry_run = result.dry_run
+    checks = result.checks if result is not None else ()
+    return jsonout.envelope(
+        "hive onboard",
+        jsonout.HIVE_ONBOARD_SCHEMA,
+        {
+            "success": exit_code == 0 and result is not None and result.successful,
+            "exit_code": exit_code,
+            "hive": hive_id,
+            "target": result.target if result is not None else "",
+            "dry_run": dry_run,
+            "cloned": result.cloned if result is not None else False,
+            "checks": [
+                {
+                    "id": check.id,
+                    "label": check.label,
+                    "ok": check.ok,
+                    "detail": check.detail,
+                    "overridable": check.overridable,
+                    "skipped": check.skipped,
+                    "text": _onboard_check_text(check),
+                }
+                for check in checks
+            ],
+            "steps": list(result.steps) if result is not None else [],
+            "registered": result.registered if result is not None else False,
+            "installers": list(result.installers) if result is not None else [],
+            "hub_synced": result.synced if result is not None else False,
+            "warnings": list(result.warnings) if result is not None else [],
+            "text": text,
+        },
     )
 
 
@@ -2122,18 +2394,79 @@ def hive_list(
         "", "--cursor", help="opaque next_cursor from an earlier --json response"
     ),
 ):
-    from . import hive
+    from . import hive_services, jsonout
+    from .modules.hives import HiveListRequest
 
     if available and as_json:
         raise typer.BadParameter("--json currently describes registered hives, not --available")
     if not as_json and (limit != 50 or cursor):
         raise typer.BadParameter("--limit and --cursor require --json")
-    hive.ls(
-        show_available=available,
-        as_json=as_json,
-        limit=limit,
-        cursor=cursor or None,
+    result = hive_services.hive_lifecycle_service().list(
+        HiveListRequest(
+            available=available,
+            limit=limit,
+            cursor=cursor or None,
+        )
     )
+    if as_json:
+        if result.diagnostics:
+            diagnostic = result.diagnostics[0]
+            jsonout.emit(
+                jsonout.envelope(
+                    "hive list",
+                    1,
+                    {"error": {"code": diagnostic.code, "detail": diagnostic.detail}},
+                )
+            )
+            raise typer.Exit(1)
+        assert result.page is not None
+        page = result.page
+        jsonout.emit(
+            jsonout.envelope(
+                "hive list",
+                1,
+                {
+                    "source_revision": page.source_revision,
+                    "generated_at": page.generated_at,
+                    "freshness": {
+                        "state": page.freshness_state,
+                        "as_of": page.freshness_as_of,
+                    },
+                    "coverage": {
+                        "state": page.coverage_state,
+                        "reason": page.coverage_reason,
+                    },
+                    "hives": list(page.hives),
+                    "returned": len(page.hives),
+                    "total": page.total,
+                    "limit": page.limit,
+                    "truncated": page.truncated,
+                    "next_cursor": page.next_cursor,
+                    "warnings": [
+                        {"code": item.code, "detail": item.detail} for item in page.diagnostics
+                    ],
+                },
+            )
+        )
+        return
+    rows = result.discovery.candidates if available else result.discovery.registered
+    if not rows:
+        message = (
+            "# No unregistered repos — every tracked repo is already a hive."
+            if available
+            else "# No registered hives."
+        )
+        typer.echo(message)
+        return
+    if available:
+        typer.echo(
+            f"# Available to register ({len(rows)}) — "
+            f"run '{config.BINARY_ALIAS} hive add <provider/org/repo>'"
+        )
+    else:
+        typer.echo(f"# Registered hives ({len(rows)})")
+    for row in rows:
+        typer.echo(f"  {row}")
 
 
 @hive_app.command(
@@ -2147,9 +2480,35 @@ def hive_status(
     ),
     as_json: bool = typer.Option(False, "--json", help="emit the status payload as JSON"),
 ):
-    from . import hive
+    from . import hive_services
+    from .modules.hives import HiveStatusRequest
 
-    hive.status(hive_id=hive_id, as_json=as_json)
+    result = hive_services.hive_lifecycle_service().status(HiveStatusRequest(hive_id))
+    payload = {
+        "candidates": list(result.candidates),
+        "collisions": list(result.collisions),
+        "violations": list(result.violations),
+        "hives": list(result.hives),
+    }
+    if as_json:
+        typer.echo(json.dumps(payload, indent=2, default=str))
+        return
+    hives = payload["hives"]
+    typer.echo(f"# Registered hives ({len(hives)})")
+    for row in hives:
+        extra = row["kind"]
+        if row.get("upstream"):
+            extra += f", fork of {row['upstream']}"
+        typer.echo(f"  {row['prefix']:<12} {row['provider']}/{row['org']}/{row['repo']} ({extra})")
+    typer.echo(f"\n# Prefix collisions ({len(payload['collisions'])})")
+    for collision in payload["collisions"]:
+        typer.echo(f"  {collision['prefix']}: {', '.join(collision['hives'])}")
+    typer.echo(f"\n# Required-org prefix violations ({len(payload['violations'])})")
+    for violation in payload["violations"]:
+        typer.echo(f"  {violation}")
+    typer.echo(f"\n# Unregistered candidates ({len(payload['candidates'])})")
+    for candidate in payload["candidates"]:
+        typer.echo(f"  {candidate}")
 
 
 @hive_app.command(
@@ -2172,9 +2531,9 @@ def hive_migrate(
     "migrate-storage",
     help="move a hive off bd's legacy embedded Dolt engine onto the fleet's shared-server mode: "
     "per hive, back up (verified) -> migrate -> verify -> report; fleet-wide (no HIVE_ID), "
-    "resumable and per-hive isolated, Factory HQ migrated last. NOT `hive migrate` (that's the "
-    "ws->bh rename) — this is a Dolt storage-mode move. Idempotent; --dry-run reports sizes and "
-    "target paths and changes nothing; a real run needs --confirm.",
+    "resumable and per-hive isolated, Factory HQ migrated last. NOT `hive migrate` (that is the "
+    "legacy command-name migration) — this is a Dolt storage-mode move. Idempotent; --dry-run "
+    "reports sizes and target paths and changes nothing; a real run needs --confirm.",
 )
 def hive_migrate_storage(
     hive_id: str = typer.Argument(
@@ -2254,10 +2613,13 @@ def hive_ready(
     verbose: bool = typer.Option(
         False, "-v", "--verbose", help="show the per-line-item breakdown (required + optional)"
     ),
+    as_json: bool = typer.Option(
+        False, "--json", help="emit the versioned readiness result as JSON"
+    ),
 ):
     from . import hive_ready as ready
 
-    ready.run_check(verbose)
+    ready.run_check(verbose, as_json=as_json)
 
 
 @hive_app.command("context", hidden=True)
@@ -2850,6 +3212,35 @@ def wt_mark_landed(
     worktree.mark_landed(hive, ref)
 
 
+@wt_app.command(
+    "mark-abandoned",
+    help=(
+        "record an authoritative non-landing disposition; optionally link the bead that "
+        "retains or supersedes this branch"
+    ),
+)
+def wt_mark_abandoned(
+    ref: str = typer.Argument(..., help="bead id or wt/bead/<type>/<id> branch"),
+    reason: str = typer.Option(..., "--reason", help="pivot, superseded, or obsolete"),
+    retained_for: str = typer.Option(
+        "", "--retained-for", help="bead that will consume the retained branch"
+    ),
+    superseded_by: str = typer.Option(
+        "", "--superseded-by", help="replacement bead whose content supersedes this branch"
+    ),
+    hive: str = typer.Option("", "--hive", help="target hive (default: cwd's hive)"),
+):
+    from . import worktree
+
+    worktree.mark_abandoned(
+        hive,
+        ref,
+        reason,
+        retained_for=retained_for,
+        superseded_by=superseded_by,
+    )
+
+
 # ---- labels (registry) ------------------------------------------------------
 
 
@@ -3000,6 +3391,23 @@ def config_init(
     for dst, wrote in config.scaffold_home(force=force):
         typer.echo(f"wrote {dst}" if wrote else f"skip {dst} (exists)")
 
+    # bh-managed workspace root (bh-cgcg.2): internal (the default) is created + seeded here
+    # so `git workspace update` has a tree to run against — re-running against an already
+    # provisioned root is a no-op (`ensure_seeded` never touches an existing workspace*.toml).
+    # External mode is left untouched: its root + workspace*.toml already exist and are the
+    # user's, not bh's, to write — nothing is written under the internal root in that case.
+    from . import gitworkspace, identity
+
+    ws_root = Path(identity.workspace_root())
+    if identity.workspace_mode(str(ws_root)) == "internal":
+        if gitworkspace.ensure_seeded(ws_root):
+            typer.echo(f"wrote {ws_root} (seeded workspace.toml)")
+        else:
+            typer.echo(f"skip {ws_root} (already seeded)")
+    else:
+        found = ", ".join(str(p) for p in gitworkspace.config_paths(config.load()))
+        typer.echo(f"external workspace: {ws_root} ({found or 'no workspace*.toml found'})")
+
     typer.echo(f"✓ edit {config.config_path()} and copy .env.example → .env")
 
 
@@ -3024,13 +3432,9 @@ def config_split(
 def config_schema_cmd(as_json: bool = typer.Option(False, "--json", help="machine payload")):
     fields = config_schema.iter_schema_fields()
     if as_json:
-        import json as json_mod
+        from .modules.config.application.schema_artifacts import legacy_schema_rows
 
-        rows = [
-            {"path": f.path, "type": f.type, "default": f.default, "description": f.description}
-            for f in fields
-        ]
-        typer.echo(json_mod.dumps(rows, indent=2))
+        typer.echo(json.dumps(legacy_schema_rows(), indent=2))
         return
     path_width = max(len(f.path) for f in fields)
     type_width = max(len(f.type) for f in fields)
@@ -3092,9 +3496,9 @@ def config_validate(
         "to the current schema (no auto-write).",
     ),
 ):
-    """Run the schema validator over the resolved config: print problems + the ws→bh rename
-    table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0. When the
-    config is stale (missing/old schema_version or a renamed key), append a paste-ready
+    """Run the schema validator over the resolved config: print problems plus the legacy-name
+    migration table, exit 1 on any error (a wrong-type value or an unknown/renamed key), else 0.
+    When the config is stale (missing/old schema_version or a renamed key), append a paste-ready
     agentic-update offer. `--fix` prints just that prompt. A missing config file prints
     `bh config init` guidance rather than a traceback."""
     from . import config_validate as cv
@@ -3260,11 +3664,11 @@ def mcp_install(
         help="Claude Code MCP scope. Use 'user' (default) for all projects, 'local' for CWD only.",
     ),
 ):
-    """Register the ws MCP server with Claude Code at the given scope.
+    """Register the bh MCP server with Claude Code at the given scope.
 
     Equivalent to running manually:
 
-        claude mcp add ws --scope user -- ws mcp serve
+        claude mcp add bh --scope user -- bh mcp serve
 
     Exits with an error and prints the manual command when the `claude` binary is not on PATH.
     """
@@ -3308,7 +3712,10 @@ def setup_check(
     text render is this same object echoed rather than a second assembly of it."""
     from . import setup as setup_mod
 
-    setup_mod.run_check(as_json=as_json)
+    setup_mod.run_check(
+        as_json=as_json,
+        daemon_advisories=host_cli.daemon_setup_advisories,
+    )
 
 
 @setup_app.command("show", help="report cached setup status without re-probing.")
@@ -3626,10 +4033,10 @@ def backup_migrate_layout_cmd(
 @backup_app.command(
     "reclaim",
     help="apply each root's retention policy: --dry-run previews, --root narrows, --confirm "
-    "is required to actually rotate the hive root.",
+    "is required to rotate the hive root or remove superseded caches.",
 )
 def backup_reclaim_cmd(
-    root: str = typer.Option("all", "--root", help="hq | hive | migrate | all"),
+    root: str = typer.Option("all", "--root", help="cache | hq | hive | migrate | all"),
     hive_id: str = typer.Option(
         "", "--hive", help="hive for the hive root's rotate (default: cwd's hive)"
     ),
@@ -3637,8 +4044,8 @@ def backup_reclaim_cmd(
     confirm: bool = typer.Option(
         False,
         "--confirm",
-        help="proceed with a real hive-root rotate (bd's own backup), or with removing a kept "
-        "in-repo pre-migrate store",
+        help="proceed with a real hive-root rotate, removal of superseded caches, or removal "
+        "of a kept in-repo pre-migrate store",
     ),
     force: bool = typer.Option(
         False, "--force", help="rotate the hive root even under backup.hive_cap_mb"
@@ -3646,11 +4053,50 @@ def backup_reclaim_cmd(
 ):
     from . import backup as backup_mod
     from .safety import format_bytes
+    from .wt_status import WtClassification
 
-    if root not in ("hq", "hive", "migrate", "all"):
-        typer.echo(f"✗ --root must be hq | hive | migrate | all, got {root!r}", err=True)
+    if root not in ("cache", "hq", "hive", "migrate", "all"):
+        typer.echo(f"✗ --root must be cache | hq | hive | migrate | all, got {root!r}", err=True)
         raise typer.Exit(1)
     cfg = config.load()
+
+    if root in ("cache", "all"):
+        preview = dry_run or not confirm
+        cache = backup_mod.reclaim_cache_entries(cfg, dry_run=preview)
+        for row in cache.entries:
+            error = cache.errors.get(row.path, "")
+            if error:
+                mark = "✗"
+            elif row.safe:
+                mark = "○" if preview else "✓"
+            else:
+                mark = "-"
+            typer.echo(
+                f"cache: {mark} [{row.classification.value.upper()}] {row.hive}  "
+                f"{format_bytes(row.size_bytes)}"
+            )
+            typer.echo(f"       {row.reason}; {row.path}")
+            if error:
+                typer.echo(f"       removal failed: {error}")
+
+        superseded = [row for row in cache.entries if row.safe]
+        retained = [row for row in cache.entries if row.classification is WtClassification.RETAINED]
+        stale = [row for row in cache.entries if row.classification is WtClassification.STALE]
+        action_count = len(superseded) if preview else len(cache.removed)
+        verb = "would reclaim" if preview else "reclaimed"
+        typer.echo(
+            f"cache: {verb} {action_count} SUPERSEDED entr{('y' if action_count == 1 else 'ies')} "
+            f"({format_bytes(cache.reclaimed_bytes)}); retain {len(retained)} only-copy "
+            f"entr{('y' if len(retained) == 1 else 'ies')} "
+            f"({format_bytes(sum(row.size_bytes for row in retained))}); "
+            f"leave {len(stale)} STALE"
+        )
+        if preview:
+            typer.echo("cache: preview only — pass --confirm to remove SUPERSEDED entries")
+        if not cache.ok:
+            raise typer.Exit(1)
+        if root == "cache" and not dry_run and not confirm:
+            raise typer.Exit(1)
 
     if root in ("hq", "all"):
         result = backup_mod.prune_hq_backups(cfg, dry_run=dry_run)
@@ -3708,6 +4154,15 @@ def backup_reclaim_cmd(
                 typer.echo(f"    {path}")
             if preview:
                 typer.echo("    (pass --confirm to remove them)")
+
+
+# Catalog declarations now own the assembled command/group identities.  The application modules
+# above supplied handlers and CLI presentation metadata; this composition step rebinds the
+# provisional Typer registrations in place so historical app identities remain compatible.
+CLI_PROJECTION = _project_cli_tree(
+    app,
+    unavailable_optional_plugins=_canonically_disabled_optional_plugins(_PLUGIN_CONFIG),
+)
 
 
 def _exception_group_leaves(exc: BaseException) -> list[BaseException]:

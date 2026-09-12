@@ -413,6 +413,9 @@ async def spawn_seat(
         # failure itself remains non-fatal; an identity conflict is a launch-contract error.
         journal.bind_provider_continuation(provider_continuation)
         env = journal.child_env(env)
+        from .activity_publisher import scoped_child_env
+
+        env = scoped_child_env(env, journal.writer)
     profile_dir = baml_profile_dir(provider_continuation)
     with contextlib.suppress(OSError):  # unwritable home → BAML's problem, never a failed spawn
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -1559,14 +1562,13 @@ class LocalLoop:
           unfinished and hold the ready set back.
         """
         epic_row = bd_mod.show(self.epic, self.hive_dir) or {}
-        rows = bd_mod.json(
-            ["list", "--parent", self.epic, "--include-infra", "--all"], self.hive_dir
-        )
+        rows = bd_mod.children(self.epic, self.hive_dir, ["--include-infra", "--all"])
         rows = [r for r in (rows or []) if isinstance(r, dict)]
         children = [r for r in rows if str(r.get("issue_type") or "") not in work_next.INFRA_TYPES]
         events: dict[str, list[dict]] = {}
         for child in children:
             bead = str(child.get("id") or "")
+            # Deliberate prefix read: event history is keyed by the child's dotted-id stream.
             child_rows = bd_mod.json(
                 ["list", "--parent", bead, "--include-infra", "--all"], self.hive_dir
             )

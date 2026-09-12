@@ -1,10 +1,10 @@
 # Development Frame Bridge v1 immutable handoff
 
 This is the core/runtime handoff to infra bead `bh-infra-lum.3`. The machine-readable record is
-[`development-frame-bridge-v1-handoff.json`](development-frame-bridge-v1-handoff.json). The
-per-frame runtime described here is distinct from the multi-frame Beadhive Gateway authored in
-the sibling `beadhive-gateway` repository. Every candidate reference below is immutable; no branch
-name is a deployment input.
+[`development-frame-bridge-v1-handoff.json`](development-frame-bridge-v1-handoff.json). Every
+candidate reference below is immutable; no branch name is a deployment input. The per-frame
+runtime is distinct from the multi-frame Beadhive Gateway authored in the sibling
+`beadhive-gateway` repository.
 
 ## Candidate
 
@@ -21,8 +21,8 @@ name is a deployment input.
 The wheel was built twice from the candidate commit with
 `SOURCE_DATE_EPOCH=1787813110 uv build --wheel`. Both byte streams produced the recorded digest.
 The source tree passed `just check`: 6,560 passed, 41 skipped, zero failed. The focused Frame Bridge
-and real loopback runtime profile contributed 56 passing tests. The machine record retains their
-old `test_remote_gateway*` paths because those paths are facts about the immutable candidate, not
+and real loopback runtime profile contributed 56 passing tests. The machine record retains its old
+`test_remote_gateway*` paths because those paths are facts about the immutable candidate, not
 current component names.
 
 ## Conformance map
@@ -56,8 +56,7 @@ Cloudflared owns a separate service and credential.
   joins admitted source work.
 - Redaction: browser shapes are exact allowlists. Work descriptions, local paths, transcripts,
   source coverage details, raw operator events, credentials, and internal exceptions are dropped.
-- Identity rotation: atomically replace the mode-0600 JWKS credential, restart the Frame Bridge,
-  and
+- Identity rotation: atomically replace the mode-0600 JWKS credential, restart the Frame Bridge, and
   prove the old signing key is refused and a new signed session succeeds. Subject removal uses the
   same replace-and-restart procedure and closes live streams at the next one-second check.
 - Global disable: stop the Frame Bridge and Cloudflared services. The loopback host daemon remains

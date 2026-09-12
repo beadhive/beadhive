@@ -10,12 +10,14 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import role_process, run_journal
+from beadhive import activity_publisher, role_process, run_journal
 
 DIGEST = "sha256:" + "d" * 64
 
 
-def _journal(tmp_path: Path, bead: str = "bh-direct") -> run_journal.RunJournal:
+def _journal(
+    tmp_path: Path, bead: str = "bh-direct", activity_publisher=None
+) -> run_journal.RunJournal:
     return run_journal.RunJournal.create(
         run_journal.RunIdentity(
             hive="github/acme/core",
@@ -25,6 +27,8 @@ def _journal(tmp_path: Path, bead: str = "bh-direct") -> run_journal.RunJournal:
             manifest_digest=DIGEST,
         ),
         base=tmp_path,
+        writer=run_journal.WRITER_BAML,
+        activity_publisher=activity_publisher,
     )
 
 
@@ -77,6 +81,58 @@ def test_foreground_exposes_progress_and_preserves_one_final_seat_run(
     ]
     assert {row["provider_continuation"] for row in records[1:]} == {provider}
     assert len({journal.run_id, seat_process, provider}) == 3
+
+
+def test_real_baml_foreground_result_isolated_from_source_publisher_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    monkeypatch.setenv("BH_ACTIVITY_PUBLISH_BAML_TOKEN", "baml-child-token")
+    monkeypatch.setenv("BH_ACTIVITY_PUBLISH_HITCH_TOKEN", "hitch-must-not-leak")
+    monkeypatch.setenv("BH_ACTIVITY_PUBLISH_BEADHIVE_TOKEN", "beadhive-must-not-leak")
+    publisher = activity_publisher.ActivityPublisher(
+        activity_publisher.ActivityPublisherConfig(
+            origin="http://127.0.0.1:8737",
+            queue_path=tmp_path / "baml-outbox.sqlite3",
+            tokens={"baml": "token"},
+        ),
+        transport=lambda *_args: 503,
+        start_worker=False,
+    )
+    journal = _journal(tmp_path, activity_publisher=publisher)
+    child_env = tmp_path / "baml-child-env.json"
+    payload = json.dumps(
+        {
+            "outcome": {"status": "done", "summary": "ok", "bead_id": "bh-direct"},
+            "session_id": "provider-isolated",
+        }
+    )
+
+    result = role_process.run_foreground(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import json,os,pathlib; "
+                f"pathlib.Path({str(child_env)!r}).write_text(json.dumps("
+                "sorted(k for k in os.environ if k.startswith('BH_ACTIVITY_PUBLISH_') "
+                "and k.endswith('_TOKEN')))); "
+                f"print({payload!r}, flush=True)"
+            ),
+        ],
+        cwd=tmp_path,
+        env=dict(os.environ),
+        journal=journal,
+        bead="bh-direct",
+        role="developer",
+        seat_process_id="seat-isolated",
+        provider_continuation="provider-isolated",
+    )
+
+    assert result == 0
+    assert json.loads(child_env.read_text()) == ["BH_ACTIVITY_PUBLISH_BAML_TOKEN"]
+    assert publisher.status().retained == 3
+    publisher.flush_once(force=True)
+    assert publisher.status().retried == 1
 
 
 def test_caller_cancellation_reaps_direct_role_descendants(tmp_path: Path) -> None:

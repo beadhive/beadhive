@@ -95,7 +95,8 @@ from pathlib import Path
 
 import typer
 
-from . import config, otel, private_paths, registry, test_report, validation_records
+from . import otel, private_paths, registry, test_report, validation_records
+from .config_consumer_ports import work_settings as config
 from .run import missing_binary, run
 
 # Read-only compatibility input from 0.15.1. New writes never touch it: rows are imported once
@@ -292,7 +293,21 @@ def _verdict_path(entry, tree: str, command_hash: str, *, create: bool = False) 
         if create
         else private_paths.git_private_root(hive)
     )
-    return root / "validation" / "verdicts" / tree / f"{command_hash}.json" if root else None
+    return _verdict_path_in(root / "validation" if root else None, tree, command_hash)
+
+
+def _verdict_path_in(root: Path | None, tree: str, command_hash: str) -> Path | None:
+    """Resolve one pointer below an already-canonical validation root."""
+    if (
+        root is None
+        or not tree
+        or not command_hash
+        or any(
+            value in {".", ".."} or "/" in value or "\\" in value for value in (tree, command_hash)
+        )
+    ):
+        return None
+    return root / "verdicts" / tree / f"{command_hash}.json"
 
 
 def _read_index(path: Path | None) -> dict | None:
@@ -514,7 +529,7 @@ def _migrate_legacy_ledger(entry) -> int:
             directory.mkdir(parents=True, exist_ok=True)
             path = directory / "manifest.json"
             if not path.exists():
-                validation_records._atomic_json(path, manifest)
+                validation_records._write_manifest(path, manifest)
                 imported += 1
             keys.add((tree, key))
         except OSError:
@@ -541,16 +556,16 @@ def _migrate_legacy_ledger(entry) -> int:
     return imported
 
 
-def _sync_index(entry, tree: str, key: str) -> bool:
-    """Make one pointer exactly reflect the newest retained execution fact.
-
-    The manifest is truth.  A pointer exists only for its newest completed-green manifest; every
-    other lifecycle/verdict removes it.  Atomic replace means concurrent readers see an old whole
-    pointer, a new whole pointer, or a miss — never torn JSON.
-    """
-    hive = registry.hive_dir(entry)
-    latest = validation_records.latest_run(hive, tree=tree, command_hash=key)
-    path = _verdict_path(entry, tree, key, create=latest is not None)
+def _sync_index_from_runs(
+    tree: str,
+    key: str,
+    runs: list[dict],
+    validation_root: Path,
+) -> bool:
+    """Commit one pointer from a manifest snapshot protected by the verdict transaction."""
+    runs = [run for run in runs if run.get("tree") == tree and run.get("command_hash") == key]
+    latest = max(runs, key=validation_records._run_order_key, default=None)
+    path = _verdict_path_in(validation_root, tree, key)
     if path is None:
         return False
     try:
@@ -561,10 +576,7 @@ def _sync_index(entry, tree: str, key: str) -> bool:
         if at is None:
             path.unlink(missing_ok=True)
             return True
-        runs = sorted(
-            validation_records.matching_runs(hive, tree=tree, command_hash=key),
-            key=validation_records._run_order_key,
-        )
+        runs = sorted(runs, key=validation_records._run_order_key)
         shas = []
         for run_record in runs:
             if not validation_records.is_qualifying_green(run_record):
@@ -594,26 +606,50 @@ def _sync_index(entry, tree: str, key: str) -> bool:
         return False
 
 
+def _sync_index(entry, tree: str, key: str) -> bool:
+    """Make one pointer exactly reflect the newest retained execution fact.
+
+    The manifest is truth.  A pointer exists only for its newest completed-green manifest; every
+    other lifecycle/verdict removes it.  Atomic replace means concurrent readers see an old whole
+    pointer, a new whole pointer, or a miss — never torn JSON.
+    """
+    hive = registry.hive_dir(entry)
+    git_root = private_paths.git_private_root(hive)
+    root = git_root / "validation" if git_root else None
+    if root is None:
+        return False
+    with validation_records._verdict_transaction(root) as locked:
+        if not locked:
+            return False
+        runs = validation_records._read_run_directory(root / "runs")
+        return _sync_index_from_runs(tree, key, runs, root)
+
+
 def rebuild_verdict_index(entry) -> int:
     """Reconstruct all lookup pointers from retained run manifests; return green pointers made."""
     hive = registry.hive_dir(entry)
-    root = private_paths.git_private_root(hive)
-    runs = root / "validation" / "runs" if root else None
-    if runs is None or not runs.is_dir():
+    git_root = private_paths.git_private_root(hive)
+    root = git_root / "validation" if git_root else None
+    runs_dir = root / "runs" if root else None
+    if runs_dir is None or not runs_dir.is_dir():
         return 0
-    keys = {
-        (run.get("tree"), run.get("command_hash"))
-        for child in runs.iterdir()
-        if (run := validation_records.read_run(hive, child.name)) is not None
-        and isinstance(run.get("tree"), str)
-        and isinstance(run.get("command_hash"), str)
-    }
-    rebuilt = 0
-    for tree, key in keys:
-        _sync_index(entry, tree, key)
-        path = _verdict_path(entry, tree, key)
-        rebuilt += bool(path is not None and path.is_file())
-    return rebuilt
+    with validation_records._verdict_transaction(root) as locked:
+        if not locked:
+            return 0
+        # The snapshot and every pointer commit share the transaction held by production
+        # manifest writers, so none can become stale between this read and its atomic replace.
+        retained_runs = validation_records._read_run_directory(runs_dir)
+        keys = {
+            (run["tree"], run["command_hash"])
+            for run in retained_runs
+            if isinstance(run.get("tree"), str) and isinstance(run.get("command_hash"), str)
+        }
+        rebuilt = 0
+        for tree, key in keys:
+            _sync_index_from_runs(tree, key, retained_runs, root)
+            path = _verdict_path_in(root, tree, key)
+            rebuilt += bool(path is not None and path.is_file())
+        return rebuilt
 
 
 def _is_fresh(e: dict, now: float, ttl: int) -> bool:

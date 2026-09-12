@@ -16,6 +16,12 @@ from unittest.mock import MagicMock
 import pytest
 
 from beadhive import otel, run
+from beadhive.kernel.telemetry import (
+    EventIdentity,
+    Outcome,
+    RecordingTelemetrySink,
+    SemanticTelemetry,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -24,9 +30,13 @@ def _reset_otel():
     forced-on test never leaks ``_initialized`` into the rest of the suite."""
     otel._initialized = False
     otel._instruments.clear()
+    otel._semantic_sink = None
+    otel._semantic_telemetry = None
     yield
     otel._initialized = False
     otel._instruments.clear()
+    otel._semantic_sink = None
+    otel._semantic_telemetry = None
 
 
 def _mock_provider(monkeypatch):
@@ -81,6 +91,54 @@ def test_trace_verb_preserves_signature_for_typer():
 
     wrapped = otel.trace_verb("work.demo")(verb)
     assert list(inspect.signature(wrapped).parameters) == ["bead", "hive"]
+
+
+def test_trace_verb_emits_one_correlated_semantic_attempt_without_changing_result(
+    monkeypatch,
+) -> None:
+    sink = RecordingTelemetrySink()
+    semantic = SemanticTelemetry(
+        sink=sink,
+        identity=EventIdentity(service="bh", instance_id="cli-one"),
+    )
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(otel, "_semantic_telemetry", semantic)
+    monkeypatch.setattr(otel, "get_tracer", lambda *_args, **_kwargs: otel._NOOP_TRACER)
+
+    @otel.trace_verb("work.issue")
+    def verb() -> int:
+        return 42
+
+    assert verb() == 42
+    assert len(sink.events) == 2
+    started, completed = sink.events
+    assert started.correlation_id == completed.correlation_id
+    assert completed.causation_id == started.event_id
+    assert completed.outcome is Outcome.SUCCEEDED
+    assert {attribute.key.value: attribute.value for attribute in started.attributes} == {
+        "operation.kind": "command",
+        "operation.name": "work.issue",
+        "surface": "cli",
+    }
+
+
+def test_trace_verb_contains_nonconforming_semantic_adapter_failure(monkeypatch) -> None:
+    class BrokenSemantic:
+        def begin(self, *_args, **_kwargs):
+            raise RuntimeError("token=secret")
+
+        def complete(self, *_args, **_kwargs):
+            raise RuntimeError("token=secret")
+
+    monkeypatch.setattr(otel, "_initialized", True)
+    monkeypatch.setattr(otel, "_semantic_telemetry", BrokenSemantic())
+    monkeypatch.setattr(otel, "get_tracer", lambda *_args, **_kwargs: otel._NOOP_TRACER)
+
+    @otel.trace_verb("work.issue")
+    def verb() -> str:
+        return "application-result"
+
+    assert verb() == "application-result"
 
 
 # ---- run() subprocess seam: zero-overhead off, span on ----------------------

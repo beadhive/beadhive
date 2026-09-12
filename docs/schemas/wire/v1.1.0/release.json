@@ -1,0 +1,43 @@
+{
+  "format_version": 1,
+  "release_version": "1.1.0",
+  "schema_draft": "https://json-schema.org/draft/2020-12/schema",
+  "artifacts": [
+    {
+      "id": "urn:beadhive:wire-schema:bh.hive-onboard:1",
+      "contract_version": 1,
+      "path": "bh-hive-onboard-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:bh.hive-ready:1",
+      "contract_version": 1,
+      "path": "bh-hive-ready-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:bh.hive-status:1",
+      "contract_version": 1,
+      "path": "bh-hive-status-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:bh.hive-survey:1",
+      "contract_version": 1,
+      "path": "bh-hive-survey-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:factory.bead-node:1",
+      "contract_version": 1,
+      "path": "factory-bead-node-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:factory.hive-info:1",
+      "contract_version": 1,
+      "path": "factory-hive-info-v1.schema.json"
+    },
+    {
+      "id": "urn:beadhive:wire-schema:factory.snapshot:1",
+      "contract_version": 1,
+      "path": "factory-snapshot-v1.schema.json"
+    }
+  ],
+  "conformance_fixtures": "conformance.json"
+}

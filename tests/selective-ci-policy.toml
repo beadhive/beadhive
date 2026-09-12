@@ -1,0 +1,13 @@
+[selective_ci]
+schema_version = 1
+# One-value rollback: change this to "full". Every boundary then ignores selective authority.
+mode = "certified"
+promoted_boundaries = ["commit", "main-integration"]
+full_only_boundaries = [
+  "leaf-merge",
+  "child-epic-finish",
+  "final-workstream-submit",
+  "final-workstream-review",
+  "scheduled",
+  "release",
+]

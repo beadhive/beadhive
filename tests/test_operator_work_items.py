@@ -308,6 +308,11 @@ def test_pagination_filters_and_cursor_scope_and_revision_are_stable(tmp_path: P
             f"/api/v1/hives/{HIVE_PATH}/work-items",
             params={"queue": "ready", "limit": 1},
         )
+        unchanged = await client.get(
+            f"/api/v1/hives/{HIVE_PATH}/work-items",
+            params={"queue": "ready", "limit": 1},
+            headers={"If-None-Match": first.headers["etag"]},
+        )
         cursor = first.json()["nextCursor"]
         second = await client.get(
             f"/api/v1/hives/{HIVE_PATH}/work-items",
@@ -326,13 +331,19 @@ def test_pagination_filters_and_cursor_scope_and_revision_are_stable(tmp_path: P
             f"/api/v1/hives/{HIVE_PATH}/work-items",
             params={"queue": "ready", "limit": 1, "cursor": cursor},
         )
-        return first, second, filtered, wrong_scope, stale
+        return first, unchanged, second, filtered, wrong_scope, stale
 
-    first, second, filtered, wrong_scope, stale = _exercise(tmp_path, action, provider=provider)
+    first, unchanged, second, filtered, wrong_scope, stale = _exercise(
+        tmp_path, action, provider=provider
+    )
     assert first.json()["truncated"] is True
     assert [item["id"] for item in first.json()["items"]] == ["bh-ready-1"]
     assert [item["id"] for item in second.json()["items"]] == ["bh-ready-2"]
     assert [item["id"] for item in filtered.json()["items"]] == ["bh-ready-1"]
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
+    assert unchanged.headers["etag"] == first.headers["etag"]
+    assert unchanged.headers["cache-control"] == "no-cache"
     assert wrong_scope.json()["error"]["code"] == "work_items_cursor_scope_mismatch"
     assert wrong_scope.status_code == 409
     assert stale.json()["error"]["code"] == "work_items_cursor_revision_mismatch"
@@ -355,6 +366,7 @@ def test_exact_detail_is_complete_and_supports_conditional_get(tmp_path: Path) -
     _validate("WorkItemDetail", response.json())
     assert response.status_code == 200
     assert response.headers["etag"].startswith('"sha256:')
+    assert response.headers["cache-control"] == "no-cache"
     assert item["ref"] == {"hiveId": HIVE, "kind": "work-item", "id": "bh-ready-1"}
     assert item["description"] == "Description bh-ready-1"
     assert item["design"] == "Design bh-ready-1"
@@ -385,6 +397,7 @@ def test_exact_detail_is_complete_and_supports_conditional_get(tmp_path: Path) -
     ]
     assert cached.status_code == 304
     assert cached.content == b""
+    assert cached.headers["cache-control"] == "no-cache"
     assert (missing.status_code, missing.json()["error"]["code"]) == (
         404,
         "work_item_not_found",

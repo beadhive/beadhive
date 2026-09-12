@@ -18,7 +18,9 @@ import os
 import shutil
 import signal
 import subprocess
+import sys
 import time
+from pathlib import Path
 
 import pytest
 
@@ -135,3 +137,106 @@ def test_a_narrow_COLUMNS_does_not_hide_the_orphan(tmp_path, fake_dolt, monkeypa
 def test_the_sweep_is_a_no_op_when_there_is_nothing_to_reap(tmp_path):
     """Runs at every session start, so the empty case is the common one."""
     assert sweep_orphaned_dolt_servers(tmp_path) == []
+
+
+def test_xdist_controller_reaps_prior_session_orphan_at_start(tmp_path, fake_dolt):
+    """The plugin hook runs on the controller before xdist workers start."""
+    cfg = _config(tmp_path, "prior-session")
+    proc = fake_dolt(cfg)
+    shutil.rmtree(cfg.parent)
+    repo = Path(__file__).parents[1]
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-n",
+            "2",
+            "-q",
+            "-s",
+            "tests/unit/test_pure_module_independence.py::test_operation_catalog_import_has_no_ambient_or_runtime_dependencies",
+            "--basetemp",
+            str(tmp_path / "current-session"),
+        ],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "dolt sweep (session start): reaped 1 orphaned sql-server(s)" in result.stdout
+    proc.wait(timeout=10)
+
+
+def test_xdist_controller_reaps_worker_orphan_at_end(tmp_path, fake_dolt):
+    """The plugin hook runs on the controller after xdist workers have stopped."""
+    repo = Path(__file__).parents[1]
+    pid_path = tmp_path / "worker-orphan.pid"
+    child_test = tmp_path / "test_create_worker_orphan.py"
+    child_test.write_text(
+        """\
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+def test_create_worker_orphan(tmp_path):
+    cfg = tmp_path / "server" / "dolt-server-config.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text("listener:\\n  port: 3308\\n")
+    proc = subprocess.Popen(
+        [os.environ["BH_TEST_FAKE_DOLT"], "sql-server", "--config", str(cfg)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        seen = subprocess.run(["ps", "-p", str(proc.pid)], capture_output=True, text=True)
+        if str(proc.pid) in seen.stdout:
+            break
+        time.sleep(0.05)
+    else:
+        raise AssertionError(f"worker orphan {proc.pid} never appeared in ps")
+    Path(os.environ["BH_TEST_ORPHAN_PID"]).write_text(str(proc.pid))
+    shutil.rmtree(cfg.parent)
+"""
+    )
+    environment = dict(os.environ)
+    environment["BH_TEST_FAKE_DOLT"] = str(tmp_path / "bin" / "dolt")
+    environment["BH_TEST_ORPHAN_PID"] = str(pid_path)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(repo / "tests"), str(repo / "src"), environment.get("PYTHONPATH", "")]
+    )
+
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "stateful_fixtures",
+                "-n",
+                "2",
+                "-q",
+                "-s",
+                str(child_test),
+                "--basetemp",
+                str(tmp_path / "current-session"),
+            ],
+            cwd=repo,
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "dolt sweep (session end): reaped 1 orphaned sql-server(s)" in result.stdout
+    finally:
+        if pid_path.is_file():
+            with contextlib.suppress(OSError, ValueError):
+                os.kill(int(pid_path.read_text()), signal.SIGKILL)

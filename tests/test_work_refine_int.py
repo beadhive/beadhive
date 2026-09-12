@@ -135,6 +135,39 @@ def test_refine_autosquash_folds_marker_and_keeps_date(world):
     assert core["date"] == core_date  # fixup keeps the target's author date
 
 
+def test_refine_autosquash_noop_mints_no_second_backup(world, capsys):
+    hive = make_hive(world)
+    make_noisy_branch(hive)
+    _entry, _target, branch = _locate(hive)
+
+    work.refine(bead=_BEAD, plan="", autosquash=True, since="", dry_run=False, hive=hive.repo)
+    before = {b for b in branches(hive.main) if b.startswith(f"{branch}.refine-")}
+    capsys.readouterr()
+    work.refine(bead=_BEAD, plan="", autosquash=True, since="", dry_run=False, hive=hive.repo)
+    after = {b for b in branches(hive.main) if b.startswith(f"{branch}.refine-")}
+
+    assert after == before and len(after) == 1
+    assert "already refined" in capsys.readouterr().out
+
+
+def test_successive_successful_refines_retain_only_latest_backup(world):
+    hive = make_hive(world)
+    make_noisy_branch(hive)
+    _entry, target, branch = _locate(hive)
+    work.refine(bead=_BEAD, plan="", autosquash=True, since="", dry_run=False, hive=hive.repo)
+
+    core = next(
+        row
+        for row in worktree.commit_rows(_entry, "main", branch)
+        if row["subject"] == "feat: core feature"
+    )
+    commit(target, "core.py", "v3\n", fixup=core["sha"])
+    work.refine(bead=_BEAD, plan="", autosquash=True, since="", dry_run=False, hive=hive.repo)
+
+    backups = [b for b in branches(hive.main) if b.startswith(f"{branch}.refine-")]
+    assert len(backups) == 1
+
+
 # ---- refine conflict path (non-contiguous reorder) --------------------------
 
 

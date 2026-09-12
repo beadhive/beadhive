@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import stat
 import sys
@@ -270,6 +271,32 @@ def _hq_remote_status(result: safety.ScanResult) -> dict[str, object]:
 def _hq_status_revision(observation: dict[str, object]) -> str:
     encoded = json.dumps(observation, sort_keys=True, separators=(",", ":")).encode()
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def local_readiness(hq_dir: Path) -> str:
+    """Observe only local HQ initialization, without fetching or scanning remote state."""
+
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    root_descriptor: int | None = None
+    state_descriptor: int | None = None
+    try:
+        root_descriptor = os.open(hq_dir, flags)
+        state_descriptor = os.open(".beads", flags, dir_fd=root_descriptor)
+    except FileNotFoundError:
+        return "hq_not_initialized" if root_descriptor is not None else "hq_path_unavailable"
+    except OSError:
+        return "hq_path_unavailable"
+    finally:
+        if state_descriptor is not None:
+            os.close(state_descriptor)
+        if root_descriptor is not None:
+            os.close(root_descriptor)
+    return "ready"
 
 
 def status_payload(*, generated_at: int | None = None) -> dict[str, object]:

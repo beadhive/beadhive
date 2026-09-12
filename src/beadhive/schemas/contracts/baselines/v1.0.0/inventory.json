@@ -1,0 +1,307 @@
+{
+  "artifacts": [
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "abort-receipt-v1-valid"
+      ],
+      "family": "abort",
+      "id": "urn:beadhive:wire-schema:abort-receipt:1",
+      "kind": "json-schema",
+      "path": "artifacts/abort-receipt-v1.schema.json",
+      "sha256": "sha256:8d6a54c6ae74851b090610c968735f431fa97836d860caf039460a16fca792cf",
+      "source_owner": "beadhive.modules.agents.domain.transaction.AbortReceiptV1",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "adapter-commit-result-v1-valid"
+      ],
+      "family": "commit",
+      "id": "urn:beadhive:wire-schema:adapter-commit-result:1",
+      "kind": "json-schema",
+      "path": "artifacts/adapter-commit-result-v1.schema.json",
+      "sha256": "sha256:3a3c63cdafdcd8e2b1104bf774250407d3e3c5e25af289450fd4e0f5ca92f794",
+      "source_owner": "beadhive.modules.agents.domain.transaction.AdapterCommitResultV1",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "agent-launch-profile-v1-valid"
+      ],
+      "family": "launch",
+      "id": "urn:beadhive:wire-schema:agent-launch-profile:1",
+      "kind": "json-schema",
+      "path": "artifacts/agent-launch-profile-v1.schema.json",
+      "sha256": "sha256:fc06ef3b343c79d83f1605fee3f3c1e0eac8f2c17c3f946d3b6637222c1e9551",
+      "source_owner": "beadhive.modules.agents.domain.profile.AgentLaunchProfile",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "agent-launch-receipt-v1-valid"
+      ],
+      "family": "receipt",
+      "id": "urn:beadhive:wire-schema:agent-launch-receipt:1",
+      "kind": "json-schema",
+      "path": "artifacts/agent-launch-receipt-v1.schema.json",
+      "sha256": "sha256:230ea6d62eb1db584065ec3911efda561f808201ab1fd42dd2f9485605110f43",
+      "source_owner": "beadhive.modules.agents.domain.profile.AgentLaunchReceipt",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "append-only-catalog-v1",
+      "examples": [
+        "cli-projections-v1-valid"
+      ],
+      "family": "cli",
+      "id": "urn:beadhive:wire-catalog:cli-projections:1",
+      "kind": "catalog",
+      "path": "artifacts/cli-projections-v1.json",
+      "sha256": "sha256:b2d38d11dd1b8e9b7eeb7f00c3a8fd25a439d51f9d8b4d2c3b6d5f5e0eabb604",
+      "source_owner": "beadhive.transport_inventory.document",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "config-v1-valid"
+      ],
+      "family": "config",
+      "id": "urn:beadhive:wire-schema:config:1",
+      "kind": "json-schema",
+      "path": "artifacts/config-v1.schema.json",
+      "sha256": "sha256:a6db5e41fe2a3d3ca4954c7e5f4c3118a5b4c24c89a041b5a5553f006dba4a88",
+      "source_owner": "beadhive.modules.config.application.schema_artifacts.generate_config_json_schema",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "append-only-catalog-v1",
+      "examples": [
+        "gateway-contracts-v1-valid"
+      ],
+      "family": "gateway",
+      "id": "urn:beadhive:wire-catalog:gateway-contracts:1",
+      "kind": "catalog",
+      "path": "artifacts/gateway-contracts-v1.json",
+      "sha256": "sha256:786cae1c30c8a85e3b3a97764abcfb4476d248cdde697ada4ce32c8e478b4f5a",
+      "source_owner": "beadhive.gateway_wire_contracts.documents",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "openapi-additive-v1",
+      "examples": [
+        "host-openapi-v1-valid"
+      ],
+      "family": "openapi",
+      "id": "urn:beadhive:wire-contract:host-openapi:1",
+      "kind": "openapi",
+      "path": "artifacts/host-openapi-v1.json",
+      "sha256": "sha256:59c2c09a3e512e31726c88d3be7e3327a834cad99bb241eb7b9887e8d4ed74e9",
+      "source_owner": "beadhive.daemon_openapi.generate_openapi_document",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "launch-receipt-v1-valid"
+      ],
+      "family": "receipt",
+      "id": "urn:beadhive:wire-schema:launch-receipt:1",
+      "kind": "json-schema",
+      "path": "artifacts/launch-receipt-v1.schema.json",
+      "sha256": "sha256:4aa15a3993c80e4c9efe34dcbba0663e9d355fa5df5d4acf300598ab84a322e7",
+      "source_owner": "beadhive.modules.agents.domain.transaction.LaunchReceiptV1",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "append-only-catalog-v1",
+      "examples": [
+        "lifecycle-events-v1-valid"
+      ],
+      "family": "lifecycle",
+      "id": "urn:beadhive:wire-catalog:lifecycle-events:1",
+      "kind": "catalog",
+      "path": "artifacts/lifecycle-events-v1.json",
+      "sha256": "sha256:44d743917b2d68ee27faf3ce7baa1cf7e2596b3da119836c84ca188a10d616cc",
+      "source_owner": "beadhive.kernel.lifecycle.contracts.ALL_LIFECYCLE_EVENTS",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "append-only-catalog-v1",
+      "examples": [
+        "mcp-projections-v1-valid"
+      ],
+      "family": "mcp",
+      "id": "urn:beadhive:wire-catalog:mcp-projections:1",
+      "kind": "catalog",
+      "path": "artifacts/mcp-projections-v1.json",
+      "sha256": "sha256:e8f243229b92613e8b1a70de53657b0f2a1338b1c4d031698afdfb06162f0d4c",
+      "source_owner": "beadhive.transport_inventory.document",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "append-only-catalog-v1",
+      "examples": [
+        "operation-catalog-v1-valid"
+      ],
+      "family": "operation-catalog",
+      "id": "urn:beadhive:wire-catalog:operations:1",
+      "kind": "catalog",
+      "path": "artifacts/operation-catalog-v1.json",
+      "sha256": "sha256:8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8",
+      "source_owner": "beadhive.kernel.operations.document",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "plugin-config-herdr-v1-valid"
+      ],
+      "family": "plugin-fragment",
+      "id": "urn:beadhive:wire-schema:plugin-config:herdr:1",
+      "kind": "json-schema",
+      "path": "artifacts/plugin-config-herdr-v1.schema.json",
+      "sha256": "sha256:14fd1dd6739ab7d637259ccb3174884a7a815dba359841764165a0e574a2c565",
+      "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "plugin-config-hitch-v1-valid"
+      ],
+      "family": "plugin-fragment",
+      "id": "urn:beadhive:wire-schema:plugin-config:hitch:1",
+      "kind": "json-schema",
+      "path": "artifacts/plugin-config-hitch-v1.schema.json",
+      "sha256": "sha256:a36483cda7101dfc29d4f6757e15b5604bef940c19f242a6ebd9f577ff35f119",
+      "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "plugin-config-observaloop-v1-valid"
+      ],
+      "family": "plugin-fragment",
+      "id": "urn:beadhive:wire-schema:plugin-config:observaloop:1",
+      "kind": "json-schema",
+      "path": "artifacts/plugin-config-observaloop-v1.schema.json",
+      "sha256": "sha256:e7b434e50b256cddf20d71a4474a61c61f1af0d5441b86326275ecb2389eb817",
+      "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "plugin-config-orca-v1-valid"
+      ],
+      "family": "plugin-fragment",
+      "id": "urn:beadhive:wire-schema:plugin-config:orca:1",
+      "kind": "json-schema",
+      "path": "artifacts/plugin-config-orca-v1.schema.json",
+      "sha256": "sha256:b1e40e259a65c5e5fc58e910772708e0a5b9c784e457d5164480794c7432a238",
+      "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "plugin-config-repowise-v1-valid"
+      ],
+      "family": "plugin-fragment",
+      "id": "urn:beadhive:wire-schema:plugin-config:repowise:1",
+      "kind": "json-schema",
+      "path": "artifacts/plugin-config-repowise-v1.schema.json",
+      "sha256": "sha256:3efbf7d6f96a8bb85224ea33edadae2bbfae38bdac0d2e98eee05781241ddc1b",
+      "source_owner": "beadhive.modules.config.application.schema_artifacts.plugin_fragment_artifacts",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "plugin-manifest-v1-valid"
+      ],
+      "family": "plugin-manifest",
+      "id": "urn:beadhive:wire-schema:plugin-manifest:1",
+      "kind": "json-schema",
+      "path": "artifacts/plugin-manifest-v1.schema.json",
+      "sha256": "sha256:5984e0fdf433758e71494f2d08054078bdefcddc4abd480ed11bceaa349a644b",
+      "source_owner": "docs/schemas/wire/v1.4.0/plugin-manifest-v1.schema.json",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "prepared-launch-v1-valid"
+      ],
+      "family": "prepared",
+      "id": "urn:beadhive:wire-schema:prepared-launch:1",
+      "kind": "json-schema",
+      "path": "artifacts/prepared-launch-v1.schema.json",
+      "sha256": "sha256:bf3c6e0d250fa21b6558c822150b27555fb228269342e8f93d57a5c4ab8f532c",
+      "source_owner": "beadhive.modules.agents.domain.transaction.PreparedLaunchV1",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "append-only-catalog-v1",
+      "examples": [
+        "seat-contracts-v1-valid"
+      ],
+      "family": "seat",
+      "id": "urn:beadhive:wire-catalog:seat-contracts:1",
+      "kind": "catalog",
+      "path": "artifacts/seat-contracts-v1.json",
+      "sha256": "sha256:d1a16e8aa06709a02264550993fd8a2c86ad09e1e4eb109114ec830262462c0a",
+      "source_owner": "beadhive.modules.agents.domain.seat.seat_contract",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "telemetry-event-envelope-v1-valid"
+      ],
+      "family": "telemetry",
+      "id": "urn:beadhive:wire-schema:telemetry.event-envelope:1",
+      "kind": "json-schema",
+      "path": "artifacts/telemetry-event-envelope-v1.schema.json",
+      "sha256": "sha256:794560e03a8c3ded22a49e59a81fe09fadae448a5f44d81b8768ed747009b4a2",
+      "source_owner": "beadhive.kernel.telemetry.event_envelope_schema",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "workspace-binding-v1-valid"
+      ],
+      "family": "workspace",
+      "id": "urn:beadhive:wire-schema:workspace-binding:1",
+      "kind": "json-schema",
+      "path": "artifacts/workspace-binding-v1.schema.json",
+      "sha256": "sha256:93bd454bf6376516f6361bef04bae5146d8324de0b29f2cd78ce5798270f66a3",
+      "source_owner": "beadhive.modules.agents.domain.transaction.WorkspaceBindingV1",
+      "version": 1
+    },
+    {
+      "compatibility_policy": "json-schema-additive-v1",
+      "examples": [
+        "workspace-target-v1-valid"
+      ],
+      "family": "workspace",
+      "id": "urn:beadhive:wire-schema:workspace-target:1",
+      "kind": "json-schema",
+      "path": "artifacts/workspace-target-v1.schema.json",
+      "sha256": "sha256:fc1f2b833d3d88e9f0a0288cd617aaade78d5f5a75a378a7705a666fbf2b4ec4",
+      "source_owner": "beadhive.modules.agents.domain.transaction.WorkspaceTargetV1",
+      "version": 1
+    }
+  ],
+  "conformance_fixtures": "conformance.json",
+  "format_version": 1,
+  "release_version": "1.0.0",
+  "schema_draft": "https://json-schema.org/draft/2020-12/schema"
+}

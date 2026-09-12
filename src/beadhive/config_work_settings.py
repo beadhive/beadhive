@@ -7,6 +7,11 @@ import datetime
 from pydantic import TypeAdapter
 
 from .config_binding import FacadeBinding
+from .modules.config.contracts import (
+    DEFAULT_JUNK_GLOBS,
+    DEFAULT_PRECIOUS_GLOBS,
+    DEFAULT_PRECIOUS_MIN_BYTES,
+)
 
 _config = FacadeBinding(f"{__package__}.config")
 
@@ -56,7 +61,7 @@ def routing_tiers(cfg, entry):
     omitted floor is ``SIMPLE`` and an omitted ceiling is ``REASONING``. Invalid hand-edited
     data degrades to no routes here; ``bh config validate`` remains the loud diagnostic gate.
     """
-    from .config_schema import RoutingTierConfig
+    from .modules.config.contracts import RoutingTierConfig
 
     raw = layered(cfg, entry, "work.routing", "tiers", []) or []
     try:
@@ -406,6 +411,21 @@ def union_globs(cfg, entry) -> list:
     return []
 
 
+def precious_globs(cfg, entry) -> list[str]:
+    """Local-only content protected regardless of size, per-hive > global > defaults."""
+    return list(work_value(cfg, entry, "precious_globs", DEFAULT_PRECIOUS_GLOBS))
+
+
+def junk_globs(cfg, entry) -> list[str]:
+    """Disposable trees excluded before filesystem inspection, per-hive > global > defaults."""
+    return list(work_value(cfg, entry, "junk_globs", DEFAULT_JUNK_GLOBS))
+
+
+def precious_min_bytes(cfg, entry) -> int:
+    """Review threshold for unknown local-only content, per-hive > global > 1 MiB."""
+    return int(work_value(cfg, entry, "precious_min_bytes", DEFAULT_PRECIOUS_MIN_BYTES))
+
+
 def work_identity(cfg, entry, actor=""):
     """Merged agent identity profile (per-hive work.identity over global), normalized to
     {mode, name, email, signing_key, sign}. mode defaults to 'agent' when any field is set,
@@ -502,6 +522,9 @@ __all__ = [
     "dispatch_seat_command",
     "dispatch_seat_bundle",
     "union_globs",
+    "precious_globs",
+    "junk_globs",
+    "precious_min_bytes",
     "work_identity",
     "claim_authority",
 ]

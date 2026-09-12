@@ -30,7 +30,15 @@ import pytest
 import typer
 from typer.testing import CliRunner
 
-from beadhive import config, hitch_plugin, hive_ready, localloop, plugins, role
+from beadhive import (
+    activity_publisher,
+    config,
+    hitch_plugin,
+    hive_ready,
+    localloop,
+    plugins,
+    role,
+)
 from beadhive.cli import app
 
 runner = CliRunner()
@@ -350,6 +358,60 @@ def test_up_injects_scoped_receipt_into_actual_child_env_and_restores_legacy_cal
     assert "argv" not in receipt and "herdr" not in receipt
     # A direct external Hitch call stays genuinely unmanaged even if its parent was managed.
     assert "BH_AGENT_LAUNCH_RECEIPT" not in calls[1][1]["env"]
+
+
+def test_real_managed_hitch_result_isolated_from_source_publisher_failure(
+    monkeypatch, tmp_path
+) -> None:
+    cfg = _stub_ready(monkeypatch, tmp_path)
+    monkeypatch.setenv("BH_ACTIVITY_PUBLISH_BAML_TOKEN", "baml-must-not-leak")
+    monkeypatch.setenv("BH_ACTIVITY_PUBLISH_HITCH_TOKEN", "hitch-child-token")
+    monkeypatch.setenv("BH_ACTIVITY_PUBLISH_BEADHIVE_TOKEN", "beadhive-must-not-leak")
+    publisher = activity_publisher.ActivityPublisher(
+        activity_publisher.ActivityPublisherConfig(
+            origin="http://127.0.0.1:8737",
+            queue_path=tmp_path / "hitch-outbox.sqlite3",
+            tokens={"hitch": "token"},
+        ),
+        transport=lambda *_args: 503,
+        start_worker=False,
+    )
+
+    class Result:
+        returncode = 7
+
+    child_env = {}
+
+    def run_hitch(*_args, **kwargs):
+        child_env.update(kwargs["env"])
+        return Result()
+
+    monkeypatch.setattr(activity_publisher, "publisher_for_env", lambda: publisher)
+    monkeypatch.setattr(
+        hitch_plugin.registry,
+        "entry_for_dir",
+        lambda _cfg, _path: {
+            "provider": "github",
+            "org": "beadhive",
+            "repo": "beadhive",
+            "prefix": "bh",
+        },
+    )
+    monkeypatch.setattr(hitch_plugin.config, "home", lambda: tmp_path / "home")
+    monkeypatch.setattr(hitch_plugin.run, "run", run_hitch)
+
+    with hitch_plugin.scoped_launch_receipt(_receipt_payload("bh-q0lol.11")):
+        result = hitch_plugin.up("claude", "developer", cfg=cfg, workspace=str(tmp_path))
+
+    assert result == 7
+    assert {
+        name
+        for name in child_env
+        if name.startswith("BH_ACTIVITY_PUBLISH_") and name.endswith("_TOKEN")
+    } == {"BH_ACTIVITY_PUBLISH_HITCH_TOKEN"}
+    assert publisher.status().retained == 2
+    publisher.flush_once(force=True)
+    assert publisher.status().retried == 1
 
 
 @pytest.mark.parametrize("ambient_kind", ["valid", "malformed"])

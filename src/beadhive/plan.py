@@ -20,20 +20,42 @@ from pathlib import Path
 
 import typer
 
-from . import adopt, bd, complexity, config, guard, molecule, otel, registry, state, validate
+from . import (
+    adopt,
+    bd,
+    complexity,
+    config,
+    guard,
+    molecule,
+    planning_services,
+    registry,
+    state,
+    validate,
+)
 from .identity import resolve_actor, workspace_identity
+from .modules.planning import (
+    FilingRequest,
+    KickoffRequest,
+    KickoffResult,
+    MoleculeGraph,
+    PlanningError,
+    RepairRequest,
+    ValidationRequest,
+    VerificationRequest,
+)
+from .modules.planning import (
+    RepairResult as PlanningRepairResult,
+)
 
 app = typer.Typer(no_args_is_help=True, help="Plan a molecule → swarm (planning plane).")
 
 
-class PlanError(Exception):
-    """A planning-plane operation failed. Typer-free; the CLI maps it to a stderr + exit 1."""
+PlanError = PlanningError
 
 
 @dataclass
 class FileResult:
-    """Outcome of filing a molecule: the new epic id and its issue / kickoff-gate counts,
-    plus how many originating reports were linked back (0 unless the molecule was adopted)."""
+    """Compatibility result for callers of the historical planning facade."""
 
     epic_id: str
     issue_count: int
@@ -191,24 +213,13 @@ def _filed_complexity_decisions(
 def _topo_order(issues: list[dict]) -> list[dict]:
     """Issues in dependency order (deps before dependents). The spec is a validated DAG, so a
     stable Kahn sort terminates; it preserves spec order among independent issues."""
-    by_handle = {i["handle"]: i for i in issues}
-    indegree = {i["handle"]: len(i.get("deps") or []) for i in issues}
-    ready = [i for i in issues if indegree[i["handle"]] == 0]
-    out: list[dict] = []
-    while ready:
-        cur = ready.pop(0)
-        out.append(cur)
-        for issue in issues:  # any issue depending on cur loses an in-edge
-            if cur["handle"] in (issue.get("deps") or []):
-                indegree[issue["handle"]] -= 1
-                if indegree[issue["handle"]] == 0:
-                    ready.append(by_handle[issue["handle"]])
-    return out
+    return list(MoleculeGraph.from_issues(issues).ordered_issues(issues))
 
 
 def _roots(issues: list[dict]) -> list[dict]:
     """Issues with no deps — the molecule's kickoff-gated entry points."""
-    return [i for i in issues if not (i.get("deps") or [])]
+    roots = set(MoleculeGraph.from_issues(issues).roots)
+    return [issue for issue in issues if issue["handle"] in roots]
 
 
 def _opt(flag: str, value) -> list[str]:
@@ -316,6 +327,13 @@ def _create_issue(issue: dict, epic_id: str, dep_ids: list[str], cwd, actor: str
 # ---- core (Typer-free; shared by the CLI verbs and the future MCP entrypoint) -
 
 
+def validate_molecule(data: dict, cfg):
+    """Validate one structured molecule through the planning application boundary."""
+    return planning_services.planning_service(
+        validate=lambda request: molecule.validate_spec(request.spec, request.config)
+    ).validate(ValidationRequest(data, cfg))
+
+
 def check_spec(spec: str, cfg) -> list[str]:
     """Load + validate a molecule spec; return its problem list ([] ⇒ valid). Typer-free.
 
@@ -323,7 +341,7 @@ def check_spec(spec: str, cfg) -> list[str]:
     file). This is the standalone validation `check` exposes and `file` runs inline."""
     data = molecule.load_spec(spec)
     compile_complexity_labels(data)
-    return molecule.validate_spec(data, cfg)
+    return list(validate_molecule(data, cfg).problems)
 
 
 # ---- kickoff plumbing (shared by `file` and `repair`) -------------------------
@@ -400,49 +418,51 @@ def _create_release_hold_gate(bead_id: str, epic_id: str, cwd, actor: str) -> No
     )
 
 
-def file_molecule(data: dict, cwd: Path, actor: str, cfg=None) -> FileResult:
-    """File a validated molecule spec into a beads swarm. Typer-free; raises PlanError.
-
-    Creates the epic + child issues (deps + identity-triplet labels) in dependency order,
-    builds the swarm, and opens the kickoff gate (a human gate per root + kickoff=pending). When
-    `release.enforce_hold` is on for the hive, also opens a hard `release-hold:` gate on every
-    `release:breaking` bead. The caller is responsible for loading + validating `data` first
-    (molecule.validate_or_raise); `cfg` defaults to `config.load()`."""
-    cfg = cfg if cfg is not None else config.load()
+def _file_molecule(request: FilingRequest, graph: MoleculeGraph) -> FileResult:
+    """Concrete Beads adapter for the typed filing application operation."""
+    data = request.spec
+    cwd = request.workspace
+    actor = request.actor
+    cfg = request.config
     entry = registry.entry_for_dir(cfg, cwd)
     epic = data["epic"]
     issues = data["issues"]
 
     epic_id = _create_epic(epic, cwd, actor)
     handle_to_id: dict[str, str] = {}
-    for issue in _topo_order(issues):
+    for issue in graph.ordered_issues(issues):
         dep_ids = [handle_to_id[h] for h in (issue.get("deps") or [])]
         handle_to_id[issue["handle"]] = _create_issue(issue, epic_id, dep_ids, cwd, actor)
 
     if not _create_swarm(epic_id, cwd, actor):
         raise PlanError(f"created epic {epic_id} but `bd swarm create` failed — inspect the hive")
 
-    for root in _roots(issues):
-        _create_kickoff_gate(handle_to_id[root["handle"]], epic_id, cwd, actor)
+    for root_handle in graph.roots:
+        _create_kickoff_gate(handle_to_id[root_handle], epic_id, cwd, actor)
     _set_kickoff_pending(epic_id, cwd, actor)
 
-    # Release-hold: a breaking change stays hard-blocked at planning time (not merely
-    # advisory-ordered) when the hive opts in via `release.enforce_hold` (bh-k2j8.5).
     if config.release_enforce_hold(cfg, entry):
         for issue in issues:
             if str(issue.get("release") or "") == "breaking":
                 _create_release_hold_gate(handle_to_id[issue["handle"]], epic_id, cwd, actor)
 
-    # Adopt path: link each originating report as child-of the epic (epic owns/blocks the report,
-    # never the reverse). Provenance already rode onto the epic at creation (see _create_epic).
     adopted = _link_adopted_reports(epic_id, epic, cwd, actor)
+    return FileResult(epic_id, len(graph.order), len(graph.roots), len(adopted))
 
-    return FileResult(
-        epic_id=epic_id,
-        issue_count=len(issues),
-        root_count=len(_roots(issues)),
-        adopt_count=len(adopted),
-    )
+
+def file_molecule(data: dict, cwd: Path, actor: str, cfg=None) -> FileResult:
+    """File a molecule through the typed planning application boundary. Typer-free.
+
+    Creates the epic + child issues (deps + identity-triplet labels) in dependency order,
+    builds the swarm, and opens the kickoff gate (a human gate per root + kickoff=pending). When
+    `release.enforce_hold` is on for the hive, also opens a hard `release-hold:` gate on every
+    `release:breaking` bead. Validation and DAG policy execute before the first mutation."""
+    cfg = cfg if cfg is not None else config.load()
+    result = planning_services.planning_service(
+        validate=lambda request: molecule.validate_spec(request.spec, request.config),
+        file=_file_molecule,
+    ).file(FilingRequest(data, cwd, actor, cfg))
+    return FileResult(result.epic_id, result.issue_count, result.root_count, result.adopt_count)
 
 
 # ---- preview -----------------------------------------------------------------
@@ -708,9 +728,11 @@ def _render_from_epic(epic_id: str, cwd) -> None:
 
 
 def _spec_from_filed(epic_data: dict, issues: list[dict]) -> dict:
-    """Reconstruct a molecule spec dict from a filed epic so molecule.validate_spec can run its
-    structural checks (epic + title, unique handles, per-issue title/acceptance, deps → real
-    handles, acyclic DAG). Dimension/identity LABELS are verified separately by _check_child_labels.
+    """Reconstruct a molecule spec dict from a filed epic for structural validation.
+
+    A child epic is a coordinator container, not leaf work.  It still participates in the
+    parent's dependency graph, but its own acceptance belongs to its child molecule, so supply a
+    structural placeholder here and verify its container conventions separately.
     """
     epic = {
         "title": epic_data.get("title") or "",
@@ -729,7 +751,9 @@ def _spec_from_filed(epic_data: dict, issues: list[dict]) -> dict:
                 "type": i["type"],
                 "description": i.get("description") or "",
                 "design": i.get("design") or "",
-                "acceptance": i["acceptance"],
+                "acceptance": i["acceptance"]
+                if i.get("type") != "epic"
+                else "coordinator container",
                 "deps": i["deps"],
                 **{
                     field: values[0]
@@ -812,7 +836,11 @@ def _ungated_roots(epic_id: str, issues: list[dict], cwd) -> list[str] | None:
     Shared by `_check_kickoff_gates` (verify) and plan_repair (backfill) so both sides apply the
     same root filter — a naive "gate every childless child" would over-gate origin reports or
     under-gate genuine roots."""
-    roots = [r for r in _roots(issues) if not (r.get("satisfied_deps") or [])]
+    # A child epic owns its own root gates.  It is a coordinator container, not an entry-point
+    # leaf of this parent molecule, so never demand a second parent-named kickoff gate for it.
+    roots = [
+        r for r in _roots(issues) if r.get("type") != "epic" and not (r.get("satisfied_deps") or [])
+    ]
     if not roots:
         return []
     gates = _gate_list(cwd, all_gates=True)
@@ -852,12 +880,12 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
         for field in ("provider", "org", "repo"):
             if not validate._label_val(labels, f"{field}:"):
                 problems.append(f"{cid}: missing identity label '{field}:'")
-        # bh-l9s8.2: the inverse assertion — origin:/intake:/kickoff: are intake-item / epic
-        # state, never work-child state; carried here they misroute the child (or hide it from
-        # the sibling set once an origin: label lands).
-        offending = sorted(
-            lbl for lbl in labels if lbl.startswith(("origin:", "intake:", "kickoff:"))
-        )
+        # bh-l9s8.2: state labels do not belong on leaf work.  A nested epic is a coordinator
+        # container in its own right, however, so its kickoff state is required and valid.
+        state_prefixes = ("origin:", "intake:")
+        if issue.get("type") != "epic":
+            state_prefixes += ("kickoff:",)
+        offending = sorted(lbl for lbl in labels if lbl.startswith(state_prefixes))
         if offending:
             problems.append(
                 f"{cid}: work children must not carry state labels ({', '.join(offending)}) — "
@@ -878,19 +906,55 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
     return problems
 
 
+def _check_coordinator_children(issues: list[dict], cwd) -> list[str]:
+    """Verify nested epic children as independent coordinator containers.
+
+    Parent verification deliberately does not borrow a nested epic's kickoff gate or demand an
+    acceptance criterion from the container record.  Each nested epic must instead retain the
+    same swarm, kickoff state, and anchored root-gate contract as a top-level molecule.
+    """
+    problems: list[str] = []
+    for issue in issues:
+        if issue.get("type") != "epic":
+            continue
+        cid = issue["handle"]
+        nested = _epic_molecule(cid, cwd)
+        if nested is None:
+            problems.append(f"{cid}: could not retrieve nested epic or its children")
+            continue
+        nested_data, nested_issues, _origin_reports = nested
+        problems += _check_epic_type(nested_data, cid)
+        problems += _check_swarm(cid, cwd)
+        problems += _check_kickoff_state(cid, cwd)
+        problems += _check_kickoff_gates(cid, nested_issues, cwd)
+    return problems
+
+
+def _verify_epic(request: VerificationRequest) -> list[str]:
+    """Concrete Beads reader for the typed verification operation."""
+    epic_id = request.epic_id
+    cfg = request.config
+    cwd = request.workspace
+    loaded = _epic_molecule(epic_id, cwd)
+    if loaded is None:
+        return [f"could not retrieve epic {epic_id} or its children — does it exist in this hive?"]
+    epic_data, issues, origin_reports = loaded
+    return _verify_loaded(epic_id, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
+
+
 def verify_epic(epic_id: str, cfg, cwd) -> list[str]:
-    """Return convention problems for a FILED molecule ([] ⇒ well-formed). Typer-free, read-only.
+    """Verify a filed molecule through the typed planning boundary. Typer-free, read-only.
 
     Layers molecule.validate_spec (structural: epic + title, handles, acceptance, deps, acyclic DAG)
     over filed-bead assertions with no other home: the bead is an epic, a bd swarm exists, every
     root has a kickoff gate, kickoff state is set, and every child carries the identity triplet +
     valid closed-dimension labels.
     """
-    loaded = _epic_molecule(epic_id, cwd)
-    if loaded is None:
-        return [f"could not retrieve epic {epic_id} or its children — does it exist in this hive?"]
-    epic_data, issues, origin_reports = loaded
-    return _verify_loaded(epic_id, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
+    return list(
+        planning_services.planning_service(verify=_verify_epic)
+        .verify(VerificationRequest(epic_id, Path(cwd), cfg))
+        .problems
+    )
 
 
 def _verify_loaded(
@@ -924,6 +988,7 @@ def _verify_loaded(
     problems += _check_kickoff_gates(epic_id, issues, cwd)
     problems += _check_kickoff_state(epic_id, cwd)
     problems += _check_child_labels(issues, cfg)
+    problems += _check_coordinator_children(issues, cwd)
     return problems
 
 
@@ -955,8 +1020,6 @@ def enforce_epic_conventions(epic_id: str, cfg, cwd, *, action: str) -> None:
 # ---- verbs ------------------------------------------------------------------
 
 
-@app.command("file")
-@otel.trace_verb("plan.file")
 def file(
     spec: str = typer.Argument(..., metavar="<spec>", help="molecule spec YAML"),
     dry_run: bool = typer.Option(False, "--dry-run", help="preview only; create nothing"),
@@ -1010,8 +1073,6 @@ def file(
         _save_spec(data, save)
 
 
-@app.command("adopt")
-@otel.trace_verb("plan.adopt")
 def adopt_cmd(
     beads: list[str] = _ADOPT_BEADS,
     out: str = typer.Option(
@@ -1059,8 +1120,6 @@ def adopt_cmd(
         molecule._yaml.dump(frame, sys.stdout)
 
 
-@app.command("check")
-@otel.trace_verb("plan.check")
 def check(
     ref: str = typer.Argument(..., metavar="<spec|epic>", help="spec YAML path OR filed epic id"),
     as_json: bool = typer.Option(
@@ -1089,7 +1148,7 @@ def check(
         except (FileNotFoundError, molecule.MoleculeError) as e:
             _abort(str(e))
         decisions = compile_complexity_labels(data)
-        problems = molecule.validate_spec(data, cfg)
+        problems = list(validate_molecule(data, cfg).problems)
         issues = data.get("issues")
     else:
         cwd = registry.hive_dir_for(cfg, hive)
@@ -1098,7 +1157,15 @@ def check(
             _abort(f"could not retrieve epic {ref} or its children — does it exist in this hive?")
         epic_data, issues, origin_reports = loaded
         decisions = _filed_complexity_decisions(ref, epic_data, issues)
-        problems = _verify_loaded(ref, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
+        problems = list(
+            planning_services.planning_service(
+                verify=lambda _request: _verify_loaded(
+                    ref, epic_data, issues, cfg, cwd, origin_reports=origin_reports
+                )
+            )
+            .verify(VerificationRequest(ref, cwd, cfg))
+            .problems
+        )
 
     summary = molecule.acceptance_summary(issues)
     if as_json:
@@ -1128,8 +1195,6 @@ def check(
     typer.echo("✓ valid")
 
 
-@app.command("verify")
-@otel.trace_verb("plan.verify")
 def verify(
     epic: str = typer.Argument(..., metavar="<epic>", help="filed epic id to verify"),
     hive: str = _HIVE,
@@ -1153,7 +1218,15 @@ def verify(
         )
         raise typer.Exit(1)
     epic_data, issues, origin_reports = loaded
-    problems = _verify_loaded(epic, epic_data, issues, cfg, cwd, origin_reports=origin_reports)
+    problems = list(
+        planning_services.planning_service(
+            verify=lambda _request: _verify_loaded(
+                epic, epic_data, issues, cfg, cwd, origin_reports=origin_reports
+            )
+        )
+        .verify(VerificationRequest(epic, cwd, cfg))
+        .problems
+    )
     warnings = molecule.acceptance_summary(issues)["warnings"]
     for problem in problems:
         typer.echo(f"  - {problem}", err=True)
@@ -1165,8 +1238,55 @@ def verify(
     typer.echo(f"✓ verified {epic}: molecule conventions satisfied{stub_note}")
 
 
-@app.command("approve")
-@otel.trace_verb("plan.approve")
+def _approve_kickoff(request: KickoffRequest) -> KickoffResult:
+    """Concrete Beads adapter for kickoff reconciliation."""
+    epic = request.epic_id
+    cwd = request.workspace
+    actor = request.actor
+    cfg = request.config
+    current = bd.state(epic, "kickoff", cwd)
+
+    # Discover open kickoff gates for this epic (the description contract: _create_kickoff_gate)
+    gates = _gate_list(cwd)
+    if gates is None:
+        raise PlanError(f"could not retrieve gate list for {epic}")
+
+    # ANCHORED (bh-76oqv). This list is RESOLVED below, so an unanchored `kickoff <epic>` substring
+    # made `plan approve <parent>` resolve a nested epic's kickoff gate — see _names_kickoff_for.
+    open_gates = [
+        g
+        for g in gates
+        if g.get("status") == "open" and _names_kickoff_for(g.get("description"), epic)
+    ]
+
+    # Fully approved already (state flipped, no open gates) — the reconciled fixpoint. No-op.
+    if current == "approved" and not open_gates:
+        return KickoffResult(epic, 0, already_approved=True)
+
+    # Convention gate: don't finalize a malformed molecule — surface the validator's problem list
+    # (reuse `verify_epic`) instead of approving a swarm that a coordinator can't cleanly
+    # dispatch. An unset kickoff state fails here with a pointer at `plan repair` (which stamps
+    # kickoff=pending), so approve converges every gated half-state and refuses the unfiled one.
+    enforce_epic_conventions(epic, cfg, cwd, action="approve")
+
+    # Resolve whatever gates remain open (possibly none, when only the state needs the flip)
+    for gate in open_gates:
+        gate_id = str(gate.get("id") or gate.get("key") or "")
+        if not gate_id:
+            raise PlanError(f"gate missing id field: {gate}")
+        bd.run(["gate", "resolve", gate_id], cwd, actor=actor)
+
+    # Flip state to approved (skipped when it already says approved — pure gate cleanup)
+    if current != "approved":
+        bd.run(
+            ["set-state", epic, "kickoff=approved", "--reason", "kickoff approved"],
+            cwd,
+            actor=actor,
+        )
+
+    return KickoffResult(epic, len(open_gates))
+
+
 def approve(
     epic: str = typer.Argument(..., metavar="<epic>", help="epic id whose kickoff to approve"),
     hive: str = _HIVE,
@@ -1184,53 +1304,18 @@ def approve(
     cfg = config.load()
     cwd = registry.hive_dir_for(cfg, hive)
     actor = resolve_actor("", "", cwd=cwd)
-
-    current = bd.state(epic, "kickoff", cwd)
-
-    # Discover open kickoff gates for this epic (the description contract: _create_kickoff_gate)
-    gates = _gate_list(cwd)
-    if gates is None:
-        _abort(f"could not retrieve gate list for {epic}")
-
-    # ANCHORED (bh-76oqv). This list is RESOLVED below, so an unanchored `kickoff <epic>` substring
-    # made `plan approve <parent>` resolve a nested epic's kickoff gate — see _names_kickoff_for.
-    open_gates = [
-        g
-        for g in gates
-        if g.get("status") == "open" and _names_kickoff_for(g.get("description"), epic)
-    ]
-
-    # Fully approved already (state flipped, no open gates) — the reconciled fixpoint. No-op.
-    if current == "approved" and not open_gates:
+    try:
+        result = planning_services.planning_service(approve=_approve_kickoff).approve(
+            KickoffRequest(epic, cwd, actor, cfg)
+        )
+    except PlanError as exc:
+        _abort(str(exc))
+    if result.already_approved:
         typer.echo(f"✓ {epic} already approved — kickoff=approved, no open kickoff gates")
         return
-
-    # Convention gate: don't finalize a malformed molecule — surface the validator's problem list
-    # (reuse `verify_epic`) instead of approving a swarm that a coordinator can't cleanly
-    # dispatch. An unset kickoff state fails here with a pointer at `plan repair` (which stamps
-    # kickoff=pending), so approve converges every gated half-state and refuses the unfiled one.
-    enforce_epic_conventions(epic, cfg, cwd, action="approve")
-
-    # Resolve whatever gates remain open (possibly none, when only the state needs the flip)
-    for gate in open_gates:
-        gate_id = str(gate.get("id") or gate.get("key") or "")
-        if not gate_id:
-            _abort(f"gate missing id field: {gate}")
-        bd.run(["gate", "resolve", gate_id], cwd, actor=actor)
-
-    # Flip state to approved (skipped when it already says approved — pure gate cleanup)
-    if current != "approved":
-        bd.run(
-            ["set-state", epic, "kickoff=approved", "--reason", "kickoff approved"],
-            cwd,
-            actor=actor,
-        )
-
-    typer.echo(f"✓ approved {epic}: {len(open_gates)} gate(s) resolved, kickoff=approved")
+    typer.echo(f"✓ approved {epic}: {result.resolved_gates} gate(s) resolved, kickoff=approved")
 
 
-@app.command("show")
-@otel.trace_verb("plan.show")
 def show(
     ref: str = typer.Argument(..., metavar="<ref>", help="spec file path OR filed epic id"),
     hive: str = _HIVE,
@@ -1259,8 +1344,6 @@ def show(
         _render_from_epic(ref, cwd)
 
 
-@app.command("status")
-@otel.trace_verb("plan.status")
 def status(
     epic: str | None = typer.Argument(
         None, metavar="[<epic>]", help="epic id (omit for all swarms)"
@@ -1313,10 +1396,131 @@ def status(
             typer.echo(f"  blocked ({len(blocked)}): {', '.join(i.get('id', '') for i in blocked)}")
 
 
-# ---- repair (own module, mounted here so `bh plan repair` rides plan.app) ----
-# plan_repair imports `plan` function-locally only, so this bottom import is cycle-safe in
-# either import order; it lives in its own module to respect plan.py's size budget (bh-62rm).
+# ---- repair ------------------------------------------------------------------
 
-from . import plan_repair as _plan_repair  # noqa: E402
+_IDENTITY_FIELDS = ("provider", "org", "repo")
 
-app.command("repair")(_plan_repair.repair)
+
+def _repair_epic(request: RepairRequest) -> PlanningRepairResult:
+    """Concrete Beads adapter for idempotent planning repair."""
+    epic_id = request.epic_id
+    cwd = request.workspace
+    actor = request.actor
+    cfg = request.config
+    loaded = _epic_molecule(epic_id, cwd)
+    if loaded is None:
+        raise PlanError(
+            f"could not retrieve epic {epic_id} or its children — does it exist in this hive?"
+        )
+    epic_data, issues, _origin_reports = loaded
+    type_problems = _check_epic_type(epic_data, epic_id)
+    if type_problems:
+        raise PlanError(f"{type_problems[0]} — repair backfills molecule plumbing, not types")
+
+    fixes: list[str] = []
+    missing = _swarm_missing(epic_id, cwd)
+    if missing is None:
+        raise PlanError(f"could not retrieve swarm list for {epic_id} — inspect the hive")
+    if missing:
+        if not _create_swarm(epic_id, cwd, actor):
+            raise PlanError(f"`bd swarm create {epic_id}` failed — inspect the hive")
+        fixes.append(f"created bd swarm for {epic_id}")
+
+    ungated = _ungated_roots(epic_id, issues, cwd)
+    if ungated is None:
+        raise PlanError(f"could not retrieve gate list for {epic_id} — inspect the hive")
+    for root_id in ungated:
+        _create_kickoff_gate(root_id, epic_id, cwd, actor)
+        fixes.append(f"created kickoff gate for root {root_id}")
+
+    if not bd.state(epic_id, "kickoff", cwd):
+        _set_kickoff_pending(epic_id, cwd, actor)
+        fixes.append(f"set kickoff=pending on {epic_id}")
+
+    ident = workspace_identity(cwd)
+    if ident is not None:
+        for issue in issues:
+            child_id = issue["handle"]
+            labels = issue.get("labels") or []
+            for field, value in zip(_IDENTITY_FIELDS, ident, strict=True):
+                if validate._label_val(labels, f"{field}:"):
+                    continue
+                label = f"{field}:{value}"
+                if bd.run(["label", "add", child_id, label], cwd, actor=actor).returncode != 0:
+                    raise PlanError(f"`bd label add {child_id} {label}` failed — inspect the hive")
+                fixes.append(f"added label {label} to {child_id}")
+
+    return PlanningRepairResult(epic_id, tuple(fixes), tuple(verify_epic(epic_id, cfg, cwd)))
+
+
+def repair_epic(epic_id: str, cfg, cwd, actor: str) -> PlanningRepairResult:
+    """Repair a filed molecule through the typed planning application boundary."""
+    return planning_services.planning_service(repair=_repair_epic).repair(
+        RepairRequest(epic_id, Path(cwd), actor, cfg)
+    )
+
+
+def repair(
+    epic: str = typer.Argument(..., metavar="<epic>", help="filed epic id to repair"),
+    hive: str = _HIVE,
+):
+    """Idempotently backfill a hand-assembled epic to the molecule conventions `verify` checks:
+    create the bd swarm if missing, open kickoff gates for GENUINE ungated roots (through the
+    same shared code path as `file`, so the gate description cannot drift), set kickoff=pending
+    when unset, and backfill missing provider/org/repo identity labels on children. Re-runs
+    verify and prints what it fixed; re-running on a clean molecule is a no-op. This is the fix
+    for the `work start` / `plan approve` convention refusal on an epic assembled without
+    `plan file`."""
+    cfg = config.load()
+    cwd = registry.hive_dir_for(cfg, hive)
+    actor = resolve_actor("", "", cwd=cwd)
+    try:
+        result = repair_epic(epic, cfg, cwd, actor)
+    except PlanError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from None
+    for fix in result.fixes:
+        typer.echo(f"  + {fix}")
+    if result.problems:
+        for problem in result.problems:
+            typer.echo(f"  - {problem}", err=True)
+        typer.echo(
+            f"✗ {epic}: applied {len(result.fixes)} fix(es) but {len(result.problems)} "
+            "problem(s) remain (above) — these need a planner, not a backfill",
+            err=True,
+        )
+        raise typer.Exit(1)
+    if result.fixes:
+        typer.echo(
+            f"✓ repaired {epic}: {len(result.fixes)} fix(es) — molecule conventions satisfied"
+        )
+    else:
+        typer.echo(f"✓ {epic} already convention-clean — nothing to repair")
+
+
+from .cli_projection import (  # noqa: E402, I001
+    generated_callbacks as _generated_cli_callbacks,
+    project_cli_group as _project_cli_group,
+)
+
+CLI_HANDLERS = {
+    "plan.file": file,
+    "plan.adopt": adopt_cmd,
+    "plan.check": check,
+    "plan.verify": verify,
+    "plan.approve": approve,
+    "plan.show": show,
+    "plan.status": status,
+    "plan.repair": repair,
+}
+CLI_PROJECTION = _project_cli_group(app, "plan", CLI_HANDLERS)
+_CLI_CALLBACKS = _generated_cli_callbacks(app, CLI_PROJECTION)
+
+file = _CLI_CALLBACKS["plan.file"]
+adopt_cmd = _CLI_CALLBACKS["plan.adopt"]
+check = _CLI_CALLBACKS["plan.check"]
+verify = _CLI_CALLBACKS["plan.verify"]
+approve = _CLI_CALLBACKS["plan.approve"]
+show = _CLI_CALLBACKS["plan.show"]
+status = _CLI_CALLBACKS["plan.status"]
+repair = _CLI_CALLBACKS["plan.repair"]

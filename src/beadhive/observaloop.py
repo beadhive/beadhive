@@ -37,7 +37,8 @@ from typing import Any
 
 import typer
 
-from . import config, plugins
+from . import plugins
+from .config_consumer_ports import plugin_settings as config
 
 # Three distinct, correctly-attributed prereq hints (case b/a/c of ``is_available``). Each is shown
 # at most once per process and names *its own* fix without crashing — the observaloop analogue of

@@ -1,0 +1,1 @@
+"""Focused integration adapter contracts."""

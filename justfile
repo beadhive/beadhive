@@ -51,7 +51,23 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check test
+check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat test
+
+# Every checked transport declaration: catalog, projection inventory, OpenAPI, gateway and roots.
+transport-artifact-check:
+    uv run python scripts/render_operation_catalog.py --check
+    uv run python scripts/render_transport_inventory.py --check
+    uv run python -m beadhive.daemon_openapi --check
+    uv run python -m beadhive.gateway_contract --check
+    uv run python scripts/render_transport_composition_evidence.py --check
+
+# Deterministic product schema/route generation: checked JSON may never drift from code.
+openapi-check:
+    uv run python -m beadhive.daemon_openapi --check
+
+# Catalog relationship for every Frame Bridge route; Gateway wire policy remains stable.
+gateway-contract-check:
+    uv run python -m beadhive.gateway_contract --check
 
 # full gate: ruff + markdown + licenses + the COMPLETE suite (unit + integration).
 #
@@ -119,7 +135,35 @@ check: lint lint-md license-check test
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check (test FAST) test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat (test FAST) test-integration-land demo-local-loop demo-live-ingress
+
+# Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
+architecture-check:
+    uv run python scripts/check_import_boundaries.py
+    uv run python scripts/test_closure_certification.py --check
+    uv run python scripts/test_closure_shadow_policy.py --check
+    uv run python scripts/test_closure_promotion_policy.py --check
+    uv run python scripts/test_closure_operational_report.py --check
+
+# Compare the candidate wire release with the target branch and validate its shared fixtures.
+# CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
+# reject same-major wire breaks and in-place edits to already-published releases
+wire-schema-compat:
+    uv run python scripts/render_telemetry_schema.py --check
+    uv run python scripts/generate_contract_release.py --check
+    uv run python scripts/generate_contract_release_evidence.py --check
+    uv run python scripts/check_wire_schema_compat.py
+
+# RELEASE ONLY — validates evidence captured by real Darwin, Linux, and container targets.
+# Unit command fixtures cannot satisfy this gate: every cell carries real-execution, target,
+# exact-revision, and freshness provenance. An unavailable target or absent cell is a failure.
+# validate the complete real host-daemon platform lifecycle evidence document
+check-host-daemon-platform-release evidence revision="":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    revision="{{revision}}"
+    if [ -z "$revision" ]; then revision="$(git rev-parse HEAD)"; fi
+    uv run python -m beadhive.daemon_platform "{{evidence}}" --revision "$revision"
 
 # MANUAL ONLY — the release browser matrix belongs to beadhive-ui because that repository owns
 # Chromium, the product bundle, and the browser adapters. Core delegates instead of copying the
@@ -512,6 +556,51 @@ test_timeout_seconds := env_var_or_default("BH_TEST_TIMEOUT_SECONDS", "900")
 test set=FAST:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
+
+# Advisory module/plugin closures. These commands never replace `just check` or `just check-all`;
+# the checked impact map adds shared-contract and reverse-dependent selectors to each direct set.
+test-closure closure:
+    ./scripts/hermetic.sh uv run python scripts/test_closures.py run {{quote(closure)}}
+
+test-closure-check:
+    uv run python scripts/test_closures.py check
+
+# Digest-bound prerequisite evidence only; selection and activation remain disabled.
+test-closure-certification-check:
+    uv run python scripts/test_closure_certification.py --check
+
+# Pure policy/evidence check only. It never runs a selected closure or changes a lifecycle gate.
+test-closure-shadow-policy-check:
+    uv run python scripts/test_closure_shadow_policy.py --check
+
+# Promotion scope/evidence check only. The trusted verifier still owns production eligibility.
+test-closure-promotion-policy-check:
+    uv run python scripts/test_closure_promotion_policy.py --check
+
+# Advisory only: emit a machine-readable impacted-test plan; never runs tests or changes policy.
+test-impact-plan base head="HEAD":
+    uv run python scripts/test_impact_selector.py --base {{quote(base)}} --head {{quote(head)}}
+
+test-kernel:
+    just test-closure kernel
+
+test-module module:
+    just test-closure {{quote("module." + module)}}
+
+test-adapters:
+    just test-closure adapters
+
+test-plugin plugin:
+    just test-closure {{quote("plugin." + plugin)}}
+
+test-contracts:
+    just test-closure contracts
+
+test-integration:
+    just test-closure integration
+
+test-system-smoke:
+    just test-closure system-smoke
 
 # QUARANTINE (bh-4kq1b, tracking bh-tfapu): the LAND gate's integration pass, minus one test.
 #
@@ -1139,6 +1228,13 @@ image-cross target="default": image-builder image-qemu
 # live OTel verification: export real traces+metrics+logs to a running collector
 otel-verify endpoint="http://localhost:4317":
     WS_OTEL_VERIFY=1 OTEL_EXPORTER_OTLP_ENDPOINT={{endpoint}} uv run pytest tests/test_otel_verify.py -v -s
+
+# Explicit compatibility gate: create a temporary environment at the declared OTel floor and
+# prove fractional env timeout parsing + bounded dead-collector daemon shutdown with zero workers.
+# Kept out of ordinary pytest because creating/installing an environment is allowed to fetch on a
+# cold cache; reviewers and dependency-floor changes invoke this recipe deliberately.
+otel-minimum-check:
+    uv run python tests/proof/verify_otel_minimum.py
 
 # live metrics-usability verification: confirms bh metrics form a stable per-(hive,command)
 # accumulating series with ws.hive/observaloop.profile labels (no service_instance_id) and

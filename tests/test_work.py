@@ -27,6 +27,7 @@ import typer
 
 from beadhive import bd as bd_mod
 from beadhive import (
+    claim_authority,
     config,
     ghpr,
     git_linkage,
@@ -39,8 +40,11 @@ from beadhive import (
     validation_ledger,
     validation_records,
     work,
+    work_group,
     work_logic,
+    work_show,
     worktree,
+    worktree_merge,
 )
 from beadhive.run import run as real_run
 from harness.processes import process_context
@@ -152,6 +156,8 @@ class FakeBd:
         # existing test's `close` keeps its old always-succeeds behavior unless it opts in.
         self.close_actor_guard = set()  # ids where a non-forced close refuses on actor mismatch
         self.close_always_fails = set()  # ids where close NEVER succeeds, even with --force
+        self.close_failures = {}  # id -> number of upcoming close calls that fail
+        self.dep_add_fails = set()  # (source, target, type) tuples
 
     def seed(self, bead_id, **fields):
         self.beads[bead_id] = {"id": bead_id, "status": "open", "assignee": "", **fields}
@@ -213,6 +219,9 @@ class FakeBd:
             return _CP(0, "", "")
         if sub == "close":
             bead_id = args[1]
+            if self.close_failures.get(bead_id, 0):
+                self.close_failures[bead_id] -= 1
+                return _CP(1, "", f"cannot close {bead_id}: simulated transient failure")
             if bead_id in self.close_always_fails:
                 return _CP(1, "", f"cannot close {bead_id}: simulated permanent failure")
             bead = self.beads.setdefault(bead_id, {"id": bead_id})
@@ -248,6 +257,25 @@ class FakeBd:
                 lbl = args[args.index("--label") + 1]
                 rows = [b for b in rows if lbl in (b.get("labels") or [])]
             return _CP(0, json.dumps(rows), "")
+        if sub == "dep" and args[1:2] == ["add"]:
+            source, target = args[2], args[3]
+            relation_type = args[args.index("-t") + 1] if "-t" in args else "blocks"
+            if (source, target, relation_type) in self.dep_add_fails:
+                return _CP(1, "", "simulated dependency failure")
+            deps = self.beads.setdefault(source, {"id": source}).setdefault("dependencies", [])
+            edge = {"depends_on_id": target, "type": relation_type}
+            if edge not in deps:
+                deps.append(edge)
+            return _CP(0, "", "")
+        if sub == "dep" and args[1:2] == ["remove"]:
+            source, target = args[2], args[3]
+            bead = self.beads.setdefault(source, {"id": source})
+            bead["dependencies"] = [
+                dep
+                for dep in bead.get("dependencies", [])
+                if str(dep.get("depends_on_id") or "") != target
+            ]
+            return _CP(0, "", "")
         if sub == "label" and len(args) >= 4 and args[1] == "add":
             bead = self.beads.setdefault(args[2], {"id": args[2]})
             labels = list(bead.get("labels") or [])
@@ -444,6 +472,122 @@ def test_history_ok_rules():
     assert not work._history_ok(1, ["bumped stuff"], 10)[0]  # …but a non-conventional one is not
 
 
+@pytest.mark.parametrize("merge_position", ["keep", "fold"])
+def test_refine_plan_rejects_a_merge_commit_in_any_group(merge_position):
+    """An explicit plan cannot promise to rewrite a merge commit: interactive rebase does not
+    preserve that topology, so both the keep and fold forms fail during pure plan validation."""
+    leaf = {
+        "sha": "a" * 40,
+        "short": "a" * 8,
+        "parents": ["0" * 40],
+        "subject": "feat: leaf",
+    }
+    merge = {
+        "sha": "b" * 40,
+        "short": "b" * 8,
+        "parents": ["0" * 40, "a" * 40],
+        "subject": "chore(merge): bead mr-1.1",
+    }
+    group = (
+        {"keep": merge["sha"], "fold": [leaf["sha"]]}
+        if merge_position == "keep"
+        else {"keep": leaf["sha"], "fold": [merge["sha"]]}
+    )
+
+    ok, errors, _groups = work.validate_plan({"groups": [group]}, [leaf, merge])
+
+    assert not ok
+    assert any("merge commit" in error and merge_position in error for error in errors)
+
+
+def test_refine_dry_run_rejects_merge_before_backup_or_rebase(
+    hive, fakebd, tmp_path, monkeypatch, capsys
+):
+    """The CLI dry-run traverses the real plan loader but refuses a merge row before any
+    safety-ref or rebase mutation can begin."""
+    epic = "mr-refine-merge"
+    _start_and_land_children(hive, fakebd, epic, count=1)
+    entry = registry.resolve_hive(config.load(), "myrepo")
+    branch = f"wt/bead/epic/{epic}"
+    base = worktree.base_of(entry, branch, "main")
+    rows = worktree.commit_rows(entry, base, branch)
+    merge = next(row for row in rows if len(row["parents"]) == 2)
+    leaf = next(row for row in rows if len(row["parents"]) == 1)
+    plan = tmp_path / "merge-plan.json"
+    plan.write_text(
+        json.dumps({"base": base, "groups": [{"keep": leaf["sha"], "fold": [merge["sha"]]}]})
+    )
+    before = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    monkeypatch.setattr(
+        worktree,
+        "backup_branch",
+        lambda *_args, **_kwargs: pytest.fail("backup created before merge-plan refusal"),
+    )
+    monkeypatch.setattr(
+        worktree,
+        "rebase_squash",
+        lambda *_args, **_kwargs: pytest.fail("rebase started before merge-plan refusal"),
+    )
+
+    with pytest.raises(typer.Exit):
+        work.refine(
+            bead=epic,
+            plan=str(plan),
+            autosquash=False,
+            since="",
+            dry_run=True,
+            hive="myrepo",
+        )
+
+    assert _git("rev-parse", branch, cwd=hive.main).stdout.strip() == before
+    assert not _git("branch", "--list", f"{branch}.refine-*", cwd=hive.main).stdout.strip()
+    assert "merge commit" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["dry-run", "apply"])
+def test_refine_autosquash_rejects_merge_range_before_backup_or_rebase(
+    hive, fakebd, monkeypatch, capsys, dry_run
+):
+    """A fixup marker makes autosquash active, but an assembled epic range also contains its
+    reviewed merge bubble. Both preview and apply must refuse before any topology rewrite seam."""
+    epic = f"mr-autosquash-merge-{dry_run}"
+    seat = _start_and_land_children(hive, fakebd, epic, count=1)
+    entry = registry.resolve_hive(config.load(), "myrepo")
+    branch = f"wt/bead/epic/{epic}"
+    rows = worktree.commit_rows(entry, "main", branch)
+    leaf = next(row for row in rows if len(row["parents"]) == 1)
+    (seat / "fixup.txt").write_text("fixup\n")
+    _git("add", "fixup.txt", cwd=seat)
+    _git("commit", "-q", f"--fixup={leaf['sha']}", cwd=seat)
+    before = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    monkeypatch.setattr(
+        worktree,
+        "backup_branch",
+        lambda *_args, **_kwargs: pytest.fail("backup created before autosquash refusal"),
+    )
+    monkeypatch.setattr(
+        worktree,
+        "rebase_autosquash",
+        lambda *_args, **_kwargs: pytest.fail("autosquash started before merge-range refusal"),
+    )
+
+    with pytest.raises(typer.Exit):
+        work.refine(
+            bead=epic,
+            plan="",
+            autosquash=True,
+            since="",
+            dry_run=dry_run,
+            hive="myrepo",
+        )
+
+    assert _git("rev-parse", branch, cwd=hive.main).stdout.strip() == before
+    assert not _git("branch", "--list", f"{branch}.refine-*", cwd=hive.main).stdout.strip()
+    assert "merge commit" in capsys.readouterr().err
+
+
 def test_is_review_gate_desc_classifies_marker_forms():
     """The single review-gate selector: bh:/legacy/batch forms with a hex sha classify as review;
     an ad-hoc human gate whose reason merely starts with the word 'review' does NOT."""
@@ -623,6 +767,30 @@ def test_claim_twice_reattaches(hive, fakebd):
     assert _wt(hive, "mr-1").exists()
 
 
+def test_claim_reattach_reports_init_rule_drift_without_running_new_rule(hive, fakebd, capsys):
+    fakebd.seed("mr-1", title="t")
+    work.claim(bead="mr-1", as_="", hive="myrepo")
+    wt = _wt(hive, "mr-1")
+    (wt / "wip.txt").write_text("in progress")
+    hive.cfg_path.write_text(
+        CONFIG_YAML
+        + """\
+worktrees:
+  init:
+    - {run: "touch changed.marker"}
+"""
+    )
+    capsys.readouterr()
+
+    work.claim(bead="mr-1", as_="", hive="myrepo")
+
+    assert (wt / "wip.txt").read_text() == "in progress"
+    assert not (wt / "changed.marker").exists()
+    err = capsys.readouterr().err
+    assert "worktree init rules changed" in err
+    assert f'bh wt init "{wt}"' in err
+
+
 def test_structured_claim_result_is_silent_and_distinguishes_reattach(hive, fakebd, capsys):
     """The composite-facing core returns the full envelope without the CLI brief/renderer."""
     fakebd.seed("mr-1", title="t")
@@ -635,6 +803,103 @@ def test_structured_claim_result_is_silent_and_distinguishes_reattach(hive, fake
     second = work._claim_single_bead(config.load(), "myrepo", "mr-1", "")
     assert second.disposition == "reattached"
     assert second.bead["assignee"] == second.actor == first.actor
+
+
+def test_claim_reattaches_assembled_epic_and_reissues_missing_epoch_record(
+    hive, fakebd, monkeypatch
+):
+    """An assembled epic is already authorized work, not a fresh dispatch to revalidate.
+
+    This is the production recovery shape: the dispatcher still owns the in-progress epic,
+    every child is closed/merged, and the worktree-local claim record is absent.  Reattachment
+    must refresh identity and mint the live epoch without asking planning to rediscover work in
+    an intentionally empty active-child projection.
+    """
+    actor = "disp/lead"
+    fakebd.seed(
+        "mr-epic",
+        title="assembled",
+        issue_type="epic",
+        status="in_progress",
+        assignee=actor,
+    )
+    fakebd.seed(
+        "mr-epic.1",
+        title="done",
+        parent="mr-epic",
+        status="closed",
+        close_reason="merged",
+    )
+    cfg = config.load()
+    entry, target, branch = worktree.ensure(cfg, "myrepo", "mr-epic", kind="epic")
+    authority = claim_authority.get_authority(config.claim_authority(cfg, entry))
+    assert authority.read(target) is None
+
+    def unexpected_fresh_dispatch(*_args, **_kwargs):
+        raise AssertionError("same-actor reattachment must not run fresh dispatch conventions")
+
+    monkeypatch.setattr(plan, "verify_epic", unexpected_fresh_dispatch)
+    monkeypatch.setattr(work, "_maybe_open_molecule", unexpected_fresh_dispatch)
+    monkeypatch.setattr(work, "_claim_fence", lambda *_args: ("host-current", 37))
+
+    result = work._claim_single_bead(cfg, "myrepo", "mr-epic", actor)
+
+    assert result.disposition == "reattached"
+    assert result.worktree == target
+    assert result.branch == branch
+    assert _cfg_get(target, "user.name") == actor
+    assert not fakebd.did("update", "mr-epic", "--claim")
+    record = authority.read(target)
+    assert record is not None
+    assert (record.bead, record.seat, record.host_id, record.epoch) == (
+        "mr-epic",
+        actor,
+        "host-current",
+        37,
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "assignee", "actor"),
+    [
+        ("closed", "disp/lead", "disp/lead"),
+        ("in_progress", "disp/other", "disp/lead"),
+        ("in_progress", "dev/wrong-seat", "dev/wrong-seat"),
+    ],
+    ids=("closed", "other-actor", "wrong-seat"),
+)
+def test_claim_reattach_preserves_authorization_guards_before_dispatch_policy(
+    hive, fakebd, monkeypatch, status, assignee, actor
+):
+    fakebd.seed(
+        "mr-epic",
+        title="guarded",
+        issue_type="epic",
+        status=status,
+        assignee=assignee,
+    )
+
+    def unexpected_convention_check(*_args, **_kwargs):
+        raise AssertionError("authorization guards must refuse before dispatch policy")
+
+    monkeypatch.setattr(plan, "verify_epic", unexpected_convention_check)
+    with pytest.raises(typer.Exit):
+        work._claim_single_bead(config.load(), "myrepo", "mr-epic", actor)
+    assert not _wt(hive, "mr-epic").exists()
+    assert not fakebd.did("update", "mr-epic", "--claim")
+
+
+def test_fresh_claim_still_refuses_a_malformed_epic(hive, fakebd, monkeypatch):
+    fakebd.seed("mr-epic", title="fresh", issue_type="epic")
+    monkeypatch.setattr(plan, "verify_epic", _malformed("mr-epic: no active work issues"))
+
+    with pytest.raises(typer.Exit):
+        work._claim_single_bead(config.load(), "myrepo", "mr-epic", "disp/lead")
+
+    assert fakebd.beads["mr-epic"]["status"] == "open"
+    assert fakebd.beads["mr-epic"]["assignee"] == ""
+    assert not _wt(hive, "mr-epic").exists()
+    assert not fakebd.did("update", "mr-epic", "--claim")
 
 
 def test_structured_claim_rejects_a_lost_claim_after_provisioning(hive, fakebd, monkeypatch):
@@ -1150,6 +1415,59 @@ def test_submit_clean_local_gate_no_push(hive, fakebd):
     assert fakebd.did("dolt", "push")  # bh-dw3e.6: submit pushes bead STATE regardless of gate
 
 
+def test_submit_reaps_only_the_exact_branch_refine_backups(hive, fakebd):
+    fakebd.seed("mr-safety", title="t")
+    work.claim(bead="mr-safety", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-safety"), "feat: the change")
+    branch = "wt/bead/issue/mr-safety"
+    owned = f"{branch}.refine-20260902T031122Z"
+    foreign = f"{branch}.refine-latest"
+    _git("branch", owned, cwd=hive.main)
+    _git("branch", foreign, cwd=hive.main)
+
+    work.submit(bead="mr-safety", hive="myrepo")
+
+    assert not _git("branch", "--list", owned, cwd=hive.main).stdout.strip()
+    assert _git("branch", "--list", foreign, cwd=hive.main).stdout.strip()
+
+
+def test_submit_remote_push_warning_still_reaps_locally_accepted_refine_backup(
+    hive, fakebd, capsys
+):
+    fakebd.seed("mr-safety-push", title="t")
+    work.claim(bead="mr-safety-push", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-safety-push"), "feat: the change")
+    branch = "wt/bead/issue/mr-safety-push"
+    backup = f"{branch}.refine-20260902T031122Z"
+    _git("branch", backup, cwd=hive.main)
+    fakebd.dolt_push_rc = 1
+    fakebd.dolt_push_err = "Error: push to origin: connection refused"
+
+    work.submit(bead="mr-safety-push", hive="myrepo")
+
+    assert fakebd.states["mr-safety-push"]["review"] == "pending"
+    assert not _git("branch", "--list", backup, cwd=hive.main).stdout.strip()
+    assert "state push failed" in capsys.readouterr().err
+
+
+def test_submit_local_gate_failure_retains_refine_backup(hive, fakebd, monkeypatch):
+    fakebd.seed("mr-safety-gate", title="t")
+    work.claim(bead="mr-safety-gate", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-safety-gate"), "feat: the change")
+    branch = "wt/bead/issue/mr-safety-gate"
+    backup = f"{branch}.refine-20260902T031122Z"
+    _git("branch", backup, cwd=hive.main)
+
+    def fail_gate(*_args, **_kwargs):
+        raise typer.Exit(1)
+
+    monkeypatch.setattr(work, "_open_submit_gate", fail_gate)
+    with pytest.raises(typer.Exit):
+        work.submit(bead="mr-safety-gate", hive="myrepo")
+
+    assert _git("branch", "--list", backup, cwd=hive.main).stdout.strip()
+
+
 def test_submit_ghpr_gate_pushes(hive, fakebd, monkeypatch):
     monkeypatch.setattr(config, "review_gate", lambda cfg, entry: "gh:pr")
     fakebd.seed("mr-5", title="t")
@@ -1165,9 +1483,7 @@ def test_submit_epic_accepts_gate_despite_dep_refusal(hive, fakebd):
     only block other epics", beads 1.1.0). A molecule submit must accept that dep-less gate —
     the review lifecycle matches gates by description, and an in_progress epic is never in
     bd ready — instead of aborting with an orphaned open gate."""
-    fakebd.seed("mr-90", title="t", issue_type="epic")
-    work.claim(bead="mr-90", as_="disp/alice", hive="myrepo")
-    _commit(_wt(hive, "mr-90"), "docs: the change")
+    _start_and_land_children(hive, fakebd, "mr-90", count=1, dispatcher="disp/alice")
     work.submit(bead="mr-90", as_="disp/alice", hive="myrepo")
     assert fakebd.states["mr-90"]["review"] == "pending"
     assert any(g["status"] == "open" and "mr-90" in g["description"] for g in fakebd.gates)
@@ -2773,6 +3089,28 @@ def test_merge_real_conflict_fails_clean_and_restores_branch(hive, fakebd):
     assert note_calls and "shared.txt" in " ".join(note_calls[0])
 
 
+def test_successful_merge_close_reaps_refine_and_premerge_backups(hive, fakebd):
+    fakebd.seed("mr-32", title="t")
+    work.claim(bead="mr-32", as_="", hive="myrepo")
+    _commit(_wt(hive, "mr-32"), "feat: the change")
+    branch = "wt/bead/issue/mr-32"
+    backups = [
+        f"{branch}.refine-20260902T031122Z",
+        f"{branch}.premerge-20260902T031123Z-abcd",
+    ]
+    for backup in backups:
+        _git("branch", backup, cwd=hive.main)
+    work.submit(bead="mr-32", hive="myrepo")
+    # Submit accepts/reaps refine, while premerge remains until merge acceptance.
+    assert not _git("branch", "--list", backups[0], cwd=hive.main).stdout.strip()
+    assert _git("branch", "--list", backups[1], cwd=hive.main).stdout.strip()
+    fakebd.approve("mr-32")
+
+    work.merge(bead="mr-32", hive="myrepo", rm=False, molecule=False)
+
+    assert all(not _git("branch", "--list", b, cwd=hive.main).stdout.strip() for b in backups)
+
+
 # ---- commit-flow metrics at the merge seam (hqfy.2) ------------------------
 
 
@@ -3104,6 +3442,890 @@ def _land_two_bead_molecule(hive, fakebd, epic="mr-1"):
         work.submit(bead=bid, hive="myrepo")
         fakebd.approve(bid)
         work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
+
+
+def _start_and_land_children(hive, fakebd, epic="mr-epic", count=6, dispatcher="disp/lead"):
+    """Assemble a real epic seat whose reviewed child topology exceeds the leaf limit."""
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_=dispatcher, hive="myrepo")
+    for index in range(1, count + 1):
+        bid = f"{epic}.{index}"
+        fakebd.seed(bid, title=f"child {index}", parent=epic)
+        work.claim(bead=bid, as_="dev/child", hive="myrepo")
+        _commit(_wt_of(hive, bid), f"feat: {bid}", fname=f"child-{index}.txt")
+        work.submit(bead=bid, as_="dev/child", hive="myrepo")
+        work.approve(bead=bid, as_=f"review/child-{index}", hive="myrepo")
+        work.merge(bead=bid, hive="myrepo", rm=False, molecule=False)
+    return worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
+
+
+def _wrap_reviewed_epic_over_advanced_root(
+    hive,
+    fakebd,
+    *,
+    epic="mr-composed",
+    count=2,
+    subject="",
+    reverse_parents=False,
+    direct_noise=False,
+):
+    """Build the real recovery shape: reviewed epic side plus a separately advanced root.
+
+    The accepted form checks out the root first and merges the reviewed epic as parent two.  The
+    reverse form preserves the historical bad wrapper as an explicit malformed control.
+    """
+    seat = _start_and_land_children(hive, fakebd, epic=epic, count=count)
+    branch = f"wt/bead/epic/{epic}"
+    if direct_noise:
+        _commit(seat, "chore: unreviewed epic noise", fname="noise.txt")
+    reviewed_tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    root = "mr-root"
+    fakebd.seed(root, title="workstream", issue_type="epic")
+    _mol_branch(hive, root, extra_subject="feat: advance protected root")
+    root_branch = f"wt/bead/epic/{root}"
+    fakebd.beads[epic]["parent"] = root
+
+    if reverse_parents:
+        message = subject or f"chore(merge): compose {root} into {epic}"
+        _git("merge", "--no-ff", root_branch, "-m", message, cwd=seat)
+    else:
+        message = subject or f"chore(merge): compose {epic} onto {root}"
+        _git("checkout", "-q", "--detach", reviewed_tip, cwd=seat)
+        _git("branch", "-f", branch, root_branch, cwd=hive.main)
+        _git("checkout", "-q", branch, cwd=seat)
+        _git("merge", "--no-ff", reviewed_tip, "-m", message, cwd=seat)
+    return seat
+
+
+def _land_reviewed_suffix_children(hive, fakebd, *, epic: str, start: int, count: int = 2):
+    """Append ordinary reviewed child bubbles after an existing composition wrapper."""
+    for index in range(start, start + count):
+        child = f"{epic}.{index}"
+        fakebd.seed(child, title=f"suffix child {index}", parent=epic)
+        work.claim(bead=child, as_="dev/suffix", hive="myrepo")
+        _commit(_wt_of(hive, child), f"feat: {child}", fname=f"suffix-{index}.txt")
+        work.submit(bead=child, as_="dev/suffix", hive="myrepo")
+        work.approve(bead=child, as_=f"review/suffix-{index}", hive="myrepo")
+        work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+
+
+def test_epic_submit_accepts_root_first_wrapper_and_recurses_into_reviewed_topology(
+    hive, fakebd, capsys
+):
+    """A recovery wrapper is infrastructure, not a replacement for child provenance.
+
+    Its first parent is the exact advanced workstream root; its second parent is an independently
+    reviewed two-child epic.  The audit must recurse into that reviewed side and account its two
+    child bubbles plus the explicit wrapper, while the ordinary configured leaf limit stays ten.
+    """
+    epic = "mr-composed"
+    _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["max_commits"] == 10
+    assert payload["history_policy"] == {
+        "kind": "epic-reviewed-topology",
+        "configured_max_commits": 10,
+        "effective_max_commits": 5,
+        "direct_children": 2,
+        "integrated_children": 2,
+        "basis": "5 linked/topology commit(s) from 2 reviewed direct-child integration(s)",
+        "valid": True,
+        "errors": [],
+    }
+
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    assert fakebd.states[epic]["review"] == "pending"
+
+
+def test_epic_submit_accepts_oldest_root_first_wrapper_followed_by_reviewed_children(
+    hive, fakebd, capsys
+):
+    """The canonical wrapper stays the oldest boundary after later children land.
+
+    Both the wrapper's reviewed side and the newer outer suffix remain independently
+    attributable: four child commits, four child bubbles, and the one wrapper.
+    """
+    epic = "mr-composed-suffix"
+    _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
+    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy == {
+        "kind": "epic-reviewed-topology",
+        "configured_max_commits": 10,
+        "effective_max_commits": 9,
+        "direct_children": 4,
+        "integrated_children": 4,
+        "basis": "9 linked/topology commit(s) from 4 reviewed direct-child integration(s)",
+        "valid": True,
+        "errors": [],
+    }
+
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    assert fakebd.states[epic]["review"] == "pending"
+
+
+@pytest.mark.parametrize("malformation", ["misplaced", "duplicate", "stacked"])
+def test_root_first_wrapper_rejects_noncanonical_outer_placement(
+    hive, fakebd, capsys, malformation
+):
+    epic = f"mr-{malformation}-compose"
+    seat = _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
+    branch = f"wt/bead/epic/{epic}"
+    wrapper = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    root_tip = _git("rev-parse", f"{wrapper}^1", cwd=hive.main).stdout.strip()
+    reviewed_tip = _git("rev-parse", f"{wrapper}^2", cwd=hive.main).stdout.strip()
+    message = f"chore(merge): compose {epic} onto mr-root"
+
+    if malformation == "misplaced":
+        _git("reset", "--hard", root_tip, cwd=seat)
+        _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=1)
+        _git("merge", "--no-ff", reviewed_tip, "-m", message, cwd=seat)
+    elif malformation == "duplicate":
+        tree = _git("rev-parse", f"{wrapper}^{{tree}}", cwd=hive.main).stdout.strip()
+        duplicate = _git(
+            "commit-tree",
+            tree,
+            "-p",
+            wrapper,
+            "-p",
+            reviewed_tip,
+            "-m",
+            message,
+            cwd=hive.main,
+        ).stdout.strip()
+        _git("update-ref", f"refs/heads/{branch}", duplicate, cwd=hive.main)
+    else:
+        nested_base = _git("merge-base", root_tip, reviewed_tip, cwd=hive.main).stdout.strip()
+        reviewed_tree = _git("rev-parse", f"{reviewed_tip}^{{tree}}", cwd=hive.main).stdout.strip()
+        inner = _git(
+            "commit-tree",
+            reviewed_tree,
+            "-p",
+            reviewed_tip,
+            "-p",
+            nested_base,
+            "-m",
+            message,
+            cwd=hive.main,
+        ).stdout.strip()
+        root_tree = _git("rev-parse", f"{root_tip}^{{tree}}", cwd=hive.main).stdout.strip()
+        outer = _git(
+            "commit-tree",
+            root_tree,
+            "-p",
+            root_tip,
+            "-p",
+            inner,
+            "-m",
+            message,
+            cwd=hive.main,
+        ).stdout.strip()
+        _git("update-ref", f"refs/heads/{branch}", outer, cwd=hive.main)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert any(
+        marker in " ".join(policy["errors"]) for marker in ("oldest", "more than once", "stacked")
+    )
+
+
+@pytest.mark.parametrize("malformation", ["direct-noise", "missing-linkage", "unaccounted-merge"])
+def test_root_first_wrapper_rejects_unreviewed_outer_suffix(hive, fakebd, capsys, malformation):
+    epic = f"mr-{malformation}-suffix"
+    seat = _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
+    branch = f"wt/bead/epic/{epic}"
+
+    if malformation == "direct-noise":
+        _commit(seat, "chore: unreviewed suffix noise", fname="suffix-noise.txt")
+    elif malformation == "missing-linkage":
+        _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=1)
+        fakebd.beads[f"{epic}.3"]["metadata"].pop("git.commits")
+    else:
+        tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+        tree = _git("rev-parse", f"{tip}^{{tree}}", cwd=hive.main).stdout.strip()
+        side = _git(
+            "commit-tree", tree, "-p", tip, "-m", "feat: unreviewed side", cwd=hive.main
+        ).stdout.strip()
+        merge = _git(
+            "commit-tree",
+            tree,
+            "-p",
+            tip,
+            "-p",
+            side,
+            "-m",
+            "chore(merge): bead mr-not-a-child",
+            cwd=hive.main,
+        ).stdout.strip()
+        _git("update-ref", f"refs/heads/{branch}", merge, cwd=hive.main)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert policy["integrated_children"] == 2
+    assert any(
+        marker in " ".join(policy["errors"])
+        for marker in ("unaccounted", "not linked", "non-child")
+    )
+
+
+def test_root_first_wrapper_rejects_duplicate_child_attribution_in_suffix(hive, fakebd, capsys):
+    epic = "mr-duplicate-attribution"
+    _wrap_reviewed_epic_over_advanced_root(hive, fakebd, epic=epic)
+    branch = f"wt/bead/epic/{epic}"
+    tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    tree = _git("rev-parse", f"{tip}^{{tree}}", cwd=hive.main).stdout.strip()
+    side = _git(
+        "commit-tree", tree, "-p", tip, "-m", "feat: duplicate child side", cwd=hive.main
+    ).stdout.strip()
+    merge = _git(
+        "commit-tree",
+        tree,
+        "-p",
+        tip,
+        "-p",
+        side,
+        "-m",
+        f"chore(merge): bead {epic}.1",
+        cwd=hive.main,
+    ).stdout.strip()
+    linked = json.loads(fakebd.beads[f"{epic}.1"]["metadata"]["git.commits"])
+    fakebd.beads[f"{epic}.1"]["metadata"]["git.commits"] = json.dumps([*linked, side, merge])
+    _git("update-ref", f"refs/heads/{branch}", merge, cwd=hive.main)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert any("integrated more than once" in error for error in policy["errors"])
+
+
+def test_epic_submit_rejects_noncanonical_composition_subject(hive, fakebd, capsys):
+    epic = "mr-wrong-subject-compose"
+    _wrap_reviewed_epic_over_advanced_root(
+        hive,
+        fakebd,
+        epic=epic,
+        subject=f"chore(merge): compose {epic} into mr-root",
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "unaccounted epic merge" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def test_epic_submit_rejects_wrong_epic_composition_wrapper(hive, fakebd, capsys):
+    epic = "mr-wrong-epic-compose"
+    _wrap_reviewed_epic_over_advanced_root(
+        hive,
+        fakebd,
+        epic=epic,
+        subject="chore(merge): compose mr-other onto mr-root",
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert f"names mr-other, expected current epic {epic}" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def _wrap_reviewed_epic_with_reversed_parents(
+    hive,
+    fakebd,
+    *,
+    epic: str,
+    composed_epic: str,
+    composed_parent: str,
+):
+    """Build and prove the reviewed-tip-first parent pair for a canonical-looking wrapper."""
+    root = "mr-root"
+    seat = _start_and_land_children(hive, fakebd, epic=epic, count=2)
+    branch = f"wt/bead/epic/{epic}"
+    reviewed_tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+
+    fakebd.seed(root, title="workstream", issue_type="epic")
+    _mol_branch(hive, root, extra_subject="feat: advance protected root")
+    root_branch = f"wt/bead/epic/{root}"
+    authoritative_parent_tip = _git("rev-parse", root_branch, cwd=hive.main).stdout.strip()
+    fakebd.beads[epic]["parent"] = root
+
+    _git(
+        "merge",
+        "--no-ff",
+        root_branch,
+        "-m",
+        f"chore(merge): compose {composed_epic} onto {composed_parent}",
+        cwd=seat,
+    )
+    wrapper = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    actual_parents = (
+        _git("show", "-s", "--format=%P", wrapper, cwd=hive.main).stdout.strip().split()
+    )
+    assert actual_parents == [reviewed_tip, authoritative_parent_tip]
+
+
+def test_epic_submit_rejects_canonical_composition_wrapper_with_reversed_parents(
+    hive, fakebd, capsys
+):
+    """A canonical subject cannot disguise a reviewed-tip-first wrapper."""
+    epic = "mr-reverse-compose"
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=epic,
+        composed_parent="mr-root",
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "must use the exact integration base as first parent" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def test_epic_submit_rejects_buried_canonical_reversal_after_reviewed_suffixes(
+    hive, fakebd, capsys
+):
+    """Reviewed provenance remains visible alongside the exact reversed-boundary diagnostic."""
+    epic = "mr-buried-reverse-compose"
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=epic,
+        composed_parent="mr-root",
+    )
+    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy["effective_max_commits"] == 9
+    assert policy["direct_children"] == 4
+    assert policy["integrated_children"] == 4
+    assert policy["basis"] == (
+        "9 linked/topology commit(s) from 4 reviewed direct-child integration(s)"
+    )
+    assert not policy["valid"]
+    assert len(policy["errors"]) == 1
+    assert "must use the exact integration base as first parent" in policy["errors"][0]
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "must use the exact integration base as first parent" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+@pytest.mark.parametrize(
+    ("epic", "composed_epic", "composed_parent", "identity_diagnostics"),
+    [
+        (
+            "mr-buried-reverse-wrong-epic",
+            "mr-other",
+            "mr-root",
+            ["names mr-other, expected current epic mr-buried-reverse-wrong-epic"],
+        ),
+        (
+            "mr-buried-reverse-wrong-parent",
+            "mr-buried-reverse-wrong-parent",
+            "mr-other-root",
+            ["names parent mr-other-root, expected mr-root"],
+        ),
+    ],
+)
+def test_buried_reversed_wrapper_reports_identity_before_parent_order(
+    hive,
+    fakebd,
+    capsys,
+    epic,
+    composed_epic,
+    composed_parent,
+    identity_diagnostics,
+):
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=composed_epic,
+        composed_parent=composed_parent,
+    )
+    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy["effective_max_commits"] == 9
+    assert policy["integrated_children"] == 4
+    assert policy["basis"] == (
+        "9 linked/topology commit(s) from 4 reviewed direct-child integration(s)"
+    )
+    assert len(policy["errors"]) == len(identity_diagnostics)
+    assert all(
+        any(diagnostic in error for error in policy["errors"])
+        for diagnostic in identity_diagnostics
+    )
+    assert not any(
+        "must use the exact integration base as first parent" in error for error in policy["errors"]
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert all(diagnostic in err for diagnostic in identity_diagnostics)
+    assert "must use the exact integration base as first parent" not in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+@pytest.mark.parametrize("malformation", ["missing-linkage", "duplicate"])
+def test_buried_reversed_wrapper_rejects_invalid_reviewed_suffix(
+    hive, fakebd, capsys, malformation
+):
+    epic = f"mr-buried-reverse-{malformation}"
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=epic,
+        composed_parent="mr-root",
+    )
+    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+
+    if malformation == "missing-linkage":
+        fakebd.beads[f"{epic}.4"]["metadata"].pop("git.commits")
+        expected_marker = "not linked"
+        expected_integrated = 3
+    else:
+        branch = f"wt/bead/epic/{epic}"
+        tip = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+        tree = _git("rev-parse", f"{tip}^{{tree}}", cwd=hive.main).stdout.strip()
+        side = _git(
+            "commit-tree", tree, "-p", tip, "-m", "feat: duplicate suffix", cwd=hive.main
+        ).stdout.strip()
+        merge = _git(
+            "commit-tree",
+            tree,
+            "-p",
+            tip,
+            "-p",
+            side,
+            "-m",
+            f"chore(merge): bead {epic}.3",
+            cwd=hive.main,
+        ).stdout.strip()
+        linked = json.loads(fakebd.beads[f"{epic}.3"]["metadata"]["git.commits"])
+        fakebd.beads[f"{epic}.3"]["metadata"]["git.commits"] = json.dumps([*linked, side, merge])
+        _git("update-ref", f"refs/heads/{branch}", merge, cwd=hive.main)
+        expected_marker = "integrated more than once"
+        expected_integrated = 4
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+
+    assert not policy["valid"]
+    assert policy["integrated_children"] == expected_integrated
+    assert any(expected_marker in error for error in policy["errors"])
+
+
+def test_buried_reversed_wrapper_rejects_malformed_parent_count(hive, fakebd, capsys):
+    epic = "mr-buried-reverse-parent-count"
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=epic,
+        composed_parent="mr-root",
+    )
+    seat = worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
+    branch = f"wt/bead/epic/{epic}"
+    wrapper = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    tree = _git("rev-parse", f"{wrapper}^{{tree}}", cwd=hive.main).stdout.strip()
+    parents = _git("show", "-s", "--format=%P", wrapper, cwd=hive.main).stdout.split()
+    third_parent = _git("rev-parse", f"{parents[0]}^1", cwd=hive.main).stdout.strip()
+    malformed = _git(
+        "commit-tree",
+        tree,
+        "-p",
+        parents[0],
+        "-p",
+        parents[1],
+        "-p",
+        third_parent,
+        "-m",
+        f"chore(merge): compose {epic} onto mr-root",
+        cwd=hive.main,
+    ).stdout.strip()
+    _git("reset", "--hard", malformed, cwd=seat)
+    _land_reviewed_suffix_children(hive, fakebd, epic=epic, start=3, count=2)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+
+    assert not policy["valid"]
+    assert any("must have exactly two parents" in error for error in policy["errors"])
+
+
+@pytest.mark.parametrize(
+    ("composed_epic", "composed_parent", "identity_diagnostics"),
+    [
+        (
+            "mr-other",
+            "mr-root",
+            ["names mr-other, expected current epic mr-reverse-wrong-identity"],
+        ),
+        (
+            "mr-reverse-wrong-identity",
+            "mr-other-root",
+            ["names parent mr-other-root, expected mr-root"],
+        ),
+        (
+            "mr-other",
+            "mr-other-root",
+            [
+                "names mr-other, expected current epic mr-reverse-wrong-identity",
+                "names parent mr-other-root, expected mr-root",
+            ],
+        ),
+    ],
+)
+def test_reversed_composition_wrapper_reports_identity_before_parent_order(
+    hive,
+    fakebd,
+    capsys,
+    composed_epic,
+    composed_parent,
+    identity_diagnostics,
+):
+    epic = "mr-reverse-wrong-identity"
+    _wrap_reviewed_epic_with_reversed_parents(
+        hive,
+        fakebd,
+        epic=epic,
+        composed_epic=composed_epic,
+        composed_parent=composed_parent,
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert all(diagnostic in err for diagnostic in identity_diagnostics)
+    assert "must use the exact integration base as first parent" not in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def test_root_first_wrapper_rejects_wrong_authoritative_parent_identity(hive, fakebd, capsys):
+    """The epic token cannot make a wrapper for a different bd parent trustworthy."""
+    epic = "mr-wrong-parent-compose"
+    _wrap_reviewed_epic_over_advanced_root(
+        hive,
+        fakebd,
+        epic=epic,
+        subject=f"chore(merge): compose {epic} onto mr-other-root",
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "names parent mr-other-root, expected mr-root" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+@pytest.mark.parametrize("malformation", ["direct-noise", "missing-linkage"])
+def test_root_first_wrapper_never_hides_unaccounted_review_history(
+    hive, fakebd, capsys, malformation
+):
+    epic = "mr-unaccounted-compose"
+    _wrap_reviewed_epic_over_advanced_root(
+        hive,
+        fakebd,
+        epic=epic,
+        direct_noise=malformation == "direct-noise",
+    )
+    if malformation == "missing-linkage":
+        fakebd.beads[f"{epic}.1"]["metadata"].pop("git.commits")
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "unaccounted" in err or "linked" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def test_root_first_wrapper_rejects_an_empty_reviewed_side(hive, fakebd, capsys):
+    """A canonical wrapper cannot itself stand in for reviewed epic history.
+
+    Build the exact adversarial graph with real Git plumbing: A is the original epic base, the
+    protected root advances to R, and wrapper W names parents [R, A].  Since parent two is already
+    an ancestor of parent one, the reviewed side contributes no commit or child integration.
+    """
+    epic = "mr-empty-compose"
+    root = "mr-root"
+    base_sha = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    fakebd.seed(root, title="workstream", issue_type="epic")
+    _mol_branch(hive, root, extra_subject="feat: advance protected root")
+    root_branch = f"wt/bead/epic/{root}"
+    root_sha = _git("rev-parse", root_branch, cwd=hive.main).stdout.strip()
+    root_tree = _git("rev-parse", f"{root_sha}^{{tree}}", cwd=hive.main).stdout.strip()
+    fakebd.seed(epic, title="empty composed epic", issue_type="epic", parent=root)
+
+    wrapper = _git(
+        "commit-tree",
+        root_tree,
+        "-p",
+        root_sha,
+        "-p",
+        base_sha,
+        "-m",
+        f"chore(merge): compose {epic} onto {root}",
+        cwd=hive.main,
+    ).stdout.strip()
+    _git("update-ref", f"refs/heads/wt/bead/epic/{epic}", wrapper, cwd=hive.main)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert policy["integrated_children"] == 0
+    assert any("empty reviewed side" in error for error in policy["errors"])
+
+
+def test_root_first_wrapper_requires_a_proven_landed_child_integration(hive, fakebd, capsys):
+    """A non-empty second-parent range made only of direct noise is not reviewed topology."""
+    epic = "mr-no-child-compose"
+    _wrap_reviewed_epic_over_advanced_root(
+        hive,
+        fakebd,
+        epic=epic,
+        count=0,
+        direct_noise=True,
+    )
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert policy["integrated_children"] == 0
+    assert any("no proven landed direct-child integration" in error for error in policy["errors"])
+
+
+def test_rebased_child_records_final_provenance_for_epic_submit_and_finish(
+    hive, fakebd, monkeypatch, capsys
+):
+    """A reviewed child may be replayed onto a newer container tip during serialized merge.
+    Record the rewritten child commit as durable provenance so the assembled epic audit accepts
+    both direct-child bubbles rather than falsely classifying routine rebase recovery as noise."""
+    epic = "mr-rebased-child"
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+    children = [f"{epic}.1", f"{epic}.2"]
+    for index, child in enumerate(children, 1):
+        fakebd.seed(child, title=child, parent=epic)
+        work.claim(bead=child, as_="dev/child", hive="myrepo")
+        _commit(_wt_of(hive, child), f"feat: {child}", fname=f"child-{index}.txt")
+        work.submit(bead=child, as_="dev/child", hive="myrepo")
+        work.approve(bead=child, as_=f"review/child-{index}", hive="myrepo")
+
+    work.merge(bead=children[0], hive="myrepo", rm=False, molecule=False)
+    second_branch = f"wt/bead/issue/{children[1]}"
+    submitted_sha = _git("rev-parse", second_branch, cwd=hive.main).stdout.strip()
+    real_merge_no_ff = worktree_merge.merge_no_ff
+    calls = 0
+
+    def conflict_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return 1, "forced stale-base conflict"
+        return real_merge_no_ff(*args, **kwargs)
+
+    monkeypatch.setattr(worktree_merge, "merge_no_ff", conflict_once)
+    work.merge(bead=children[1], hive="myrepo", rm=False, molecule=False)
+
+    rebased_sha = _git("rev-parse", second_branch, cwd=hive.main).stdout.strip()
+    assert rebased_sha != submitted_sha
+    assert rebased_sha in git_linkage.read_commits(children[1], hive.main)
+    assert "rebased onto a newer base first" in capsys.readouterr().out
+
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    work.approve(bead=epic, as_="review/epic", hive="myrepo")
+    work.finish(epic=epic, hive="myrepo")
+
+    assert fakebd.beads[epic]["status"] == "closed"
+    assert _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == (
+        f"chore(merge): molecule {epic}"
+    )
+
+
+def test_zero_delta_rebase_bounces_without_closing_or_linking_child(
+    hive, fakebd, capsys, monkeypatch
+):
+    """If replay drops every reviewed patch as already present, no child commit remains to
+    introduce through a no-ff bubble. Fail closed and restore the submitted branch instead of
+    closing the child against another child's existing integration tip. The A→B→C versus A→B
+    history exercises Git's real merge conflict, abort, previously-applied skip, and restoration
+    paths without mocking a merge result."""
+    epic = "mr-zero-delta-child"
+    (hive.main / "same.txt").write_text("A\n")
+    _git("add", "same.txt", cwd=hive.main)
+    _git("commit", "-qm", "chore: seed shared state A", cwd=hive.main)
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+    children = [f"{epic}.1", f"{epic}.2"]
+    for index, child in enumerate(children, 1):
+        fakebd.seed(child, title=child, parent=epic)
+        work.claim(bead=child, as_="dev/child", hive="myrepo")
+        child_wt = _wt_of(hive, child)
+        (child_wt / "same.txt").write_text("B\n")
+        _git("add", "same.txt", cwd=child_wt)
+        monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-09-08T12:00:00+00:00")
+        monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-09-08T12:00:00+00:00")
+        # Distinct messages keep the two identical patches as distinct reviewed commits even
+        # when Git gives both commits the same one-second timestamp under xdist. Fixed dates make
+        # the adversarial graph deterministic while still proving the commits remain distinct.
+        _git("commit", "-qm", f"feat: child {index} advances shared state to B", cwd=child_wt)
+        monkeypatch.delenv("GIT_AUTHOR_DATE")
+        monkeypatch.delenv("GIT_COMMITTER_DATE")
+        if index == 1:
+            (child_wt / "same.txt").write_text("C\n")
+            _git("add", "same.txt", cwd=child_wt)
+            _git("commit", "-qm", "feat: advance first child to C", cwd=child_wt)
+        work.submit(bead=child, as_="dev/child", hive="myrepo")
+        work.approve(bead=child, as_=f"review/child-{index}", hive="myrepo")
+
+    work.merge(bead=children[0], hive="myrepo", rm=False, molecule=False)
+    branch = f"wt/bead/issue/{children[1]}"
+    base = f"wt/bead/epic/{epic}"
+    branch_before = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    base_before = _git("rev-parse", base, cwd=hive.main).stdout.strip()
+    linkage_before = git_linkage.read_commits(children[1], hive.main)
+    capsys.readouterr()
+
+    with pytest.raises(typer.Exit):
+        work.merge(bead=children[1], hive="myrepo", rm=False, molecule=False)
+
+    assert _git("rev-parse", base, cwd=hive.main).stdout.strip() == base_before
+    assert _git("rev-parse", branch, cwd=hive.main).stdout.strip() == branch_before
+    assert git_linkage.read_commits(children[1], hive.main) == linkage_before
+    assert fakebd.beads[children[1]]["status"] != "closed"
+    assert fakebd.states[children[1]]["review"] == "changes-requested"
+    assert "zero-delta" in capsys.readouterr().err
+
+
+def test_epic_submit_and_finish_accept_reviewed_topology_over_leaf_limit(hive, fakebd, capsys):
+    """Six one-commit children produce twelve commits over base. The ordinary leaf maximum is
+    still ten, but every commit is accounted for by a reviewed child plus its no-ff bubble, so
+    epic submit and the merge-time preflight both accept the graph without rewriting it."""
+    epic = "mr-assembled"
+    _start_and_land_children(hive, fakebd, epic, count=6)
+    branch = f"wt/bead/epic/{epic}"
+    assert worktree.history(registry.resolve_hive(config.load(), "myrepo"), branch, "main")[0] == 12
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["max_commits"] == 10  # configured leaf limit remains unchanged
+    assert payload["history_policy"] == {
+        "kind": "epic-reviewed-topology",
+        "configured_max_commits": 10,
+        "effective_max_commits": 12,
+        "direct_children": 6,
+        "integrated_children": 6,
+        "basis": "12 linked commit(s) from 6 reviewed direct-child integration(s)",
+        "valid": True,
+        "errors": [],
+    }
+
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    work.review(bead=epic, run_validate=False, demo=False, view=["log"], hive="myrepo")
+    assert "epic-reviewed-topology" in capsys.readouterr().out
+    work.approve(bead=epic, as_="review/assembled-epic", hive="myrepo")
+    work.finish(epic=epic, hive="myrepo")
+
+    assert fakebd.beads[epic]["status"] == "closed"
+    assert _git("log", "-1", "--format=%s", cwd=hive.main).stdout.strip() == (
+        f"chore(merge): molecule {epic}"
+    )
+
+
+def test_epic_submit_rejects_unaccounted_direct_commit(hive, fakebd, capsys):
+    """A conventional-looking checkpoint committed directly on the epic spine is not child
+    provenance. A larger numeric allowance must never turn that noise into accepted history."""
+    epic = "mr-noisy-epic"
+    seat = _start_and_land_children(hive, fakebd, epic, count=1)
+    _commit(seat, "chore: direct epic checkpoint", fname="direct.txt")
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "unaccounted" in err and "direct epic checkpoint" in err
+    assert not fakebd.did("set-state", epic, "review=pending")
+
+
+def test_epic_finish_rechecks_and_rejects_missing_child_linkage(hive, fakebd, capsys):
+    """Finish independently re-runs the topology guard. Removing the durable linkage from an
+    otherwise plausible child bubble makes the range unverifiable and leaves main untouched."""
+    epic = "mr-unlinked-epic"
+    _start_and_land_children(hive, fakebd, epic, count=1)
+    fakebd.beads[f"{epic}.1"]["metadata"].pop("git.commits")
+    main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+
+    with pytest.raises(typer.Exit):
+        work.finish(epic=epic, hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "linked" in err and f"{epic}.1" in err
+    assert _git("rev-parse", "main", cwd=hive.main).stdout.strip() == main_before
+    assert fakebd.beads[epic]["status"] != "closed"
+
+
+def test_epic_submit_rejects_landed_direct_child_without_integration(hive, fakebd, capsys):
+    """A child disposition alone is not reviewed topology. Every landed direct work child must
+    be attributable to exactly one lifecycle bubble in the assembled epic range."""
+    epic = "mr-missing-child-bubble"
+    _start_and_land_children(hive, fakebd, epic, count=1)
+    missing = f"{epic}.2"
+    fakebd.seed(
+        missing,
+        title="landed without a bubble",
+        parent=epic,
+        status="closed",
+        close_reason="merged",
+    )
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+
+    err = capsys.readouterr().err
+    assert "landed direct child" in err and missing in err
+    assert not fakebd.did("set-state", epic, "review=pending")
 
 
 def test_merge_molecule_closes_swarm_bead(hive, fakebd):
@@ -3494,6 +4716,103 @@ def test_mark_landed_noop_when_already_landed(hive, fakebd):
     assert not fakebd.did("close", "mr-43")
 
 
+# ---- worktree mark-abandoned: authoritative terminal disposition -----------
+
+
+def test_mark_abandoned_retained_writes_outgoing_relation_and_is_idempotent(hive, fakebd, capsys):
+    fakebd.seed("mr-old", title="old")
+    fakebd.seed("mr-port", title="port")
+
+    worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+    first_call_count = len(fakebd.calls)
+    worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["dependencies"] == [
+        {"depends_on_id": "mr-port", "type": "relates-to"}
+    ]
+    assert fakebd.beads["mr-old"]["close_reason"] == (
+        "bh:worktree-disposition:v1;state=retained;reason=pivot;citing=mr-port"
+    )
+    assert ["dep", "add", "mr-old", "mr-port", "-t", "relates-to"] in [
+        args for _actor, args in fakebd.calls
+    ]
+    assert ["dep", "add", "mr-port", "mr-old", "-t", "relates-to"] not in [
+        args for _actor, args in fakebd.calls
+    ]
+    repeat_calls = [args for _actor, args in fakebd.calls[first_call_count:]]
+    assert not [args for args in repeat_calls if args and args[0] in {"dep", "close", "reopen"}]
+    output = capsys.readouterr().out
+    assert "already exists" not in output
+    assert "nothing to do" in output
+
+
+def test_mark_abandoned_superseded_writes_incoming_relation_from_replacement(hive, fakebd):
+    fakebd.seed("mr-old", title="old")
+    fakebd.seed("mr-new", title="new")
+
+    worktree.mark_abandoned("myrepo", "mr-old", "superseded", superseded_by="mr-new")
+
+    assert fakebd.beads["mr-new"]["dependencies"] == [
+        {"depends_on_id": "mr-old", "type": "supersedes"}
+    ]
+    assert fakebd.beads["mr-old"]["close_reason"].endswith("citing=mr-new")
+
+
+def test_mark_abandoned_prevalidation_failure_makes_no_mutation(hive, fakebd):
+    fakebd.seed("mr-old", title="old")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-missing")
+
+    assert fakebd.beads["mr-old"]["status"] == "open"
+    assert not fakebd.did("dep", "add")
+    assert not fakebd.did("close", "mr-old")
+
+
+def test_mark_abandoned_relation_failure_happens_before_close_reason_mutation(hive, fakebd):
+    fakebd.seed("mr-old", title="old")
+    fakebd.seed("mr-port", title="port")
+    fakebd.dep_add_fails.add(("mr-old", "mr-port", "relates-to"))
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["status"] == "open"
+    assert "close_reason" not in fakebd.beads["mr-old"]
+
+
+def test_mark_abandoned_conflicting_edge_is_fail_closed_and_makes_no_mutation(hive, fakebd):
+    fakebd.seed(
+        "mr-old",
+        title="old",
+        dependencies=[{"depends_on_id": "mr-port", "type": "blocks"}],
+    )
+    fakebd.seed("mr-port", title="port")
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["status"] == "open"
+    assert fakebd.beads["mr-old"]["dependencies"] == [
+        {"depends_on_id": "mr-port", "type": "blocks"}
+    ]
+    assert not fakebd.did("close", "mr-old")
+
+
+def test_mark_abandoned_reclose_failure_compensates_edge_and_original_reason(hive, fakebd):
+    fakebd.seed("mr-old", title="old", status="closed", close_reason="wontfix")
+    fakebd.seed("mr-port", title="port")
+    fakebd.close_failures["mr-old"] = 1
+
+    with pytest.raises(typer.Exit):
+        worktree.mark_abandoned("myrepo", "mr-old", "pivot", retained_for="mr-port")
+
+    assert fakebd.beads["mr-old"]["status"] == "closed"
+    assert fakebd.beads["mr-old"]["close_reason"] == "wontfix"
+    assert fakebd.beads["mr-old"].get("dependencies") == []
+    assert fakebd.did("dep", "remove", "mr-old", "mr-port")
+
+
 # ---- start / finish: epic-only aliases (kickoff + land) ---------------------
 
 
@@ -3543,6 +4862,8 @@ def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(hive
     work.merge(bead="mr-ws.1.1", hive="myrepo", rm=False, molecule=False)
 
     ws_before = _git("rev-parse", "wt/bead/epic/mr-ws", cwd=hive.main).stdout.strip()
+    work.submit(bead="mr-ws.1", as_="disp/e", hive="myrepo")
+    work.approve(bead="mr-ws.1", as_="review/nested", hive="myrepo")
     work.finish(epic="mr-ws.1", hive="myrepo")  # lands child epic onto the workstream container
 
     # the child-epic bubble landed on the WORKSTREAM container, and main is untouched
@@ -3556,6 +4877,8 @@ def test_finish_lands_nested_epic_onto_workstream_then_workstream_onto_main(hive
     assert not worktree._branch_exists(hive.main, "wt/bead/epic/mr-ws.1")
 
     # now the workstream itself lands onto main (its integration_base is the dotless root → main)
+    work.submit(bead="mr-ws", as_="disp/ws", hive="myrepo")
+    work.approve(bead="mr-ws", as_="review/workstream", hive="myrepo")
     work.finish(epic="mr-ws", hive="myrepo")
     assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=hive.main).stdout.strip() == "main"
     assert (
@@ -4606,6 +5929,21 @@ def test_claim_collapse_synthesizes_batch_label_on_unbatched_children(hive, fake
     assert not _wt_of(hive, "mr-1.1").exists()  # collapsed: no per-bead worktrees
 
 
+def test_ready_children_excludes_a_detached_dotted_prefix_match(monkeypatch, tmp_path):
+    """Collapsed batches are built only from parent-edge members, not bd's wider id-prefix rows."""
+    rows = [
+        {"id": "mr-1.1", "parent": "mr-1", "status": "open"},
+        {"id": "mr-1.2", "parent": "mr-other", "status": "open"},
+    ]
+    monkeypatch.setattr(
+        bd_mod,
+        "_run",
+        lambda *_args, **_kwargs: _CP(0, json.dumps(rows), ""),
+    )
+
+    assert work_group.ready_children("mr-1", tmp_path) == ["mr-1.1"]
+
+
 def test_claim_collapse_lands_commits_on_batch_worktree_not_coordinator_seat(hive, fakebd):
     """Regression: with the coordinator SEAT worktree already provisioned on
     wt/bead/epic/<epic>, a collapsed claim must give the group its OWN wt/batch/<epic> worktree in
@@ -5059,6 +6397,43 @@ def test_review_molecule_aggregates_intent_and_change(hive, fakebd, capsys):
     assert "accept one" in out and "accept two" in out
     assert "## Change (wt/bead/epic/mr-1 vs main)" in out
     assert "change.txt" in out  # the child merges show up in the stat view
+
+
+def test_review_molecule_intent_excludes_a_detached_dotted_prefix_match(
+    monkeypatch, tmp_path, capsys
+):
+    rows = [
+        {
+            "id": "mr-1.1",
+            "parent": "mr-1",
+            "status": "open",
+            "issue_type": "task",
+            "title": "attached",
+            "acceptance_criteria": "keep me",
+        },
+        {
+            "id": "mr-1.2",
+            "parent": "mr-other",
+            "status": "open",
+            "issue_type": "task",
+            "title": "detached",
+            "acceptance_criteria": "do not review me",
+        },
+    ]
+    monkeypatch.setattr(
+        bd_mod,
+        "_run",
+        lambda *_args, **_kwargs: _CP(0, json.dumps(rows), ""),
+    )
+    monkeypatch.setattr(bd_mod, "show", lambda *_args: {"id": "mr-1", "title": "epic"})
+    monkeypatch.setattr(work, "_print_brief", lambda *_args: None)
+
+    work_show._review_molecule_intent({}, {}, "mr-1", tmp_path)
+
+    out = capsys.readouterr().out
+    assert "## Molecule children (1)" in out
+    assert "keep me" in out
+    assert "do not review me" not in out
 
 
 def test_review_bead_mode_shows_brief_and_change(hive, fakebd, capsys):
