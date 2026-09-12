@@ -27,7 +27,7 @@ from pathlib import Path
 
 import pytest
 
-from beadhive import hub
+from beadhive import hub, store_locator
 from beadhive.run import run
 from harness.beads import skip_if_no_bd
 from harness.world import reap_dolt_server
@@ -79,16 +79,36 @@ def _make_hive(root, prefix: str, titles):
     return hive
 
 
-def _hydrate(hub_dir, hives):
-    """Stand the hub up and hydrate it with the same shared-server mode that
-    `hub.ensure_store` uses, followed by the `repo add` + `repo sync` pair `hub.sync()` runs."""
-    assert _bd_init(hub_dir, hub.HUB_PREFIX).returncode == 0, (
-        f"bd refused the hub prefix {hub.HUB_PREFIX!r} — the sentinel must stay inside bd's "
-        "own database-name alphabet"
-    )
-    for hive in hives:
-        assert _bd(hub_dir, "repo", "add", str(hive)).returncode == 0
-    assert _bd(hub_dir, "repo", "sync").returncode == 0
+def _hydrate(hub_dir, hives, monkeypatch):
+    """Hydrate through the real product orchestration, including its hub initialization.
+
+    Only fleet discovery and the optional SQL bulk accelerator are replaced: forcing an empty
+    co-location result deliberately exercises ``sync()``'s real ``bd repo add`` / ``repo sync``
+    correctness backstop against the isolated shared server.
+    """
+    from beadhive import hub_bulk, metadata
+
+    entries = [
+        {"provider": "github", "org": "test", "repo": hive.name, "prefix": hive.name}
+        for hive in hives
+    ]
+    paths = {hive.name: hive for hive in hives}
+    cfg = {"managed_repos": entries, "hub": {"bulk_sync": True}}
+    monkeypatch.setenv("BH_HUB", str(hub_dir))
+    monkeypatch.setattr(hub.config, "load", lambda: cfg)
+    monkeypatch.setattr(hub.config, "cache_dir", lambda: hub_dir.parent / "cache")
+    monkeypatch.setattr(hub.registry, "hive_dir", lambda entry: paths[entry["repo"]])
+    monkeypatch.setattr(hub_bulk, "server_databases", lambda _hub: set())
+    monkeypatch.setattr(hub_bulk, "run_bulk_pass", lambda _hub, _entries: [])
+    monkeypatch.setattr(metadata, "invalidate", lambda _cfg: None)
+
+    # Each real init may have started the isolated server. Stop it before asking production
+    # ``ensure_hub`` to initialize/attach: under xdist another fixture's process sweep can make
+    # an already-listening ephemeral port temporarily unidentifiable to bd. The databases stay
+    # on disk, and ensure_hub starts their own server again as part of the behavior under test.
+    if shared := os.environ.get("BEADS_SHARED_SERVER_DIR"):
+        reap_dolt_server(Path(shared))
+    assert hub.sync() == []
 
 
 def _aggregate(hub_dir):
@@ -105,7 +125,7 @@ def _aggregate(hub_dir):
     return sorted((b["id"], b.get("title", ""), b.get("status", "")) for b in beads)
 
 
-def test_rm_rf_the_hub_then_rehydrate_yields_the_identical_aggregate(tmp_path):
+def test_rm_rf_the_hub_then_rehydrate_yields_the_identical_aggregate(tmp_path, monkeypatch):
     """Delete the hub outright and rebuild it from the hives alone — same aggregate, and no
     bead anywhere carrying the hub's own prefix."""
     hives = [
@@ -114,14 +134,17 @@ def test_rm_rf_the_hub_then_rehydrate_yields_the_identical_aggregate(tmp_path):
     ]
     hub_dir = tmp_path / "hub"
 
-    _hydrate(hub_dir, hives)
+    _hydrate(hub_dir, hives, monkeypatch)
     before = _aggregate(hub_dir)
+    identity_before = store_locator.project_id(hub_dir)
     assert len(before) == 3, before
+    assert identity_before
 
     shutil.rmtree(hub_dir)  # the whole point: the hub is disposable
-    _hydrate(hub_dir, hives)
+    _hydrate(hub_dir, hives, monkeypatch)
 
     assert _aggregate(hub_dir) == before
+    assert store_locator.project_id(hub_dir) == identity_before
 
     # ISSUES NO IDS: every bead carries its SOURCE hive's prefix, never the hub's.
     assert all(bead_id.split("-")[0] in {"srcone", "srctwo"} for bead_id, _, _ in before), before
