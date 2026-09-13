@@ -173,6 +173,19 @@ def server_store_dir() -> Path:
     return shared_server_dir() / SERVER_STORE_NAME
 
 
+def has_direct_server_database(database: str) -> bool:
+    """Whether ``database`` is a direct, on-disk shared-server Dolt database.
+
+    A directory-name match alone is not authoritative enough for identity reconciliation.
+    Require Dolt's own marker, and reject a symlink at either boundary so callers cannot be
+    redirected outside the configured shared-server store. This is a pure filesystem probe:
+    it never starts a server or reads from the database.
+    """
+    database_dir = server_store_dir() / database
+    marker = database_dir / ".dolt"
+    return not database_dir.is_symlink() and not marker.is_symlink() and marker.is_dir()
+
+
 def store_dir(hive_dir: Path) -> Path:
     """MODE-AWARE: the parent that holds ``hive_dir``'s databases, per bd's own persisted
     ``dolt_mode`` — :func:`embedded_store_dir` for embedded, :func:`server_store_dir` for
