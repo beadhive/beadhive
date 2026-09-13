@@ -236,7 +236,14 @@ def test_loop_breaker_escalates_only_the_looping_member_of_a_budgeted_dispatch()
 
 
 def test_attempt_count_ignores_events_that_are_not_the_actions_failure():
-    events = [_event("review -> pending"), _event("merge conflict onto main")]
+    events = [
+        {**_event("review -> pending"), "id": "ev.1", "created_at": "2026-01-01T00:00:00Z"},
+        {
+            **_event("merge conflict onto main"),
+            "id": "ev.2",
+            "created_at": "2026-01-01T00:01:00Z",
+        },
+    ]
     assert work_next.attempt_count(events, "resume") == 0
     assert work_next.attempt_count(events, "merge") == 1
 
@@ -245,10 +252,80 @@ def test_attempt_count_resets_after_a_later_submit():
     """bh-7679k: a bead that failed once and then submitted must not carry that failure into its
     next dispatch cycle — the submit (`review -> pending`) event ends the sequence, so only events
     AFTER it count."""
-    events = [_event("dispatched"), _event("dispatched"), _event("review -> pending")]
+    events = [
+        {**_event("dispatched"), "id": "ev.1", "created_at": "2026-01-01T00:00:00Z"},
+        {**_event("dispatched"), "id": "ev.2", "created_at": "2026-01-01T00:01:00Z"},
+        {
+            **_event("review -> pending"),
+            "id": "ev.3",
+            "created_at": "2026-01-01T00:02:00Z",
+        },
+    ]
     assert work_next.attempt_count(events, "dispatch") == 0
-    events_with_a_later_failure = events + [_event("dispatched")]
+    events_with_a_later_failure = events + [
+        {**_event("dispatched"), "id": "ev.4", "created_at": "2026-01-01T00:03:00Z"}
+    ]
     assert work_next.attempt_count(events_with_a_later_failure, "dispatch") == 1
+
+
+def test_attempt_count_normalizes_real_newest_first_bounce_history():
+    """Real bd list order is newest-first. At bounce time the failure precedes the older pending
+    row in the returned list; chronology normalization must retain that one post-submit retry."""
+    events = [
+        {
+            "id": "bh-hnnlb.2",
+            "issue_type": "event",
+            "title": "State change: review → changes-requested",
+            "description": "Changed review from pending to changes-requested",
+            "created_at": "2026-09-13T01:35:47Z",
+        },
+        {
+            "id": "bh-hnnlb.1",
+            "issue_type": "event",
+            "title": "State change: review → pending",
+            "description": "Set review to pending\n\nReason: submitted b77b8569",
+            "created_at": "2026-09-13T01:06:38Z",
+        },
+    ]
+
+    assert work_next.attempt_count(events, "resume") == 1
+
+
+def test_chronology_fallback_is_natural_id_order_not_input_order():
+    rows = [{"id": "bh-x.10"}, {"id": "bh-x.2"}, {"id": "bh-x.1"}]
+    expected = ["bh-x.1", "bh-x.2", "bh-x.10"]
+    assert [row["id"] for row in work_next.chronological_rows(rows)] == expected
+    assert [row["id"] for row in work_next.chronological_rows(reversed(rows))] == expected
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "to_state": "review=pending",
+            "title": "State change: review → changes-requested",
+        },
+        {
+            "title": "State change: review → pending; review -> changes-requested",
+        },
+        {
+            "title": "State change: review → pending",
+            "description": "Changed review from pending to changes-requested",
+        },
+        {"title": "State change: review pending"},
+    ],
+)
+def test_transition_destination_fails_closed_on_ambiguous_or_malformed_events(event):
+    assert work_next.transition_destination(event, "review") == ""
+
+
+def test_transition_destination_accepts_multiple_sources_only_when_they_agree():
+    event = {
+        "to_state": "review=pending",
+        "title": "State change: review → pending",
+        "description": "Changed review from changes-requested to pending",
+    }
+    assert work_next.transition_destination(event, "review") == "pending"
 
 
 def test_loop_breaker_never_escalates_a_bead_whose_review_gate_is_open():

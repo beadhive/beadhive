@@ -82,7 +82,8 @@ Write on failure, not on attempt: event beads are permanent (this hive has no co
 escalations are recorded, never a per-pass or per-attempt heartbeat.
 
 Read-path cost, measured (not assumed): the loop's read is ``bd list --parent <bead>
---include-infra --json`` (already ``work._flow_events``'s call, reused here) — NOT ``bd
+--include-infra --all --limit 0 --json`` (owned by ``bd.child_rows`` and shared with
+``work._flow_events``) — NOT ``bd
 history``, which wraps the noisy ``dolt_history_issues`` semantics (~6.1M rows for a 2321-row
 table) and is the read the design record warns off. Measured on this hive, embedded mode,
 2026-08-10: **~0.28s per call** (5-run mean over a real bead with 6 event children), paid once

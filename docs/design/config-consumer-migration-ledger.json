@@ -1519,56 +1519,56 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "indirect-adapter",
-        "line": 97,
+        "line": 102,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.work.config.load"
       },
       {
         "facade_target": "beadhive.config.load_fleet",
         "kind": "direct-facade",
-        "line": 114,
+        "line": 119,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.config.load_fleet"
       },
       {
         "facade_target": "beadhive.config.load_host",
         "kind": "direct-facade",
-        "line": 115,
+        "line": 120,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.config.load_host"
       },
       {
         "facade_target": "beadhive.config._reject_fleet_overrides",
         "kind": "direct-facade",
-        "line": 120,
+        "line": 125,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.config._reject_fleet_overrides"
       },
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 161,
+        "line": 166,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.worktree.config.integration_branch"
       },
       {
         "facade_target": "beadhive.config.precious_globs",
         "kind": "indirect-adapter",
-        "line": 178,
+        "line": 183,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.worktree.config.precious_globs"
       },
       {
         "facade_target": "beadhive.config.junk_globs",
         "kind": "indirect-adapter",
-        "line": 179,
+        "line": 184,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.worktree.config.junk_globs"
       },
       {
         "facade_target": "beadhive.config.precious_min_bytes",
         "kind": "indirect-adapter",
-        "line": 180,
+        "line": 185,
         "path": "tests/test_structural_facade_contracts.py",
         "target": "beadhive.worktree.config.precious_min_bytes"
       },
@@ -1666,21 +1666,21 @@
       {
         "facade_target": "beadhive.config.validation_mode",
         "kind": "direct-facade",
-        "line": 5057,
+        "line": 5061,
         "path": "tests/test_work.py",
         "target": "beadhive.config.validation_mode"
       },
       {
         "facade_target": "beadhive.config.max_commits",
         "kind": "direct-facade",
-        "line": 6229,
+        "line": 6233,
         "path": "tests/test_work.py",
         "target": "beadhive.config.max_commits"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 683,
+        "line": 760,
         "path": "tests/test_work_next.py",
         "target": "beadhive.config.load"
       },

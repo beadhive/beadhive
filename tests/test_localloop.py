@@ -936,6 +936,29 @@ async def test_event_beads_are_read_with_all_because_they_are_created_closed(tmp
 
 
 @async_test
+async def test_closed_bounce_history_reaches_the_loop_breaker(tmp_path, fakebd):
+    """The shared historical-child query feeds decision memory, not only telemetry: two CLOSED
+    bounce events must trip the default retry limit instead of collapsing to an empty history."""
+    bounce = {"issue_type": "event", "status": "closed", "title": "review -> changes-requested"}
+    fakebd(
+        FakeBd(
+            children=[_child("b1", status="in_progress", labels=["review:changes-requested"])],
+            events={"b1": [{**bounce, "id": "b1.e1"}, {**bounce, "id": "b1.e2"}]},
+        )
+    )
+
+    molecule = _loop(tmp_path).load_molecule(budget=1)
+    verdict = work_next.decide(molecule)
+
+    assert len(molecule.events["b1"]) == 2
+    assert (verdict.action, verdict.reason, verdict.beads) == (
+        "escalate",
+        "repeated_changes_requested",
+        ("b1",),
+    )
+
+
+@async_test
 async def test_molecule_filters_detached_prefix_rows_but_keeps_historical_events(tmp_path, fakebd):
     event = {"id": "b1.event", "issue_type": "event", "status": "closed"}
     fakebd(

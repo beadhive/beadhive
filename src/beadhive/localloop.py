@@ -1570,14 +1570,17 @@ class LocalLoop:
         for child in children:
             bead = str(child.get("id") or "")
             # Deliberate prefix read: event history is keyed by the child's dotted-id stream.
-            child_rows = bd_mod.json(
-                ["list", "--parent", bead, "--include-infra", "--all"], self.hive_dir
+            child_rows = bd_mod.child_rows(
+                bead,
+                self.hive_dir,
+                ["--include-infra"],
+                include_closed=True,
             )
-            events[bead] = [
+            events[bead] = work_next.chronological_rows(
                 r
                 for r in (child_rows or [])
                 if isinstance(r, dict) and str(r.get("issue_type") or "") == "event"
-            ]
+            )
         return work_next.Molecule(
             epic=self.epic,
             epic_status=str(epic_row.get("status") or "open"),

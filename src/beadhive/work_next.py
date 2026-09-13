@@ -36,6 +36,8 @@ by-design; until it lands, treat :func:`attempt_count` as a lower bound.
 
 from __future__ import annotations
 
+import datetime
+import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 
@@ -123,6 +125,92 @@ _ACTION_SIGNATURES: dict[str, tuple[tuple[str, ...], str]] = {
     "merge": (("merge conflict", "merge failed", "merge_failure"), "repeated_merge_failure"),
     "review": (("ambiguous gate", "ambiguous_gate", "multiple review gates"), "ambiguous_gate"),
 }
+
+_NATURAL_PART = re.compile(r"(\d+)")
+
+
+def _parse_timestamp(value) -> datetime.datetime | None:
+    if not value:
+        return None
+    try:
+        text = str(value).strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        parsed = datetime.datetime.fromisoformat(text)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=datetime.UTC)
+    except (TypeError, ValueError):
+        return None
+
+
+def _natural_identifier(value) -> tuple:
+    """A deterministic fallback key where ``.2`` precedes ``.10`` like bead creation order."""
+    return tuple(
+        (0, int(part)) if part.isdigit() else (1, part.lower())
+        for part in _NATURAL_PART.split(str(value or ""))
+        if part
+    )
+
+
+def chronological_rows(rows: Iterable[Mapping], timestamp_keys=("created_at", "created")) -> list:
+    """Return rows oldest-first without trusting bd's current newest-first presentation.
+
+    The first parseable timestamp wins. Rows without one sort deterministically after dated rows
+    by natural bead id and a canonical field representation; input order is never the fallback.
+    """
+
+    def key(row: Mapping):
+        timestamp = next(
+            (
+                parsed
+                for name in timestamp_keys
+                if (parsed := _parse_timestamp(row.get(name))) is not None
+            ),
+            None,
+        )
+        if timestamp is not None:
+            timestamp = timestamp.astimezone(datetime.UTC)
+        identity = _natural_identifier(row.get("id"))
+        canonical = tuple(sorted((str(name), repr(value)) for name, value in row.items()))
+        fallback_time = datetime.datetime.max.replace(tzinfo=datetime.UTC)
+        return (timestamp is None, timestamp or fallback_time, identity, canonical)
+
+    return sorted((row for row in rows if isinstance(row, Mapping)), key=key)
+
+
+def transition_destination(event: Mapping, dimension: str) -> str:
+    """The destination value of one state-change event, never a source-state mention.
+
+    Real bd rows encode the transition in the title (``State change: review → pending``), while
+    older/test rows may carry ``review=pending`` or explicit ``to_state``/``state`` fields. The
+    description is only a final structured fallback and must say ``to``; a phrase such as
+    ``from changes-requested to pending`` therefore classifies as pending exactly once. No one
+    field has a documented canonical precedence, so contradictory destinations fail closed.
+    """
+    dim = re.escape(str(dimension).strip().lower())
+    destinations: set[str] = set()
+
+    def add(values) -> None:
+        destinations.update(str(value).replace("_", "-") for value in values)
+
+    for state_field in ("to_state", "state"):
+        raw = str(event.get(state_field) or "").strip().lower()
+        if not raw:
+            continue
+        qualified = re.findall(rf"(?:^|\b){dim}\s*(?:=|→|->|:)\s*([a-z0-9_-]+)\b", raw)
+        if qualified:
+            add(qualified)
+        elif re.fullmatch(r"[a-z0-9_-]+", raw):
+            add((raw,))
+    title = str(event.get("title") or "").lower()
+    add(re.findall(rf"(?:^|\b){dim}\s*(?:=|→|->|:)\s*([a-z0-9_-]+)\b", title))
+    description = str(event.get("description") or "").lower()
+    add(
+        re.findall(
+            rf"\b(?:set\s+{dim}|changed\s+{dim}(?:\s+from\s+\S+)?)\s+to\s+([a-z0-9_-]+)\b",
+            description,
+        )
+    )
+    return next(iter(destinations)) if len(destinations) == 1 else ""
 
 
 # ---- decision -----------------------------------------------------------------------------
@@ -352,7 +440,7 @@ def attempt_count(events: Iterable[Mapping], action: str) -> int:
     that failed once and then submitted cleanly starts its next dispatch cycle at zero, rather than
     carrying a strike from before the submit forever (bh-7679k).
     """
-    events = list(events)
+    events = chronological_rows(events)
     for i in range(len(events) - 1, -1, -1):
         if _is_success_event(events[i]):
             events = events[i + 1 :]
@@ -360,8 +448,12 @@ def attempt_count(events: Iterable[Mapping], action: str) -> int:
     markers, _reason = _ACTION_SIGNATURES.get(action, ((), "stuck"))
     total = 0
     for ev in events:
-        text = event_text(ev)
-        if not markers or any(m in text for m in markers):
+        matches = (
+            transition_destination(ev, "review") == REVIEW_CHANGES_REQUESTED
+            if action == "resume"
+            else (not markers or any(marker in event_text(ev) for marker in markers))
+        )
+        if matches:
             total += 1
     return total
 
@@ -369,8 +461,7 @@ def attempt_count(events: Iterable[Mapping], action: str) -> int:
 def _is_success_event(ev: Mapping) -> bool:
     """True for the event bead that records a submit (`bd set-state review=pending`) — the
     terminal SUCCESS of a dispatch turn. Mirrors `work._is_review_pending`'s text match."""
-    text = event_text(ev)
-    return "review" in text and "pending" in text
+    return transition_destination(ev, "review") == REVIEW_PENDING
 
 
 def event_text(ev: Mapping) -> str:
