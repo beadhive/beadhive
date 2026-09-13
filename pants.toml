@@ -6,6 +6,8 @@ backend_packages = [
 ]
 remote_cache_read = false
 remote_cache_write = false
+local_store_processes_max_size_bytes = 2147483648
+local_store_files_max_size_bytes = 2147483648
 
 [source]
 root_patterns = ["/src", "/tests"]
