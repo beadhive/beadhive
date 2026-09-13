@@ -251,6 +251,7 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     check_all_dependencies = {item["recipe"] for item in check_all["dependencies"]}
     full_only = {
         "require-bd",
+        "pants-attest",
         "test-integration-land",
         "demo-local-loop",
         "demo-live-ingress",

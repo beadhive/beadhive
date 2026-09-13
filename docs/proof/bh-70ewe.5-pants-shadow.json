@@ -4,7 +4,7 @@
   "inputs": {
     "pants.toml": "sha256:620c21b8eeb06cbcf0f095332b1a9d766bb4833c670226e7a3c1150368dafb27",
     "scripts/pants_cache.py": "sha256:28e4553baf0a8f76c61da4c2dae91565291a9c9b1e69a80865486cc4ab0e664c",
-    "scripts/pants_routes.py": "sha256:3a7ac74bcc6940a0c4a01a6000ba1e7a1a7a0654d3655c3d3ec90394590e8c40",
+    "scripts/pants_routes.py": "sha256:d221680824efe58a6d1761feb94f29de4f95129fa182f1917b315ec1d974ae73",
     "tests/BUILD": "sha256:92edd92d61237086d3f6d29ad7540a3c9927c5895d03aba8826d9a252d8e14c2"
   },
   "identity": {
