@@ -144,6 +144,7 @@ architecture-check:
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
     uv run python scripts/test_closure_operational_report.py --check
+    uv run python scripts/pants_shadow_evidence.py
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
@@ -590,6 +591,9 @@ pants-test-changed base="HEAD":
 
 pants-test-dependents source:
     uv run python scripts/pants_routes.py dependent {{quote(source)}}
+
+pants-shadow-check:
+    uv run python scripts/pants_shadow_evidence.py
 
 test-kernel:
     just test-closure kernel
