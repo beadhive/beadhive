@@ -1,0 +1,72 @@
+diff --git a/pants.toml b/pants.toml
+new file mode 100644
+--- /dev/null
++++ b/pants.toml
+@@ -0,0 +1,23 @@
++[GLOBAL]
++pants_version = "2.32.1"
++backend_packages = ["pants.backend.python", "pants.backend.experimental.python"]
++remote_cache_read = false
++remote_cache_write = false
++
++[source]
++root_patterns = ["/src", "/tests"]
++
++[python]
++enable_resolves = true
++default_resolve = "beadhive"
++resolves = { beadhive = "3rdparty/python/beadhive.lock" }
++resolver = "uv"
++run_against_entire_lockfile = true
++interpreter_constraints = ["CPython>=3.11,<3.15"]
++
++[pytest]
++install_from_resolve = "beadhive"
++requirements = [
++  "//3rdparty/python:pytest", "//3rdparty/python:pytest-xdist",
++  "//3rdparty/python:pytest-cov",
++]
+diff --git a/3rdparty/python/BUILD b/3rdparty/python/BUILD
+new file mode 100644
+--- /dev/null
++++ b/3rdparty/python/BUILD
+@@ -0,0 +1,8 @@
++python_requirement(name="pytest", requirements=["pytest>=8"])
++python_requirement(name="pytest-xdist", requirements=["pytest-xdist>=3"])
++python_requirement(name="pytest-cov", requirements=["pytest-cov>=5"])
++python_requirement(name="runtime", requirements=[
++  "typer>=0.12", "ruamel.yaml>=0.18", "structlog>=24", "fastmcp>=3.4,<4",
++  "starlette>=0.47,<2", "uvicorn>=0.34,<1", "joserfc>=1.7,<2",
++  "httpx>=0.28,<1", "pydantic-settings>=2.11", "jsonschema>=4",
++])
+diff --git a/src/beadhive/BUILD b/src/beadhive/BUILD
+new file mode 100644
+--- /dev/null
++++ b/src/beadhive/BUILD
+@@ -0,0 +1,2 @@
++python_sources(name="lib", sources=["**/*.py"], dependencies=["//3rdparty/python:runtime"])
++resources(name="plugin-manifests", sources=["kernel/plugins/manifests/*.json"])
+diff --git a/tests/BUILD b/tests/BUILD
+new file mode 100644
+--- /dev/null
++++ b/tests/BUILD
+@@ -0,0 +1,5 @@
++python_source(name="conftest", source="conftest.py", dependencies=[":watchdog"])
++python_source(name="watchdog", source="harness/watchdog_diagnostics.py")
++python_source(name="stateful", source="stateful_fixtures.py")
++python_sources(name="harness", sources=["harness/**/*.py"])
++python_tests(name="tests", sources=["**/test_*.py"], dependencies=[":conftest"])
+diff --git a/tests/conftest.py b/tests/conftest.py
+--- a/tests/conftest.py
++++ b/tests/conftest.py
+@@ -1,3 +1,9 @@
+ """Universal pytest registration with no environment or runtime initialization."""
+ 
+-pytest_plugins = ("harness.watchdog_diagnostics", "stateful_fixtures")
++from importlib.util import find_spec
++
++
++_plugins = ["harness.watchdog_diagnostics"]
++if find_spec("stateful_fixtures") is not None:  # pants: no-infer-dep
++    _plugins.append("stateful_fixtures")
++pytest_plugins = tuple(_plugins)
