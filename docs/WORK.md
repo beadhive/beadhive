@@ -8,7 +8,8 @@ already exist — `bd` (Beads), [`bh worktree`](WORKTREES.md), and per-agent ide
 > Raw `git` is for the change **inside** the worktree only — never the lifecycle
 > around it (`claim`/`submit`/`merge`). The worktree is already provisioned and the
 > branch is already `wt/bead/<id>`; don't `git clone`, `git checkout -b`, or
-> `gh pr create`.
+> `gh pr create`. Before using a scratch directory, follow the
+> [worktree safety guidance](WORKTREES.md#never-copy-a-linked-worktree-as-a-scratch-directory).
 
 ## Lifecycle
 
