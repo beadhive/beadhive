@@ -39,8 +39,10 @@ dir* outside the workspace means:
 
 > **Warning:** `cp -r` of a linked worktree is not an isolated copy. In a linked worktree,
 > `.git` is a **file** containing a `gitdir: <path>` pointer. `cp -r` duplicates that pointer, so
-> the apparent copy shares the real repository's refs, index, and `HEAD`; commits, resets, and
-> `git clean` in the copy affect the real branch.
+> the apparent copy shares the real repository's refs and the linked worktree's index and `HEAD`;
+> commits and resets in the copy can therefore affect the real branch and worktree state. `git clean`
+> is different: it removes untracked files only from the copied working tree, not matching untracked
+> files in the source worktree.
 
 Recognize the condition before a destructive experiment:
 
