@@ -183,14 +183,17 @@ concurrently mint the *same* id. That is where the line is drawn:
 |---|---|
 | `bh bd create` — a new **top-level** bead | `claim`, `assign`, `submit`, `merge` |
 | every read: `ready`, `list`, `show`, `brief`, `sync` | `bh plan file`, and any `--parent` create |
-| **moving the store**: `bd dolt push` / `pull` / `status` | changing a bead that already exists |
+| **reading the store**: `bd dolt pull` / `fetch` / `status` | publishing via managed `bh hive sync remotes --push` |
 | | `bd dolt remote add` / `remove` |
 
 ### Not finished yet
 
-- Lease enforcement is advisory until the epoch fence fires again — `bh-ban1j`.
+- Managed publication has a sequenced epoch-fence CAS, but current bd prevents atomicity and
+  raw `bd dolt push` bypasses bh; `bh doctor` reports this degraded posture — `bh-tfapu`.
 - A provisioned host cannot run an agent seat until provision installs the plugin — `bh-tx2hp`.
-- The file-here / execute-there cycle is unproven until the E2E runs — `bh-i7ws9`.
+- The recorded file-here / execute-there run used raw `bd dolt push`; rerun `bh-i7ws9` through
+  managed sync and verify signed code plus stale/adversarial refusal before treating it as the
+  safe multi-host E2E.
 
 **Buys.** A machine that executes while your laptop sleeps, with one owner of execution per
 hive and everyone else still able to file into it.

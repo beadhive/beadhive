@@ -1843,6 +1843,30 @@ def _data_layout(cfg) -> dict:
     }
 
 
+def _epoch_fence_posture_warning(cfg, entry, path: Path) -> str | None:
+    """Expose the strongest posture current bd can actually enforce.
+
+    Once a hive has a host lease, the original hook-based atomic claim is false on every
+    current bd transport: bd forces ``core.hooksPath=/dev/null``. Managed pushes still fail
+    closed at their sequenced CAS boundary, but doctor must keep the residual window and raw
+    bypass visible rather than letting a healthy lease imply atomic authority.
+    """
+    from . import guard
+
+    if guard.primary_state(cfg=cfg, entry=entry) is None:
+        return None
+    prefix = str(entry.get("prefix") or "?")
+    return (
+        f"hive '{prefix}': atomic epoch-fence posture is UNENFORCEABLE with current bd — "
+        "bd disables Git hooks in its Dolt transport. Beadhive-managed pushes reserve "
+        "refs/bh/epoch by remote CAS before data and verify it afterward, but the CAS→push "
+        "window is not atomic and a takeover there may let data land before detection. "
+        "Direct raw `bd dolt push` bypasses bh entirely; publish only through "
+        f"`{config.BINARY_ALIAS} hive sync remotes --push` and reconcile immediately if postflight "
+        "reports DATA MAY HAVE LANDED."
+    )
+
+
 def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
     and per-hive checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
@@ -1962,14 +1986,18 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
                 )
         if path.exists():
             warns += _legacy_validation_warnings(e, path)
+            if (path / ".beads").is_dir():
+                fence_posture = _epoch_fence_posture_warning(cfg, e, path)
+                if fence_posture:
+                    warns.append(fence_posture)
             n_commits, holder = _local_commits_while_not_primary(cfg, e, path)
             if n_commits:
                 warns.append(
                     f"hive '{e['prefix']}': {n_commits} local commits made while not primary "
                     f"(current primary: {holder}) — direct `bd` bypasses the multi-host guard "
-                    "(bh-ytbb.9); the push-time fence (refs/bh/epoch, bh-ytbb.7) will refuse "
-                    "these, so treat this local state as unconfirmed until you re-adopt this "
-                    f"host or coordinate with {holder}"
+                    "and raw `bd dolt push` bypasses epoch-fence enforcement too; treat this "
+                    "local state as unconfirmed and DO NOT publish it until you re-adopt this "
+                    f"host or coordinate with {holder} through the managed sync path"
                 )
             split_brain = _split_brain_lineage_warning(e, path)
             if split_brain:

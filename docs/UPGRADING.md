@@ -635,11 +635,11 @@ bh hive hook pre-push [HIVE_ID]    # the hook contract itself, for your own disp
 
 Two reasons, and the second is the one that matters.
 
-**It was never the enforcement.** The fence's real backstop is the atomic
-`--force-with-lease` epoch push (`refs/bh/epoch`, §1), which rejects a stale-epoch push
-regardless of hooks *and* regardless of `git push --no-verify`. The hook is a local, fast-fail
-refusal in front of it. Turning it off by default costs an early, legible error message — not
-safety.
+**It is not enforcement.** Current bd forces `core.hooksPath=/dev/null` in its Dolt transport,
+so this hook does not run for `bd dolt push`. Managed publication now reserves
+`refs/bh/epoch` by remote CAS before bd and verifies the same ticket afterward. That rejects a
+stale host before data, but it is not atomic with bd's opaque push; `bh doctor` exposes the
+CAS→push window and raw-bd bypass. The hook remains only a compatibility/diagnostic entrypoint.
 
 **The old default was already failing quietly.** The installer is deliberately
 non-destructive: finding a `pre-push` it did not write, it skips and reports

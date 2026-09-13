@@ -1,14 +1,10 @@
-"""Integration: does the repo `prepush` installs the fence hook into actually perform the push?
+"""Integration: establish bd's real transport and exercise the viable epoch-fence boundary.
 
-`bh-areg.6`'s acceptance asks for the hook to "install and fire in the target mode, from
-whichever repo actually performs the push" — a claim no unit test can settle, because the
-answer is bd's to give. `bh-ukit.2` measured it by hand
-(`docs/spikes/bh-ukit.2-fence-under-a-dolt-server.md`); this is that measurement pinned as a
-test, so a future bd release that moves the transport cannot quietly disarm the fence again.
-
-The instrument is a MARKER hook (writes a file, exits 0 — observes, never blocks) placed in
-exactly the location `host_fence.transport_lookup` reports, rather than bh's own shim: what is
-under test is the LOCATION, not the shim's own decision logic (that is `test_prepush.py`'s job).
+Current bd shells out to real Git from exactly the repo ``transport_lookup`` locates, but
+forces ``core.hooksPath=/dev/null``. A marker hook plus Git trace2 prove both facts in embedded
+and shared-server modes. The same test then proves the managed CAS preflight rejects a stale
+host before data, and its raw-bd adversarial control proves why doctor calls that bypass
+unenforceable. This is mechanism evidence, not an argv-shaped mock.
 
 Fully local, and deliberately so: `file://` bare repos as remotes, and an isolated
 `BEADS_SHARED_SERVER_DIR` + non-default port, so the operator's real shared server is never
@@ -20,13 +16,14 @@ PATH, per this repo's marker convention (`justfile`: `just test` excludes "integ
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import uuid
 
 import pytest
 
-from beadhive import host_fence
+from beadhive import engine, gitref, guard, host_fence
 from beadhive.run import run
 from harness.world import free_port, reap_dolt_server
 
@@ -72,6 +69,41 @@ def _bd(args, cwd, env=None):
     )
 
 
+def _remote_data(hive):
+    out = _git(["ls-remote", "origin", host_fence.DATA_REF], hive).stdout.strip()
+    return out.split()[0] if out else ""
+
+
+class _LiveLease:
+    epoch = 1
+
+    @staticmethod
+    def held_by(host_id):
+        return host_id == "host-a"
+
+
+def _trace_transport_push(trace_path, transport):
+    events = [json.loads(line) for line in trace_path.read_text().splitlines() if line.strip()]
+    pushes = [
+        event
+        for event in events
+        if event.get("event") == "start"
+        and len(event.get("argv", [])) > 1
+        and event["argv"][1] == "push"
+        and any(str(arg).endswith(":" + host_fence.DATA_REF) for arg in event["argv"])
+    ]
+    assert pushes, "bd did not expose the refs/dolt/data transport in Git trace2"
+    push = pushes[-1]
+    assert os.path.basename(push["argv"][0]) == "git"
+    params = {
+        event.get("param"): event.get("value")
+        for event in events
+        if event.get("event") == "def_param" and event.get("sid") == push["sid"]
+    }
+    assert os.path.realpath(params["GIT_DIR"]) == os.path.realpath(transport)
+    assert "core.hooksPath=/dev/null" in params["GIT_CONFIG_PARAMETERS"]
+
+
 @pytest.fixture
 def scratch_server(tmp_path):
     """An isolated shared-server data dir, torn down after the test — a bd-spawned server left
@@ -88,9 +120,7 @@ def scratch_server(tmp_path):
 def test_the_located_transport_repo_is_the_one_that_pushes(
     tmp_path, monkeypatch, scratch_server, shared_server
 ):
-    """The property the fence depends on, in both modes: the repo `transport_lookup` points at
-    is where bd's own `git push` originates — so a hook installed there sees the data push, and
-    one installed anywhere else does not."""
+    """Pin the shipped bd mechanism, then prove managed and raw adversarial outcomes."""
     if shared_server:
         # An EPHEMERAL port, never a literal (this was 3399, and a stray dolt server another
         # session left on 3399 made this case fail permanently on that machine — the failure
@@ -100,6 +130,11 @@ def test_the_located_transport_repo_is_the_one_that_pushes(
         monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
         monkeypatch.setenv("BEADS_DOLT_SHARED_SERVER", "1")
 
+    # The shared server inherits its environment only when it starts, so tracing must be
+    # armed before `bd init` rather than immediately before the measured second push.
+    trace = tmp_path / "git-trace.json"
+    monkeypatch.setenv("GIT_TRACE2_EVENT", str(trace))
+    monkeypatch.setenv("GIT_TRACE2_ENV_VARS", "GIT_DIR,GIT_CONFIG_PARAMETERS")
     hive = _hive_with_remote(tmp_path, "hive")
     prefix = f"fx{uuid.uuid4().hex[:6]}"
     init = ["init", "--prefix", prefix, "--non-interactive"]
@@ -127,5 +162,44 @@ def test_the_located_transport_repo_is_the_one_that_pushes(
     assert _bd(["create", "--title", "two", "-t", "task", "-p", "2"], hive).returncode == 0
     assert _bd(["dolt", "push"], hive).returncode == 0
 
-    assert marker.exists(), "the located transport repo did not perform the push"
+    # Real Git did push from this exact repo, but bd disabled every hook for the call. Both
+    # marker absences are important: neither location is an enforcement point.
+    _trace_transport_push(trace, lookup.repos[0])
+    assert not marker.exists(), "bd unexpectedly stopped suppressing transport Git hooks"
     assert not hive_marker.exists(), "the hive checkout is NOT where a data push fires from"
+
+    # Install the fence and exercise the actual supported boundary around a real bd push.
+    monkeypatch.setattr(guard, "primary_state", lambda **_kw: (prefix, "host-a", _LiveLease()))
+    initial = host_fence.install_fence(
+        "origin",
+        host_fence.EpochFence(epoch=1, host_id="host-a"),
+        expected=gitref.ABSENT,
+        cwd=hive,
+    )
+    assert _bd(["create", "--title", "three", "-t", "task", "-p", "2"], hive).returncode == 0
+    managed = engine.BdEngine().push_state(hive, message="managed epoch-fenced push")
+    assert managed.returncode == 0, managed.stderr
+    reserved, fence = host_fence.read_fence("origin", cwd=hive)
+    assert reserved != initial
+    assert fence == host_fence.EpochFence(epoch=1, host_id="host-a", seq=1)
+    assert not marker.exists(), "managed safety must not rely on bd's suppressed hook"
+
+    # Another host takes over. The stale managed path loses before bd and leaves data alone.
+    host_fence.install_fence(
+        "origin",
+        host_fence.EpochFence(epoch=2, host_id="host-b"),
+        expected=reserved,
+        cwd=hive,
+    )
+    assert _bd(["create", "--title", "four", "-t", "task", "-p", "2"], hive).returncode == 0
+    before = _remote_data(hive)
+    refused = engine.BdEngine().push_state(hive, message="stale managed push")
+    assert refused.returncode != 0
+    assert "refused before data transfer" in refused.stderr
+    assert _remote_data(hive) == before
+
+    # Adversarial control: OS-level raw bd is not interceptable, ignores refs/bh/epoch, and
+    # publishes the same stale state. Doctor must therefore expose this exact posture.
+    raw = _bd(["dolt", "push"], hive)
+    assert raw.returncode == 0, raw.stderr
+    assert _remote_data(hive) != before

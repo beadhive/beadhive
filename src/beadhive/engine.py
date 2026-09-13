@@ -12,6 +12,7 @@ push_state/pull_state into `bh work` verbs is bh-dw3e.6.
 
 from __future__ import annotations
 
+import importlib
 import json
 import subprocess
 from dataclasses import dataclass
@@ -328,7 +329,53 @@ class BdEngine:
             args += ["--remote", remote]
         if force:
             args.append("--force")
-        return self._state_call(args, cwd, actor=actor)
+        # Current bd deliberately invokes its internal Git transport with
+        # `core.hooksPath=/dev/null`; the transport pre-push hook is therefore not an
+        # enforcement point. Reserve the authoritative REMOTE fence immediately before the
+        # opaque operation and verify the exact ticket immediately after it. This is the
+        # strongest available managed boundary, but remains sequenced rather than atomic (the
+        # postflight error is explicit that data may already have landed).
+        # Legacy engine.py already sits on a large owned import cycle with bd. Importing the
+        # fence eagerly would pull the safety module into that cycle, so resolve this literal
+        # module at the operation boundary (the architecture checker permits this for legacy
+        # modules and still verifies non-legacy dynamic imports).
+        host_fence = importlib.import_module("beadhive.host_fence")
+        fence_remote = remote or "origin"
+        try:
+            reservation = host_fence.reserve_managed_push(fence_remote, cwd=cwd, cfg=config.load())
+        except (
+            host_fence.FenceError,
+            host_fence.RemoteUnreachable,
+            RuntimeError,
+            ValueError,
+        ) as exc:
+            return subprocess.CompletedProcess(
+                args=["bd", *args],
+                returncode=1,
+                stdout="",
+                stderr=f"epoch-fence preflight refused state push: {exc}",
+            )
+
+        pushed = self._state_call(args, cwd, actor=actor)
+        if pushed.returncode or reservation is None:
+            return pushed
+        try:
+            host_fence.verify_managed_push(fence_remote, cwd=cwd, reservation=reservation)
+        except (
+            host_fence.FenceError,
+            host_fence.RemoteUnreachable,
+            RuntimeError,
+            ValueError,
+        ) as exc:
+            prior = (getattr(pushed, "stderr", "") or "").rstrip()
+            detail = f"epoch-fence postflight failed: {exc}"
+            return subprocess.CompletedProcess(
+                args=getattr(pushed, "args", ["bd", *args]),
+                returncode=1,
+                stdout=getattr(pushed, "stdout", "") or "",
+                stderr=f"{prior}\n{detail}".lstrip(),
+            )
+        return pushed
 
     def pull_state(self, cwd, *, remote=""):
         args = ["dolt", "pull"]

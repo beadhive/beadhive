@@ -61,12 +61,13 @@ step:
          docs/ADOPTION.md. A user must not discover advisory-only lease
          enforcement by hitting it:
 
-           - Lease enforcement is advisory until the epoch fence fires
-             again — bh-ban1j.
+           - Managed publication reserves the epoch fence, but current bd
+             prevents atomicity and raw bd bypasses bh — bh-tfapu.
            - A provisioned host cannot run an agent seat until provision
              installs the plugin — bh-tx2hp.
-           - The file-here / execute-there cycle is unproven until the E2E
-             runs — bh-i7ws9.
+           - The old file-here / execute-there run used raw bd; rerun the
+             E2E through managed sync with signatures and stale/adversarial
+             refusal — bh-i7ws9.
 
       5. Back on THIS machine, `bh host list` shows every host with its
          role and staleness. Two hosts, neither stale, is the rung-4
@@ -205,9 +206,11 @@ It clones HQ from the wired remote and then adopts the host, probing before each
 Three known gaps, carried from `docs/ADOPTION.md` so a user meets them as a stated limitation
 rather than as a bug:
 
-- Lease enforcement is advisory until the epoch fence fires again — `bh-ban1j`.
+- Managed publication reserves the epoch fence, but current bd prevents atomicity and raw bd
+  bypasses bh — `bh-tfapu`.
 - A provisioned host cannot run an agent seat until provision installs the plugin — `bh-tx2hp`.
-- The file-here / execute-there cycle is unproven until the E2E runs — `bh-i7ws9`.
+- The recorded file-here / execute-there run used raw bd; rerun `bh-i7ws9` through managed
+  sync and verify signatures plus stale/adversarial refusal.
 
 The second one in particular changes what the user should expect on day one: a provisioned host
 is adopted into HQ but cannot yet run an agent seat.

@@ -61,10 +61,10 @@ def test_just_rejects_an_invalid_xdist_ceiling() -> None:
     assert f"{AUTO_WORKER_ENV} must be a positive integer" in result.stderr
 
 
-def test_marker_quarantine_coverage_and_serial_debugging_contracts_remain() -> None:
+def test_marker_coverage_and_serial_debugging_contracts_remain() -> None:
     text = JUSTFILE.read_text()
 
     assert '{{ if set == "" { "" } else { "-m " + quote(set) } }}' in text
-    assert text.count('--deselect "tests/test_host_fence_int.py::') == 2
+    assert '--deselect "tests/test_host_fence_int.py::' not in text
     assert "-m 'not integration' --cov=src/beadhive --cov-report=term-missing" in text
     assert "`uv run pytest -n0 ...` forces serial" in text

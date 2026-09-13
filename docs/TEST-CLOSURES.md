@@ -26,7 +26,7 @@ declares three kinds of evidence:
 The runner de-duplicates and executes the union. A closure with marker-specific `pytest_args`
 runs its direct selection first and its shared/reverse-dependent tests in a second invocation, so
 the marker cannot silently filter those supplemental tests. The integration row mirrors the
-existing land integration selection, including its two documented `bh-tfapu` deselections.
+complete land integration selection; host-fence coverage is not quarantined.
 
 ## Commands
 

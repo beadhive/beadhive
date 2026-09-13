@@ -972,47 +972,36 @@ under the new epoch) and re-submit, or push the branch and let the current prima
 bead updates under its own epoch.
 
 The epoch is read from the *cached* host lease — no network, so claiming stays cheap and
-workers never poll. `refs/bh/epoch` beside the hive's data remains the enforcement truth (its
-CAS is what makes the write itself safe); the two carry the same generation by construction,
-because the two-phase adopt records phase 1's epoch into phase 2's lease.
+workers never poll. The remote `refs/bh/epoch` is re-read and CAS-reserved by each managed
+publish; the local claim token is only an early authorization check and grants no remote
+authority. Fence and lease carry the same generation by construction because two-phase adopt
+records phase 1's epoch into phase 2's lease.
 
 A record with no token (written before this shipped, or on a factory that never adopted) fails
 **open** — it is never refused for a token it was never issued.
 
-### Direct `bd`: the pre-push fence hook + doctor warning
+### Direct `bd`: managed publication + doctor warning
 
-`guard_primary` only gates `bh work`'s own write verbs — a raw `bd` invocation never goes
-through it at all. That gap is bounded (a direct `bd` write lands only in the local Dolt
-replica; it cannot corrupt the remote, because the real fence is at push,
-[design/multi-host-model-adr.md](design/multi-host-model-adr.md) Amendment 1 §2), but it can
-still leave an operator building an hour of work on a doomed local state before discovering,
-only at push time, that this host was never primary. Two defence-in-depth layers close that
-gap early — both **local reads, neither needs HQ over the network**, both reusing
-`guard.primary_state`'s cached-lease read so they can never disagree with `guard_primary`
-about who is primary:
+`guard_primary` only gates bh's own write verbs — a raw `bd` invocation never goes through it.
+A raw OS-level `bd dolt push` also bypasses the epoch fence: current bd deliberately disables
+transport Git hooks. Adopted hives therefore refuse direct `bh bd dolt push|sync`, even for the
+primary, and publish through managed paths such as `bh hive sync remotes --push`.
+Those paths re-read and CAS-reserve the remote fence immediately before bd, then verify the
+exact ticket after. A stale preflight guarantees no data was attempted. A forced takeover in
+the CAS→push window can let data land before postflight reports `DATA MAY HAVE LANDED`; this is
+not atomic and requires reconciliation.
 
-- **A `pre-push` git hook**, furnished by `bh hive init` (`src/beadhive/prepush.py`) —
-  **independent of the furnish axis**: a git hook is never tracked in a repo's history
-  regardless of a hive's declared footprint, so a `furnish: none` hive gets it exactly the
-  same as a furnished one. Installed into every place a `refs/dolt/data` push can actually
-  happen (the hive's own `.git/hooks/`, and any existing bd-embedded git-transport bare repo
-  under `.beads/` — see the module docstring for why a not-yet-created transport repo is a
-  harmless gap, not a real one). Non-destructive: an operator's own pre-existing `pre-push`
-  hook is left untouched. The hook filters on the ref name in `sh` (no `bh`/python startup
-  for an ordinary code push) and shells out to the hidden `bh hive check-push-fence` verb
-  only for a push that actually touches `refs/dolt/data`.
+- **The opt-in `pre-push` hook** remains a compatibility/diagnostic entrypoint for transports
+  that do permit hooks. Shipped bd supplies `core.hooksPath=/dev/null`, so it must never be
+  treated as authority for bd's data push.
 - **`bh doctor`** reports "N local commits made while not primary" per hive: local
   `refs/dolt/data` commits dated after the CURRENT lease holder's `adopted_at`, for any hive
   this host does not currently hold the lease for. Bounded on purpose — only commits made
   strictly after primacy demonstrably passed elsewhere count, not every unpushed local commit
   a healthy single-host workflow racks up between pushes.
 
-Both are **bypassable, and documented as such where an operator actually reads it** (the
-hook's own refusal text): `git push --no-verify` skips the hook entirely, and that is fine —
-it is a convenience, an early legible refusal, not the enforcement. The real backstop is the
-same atomic `--force-with-lease` push fence beside the hive's own data (`refs/bh/epoch`,
-`src/beadhive/host_fence.py`) named above: a stale-epoch push is rejected there regardless of
-`--no-verify`.
+Doctor reports the degraded atomic posture on every adopted hive, including the raw-bd bypass.
+No hook, local ref, or cached lease is represented as remote write authority.
 
 ## The role-binary contract
 

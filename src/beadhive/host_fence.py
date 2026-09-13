@@ -2,16 +2,19 @@
 
 The enforcement half of the multi-host write model
 (``docs/design/multi-host-model-adr.md``, Amendment 1 §2). The **host lease**
-(:mod:`beadhive.host_lease`, in HQ) says who *should* be primary; this ref says who *may
-write*, and it is co-located with the data so the check is **atomic with the write**::
+(:mod:`beadhive.host_lease`, in HQ) says who *should* be primary; this ref is the remote
+compare-and-swap token every Beadhive-managed data push must reserve first.
 
-    git push --atomic --force-with-lease=refs/bh/epoch:<held> \\
-      origin refs/dolt/data refs/bh/epoch
-
-That formulation is the whole point. A stale primary does not merely fail a policy check it
-might have passed a moment earlier — the remote rejects its push, and because the push is
-``--atomic``, **no data lands with it**. The check-then-write race closes structurally rather
-than by having checked recently.
+The original design coupled ``refs/dolt/data`` and this ref in one atomic Git push. Current
+``bd`` does invoke real Git from the located transport repo, but deliberately supplies
+``core.hooksPath=/dev/null`` and owns a transient data ref that disappears when the call
+returns. Beadhive therefore cannot join the two refs or intercept that push. The strongest
+available boundary is deliberately honest and fail-closed: reserve the fence by remote CAS,
+run ``bd dolt push``, then verify that the exact reservation is still current. A stale host
+loses before data is attempted; a takeover in the CAS-to-push window can still race, and the
+postflight detects that data may already have landed. Raw ``bd dolt push`` is outside this
+boundary entirely. Doctor and the ADR expose both limitations; neither hooks nor a local ref
+are represented as authority.
 
 ``refs/bh/epoch`` lives OUTSIDE ``refs/dolt/data``: it is a sibling ref, not a row inside the
 database, so it never participates in a Dolt merge and can never be "resolved" by a
@@ -24,16 +27,13 @@ itself a custom ref), so fence and data are co-located by necessity, not prefere
   * ``epoch`` — the ADOPT generation, minted by :mod:`beadhive.host_lease`'s ``epoch + 1``.
     This is the fencing token ``ClaimRecord`` carries (bh-ytbb.10), so it must stay stable
     for the whole tenure.
-  * ``seq``   — a per-push counter, bumped only on the non-atomic fallback path (below).
-  * ``host_id`` — who installed it; diagnostic, never trusted for a decision (the *sha* is
-    what the CAS compares).
+  * ``seq``   — a per-push counter, bumped for each managed push reservation.
+  * ``host_id`` — who installed it. The remote object and its sha are authoritative; the
+    identity is checked against the live lease, never trusted merely because it is local.
 
-**When the forge has no ``--atomic``.** Support is probed (:func:`probe_atomic`) rather than
-assumed, and a forge without it degrades to the documented **per-push epoch-bump fallback**
-(:func:`_fallback_push`) — the fence is never silently dropped. The fallback's honest limit is
-stated in that function's docstring: it narrows the unfenced window to the interval between
-the fence CAS and the data push, and cannot close it. That is exactly why ``--atomic`` is
-preferred and why its absence is *recorded*.
+The older :func:`fenced_push` primitive remains for callers that genuinely own a stable local
+data ref. Production ``BdEngine`` cannot use it; it uses :func:`reserve_managed_push` and
+:func:`verify_managed_push` around the opaque ``bd`` operation instead.
 
 Typer-free; every remote interaction goes through :mod:`beadhive.gitref`'s one subprocess
 seam, so tests drive scratch bare repos in a tmp dir.
@@ -122,6 +122,14 @@ class FenceRejected(FenceError):
     permitted to write. NOT a retryable condition — re-adopt (bh-ytbb.8) or stay read-only."""
 
 
+class FenceViolation(FenceError):
+    """A managed push lost its reservation after data transfer began.
+
+    Rejection happens before the data push. A violation means data may already have landed
+    and the two hosts must reconcile before another write.
+    """
+
+
 @dataclass(frozen=True)
 class EpochFence:
     """The value at ``refs/bh/epoch``."""
@@ -157,6 +165,15 @@ class PushOutcome:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class PushReservation:
+    """The exact remote ticket held by one Beadhive-managed ``bd dolt push``."""
+
+    prefix: str
+    held: str
+    fence: EpochFence
+
+
 def _git(args: list[str], cwd: Path):
     return run(["git", *args], cwd=str(cwd), check=False, capture=True, timeout=GIT_TIMEOUT)
 
@@ -187,9 +204,9 @@ def transport_lookup(hive_dir: Path) -> TransportLookup:
     perform the ``git push`` — plus WHY there are none when there are none.
 
     **Measured, not assumed.** bh-ytbb.7 measured the embedded layout against bd 1.1.0;
-    bh-ukit.2 re-measured both modes against bd HEAD-af076b6 *and* re-ran the embedded control
-    on bd 1.1.0, by instrumenting a real ``bd dolt push`` with a logging ``pre-push`` hook in
-    every candidate location. What that established:
+    bh-ukit.2 measured both modes against bd HEAD-af076b6 and bd 1.1.0. bh-tfapu then pinned
+    current shipped bd with Git trace2 rather than relying on hook execution. What that
+    established:
 
       * The push fires from a hidden bare repo at ``<db>/.dolt/git-remote-cache/<hash>/
         repo.git``, in BOTH modes — **never** from the hive's own checkout, whose hook does not
@@ -205,6 +222,8 @@ def transport_lookup(hive_dir: Path) -> TransportLookup:
         was wrong when written, and it is why the ADR's
         ``git push --atomic … origin refs/dolt/data refs/bh/epoch`` cannot be issued by bh from
         here. See ``docs/spikes/bh-ukit.2-fence-under-a-dolt-server.md``.
+      * Current bd supplies ``core.hooksPath=/dev/null`` to that exact real Git process. A hook
+        installed in the located repo therefore does not fire and confers no authority.
 
     **Scope differs by mode, deliberately.** Embedded's parent is private to the hive, so every
     database under it belongs to this hive (this repo carries ``bh`` and a legacy ``beads``) and
@@ -285,6 +304,82 @@ def install_fence(
     return result.sha
 
 
+def reserve_managed_push(remote: str, *, cwd: Path, cfg=None) -> PushReservation | None:
+    """Reserve the remote fence immediately before a managed ``bd dolt push``.
+
+    ``None`` means the hive has never entered the multi-host model, so no fence exists to
+    reserve. Once a lease exists this is fail-closed: the caller must be its live holder and
+    the authoritative REMOTE fence must name the same generation and host. A forged/stale
+    local ref grants no authority because it is never read here.
+
+    The CAS bumps ``seq`` and makes the ticket single-use. Losing it raises
+    :class:`FenceRejected` before the caller invokes bd, which guarantees that rejection did
+    not publish data. This reservation and bd's opaque push are sequenced, not atomic; the
+    mandatory postflight is :func:`verify_managed_push`.
+    """
+    from . import guard  # lazy: guard imports this module on other paths
+
+    cwd = Path(cwd)
+    state = guard.primary_state(cfg=cfg, hive_dir=cwd)
+    if state is None:
+        return None
+    prefix, this_host, lease = state
+    if not this_host or not lease.held_by(this_host):
+        raise FenceRejected(
+            f"{prefix}: managed state push refused before data transfer — this host does not "
+            "hold the live host lease"
+        )
+
+    held, current = read_fence(remote, cwd=cwd)
+    if current is None:
+        raise FenceRejected(
+            f"{prefix}: no epoch fence is installed on {remote}; managed state push refused "
+            "before data transfer. Re-adopt this hive to restore the fence."
+        )
+    if current.epoch != lease.epoch or current.host_id != this_host:
+        raise FenceRejected(
+            f"{prefix}: remote epoch fence is {current.describe()}, but this host's live lease "
+            f"is epoch {lease.epoch} held by {this_host}; managed state push refused before "
+            "data transfer. Re-adopt or reconcile the half-state."
+        )
+
+    bumped = EpochFence(epoch=current.epoch, host_id=current.host_id, seq=current.seq + 1)
+    ticket = gitref.cas(remote, EPOCH_REF, bumped.to_record(), expected=held, cwd=cwd)
+    if not ticket.ok:
+        raise FenceRejected(
+            f"{prefix}: epoch-fence reservation lost its remote CAS; managed state push was "
+            f"not attempted and no data landed.\n  git: {ticket.detail}"
+        )
+    gitref.set_local(EPOCH_REF, ticket.sha, cwd=cwd)
+    log.get_logger(__name__).warning(
+        "fence_sequenced_reservation",
+        hive_prefix=prefix,
+        remote=remote,
+        epoch=bumped.epoch,
+        seq=bumped.seq,
+        reason="bd disables transport hooks; fence CAS and data push cannot be atomic",
+    )
+    return PushReservation(prefix=prefix, held=ticket.sha, fence=bumped)
+
+
+def verify_managed_push(remote: str, *, cwd: Path, reservation: PushReservation) -> None:
+    """Require the exact reservation to remain remote after bd reports push success.
+
+    A mismatch is detected after the opaque data operation, so the exception states the
+    material distinction explicitly: data may have landed. It must never be presented as a
+    clean preflight refusal.
+    """
+    observed_sha, observed = read_fence(remote, cwd=Path(cwd))
+    if observed_sha == reservation.held and observed == reservation.fence:
+        return
+    description = observed.describe() if observed is not None else "missing"
+    raise FenceViolation(
+        f"{reservation.prefix}: epoch fence changed during managed state push "
+        f"(reserved {reservation.fence.describe()}, now {description}). DATA MAY HAVE LANDED; "
+        "stop writes and reconcile the two hosts before retrying."
+    )
+
+
 def probe_atomic(remote: str, *, cwd: Path) -> bool:
     """Whether `remote`'s receive-pack advertises the ``atomic`` capability.
 
@@ -322,7 +417,7 @@ def fenced_push(
     epoch_ref: str = EPOCH_REF,
     atomic: bool | None = None,
 ) -> PushOutcome:
-    """Push bead data behind the epoch fence.
+    """Legacy stable-local-ref push primitive; production ``BdEngine`` does not use it.
 
     `held` is the fence sha this host believes is current — the ``<held>`` in
     ``--force-with-lease=refs/bh/epoch:<held>``. It comes from the adopt that installed the
@@ -332,7 +427,8 @@ def fenced_push(
     reuse a cached answer and skip the round trip.
 
     Raises :class:`FenceRejected` when the fence is stale — with ``--atomic`` that is
-    guaranteed to mean **no data landed**, which is the property this whole module exists for.
+    guaranteed to mean **no data landed**. That guarantee applies only to this primitive's
+    stable refs, not bd's opaque transient-ref push.
     """
     if atomic is None:
         atomic = probe_atomic(remote, cwd=cwd)
@@ -366,7 +462,7 @@ def _atomic_push(remote, *, held, cwd, data_ref, epoch_ref) -> PushOutcome:
 
 
 def _fallback_push(remote, *, held, cwd, data_ref, epoch_ref) -> PushOutcome:
-    """The documented **per-push epoch-bump fallback** for a forge with no ``--atomic``.
+    """The legacy primitive's per-push ticket-bump fallback when ``--atomic`` is unavailable.
 
     Two sequenced pushes, fence FIRST:
 

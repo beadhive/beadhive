@@ -691,29 +691,37 @@ def test_intake_is_classified_without_touching_the_lease_at_all():
     assert not guard.is_intake_create([])
 
 
-# ---- bh-qzoo1: moving the store is not authoring in it ------------------------
-#
-# Shipping bh-lkbas without this made the intake tier hollow: a laptop could FILE a bead
-# without the lease and then had no way to publish it, so it never left the machine. Measured
-# on xeno-mac against the real nvhack hive — `bd create` succeeded with a free lease, then
-# `bd dolt push` was refused and the bead was stranded.
+# ---- bh-tfapu: reads are free; unmanaged publication bypasses the fence -------
 
 
 @pytest.mark.parametrize(
     "args",
     [
-        ["dolt", "push"],  # publish what is already local — the stranding fix
         ["dolt", "pull"],  # EVERY host, viewer included, must reach the current view
         ["dolt", "fetch"],
         ["dolt", "status"],
-        ["dolt", "sync"],
         ["dolt", "remote", "list"],
     ],
 )
-def test_moving_the_store_needs_no_lease(hq, hive, this_host, monkeypatch, args):
+def test_reading_the_store_needs_no_lease(hq, hive, this_host, monkeypatch, args):
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
     _record_lease(hq, _lease(OTHER_HOST))  # another host holds it, live
     assert guard.bd_write_refusal(args, hq / "x", cfg={}) == ""
+
+
+@pytest.mark.parametrize("args", [["dolt", "push"], ["dolt", "sync"]])
+@pytest.mark.parametrize("holder", [THIS_HOST, OTHER_HOST])
+def test_direct_store_publish_is_refused_for_every_host(
+    hq, hive, this_host, monkeypatch, args, holder
+):
+    """Passthrough never uses Engine.push_state's remote reservation. Even a primary must use
+    the managed publish surface; local lease identity cannot confer false authority."""
+    monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
+    _record_lease(hq, _lease(holder))
+    refusal = guard.bd_write_refusal(args, hq / "x", cfg={})
+    assert "refused" in refusal
+    assert "bh hive sync remotes --push" in refusal
+    assert "raw `bd dolt push`" in refusal
 
 
 @pytest.mark.parametrize(
@@ -727,13 +735,17 @@ def test_repointing_the_remote_is_still_gated(hq, hive, this_host, monkeypatch, 
     assert guard.bd_write_refusal(args, hq / "x", cfg={}) != ""
 
 
-def test_the_whole_intake_round_trip_is_ungated(hq, hive, this_host, monkeypatch):
-    """The actual user journey, end to end: a host holding no lease files a bead AND gets it
-    off the machine. Either half alone is useless — that was the bh-qzoo1 defect."""
+def test_intake_may_be_local_but_must_publish_through_managed_sync(
+    hq, hive, this_host, monkeypatch
+):
+    """A follower may still file an additive top-level bead, but direct publication cannot
+    outrank the epoch fence. The current primary publishes it through the managed surface."""
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
     _record_lease(hq, _lease(OTHER_HOST))
     assert guard.bd_write_refusal(["create", "--title", "a bug"], hq / "x", cfg={}) == ""
-    assert guard.bd_write_refusal(["dolt", "push"], hq / "x", cfg={}) == ""
+    assert "bh hive sync remotes --push" in guard.bd_write_refusal(
+        ["dolt", "push"], hq / "x", cfg={}
+    )
 
 
 def test_authoring_verbs_did_not_get_swept_up_in_the_sync_exemption(

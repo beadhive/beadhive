@@ -378,9 +378,10 @@ def test_onboard_installs_no_git_hook_at_all(world, synced, monkeypatch):
     dispatcher the repo actually uses and loses SILENTLY (a foreign pre-push makes
     `_write_hook` return "skipped (custom hook present)", which nobody reads).
 
-    Safe because the fence was never the enforcement: the atomic --force-with-lease epoch
-    fence (host_fence.py) rejects a stale-epoch push regardless of hooks and regardless of
-    --no-verify. Operators who want the early refusal run `bh hive hook install`."""
+    Safe because managed publication does not depend on a hook. Managed reserve-before-bd plus
+    exact postflight verification is the current boundary. It has a deliberately non-atomic
+    CAS→push window, and raw OS-level bd bypasses it; the optional legacy hook grants no stronger
+    authority. Operators who want its diagnostic early refusal run `bh hive hook install`."""
     target = _make_repo(world)
     monkeypatch.setattr(registry, "classify", lambda *a, **k: "personal-or-prototype")
     ctx = _ctx(world, target, furnish=False)

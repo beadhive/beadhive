@@ -1,26 +1,21 @@
-"""prepush.py — the pre-push fence hook (bh-ytbb.12): defence in depth against direct `bd`.
+"""prepush.py — the legacy/compatibility pre-push fence hook (bh-ytbb.12).
 
 `bh work`'s write verbs are gated by `guard.guard_primary` (bh-ytbb.9): only the host holding
 a hive's host lease may `assign`/`claim`/`submit`/`merge`. A raw `bd` invocation never goes
-through that gate at all — it writes straight to the local Dolt replica, which is bounded
-(bd repo sync cannot corrupt the remote; the real fence is at push, `host_fence.py`,
-bh-ytbb.7) but still lets an operator build an hour of work on a doomed local state before
-discovering their host was never primary.
+through that gate and can write or publish state outside bh's control.
 
-This module closes that gap EARLY, at the one place a direct `bd dolt push` cannot avoid:
-git's own `pre-push` hook. It reuses `guard.primary_state`'s cached-lease read (the exact
-predicate `guard_primary` already uses) rather than inventing a second notion of "primary" —
-so the hook and `bh work`'s own gate can never disagree.
+This module preserves a hook contract for Git transports that permit hooks. Shipped bd does
+not: trace2 proves it invokes real Git with ``core.hooksPath=/dev/null`` in both embedded and
+shared-server modes. Therefore this hook is not a boundary a direct `bd dolt push` must pass,
+and nothing here is represented as enforcement authority.
 
 **Local-only, always** (the acceptance bar): no network call, no HQ round trip — only the
 local `refs/bh/lease/<prefix>` ref already cached in this host's HQ clone, the same read
 `guard_primary` performs on every `bh work` write verb.
 
-**Bypassable, on purpose, and documented as such.** `git push --no-verify` skips this hook
-entirely. That is fine: the hook is a convenience — an early, legible refusal — not the
-enforcement. The real backstop is the atomic `--force-with-lease` push fence beside the
-hive's own data (`refs/bh/epoch`, `host_fence.py`, docs/design/multi-host-model-adr.md
-Amendment 1 §2): a stale-epoch push is rejected there regardless of `--no-verify`.
+**Bypassable and diagnostic only.** `git push --no-verify` skips it, and current bd suppresses
+it unconditionally. The managed boundary is the remote CAS reservation plus postflight around
+``Engine.push_state``; it is sequenced rather than atomic, and raw bd bypasses it too.
 
 **Two install locations, one hive — and only ONE of them ever fires for a data push.**
 `bd dolt push`'s `git push` is issued from a HIDDEN bare repo nested under the database
@@ -38,17 +33,13 @@ The hive's own hooks dir is still installed into — it is cheap, and it covers 
 whose `refs/dolt/data` really does live in the wrapping repo (`safety.DoltRefInfo`'s
 docstring) — but it is not what fences a data push under either mode above. An earlier version
 of this docstring called that location "a non-embedded/server Dolt setup"; that was wrong, and
-correcting it is part of what `bh-areg.6` was filed for.
+correcting it is part of what `bh-areg.6` was filed for. Neither this location nor the hidden
+transport is effective under current bd's explicit hooks-path override.
 
 That bare repo does not exist until bd creates it, lazily, on the first `bd dolt push` for
 the hive — so a freshly-initialized hive that has never pushed bead data has nothing there
-yet to hook. This is provably harmless: the multi-host model is never "in force"
-(`guard.primary_state` returns `None`) until an `adopt` has happened, and an adopt can only
-follow at least one host already having pushed bead data (a second host bootstraps FROM that
-push — `onboard._origin_has_dolt_data`). By the time two hosts are contesting primacy, the
-first push — and so the transport repo, and so this hook — already exists. `install_for_hive`
-re-installs idempotently, so re-running `bh hive init` (or the second host's own onboard,
-which bootstraps first) picks up any transport repo that has since appeared.
+yet to hook. `install_for_hive` re-installs idempotently after it appears, but this changes only
+diagnostic compatibility; safety never depends on its presence or execution.
 
 **A SECOND, UNRELATED PRE-PUSH BEHAVIOUR LIVES HERE TOO** (bh-ku9n9.5):
 :func:`check_push_main`, the attested-green lookup the main-merge gate consults before it
@@ -66,9 +57,8 @@ miss, stale entry, invalid record, unconfigured phase, or any exception at all.
 **Installed independent of the furnish axis** (`hive.py`'s declared-footprint convention,
 bh-ytbb.12's spec-review note): a git hook is never tracked in a repo's git history — it lives
 under `.git/` (or a bare repo dir) by construction, invisible to `git status`/`git add` either
-way — so `furnish: none` has nothing to opt out of here. Every hive gets the hook, tracked or
-not; this is a safety mechanism, not a convenience the ownership-gated furnish declaration was
-ever meant to gate.
+way — so `furnish: none` does not prevent an explicit `bh hive hook install`. Installation is
+opt-in; this is compatibility tooling, not remote write authority.
 """
 
 from __future__ import annotations
@@ -87,8 +77,8 @@ PUSH_MAIN_PHASE = "push-main"
 
 # Stamped into every hook bh installs: lets a re-run tell "ours, safe to refresh" apart from
 # an operator's own pre-existing pre-push hook, which is left untouched (non-destructive,
-# mirroring hive.py's agent-extras installers — a safety mechanism must never clobber a
-# repo's own tooling).
+# mirroring hive.py's agent-extras installers — compatibility tooling must never clobber a
+# repo's own hook).
 _MARKER = "# bh:prepush-fence (bh-ytbb.12) -- do not hand-edit; `bh hive init` regenerates this"
 
 # Distinct from guard.PRIMARY_REFUSAL_MARKER / STALE_CLAIM_REFUSAL_MARKER (same convention):
@@ -125,11 +115,10 @@ def hook_script(hive: str) -> str:
         f"{_MARKER}\n"
         "# Refuses a refs/dolt/data push when this host's cached multi-host lease shows it is\n"
         "# NOT primary. A LOCAL-ONLY read, never a network round trip. Bypass with\n"
-        "# `git push --no-verify`: that is fine, this hook is a FAST-FAIL CONVENIENCE, not the\n"
-        "# enforcement. The atomic --force-with-lease push fence beside the hive's own data\n"
-        "# (refs/bh/epoch, docs/design/multi-host-model-adr.md Amendment 1 §2) is the real\n"
-        "# backstop and rejects a stale-epoch push regardless of --no-verify. That is why this\n"
-        "# hook is opt-in (`bh hive hook install`) and no longer furnished automatically.\n"
+        "# `git push --no-verify`, and current bd forces core.hooksPath=/dev/null. This hook\n"
+        "# is compatibility/diagnostic tooling, not enforcement. Managed bh publication uses\n"
+        "# a sequenced remote fence CAS plus postflight; raw bd remains outside that boundary.\n"
+        "# That is why this hook is opt-in (`bh hive hook install`).\n"
         "\n"
         f"exec ${{BH_EXEC:-{config.BINARY_ALIAS}}} hive hook pre-push '{hive_sh}'\n"
     )
@@ -183,10 +172,12 @@ def install_for_hive(hive_dir: Path, hive: str) -> list[str]:
     transport repo contributes nothing, silently — see module docstring).
 
     **OPT-IN as of bh-smcj.** This is no longer furnished by `bh hive init`/onboard; it runs
-    only when an operator asks for it via `bh hive hook install`. The hook is a fast-fail
-    convenience in front of the real `--force-with-lease` epoch fence, not the enforcement, so
-    defaulting it OFF costs an early refusal and nothing else — while keeping bh out of the
-    business of installing hook files behind your back
+    only when an operator asks for it via `bh hive hook install`. This legacy hook is a
+    diagnostic fast-fail only: shipped bd suppresses it. Managed reserve-before-bd plus exact
+    postflight verification is the current boundary: bh CASes the remote epoch ref, invokes bd,
+    then checks the same reservation. That sequence has a non-atomic CAS→push window, and raw
+    OS-level bd bypasses it entirely. Defaulting the hook OFF therefore removes no managed
+    authority while keeping bh out of the business of installing hook files behind your back
     (`docs/design/hooks-as-functionality-adr.md`).
 
     `hive_dir` is resolved to an ABSOLUTE path first: the transport-repo copy is discovered
@@ -231,16 +222,14 @@ def check_fence(hive_dir: Path, *, cfg=None) -> tuple[bool, str]:
     held = "nobody currently holds it" if lease.is_tombstone else f"held by {lease.describe()}"
     detail = (
         f"✗ {PREPUSH_FENCE_REFUSAL_MARKER} {prefix} — {held}.\n"
-        "  A direct `bd dolt push` bypasses bh's own write guard (bh-ytbb.9) -- this hook is\n"
-        "  catching it here instead: writing bead data from a host that isn't primary risks\n"
-        "  building on a doomed local state (a re-adopted primary's push fence will refuse\n"
-        "  this data anyway).\n"
+        "  This compatibility hook observed a refs/dolt/data push from a host that is not\n"
+        "  primary and refuses it. Current bd normally forces core.hooksPath=/dev/null, so do\n"
+        "  not treat this hook as authority.\n"
         "  Re-adopt this hive on THIS host before pushing, or coordinate with the current\n"
         "  primary named above.\n"
-        f"  `git push --no-verify` bypasses ONLY this hook, not real enforcement: the atomic\n"
-        f"  --force-with-lease push fence beside the hive's own data ({host_fence.EPOCH_REF},\n"
-        "  docs/design/multi-host-model-adr.md Amendment 1 §2) is the actual backstop, and a\n"
-        "  stale-epoch push is rejected there regardless of --no-verify."
+        f"  Managed bh publication reserves {host_fence.EPOCH_REF} by remote CAS before bd\n"
+        "  and verifies it afterward. Raw bd and --no-verify can bypass this hook; publish\n"
+        "  through `bh hive sync remotes --push` (ADR Amendment 1 §2)."
     )
     return False, detail
 

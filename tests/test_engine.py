@@ -13,7 +13,7 @@ from collections import namedtuple
 
 import pytest
 
-from beadhive import bd, config, engine
+from beadhive import bd, config, engine, host_fence
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -182,6 +182,72 @@ def test_push_state_returns_push_failure_even_if_commit_is_a_noop(monkeypatch):
 
     assert result.returncode == 1
     assert "push failed" in result.stderr
+
+
+def test_push_state_reserves_immediately_before_bd_and_verifies_after(monkeypatch):
+    events = []
+    reservation = host_fence.PushReservation(
+        prefix="tt",
+        held="abc",
+        fence=host_fence.EpochFence(epoch=7, host_id="host", seq=2),
+    )
+
+    def fake_run(cmd, **_kw):
+        events.append("push" if cmd[-2:] == ["dolt", "push"] else "commit")
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(bd, "_run", fake_run)
+    monkeypatch.setattr(
+        host_fence,
+        "reserve_managed_push",
+        lambda remote, **_kw: events.append(f"reserve:{remote}") or reservation,
+    )
+    monkeypatch.setattr(
+        host_fence,
+        "verify_managed_push",
+        lambda remote, **_kw: events.append(f"verify:{remote}"),
+    )
+
+    result = engine.BdEngine().push_state("/hive", message="m")
+
+    assert result.returncode == 0
+    assert events == ["commit", "reserve:origin", "push", "verify:origin"]
+
+
+def test_push_state_fence_rejection_never_invokes_bd_push(monkeypatch):
+    calls = []
+    monkeypatch.setattr(bd, "_run", lambda cmd, **_kw: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(
+        host_fence,
+        "reserve_managed_push",
+        lambda *_a, **_kw: (_ for _ in ()).throw(host_fence.FenceRejected("stale")),
+    )
+
+    result = engine.BdEngine().push_state("/hive", message="m")
+
+    assert result.returncode == 1
+    assert "preflight refused" in result.stderr
+    assert all(cmd[-2:] != ["dolt", "push"] for cmd in calls)
+
+
+def test_push_state_postflight_reports_that_data_may_have_landed(monkeypatch):
+    reservation = host_fence.PushReservation(
+        prefix="tt",
+        held="abc",
+        fence=host_fence.EpochFence(epoch=7, host_id="host", seq=2),
+    )
+    monkeypatch.setattr(bd, "_run", lambda *_a, **_kw: Completed(0, "ok", ""))
+    monkeypatch.setattr(host_fence, "reserve_managed_push", lambda *_a, **_kw: reservation)
+    monkeypatch.setattr(
+        host_fence,
+        "verify_managed_push",
+        lambda *_a, **_kw: (_ for _ in ()).throw(host_fence.FenceViolation("DATA MAY HAVE LANDED")),
+    )
+
+    result = engine.BdEngine().push_state("/hive", message="m")
+
+    assert result.returncode == 1
+    assert "DATA MAY HAVE LANDED" in result.stderr
 
 
 def test_pull_state_runs_dolt_pull(monkeypatch):

@@ -4,6 +4,12 @@
 **Feeds decision on:** `bh-areg.6` — fix(fence): the epoch fence and pre-push hook find no
 transport repo under a dolt server
 
+> **Superseded enforcement conclusion (`bh-tfapu`, 2026-09-13).** Current shipped bd invokes
+> the measured real Git transport with `core.hooksPath=/dev/null`; the recommended hook-side
+> refusal below cannot enforce. Amendment 1 §2 now settles on a managed, sequenced remote CAS
+> reservation plus postflight, and records its non-atomic/raw-bd limits. The topology evidence
+> in this spike remains valid.
+
 ## Question
 
 Does the epoch fence / host lease model of

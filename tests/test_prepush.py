@@ -6,8 +6,10 @@ Two things under test:
     (`.git/hooks/` and any existing bd-embedded transport bare repo's `hooks/`),
     non-destructively (a foreign hook is never clobbered) and idempotently. It is no longer
     furnished by onboard: bh does not install hook files as a side effect
-    (docs/design/hooks-as-functionality-adr.md), and the fence is a fast-fail convenience in
-    front of the real --force-with-lease epoch fence, never the enforcement.
+    (docs/design/hooks-as-functionality-adr.md). It is explicitly legacy/diagnostic because
+    shipped bd suppresses transport hooks. Managed reserve-before-bd plus exact postflight
+    verification is the current boundary; it has a non-atomic CAS→push window, and raw OS-level
+    bd bypasses it.
   * `prepush.check_fence` — the decision the shim's `bh hive hook pre-push` shells out to:
     reuses `guard.primary_state`'s cached-lease read (bh-ytbb.9), so it agrees with
     `guard_primary` about who is primary, entirely from local state (no HQ round trip).
@@ -197,8 +199,9 @@ def test_onboard_no_longer_installs_the_hook_at_all():
     install hook files as a side effect (docs/design/hooks-as-functionality-adr.md): it fights
     whatever dispatcher the repo actually uses and loses SILENTLY (`_write_hook` leaves a
     foreign pre-push alone and reports "skipped (custom hook present)", which nobody reads).
-    The fence is a fast-fail convenience in front of the real --force-with-lease epoch fence,
-    so defaulting it off costs an early refusal, not safety. `bh hive hook install` is the
+    The legacy hook is only a diagnostic fast-fail; shipped bd suppresses it. Managed
+    reserve-before-bd plus exact postflight verification is the current boundary, with a
+    documented non-atomic CAS-to-push window and raw-bd bypass. `bh hive hook install` is the
     opt-in."""
     from beadhive import onboard
 
@@ -291,17 +294,18 @@ def test_refuses_when_this_hosts_lease_has_lapsed(hq, this_host, registered, mon
     assert ok is False
 
 
-def test_refusal_names_no_verify_and_the_real_backstop(
+def test_refusal_names_no_verify_and_the_managed_boundary(
     hq, this_host, registered, monkeypatch, tmp_path
 ):
-    """AC: documented as bypassable (--no-verify), with the push fence named as the real
-    backstop — the refusal text is the one place an operator actually reads this."""
+    """The refusal must not grant false authority to a hook current bd suppresses."""
     monkeypatch.setattr(host_lease.time, "time", lambda: T0 + 1)
     _record_lease(hq, _lease(OTHER_HOST))
     _ok, detail = prepush.check_fence(tmp_path / "hive", cfg={})
     assert "--no-verify" in detail
     assert host_fence.EPOCH_REF in detail
-    assert "--force-with-lease" in detail
+    assert "remote CAS" in detail
+    assert "Raw bd" in detail
+    assert "bh hive sync remotes --push" in detail
 
 
 def test_refuses_on_a_released_tombstone(hq, this_host, registered, monkeypatch, tmp_path):

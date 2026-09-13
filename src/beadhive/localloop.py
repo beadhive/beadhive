@@ -912,8 +912,9 @@ class HostLeaseKeeper:
     so this renews nothing when nothing is in flight.
 
     The `held` answer is read back from the lease itself rather than inferred from the renewal
-    call, because bh-tfapu leaves the epoch fence inoperable — enforcement is ADVISORY today, so
-    the loop cannot rely on being fenced out and has to check and stop on its own.
+    call. The managed push fence rejects stale state at its remote-CAS preflight, but current bd
+    makes CAS→push non-atomic and raw bd bypasses bh, so the loop must still check and stop on
+    its own rather than relying on eventual publication failure.
     """
 
     #: The lease store: this host's HQ clone, and the same `origin` remote `guard.guard_primary`
@@ -1861,9 +1862,9 @@ class LocalLoop:
         """Lost the host lease mid-flight: STOP DISPATCHING and escalate — never keep spawning
         seats whose work cannot be landed.
 
-        Handled explicitly rather than left to surface as a submit refusal, because bh-tfapu
-        leaves the epoch fence inoperable: enforcement is advisory, so nothing else will stop
-        this loop. In-flight seats are wrapped up COOPERATIVELY rather than hard-killed — their
+        Handled explicitly rather than left to surface as a submit refusal: remote fence
+        preflight is a publication boundary, not a reason to keep scheduling after the local
+        lease is lost. In-flight seats are wrapped up COOPERATIVELY rather than hard-killed — their
         commits are still worth having on the branch even though this host can no longer land
         them (the branch is the checkpoint), which is also what makes the eventual re-dispatch
         cheap.

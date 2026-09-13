@@ -3,10 +3,12 @@
 The coordination half of the multi-host write model
 (``docs/design/multi-host-model-adr.md``, Amendment 1 §§1–2): *who should be primary for a
 hive, with a TTL*. It is bookkeeping and scheduling — ``bh host list``, handoff, expiry — and
-it is deliberately **not** the enforcement mechanism. Enforcement is the epoch fence beside
-the hive's own data (:mod:`beadhive.host_fence`); per Amendment 1's refinement of Limitation
-6, a lease read is a *reading with an as-of*, and it is the fence, not the lease, that makes a
-write safe.
+it is deliberately **not** remote write authority. Managed publication re-reads and
+CAS-reserves the epoch fence beside the hive's data (:mod:`beadhive.host_fence`) before bd,
+then verifies the exact ticket afterward. Per Amendment 1's refinement of Limitation 6, a
+lease read is only a *reading with an as-of*. Current bd makes the fence/data sequence
+non-atomic, so doctor exposes the residual window rather than claiming the lease makes a write
+safe.
 
 Why HQ and not the hive's own remote: a contrib repo or a fork's upstream is not the
 operator's to write, so a per-hive primary ref cannot exist for a whole class of hives ``bh``
@@ -434,7 +436,9 @@ def takeover(
 def read(remote: str, prefix: str, *, cwd: Path) -> HostLease | None:
     """The lease currently recorded at HQ for `prefix`, or ``None`` when never adopted.
     A *reading with an as-of* (Amendment 1's sharpened Limitation 6), not a truth: by the time
-    a caller acts on it, another host may have CASed it. Only the fence makes a write safe."""
+    a caller acts on it, another host may have CASed it. Managed publication independently
+    reserves the remote fence; current bd prevents that reservation from being atomic with
+    its data push, so neither this read nor the fence claims absolute safety."""
     _sha, lease = _read(remote, prefix, cwd=cwd)
     return lease
 
