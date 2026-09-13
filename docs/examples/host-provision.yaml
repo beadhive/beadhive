@@ -1,0 +1,12 @@
+# Valid unattended plan for `bh host provision --answers` and the default host posture of
+# `just local-install`. `~/.beadhive/host.yaml` is machine identity, not this answers format.
+role: executor
+
+# Optional: omit `hives` to clone every hive registered by HQ, or list a subset.
+# hives:
+#   - beadhive
+
+# Optional: taking primary is fleet-visible, so no leases are adopted by default. Every entry
+# here must also appear under `hives` when that key is present.
+# adopt:
+#   - beadhive
