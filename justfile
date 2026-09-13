@@ -863,7 +863,7 @@ install:
 
 # ---- local-install: a checkout -> a provisioned Linux host (bh-q160.5) ----------------------
 #
-#     nix develop --command just local-install mode=native from_source=0 answers=host.yaml
+#     nix develop --command just local-install mode=native from_source=0
 #
 # A ROUTER, NOT AN INSTALLER. Every step is an existing command; this recipe owns the ORDER,
 # the idempotence and the failure messages, and nothing else. Logic a step needs belongs in the
@@ -937,7 +937,7 @@ install:
 # refuses a bad VALUE — both before a single line runs.
 mode := "native"
 from_source := "0"
-answers := "host.yaml"
+answers := "docs/examples/host-provision.yaml"
 plan := "0"
 posture := "host"
 

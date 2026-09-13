@@ -373,22 +373,34 @@ def test_migrate_hive_bootstrap_failure_attributes_to_dolt_start_and_cross_refer
 # ---- verify_migration: readable AND complete -----------------------------------------------
 
 
-def test_verify_migration_ok_when_consistent(tmp_path, monkeypatch):
-    hive_dir = tmp_path / "hive"
+@pytest.mark.parametrize("real_schema_version", [59, 66])
+def test_verify_migration_records_real_schema_version_for_different_stores(
+    tmp_path, monkeypatch, real_schema_version
+):
+    """The migration record varies with the store's real migration version; it never consumes
+    `bd dolt status`'s hardcoded JSON-envelope `schema_version: 1`. Two distinct versions are
+    load-bearing: testing only one value cannot distinguish the old constant from a probe."""
+    hive_dir = tmp_path / f"hive-v{real_schema_version}"
     _write_metadata(hive_dir, dolt_mode="server")
 
     def fake_json(args, cwd):
         if args[:2] == ["status", "--no-activity"]:
             return {"summary": {"total_issues": 3}}
-        if args[:2] == ["dolt", "status"]:
-            return {"schema_version": 1}
         raise AssertionError(args)
 
     monkeypatch.setattr(storage_migrate.bd_mod, "json", fake_json)
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_raw_schema_version",
+        lambda path, *, dolt_mode: storage_migrate.dolt_health.SchemaProbeResult(
+            real_schema_version, f"read {path}/schema_migrations"
+        ),
+    )
     out = storage_migrate.verify_migration(hive_dir, pre_count=3, cfg={})
 
     assert out.ok, out.problems
     assert out.issue_count == 3
+    assert out.schema_version == str(real_schema_version)
     assert out.dolt_mode == "server"
 
 
@@ -399,6 +411,11 @@ def test_verify_migration_fails_on_issue_count_mismatch(tmp_path, monkeypatch):
         storage_migrate.bd_mod,
         "json",
         lambda args, cwd: {"summary": {"total_issues": 2}} if "status" in args else {},
+    )
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_raw_schema_version",
+        lambda *a, **k: storage_migrate.dolt_health.SchemaProbeResult(66, "read real version"),
     )
     out = storage_migrate.verify_migration(hive_dir, pre_count=3, cfg={})
     assert not out.ok
@@ -416,6 +433,11 @@ def test_verify_migration_fails_on_engine_metadata_disagreement(tmp_path, monkey
         "json",
         lambda args, cwd: {"summary": {"total_issues": 3}} if "status" in args else {},
     )
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_raw_schema_version",
+        lambda *a, **k: storage_migrate.dolt_health.SchemaProbeResult(66, "read real version"),
+    )
     out = storage_migrate.verify_migration(hive_dir, pre_count=3, cfg={})
     assert not out.ok
     assert any("disagreement" in p for p in out.problems)
@@ -428,6 +450,29 @@ def test_verify_migration_fails_when_store_does_not_open(tmp_path, monkeypatch):
     out = storage_migrate.verify_migration(hive_dir, pre_count=3, cfg={})
     assert not out.ok
     assert any("did not open" in p for p in out.problems)
+
+
+def test_verify_migration_fails_when_real_schema_version_cannot_be_read(tmp_path, monkeypatch):
+    hive_dir = tmp_path / "hive"
+    _write_metadata(hive_dir, dolt_mode="server")
+    monkeypatch.setattr(
+        storage_migrate.bd_mod,
+        "json",
+        lambda args, cwd: {"summary": {"total_issues": 3}},
+    )
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_raw_schema_version",
+        lambda *a, **k: storage_migrate.dolt_health.SchemaProbeResult(
+            None, "schema_migrations is unavailable"
+        ),
+    )
+
+    out = storage_migrate.verify_migration(hive_dir, pre_count=3, cfg={})
+
+    assert not out.ok
+    assert out.schema_version == "unknown"
+    assert any("schema_migrations is unavailable" in problem for problem in out.problems)
 
 
 # ---- constraint 3: per-hive serialization -----------------------------------------------
@@ -1427,15 +1472,13 @@ def _fake_bd_json_for_full_migration(issue_count: int):
             return {"value": "frn"}
         if args[:2] == ["status", "--no-activity"]:
             return {"summary": {"total_issues": issue_count}}
-        if args[:2] == ["dolt", "status"]:
-            return {"schema_version": "59"}
         raise AssertionError(args)
 
     return fake_json
 
 
 def test_migrate_hive_real_run_on_a_furnished_hive_ends_fully_clean_and_bd_backup_at_root_2(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, capsys
 ):
     """MEASURED, not asserted (bh-aef0f's own acceptance bar, applied to the full path a prior
     bead only unit-tested a helper in isolation for): drive a REAL `migrate_hive` run over a
@@ -1461,6 +1504,11 @@ def test_migrate_hive_real_run_on_a_furnished_hive_ends_fully_clean_and_bd_backu
     monkeypatch.setattr(storage_migrate, "_lock_dir", lambda cfg: tmp_path / "locks")
     monkeypatch.setattr(storage_migrate, "origin_has_dolt_data", lambda hd: False)
     monkeypatch.setattr(storage_migrate.engine, "get_engine", lambda cfg: _FullMigrationEngine())
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_raw_schema_version",
+        lambda *a, **k: storage_migrate.dolt_health.SchemaProbeResult(66, "read real version"),
+    )
     # `_bd()`'s own `run` — `bd init --reinit-local`/`config set` calls this fixture has no real
     # bd store to satisfy; every OTHER git call this run makes (git ls-files, inside the
     # gitignore helpers) goes through this SAME `run`, so it must still report success rather
@@ -1472,6 +1520,9 @@ def test_migrate_hive_real_run_on_a_furnished_hive_ends_fully_clean_and_bd_backu
     assert result.status == "migrated", (result.detail, result.backup_plan)
     assert result.pre_issue_count == 1
     assert result.post_issue_count == 1
+    assert result.schema_version == "66"
+    storage_migrate._echo_result(result)
+    assert "schema_version: 66" in capsys.readouterr().out
 
     # bh-ypfnu: the registration bd's own `backup add`/`sync` left pointed at the migrate
     # snapshot got re-pointed back to root #2 once verification passed.
