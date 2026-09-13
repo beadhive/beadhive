@@ -13,19 +13,231 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
-## Unreleased
+## v0.16.0 (2026-09-13)
 
 ### Feat
 
-- **herdr**: launch canonical Claude and Codex developer, dispatcher, and planner seats through
-  Herdr with exact environment/profile receipts, generation-fenced cancellation, exact-live
-  client restart adoption, and fresh-generation relaunch after authoritative Herdr server loss
+- **config**: allow persistent worktree host override
+- **validation**: provision certified closure promotion
+- **validation**: add fail-closed impact selector
+- **telemetry**: adapt runtime surfaces to semantic port
+- **contracts**: publish complete official v1 bundle
+- **telemetry**: instrument operation and lifecycle seams
+- **telemetry**: ratify semantic event envelope v1
+- **transport**: prove composition root boundaries
+- **transport**: publish catalog projection contracts
+- **catalog**: inventory every transport projection
+- **runtime**: ship host daemon platform lifecycle
+- **telemetry**: instrument daemon lifecycle with bounded export
+- **daemon**: generate checked OpenAPI contract
+- **daemon**: add supervised lifecycle status
+- **daemon**: mount authenticated MCP HTTP
+- **daemon**: expose durable activity API
+- **daemon**: add durable activity store
+- **daemon**: own bounded hive state broker
+- **daemon**: serve exact factory directory
+- **daemon**: enforce shared network boundary
+- **daemon**: enforce scoped bearer authority
+- **daemon**: secure singleton host runtime
+- **daemon**: define secure v1 contracts
+- **backup**: reclaim superseded hive caches
+- **worktree**: record terminal dispositions
+- **safety**: withhold precious worktrees from prune
+- **safety**: detect precious local-only content
+- **workspace**: adopt managed workspace root contracts
+- **config**: make git_workspace.root external-only; reject it under mode: internal
+- **setup**: provision the internal workspace at config init; doctor offers to create it
+- **identity**: bh-managed workspace root by default; external mode opt-in
+- **config**: compose plugin config fragments
+- **config**: extract resolution and persistence ports
+- **config**: extract canonical models and schema artifact
+- **agents**: implement Herdr lifecycle adapter
+- **herdr**: split transport and topology adapter
+- **plugins**: migrate built-ins to manifests
+- **plugins**: add deterministic discovery kernel
+- **lifecycle**: add typed delivery kernel
+- **architecture**: enforce import boundaries
+- **mcp**: derive server surface from catalog
+- **cli**: derive work and plan from catalog
+- **catalog**: declare canonical operation surface
+- **hive**: add lifecycle JSON contracts
+- **schema**: publish versioned wire contracts
+- **herdr**: relaunch lost managed generations
+- **herdr**: fence managed agent generations
+- **herdr**: transport exact launch profiles
+- **launch**: compile canonical seat contracts
+- **profile**: emit versioned launch receipts
+- **herdr**: add exact launch profiles
+- **role**: apply core agent launch profiles
+- **runtime**: add core agent launch profiles
+- **herdr**: project exact Crew topology
+- **herdr**: project enhanced sidebar metadata
+- **herdr**: project deck companion split intent
+- **herdr**: target explicit sessions safely
+- **hq**: expose structured status projection
+- **herdr**: register external package explicitly
+- **herdr**: expose display metadata patches
+- **sync**: expose Dolt revision comparison JSON
+- **operator**: expose authoritative agent topology facts
+- **worktree**: expose bounded JSON inventory
+- **hive**: expose structured identity JSON
+- **gateway**: serve generated rich read bridge
+- **herdr**: add deck view projections
+- **operator**: advertise entity actions
+- **herdr**: expose correlated live agent roster
+- **operator**: add bounded work item reads
+- **herdr**: add lifecycle JSON receipts
+- **operator**: expose bounded hive summaries
+- **gateway**: add deployable dev demo runtime
+- **gateway**: stream ordered dev demo events
+- **gateway**: authorize dev demo refresh command
+- **gateway**: serve redacted development snapshot
+- **herdr**: launch agents from one bead id
+- **herdr**: configure default agent kind
+- **validation**: prove and expose admission outcomes
+- **validation**: make submit retries join active runs
+- **validation**: coalesce identical in-flight gates
+- **validation**: admit all worktree gate executions
+- **validation**: add host-wide admission slots
+- **work**: expose structured single-bead claim core
+- **role**: resolve launch hive from exact bead
+- **storage**: enforce private state namespace
+- **validation**: migrate legacy validation history
+- **validation**: derive verdict index from run manifests
+- **validation**: persist per-run artifacts
+- **validation**: persist typed run and use records
+- **work**: centralize claim records
+- **release**: migrate bump gate state
+- **storage**: add private path resolvers
 
-### Rollback
+### Fix
 
-- No schema migration or upstream Herdr patch is required. Existing beads and worktrees are
-  unchanged. To roll back, stop using exact managed launch profiles or unlink the optional Herdr
-  package; retained work can continue through native `bh work`.
+- **lifecycle**: include closed event history
+- **safety**: enforce managed epoch reservations (bh-tfapu)
+- **storage**: record real migration schema version (bh-ycmb)
+- **bootstrap**: ship host provision answers plan
+- **gateway**: advertise generated event capability accurately
+- **hub**: preserve identity when rebuilding generated hub
+- **test**: isolate Beads global configuration
+- **test**: isolate Beads validation servers
+- **work**: accept reviewed ancestor boundaries
+- **work**: allow top-level epic composition
+- **evidence**: correct frame bridge closeout facts
+- **evidence**: reconcile active debt identities
+- **frame-bridge**: authenticate daemon runtime calls
+- **validation**: admit canonical exact-tree receipts
+- **validation**: bind receipt to candidate tree
+- **closures**: rebind shadow evidence to corrected base
+- **closures**: verify production shadow authority
+- **closures**: validate shadow evidence bindings
+- **telemetry**: contain flush control flow faults
+- **daemon**: bound activity publication under contention
+- **gateway**: align event cursor contracts
+- **gateway**: bind projections to wire contracts
+- **cli**: classify daemon telemetry callbacks
+- **work**: retain rejected topology provenance
+- **work**: preserve buried reversal diagnostics
+- **work**: reject canonical reversed composition parents
+- **work**: preserve reviewed wrapper prefixes
+- **validation**: serialize verdict rebuilds with run publication
+- **daemon**: canonicalize Host allowlist admission
+- **sse**: enforce live session boundaries
+- **auth**: bound credential session callback drain
+- **work**: audit root-first epic composition
+- **work**: reject zero-delta child replay
+- **work**: close topology review gaps
+- **work**: preserve reviewed epic topology
+- **work**: reattach assembled epic claims
+- **worktree**: report stale init rules on reattach
+- **worktree**: classify landed batches safe
+- **worktree**: bound recovery safety refs
+- **work**: reconcile parent and init command handling
+- **identity**: scope the legacy-populated guard's managed_repos check to root
+- **architecture**: record dynamic facade lookups
+- **architecture**: resolve semantic patch targets
+- **architecture**: inventory all dynamic test seams
+- **schema**: compare catalog data semantically
+- **worktree**: ignore repowise workspace links
+- **plan**: validate nested epic coordinators
+- **herdr**: fail closed before managed launch
+- **herdr**: verify planner checkout through git
+- **herdr**: fence exact managed launch receipts
+- **herdr**: honor generation-tagged lifecycle retries
+- **role**: scrub inherited launch receipts
+- **role**: propagate launch receipts across backends
+- **role**: reject launch flags without seat
+- **role**: preflight profiles before workspace claim
+- **profile**: fence exact launch result observation
+- **profile**: fence Herdr receipt observations
+- **herdr**: preserve live agent harness facts
+- **herdr**: make spawn receipts lifecycle-accurate
+- **herdr**: resolve collapsed batch worktrees
+- **demo**: make bd init non-interactive
+- **demo**: bound and retry fresh bd init
+- **herdr**: bind views to resolved session
+- **herdr**: resolve lifecycle session precedence
+- **validation**: reap zombie receipt owners
+- **herdr**: stabilize deck cursor revisions
+- **herdr**: complete presentation row patches
+- **herdr**: retain active work and stale attention
+- **herdr**: harden safe dispatch correlation
+- **operator**: bound deck queue projection
+- **herdr**: constrain launch actions by live preflight
+- **herdr**: enforce live roster ownership
+- **herdr**: preserve bounded projection continuity
+- **gateway**: bound development demo projection
+- **gateway**: accept Clerk token category header
+- **gateway**: adopt suffix development origins
+- **gateway**: translate internal event revisions
+- **gateway**: restrict service networking to loopback
+- **gateway**: make runtime shutdown cancellable
+- **gateway**: bound runtime call isolation
+- **gateway**: close remote disclosure boundary
+- **test**: isolate validation host slots
+- **validation**: avoid nested admission deadlock
+- **runtime**: reap seats after shutdown timeout
+- **runtime**: bound local shutdown cleanup
+- **runtime**: close local event loops
+- **repowise**: enforce exact launch boundary
+- **repowise**: isolate capability probes
+- **repowise**: harden command contract
+- **repowise**: reconcile supported init contract
+- **test**: make xdist hangs diagnosable
+- **test**: harden process deadlock guardrails
+- **test**: prevent xdist process deadlocks
+- **build**: make local overlay portable
+- **validation**: preserve active blocker attribution
+- **test**: drain concurrent submit outcomes
+- **test**: isolate worktree root overrides
+- **validation**: share terminal coalesced outcomes
+- **test**: cap xdist auto workers
+- **work**: preserve concurrent claim winners
+- **work**: verify claim ownership after provisioning
+- **validation**: fail closed before verify checkout
+- **build**: migrate scratch state under private root
+
+### Refactor
+
+- **frame-bridge**: distinguish core bridge from gateway
+- **frame-bridge**: replay naming on modular core
+- **cli**: derive Typer tree from operation catalog
+- **mcp**: compose server from catalog bindings
+- **plugins**: resolve built-ins from runtime catalog
+- **state**: extract durable read projections
+- **planning**: extract molecule application boundary
+- **work**: extract lifecycle capability ports
+- **worktrees**: establish typed capability boundary
+- **hives**: route transports through lifecycle services
+- **hives**: establish typed lifecycle boundary
+- **config**: migrate consumers to capability settings
+- **herdr**: bound compatibility presentation
+- **agents**: establish provider-neutral module
+- **plugins**: adapt legacy callers to kernel
+
+### Perf
+
+- **validation**: bound manifest lookup metadata probes
+- **operator**: index work queue blockers
 
 ## v0.15.1 (2026-08-25)
 
