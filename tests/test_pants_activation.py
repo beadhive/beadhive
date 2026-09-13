@@ -29,6 +29,22 @@ def test_launcher_override_fails_actionably_when_missing() -> None:
         raise AssertionError("missing launcher was accepted")
 
 
+def test_launcher_prefers_explicit_then_pants_then_scie_pants(tmp_path) -> None:
+    pants = tmp_path / "pants"
+    scie = tmp_path / "scie-pants"
+    for path in (pants, scie):
+        path.write_text("#!/bin/sh\n", encoding="utf-8")
+        path.chmod(0o755)
+    assert attest.launcher({"PANTS_BIN": str(scie), "PATH": str(tmp_path)}) == str(scie)
+    assert attest.launcher({"PATH": str(tmp_path)}) == str(pants)
+    pants.unlink()
+    assert attest.launcher({"PATH": str(tmp_path)}) == str(scie)
+
+
+def test_mise_pins_official_scie_pants_launcher() -> None:
+    assert 'scie-pants = "0.13.2"' in (ROOT / ".mise.toml").read_text(encoding="utf-8")
+
+
 def test_attest_runs_version_shadow_package_then_qualified_tests(monkeypatch, capsys) -> None:
     monkeypatch.setattr(attest, "launcher", lambda: "/pants")
     calls: list[list[str]] = []
