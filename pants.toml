@@ -1,0 +1,30 @@
+[GLOBAL]
+pants_version = "2.32.1"
+backend_packages = [
+  "pants.backend.python",
+  "pants.backend.experimental.python",
+]
+remote_cache_read = false
+remote_cache_write = false
+
+[source]
+root_patterns = ["/src", "/tests"]
+
+[python]
+enable_resolves = true
+default_resolve = "beadhive"
+resolves = { beadhive = "3rdparty/python/beadhive.lock" }
+resolver = "uv"
+run_against_entire_lockfile = true
+interpreter_constraints = ["CPython>=3.11,<3.15"]
+
+[python-infer]
+unowned_dependency_behavior = "error"
+
+[pytest]
+install_from_resolve = "beadhive"
+requirements = [
+  "//3rdparty/python:pytest",
+  "//3rdparty/python:pytest-cov",
+  "//3rdparty/python:pytest-xdist",
+]
