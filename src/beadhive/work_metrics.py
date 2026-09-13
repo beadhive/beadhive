@@ -8,8 +8,9 @@ telemetry can never block a merge.  ``beadhive.work`` re-exports these names for
 from __future__ import annotations
 
 import datetime
+import re
 
-from . import bd, guard, otel, state, work_logic
+from . import bd, guard, otel, state, work_logic, work_next
 from .work_guards import first
 
 
@@ -47,13 +48,16 @@ def emit_delta(record_fn, end, start, attrs) -> None:
 
 
 def flow_events(bead, cwd):
-    # Deliberate prefix read: metrics consume the bead's historical dotted-id event stream.
-    rows = bd.json(["list", "--parent", bead, "--include-infra"], cwd)
+    # Deliberate prefix read: metrics consume the bead's historical dotted-id event stream, not
+    # only rows which still carry a parent edge. State-change events are born CLOSED, so the
+    # shared seam's include_closed=True is load-bearing: [] means a successful empty history,
+    # while None still means the read failed.
+    rows = bd.child_rows(bead, cwd, ["--include-infra"], include_closed=True)
     if not isinstance(rows, list):
         return None
-    return [
+    return work_next.chronological_rows(
         row for row in rows if isinstance(row, dict) and str(row.get("issue_type") or "") == "event"
-    ]
+    )
 
 
 def event_text(event) -> str:
@@ -63,18 +67,15 @@ def event_text(event) -> str:
 
 
 def is_review_pending(event) -> bool:
-    text = event_text(event)
-    return "review" in text and "pending" in text
+    return work_next.transition_destination(event, "review") == work_next.REVIEW_PENDING
 
 
 def is_changes_requested(event) -> bool:
-    text = event_text(event)
-    return "changes-requested" in text or "changes_requested" in text
+    return work_next.transition_destination(event, "review") == work_next.REVIEW_CHANGES_REQUESTED
 
 
 def is_dispatch_cause(event, cause: str) -> bool:
-    text = event_text(event)
-    return "dispatch" in text and cause in text
+    return work_next.transition_destination(event, "dispatch") == cause.replace("_", "-")
 
 
 def dispatch_cause_count(events, cause: str) -> int:
@@ -91,9 +92,53 @@ def record_dispatch_failure(bead, cause: str, reason: str, cwd, *, actor="") -> 
 
 
 def review_pending_at(events):
-    for event in events:
+    for event in work_next.chronological_rows(events):
         if is_review_pending(event):
             return parse_ts(first(event, "created_at", "created"))
+    return None
+
+
+_SUBMITTED_SHA = re.compile(r"\bsubmitted\s+([0-9a-f]{7,40})\b", re.IGNORECASE)
+_REVIEW_SHA = re.compile(r"\breview\s+([0-9a-f]{7,40})\b", re.IGNORECASE)
+
+
+def _sha(pattern, row, fields) -> str:
+    text = " ".join(str(row.get(field) or "") for field in fields)
+    match = pattern.search(text)
+    return match.group(1).lower() if match else ""
+
+
+def _approved_review_gate(resolved_review):
+    """The final gate explicitly resolved as approved; never an earlier bounced round."""
+    approved = [
+        gate
+        for gate in resolved_review
+        if str(gate.get("close_reason") or "").strip().lower().startswith("approved")
+    ]
+    ordered = work_next.chronological_rows(
+        approved, ("closed_at", "resolved_at", "updated_at", "created_at", "created")
+    )
+    return ordered[-1] if ordered else None
+
+
+def _review_pending_for_gate(events, gate):
+    """Pending timestamp from the same submitted SHA/review round as ``gate`` when available."""
+    pending = [event for event in work_next.chronological_rows(events) if is_review_pending(event)]
+    gate_sha = _sha(_REVIEW_SHA, gate or {}, ("description", "reason"))
+    if gate_sha:
+        matched = [
+            event
+            for event in pending
+            if _sha(_SUBMITTED_SHA, event, ("title", "description", "reason")) == gate_sha
+        ]
+        if matched:
+            return parse_ts(first(matched[-1], "created_at", "created"))
+    if len(pending) == 1:
+        event_sha = _sha(_SUBMITTED_SHA, pending[0], ("title", "description", "reason"))
+        # A singleton is useful legacy evidence only when at least one side lacks a revision.
+        # Two explicit, unequal revisions prove these are different review rounds.
+        if not gate_sha or not event_sha:
+            return parse_ts(first(pending[0], "created_at", "created"))
     return None
 
 
@@ -157,17 +202,25 @@ def emit_bead_flow(bead, data, main, attrs) -> None:
     started = parse_ts(first(data or {}, "started_at", "started"))
 
     events = flow_events(bead, main)
-    event_pending_at = None
+    first_pending_at = None
     if events is not None:
-        event_pending_at = review_pending_at(events)
+        first_pending_at = review_pending_at(events)
         otel.record_rework(sum(1 for event in events if is_changes_requested(event)), attrs)
 
     open_review, resolved_review = work_logic.review_gates(bead, main)
-    gate = open_review[0] if open_review else (resolved_review[-1] if resolved_review else None)
+    all_review = [*open_review, *resolved_review]
+    first_gate = next(iter(work_next.chronological_rows(all_review)), None)
+    gate = _approved_review_gate(resolved_review)
     gate_closed_at = parse_ts(first(gate or {}, "closed_at", "resolved_at")) if gate else None
     gate_opened_at = parse_ts(first(gate or {}, "created_at", "created")) if gate else None
-    review_pending = event_pending_at or gate_opened_at
+    first_gate_opened_at = (
+        parse_ts(first(first_gate or {}, "created_at", "created")) if first_gate else None
+    )
+    first_submit = first_pending_at or first_gate_opened_at
+    final_round_pending = (
+        _review_pending_for_gate(events, gate) if events is not None and gate else None
+    ) or gate_opened_at
 
-    emit_delta(stage_recorder("coding"), review_pending, started, attrs)
-    emit_delta(stage_recorder("review_wait"), gate_closed_at, review_pending, attrs)
+    emit_delta(stage_recorder("coding"), first_submit, started, attrs)
+    emit_delta(stage_recorder("review_wait"), gate_closed_at, final_round_pending, attrs)
     emit_delta(stage_recorder("merge_latency"), now, gate_closed_at, attrs)

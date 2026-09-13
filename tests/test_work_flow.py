@@ -16,7 +16,7 @@ import pytest
 import typer
 
 from beadhive import bd as bd_mod
-from beadhive import otel, work, work_logic, work_next
+from beadhive import otel, work, work_logic, work_metrics, work_next
 
 UTC = datetime.UTC
 Completed = namedtuple("Completed", "returncode stdout stderr")
@@ -49,13 +49,13 @@ def rec(monkeypatch):
 
 
 def _bd_json_stub(events=None, gates=None, fail=False):
-    """A fake ``work._bd_json`` dispatching on the first arg (list=events, gate=gates)."""
+    """A fake bd read that reproduces closed-event filtering unless ``--all`` is present."""
 
     def f(args, cwd):
         if fail:
             return None
         if args and args[0] == "list":
-            return events
+            return events if "--all" in args else []
         if args and args[0] == "gate":
             return gates
         return None
@@ -80,18 +80,21 @@ def test_emit_bead_flow_happy_path_emits_full_set(monkeypatch, rec):
     events = [
         {
             "issue_type": "event",
-            "title": "set-state review=pending",
+            "title": "State change: review → pending",
+            "description": "Set review to pending\n\nReason: submitted abc1234",
             "created_at": _iso(review_pending),
         },
-        {"issue_type": "event", "title": "review=changes-requested round 1"},
-        {"issue_type": "event", "title": "review=changes-requested round 2"},
+        {"issue_type": "event", "title": "State change: review → changes-requested"},
+        {"issue_type": "event", "title": "State change: review → changes-requested"},
         {"issue_type": "task", "title": "not an event — ignored"},
     ]
     gates = [
         {
             "status": "closed",
             "description": "Ad-hoc gate blocking mr-40\n\nReason: review abc1234",
+            "created_at": _iso(review_pending - datetime.timedelta(seconds=2)),
             "closed_at": _iso(gate_closed),
+            "close_reason": "approved by review/example",
         }
     ]
     monkeypatch.setattr(bd_mod, "json", _bd_json_stub(events=events, gates=gates))
@@ -128,6 +131,7 @@ def test_emit_bead_flow_derives_review_pending_from_gate_when_no_event(monkeypat
             "description": "Ad-hoc gate blocking mr-43\n\nReason: review abc1234",
             "created_at": _iso(gate_opened),
             "closed_at": _iso(gate_closed),
+            "close_reason": "approved by review/example",
         }
     ]
     monkeypatch.setattr(bd_mod, "json", _bd_json_stub(events=events, gates=gates))
@@ -143,6 +147,137 @@ def test_emit_bead_flow_derives_review_pending_from_gate_when_no_event(monkeypat
     review_wait = next(c for c in rec if c[0] == "stage.review_wait")[1]
     assert coding == pytest.approx((gate_opened - started).total_seconds(), abs=2)
     assert review_wait == pytest.approx((gate_closed - gate_opened).total_seconds(), abs=2)
+
+
+def test_emit_bead_flow_normalizes_and_pairs_real_multi_round_history(monkeypatch, rec):
+    """The bh-hnnlb shape: bd returns newest-first; resubmit mentions changes-requested as the
+    source state; two gates exist and only the final one is approved. Metrics must report one
+    rework, coding to the first submit, and nonnegative wait for the final approved round."""
+    started = datetime.datetime(2026, 9, 13, 0, 30, tzinfo=UTC)
+    first_pending = datetime.datetime(2026, 9, 13, 1, 6, 38, tzinfo=UTC)
+    final_pending = datetime.datetime(2026, 9, 13, 2, 18, 15, tzinfo=UTC)
+    final_closed = datetime.datetime(2026, 9, 13, 2, 32, 35, tzinfo=UTC)
+    events = [
+        {
+            "id": "bh-hnnlb.3",
+            "issue_type": "event",
+            "title": "State change: review → pending",
+            "description": (
+                "Changed review from changes-requested to pending\n\nReason: submitted e04b3a14"
+            ),
+            "created_at": _iso(final_pending),
+        },
+        {
+            "id": "bh-hnnlb.2",
+            "issue_type": "event",
+            "title": "State change: review → changes-requested",
+            "description": "Changed review from pending to changes-requested",
+            "created_at": "2026-09-13T01:35:47Z",
+        },
+        {
+            "id": "bh-hnnlb.1",
+            "issue_type": "event",
+            "title": "State change: review → pending",
+            "description": "Set review to pending\n\nReason: submitted b77b8569",
+            "created_at": _iso(first_pending),
+        },
+    ]
+    gates = [
+        {
+            "id": "bh-70kak",
+            "status": "closed",
+            "description": "Ad-hoc gate blocking bh-hnnlb\n\nReason: bh:review e04b3a14",
+            "created_at": "2026-09-13T02:18:13Z",
+            "closed_at": _iso(final_closed),
+            "close_reason": "approved by review/worktree-copy-safety-r2",
+        },
+        {
+            "id": "bh-xxve1",
+            "status": "closed",
+            "description": "Ad-hoc gate blocking bh-hnnlb\n\nReason: bh:review b77b8569",
+            "created_at": "2026-09-13T01:06:35Z",
+            "closed_at": "2026-09-13T01:35:43Z",
+            "close_reason": "changes requested by review/worktree-copy-safety",
+        },
+    ]
+    monkeypatch.setattr(bd_mod, "json", _bd_json_stub(events=events, gates=gates))
+
+    work._emit_bead_flow("bh-hnnlb", {"started_at": _iso(started)}, Path("/x"), {"ws.hive": "bh"})
+
+    values = {name: value for name, value, _attrs in rec}
+    assert values["rework"] == 1
+    assert values["stage.coding"] == (first_pending - started).total_seconds()
+    assert values["stage.review_wait"] == (final_closed - final_pending).total_seconds()
+    assert values["stage.review_wait"] >= 0
+    assert values["stage.merge_latency"] >= 0
+
+
+def test_transition_classifies_destination_not_source_state():
+    pending = {
+        "title": "State change: review → pending",
+        "description": "Changed review from changes-requested to pending",
+    }
+    assert work._is_review_pending(pending) is True
+    assert work._is_changes_requested(pending) is False
+
+
+def test_review_pending_singleton_with_explicit_sha_mismatch_does_not_pair():
+    event = {
+        "title": "State change: review → pending",
+        "description": "Set review to pending\n\nReason: submitted aaaaaaa",
+        "created_at": "2026-09-13T01:00:00Z",
+    }
+    gate = {"description": "Reason: review bbbbbbb"}
+
+    assert work_metrics._review_pending_for_gate([event], gate) is None
+
+
+@pytest.mark.parametrize(
+    ("event_description", "gate_description"),
+    [
+        ("Set review to pending", "Reason: review bbbbbbb"),
+        ("Reason: submitted aaaaaaa", "review gate without a revision"),
+    ],
+)
+def test_review_pending_singleton_fallback_requires_a_missing_sha(
+    event_description, gate_description
+):
+    event = {
+        "title": "State change: review → pending",
+        "description": event_description,
+        "created_at": "2026-09-13T01:00:00Z",
+    }
+
+    paired = work_metrics._review_pending_for_gate([event], {"description": gate_description})
+
+    assert paired == datetime.datetime(2026, 9, 13, 1, 0, tzinfo=UTC)
+
+
+def test_emit_bead_flow_never_treats_bounced_or_unknown_gate_as_approval(monkeypatch, rec):
+    pending = datetime.datetime(2026, 9, 13, 1, 0, tzinfo=UTC)
+    gates = [
+        {
+            "status": "closed",
+            "description": "Ad-hoc gate blocking mr-44\n\nReason: review abc1234",
+            "created_at": _iso(pending),
+            "closed_at": "2026-09-13T01:10:00Z",
+            "close_reason": "changes requested by review/example",
+        },
+        {
+            "status": "closed",
+            "description": "Ad-hoc gate blocking mr-44\n\nReason: review def5678",
+            "created_at": "2026-09-13T01:20:00Z",
+            "closed_at": "2026-09-13T01:30:00Z",
+        },
+    ]
+    monkeypatch.setattr(bd_mod, "json", _bd_json_stub(events=[], gates=gates))
+
+    work._emit_bead_flow("mr-44", {"started_at": _iso(pending)}, Path("/x"), {"ws.hive": "mr"})
+
+    names = _names(rec)
+    assert "stage.coding" in names
+    assert "stage.review_wait" not in names
+    assert "stage.merge_latency" not in names
 
 
 # ---- bd-read failure: emit nothing for the affected metric, never raise -----

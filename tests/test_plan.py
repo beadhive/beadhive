@@ -1953,6 +1953,32 @@ def test_verify_merged_predecessor_root_needs_no_kickoff_gate(hive, monkeypatch)
     assert "no kickoff gate" not in result.output
 
 
+def test_verify_all_closed_molecule_validates_the_completed_graph(hive, monkeypatch):
+    """A completed molecule retains its full filed graph at the done-gate instead of becoming a
+    plausible empty molecule. The original root gate remains the only required kickoff gate."""
+    children = [
+        _child(
+            "epic-1.1",
+            "scaffold",
+            labels=_TRIPLET + ["model:anthropic/sonnet"],
+            status="closed",
+        ),
+        _child(
+            "epic-1.2",
+            "wire it",
+            labels=_TRIPLET + ["model:anthropic/sonnet"],
+            deps=["epic-1.1"],
+            status="closed",
+        ),
+    ]
+
+    result = _verify(hive, monkeypatch, children=children)
+
+    assert result.exit_code == 0, result.output
+    assert "✓ verified" in result.output
+    assert "no issues: a molecule needs at least one issue" not in result.output
+
+
 def test_verify_still_catches_genuinely_ungated_root_alongside_satisfied_one(hive, monkeypatch):
     """The satisfied-root allowance must NOT mask a genuinely ungated root: a fresh root with no
     predecessor and no kickoff gate still fails, naming that specific root."""

@@ -371,7 +371,28 @@ def _warn_missing_binary(res, cwd=None) -> None:
     typer.echo(f"✗ {_missing_binary_message(binary, narrating=True)}", err=True)
 
 
-def children(epic, cwd, extra=None):
+def child_rows(parent, cwd, extra=None, *, include_closed=False):
+    """Rows selected by ``bd list --parent`` without imposing parent-edge membership.
+
+    This is the shared query seam for two deliberately different consumers: molecule readers
+    narrow the result to real parent edges in :func:`children`, while lifecycle-event readers
+    retain bd's historical dotted-id stream even when an old event no longer carries that edge.
+    ``include_closed`` owns the load-bearing ``--all`` spelling in one place: state-change event
+    beads are born closed, so omitting it turns a populated history into a plausible empty list.
+
+    Returns ``None`` on read failure and ``[]`` only for a successful, genuinely empty read.
+    ``--limit 0`` keeps long histories from silently truncating at bd's default window.
+    """
+    flags = list(extra or [])
+    if include_closed and "--all" not in flags:
+        flags.append("--all")
+    rows = json(["list", "--parent", str(parent), "--limit", "0", *flags], cwd)
+    if not isinstance(rows, list):
+        return None
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def children(epic, cwd, extra=None, *, include_closed=False):
     """`bd list --parent <epic>` filtered to rows that are ACTUALLY children by the parent EDGE.
 
     bd resolves `--parent` by dotted-id PREFIX, not by the edge, so a bead deliberately detached
@@ -393,10 +414,10 @@ def children(epic, cwd, extra=None):
     silently — the same window that already hid an open review gate from approve (bh-pwi2, see
     `work_logic._bead_gates`). Largest molecule in this hive today is 26 children, so this is a
     latent bug closed while the call was being rewritten anyway, not an observed one."""
-    rows = json(["list", "--parent", str(epic), "--limit", "0"] + list(extra or []), cwd)
+    rows = child_rows(epic, cwd, extra, include_closed=include_closed)
     if not isinstance(rows, list):
         return None
-    return [r for r in rows if isinstance(r, dict) and _has_parent_edge(r, str(epic))]
+    return [r for r in rows if _has_parent_edge(r, str(epic))]
 
 
 def _has_parent_edge(row, epic) -> bool:

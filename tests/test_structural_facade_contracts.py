@@ -69,7 +69,7 @@ def test_work_extraction_compatibility_matrix_keeps_historical_imports():
 
 
 def test_flow_metrics_keep_the_historical_dotted_event_stream(monkeypatch, tmp_path):
-    """Metrics deliberately consume event history by dotted id even when no parent edge remains."""
+    """Metrics consume the complete dotted-id history even when events are closed and detached."""
     event = {"id": "bh-1.event", "issue_type": "event", "status": "closed"}
     calls = []
     monkeypatch.setattr(
@@ -79,7 +79,12 @@ def test_flow_metrics_keep_the_historical_dotted_event_stream(monkeypatch, tmp_p
     )
 
     assert work_metrics.flow_events("bh-1", tmp_path) == [event]
-    assert calls == [(["list", "--parent", "bh-1", "--include-infra"], tmp_path)]
+    assert calls == [
+        (
+            ["list", "--parent", "bh-1", "--limit", "0", "--include-infra", "--all"],
+            tmp_path,
+        )
+    ]
 
 
 def test_work_issue_facade_executes_the_module_local_bd_patch_point(monkeypatch):
