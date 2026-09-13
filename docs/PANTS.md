@@ -83,3 +83,20 @@ The `bh` PEX is a graph/package smoke artifact, not a replacement installation f
 assume an installed `bh` console script beside `sys.executable`, dynamic fixture consumers, and
 other unqualified boundaries continue to use native/full validation. Host cache placement,
 capacity policy, and cross-worktree cache reuse are kept outside BUILD ownership.
+
+## Selective routes
+
+The first production-qualified closure is deliberately narrow:
+`tests/unit/modules/config/test_resolution.py` and its matching resolution implementation. Use
+`just pants-test-leaf <path>`, `just pants-test-changed <git-base>`, or
+`just pants-test-dependents <source-path>`. Each emits a JSON receipt with the selector reason,
+targets and transitive dependents, invalidation cause, execution/avoidance/cache counts, fallback
+reason, and edit-to-result latency.
+
+Known unrelated documentation-only edits avoid this closure. Shared/generated/compatibility and
+plugin-dynamic code, multi-module edits, test infrastructure, dependency locks, BUILD/Pants
+configuration, installed-console-script tests, ambiguous integration tests, and unknown inputs
+run `just check` instead. Selector failures also run that native/full fallback and preserve its
+exit status. `just test`, `just check`, and `just check-all` remain the immediate rollback path.
+The release `just attest` gate remains native until the later activation beads can prove all
+required Pants build and test evidence without weakening the authoritative full gate.

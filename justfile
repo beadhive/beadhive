@@ -581,6 +581,16 @@ test-closure-promotion-policy-check:
 test-impact-plan base head="HEAD":
     uv run python scripts/test_impact_selector.py --base {{quote(base)}} --head {{quote(head)}}
 
+# Explicit qualified Pants routes. These are additive; `just test`/`just check` remain rollback.
+pants-test-leaf target:
+    uv run python scripts/pants_routes.py leaf {{quote(target)}}
+
+pants-test-changed base="HEAD":
+    uv run python scripts/pants_routes.py changed {{quote(base)}}
+
+pants-test-dependents source:
+    uv run python scripts/pants_routes.py dependent {{quote(source)}}
+
 test-kernel:
     just test-closure kernel
 
