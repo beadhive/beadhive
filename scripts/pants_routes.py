@@ -137,6 +137,24 @@ def route(
     native_command: Sequence[str],
 ) -> int:
     started = time.monotonic()
+    if os.environ.get("BH_PANTS_ROUTING", "1").lower() in {"0", "false", "off", "no"}:
+        result = _run(native_command)
+        return _emit(
+            Receipt(
+                action,
+                "native-full-fallback",
+                [selector],
+                [],
+                [],
+                None,
+                0,
+                0,
+                0,
+                "pants-routing-disabled",
+                time.monotonic() - started,
+                result.returncode,
+            )
+        )
     try:
         paths = changed_paths(selector) if action == "changed" else [selector]
     except Exception as exc:

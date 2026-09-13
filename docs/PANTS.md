@@ -104,3 +104,14 @@ required Pants build and test evidence without weakening the authoritative full 
 Shadow/oracle qualification and current route/fallback volume are recorded in
 `docs/PANTS-SHADOW-QUALIFICATION.md`; `just pants-shadow-check` fails closed when its inputs or
 same-tree oracle evidence are stale, incomplete, incompatible, or contain a correctness escape.
+
+The qualified routes are active by default. Set `BH_PANTS_ROUTING=0` to send even the qualified
+resolution route through native/full validation; no uv, pytest, or native Just repair is needed.
+`PANTS_BIN` may name an absolute official launcher. Without it, the launcher must be available as
+`pants` on `PATH`; an absent or non-executable launcher fails closed with the setup action.
+
+`just pants-attest` verifies the 2.32.1 pin, experimental uv whole-lock resolve, coherent pytest
+resolve, disabled remote cache, lock metadata, current shadow evidence, the `bh` PEX package, and
+the qualified 58-test Pants closure. `just check-all` depends on that evidence and then retains all
+native phases. Consequently `just attest` cannot stamp an exact tree green without both Pants
+build correctness and the authoritative native suite.
