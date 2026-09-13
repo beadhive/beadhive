@@ -121,3 +121,16 @@ def test_justfile_exposes_all_routes_without_replacing_native() -> None:
         "attest",
     ):
         assert f"{recipe}" in text
+
+
+def test_route_launcher_discovers_scie_pants_and_missing_is_actionable(tmp_path) -> None:
+    scie = tmp_path / "scie-pants"
+    scie.write_text("#!/bin/sh\n", encoding="utf-8")
+    scie.chmod(0o755)
+    assert routes.launcher({"PATH": str(tmp_path)}) == str(scie)
+    try:
+        routes.launcher({"PATH": ""})
+    except RuntimeError as exc:
+        assert "mise install scie-pants" in str(exc)
+    else:
+        raise AssertionError("missing launcher was accepted")

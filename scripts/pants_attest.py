@@ -24,12 +24,13 @@ def launcher(environ: dict[str, str] | None = None) -> str:
         if path and Path(path).is_file() and os.access(path, os.X_OK):
             return path
         raise RuntimeError(f"PANTS_BIN is not executable: {explicit}")
-    found = shutil.which("pants")
-    if found:
-        return found
+    for name in ("pants", "scie-pants"):
+        found = shutil.which(name, path=env.get("PATH"))
+        if found:
+            return found
     raise RuntimeError(
-        "Pants launcher unavailable: install the official launcher from pantsbuild.org, "
-        "or set PANTS_BIN=/absolute/path/to/pants"
+        "Pants launcher unavailable: run `mise install scie-pants`, install the official "
+        "launcher from pantsbuild.org, or set PANTS_BIN=/absolute/path/to/pants"
     )
 
 
