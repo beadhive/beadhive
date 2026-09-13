@@ -26,10 +26,15 @@ reason to prefer `bh bd` over a direct `bd`: bh can only respect a lock it is as
   isn't primary for, and still runs the rest.
 - **Nothing is gated on a single-host factory.** An absent lease means "unconfigured", not
   "someone else's"; exclusive primary switches on when a second host adopts.
+- **Direct publication is refused once adopted, even for the primary.** `bh bd dolt push`
+  and upload-capable `sync` bypass the managed reservation; use `bh hive sync remotes --push`.
+  Pull, fetch, status, and remote list remain ungated reads.
 
 This is early, legible failure — not enforcement. It gates `bh bd`, not a genuinely raw `bd`,
-which nothing in bh can. The backstop is the epoch fence beside the data at push time
-(`host_fence.py`, [spike](spikes/bh-ukit.2-fence-under-a-dolt-server.md)).
+which nothing in bh can. Managed publication reserves the remote epoch fence before bd and
+verifies it afterward; this is sequenced rather than atomic, and doctor exposes the residual
+CAS→push window plus the raw-bd bypass (`host_fence.py`,
+[multi-host ADR](design/multi-host-model-adr.md#2-the-fence-splits-from-the-lease)).
 
 ### Destructive wisp-cleanup guard
 

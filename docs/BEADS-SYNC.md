@@ -148,28 +148,32 @@ local case falls out for free.
 
 ## The epoch fence beside the data (multi-host)
 
-`refs/bh/epoch` rides the hive's own remote **beside** `refs/dolt/data`, so the
-"may this host write?" check is atomic with the write itself — see
+`refs/bh/epoch` lives on the hive's own remote beside `refs/dolt/data`. Current bd owns the
+data push and disables its Git hooks, so the two updates are **not atomic**. Managed
+reserve-before-bd plus exact postflight verification CASes a fresh fence reservation immediately
+before bd and verifies it immediately afterward — see
 [design/multi-host-model-adr.md](design/multi-host-model-adr.md) Amendment 1 §2 and
-`src/beadhive/host_fence.py`. Two facts measured while building it (bh-ytbb.7), recorded
+`src/beadhive/host_fence.py`. A stale preflight guarantees no data was attempted; a takeover
+inside the CAS→push window can land data before postflight detects it. Raw `bd dolt push`
+bypasses bh entirely, so adopted hives publish through `bh hive sync remotes --push`. Two facts
+measured while building it (bh-ytbb.7, corrected by bh-tfapu), recorded
 here because both are easy to get wrong from the outside:
 
-- **Where `refs/dolt/data` actually lives locally.** A hive's own working clone has **no**
-  local `refs/dolt/data`. `bd dolt push` stages through a hidden bare repo at
+- **Where the transient data ref actually lives.** A hive's own working clone has **no** local
+  `refs/dolt/data`. `bd dolt push` stages through a hidden bare repo at
   `<hive>/.beads/embeddeddolt/<db>/.dolt/git-remote-cache/<hash>/repo.git`, which carries its
-  own `origin`. The ADR's push formulation has to run from *that* repo — run from the hive
-  checkout, the refspec names a ref that does not exist locally and the push fails for a
-  reason unrelated to the fence. `host_fence.transport_repos()` discovers them.
-- **`--atomic` receive-pack per forge.** GitHub and GitLab advertise it. **Gitea does too, on
-  every supported deployment**: Gitea does not implement its own receive-pack — it shells out
-  to the real `git receive-pack` binary on both transports
-  (`routers/web/repo/githttp.go`, `cmd/serv.go`) — and pins `RequiredVersion = "2.13.0"`
-  (`modules/git/git.go`), well past the 2.4 release that added the capability;
-  `receive.advertiseAtomic` defaults to true. The only way to lose it is an admin explicitly
-  disabling that setting. (Gitea's AGit `proc-receive` path applies to `refs/for/*` refspecs
-  only, which `bh` never pushes.) Support is still **probed** at runtime rather than trusted,
-  and a forge without it degrades to the documented per-push epoch-bump fallback — never to
-  an unfenced push.
+  own `origin`. The local source is a short-lived
+  `refs/dolt/blobstore/origin/dolt/data/<uuid>`, not a stable ref bh can name before or after
+  the call. `host_fence.transport_lookup()` discovers the repo for diagnostics and mechanism
+  verification. Shipped bd passes `core.hooksPath=/dev/null` to that real Git push, so hooks
+  there are explicitly legacy tooling and do not enforce.
+- **Why receive-pack atomicity does not repair the managed path.** Supported forges may advertise
+  `--atomic`, and the retained `host_fence.fenced_push()` primitive probes that capability for a
+  caller that genuinely owns stable local refs. Production bd does not expose its transient data
+  ref or accept bh's fence ref in the same transaction. Therefore managed publication does not
+  claim atomicity on any forge: it reserves by remote CAS immediately before bd and verifies the
+  exact reservation afterward. A lost preflight means no data was attempted; a postflight loss
+  means `DATA MAY HAVE LANDED` and requires reconciliation. Raw OS-level bd bypasses both checks.
 
 ## Open questions
 

@@ -2089,6 +2089,30 @@ def test_local_commits_check_reuses_guard_primary_state(monkeypatch, tmp_path):
     assert calls == [_commits_entry()]
 
 
+def test_epoch_fence_posture_is_silent_before_multi_host_adoption(monkeypatch, tmp_path):
+    (tmp_path / ".beads").mkdir()
+    monkeypatch.setattr(guard, "primary_state", lambda **_kw: None)
+    assert doctor._epoch_fence_posture_warning({}, _commits_entry(), tmp_path) is None
+
+
+def test_epoch_fence_posture_exposes_non_atomic_and_raw_bd_bypasses(
+    commits_hq, commits_this_host, monkeypatch, tmp_path
+):
+    (tmp_path / ".beads").mkdir()
+    monkeypatch.setattr(host_lease.time, "time", lambda: _T0 + 1)
+    _commits_record_lease(
+        commits_hq, _commits_lease(_THIS_HOST, adopted_at=host_lease.now_stamp(_T0))
+    )
+
+    warning = doctor._epoch_fence_posture_warning({}, _commits_entry(), tmp_path)
+
+    assert warning is not None
+    assert "UNENFORCEABLE" in warning
+    assert "CAS→push window is not atomic" in warning
+    assert "raw `bd dolt push` bypasses bh" in warning
+    assert "bh hive sync remotes --push" in warning
+
+
 # ---- home layout drift (bh-cmqp.3) --------------------------------------------------------
 #
 # `_sandbox_bh_home` (conftest.py, autouse) already isolates `config.home()` to a per-test

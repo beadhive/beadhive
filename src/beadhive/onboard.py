@@ -1550,10 +1550,10 @@ def build_steps(ctx: Ctx) -> list[Step]:
 
     # NO prepush-hook step (bh-smcj). Onboard used to furnish the pre-push fence hook here,
     # which made bh install a hook file as a side effect of onboarding — the thing
-    # docs/design/hooks-as-functionality-adr.md forbids. The fence is a FAST-FAIL convenience
-    # in front of the real --force-with-lease epoch fence (host_fence.py), never the
-    # enforcement, so defaulting it off costs an early refusal and nothing else. Operators who
-    # want it run `bh hive hook install` explicitly.
+    # docs/design/hooks-as-functionality-adr.md forbids. Current bd suppresses transport hooks,
+    # so this shim is compatibility/diagnostic tooling rather than enforcement. Managed pushes
+    # reserve the remote fence in Engine.push_state. Operators who want the shim run
+    # `bh hive hook install` explicitly.
 
     installers = [
         Step(

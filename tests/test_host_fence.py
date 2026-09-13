@@ -1,9 +1,16 @@
-"""``refs/bh/epoch`` — the epoch fence + atomic data push (bh-ytbb.7).
+"""``refs/bh/epoch`` — managed reservations and the legacy stable-ref primitive.
 
-The acceptance bar says the stale-epoch rejection is **verified by test, not by inspection**,
-so this file drives real git against scratch bare repos rather than asserting on an argv:
+Production ``BdEngine`` cannot join its fence ref to bd's transient data ref. Its current
+contract is tested first: managed reserve-before-bd plus exact postflight verification. A stale
+host loses before data is attempted; a takeover in the non-atomic CAS→push window may land data
+before postflight detects it, and raw OS-level bd bypasses the boundary.
 
-  * ``test_a_stale_epoch_rejects_the_whole_push_and_no_data_lands`` — the core property.
+This file also retains tests for ``fenced_push``, the explicitly legacy primitive available to
+callers that genuinely own a stable local data ref. Those tests drive real git against scratch
+bare repos rather than asserting on an argv:
+
+  * ``test_a_stale_epoch_rejects_the_whole_push_and_no_data_lands`` — the legacy atomic
+    primitive's core property, not a claim about bd.
   * ``test_without_atomic_the_same_push_leaks_data`` — the CONTROL that proves the previous
     test is measuring ``--atomic`` and not some unrelated refusal. Without it, a green
     fence test could pass for the wrong reason forever.
@@ -21,7 +28,7 @@ import subprocess
 
 import pytest
 
-from beadhive import engine, gitref, host_fence
+from beadhive import engine, gitref, guard, host_fence
 
 HOST_A = "aaaaaaaa-1111-4111-8111-111111111111"
 HOST_B = "bbbbbbbb-2222-4222-8222-222222222222"
@@ -135,6 +142,145 @@ def test_installing_a_fence_over_a_moved_ref_is_rejected(hive_remote, host_a, ho
             expected=held,
             cwd=host_a,
         )
+
+
+# ---- the production bd boundary: sequenced reservation + postflight -------------------
+
+
+class _Lease:
+    def __init__(self, epoch, holder=HOST_A, live=True):
+        self.epoch = epoch
+        self.holder = holder
+        self.live = live
+
+    def held_by(self, host_id):
+        return self.live and self.holder == host_id
+
+
+def _primary(monkeypatch, *, epoch=1, holder=HOST_A, this_host=HOST_A, live=True):
+    monkeypatch.setattr(
+        guard,
+        "primary_state",
+        lambda **_kw: ("tt", this_host, _Lease(epoch, holder=holder, live=live)),
+    )
+
+
+def test_managed_reservation_is_absent_only_before_multi_host_adoption(monkeypatch, host_a):
+    monkeypatch.setattr(guard, "primary_state", lambda **_kw: None)
+    monkeypatch.setattr(
+        host_fence,
+        "read_fence",
+        lambda *_a, **_kw: pytest.fail("single-host path must not touch a remote fence"),
+    )
+    assert host_fence.reserve_managed_push("origin", cwd=host_a, cfg={}) is None
+
+
+def test_managed_reservation_bumps_remote_ticket_and_postflight_accepts_exact_ticket(
+    monkeypatch, hive_remote, host_a
+):
+    _primary(monkeypatch)
+    initial = host_fence.install_fence(
+        hive_remote,
+        host_fence.EpochFence(epoch=1, host_id=HOST_A),
+        expected=gitref.ABSENT,
+        cwd=host_a,
+    )
+
+    reservation = host_fence.reserve_managed_push(hive_remote, cwd=host_a, cfg={})
+
+    assert reservation is not None
+    assert reservation.held != initial
+    assert reservation.fence == host_fence.EpochFence(epoch=1, host_id=HOST_A, seq=1)
+    host_fence.verify_managed_push(hive_remote, cwd=host_a, reservation=reservation)
+
+
+@pytest.mark.parametrize(
+    ("epoch", "holder", "this_host", "live"),
+    [(1, HOST_B, HOST_A, True), (1, HOST_A, HOST_A, False)],
+)
+def test_non_holder_or_expired_lease_is_rejected_before_remote_access(
+    monkeypatch, host_a, epoch, holder, this_host, live
+):
+    _primary(monkeypatch, epoch=epoch, holder=holder, this_host=this_host, live=live)
+    monkeypatch.setattr(
+        host_fence,
+        "read_fence",
+        lambda *_a, **_kw: pytest.fail("invalid local lease grants no remote attempt"),
+    )
+    with pytest.raises(host_fence.FenceRejected, match="before data transfer"):
+        host_fence.reserve_managed_push("origin", cwd=host_a, cfg={})
+
+
+def test_forged_local_fence_never_grants_authority(monkeypatch, hive_remote, host_a, host_b):
+    """The remote record is authoritative: a matching local ref cannot mask a takeover."""
+    _primary(monkeypatch, epoch=1)
+    old = host_fence.install_fence(
+        hive_remote,
+        host_fence.EpochFence(epoch=1, host_id=HOST_A),
+        expected=gitref.ABSENT,
+        cwd=host_a,
+    )
+    host_fence.install_fence(
+        hive_remote,
+        host_fence.EpochFence(epoch=2, host_id=HOST_B),
+        expected=old,
+        cwd=host_b,
+    )
+    forged = gitref.write_object(
+        host_fence.EpochFence(epoch=1, host_id=HOST_A, seq=99).to_record(), cwd=host_a
+    )
+    gitref.set_local(host_fence.EPOCH_REF, forged, cwd=host_a)
+
+    with pytest.raises(host_fence.FenceRejected, match="remote epoch fence"):
+        host_fence.reserve_managed_push(hive_remote, cwd=host_a, cfg={})
+
+
+def test_managed_reservation_losing_the_cas_never_returns_a_ticket(
+    monkeypatch, hive_remote, host_a
+):
+    _primary(monkeypatch)
+    host_fence.install_fence(
+        hive_remote,
+        host_fence.EpochFence(epoch=1, host_id=HOST_A),
+        expected=gitref.ABSENT,
+        cwd=host_a,
+    )
+    monkeypatch.setattr(
+        gitref,
+        "cas",
+        lambda *_a, **_kw: gitref.CasResult(
+            ok=False,
+            ref=host_fence.EPOCH_REF,
+            sha="losing-ticket",
+            detail="! [rejected] stale info",
+        ),
+    )
+
+    with pytest.raises(host_fence.FenceRejected, match="not attempted and no data landed"):
+        host_fence.reserve_managed_push(hive_remote, cwd=host_a, cfg={})
+
+
+def test_postflight_detects_takeover_and_never_claims_no_data_landed(
+    monkeypatch, hive_remote, host_a, host_b
+):
+    _primary(monkeypatch)
+    host_fence.install_fence(
+        hive_remote,
+        host_fence.EpochFence(epoch=1, host_id=HOST_A),
+        expected=gitref.ABSENT,
+        cwd=host_a,
+    )
+    reservation = host_fence.reserve_managed_push(hive_remote, cwd=host_a, cfg={})
+    assert reservation is not None
+    host_fence.install_fence(
+        hive_remote,
+        host_fence.EpochFence(epoch=2, host_id=HOST_B),
+        expected=reservation.held,
+        cwd=host_b,
+    )
+
+    with pytest.raises(host_fence.FenceViolation, match="DATA MAY HAVE LANDED"):
+        host_fence.verify_managed_push(hive_remote, cwd=host_a, reservation=reservation)
 
 
 # ---- THE core property ------------------------------------------------------------

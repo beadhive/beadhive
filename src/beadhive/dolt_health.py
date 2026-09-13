@@ -626,9 +626,9 @@ def probe_raw_schema_version(
 # A THIRD failure shape, distinct from the two `_scan_dolt_ref`/`sync_remote` already name
 # ("behind" — a normal pull fixes it; "diverged" — ahead AND behind, but still one DAG a merge
 # can resolve): two stores whose histories share NO COMMON ANCESTOR at all. Measured directly
-# (bh-s9cdk's own repro): `bd`'s embedded engine auto-pushes by default and enforces nothing at
-# push time (the epoch fence, bh-ban1j -> bh-tfapu, is inert), so two hosts can each publish an
-# independently-`bd init`'d/rebuilt lineage to the same remote and never notice — both read
+# (bh-s9cdk's own repro): `bd`'s embedded engine auto-pushes by default, and a raw bd push
+# bypasses bh's managed epoch-fence reservation, so two hosts can each publish an independently-
+# `bd init`'d/rebuilt lineage to the same remote and never notice — both read
 # healthy, `bd stats`/`bd list` agree, and the two DAGs only collide the day something tries to
 # converge them. `bd`'s own messages at that point are actively misleading: a merge reports "row
 # conflicts require operator resolution" (implying beads to go reconcile — there are none) and a

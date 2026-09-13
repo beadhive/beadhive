@@ -689,10 +689,9 @@ def test_092_emits_the_command_rather_than_running_it() -> None:
 
 
 def test_092_carries_rung_4s_three_line_gap_note() -> None:
-    """ACCEPTANCE (.8): the three beads, so advisory-only enforcement is not discovered by
-    hitting it."""
+    """ACCEPTANCE (.8): the three gaps, including the current degraded fence posture."""
     prompt = _prompt(_step(92))
-    for bead in ("bh-ban1j", "bh-tx2hp", "bh-i7ws9"):
+    for bead in ("bh-tfapu", "bh-tx2hp", "bh-i7ws9"):
         assert bead in prompt, f"rung 4's gap note must name {bead}"
 
 

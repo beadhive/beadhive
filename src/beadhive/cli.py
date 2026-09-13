@@ -2697,9 +2697,8 @@ hive_app.add_typer(hive_hook_app, name="hook")
 
 @hive_hook_app.command(
     "install",
-    help="OPT-IN: install the pre-push fence shim into the repos git actually pushes "
-    "refs/dolt/data from. Not run by `hive init`/onboard — the fence is a fast-fail "
-    "convenience, not the enforcement.",
+    help="OPT-IN compatibility: install the pre-push fence shim. Current bd disables "
+    "transport hooks, so this is diagnostic and not enforcement.",
 )
 def hive_hook_install(
     hive_id: str = typer.Argument(
@@ -2713,16 +2712,17 @@ def hive_hook_install(
     reasons. First, bh installing hook files behind your back is what that ADR forbids —
     it fights whatever dispatcher you actually use, and loses silently (`_write_hook` leaves a
     foreign `pre-push` alone and reports `"skipped (custom hook present)"`, which nobody
-    reads). Second, and decisively: this hook was never the enforcement. It is a LOCAL,
-    fast-fail refusal in front of the atomic `--force-with-lease` epoch fence
-    (:mod:`beadhive.host_fence`), which rejects a stale-epoch push regardless of hooks and
-    regardless of `--no-verify`. Defaulting it off costs an early, legible error — not safety.
+    reads). Second, and decisively: this hook is not enforcement. Current bd invokes its
+    transport Git with ``core.hooksPath=/dev/null``, so the hook does not run for a bd data
+    push. Managed bh publication instead performs a sequenced remote fence CAS before bd plus
+    postflight verification; raw bd bypasses that boundary and doctor exposes the limitation.
 
     It stays available because the location that matters cannot be reached any other way: with
     bd's embedded engine, `bd dolt push` runs `git push` from a HIDDEN bare repo nested under
     `.beads/embeddeddolt/`, created lazily at a content-hash path. No dispatcher will ever be
-    installed there, so this verb is the only way to fence that path early. The shim it writes
-    holds no logic — it execs `bh hive hook pre-push <hive>`.
+    installed there, so this verb preserves the compatibility entrypoint for a future/upstream
+    transport that permits hooks. The shim it writes holds no logic — it execs
+    `bh hive hook pre-push <hive>`.
 
     Re-run it after the first `bd dolt push` on a fresh hive: the transport repo does not exist
     until then, so an earlier run has nothing to install into (and says so by omission)."""

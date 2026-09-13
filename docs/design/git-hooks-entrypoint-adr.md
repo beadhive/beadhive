@@ -8,6 +8,12 @@
 > pre-commit job enforces) and [`multi-host-model-adr.md`](multi-host-model-adr.md) (the fence
 > the pre-push job protects).
 
+**Current bd transport note (`bh-tfapu`).** bd forces `core.hooksPath=/dev/null` for its
+internal Dolt Git push, so this composition contract cannot enforce bead-data publication.
+The pre-push entrypoint is compatibility/diagnostic tooling; managed enforcement is the
+sequenced remote fence reservation in `Engine.push_state`, with the non-atomic/raw-bd limits
+recorded in the multi-host ADR.
+
 ## Context
 
 Git gives a repository **exactly one** hook dispatch point: `core.hooksPath`, defaulting to
@@ -90,9 +96,10 @@ the convention governs the repo a human or agent commits in, not every git repo 
 underneath it. Fencing it is `bh hive hook install`, which an operator runs deliberately —
 onboard no longer does it for them (bh-smcj).
 
-This is a real limit, not a loophole: the fence's *enforcement* has never been the hook anyway
-(see `multi-host-model-adr.md` Amendment 1 §2 — the atomic `--force-with-lease` epoch push is
-the backstop, and survives `--no-verify`). The hook is the early, legible refusal.
+This is a real limit, not a loophole. Current bd disables that transport's hooks explicitly.
+Managed publication instead reserves the remote epoch fence before bd and verifies it after;
+the sequence is not atomic and raw bd bypasses it (see `multi-host-model-adr.md` Amendment 1
+§2). The hook is compatibility/diagnostic tooling, not authority.
 
 ## The hook map
 

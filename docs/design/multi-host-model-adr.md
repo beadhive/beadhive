@@ -177,8 +177,8 @@ Recorded explicitly so none of these is rediscovered as a surprise.
    how split-brain happens. Mitigation is loud logging and escalation, not prevention.
 
    **Split-brain, detected and named (bh-s9cdk).** Measured live on this fleet, 2026-08-07: two
-   hosts, each auto-pushing by default with the epoch fence inert (limitation above, tracked as
-   bh-tfapu) and two `bd` install planes sharing one store (bh-tp38g), each built an
+   hosts, each publishing through raw bd before the managed reservation boundary existed
+   (bh-tfapu) and two `bd` install planes sharing one store (bh-tp38g), each built an
    independently-`bd init`'d/rebuilt lineage and published it to the same remote — same content
    (verified: identical id sets both directions), but two DAGs with **no common ancestor**. `bd`
    itself cannot tell an operator this: a merge attempt reports "row conflicts require operator
@@ -214,8 +214,9 @@ Recorded explicitly so none of these is rediscovered as a surprise.
    contract the provider-headroom design uses.
    *Sharpened by [Amendment 1 §4](#4-this-makes-hq-a-coordination-dependency--and-bends-the-no-central-server-tenet):
    the lease now lives in HQ, so this limitation acquires teeth — a lease read is still only a
-   reading, and it is the **fence**, not the lease, that makes a write safe. HQ also becomes a
-   required coordination point for handoffs, which bends the no-central-server tenet.*
+   reading. The managed path must independently reserve the remote fence, and current bd leaves
+   that reservation sequenced rather than atomic with data. HQ also becomes a required
+   coordination point for handoffs, which bends the no-central-server tenet.*
 
 7. **The `host:` dimension cannot be expressed in a molecule spec.** `plan.py:58`'s
    `_DIMENSION_FIELDS` has no `host` (nor `tag`) — see idea bead `bh-0a6g`.
@@ -345,8 +346,8 @@ not while the fleet is token-bound.
   existing procedure.
 - Further consequences follow from
   [Amendment 1](#consequences-of-amendment-1) — notably an `epoch` fencing token on
-  `ClaimRecord`, `hosts/<host_id>.yaml` manifests in HQ, and a forge-dependent `--atomic`
-  receive-pack requirement.
+  `ClaimRecord`, `hosts/<host_id>.yaml` manifests in HQ, and managed reserve-before-bd plus
+  exact postflight verification around the opaque data push.
 
 ---
 
@@ -361,9 +362,10 @@ sub-molecule II of the multi-host workstream `bh-xotc` — whose children implem
 rather than the shape originally filed. Recorded **before** that code lands, so a reviewer reading
 Decision 2 is not misled and the fork/contrib gap that forced the change is not rediscovered later.
 
-Decision 2's core survives intact: **exclusive primary, enforced by a compare-and-swap on a git
-ref, with the git remote as the linearization point.** What changes is *where the record lives*
-and *how many jobs one record is asked to do*.
+Decision 2's admission core survives: **a managed publisher must win a compare-and-swap on a git
+ref before it invokes bd, with the git remote as the preflight linearization point.** That does
+not make bd's later data push atomic or cover raw bd. What changes is *where the record lives* and
+*how many jobs one record is asked to do*.
 
 ### 1. Leases centralize in the HQ repo, not on each hive's remote
 
@@ -394,39 +396,44 @@ One object cannot do both jobs, so it becomes two:
 | | lives | job |
 |---|---|---|
 | **lease** `refs/bh/lease/<prefix>` | HQ repo | who *should* be primary — schedule, TTL, `bh host list` |
-| **fence** `refs/bh/epoch` | alongside `refs/dolt/data` on the hive's remote | who *may* write — enforcement |
+| **fence** `refs/bh/epoch` | alongside `refs/dolt/data` on the hive's remote | managed preflight admission and exact-postflight ticket |
 
-The fence is co-located with the data, so the check is **atomic with the write**:
+The fence is co-located with the data, but current `bd` prevents Beadhive from making the two
+updates atomic. The settled managed-push sequence is:
 
-```sh
-git push --atomic --force-with-lease=refs/bh/epoch:<held> \
-  origin refs/dolt/data refs/bh/epoch
-```
+1. re-read the authoritative remote fence and require it to match this host's live lease;
+2. CAS it to the same `{epoch, host_id}` with a fresh per-push `seq`;
+3. only after that CAS succeeds, invoke `bd dolt push`;
+4. after bd succeeds, re-read and require the exact reservation SHA and record to remain.
 
-> **Correction, `bh-ukit.2` (2026-08-04) — `bh` cannot issue that push.** Measured against
-> bd `HEAD-af076b6` *and* bd 1.1.0, embedded and shared-server alike
-> ([spike](../spikes/bh-ukit.2-fence-under-a-dolt-server.md)): `bd dolt push` issues the
-> `git push` itself, from a bare transport repo beside the database, and **`refs/dolt/data` is
-> not a local ref there** — the local side is a transient
-> `refs/dolt/blobstore/origin/dolt/data/<uuid>` that `bh` cannot reproduce. The block above
-> therefore describes a push no `bh` process is in a position to run. This is not a
-> server-mode regression; it has been true since the fence was written.
->
-> The fence's *property* is unaffected — `bh-areg.6` proves the stale-epoch rejection from a
-> real server-mode transport repo — but **where enforcement attaches is an open decision**, and
-> is deliberately not settled here. Two options, both viable on the evidence: refusal from that
-> repo's own `pre-push` hook, which sees the real refspecs on stdin and aborts before any ref
-> moves (stronger, but `--no-verify`-bypassable); or the sequenced fence-CAS-then-data-push that
-> `host_fence._fallback_push` already implements (weaker — a narrow unfenced window — but it
-> needs nothing new). Whichever is chosen, replace the block above with it.
+**Mechanism evidence (`bh-tfapu`, 2026-09-13).** The embedded and shared-server integration
+test traces shipped bd's process tree rather than inferring it. bd does invoke real
+`/usr/bin/git push` from exactly the bare transport repo
+`host_fence.transport_lookup` finds, with a transient local ref
+`refs/dolt/blobstore/origin/dolt/data/<uuid>`. It also deliberately injects
+`GIT_CONFIG_PARAMETERS='core.hooksPath=/dev/null'`. Thus a transport `pre-push` hook does not
+run, and the transient ref is gone before bh could combine it with `refs/bh/epoch`. There is no
+upstream switch that restores hooks. The old atomic command described a push no bh process can
+issue; hook installation is compatibility/diagnostic tooling, not authority.
+
+This is the strongest viable managed enforcement point in this repository. A stale or mismatched host
+loses the remote CAS before bd is invoked, so that refusal guarantees no data landed. It does
+**not** close the CAS→push race: a forced takeover in that interval can allow the old host's data
+to land, after which postflight reports `DATA MAY HAVE LANDED`. A raw OS-level `bd dolt push`
+bypasses bh and cannot be intercepted. `bh doctor` therefore reports the atomic posture as
+unenforceable on every adopted hive, and direct `bh bd dolt push|sync` is refused under the
+multi-host model even on the primary. Managed publication goes through `Engine.push_state`
+(including `bh hive sync remotes --push`). Restoring atomicity requires an upstream bd seam that either
+permits hooks or accepts the fence ref/CAS in its own push transaction.
 
 Two consequences worth stating:
 
-1. **The check-then-write race closes structurally**, not by having checked recently. A stale
-   primary does not merely fail a policy check it might have passed a moment earlier — the remote
-   rejects its push, and because the push is `--atomic`, no data lands with it.
+1. **Preflight rejection is structural; the full write is not atomic.** A stale primary loses a
+   remote CAS before data transfer. A takeover after that reservation is detected only after the
+   opaque bd push and requires reconciliation.
 2. **HQ becomes a *coordination* dependency, not a write-path one.** HQ unreachable ⇒ existing
-   primaries keep working (the fenced push talks only to the hive's remote); only handoffs stall.
+   primaries keep working (managed reserve-before-bd plus exact postflight talks only to the
+   hive's remote); only handoffs stall.
    That is the mitigation for §4, not an exemption from it.
 
 Where a hive's remote cannot take custom refs at all, its bead data cannot live there either —
@@ -484,9 +491,9 @@ What stays decentralized:
 - **Reads.** Never gated, never routed through HQ — Decision 2's "gate writes, never reads" is
   unchanged.
 - **Hive data.** Still authoritative on each hive's own remote. HQ holds no hive's truth.
-- **Ongoing writes by an established primary.** The fenced push in §2 reaches only the hive's
-  remote, and a cached lease covers the renewal interval, so HQ is off the hot path entirely
-  (`bh-ytbb.11`).
+- **Ongoing writes by an established primary.** The managed reservation, bd data push, and exact
+  postflight in §2 reach only the hive's remote, and a cached lease covers the renewal interval,
+  so HQ is off the hot path entirely (`bh-ytbb.11`).
 
 What is now centralized:
 
@@ -519,13 +526,18 @@ for it, and the two are namespaced apart on every surface that shows them (`bh h
   impossible, and still cannot be made possible.
 - **Limitation 4 is answered** by `role` (§3) rather than by choosing a better number.
 - **Limitation 6 gains teeth.** HQ is still a replicated store presented as a singleton, and the
-  lease now lives in it — so a lease read remains a *reading with an `as_of`*. The **fence**, not
-  the lease, is what makes a write safe. This is why the split matters beyond tidiness.
+  lease now lives in it — so a lease read remains a *reading with an `as_of`*. The remote fence
+  CAS, not that cached lease alone, is the authoritative admission check for a managed push.
+  Managed reserve-before-bd rejects a stale host before data is attempted, but it does not make
+  the whole write atomic: exact postflight detects a takeover in the CAS→push window only after
+  data may have landed, and raw bd bypasses the boundary. This is why the split matters beyond
+  tidiness.
 - **`ClaimRecord` carries the `epoch`** it was minted under, as a fencing token, alongside the
   `host_id` the original Consequences list already required (`bh-ytbb.10`).
-- **`--atomic` receive-pack support is forge-dependent.** It is probed per forge; where absent the
-  fence degrades to a documented per-push epoch-bump fallback rather than silently disappearing.
-  Gitea support is explicitly determined and recorded (`bh-ytbb.7`, `bh-aa5b.1`).
+- **Atomic receive-pack is not the current bd enforcement point.** The retained `fenced_push`
+  primitive probes it only for callers that own a stable local data ref. Production bd owns a
+  transient ref and suppresses hooks, so managed publication always uses the explicitly
+  non-atomic reserve-before-bd plus exact-postflight sequence (`bh-tfapu`).
 - The `bh host` CLI group named in the original Consequences gains `adopt` / `release` / `packup`
   (`bh-ytbb.13`) over the lease, and a `guard_primary()` check on the write verbs (`bh-ytbb.9`).
 - `bh host` also gains `remove` (`bh-salu`): since `host_id` is minted once and never

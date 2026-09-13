@@ -602,31 +602,14 @@ test-integration:
 test-system-smoke:
     just test-closure system-smoke
 
-# QUARANTINE (bh-4kq1b, tracking bh-tfapu): the LAND gate's integration pass, minus one test.
-#
-# `test_host_fence_int.py::test_the_located_transport_repo_is_the_one_that_pushes` is a known
-# true-positive (bh-tfapu, triaged 2026-08-08): `bd dolt push` no longer fires git hooks in the
-# transport repo, so the epoch fence is inoperable and multi-host write enforcement is advisory.
-# Fixing it is an upstream `bd` issue, not quick, and disproportionate to block ALL integration
-# on. Reverting the gate that made it visible (bh-4kq1b's own `check-all` wiring) would just
-# restore the hole. So: quarantine this ONE node from the land path only.
-#
-# THIS IS THE ONLY PLACE IT IS QUARANTINED. `just test integration` (bare) and a plain
-# `uv run pytest tests/test_host_fence_int.py` run it and it still FAILS — this recipe exists
-# so `check-all` (and therefore `bh work finish`/`merge`) does not block on it. Whoever closes
-# bh-tfapu: delete the two --deselect lines below and this comment: `grep -rn bh-tfapu justfile`
-# finds this recipe, so closing that bead without touching this file leaves it a stale quarantine
-# nobody remembers exists.
 # FENCED (bh-pxoby). Runs through `scripts/hermetic.sh`, which puts the suite in a bubblewrap
 # sandbox: host read-only, tmpfs HOME (so ~/.beads and ~/.gitconfig leave bd's resolution walk),
 # loopback up but no egress. 41ms per spawn — cheap enough to be the default rather than an
 # opt-in. Off Linux the wrapper says so on stderr and runs unfenced; BH_HERMETIC=0 forces that.
-# the LAND gate's integration pass — fenced and parallel, minus the quarantines named above
+# the LAND gate's complete integration pass — fenced and parallel
 test-integration-land:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run pytest -n auto -m "integration" \
-        --deselect "tests/test_host_fence_int.py::test_the_located_transport_repo_is_the_one_that_pushes[embedded]" \
-        --deselect "tests/test_host_fence_int.py::test_the_located_transport_repo_is_the_one_that_pushes[shared-server]"
+        ./scripts/hermetic.sh uv run pytest -n auto -m "integration"
 
 # ^ the FENCE's own quarantine (test_storage_migrate_int's furnished-hive test) is GONE, not
 # forgotten (bh-gsg8x). It was never a fence incompatibility: in a linked worktree the tmpfs HOME

@@ -519,12 +519,11 @@ def live_epoch(hive: str = "", *, cfg=None) -> int:
          1's `epoch` explicitly, precisely so they cannot drift — and ``renew`` holds the epoch
          fixed. So the cached lease's epoch IS the fence's epoch for any completed adopt.
 
-    The fence remains the *enforcement* truth (Amendment 1 §2): its CAS is what makes the write
-    itself safe, atomically, and no local reading can substitute for that. This check is the
-    early, legible refusal at the bead-write boundary — it turns a token that a later fenced
-    push would reject anyway into an actionable message *before* the worker's submit does any
-    work. When ``fenced_push`` is wired into the real ``bd dolt push`` path (it ships standalone
-    today, bh-ytbb.7), this function is the single place to upgrade the source."""
+    No local reading is remote authority. Managed publication re-reads and CAS-reserves the
+    remote fence before invoking bd, then verifies it afterward (Amendment 1 §2). This cached
+    check remains the early, legible refusal at the bead-write boundary; a stale remote fence
+    is independently rejected by that managed preflight. Current bd prevents the reservation
+    and data update from being atomic, a limitation doctor exposes."""
     state = primary_state(hive, cfg=cfg)
     return state[2].epoch if state is not None else 0
 
@@ -874,7 +873,7 @@ def is_intake_create(args) -> bool:
     )
 
 
-# ---- store sync is not authoring (bh-qzoo1) ---------------------------------------------
+# ---- store transfer: reads are free; unmanaged publication is not -----------------------
 # Shipping the intake tier without this made it hollow: a laptop could FILE a bead without the
 # lease and then had no way to publish it, so the bead never left the machine. Filing has two
 # halves — mint it locally, then move the store — and gating the second undoes the first.
@@ -883,45 +882,38 @@ def is_intake_create(args) -> bool:
 # the remote by any reasonable definition, and a host that cannot refresh is a host reasoning
 # from stale state — which is the failure bh-sks7f already cost a day to.
 #
-# PUSHING is the one that needs an argument, and it has three legs:
-#
-#   1. It authors nothing. `dolt push` moves state that is already in the local store; whether
-#      that state was legitimate was decided when it was written, not now. (The hub guard used
-#      to reason the same way to allow `bd dolt push` through itself — bh-ohx2. It no longer
-#      needs to: bh-89wxf.2 gave HQ its own surface, and the HUB has no remote to push to at
-#      all, so there the verb is simply refused.)
-#   2. A follower's local delta is CONSTRAINED BY CONSTRUCTION to intake creates. Every other
-#      authoring verb — update, close, dep add, a --parent create — is still refused without
-#      the lease. So the only thing a non-primary host can have to push is a top-level bead
-#      with a randomly minted id, which is additive and cannot collide (bh-lkbas).
-#   3. Concurrency is serialized by git, not by us. `refs/dolt/data` is a git ref: a push that
-#      is not a fast-forward is REJECTED, never silently interleaved. The loser pulls and
-#      retries. That is the same primitive `gitref.cas` relies on elsewhere in this module.
-#
-# HONEST LIMIT: leg 2 holds for `bh bd`, not for a genuinely raw `bd` — the same limit
-# `bd_write_refusal` already documents about itself. And the epoch fence that would otherwise
-# backstop a bad follower push does not currently fire at all (bh-ban1j), so it is NOT part of
-# this argument; the argument stands on 1-3 alone.
+# Publication is different. Current bd deliberately disables Git hooks in its transport repo,
+# so a direct passthrough push bypasses the managed remote-CAS reservation in
+# ``Engine.push_state``. Under the multi-host model, ``bh bd dolt push`` and the upload-capable
+# ``sync`` are therefore refused for EVERY host, including the primary. The supported publish
+# path is ``bh hive sync remotes --push`` (and work/report flows that call Engine.push_state).
+# A genuinely raw OS-level ``bd dolt push`` remains outside bh's control; doctor calls that out.
 #
 # `remote add`/`remove` stay gated: they repoint where a later push LANDS, which is
 # configuration, not sync, and `bh hq init` already owns remote wiring.
-_STORE_SYNC_SUBVERBS = frozenset({"push", "pull", "fetch", "status", "sync"})
+_STORE_READ_SUBVERBS = frozenset({"pull", "fetch", "status"})
+_STORE_PUBLISH_SUBVERBS = frozenset({"push", "sync"})
 
 
 def is_store_sync(args) -> bool:
-    """True for a ``bd dolt`` verb that MOVES the store rather than authoring in it —
-    push/pull/fetch/status/sync, plus ``dolt remote list``.
-
-    These need no host lease: see the block comment above for why publishing is safe when
-    every authoring verb is still gated, and why every host (a ``viewer`` included) must be
-    able to refresh its view."""
+    """True for a read-only ``bd dolt`` transfer — pull/fetch/status or remote list."""
     positionals = _positionals(args)
     if not positionals or positionals[0] != "dolt":
         return False
     sub = positionals[1] if len(positionals) > 1 else ""
-    if sub in _STORE_SYNC_SUBVERBS:
+    if sub in _STORE_READ_SUBVERBS:
         return True
     return sub == "remote" and len(positionals) > 2 and positionals[2] == "list"
+
+
+def is_store_publish(args) -> bool:
+    """True for a direct ``bd dolt`` operation that can upload state."""
+    positionals = _positionals(args)
+    return (
+        len(positionals) > 1
+        and positionals[0] == "dolt"
+        and positionals[1] in _STORE_PUBLISH_SUBVERBS
+    )
 
 
 def is_bd_write(args) -> bool:
@@ -958,9 +950,10 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     single-target run — so returning the text preserves both behaviours without a second
     convention.
 
-    **Honest limit, stated the way `prepush.py` states its own:** this gates `bh bd`, not a
-    genuinely raw `bd` — nothing in bh can. It is early, legible failure. The enforcement is
-    still the epoch fence beside the data at push time (`host_fence.py`, `bh-ukit.2`)."""
+    **Honest limit:** this gates `bh bd`, not a genuinely raw `bd` — nothing in bh can. Direct
+    passthrough publication is refused for an adopted hive because it bypasses
+    ``Engine.push_state``'s remote reservation. That managed reservation is sequenced rather
+    than atomic with current bd; doctor exposes the residual window and raw bypass."""
     if not is_bd_write(args):
         return ""
     # `passthrough` deliberately passes an EMPTY cfg in cwd mode (the common case) to skip a
@@ -973,6 +966,14 @@ def bd_write_refusal(args, cwd, *, cfg=None) -> str:
     if state is None:
         return ""  # multi-host model not in force here (see `primary_state`)
     prefix, this_host, lease = state
+    if is_store_publish(args):
+        return (
+            f"✗ {prefix}: direct `bh bd dolt {_positionals(args)[1]}` is refused while the "
+            "multi-host epoch fence is active, even on the primary. Current bd disables its "
+            "transport Git hooks, so this passthrough would bypass the managed remote-CAS "
+            "reservation. Publish through `bh hive sync remotes --push` instead. A raw `bd dolt "
+            "push` cannot be intercepted by bh and is unsafe."
+        )
     if lease.held_by(this_host):
         return ""
     return _not_primary(

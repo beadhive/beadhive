@@ -111,12 +111,12 @@ The resolution is neither, because it reframes what the rule is protecting again
 nothing unless invoked, and writes a shim that holds **no logic** — it execs
 `bh hive hook pre-push <hive>`.
 
-What makes opt-in the right default rather than a compromise: **this hook was never the
-enforcement.** It is a local, fast-fail refusal in front of the atomic `--force-with-lease`
-epoch fence (`host_fence.py`, `multi-host-model-adr.md` Amendment 1 §2), which rejects a
-stale-epoch push regardless of hooks and regardless of `--no-verify`. Defaulting it off costs
-an early, legible error message — not safety. That asymmetry is exactly what justifies "off
-unless asked" for a *convenience*, where it would be indefensible for a *guarantee*.
+What makes opt-in the right default rather than a compromise: **this hook is not enforcement.**
+Current bd explicitly invokes its transport Git with `core.hooksPath=/dev/null`, so the shim
+does not run for a bd data push at all. Managed publication uses a sequenced remote epoch-fence
+CAS plus postflight (`host_fence.py`, `multi-host-model-adr.md` Amendment 1 §2); raw bd remains
+outside that boundary. The opt-in hook is compatibility/diagnostic tooling for a transport that
+does permit it, never a guarantee.
 
 The old default was also worse than it looked: auto-install into a repo that already had a
 `pre-push` returned `"skipped (custom hook present)"` and carried on. Every hive whose operator

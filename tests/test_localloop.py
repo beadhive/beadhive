@@ -820,8 +820,13 @@ async def test_a_seat_outliving_the_renew_interval_keeps_the_lease_alive(tmp_pat
 
 @async_test
 async def test_losing_the_lease_mid_flight_stops_dispatch_and_escalates(tmp_path, fakebd):
-    """Handled explicitly rather than left to surface as a submit refusal — bh-tfapu leaves the
-    epoch fence inoperable, so nothing else will stop this loop."""
+    """Halt dispatch at the first lost lease rather than waiting for managed publication.
+
+    Managed reserve-before-bd would later reject a stale host before attempting data, and exact
+    postflight verification catches a takeover during the non-atomic CAS→push window. Neither
+    protects a raw OS-level bd invocation, so the loop must never treat that downstream boundary
+    as its only response to lost authority.
+    """
     fake = fakebd(FakeBd(children=[_child("b1"), _child("b2")]))
     keeper = RecordingKeeper(held=False)
     claims = 0
