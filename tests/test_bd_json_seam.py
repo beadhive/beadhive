@@ -146,6 +146,25 @@ def test_children_forwards_extra_flags(monkeypatch):
     assert "--parent" in seen["cmd"] and "bh-epic" in seen["cmd"]
 
 
+def test_child_rows_distinguishes_empty_closed_history_and_read_failure(monkeypatch):
+    """The historical query has three honest outcomes: [] for a real empty history, event rows
+    when closed infrastructure exists, and None when the read itself failed."""
+    event = {"id": "bh-1.e1", "issue_type": "event", "status": "closed"}
+    responses = iter([_CP(0, "[]", ""), _CP(0, json.dumps([event]), ""), _CP(1, "", "boom")])
+    seen = []
+
+    def _read(cmd, **_kw):
+        seen.append(cmd)
+        return next(responses)
+
+    monkeypatch.setattr(bd_mod, "_run", _read)
+
+    assert bd_mod.child_rows("bh-1", "/hive", ["--include-infra"], include_closed=True) == []
+    assert bd_mod.child_rows("bh-1", "/hive", ["--include-infra"], include_closed=True) == [event]
+    assert bd_mod.child_rows("bh-1", "/hive", ["--include-infra"], include_closed=True) is None
+    assert all("--all" in cmd and "--limit" in cmd for cmd in seen)
+
+
 def test_children_accepts_the_edge_in_either_representation(monkeypatch):
     """bd states the parent edge two ways in one row — a top-level `parent`, and a `parent-child`
     entry in `dependencies` (the form `bd dep tree` walks). A real row carries both, but `parent`

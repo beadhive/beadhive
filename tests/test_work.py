@@ -3152,7 +3152,11 @@ def test_merge_emits_slot_cycle_stage_outcome_metrics(hive, fakebd, monkeypatch)
         "title": "review=changes-requested",
     }
     # the review gate submit opened + approve resolved carries the resolution timestamp
-    fakebd.gates[0].update(status="closed", closed_at=_iso_ago(minutes=10))
+    fakebd.gates[0].update(
+        status="closed",
+        closed_at=_iso_ago(minutes=10),
+        close_reason="approved by review/default",
+    )
 
     meter = _otel_meter_on(monkeypatch)
     work.merge(bead="mr-40", hive="myrepo", rm=False, molecule=False)

@@ -288,8 +288,10 @@ instrument is a no-op when otel is off and carries **bounded attributes only** (
 - **cycle_time** = `now − created_at` (total lead time, idea→merged).
 - **cycle_time.active** = `now − started_at` (work started→merged, excludes backlog wait).
 - **stage.coding** = `review_pending_at − started_at` (start of work → first submit for review).
-- **stage.review_wait** = `gate_closed_at − review_pending_at` (time a bead sits in review).
-- **stage.merge_latency** = `now − gate_closed_at` (approved → actually merged; merge-queue wait).
+- **stage.review_wait** = final approved round's `gate_closed_at − review_pending_at` (the
+  pending event is paired to that gate by submitted revision; the gate opening is the fallback).
+- **stage.merge_latency** = `now − final_approved_gate_closed_at` (approved → actually merged;
+  merge-queue wait).
 - **rework.count** = number of `review→changes-requested` rounds for the bead.
 - **merge_slot.wait / .hold** = contention on the hive's serialized merge slot (acquire wait,
   then hold duration around the land).
@@ -302,9 +304,10 @@ merge_slot + merge.outcome + validation.duration only** — never the per-bead `
 
 **At-merge bd-read contract (best-effort + skew-guarded).** The cycle/stage/rework values are
 derived at merge time from cheap `bd` reads: the bead's `created_at`/`started_at` (reused from the
-`bd show` already done for the merge guard), `bd list --parent <id> --include-infra` (the
+`bd show` already done for the merge guard),
+`bd list --parent <id> --limit 0 --include-infra --all` (the
 `review→pending` event's `created_at` + the `review→changes-requested` event count), and
-`bd gate list --all` (the review gate's open/closed timestamps, matched by the `review <sha>`
+`bd gate list --limit 0 --all` (the review gate's open/closed timestamps, matched by the `review <sha>`
 reason). These reads are **strictly best-effort**: every read is wrapped so a slow or failing
 `bd` never blocks a successful merge — it simply records nothing for the affected metric. Any
 **negative delta** (clock skew / out-of-order events) is **skipped**, never recorded. The merge

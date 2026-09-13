@@ -603,7 +603,7 @@ def _epic_molecule(epic_id: str, cwd):
     # genuine root (no predecessor at all) from a *satisfied* one (predecessor merged).
     # Membership is the parent EDGE, not the id string: bd resolves `--parent` by dotted-id
     # prefix, so a detached `<epic>.<n>` would be verified as a sibling it no longer is (bh-89mrf).
-    children = bd.children(epic_id, cwd, ["--all"])
+    children = bd.children(epic_id, cwd, include_closed=True)
     if not isinstance(children, list):
         return None
 
@@ -624,13 +624,17 @@ def _epic_molecule(epic_id: str, cwd):
     sibling_ids = {c["id"] for c in children if _is_sibling(c)}
     closed_ids = {c["id"] for c in children if _is_sibling(c) and c.get("status") == "closed"}
 
-    # Build molecule-like dicts (handle = bead id) for the LIVE issues only. Merged siblings have
-    # left the active molecule, so validate_spec / show / label checks operate on live work — but
-    # each live issue records whether its blocking predecessors are still open (`deps`) or have
-    # merged away (`satisfied_deps`), so a satisfied root isn't mistaken for an ungated one.
+    # Build molecule-like dicts (handle = bead id) for the LIVE issues while any work remains.
+    # Merged siblings have left that active molecule, and each live issue records whether its
+    # blocking predecessors are still open (`deps`) or have merged (`satisfied_deps`), so a
+    # satisfied root isn't mistaken for an ungated one. Once EVERY work sibling is closed, retain
+    # the complete filed graph for the done-gate: an all-closed molecule is complete, not empty.
+    # This branch is deliberately all-or-nothing; including closed siblings in a partial molecule
+    # would undo the satisfied-dependency semantics above.
+    all_closed = bool(sibling_ids) and sibling_ids == closed_ids
     issues = []
     for child in children:
-        if not _is_sibling(child) or child["id"] in closed_ids:
+        if not _is_sibling(child) or (child["id"] in closed_ids and not all_closed):
             continue
         cid = child["id"]
         blocks = [
@@ -646,8 +650,8 @@ def _epic_molecule(epic_id: str, cwd):
                 "description": child.get("description") or "",
                 "design": child.get("design") or "",
                 "labels": child.get("labels") or [],
-                "deps": [d for d in blocks if d not in closed_ids],
-                "satisfied_deps": [d for d in blocks if d in closed_ids],
+                "deps": blocks if all_closed else [d for d in blocks if d not in closed_ids],
+                "satisfied_deps": [] if all_closed else [d for d in blocks if d in closed_ids],
                 "acceptance": child.get("acceptance_criteria") or "",
                 "status": child.get("status") or "",
             }
