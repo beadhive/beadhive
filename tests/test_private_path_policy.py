@@ -425,6 +425,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("storage_migrate.py", "plan_targets", ".beads")
     | _owned("store_locator.py", "<module>", ".beads")
     | _owned("store_locator.py", "embedded_store_dir", ".beads")
+    | _owned("store_locator.py", "has_direct_server_database", ".dolt")
     # Harnesses/plugins own these exact configuration and agent-install callsites.
     | _owned("config_paths.py", "plugin_root", ".claude-plugin")
     | _owned("config_release.py", "_marketplace_root", ".claude-plugin")

@@ -734,6 +734,91 @@ def test_ensure_store_passes_shared_server_flag_on_a_fresh_store(tmp_path, monke
     assert config_call in calls
 
 
+def test_missing_hub_reuses_its_known_shared_server_database(tmp_path, monkeypatch):
+    """Deleting the local derived hub must reconnect to its existing server database.
+
+    A plain second ``bd init`` mints a new project identity, then ``bd repo add`` rejects the
+    old database with PROJECT IDENTITY MISMATCH.  ``--database`` is bd's non-destructive
+    attach path: it copies the database's authoritative identity into the new local metadata.
+    """
+    store = tmp_path / "hub"
+    shared = tmp_path / "shared-server"
+    (shared / "dolt" / hub.HUB_PREFIX / ".dolt").mkdir(parents=True)
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    monkeypatch.setenv("WS_HUB", str(store))
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(shared))
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(hub, "run", fake_run)
+    from beadhive import store_locator
+
+    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda path: False)
+
+    hub.ensure_hub()
+
+    init_call = calls[0]
+    assert init_call[:2] == ["bd", "init"]
+    assert init_call[init_call.index("--database") + 1] == hub.HUB_PREFIX
+
+
+@pytest.mark.parametrize("candidate", ["empty", "database-symlink", "marker-symlink"])
+def test_missing_hub_does_not_attach_an_unproven_database(tmp_path, monkeypatch, candidate):
+    """A basename match alone is not provenance: require a direct Dolt database directory."""
+    store = tmp_path / "hub"
+    shared = tmp_path / "shared-server"
+    database = shared / "dolt" / hub.HUB_PREFIX
+    if candidate == "empty":
+        database.mkdir(parents=True)
+    elif candidate == "database-symlink":
+        target = tmp_path / "untrusted" / hub.HUB_PREFIX
+        (target / ".dolt").mkdir(parents=True)
+        database.parent.mkdir(parents=True)
+        database.symlink_to(target, target_is_directory=True)
+    else:
+        target = tmp_path / "untrusted" / ".dolt"
+        target.mkdir(parents=True)
+        database.mkdir(parents=True)
+        (database / ".dolt").symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("WS_HOME", str(tmp_path))
+    monkeypatch.setenv("WS_HUB", str(store))
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(shared))
+    calls = []
+    monkeypatch.setattr(hub, "run", lambda cmd, **kwargs: calls.append(cmd) or Completed(0, "", ""))
+    from beadhive import store_locator
+
+    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda path: False)
+
+    hub.ensure_hub()
+
+    assert "--database" not in calls[0]
+
+
+def test_generic_store_never_infers_hq_or_hive_database(tmp_path, monkeypatch):
+    """The attach exception belongs only to the disposable hub, never durable stores."""
+    shared = tmp_path / "shared-server"
+    hq_database = shared / "dolt" / "hq" / ".dolt"
+    hive_database = shared / "dolt" / "real_hive" / ".dolt"
+    hq_database.mkdir(parents=True)
+    hive_database.mkdir(parents=True)
+    marker = hive_database / "KEEP"
+    marker.write_text("authoritative")
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(shared))
+    calls = []
+    monkeypatch.setattr(hub, "run", lambda cmd, **kwargs: calls.append(cmd) or Completed(0, "", ""))
+    from beadhive import store_locator
+
+    monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda path: False)
+
+    hub.ensure_store(tmp_path / "hq", "hq")
+
+    assert "--database" not in calls[0]
+    assert marker.read_text() == "authoritative"
+
+
 def test_ensure_store_warns_visibly_when_dolt_mode_needed_fixing(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("WS_HOME", str(tmp_path))
     monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
