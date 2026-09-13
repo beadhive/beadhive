@@ -135,7 +135,7 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat (test FAST) test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat pants-attest (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
 # Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
 architecture-check:
@@ -144,6 +144,7 @@ architecture-check:
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
     uv run python scripts/test_closure_operational_report.py --check
+    uv run python scripts/pants_shadow_evidence.py
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
@@ -581,6 +582,23 @@ test-closure-promotion-policy-check:
 test-impact-plan base head="HEAD":
     uv run python scripts/test_impact_selector.py --base {{quote(base)}} --head {{quote(head)}}
 
+# Explicit qualified Pants routes. These are additive; `just test`/`just check` remain rollback.
+pants-test-leaf target:
+    uv run python scripts/pants_routes.py leaf {{quote(target)}}
+
+pants-test-changed base="HEAD":
+    uv run python scripts/pants_routes.py changed {{quote(base)}}
+
+pants-test-dependents source:
+    uv run python scripts/pants_routes.py dependent {{quote(source)}}
+
+pants-shadow-check:
+    uv run python scripts/pants_shadow_evidence.py
+
+# Required Pants build/test evidence; `check-all` still runs every native phase afterward.
+pants-attest:
+    uv run python scripts/pants_attest.py
+
 test-kernel:
     just test-closure kernel
 
@@ -702,7 +720,7 @@ demo-live-ingress:
 # prove this tree green and stamp the verdict — idempotent, so it's cheap on an already-proven tree
 attest:
     @if ${BH_EXEC:-bh} release attest --help 2>/dev/null | grep -q -- --if-needed; then \
-        ${BH_EXEC:-bh} release attest --if-needed --gate "just check-all"; \
+        ${BH_EXEC:-bh} release attest "$(git rev-parse HEAD)" --if-needed --gate "just check-all"; \
     else \
         just _require "release attest --if-needed" bh-0jndj fail "NOTHING WAS ATTESTED"; \
     fi

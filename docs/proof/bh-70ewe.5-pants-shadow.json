@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "evidence_date": "2026-09-13",
+  "inputs": {
+    "pants.toml": "sha256:620c21b8eeb06cbcf0f095332b1a9d766bb4833c670226e7a3c1150368dafb27",
+    "scripts/pants_cache.py": "sha256:28e4553baf0a8f76c61da4c2dae91565291a9c9b1e69a80865486cc4ab0e664c",
+    "scripts/pants_routes.py": "sha256:d221680824efe58a6d1761feb94f29de4f95129fa182f1917b315ec1d974ae73",
+    "tests/BUILD": "sha256:92edd92d61237086d3f6d29ad7540a3c9927c5895d03aba8826d9a252d8e14c2"
+  },
+  "identity": {
+    "pants_version": "2.32.1",
+    "resolver": "experimental-uv",
+    "worktree": "bh-70ewe-4-qualified-disposable",
+    "cache": "shared-local-store/worktree-isolated-mutable"
+  },
+  "metrics": {
+    "cold_seconds": 43.377,
+    "warm_seconds": 10.381,
+    "edit_seconds": 11.225,
+    "warm_repeatable": true,
+    "unrelated_test_avoided": true
+  },
+  "observations": [
+    {"mutation":"source","selector_reason":"qualified-change","fallback_reason":null,"executed_count":1,"avoided_count":0,"cache_served_count":0,"edit_to_result_seconds":11.225,"pants_result":"green","native_result":"green"},
+    {"mutation":"test","selector_reason":"explicit-qualified-leaf","fallback_reason":null,"executed_count":1,"avoided_count":0,"cache_served_count":0,"edit_to_result_seconds":1.94,"pants_result":"green","native_result":"green"},
+    {"mutation":"dependency-lock","selector_reason":"native-full-fallback","fallback_reason":"dependency-lock","executed_count":0,"avoided_count":0,"cache_served_count":0,"edit_to_result_seconds":null,"pants_result":"not-selected","native_result":"green"},
+    {"mutation":"shared-contract","selector_reason":"native-full-fallback","fallback_reason":"shared-contract","executed_count":0,"avoided_count":0,"cache_served_count":0,"edit_to_result_seconds":null,"pants_result":"not-selected","native_result":"green"},
+    {"mutation":"generated-resource","selector_reason":"native-full-fallback","fallback_reason":"generated","executed_count":0,"avoided_count":0,"cache_served_count":0,"edit_to_result_seconds":null,"pants_result":"not-selected","native_result":"green"},
+    {"mutation":"build-config","selector_reason":"native-full-fallback","fallback_reason":"build-config","executed_count":0,"avoided_count":0,"cache_served_count":0,"edit_to_result_seconds":null,"pants_result":"not-selected","native_result":"green"},
+    {"mutation":"fixture-plugin","selector_reason":"native-full-fallback","fallback_reason":"test-infrastructure","executed_count":0,"avoided_count":0,"cache_served_count":0,"edit_to_result_seconds":null,"pants_result":"not-selected","native_result":"green"},
+    {"mutation":"multi-module","selector_reason":"native-full-fallback","fallback_reason":"multi-module","executed_count":0,"avoided_count":0,"cache_served_count":0,"edit_to_result_seconds":null,"pants_result":"not-selected","native_result":"green"},
+    {"mutation":"unrelated-test","selector_reason":"shadow-known-unrelated","fallback_reason":"native-oracle-only","executed_count":0,"avoided_count":1,"cache_served_count":0,"edit_to_result_seconds":0.009,"pants_result":"avoided","native_result":"green"}
+  ],
+  "promotion": {
+    "activation_eligible": true,
+    "promoted_pants_routes": 1,
+    "production_activation": false,
+    "fallback_observations": 7,
+    "selected_green_native_red_escapes": 0,
+    "stale_missing_incompatible_route": "native/full"
+  }
+}
