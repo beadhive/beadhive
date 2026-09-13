@@ -786,10 +786,17 @@ def verify_migration(hive_dir: Path, pre_count: int, cfg: dict) -> VerifyOutcome
             f"issue count mismatch: {pre_count} before migration, {out.issue_count} after"
         )
 
-    status = bd_mod.json(["dolt", "status"], hive_dir)
-    out.schema_version = str((status or {}).get("schema_version", "unknown"))
-
     out.dolt_mode = store_locator.dolt_mode(hive_dir) or "unknown"
+    schema = dolt_health.probe_raw_schema_version(hive_dir, dolt_mode=out.dolt_mode)
+    if schema.version is None:
+        out.ok = False
+        out.schema_version = "unknown"
+        out.problems.append(
+            f"could not determine the real schema migration version: {schema.detail}"
+        )
+    else:
+        out.schema_version = str(schema.version)
+
     if out.dolt_mode != "server":
         out.ok = False
         out.problems.append(
