@@ -680,7 +680,7 @@ class GeneratedCatalogReadSource:
                         "expiresAt": None,
                         "detail": "Immutable generated Development artifact.",
                     },
-                    "capabilities": ["snapshot", "events"],
+                    "capabilities": ["snapshot", "events"] if hive.events else ["snapshot"],
                 }
             )
         next_offset = offset + len(selected)

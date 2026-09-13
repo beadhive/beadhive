@@ -212,7 +212,7 @@ def test_authenticated_bridge_lists_selected_hives_and_returns_rich_generated_sn
     assert directory.json()["nextCursor"] is None
     assert all(item["sourceMode"] == "generated" for item in directory.json()["items"])
     assert all(item["scenarioId"] == "multi-hive" for item in directory.json()["items"])
-    assert all(item["capabilities"] == ["snapshot", "events"] for item in directory.json()["items"])
+    assert all(item["capabilities"] == ["snapshot"] for item in directory.json()["items"])
     assert directory.headers["cache-control"] == "private, max-age=0, must-revalidate"
     assert directory.headers["vary"] == "Authorization, Origin, Accept"
     assert directory.headers["etag"].startswith('"sha256:')
@@ -232,6 +232,24 @@ def test_authenticated_bridge_lists_selected_hives_and_returns_rich_generated_sn
     assert envelope["snapshot"]["hive"]["prefix"] == envelope["hiveId"]
     assert not envelope["snapshot"]["advertisedActions"]
     assert set(_hive_ids(envelope["snapshot"])) <= {envelope["hiveId"]}
+
+
+def test_directory_advertises_events_only_when_the_selected_hive_has_replayable_events() -> None:
+    artifact, packaged_manifest = _catalog_bytes()
+
+    async def capabilities_for(scenario_id: str) -> list[str]:
+        manifest, manifest_digest = _manifest_select(packaged_manifest, scenario_id)
+        source = gateway_read.GeneratedCatalogReadSource(
+            artifact,
+            manifest,
+            authorized_subjects=frozenset({SUBJECT}),
+            expected_manifest_sha256=manifest_digest,
+        )
+        directory = await source.list_hives(SUBJECT, limit=200, after=None)
+        return directory["items"][0]["capabilities"]  # type: ignore[index,return-value]
+
+    assert asyncio.run(capabilities_for("small")) == ["snapshot", "events"]
+    assert asyncio.run(capabilities_for("dense")) == ["snapshot"]
 
 
 def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_scope() -> None:
