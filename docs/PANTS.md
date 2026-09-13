@@ -29,7 +29,57 @@ plugin. Direct harness imports infer per-file harness dependencies. Package data
 resources have explicit resource targets. Unowned Python imports are errors, not warnings, so an
 incomplete mapping fails closed during graph use.
 
+## Host-wide cache topology
+
+Run Pants through the checked cache coordinator so independent worktrees share only Pants'
+content-addressed local store:
+
+```console
+uv run python scripts/pants_cache.py status
+uv run python scripts/pants_cache.py check
+uv run python scripts/pants_cache.py run -- pants test tests/unit/modules/config/test_resolution.py
+```
+
+`BH_PANTS_CACHE_ROOT` selects the stable host root; its default is
+`$XDG_CACHE_HOME/beadhive/pants` (or `~/.cache/beadhive/pants`). `local-store` is common to every
+worktree with mode 0775. A SHA-256 key of the absolute checkout path gives each worktree separate
+named caches, Pants workdir, pantsd subprocess directory, uv cache, and PEX root with mode 0700.
+The coordinator holds a shared lease for the complete Pants process. Cleanup and recovery require
+an exclusive nonblocking lease and therefore refuse to run while any coordinated Pants process is
+active.
+
+The preflight defaults reserve 2 GiB and 50,000 inodes. Operators can increase these thresholds
+with `BH_PANTS_MIN_FREE_BYTES` and `BH_PANTS_MIN_FREE_INODES`; reducing them is an explicit host
+choice. Pants separately bounds process and file stores at 2 GiB each in `pants.toml`. Every run
+emits a JSON preflight event containing free bytes, free inodes, and both cache paths. A reserve,
+ownership, mode, ENOSPC, launcher, or Pants failure remains nonzero and names `just check` as the
+authoritative fallback.
+
+Maintenance is deliberately surgical:
+
+```console
+# Remove inactive worktree cache roots older than 30 days; never the shared store.
+uv run python scripts/pants_cache.py cleanup --max-age-days 30
+# Remove one known-corrupt content-addressed entry after Pants diagnostics identify it.
+uv run python scripts/pants_cache.py recover-local files/a/<full-entry-name>
+# Reset one mutable cache for only this checkout.
+uv run python scripts/pants_cache.py reset-worktree uv
+```
+
+`recover-local` rejects absolute paths, traversal, the store root, and broad top-level names. A
+suspected LMDB-wide failure without an exact entry is not permission to erase the host store:
+retry with a fresh per-worktree cache or use the native fallback, then investigate separately.
+
+Remote cache reads and writes remain false in repository defaults. A future environment may use
+Pants' REAPI seam without changing BUILD ownership by supplying `PANTS_REMOTE_PROVIDER=reapi`,
+`PANTS_REMOTE_STORE_ADDRESS=grpcs://…`, `PANTS_REMOTE_INSTANCE_NAME`, and explicitly setting
+`PANTS_REMOTE_CACHE_READ=true` / `PANTS_REMOTE_CACHE_WRITE=true`. TLS and authentication stay in
+host or secret configuration through `PANTS_REMOTE_CA_CERTS_PATH`, optional
+`PANTS_REMOTE_CLIENT_CERTS_PATH` plus `PANTS_REMOTE_CLIENT_KEY_PATH`,
+`PANTS_REMOTE_OAUTH_BEARER_TOKEN`, `PANTS_REMOTE_STORE_HEADERS`, or a
+`PANTS_REMOTE_AUTH_PLUGIN`. Do not commit endpoints, certificates, headers, or credentials.
+
 The `bh` PEX is a graph/package smoke artifact, not a replacement installation format. Tests that
 assume an installed `bh` console script beside `sys.executable`, dynamic fixture consumers, and
 other unqualified boundaries continue to use native/full validation. Host cache placement,
-capacity policy, and cross-worktree cache reuse are configured by the next adoption stage.
+capacity policy, and cross-worktree cache reuse are kept outside BUILD ownership.
