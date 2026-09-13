@@ -1,6 +1,9 @@
 """Explicit stateful fixtures for the existing integration-shaped test closure.
 
-This plugin is loaded by the side-effect-free root conftest, but every fixture in it is lazy.
+This compatibility plugin is loaded by the side-effect-free root conftest only when the module
+is owned by the test sandbox, and every fixture in it is lazy.  Native validation always owns
+the module.  A qualified pure-unit sandbox may exclude it, removing the stateful fixture edge
+entirely while keeping plugin registration static and early.
 ``pytest_collection_modifyitems`` is the compatibility inventory that requests the aggregate
 scope for existing test locations.  New pure unit tests live under ``tests/unit`` and must name
 any stateful scope they need instead of inheriting one accidentally.
