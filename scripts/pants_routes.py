@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -18,6 +19,24 @@ QUALIFIED_TEST = "tests/unit/modules/config/test_resolution.py"
 QUALIFIED_SOURCE = "src/beadhive/modules/config/application/resolution.py"
 QUALIFIED = frozenset({QUALIFIED_TEST, QUALIFIED_SOURCE})
 QUALIFIED_CLOSURE_COUNT = 1
+
+
+def launcher(environ: dict[str, str] | None = None) -> str:
+    env = os.environ if environ is None else environ
+    explicit = env.get("PANTS_BIN")
+    if explicit:
+        resolved = shutil.which(explicit, path=env.get("PATH")) if "/" not in explicit else explicit
+        if resolved and Path(resolved).is_file() and os.access(resolved, os.X_OK):
+            return resolved
+        raise RuntimeError(f"PANTS_BIN is not executable: {explicit}")
+    for name in ("pants", "scie-pants"):
+        resolved = shutil.which(name, path=env.get("PATH"))
+        if resolved:
+            return resolved
+    raise RuntimeError(
+        "Pants launcher unavailable: run `mise install scie-pants`, install the official "
+        "launcher, or set PANTS_BIN=/absolute/path/to/pants"
+    )
 
 
 @dataclass
@@ -234,7 +253,7 @@ def route(
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument("--pants", default=os.environ.get("PANTS_BIN", "pants"))
+    result.add_argument("--pants")
     result.add_argument("--native-command", nargs="+", default=["just", "check"])
     sub = result.add_subparsers(dest="action", required=True)
     sub.add_parser("leaf").add_argument("target")
@@ -246,9 +265,27 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     options = parser().parse_args(argv)
     selector = getattr(options, "target", None) or getattr(options, "base", None) or options.source
-    return route(
-        options.action, selector, pants=options.pants, native_command=options.native_command
-    )
+    try:
+        pants = options.pants or launcher()
+    except RuntimeError as exc:
+        native = _run(options.native_command)
+        return _emit(
+            Receipt(
+                options.action,
+                "native-full-fallback",
+                [selector],
+                [],
+                [],
+                None,
+                0,
+                0,
+                0,
+                f"launcher-error: {exc}",
+                0.0,
+                native.returncode,
+            )
+        )
+    return route(options.action, selector, pants=pants, native_command=options.native_command)
 
 
 if __name__ == "__main__":
