@@ -100,3 +100,7 @@ run `just check` instead. Selector failures also run that native/full fallback a
 exit status. `just test`, `just check`, and `just check-all` remain the immediate rollback path.
 The release `just attest` gate remains native until the later activation beads can prove all
 required Pants build and test evidence without weakening the authoritative full gate.
+
+Shadow/oracle qualification and current route/fallback volume are recorded in
+`docs/PANTS-SHADOW-QUALIFICATION.md`; `just pants-shadow-check` fails closed when its inputs or
+same-tree oracle evidence are stale, incomplete, incompatible, or contain a correctness escape.
