@@ -209,7 +209,7 @@ def _reconcile_removed(hub, cfg, managed, marks: dict[str, str] | None = None) -
             del marks[prefix]
 
 
-def ensure_store(store, prefix):
+def ensure_store(store, prefix, *, database: str | None = None):
     """bd-init a local git+bd aggregation store at ``store`` (prefix ``prefix``) if absent, and
     return it. Shared by the legacy disposable hub and the durable Factory HQ — the one place
     the cross-hive aggregate is stood up.
@@ -236,7 +236,12 @@ def ensure_store(store, prefix):
     (bh-areg.7's own review finding, round 3: "the error above" pointed at nothing, because
     the quoted line was bd's "✓ Initialized git repository"). Streaming lets bd's own already-
     actionable message (port, offending PID, remediation) through untouched, matching
-    `onboard._run_bd_mint`'s identical fix for the same two-phase shape."""
+    `onboard._run_bd_mint`'s identical fix for the same two-phase shape.
+
+    ``database`` is bd's explicit attach path for a known existing shared-server database. It
+    is intentionally opt-in: the generic path is also used by durable HQ, whose identity must
+    never be inferred from a coincidentally named directory. Only :func:`ensure_hub`, for the
+    disposable generated aggregate and its fixed database name, supplies it."""
     if not (store / ".beads").is_dir():
         store.mkdir(parents=True, exist_ok=True)
         cmd = [
@@ -244,11 +249,17 @@ def ensure_store(store, prefix):
             "init",
             "--prefix",
             prefix,
-            _SHARED_SERVER_FLAG,
-            "--skip-agents",
-            "--skip-hooks",
-            "--non-interactive",
         ]
+        if database is not None:
+            cmd.extend(["--database", database])
+        cmd.extend(
+            [
+                _SHARED_SERVER_FLAG,
+                "--skip-agents",
+                "--skip-hooks",
+                "--non-interactive",
+            ]
+        )
         try:
             res = run(cmd, cwd=str(store), env=_bd_ni_env(), check=False)
         except FileNotFoundError:
@@ -358,6 +369,11 @@ def _retire_legacy_hub(store: Path) -> None:
 def ensure_hub():
     store, prefix = hub_target()
     _retire_legacy_hub(store)
+    # The name is a fixed bh-owned sentinel, not path- or metadata-derived input. Require the
+    # actual Dolt marker and reject symlinks: an unrelated/stale directory must not make the
+    # generic mint attach somewhere merely because its basename happens to match.
+    if store_locator.has_direct_server_database(HUB_PREFIX):
+        return ensure_store(store, prefix, database=HUB_PREFIX)
     return ensure_store(store, prefix)
 
 
