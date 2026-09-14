@@ -5,7 +5,9 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import os
 import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -137,6 +139,22 @@ def test_checked_before_after_evidence_is_current_and_closes_every_root() -> Non
             assert exclusions == []
             assert drift["comparison"]["projection_declaration_count"] == len(drift["declared"])
     assert all(not row["after"]["cycle_member"] for row in evidence["roots"])
+
+
+def test_before_after_evidence_does_not_require_an_unreachable_git_object(tmp_path) -> None:
+    fake_git = tmp_path / "git"
+    fake_git.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+    fake_git.chmod(0o755)
+    result = subprocess.run(
+        [sys.executable, "scripts/render_transport_composition_evidence.py", "--check"],
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "PATH": f"{tmp_path}:{os.environ['PATH']}"},
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 @pytest.mark.parametrize("surface", ROOTS)
