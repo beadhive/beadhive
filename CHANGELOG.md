@@ -13,6 +13,16 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.16.1 (2026-09-14)
+
+### Fix
+
+- **pants**: ignore local runtime state
+
+### Refactor
+
+- **tests**: isolate stateful fixture ownership
+
 ## v0.16.0 (2026-09-13)
 
 ### Feat
