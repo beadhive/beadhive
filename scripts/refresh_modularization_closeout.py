@@ -93,11 +93,7 @@ def refresh(root: Path, report_path: Path, *, write: bool) -> tuple[int, list[st
     if errors:
         return 1, errors
 
-    stale = [
-        str(row["path"])
-        for row in rows
-        if row.get("sha256") != digests[str(row["path"])]
-    ]
+    stale = [str(row["path"]) for row in rows if row.get("sha256") != digests[str(row["path"])]]
     if not stale:
         return 0, []
     if not write:

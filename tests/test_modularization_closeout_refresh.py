@@ -29,9 +29,7 @@ def _fixture(tmp_path: Path) -> tuple[Path, Path]:
                             {"path": "second.txt", "sha256": "1" * 64},
                         ]
                     },
-                    "immutable_historical": [
-                        {"path": "first.txt", "sha256": "2" * 64}
-                    ],
+                    "immutable_historical": [{"path": "first.txt", "sha256": "2" * 64}],
                 },
                 "preserved": {"value": 7},
             },
@@ -63,9 +61,10 @@ def test_write_is_idempotent_and_changes_only_generated_digest_fields(tmp_path: 
     after = json.loads(written)
 
     assert after["preserved"] == before["preserved"]
-    assert after["evidence_inventory"]["immutable_historical"] == before["evidence_inventory"][
-        "immutable_historical"
-    ]
+    assert (
+        after["evidence_inventory"]["immutable_historical"]
+        == before["evidence_inventory"]["immutable_historical"]
+    )
     rows = after["evidence_inventory"]["current_candidate"]["artifacts"]
     assert [row["sha256"] for row in rows] == [
         _digest(root / "first.txt"),

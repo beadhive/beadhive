@@ -208,9 +208,7 @@ def bump(expected: str, gate: str) -> None:
         )
     _signing_identity()
     tag = f"v{expected}"
-    tag_exists = _run(
-        "git", "show-ref", "--verify", "--quiet", f"refs/tags/{tag}", check=False
-    )
+    tag_exists = _run("git", "show-ref", "--verify", "--quiet", f"refs/tags/{tag}", check=False)
     if tag_exists.returncode == 0:
         raise Refusal(f"local tag {tag!r} already exists")
     _preflight(gate)

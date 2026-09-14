@@ -70,9 +70,7 @@ def _release_repo(tmp_path: Path, *, generator_fails: bool = False) -> ReleaseRe
         prepare.write_text(prepare.read_text() + "exit 42\n")
 
     key = tmp_path / "release-key"
-    subprocess.run(
-        ["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True
-    )
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
     public = key.with_suffix(".pub").read_text().strip()
     allowed = tmp_path / "allowed_signers"
     allowed.write_text(f"release@example.com {public}\n")
@@ -99,9 +97,7 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
         json.dumps(
             {
                 "evidence_inventory": {
-                    "current_candidate": {
-                        "package": {"path": "pyproject.toml", "sha256": "0" * 64}
-                    }
+                    "current_candidate": {"package": {"path": "pyproject.toml", "sha256": "0" * 64}}
                 }
             },
             indent=2,
@@ -124,7 +120,7 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
     )
     uv.chmod(0o755)
     bh = binary / "bh"
-    bh.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$BH_LOG\"\nexit ${BH_RC:-0}\n")
+    bh.write_text('#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$BH_LOG"\nexit ${BH_RC:-0}\n')
     bh.chmod(0o755)
     (binary / "python3").symlink_to(sys.executable)
 
