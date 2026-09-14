@@ -33,6 +33,21 @@ def launcher(environ: dict[str, str] | None = None) -> str:
         resolved = shutil.which(name, path=env.get("PATH"))
         if resolved:
             return resolved
+    mise = shutil.which("mise", path=env.get("PATH"))
+    if mise:
+        result = subprocess.run(
+            [mise, "exec", "--", "which", "scie-pants"],
+            cwd=ROOT,
+            env={**os.environ, **env},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        candidate = (result.stdout or "").strip()
+        if result.returncode == 0 and "\n" not in candidate:
+            resolved = Path(candidate)
+            if resolved.is_file() and os.access(resolved, os.X_OK):
+                return str(resolved)
     raise RuntimeError(
         "Pants launcher unavailable: run `mise install scie-pants`, install the official "
         "launcher, or set PANTS_BIN=/absolute/path/to/pants"

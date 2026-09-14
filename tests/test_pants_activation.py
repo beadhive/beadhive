@@ -41,6 +41,18 @@ def test_launcher_prefers_explicit_then_pants_then_scie_pants(tmp_path) -> None:
     assert attest.launcher({"PATH": str(tmp_path)}) == str(scie)
 
 
+def test_launcher_resolves_mise_tool_when_shims_are_not_on_path(tmp_path) -> None:
+    resolved = tmp_path / "installed" / "scie-pants"
+    resolved.parent.mkdir()
+    resolved.write_text("#!/bin/sh\n", encoding="utf-8")
+    resolved.chmod(0o755)
+    mise = tmp_path / "mise"
+    mise.write_text(f"#!/bin/sh\nprintf '%s\\n' {resolved!s}\n", encoding="utf-8")
+    mise.chmod(0o755)
+
+    assert attest.launcher({"PATH": str(tmp_path)}) == str(resolved)
+
+
 def test_mise_pins_official_scie_pants_launcher() -> None:
     assert 'scie-pants = "0.13.2"' in (ROOT / ".mise.toml").read_text(encoding="utf-8")
 
