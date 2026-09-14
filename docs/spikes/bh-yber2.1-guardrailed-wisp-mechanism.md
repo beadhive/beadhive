@@ -417,8 +417,8 @@ vs. persistent table), and no gate *type* moves a bead between those tables, the
 prediction is: **`gh:run` would change local `bd` persistence not at all.** A `gh:run` gate
 materialized by a formula inside a wisp would still be ephemeral and still return *"No history
 found"* (E9 unchanged); a `gh:run` gate made by `bd gate create` would be persistent exactly like
-`gw-v9r` above. Its only *additional* effect is to relocate the **canonical approval decision**
-to GitHub, where `environment: pypi-prod` already holds it (`bh-bomrd.1` **E12**). **This
+`gw-v9r` above. Its only *additional* effect is to create a GitHub-hosted decision that the current
+release environment does not provide (`bh-bomrd.1` **E12**). **This
 prediction is stated as a prediction, not as a measurement** — it is the one claim in this
 document not backed by live output, and the one thing a future spike with a live GH connection
 would need to confirm. Note it would not rescue **M4**: `bd gate create --type gh:run --blocks
@@ -648,9 +648,9 @@ re-open the accepted risk: the guardrail held (M11).
 
 2. **Do not adopt the wisp + persistent-gate hybrid in front of `just release`.** M4 is
    disqualifying on its own for a one-way door, independent of E6, E11 and the guardrail.
-   `environment: pypi-prod` on `.github/workflows/release.yml:20` already has a real executor, a
-   real identity and an audit log GitHub retains (E12/A3) — it enforces *and* records, which is
-   exactly the combination M4 shows this hybrid cannot offer.
+   The publish job already has a real executor, a scoped Trusted Publisher identity and an audit
+   log GitHub retains (E12/A3). Required reviewers are not configured; adding a wisp would not
+   make its hand-maintained record authoritative over the measured publish outcome.
 
 3. **Take the measured-fact replication pattern on its own merits, if it is wanted — separately,
    and without a wisp.** It is `bd update --metadata` on a persistent bead, needs no new

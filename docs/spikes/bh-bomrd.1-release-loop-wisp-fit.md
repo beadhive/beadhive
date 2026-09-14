@@ -306,15 +306,13 @@ marker all report otherwise. So the wisp does not supply a durable "where did th
 record **distinct from log output** — it supplies a **fifth, non-authoritative, unmeasured** one
 beside four measured ones, and E6/E8 show it is the one that silently goes wrong.
 
-**E12. The human gate already exists, with an executor behind it.** `just release` →
+**E12. The publisher executor exists; a human gate does not.** `just release` →
 `scripts/push-main.sh` pushes the tag; `.github/workflows/release.yml` fires on `push: tags:`
-(`:9-10`) and publishes under `environment: pypi-prod  # approval gate; configured under repo
-Settings → Environments` (`:20`). That approval is exactly the shape
-formula's `gate: gh:run` *models* — with a real executor, real identity, and a real audit log
-GitHub retains. The ADR already recorded this (Decision 4 table: release cut → *"Neither …
-its human gate is already `environment: pypi-prod` — the `gate: gh:run` shape formula models,
-with a real executor behind it"*). E9 is the measurement of what swapping it for a wisp gate
-costs: the sign-off stops being auditable.
+and uses the `pypi-prod` environment to scope its Trusted Publisher identity. Required reviewers
+are not configured, so the environment supplies no human decision. Formula's `gate: gh:run`
+would add one rather than model existing release state. The workflow still has a real executor,
+real identity, and a GitHub audit log; downstream jobs depend on measured publication. E9 is the
+measurement of why a wisp gate remains the wrong place to mirror that executable state.
 
 ## Verdict — **NO-GO**
 
@@ -380,8 +378,8 @@ E8) that a future reader would otherwise re-derive wrongly from the closed spike
 
 2. **Do not touch `release.py` or the release recipes.** The measure-don't-remember design
    (E11) and its 0/1/2/3 exit contract are what a wisp layer would dilute, not extend. There is
-   no partial adoption worth taking either: the gate is the one piece that looked portable, and
-   E9/E12 show moving it off `environment: pypi-prod` loses the executor *and* the audit record.
+   no partial adoption worth taking either: E9/E12 show that mirroring the executable publish
+   state in a wisp produces a second, weaker record.
 
 3. **Escalated, not fixed here** (filed via `bh escalate`, upstream `bd` defects — they change
    no verdict above, since E11 stands without them):

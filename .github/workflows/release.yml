@@ -115,12 +115,13 @@ jobs:
   # by explicit promotion (.github/workflows/promote-stable.yml).
   #
   # WHY `needs: publish` AND NOT A SEPARATE TAG TRIGGER. The point of a channel is that it
-  # lags the tag by whatever gate you trust. Ours is PyPI publication, which sits behind the
-  # `pypi-prod` environment approval gate above — so a release that is tagged but never
-  # approved, or whose upload fails, leaves `latest` exactly where it was. Only `needs:`
-  # expresses that. (Same property nixpkgs gets from Hydra: the channel lags master on
-  # purpose.) For the same reason this canNOT live in `cz bump` — `just bump` creates the tag
-  # LOCALLY, before anything has been built, validated or published.
+  # lags the tag by whatever gate you trust. Ours is successful PyPI publication: a release
+  # whose upload fails leaves `latest` exactly where it was. The `pypi-prod` environment scopes
+  # the Trusted Publisher identity, but repository code cannot prove any required reviewers are
+  # configured. Only `needs:` expresses the publication dependency. (Same property nixpkgs gets
+  # from Hydra: the channel lags master on purpose.) For the same reason this canNOT live in `cz
+  # bump` — `just bump` creates the tag LOCALLY, before anything has been built, validated or
+  # published.
   latest:
     needs: publish
     # A manual workflow_dispatch off a branch has no version to name: skip, don't fail.

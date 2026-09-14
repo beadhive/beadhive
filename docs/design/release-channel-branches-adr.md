@@ -332,10 +332,11 @@ a tag because there is.**
    step. `INSTALL.md:23`'s comment is rewritten — its "tag refs are immutable" argument survives, as
    the reason `setup.py` still uses one — and `README.md:43` stays a byte-identical mirror of
    `INSTALL.md:115`, which is now cheap because neither line changes again.
-2. **The channel lags the tag, on purpose.** Between the tag push and the `publish` job clearing its
-   `pypi-prod` approval gate, `latest` names the *previous* release. That window is a feature — it
-   is the gate — but it means "the tag exists" and "the channel moved" are different events, and
-   anything that asserts equality between them will flap.
+2. **The channel lags the tag, on purpose.** Between the tag push and the `publish` job succeeding,
+   `latest` names the *previous* release. That window is a feature — successful publication is the
+   gate — but it means "the tag exists" and "the channel moved" are different events, and anything
+   that asserts equality between them will flap. The environment scopes publishing identity;
+   required reviewers are not configured.
 3. **A failed publish leaves the channel correct.** No cleanup, no revert, no manual step: the
    channel simply did not move.
 4. **CI gains `contents: write` on one job.** Narrowed to the channel job, not the workflow.

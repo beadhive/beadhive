@@ -80,6 +80,20 @@ def test_downstream_release_jobs_wait_for_attested_publish() -> None:
     assert jobs["latest"]["needs"] == "publish"
 
 
+def test_pypi_environment_is_not_documented_as_an_approval_gate() -> None:
+    paths = [
+        *sorted((ROOT / ".github" / "workflows").glob("*.yml")),
+        *sorted((ROOT / "docs").rglob("*.md")),
+    ]
+
+    for path in paths:
+        prose = " ".join(path.read_text().lower().replace("`", "").split())
+        assert not re.search(r"pypi-prod.{0,100}approval", prose), path.relative_to(ROOT)
+        assert not re.search(r"approval.{0,100}pypi-prod", prose), path.relative_to(ROOT)
+        assert not re.search(r"human gate.{0,100}pypi-prod", prose), path.relative_to(ROOT)
+        assert not re.search(r"pypi-prod.{0,100}human gate", prose), path.relative_to(ROOT)
+
+
 def test_release_docs_distinguish_git_and_distribution_signatures() -> None:
     assert "Signed commits and signed\nrelease tags" in CONTRIBUTING
     assert "PEP 740 attestations authenticate the `.whl` and `.tar.gz` files" in CONTRIBUTING
