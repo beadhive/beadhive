@@ -275,5 +275,5 @@ def test_just_check_keeps_the_existing_full_test_selection():
     assert (
         check_line
         == "check: lint lint-md license-check architecture-check transport-artifact-check "
-        "wire-schema-compat test"
+        "wire-schema-compat proof-digest-check test"
     )

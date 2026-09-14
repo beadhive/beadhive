@@ -313,7 +313,7 @@
           {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "29046c0b29b1a6aa9dfd8ad1ca1f0f3f3356d0ef35da01dfa319d4885d1c293d"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "570d759d9a640c717a27a66d900b308f29aac5be65b34bc47291dc9eba17a85a"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
-          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "c19ddabd2d448b37f45e9e200ce00d9c68b28d5535f4c18943399a5deeb70178"}
+          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "fcb85575daa2de392cad9f53a8f8920d3c250625ef285ef92785d4ab94f0261a"}
         ]
       },
       "import_boundary": {
@@ -340,7 +340,7 @@
         ]
       },
       "package_and_entry_point": {
-        "manifest": {"path": "pyproject.toml", "sha256": "ee8f63e410d3b4a3548ce042ace8a64ace5ca3d6f86577d91699cf60010456f0"},
+        "manifest": {"path": "pyproject.toml", "sha256": "fa73d2958e388abf2191fe9c3cfcc01da586c7e086777b7392d6a173e3039a43"},
         "wheel_test": "tests/test_frame_bridge_handoff.py::test_wheel_contains_only_the_frame_bridge_core_entry_point",
         "console_script": "beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main",
         "packaged_modules": ["beadhive/bootstrap/frame_bridge.py", "beadhive/frame_bridge.py", "beadhive/frame_bridge_runtime.py"],

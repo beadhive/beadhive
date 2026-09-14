@@ -381,6 +381,8 @@ def test_an_unconfigured_push_main_phase_runs_the_gate(hive):
 
     assert res.exit_code == 1  # …and is deliberately unreachable
     assert "no `work.validate.push-main` configured" in res.output
+    assert "bh config set work.validate.push-main 'just check-all' --scope fleet" in res.output
+    assert "fleet-owned" in res.output
 
 
 def test_a_phase_naming_a_different_command_than_the_hook_runs_the_gate(hive):
@@ -394,6 +396,8 @@ def test_a_phase_naming_a_different_command_than_the_hook_runs_the_gate(hive):
 
     assert res.exit_code == 1
     assert "but this gate runs" in res.output
+    assert "Configured command: 'just check'" in res.output
+    assert "Requested command: 'just check-all'" in res.output
 
 
 def test_a_verdict_for_another_command_at_the_same_tree_runs_the_gate(hive):

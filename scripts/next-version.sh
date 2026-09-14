@@ -24,4 +24,7 @@ set -uo pipefail
 # run by hand, or by a `bh` invoked from somewhere else entirely.
 cd "$(dirname "$0")/.." || exit 2
 
-exec uv run cz bump --dry-run
+if [ -n "${CZ_EXEC:-}" ]; then
+    exec "${CZ_EXEC}" bump --dry-run "$@"
+fi
+exec uv run cz bump --dry-run "$@"

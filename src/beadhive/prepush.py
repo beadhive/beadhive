@@ -64,6 +64,7 @@ opt-in; this is compatibility tooling, not remote write authority.
 from __future__ import annotations
 
 import datetime
+import shlex
 from pathlib import Path
 
 from . import config, guard, host_fence, registry, validation_ledger
@@ -251,17 +252,39 @@ def push_main_cmd(cfg, entry, gate_cmd: str = "") -> tuple[str, str]:
       weaker) command than the caller runs is a verdict about some other gate."""
     per = config.work_value(cfg, entry, "validate", {}) or {}
     if PUSH_MAIN_PHASE not in per:
-        return "", (
-            f"• no `work.validate.{PUSH_MAIN_PHASE}` configured for hive "
-            f"{entry.get('prefix', '?')} — nothing to look a verdict up under. Set it to the "
-            f"command the gate runs to enable attested-green reuse."
+        target = str(entry.get("prefix") or "?")
+        requested = gate_cmd.strip()
+        remedy = shlex.join(
+            [
+                config.BINARY_ALIAS,
+                "config",
+                "set",
+                f"work.validate.{PUSH_MAIN_PHASE}",
+                requested,
+                "--scope",
+                "fleet",
+            ]
         )
+        detail = (
+            f"• no `work.validate.{PUSH_MAIN_PHASE}` configured for hive "
+            f"{target} — nothing to look a verdict up under.\n"
+            f"  Target hive: {target}. Requested gate command: {requested!r}.\n"
+            "  Validation policy is fleet-owned so every host proves releases under the same "
+            "command; host scope is not valid here."
+        )
+        if requested:
+            detail += f"\n  Configure it explicitly: `{remedy}`"
+        else:
+            detail += "\n  Supply the gate command so an exact fleet-scoped remedy can be shown."
+        return "", detail
     cmd = config.validate_cmd(cfg, entry, phase=PUSH_MAIN_PHASE)
     if gate_cmd and gate_cmd.strip() != cmd.strip():
         return "", (
             f"• work.validate.{PUSH_MAIN_PHASE} is {cmd!r} but this gate runs {gate_cmd!r} — a "
             f"verdict earned under a different command says nothing about this one. Point the "
-            f"phase at the gate's own command."
+            f"phase at the gate's own command.\n"
+            f"  Target hive: {entry.get('prefix', '?')}. Configured command: {cmd!r}. "
+            f"Requested command: {gate_cmd.strip()!r}."
         )
     return cmd, ""
 

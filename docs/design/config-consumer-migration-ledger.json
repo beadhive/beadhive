@@ -1302,42 +1302,42 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 393,
+        "line": 400,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 405,
+        "line": 412,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 419,
+        "line": 426,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 945,
+        "line": 953,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 954,
+        "line": 962,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 1734,
+        "line": 1756,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
