@@ -558,7 +558,6 @@ def _run_collection(command: tuple[str, ...], root: Path) -> tuple[str, ...]:
     completed = subprocess.run(
         tuple(adjusted_parts),
         cwd=root,
-        env=test_closures._pytest_environment(root),
         check=False,
         capture_output=True,
         text=True,

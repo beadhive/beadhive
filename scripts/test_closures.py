@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import ast
-import os
 import re
 import subprocess
 import sys
@@ -360,14 +359,6 @@ def _pytest_commands(closure: Closure, *, collect_only: bool) -> tuple[tuple[str
     return ((*prefix, *closure.selectors),)
 
 
-def _pytest_environment(root: Path) -> dict[str, str]:
-    environment = os.environ.copy()
-    source = str(root / "src")
-    existing = environment.get("PYTHONPATH")
-    environment["PYTHONPATH"] = os.pathsep.join(value for value in (source, existing) if value)
-    return environment
-
-
 def _pytest(closure: Closure, *, collect_only: bool) -> int:
     if closure.status == "absent":
         print(f"test-closure: {closure.id} is explicitly absent; no tests collected")
@@ -380,9 +371,7 @@ def _pytest(closure: Closure, *, collect_only: bool) -> int:
     for index, command in enumerate(commands, 1):
         if len(commands) > 1:
             print(f"  pytest invocation: {index}")
-        returncode = subprocess.run(
-            command, cwd=ROOT, env=_pytest_environment(ROOT), check=False
-        ).returncode
+        returncode = subprocess.run(command, cwd=ROOT, check=False).returncode
         if returncode == 5:
             print(
                 f"test-closure: {closure.id}: pytest collected/executed zero tests",
