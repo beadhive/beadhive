@@ -220,7 +220,10 @@ def _event_text(plan: RetirePlan, event: RetireEvent) -> str:
             "(fleet-wide — every host loses this hive)"
         )
     if code == "registry_retained":
-        return f"  registry: left untouched — {facts['identity']} remains registered for the fleet"
+        return (
+            f"  registry: left untouched — {facts['identity']} remains registered for the fleet "
+            f"(`{config.BINARY_ALIAS} hive rm --confirm` unregisters it fleet-wide)"
+        )
     if code == "plugin_preview":
         return f"  plugin {facts['plugin']}: would notify of retire (manual removal)"
     if code == "plugin_failed":

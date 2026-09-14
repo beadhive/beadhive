@@ -414,6 +414,9 @@ again on this host later without re-registering). Everything under
 [Orchestration order](#orchestration-order), the [flag reference](#flag-reference), and the
 [guardrail contract](#the-guardrail-contract) above applies identically — the only difference
 from `bh hive retire` is that step 4 stops after archive/purge and never touches the registry.
+If the hive should also stop being registered for the fleet afterwards, that is a separate,
+deliberate step: [`bh hive rm --confirm`](#bh-hive-add--bh-hive-rm) — `rm` is the registry
+unregister; `reclaim`/`retire` are the on-disk teardown.
 
 ## `bh hive archive`
 
