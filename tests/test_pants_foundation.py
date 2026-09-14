@@ -67,3 +67,9 @@ def test_package_target_owns_runtime_resources() -> None:
     assert 'name="package-data"' in build
     assert '":package-data"' in build
     assert 'entry_point="beadhive.bootstrap.cli:main"' in build
+
+
+def test_local_pants_runtime_state_is_ignored() -> None:
+    ignored = (ROOT / ".gitignore").read_text(encoding="utf-8").splitlines()
+
+    assert ".pants.d/" in ignored

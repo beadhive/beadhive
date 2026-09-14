@@ -19,6 +19,7 @@ dist/
 build/
 .ruff_cache/
 .pytest_cache/
+.pants.d/
 
 # Beads / Dolt files (added by bd init)
 .dolt/
