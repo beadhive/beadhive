@@ -51,7 +51,11 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat test
+check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check test
+
+# Current-candidate proof rows are generated evidence and must match the exact release tree.
+proof-digest-check:
+    uv run python scripts/refresh_modularization_closeout.py --check
 
 # Every checked transport declaration: catalog, projection inventory, OpenAPI, gateway and roots.
 transport-artifact-check:
@@ -135,7 +139,7 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat pants-attest (test FAST) test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
 # Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
 architecture-check:

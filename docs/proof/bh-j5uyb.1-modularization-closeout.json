@@ -340,7 +340,7 @@
         ]
       },
       "package_and_entry_point": {
-        "manifest": {"path": "pyproject.toml", "sha256": "ee8f63e410d3b4a3548ce042ace8a64ace5ca3d6f86577d91699cf60010456f0"},
+        "manifest": {"path": "pyproject.toml", "sha256": "fa73d2958e388abf2191fe9c3cfcc01da586c7e086777b7392d6a173e3039a43"},
         "wheel_test": "tests/test_frame_bridge_handoff.py::test_wheel_contains_only_the_frame_bridge_core_entry_point",
         "console_script": "beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main",
         "packaged_modules": ["beadhive/bootstrap/frame_bridge.py", "beadhive/frame_bridge.py", "beadhive/frame_bridge_runtime.py"],
