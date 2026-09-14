@@ -99,15 +99,15 @@ tag_format = "v$version"
 # Stay pre-1.0: a breaking change bumps the MINOR (0.2 -> 0.3), not the major.
 # Flip to 1.0.0 deliberately, not because of a `feat!` commit.
 major_version_zero = true
-# tag.gpgsign=true forces annotated tags, which need a message; cz must create them annotated
+# The bump recipe passes Commitizen --gpg-sign explicitly; annotated_tag supplies its message.
 annotated_tag = true
-# uv.lock pins beadhive's own version, so cz's pyproject-only bump leaves it stale. Write the new
-# version through uv instead (it re-locks), before cz updates pyproject and commits with `git
-# commit -a` — so the lock lands inside the bump commit the tag points at.
-pre_bump_hooks = ["uv version --no-sync $CZ_PRE_NEW_VERSION"]
+# uv.lock pins beadhive's own version, and the modularization closeout hashes pyproject.toml.
+# Prepare both generated artifacts before cz commits so the tag points at one exact bump tree.
+pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
 
 [tool.pytest.ini_options]
 addopts = "--durations=25 --durations-min=1.0"
+pythonpath = [".", "src"]
 markers = [
     "integration: real-bd AGF topology harness (slower; needs the bd binary)",
     # Not documentation: conftest's `_bound_concurrent_dolt_servers` makes a marked test hold one

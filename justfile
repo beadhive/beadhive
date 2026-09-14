@@ -51,7 +51,11 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat test
+check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check test
+
+# Current-candidate proof rows are generated evidence and must match the exact release tree.
+proof-digest-check:
+    uv run python scripts/refresh_modularization_closeout.py --check
 
 # Every checked transport declaration: catalog, projection inventory, OpenAPI, gateway and roots.
 transport-artifact-check:
@@ -135,7 +139,7 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat pants-attest (test FAST) test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
 # Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
 architecture-check:
@@ -686,7 +690,7 @@ demo-live-ingress:
 #   just attest           prove THIS tree green and stamp it.        nothing committed
 #   just push             main to the remote. NO TAG.                reversible
 #   just bump-preview     what would the next bump write?            read-only
-#   just bump             version + changelog + LOCAL tag.           reversible, still local
+#   just bump X.Y.Z       version + changelog + LOCAL tag.           reversible, still local
 #   just release-preview  is the path clear? (--next: what would bump write?)   read-only
 #   just release          main + tag, atomic. CI publishes.          ONE-WAY DOOR
 
@@ -759,10 +763,9 @@ bump-preview:
 # Deliberately NOT probed for like `_await-bump-gate` is: an old `bh` here should fail the bump
 # loudly, not bump unproven. A release is exactly where "the check silently did not run" is
 # worst. Set BH_EXEC='uv run bh' to use this tree's bh.
-# BUMP: version + changelog + uv.lock + a LOCAL tag, as one commit. Nothing leaves this machine.
-bump:
-    ${BH_EXEC:-bh} release preflight --gate "just check-all"
-    uv run cz bump --changelog
+# BUMP: version + changelog + uv.lock + proof + signed LOCAL tag. Nothing leaves this machine.
+bump expected_version:
+    python3 scripts/release_transaction.py bump "{{ expected_version }}" --gate "just check-all"
     ${BH_EXEC:-bh} release attest --background --gate "just check-all"
 
 # is the release path clear? READ-ONLY, and a SUPERSET of `bump-preview` above rather than its
@@ -817,6 +820,7 @@ release-preview *flags:
 # RELEASE — the ONE-WAY DOOR: main AND its tag pushed atomically, and CI publishes from the tag.
 release tag="" remote="origin":
     @just _await-bump-gate
+    @python3 scripts/release_transaction.py verify "`scripts/release-pin.sh`" --tag "{{ if tag == "" { "v" + `scripts/release-pin.sh` } else { tag } }}"
     ./scripts/push-main.sh {{ remote }} main "{{ if tag == "" { "v" + `scripts/release-pin.sh` } else { tag } }}"
 
 # ---- local builds are STAMPED (bh-7hacm) ----------------------------------------------------

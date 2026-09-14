@@ -141,7 +141,7 @@ and permanent, and wisp (`gc`/`squash`/`burn`/`promote`) is the shape of the mis
 | **Setup Guide** (`src/beadhive/assets/guides/setup/`, 12 steps + nested `guides/rescue/`) | **Guide, alone** | Needs judgment + verification + retry: 7/12 steps verify by `agent_judgment`, all 12 have `on_failure` and `interactions` (Evidence 6). And beads is *literally unavailable* — the Guide runs on a machine with no `bh`, no hive and no `bd`; step `080-first-hive` is where a bead store first exists. A beads-backed work item cannot track the workflow that creates the bead store. |
 | **`github-app-tier-provision`** (`beadhive/infra:guides/…`, 7 steps) | **Guide, alone** | Two `performer: human` prerequisites (`GUIDE.md:22,31`) and an execution trace over credential/tier operations. Beads adds nothing: the run is single-session and needs no place in the dependency graph. |
 | **`backfill`** (`claude-plugin/beadhive/skills/backfill/`, 5 steps) | **Both — cleanly, already** | The interesting case, and it is already solved without formula. The Guide is the *execution trace* (classify → propose → human confirm → apply); its **product** is durable beads. Two sources of truth do not arise because they answer different questions: the run log records *how the reconcile reasoned*, the filed beads are *what exists*. Note `GUIDE.md:12-14` — "A re-run of the reconcile proposes zero changes" — the run is idempotent, so nothing is lost by not tracking the run itself as work. |
-| **Release cut** (`just bump` + `.github/workflows/release.yml`) | **Neither** | Already fully mechanized in CI, and its human gate is already an approval gate: `release.yml:20`, `environment: pypi-prod  # approval gate`. Formula's `gate:` primitive would re-model in beads a gate GitHub already enforces, with no executor behind it. |
+| **Release cut** (`just bump` + `.github/workflows/release.yml`) | **Neither** | Already fully mechanized in CI, with downstream work gated on measured PyPI publication. The environment scopes the Trusted Publisher identity; required reviewers are not configured. Formula's `gate:` primitive would add separate state rather than re-model an existing human decision. |
 | **`onboard.py`** (`src/beadhive/onboard.py`, 1,562 lines) | **Neither — it is imperative code** | A two-phase DAG executor whose nodes hold real `action` callables and read-only `Check` predicates, batch-failing preflight before any mutation. A formula `Step` has no `action`. Its own docstring (`onboard.py:14`) says it is "onboarding-specific by design — NOT a generic workflow engine." Re-expressing it as a formula would produce a work-item shadow of code that still has to run, i.e. exactly the double-bookkeeping the epic asked about. |
 
 **The both-substrates rule** (from the `backfill` row): compose them by **layer, not by mirror**
@@ -165,11 +165,11 @@ sources of truth, and no beadhive workflow needs it.
   its lifecycle is also unexercised and self-contradictory in its own help text (Evidence 5).
 
 Beyond retention, formula adds **nothing** to beadhive's five real workflows: three want Guide's
-executable/judgment shape that a `Step` cannot express (Evidence 6), the release cut's gate is
-already a GitHub environment approval (`release.yml:20`), and `onboard.py` is imperative code a
-non-executing formula could only shadow. Even the residual "Guide has no delete" fact
-(Evidence 2) is not beadhive's to fix: beadhive neither installs the runtime nor selects the
-backend (Evidence 7).
+executable/judgment shape that a `Step` cannot express (Evidence 6), the release cut already has
+an executable CI publisher and downstream dependencies on measured publication, and `onboard.py`
+is imperative code a non-executing formula could only shadow. Even the residual "Guide has no
+delete" fact (Evidence 2) is not beadhive's to fix: beadhive neither installs the runtime nor
+selects the backend (Evidence 7).
 
 ## Recommendation
 

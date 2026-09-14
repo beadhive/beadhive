@@ -164,3 +164,10 @@ def test_the_next_version_lookup_has_exactly_one_implementation():
     release_py = (ROOT / "src" / "beadhive" / "release.py").read_text()
     assert "next-version.sh" in release_py
     assert "cz bump" not in release_py.replace("`cz bump`", "")  # prose may name it; code may not
+
+
+def test_release_verifies_the_local_tag_immediately_before_the_atomic_push():
+    justfile = JUSTFILE.read_text()
+    body = justfile.split('\nrelease tag="" remote="origin":\n', 1)[1].split("\n\n", 1)[0]
+
+    assert body.index("release_transaction.py verify") < body.index("scripts/push-main.sh")
