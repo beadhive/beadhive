@@ -82,5 +82,29 @@ def test_missing_artifact_refuses_without_rewriting_report(tmp_path: Path) -> No
     code, messages = refresher.refresh(root, report, write=True)
 
     assert code == 1
-    assert messages == ["second.txt: artifact is missing"]
+    assert messages == [
+        "second.txt: artifact is missing",
+        "first.txt: stale artifact digest",
+    ]
     assert report.read_bytes() == before
+
+
+def test_check_aggregates_missing_invalid_and_computable_stale_rows(tmp_path: Path) -> None:
+    root, report = _fixture(tmp_path)
+    third = root / "third.txt"
+    third.write_text("third\n")
+    payload = json.loads(report.read_text())
+    payload["evidence_inventory"]["current_candidate"]["artifacts"].append(
+        {"path": "third.txt", "sha256": "invalid"}
+    )
+    report.write_text(json.dumps(payload, indent=2) + "\n")
+    (root / "second.txt").unlink()
+
+    code, messages = refresher.refresh(root, report, write=False)
+
+    assert code == 1
+    assert messages == [
+        "second.txt: artifact is missing",
+        "third.txt: recorded sha256 is not a lowercase 64-character digest",
+        "first.txt: stale artifact digest",
+    ]

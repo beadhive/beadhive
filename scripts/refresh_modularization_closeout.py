@@ -90,14 +90,24 @@ def refresh(root: Path, report_path: Path, *, write: bool) -> tuple[int, list[st
         return 1, ["closeout report declares no current-candidate artifact digests"]
 
     digests, errors = _digests(root, rows)
-    if errors:
-        return 1, errors
-
-    stale = [str(row["path"]) for row in rows if row.get("sha256") != digests[str(row["path"])]]
-    if not stale:
+    for row in rows:
+        relative = str(row["path"])
+        recorded = row.get("sha256")
+        if not isinstance(recorded, str) or not SHA256.fullmatch(recorded):
+            errors.append(f"{relative}: recorded sha256 is not a lowercase 64-character digest")
+    stale = [
+        str(row["path"])
+        for row in rows
+        if str(row["path"]) in digests
+        and isinstance(row.get("sha256"), str)
+        and SHA256.fullmatch(str(row["sha256"]))
+        and row["sha256"] != digests[str(row["path"])]
+    ]
+    diagnostics = [*errors, *(f"{relative}: stale artifact digest" for relative in stale)]
+    if not diagnostics:
         return 0, []
-    if not write:
-        return 1, [f"{relative}: stale artifact digest" for relative in stale]
+    if not write or errors:
+        return 1, diagnostics
 
     try:
         updated = _updated_text(original, report, rows, digests)

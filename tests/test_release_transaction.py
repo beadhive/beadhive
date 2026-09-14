@@ -43,6 +43,7 @@ class ReleaseRepo:
     environment: dict[str, str]
     start: str
     key: Path
+    binary: Path
 
     def transaction(self, *args: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -158,7 +159,47 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
         "CZ_EXEC": str(changelog_tool),
         "UV_EXEC": str(uv),
     }
-    return ReleaseRepo(repo, environment, start, key)
+    return ReleaseRepo(repo, environment, start, key, binary)
+
+
+def _signing_fingerprint(release_repo: ReleaseRepo) -> str:
+    result = subprocess.run(
+        ["ssh-keygen", "-lf", str(release_repo.key.with_suffix(".pub")), "-E", "sha256"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.split()[1]
+
+
+def _install_git_wrapper(
+    release_repo: ReleaseRepo,
+    *,
+    verify_exit: int = 1,
+    delete_exit: int | None = None,
+    reset_noop: bool = False,
+) -> None:
+    real_git = shutil.which("git")
+    assert real_git is not None
+    wrapper = release_repo.binary / "git"
+    fingerprint = _signing_fingerprint(release_repo)
+    signature_line = f'Good "git" signature for release@example.com with ED25519 key {fingerprint}'
+    wrapper.write_text(
+        "#!/bin/sh\n"
+        'if [ "$1" = verify-tag ]; then\n'
+        f"  echo '{signature_line}' >&2\n"
+        '  echo "No principal matched." >&2\n'
+        f"  exit {verify_exit}\n"
+        "fi\n"
+        + (
+            f'if [ "$1" = update-ref ] && [ "$2" = -d ]; then\n  exit {delete_exit}\nfi\n'
+            if delete_exit is not None
+            else ""
+        )
+        + ('if [ "$1" = reset ] && [ "$2" = --hard ]; then exit 0; fi\n' if reset_noop else "")
+        + f'exec "{real_git}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
 
 
 def test_bump_creates_one_exact_signed_commit_and_tag_with_refreshed_proof(tmp_path: Path) -> None:
@@ -234,6 +275,43 @@ def test_missing_signing_configuration_refuses_before_mutation(tmp_path: Path) -
     assert "missing signing configuration: user.signingkey" in result.stderr
     assert _must_git(release_repo.root, "rev-parse", "HEAD") == release_repo.start
     assert _must_git(release_repo.root, "status", "--porcelain") == ""
+    assert _must_git(release_repo.root, "tag", "--list", "v0.16.2") == ""
+
+
+def test_verify_rejects_good_signature_text_when_git_exits_nonzero(tmp_path: Path) -> None:
+    release_repo = _release_repo(tmp_path)
+    assert release_repo.transaction("bump", "0.16.2").returncode == 0
+    _install_git_wrapper(release_repo, verify_exit=1)
+
+    result = release_repo.transaction("verify", "0.16.2", "--tag", "v0.16.2")
+
+    assert result.returncode == 1
+    assert "git verify-tag exited 1" in result.stderr
+
+
+def test_rollback_reports_failed_tag_deletion_and_lingering_tag(tmp_path: Path) -> None:
+    release_repo = _release_repo(tmp_path)
+    _install_git_wrapper(release_repo, verify_exit=1, delete_exit=42)
+
+    result = release_repo.transaction("bump", "0.16.2")
+
+    assert result.returncode == 1
+    assert "release rollback failed" in result.stderr
+    assert "tag deletion exited 42" in result.stderr
+    assert "local release tag 'v0.16.2' still exists" in result.stderr
+    assert _must_git(release_repo.root, "rev-parse", "HEAD") == release_repo.start
+
+
+def test_rollback_verifies_head_even_when_reset_claims_success(tmp_path: Path) -> None:
+    release_repo = _release_repo(tmp_path)
+    _install_git_wrapper(release_repo, verify_exit=1, reset_noop=True)
+
+    result = release_repo.transaction("bump", "0.16.2")
+
+    assert result.returncode == 1
+    assert "release rollback failed" in result.stderr
+    assert "expected rollback target" in result.stderr
+    assert _must_git(release_repo.root, "rev-parse", "HEAD") != release_repo.start
     assert _must_git(release_repo.root, "tag", "--list", "v0.16.2") == ""
 
 

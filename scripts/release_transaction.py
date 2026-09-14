@@ -150,8 +150,11 @@ def verify(expected: str, tag: str = "") -> None:
     valid_signature = re.search(
         r'^Good "git" signature .* key (SHA256:\S+)$', tag_verification.stderr, re.MULTILINE
     )
-    if not valid_signature:
-        raise Refusal(f"local release tag {tag!r} does not have a valid signature")
+    if tag_verification.returncode != 0 or not valid_signature:
+        raise Refusal(
+            f"local release tag {tag!r} does not have a valid signature "
+            f"(git verify-tag exited {tag_verification.returncode})"
+        )
     tag_fingerprint = valid_signature.group(1)
     if tag_fingerprint != identity.fingerprint:
         raise Refusal(
@@ -190,6 +193,33 @@ def _preflight(gate: str) -> None:
     _run(*command, "release", "preflight", "--gate", gate)
 
 
+def _rollback(start: str, tag: str) -> None:
+    errors: list[str] = []
+    delete = _run("git", "update-ref", "-d", f"refs/tags/{tag}", check=False)
+    if delete.returncode != 0:
+        errors.append(f"tag deletion exited {delete.returncode}")
+    reset = _run("git", "reset", "--hard", start, check=False)
+    if reset.returncode != 0:
+        errors.append(f"worktree reset exited {reset.returncode}")
+
+    head = _run("git", "rev-parse", "HEAD", check=False)
+    if head.returncode != 0 or head.stdout.strip() != start:
+        current = head.stdout.strip()[:12] if head.returncode == 0 else "unreadable"
+        errors.append(f"HEAD is {current}, expected rollback target {start[:12]}")
+    tag_state = _run("git", "show-ref", "--verify", "--quiet", f"refs/tags/{tag}", check=False)
+    if tag_state.returncode == 0:
+        errors.append(f"local release tag {tag!r} still exists")
+    elif tag_state.returncode != 1:
+        errors.append(f"could not verify local release tag removal (exit {tag_state.returncode})")
+    status = _run("git", "status", "--porcelain=v1", "--untracked-files=normal", check=False)
+    if status.returncode != 0:
+        errors.append(f"could not verify rollback worktree state (exit {status.returncode})")
+    elif status.stdout.strip():
+        errors.append("rollback worktree is not clean")
+    if errors:
+        raise Refusal("release rollback failed: " + "; ".join(errors))
+
+
 def bump(expected: str, gate: str) -> None:
     status = _git("status", "--porcelain=v1", "--untracked-files=normal")
     if status:
@@ -214,8 +244,6 @@ def bump(expected: str, gate: str) -> None:
     _preflight(gate)
 
     start = _git("rev-parse", "HEAD")
-    complete = False
-    armed = True
     try:
         _cz("bump", "--changelog", "--gpg-sign", expected)
         head = _git("rev-parse", "HEAD")
@@ -231,11 +259,12 @@ def bump(expected: str, gate: str) -> None:
                 f"expected {sorted(RELEASE_FILES)!r}, found {sorted(changed)!r}"
             )
         verify(expected, tag)
-        complete = True
-    finally:
-        if armed and not complete:
-            _run("git", "update-ref", "-d", f"refs/tags/{tag}", check=False)
-            _run("git", "reset", "--hard", start, check=False)
+    except BaseException as failure:
+        try:
+            _rollback(start, tag)
+        except Refusal as cleanup_failure:
+            raise Refusal(f"release failed ({failure}); {cleanup_failure}") from failure
+        raise
     print(f"✓ local release transaction {tag} -> {_git('rev-parse', '--short=12', 'HEAD')}")
 
 
