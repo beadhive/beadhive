@@ -867,6 +867,7 @@ def build_development_frame_bridge_application(
     registry: DevelopmentInstanceRegistry,
     runtime_calls: RuntimeCallPolicy | None = None,
     read_source: gateway_read_mod.GatewayReadSource | None = None,
+    experience_source: gateway_read_mod.ExperienceReadSource | None = None,
     telemetry: SemanticTelemetryPort | None = None,
 ) -> Starlette:
     """Build the Frame Bridge read profile without mutating the loopback application."""
@@ -1619,6 +1620,7 @@ def build_development_frame_bridge_application(
         ],
         lifespan=lifespan,
     )
+    app.state.experience_source = experience_source
 
     async def cors_and_read_only(request: Request, call_next):
         is_command = (

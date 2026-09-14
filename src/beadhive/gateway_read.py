@@ -29,6 +29,23 @@ CATALOG_FILE = "gateway-read-v1-development.json"
 MANIFEST_FILE = "gateway-read-v1-development.manifest.json"
 PINNED_CATALOG_SHA256 = "c45b4b80553f16d7973ff3758fae866415f624e4083c742c161bdc31fda5991b"
 PINNED_MANIFEST_SHA256 = "894c31924af6706fb10191f89383e1439791bb09281c154274575e979dfd0d00"
+DEMO_EXPERIENCE_FILE = "demo-tour-overview.json"
+DEMO_EXPERIENCE_MANIFEST_FILE = "demo-tour-overview.manifest.json"
+PINNED_DEMO_EXPERIENCE_SHA256 = "27103f5b5072de992a05665c06c9502cc5848567cb1a965add6dab0178a1b528"
+PINNED_DEMO_EXPERIENCE_MANIFEST_SHA256 = (
+    "ad958fe05599532be823ab8e841a23c0eccb252a75f4c2b9439177618c6e93d3"
+)
+PINNED_DEMO_EXPERIENCE_DIGEST = (
+    "sha256:5106bc028061d2a0662eb96d2ca09213be4ca7a85a5df5f26dd120f7c71a7227"
+)
+PINNED_DEMO_PACKAGE_VERSION = "0.1.0"
+DEMO_EXPERIENCE_CAPABILITIES = (
+    "operator.snapshot",
+    "planning.foresight",
+    "activity.replay",
+    "assistant.transcript",
+    "tour.navigation",
+)
 SCENARIO_IDS = (
     "small",
     "dense",
@@ -202,6 +219,10 @@ class ReadSourceResnapshotRequired(Exception):
     """A page or source cursor cannot be proven continuous."""
 
 
+class ExperienceAuthorizationFailed(Exception):
+    """An authenticated principal cannot read the selected experience."""
+
+
 class GatewayReadSource(Protocol):
     """Substrate-neutral authenticated rich-read port used by bridge handlers."""
 
@@ -225,6 +246,18 @@ class GatewayReadSource(Protocol):
         subscription: str,
         after: str | None,
     ) -> AsyncIterator[Mapping[str, object]]: ...
+
+
+class ExperienceReadSource(Protocol):
+    """Startup-validated source for the server-selected Development experience."""
+
+    @property
+    def cache_boundary(self) -> str: ...
+
+    @property
+    def source_mode(self) -> str: ...
+
+    async def experience(self, subject: str, *, instance_id: str) -> Mapping[str, object]: ...
 
 
 @dataclass(frozen=True)
@@ -826,3 +859,167 @@ def load_packaged_development_source(
     if source.selected_scenario_id != SELECTED_SCENARIO_ID:
         raise CatalogValidationError("packaged gateway read release selection is incompatible")
     return source
+
+
+def _demo_experience_envelope(artifact_bytes: bytes, manifest_bytes: bytes) -> dict[str, object]:
+    """Validate the exact UI release artifact and project its gateway-owned descriptor."""
+    if (
+        _sha256(artifact_bytes) != PINNED_DEMO_EXPERIENCE_SHA256
+        or _sha256(manifest_bytes) != PINNED_DEMO_EXPERIENCE_MANIFEST_SHA256
+    ):
+        raise CatalogValidationError("packaged demo experience does not match its source pin")
+    try:
+        artifact = _object(json.loads(artifact_bytes), "demo experience artifact")
+        manifest = _object(json.loads(manifest_bytes), "demo experience manifest")
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise CatalogValidationError("packaged demo experience is not UTF-8 JSON") from exc
+
+    digest_input = {
+        key: artifact.get(key)
+        for key in ("schemaVersion", "artifactVersion", "generatedBy", "descriptor", "experience")
+    }
+    digest = "sha256:" + _sha256(_canonical_bytes(digest_input) + b"\n")
+    canonical_artifact = _canonical_bytes(artifact) + b"\n"
+    if (
+        artifact.get("schemaVersion") != SCHEMA_VERSION
+        or artifact.get("artifactVersion") != SCHEMA_VERSION
+        or artifact.get("digest") != PINNED_DEMO_EXPERIENCE_DIGEST
+        or digest != PINNED_DEMO_EXPERIENCE_DIGEST
+        or artifact.get("byteCount") != len(canonical_artifact)
+        or canonical_artifact != artifact_bytes
+    ):
+        raise CatalogValidationError("packaged demo experience artifact is incompatible")
+
+    descriptor = _object(artifact.get("descriptor"), "demo provider descriptor")
+    scenario = _object(descriptor.get("scenario"), "demo scenario")
+    capabilities = _array(
+        descriptor.get("capabilities"),
+        "demo capabilities",
+        maximum=len(DEMO_EXPERIENCE_CAPABILITIES),
+    )
+    if (
+        descriptor.get("source") != "hosted-static-demo"
+        or descriptor.get("authority") != "generated"
+        or descriptor.get("transport") != "static"
+        or tuple(capabilities) != DEMO_EXPERIENCE_CAPABILITIES
+        or scenario.get("id") != "tour-overview"
+        or scenario.get("artifactVersion") != SCHEMA_VERSION
+        or scenario.get("selectedBy") != "build"
+    ):
+        raise CatalogValidationError("packaged demo experience provider is incompatible")
+
+    if (
+        manifest.get("schemaVersion") != SCHEMA_VERSION
+        or manifest.get("artifactVersion") != SCHEMA_VERSION
+        or manifest.get("scenarioId") != "tour-overview"
+        or manifest.get("artifact") != "tour-overview.json"
+        or manifest.get("digest") != artifact["digest"]
+        or manifest.get("byteCount") != artifact["byteCount"]
+        or manifest.get("capabilities") != capabilities
+    ):
+        raise CatalogValidationError("packaged demo experience manifest is incompatible")
+
+    generated_by = _object(artifact.get("generatedBy"), "demo generator provenance")
+    if (
+        generated_by.get("package") != "@beadhive/operator-testkit"
+        or not isinstance(generated_by.get("version"), str)
+        or not generated_by["version"]
+    ):
+        raise CatalogValidationError("packaged demo experience provenance is incompatible")
+
+    experience = _object(artifact.get("experience"), "demo experience")
+    lanes = _object(experience.get("lanes"), "demo experience lanes")
+    if set(lanes) != {"operator", "planning", "activity", "assistant"}:
+        raise CatalogValidationError("packaged demo experience lanes are incomplete")
+    operator = _object(lanes.get("operator"), "demo operator lane")
+    snapshot = _object(operator.get("snapshot"), "demo operator snapshot")
+    planning = _object(lanes.get("planning"), "demo planning lane")
+    activity = _object(lanes.get("activity"), "demo activity lane")
+    assistant = _object(lanes.get("assistant"), "demo assistant lane")
+    coverage = _object(experience.get("coverage"), "demo experience coverage")
+    required = _array(coverage.get("required"), "demo required coverage", maximum=128)
+    exercised = _array(coverage.get("exercised"), "demo exercised coverage", maximum=128)
+    counts = _object(manifest.get("counts"), "demo experience counts")
+    if (
+        experience.get("schemaVersion") != SCHEMA_VERSION
+        or experience.get("id") != "tour-overview"
+        or operator.get("instanceId") != INSTANCE_ID
+        or scenario.get("revision") != snapshot.get("revision")
+        or snapshot.get("advertisedActions") != []
+        or planning.get("state") != "populated"
+        or counts.get("workItems") != len(_array(snapshot.get("workItems"), "demo work items"))
+        or counts.get("activityFrames")
+        != len(_array(activity.get("frames"), "demo activity frames"))
+        or counts.get("assistantFrames")
+        != len(_array(assistant.get("frames"), "demo assistant frames"))
+        or counts.get("tourStops") != len(_array(experience.get("tourStops"), "demo tour stops"))
+        or len(required) != len(set(required))
+        or len(exercised) != len(set(exercised))
+        or not set(required) <= set(exercised)
+    ):
+        raise CatalogValidationError("packaged demo experience is internally incoherent")
+
+    projected_descriptor = copy.deepcopy(descriptor)
+    projected_descriptor.update(
+        {"source": "gateway-demo", "authority": "generated", "transport": "gateway"}
+    )
+    projected_scenario = _object(projected_descriptor["scenario"], "projected demo scenario")
+    projected_scenario["selectedBy"] = "gateway"
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "contractVersion": CONTRACT_VERSION,
+        "instanceId": INSTANCE_ID,
+        "provider": projected_descriptor,
+        "provenance": {
+            "package": "@beadhive/demo-scenarios",
+            "packageVersion": PINNED_DEMO_PACKAGE_VERSION,
+            "artifact": "tour-overview.json",
+            "artifactVersion": artifact["artifactVersion"],
+            "digest": artifact["digest"],
+            "byteCount": artifact["byteCount"],
+            "generatedBy": copy.deepcopy(generated_by),
+        },
+        "experience": copy.deepcopy(experience),
+    }
+
+
+class GeneratedExperienceReadSource:
+    """One immutable, gateway-selected experience loaded before readiness."""
+
+    def __init__(
+        self,
+        artifact: bytes,
+        manifest: bytes,
+        *,
+        authorized_subjects: frozenset[str],
+    ) -> None:
+        self._envelope = _demo_experience_envelope(artifact, manifest)
+        self._authorized_subjects = authorized_subjects
+        self._incarnation = secrets.token_urlsafe(18)
+
+    @property
+    def cache_boundary(self) -> str:
+        return self._incarnation
+
+    @property
+    def source_mode(self) -> str:
+        return "generated"
+
+    async def experience(self, subject: str, *, instance_id: str) -> Mapping[str, object]:
+        if instance_id != INSTANCE_ID:
+            raise ReadSourceNotFound
+        if subject not in self._authorized_subjects:
+            raise ExperienceAuthorizationFailed
+        return copy.deepcopy(self._envelope)
+
+
+def load_packaged_development_experience_source(
+    *, authorized_subjects: frozenset[str]
+) -> GeneratedExperienceReadSource:
+    """Load, pin, and validate tour-overview before the listener becomes ready."""
+    package = resources.files("beadhive").joinpath("catalog")
+    return GeneratedExperienceReadSource(
+        package.joinpath(DEMO_EXPERIENCE_FILE).read_bytes(),
+        package.joinpath(DEMO_EXPERIENCE_MANIFEST_FILE).read_bytes(),
+        authorized_subjects=authorized_subjects,
+    )
