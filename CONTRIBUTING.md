@@ -92,6 +92,34 @@ Two traps worth knowing even if you never read the script:
 - **Never "fix" a stuck push with `--no-verify`.** That bypasses the gate entirely, and once it
   becomes habit the gate is gone.
 
+## Release artifact provenance
+
+The release workflow builds and checks one wheel and one source distribution without OIDC
+privileges, records their SHA-256 hashes, and transfers those exact files to a publish-only job.
+That job uses PyPI Trusted Publishing and Sigstore keyless signing to upload a PEP 740 publish
+attestation for each distribution through PyPI's Integrity API. It never rebuilds the files.
+
+Git signatures and distribution attestations prove different things. Signed commits and signed
+release tags authenticate objects in the Git history using the maintainer's configured signing
+key. PEP 740 attestations authenticate the `.whl` and `.tar.gz` files using the GitHub Actions
+OIDC identity trusted by PyPI. They do not embed deprecated wheel signatures or upload detached
+PGP signatures.
+
+After PyPI publishes a release, verify both files and require their signing identity to match this
+repository. For example, the v0.16.2 release proof is:
+
+```sh
+uvx pypi-attestations verify pypi \
+  --repository https://github.com/beadhive/beadhive \
+  pypi:beadhive-0.16.2-py3-none-any.whl
+uvx pypi-attestations verify pypi \
+  --repository https://github.com/beadhive/beadhive \
+  pypi:beadhive-0.16.2.tar.gz
+```
+
+The verifier fetches each file's provenance from PyPI's Integrity API and fails if the artifact,
+attestation, or expected repository identity does not match.
+
 ## Submitting a change
 
 1. Branch off `main`.

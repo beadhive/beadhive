@@ -158,9 +158,9 @@ jobs:
           }
 
           # THE GATE THAT MATTERS. A tag proves someone ran `just bump`; it does not prove the
-          # release shipped. The realistic failure is a tag whose publish failed, or that is
-          # still parked behind release.yml's `pypi-prod` approval gate. A `stable` naming a
-          # version nobody can install is worse than a `stable` that is merely stale.
+          # release shipped. The realistic failure is a tag whose publish failed or whose
+          # release workflow has not completed. A `stable` naming a version nobody can install
+          # is worse than a `stable` that is merely stale.
           status="$(curl -sSL -o /tmp/pypi.json -w '%{http_code}' \
             "https://pypi.org/pypi/${PROJECT}/${VERSION}/json" || echo 000)"
 
@@ -168,7 +168,7 @@ jobs:
             200) ;;
             404)
               refuse "${PROJECT} ${VERSION} is not on PyPI." \
-                $'The tag exists but the release did not ship — either the publish failed, or it is\nstill waiting on the pypi-prod environment approval. Promote only versions a user can\nactually install.' ;;
+                $'The tag exists but the release did not ship — either the publish failed, or the\nrelease workflow has not completed. Promote only versions a user can actually install.' ;;
             *)
               refuse "could not confirm ${PROJECT} ${VERSION} on PyPI (HTTP ${status})." \
                 "Refusing to promote on an inconclusive check — re-run once PyPI answers." ;;

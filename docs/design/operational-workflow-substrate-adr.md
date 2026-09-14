@@ -226,7 +226,7 @@ Applied to every real workflow in the repo:
 | Setup Guide (12 steps + nested `guides/rescue/`) | **Guide, alone** | Judgment + verification + retry; and beads is *literally unavailable* — the Guide runs on a machine with no `bh`, no hive, no `bd`. Step `080-first-hive` is where a bead store first exists. |
 | `github-app-tier-provision` (7 steps) | **Guide, alone** | Two `performer: human` prerequisites; single-session, needs no place in the dependency graph. |
 | `backfill` (5 steps) | **Both, by layer** | Guide is the execution trace; its *product* is durable beads. Idempotent re-run proposes zero changes, so nothing is lost by not tracking the run as work. |
-| Release cut (`just bump` + `release.yml`) | **Neither** | Already mechanised in CI; its human gate is already `environment: pypi-prod` — the `gate: gh:run` shape formula models, with a real executor behind it. |
+| Release cut (`just bump` + `release.yml`) | **Neither** | Already mechanised in CI with a real publisher; downstream work depends on measured PyPI publication. The environment scopes publishing identity, but required reviewers are not configured. |
 | `onboard.py` (1,562 lines) | **Neither — it is imperative code** | Two-phase DAG executor with real `action` callables; its own docstring says "onboarding-specific by design — NOT a generic workflow engine." |
 
 The one GO candidate this decision had to dispose of was **beads-as-Guide-`StateBackend`**, on the
@@ -572,9 +572,9 @@ The reason this is worth spelling out: someone reading Decision 5's *"gate beads
 versioned, git-synced, and never GC-eligible"* and then reaching for `gate:` inside a formula
 because it is the same words would get none of those four properties. **Those are properties of
 `bd gate create`, not of the `type: gate` bead shape.** For the release loop specifically, the
-existing human gate — `environment: pypi-prod` on `release.yml`, with a real executor, real
-identity, and an audit log GitHub retains — is strictly better than either, and moving it into a
-wisp loses the executor *and* the record.
+publish job has a real executor, scoped identity, and an audit log GitHub retains, while its
+downstream jobs depend on measured publication. Required reviewers are not configured. Mirroring
+that state in a wisp loses the executor while adding a second, weaker record.
 
 ### A4 — corrections to Decision 2's stated reasons (the verdict is unchanged)
 
