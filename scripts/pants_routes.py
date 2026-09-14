@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -14,44 +13,16 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+try:
+    from scripts.pants_launcher import launcher
+except ModuleNotFoundError:
+    from pants_launcher import launcher
+
 ROOT = Path(__file__).parents[1]
 QUALIFIED_TEST = "tests/unit/modules/config/test_resolution.py"
 QUALIFIED_SOURCE = "src/beadhive/modules/config/application/resolution.py"
 QUALIFIED = frozenset({QUALIFIED_TEST, QUALIFIED_SOURCE})
 QUALIFIED_CLOSURE_COUNT = 1
-
-
-def launcher(environ: dict[str, str] | None = None) -> str:
-    env = os.environ if environ is None else environ
-    explicit = env.get("PANTS_BIN")
-    if explicit:
-        resolved = shutil.which(explicit, path=env.get("PATH")) if "/" not in explicit else explicit
-        if resolved and Path(resolved).is_file() and os.access(resolved, os.X_OK):
-            return resolved
-        raise RuntimeError(f"PANTS_BIN is not executable: {explicit}")
-    for name in ("pants", "scie-pants"):
-        resolved = shutil.which(name, path=env.get("PATH"))
-        if resolved:
-            return resolved
-    mise = shutil.which("mise", path=env.get("PATH"))
-    if mise:
-        result = subprocess.run(
-            [mise, "exec", "--", "which", "scie-pants"],
-            cwd=ROOT,
-            env={**os.environ, **env},
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        candidate = (result.stdout or "").strip()
-        if result.returncode == 0 and "\n" not in candidate:
-            resolved = Path(candidate)
-            if resolved.is_file() and os.access(resolved, os.X_OK):
-                return str(resolved)
-    raise RuntimeError(
-        "Pants launcher unavailable: run `mise install scie-pants`, install the official "
-        "launcher, or set PANTS_BIN=/absolute/path/to/pants"
-    )
 
 
 @dataclass

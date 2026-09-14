@@ -47,10 +47,26 @@ def test_launcher_resolves_mise_tool_when_shims_are_not_on_path(tmp_path) -> Non
     resolved.write_text("#!/bin/sh\n", encoding="utf-8")
     resolved.chmod(0o755)
     mise = tmp_path / "mise"
-    mise.write_text(f"#!/bin/sh\nprintf '%s\\n' {resolved!s}\n", encoding="utf-8")
+    mise.write_text(
+        f'#!/bin/sh\n[ "$1" = which ] && [ "$2" = scie-pants ] || exit 41\n'
+        f"printf '%s\\n' {resolved!s}\n",
+        encoding="utf-8",
+    )
     mise.chmod(0o755)
 
     assert attest.launcher({"PATH": str(tmp_path)}) == str(resolved)
+
+
+def test_launcher_missing_is_actionable_for_both_supported_remedies() -> None:
+    try:
+        attest.launcher({"PATH": ""})
+    except RuntimeError as exc:
+        message = str(exc)
+        assert "mise install scie-pants" in message
+        assert "official launcher" in message
+        assert "PANTS_BIN=/absolute/path/to/pants" in message
+    else:
+        raise AssertionError("missing launcher was accepted")
 
 
 def test_mise_pins_official_scie_pants_launcher() -> None:
@@ -90,6 +106,7 @@ def test_disable_switch_invokes_native_and_preserves_failure(monkeypatch) -> Non
         routes.route("leaf", routes.QUALIFIED_TEST, pants="pants", native_command=["just", "check"])
         == 19
     )
+    assert routes.launcher is attest.launcher
 
 
 def test_check_all_requires_pants_attest_and_native_phases() -> None:

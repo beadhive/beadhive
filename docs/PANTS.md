@@ -108,10 +108,12 @@ same-tree oracle evidence are stale, incomplete, incompatible, or contain a corr
 The qualified routes are active by default. Set `BH_PANTS_ROUTING=0` to send even the qualified
 resolution route through native/full validation; no uv, pytest, or native Just repair is needed.
 `.mise.toml` pins the official scie-pants launcher at 0.13.2 for developer machines; this launcher
-version is distinct from the Pants engine 2.32.1 pinned by `pants.toml`. `PANTS_BIN` always wins.
-Otherwise discovery tries `pants`, then mise's `scie-pants`; absence fails closed with
-`mise install scie-pants` and native-fallback guidance. Nix and deployment integration remain
-deferred: this development pin does not modify `flake.nix` or deployment manifests.
+version is distinct from the Pants engine 2.32.1 pinned by `pants.toml`. `PANTS_BIN` always wins;
+an invalid explicit value fails closed. Otherwise discovery tries `pants`, then `scie-pants`, then
+the read-only `mise which scie-pants` query. Every result must be executable; absence fails closed
+with `mise install scie-pants`, the official launcher, or the `PANTS_BIN` remedy. Nix and deployment
+integration remain deferred: this development pin does not modify `flake.nix` or deployment
+manifests.
 
 `just pants-attest` verifies the 2.32.1 pin, experimental uv whole-lock resolve, coherent pytest
 resolve, disabled remote cache, lock metadata, current shadow evidence, the `bh` PEX package, and

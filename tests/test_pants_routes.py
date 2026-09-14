@@ -142,7 +142,11 @@ def test_route_launcher_resolves_mise_tool_when_shims_are_not_on_path(tmp_path) 
     resolved.write_text("#!/bin/sh\n", encoding="utf-8")
     resolved.chmod(0o755)
     mise = tmp_path / "mise"
-    mise.write_text(f"#!/bin/sh\nprintf '%s\\n' {resolved!s}\n", encoding="utf-8")
+    mise.write_text(
+        f'#!/bin/sh\n[ "$1" = which ] && [ "$2" = scie-pants ] || exit 41\n'
+        f"printf '%s\\n' {resolved!s}\n",
+        encoding="utf-8",
+    )
     mise.chmod(0o755)
 
     assert routes.launcher({"PATH": str(tmp_path)}) == str(resolved)
