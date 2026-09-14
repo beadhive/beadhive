@@ -413,7 +413,7 @@ def test_architecture_gate_checks_shadow_policy_without_replacing_full_gate() ->
     assert "uv run python scripts/test_closure_shadow_policy.py --check" in justfile
     assert (
         "check: lint lint-md license-check architecture-check transport-artifact-check "
-        "wire-schema-compat test" in justfile
+        "wire-schema-compat proof-digest-check test" in justfile
     )
 
 
