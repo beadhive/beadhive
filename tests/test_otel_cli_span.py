@@ -193,6 +193,7 @@ def test_child_spans_nest_under_cli_root_span(monkeypatch):
     )
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
     from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+    from opentelemetry.trace import get_current_span
 
     exporter = InMemorySpanExporter()
     provider = sdk_trace.TracerProvider()
@@ -207,8 +208,12 @@ def test_child_spans_nest_under_cli_root_span(monkeypatch):
     original_config_path = cli.config.config_path
 
     def _config_path_with_child_span():
-        with otel.span("child.span"):
-            return original_config_path()
+        # CLI startup also reads the config path before command instrumentation begins.
+        # Instrument only the handler call made while the CLI root span is current.
+        if get_current_span().get_span_context().is_valid:
+            with otel.span("child.span"):
+                return original_config_path()
+        return original_config_path()
 
     monkeypatch.setattr(cli.config, "config_path", _config_path_with_child_span)
 
