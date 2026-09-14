@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
 import subprocess
 import sys
 from dataclasses import fields, replace
@@ -256,6 +258,54 @@ def test_runner_reports_pytest_zero_collection(monkeypatch, capsys):
 
     assert test_closures._pytest(closure, collect_only=False) == 5
     assert "pytest collected/executed zero tests" in capsys.readouterr().err
+
+
+def test_focused_runner_delegates_imports_to_pytest_configuration(monkeypatch):
+    closure = test_closures.load_registry().by_id()["plugin.herdr"]
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(test_closures.subprocess, "run", fake_run)
+
+    assert test_closures._pytest(closure, collect_only=False) == 0
+    assert "env" not in calls[0]
+
+
+def test_script_namespace_is_importable_from_focused_pytest_node():
+    from scripts import test_closures as imported_test_closures
+
+    assert imported_test_closures.ROOT == ROOT
+
+
+def test_console_and_module_pytest_entrypoints_match_in_sanitized_environment():
+    pytest_console = shutil.which("pytest", path=str(Path(sys.executable).parent))
+    assert pytest_console is not None
+    environment = {
+        key: value for key in ("HOME", "PATH", "TMPDIR") if (value := os.environ.get(key))
+    }
+    target = (
+        "tests/test_test_closures.py::test_script_namespace_is_importable_from_focused_pytest_node"
+    )
+    commands = (
+        (pytest_console, "-q", "-p", "no:stateful_fixtures", target),
+        (sys.executable, "-m", "pytest", "-q", "-p", "no:stateful_fixtures", target),
+    )
+    for command in commands:
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert completed.returncode == 0, (
+            f"pytest entrypoint failed: {' '.join(command)}\n"
+            f"stdout:\n{completed.stdout}\nstderr:\n{completed.stderr}"
+        )
 
 
 def test_expected_future_module_requires_an_explicit_registry_row():
