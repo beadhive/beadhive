@@ -357,10 +357,15 @@ def test_an_unconfigured_push_main_phase_refuses_the_bump(hive):
     hive["entry"]["work"] = {"validate": {}, "validate_cmd": "just check"}
     validation_ledger.record(hive["entry"], hive["sha"], "just check", 0)
 
-    res = _preflight(hive, gate="")
+    res = _preflight(hive)
 
     assert res.exit_code == 1
     assert "no `work.validate.push-main` configured" in res.output
+    assert "Target hive: mr" in res.output
+    assert "Requested gate command: 'just check-all'" in res.output
+    assert "fleet-owned" in res.output
+    assert "bh config set work.validate.push-main 'just check-all' --scope fleet" in res.output
+    assert "--scope host" not in res.output
 
 
 def test_a_phase_naming_a_different_command_refuses_the_bump(hive):
@@ -373,6 +378,8 @@ def test_a_phase_naming_a_different_command_refuses_the_bump(hive):
 
     assert res.exit_code == 1
     assert "but this gate runs" in res.output
+    assert "Configured command: 'just check'" in res.output
+    assert "Requested command: 'just check-all'" in res.output
 
 
 def test_an_unresolvable_rev_refuses_the_bump(hive):
@@ -489,10 +496,11 @@ def test_attest_refuses_an_unconfigured_phase_rather_than_gating_under_the_fast_
     back to `just check` would MANUFACTURE the ambiguous verdict the lookup exists to refuse."""
     hive["entry"]["work"] = {"validate": {}, "validate_cmd": "just check"}
 
-    res = _run(hive, "attest", hive["sha"])
+    res = _run(hive, "attest", hive["sha"], "--gate", GATE_CMD)
 
     assert res.exit_code == 1
     assert "no `work.validate.push-main` configured" in res.output
+    assert "bh config set work.validate.push-main 'just check-all' --scope fleet" in res.output
     assert not _ledger(hive).exists()
 
 
@@ -1638,6 +1646,20 @@ def test_preview_reports_an_unattested_tree_instead_of_refusing_it(hive):
     assert "not attested" in res.output
     assert "just attest" in res.output
     assert "tag" in res.output  # the other checks still ran and were reported
+
+
+def test_preview_reports_the_fleet_scoped_push_main_remedy_without_writing(hive, monkeypatch):
+    hive["entry"]["work"] = {"validate": {}}
+    monkeypatch.setattr(release, "_published_artifact", lambda *args: (False, "not published"))
+
+    res = _preview(hive)
+
+    assert res.exit_code == 0
+    assert "Target hive: mr" in res.output
+    assert "bh config set work.validate.push-main 'just check-all' --scope fleet" in res.output
+    assert "fleet-owned" in res.output
+    assert not _ledger(hive).exists()
+    assert not _marker(hive).exists()
 
 
 def test_preview_reports_a_green_tree_as_green(hive):
