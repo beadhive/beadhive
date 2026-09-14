@@ -13,6 +13,25 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.16.2 (2026-09-14)
+
+### Fix
+
+- **release**: attest landed handoff tree
+- **evidence**: refresh closeout manifest digest
+- **test**: configure focused pytest imports
+- **pants**: centralize mise launcher resolution
+- **pants**: refresh shadow evidence digest
+- **test**: preserve repository imports in focused pytest
+- **pants**: resolve mise-pinned launcher
+- **release**: enforce verification and rollback proofs
+- **release**: refresh transport composition proof
+- **release**: require signed expected-version tags
+- **release**: report fleet push gate remedy
+- **release**: refresh proof digests during bump
+- **release**: correct environment gate claims
+- **release**: publish PEP 740 attestations
+
 ## v0.16.1 (2026-09-14)
 
 ### Fix
