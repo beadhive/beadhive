@@ -177,8 +177,13 @@ async def test_real_beadhive_cancel_result_isolated_from_source_publisher_failur
         cwd=tmp_path,
         journal=journal,
     )
+    child_tokens = None
     for _ in range(100):
-        if child_env.exists():
+        try:
+            child_tokens = json.loads(child_env.read_text())
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        else:
             break
         await asyncio.sleep(0.01)
 
@@ -190,7 +195,7 @@ async def test_real_beadhive_cancel_result_isolated_from_source_publisher_failur
     )
 
     assert result.reap.group_gone is True
-    assert json.loads(child_env.read_text()) == ["BH_ACTIVITY_PUBLISH_BEADHIVE_TOKEN"]
+    assert child_tokens == ["BH_ACTIVITY_PUBLISH_BEADHIVE_TOKEN"]
     assert publisher.status().retained == 3
     publisher.flush_once(force=True)
     assert publisher.status().retried == 1
