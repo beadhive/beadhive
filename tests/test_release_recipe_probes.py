@@ -26,6 +26,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 JUSTFILE = ROOT / "justfile"
+HANDOFF = ROOT / "docs" / "proof" / "bh-g7pq2.7-v0.16.2-candidate.md"
 
 needs_just = pytest.mark.skipif(shutil.which("just") is None, reason="needs just")
 
@@ -171,3 +172,26 @@ def test_release_verifies_the_local_tag_immediately_before_the_atomic_push():
     body = justfile.split('\nrelease tag="" remote="origin":\n', 1)[1].split("\n\n", 1)[0]
 
     assert body.index("release_transaction.py verify") < body.index("scripts/push-main.sh")
+
+
+def test_release_handoff_attests_the_actual_landed_tree_before_bump():
+    handoff = HANDOFF.read_text()
+    operator = handoff.split("\n## Operator handoff\n", 1)[1]
+
+    assert "## Historical pre-handoff candidate" in handoff
+    assert "2e51fdf19a70125a3f34f5f5a2ebdcd80274f682" in handoff
+    assert 'test "$(git rev-parse HEAD^{tree})" = "2e51fdf' not in operator
+    required = [
+        "git pull --ff-only origin main",
+        'landed_sha="$(git rev-parse HEAD)"',
+        'landed_tree="$(git rev-parse HEAD^{tree})"',
+        "git merge-base --is-ancestor 48d68fb2a98aa361f60218326c3043298f0ab03c",
+        "BH_EXEC='uv run bh' just attest",
+        "uv run bh release preflight \"$landed_sha\" --gate 'just check-all'",
+        'test "$(git rev-parse HEAD)" = "$landed_sha"',
+        'test "$(git rev-parse HEAD^{tree})" = "$landed_tree"',
+        "BH_EXEC='uv run bh' just bump 0.16.2",
+    ]
+
+    positions = [operator.index(command) for command in required]
+    assert positions == sorted(positions)

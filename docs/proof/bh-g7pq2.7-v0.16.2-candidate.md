@@ -4,12 +4,12 @@ This handoff certifies the assembled `bh-g7pq2` workstream before the release bu
 claim that v0.16.2 exists. Publication remains pending explicit operator approval after the
 molecule lands on `main` and the landed tree is rechecked.
 
-## Exact candidate
+## Historical pre-handoff candidate
 
 | Field | Value |
 | --- | --- |
-| Commit | `6823b4b70f5d11585638d3dfe5e83e3e543c10d9` |
-| Tree | `2e51fdf19a70125a3f34f5f5a2ebdcd80274f682` |
+| Pre-handoff commit | `6823b4b70f5d11585638d3dfe5e83e3e543c10d9` |
+| Pre-handoff tree | `2e51fdf19a70125a3f34f5f5a2ebdcd80274f682` |
 | Parent release | `v0.16.1` (`11969f85212c9795f5a7e96d9f6d50e8221fe1fb`) |
 | Full-gate receipt | `run-76c2620005bbf23b41726e933e0f1c5b` |
 | Full-gate verdict | Green for `just check-all` at `2026-09-14T20:33:26+00:00` |
@@ -76,17 +76,28 @@ certification.
 
 ## Operator handoff
 
-After the molecule lands, first prove that `main` reproduces the approved candidate tree:
+After the molecule lands, synchronize `main`, capture its actual identity for the release session,
+and prove that it contains the reviewed certification handoff. Do not compare the landed tree with
+the historical pre-handoff tree: the handoff commit itself necessarily changed that tree.
 
 ```bash
 git switch main
 git pull --ff-only origin main
-test "$(git rev-parse HEAD^{tree})" = "2e51fdf19a70125a3f34f5f5a2ebdcd80274f682"
+landed_sha="$(git rev-parse HEAD)"
+landed_tree="$(git rev-parse HEAD^{tree})"
+printf 'landed main: %s\nlanded tree: %s\n' "$landed_sha" "$landed_tree"
+git merge-base --is-ancestor 48d68fb2a98aa361f60218326c3043298f0ab03c "$landed_sha"
 ```
 
-Only then cross the local, reversible bump boundary and inspect its new exact-tree gate:
+Establish and re-read a fresh `just check-all` verdict for that exact landed tree. Reconfirm that
+the checkout did not move before crossing the local, reversible bump boundary, then inspect the
+bump commit's new exact-tree gate:
 
 ```bash
+BH_EXEC='uv run bh' just attest
+uv run bh release preflight "$landed_sha" --gate 'just check-all'
+test "$(git rev-parse HEAD)" = "$landed_sha"
+test "$(git rev-parse HEAD^{tree})" = "$landed_tree"
 BH_EXEC='uv run bh' just bump 0.16.2
 uv run bh release await --gate 'just check-all'
 git verify-tag v0.16.2
