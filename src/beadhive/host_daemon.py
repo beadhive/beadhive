@@ -696,6 +696,7 @@ class _McpLiveSession:
     credential_session: Any = field(repr=False)
     created_at: float
     last_seen_at: float
+    active_requests: int = 0
     telemetry_connection: Any = field(default=None, repr=False)
 
 
@@ -818,7 +819,8 @@ class _McpSessionLifecycle:
             )
             self._wake.set()
 
-    async def touch(self, session_id: str, *, principal: Any) -> None:
+    async def begin_request(self, session_id: str, *, principal: Any) -> bool:
+        timed_out = False
         async with self._lock:
             session = self._sessions.get(session_id)
             owner = session.credential_session.principal if session is not None else None
@@ -831,8 +833,29 @@ class _McpSessionLifecycle:
                 principal.principal,
                 principal.audience,
             ):
-                session.last_seen_at = self._monotonic()
+                now = self._monotonic()
+                timed_out = (
+                    now - session.last_seen_at >= self._idle_seconds
+                    or now - session.created_at >= self._absolute_seconds
+                )
+                if not timed_out:
+                    session.last_seen_at = now
+                    session.active_requests += 1
+                    self._wake.set()
+                    return True
+        if timed_out:
+            await self.terminate(session_id, reason="timeout")
+        return False
+
+    async def end_request(self, session_id: str) -> None:
+        async with self._lock:
+            session = self._sessions.get(session_id)
+            if session is not None:
+                if session.active_requests <= 0:
+                    raise RuntimeError("MCP request ownership released more than once")
+                session.active_requests -= 1
                 self._wake.set()
+        await self.expire_due()
 
     async def terminate(
         self,
@@ -869,16 +892,23 @@ class _McpSessionLifecycle:
             candidates = tuple(
                 session_id
                 for session_id, session in self._sessions.items()
-                if now - session.last_seen_at >= self._idle_seconds
-                or now - session.created_at >= self._absolute_seconds
+                if session.active_requests == 0
+                and (
+                    now - session.last_seen_at >= self._idle_seconds
+                    or now - session.created_at >= self._absolute_seconds
+                )
             )
         for session_id in candidates:
             async with self._lock:
                 session = self._sessions.get(session_id)
                 current = self._monotonic()
-                still_due = session is not None and (
-                    current - session.last_seen_at >= self._idle_seconds
-                    or current - session.created_at >= self._absolute_seconds
+                still_due = (
+                    session is not None
+                    and session.active_requests == 0
+                    and (
+                        current - session.last_seen_at >= self._idle_seconds
+                        or current - session.created_at >= self._absolute_seconds
+                    )
                 )
             if still_due:
                 await self.terminate(session_id, reason="timeout")
@@ -938,8 +968,9 @@ class _McpSessionLifecycleMiddleware:
         await self.lifecycle.expire_due()
         request_id = _mcp_session_header(scope.get("headers", ()))
         method = str(scope.get("method", ""))
+        active_request = False
         if request_id is not None:
-            await self.lifecycle.touch(
+            active_request = await self.lifecycle.begin_request(
                 request_id,
                 principal=scope.get("state", {})["auth_principal"],
             )
@@ -972,6 +1003,8 @@ class _McpSessionLifecycleMiddleware:
                 await self.lifecycle.terminate(registered_id, reason="cancelled")
             if successful and request_id is not None and method == "DELETE":
                 await self.lifecycle.terminate(request_id)
+            if active_request and request_id is not None:
+                await self.lifecycle.end_request(request_id)
 
 
 def _mcp_session_header(headers: Sequence[tuple[bytes, bytes]]) -> str | None:
