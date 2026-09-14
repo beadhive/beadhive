@@ -258,6 +258,20 @@ def test_runner_reports_pytest_zero_collection(monkeypatch, capsys):
     assert "pytest collected/executed zero tests" in capsys.readouterr().err
 
 
+def test_focused_runner_preserves_repository_source_imports(monkeypatch):
+    closure = test_closures.load_registry().by_id()["plugin.herdr"]
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(test_closures.subprocess, "run", fake_run)
+
+    assert test_closures._pytest(closure, collect_only=False) == 0
+    assert calls[0]["env"]["PYTHONPATH"].split(test_closures.os.pathsep)[0] == str(ROOT / "src")
+
+
 def test_expected_future_module_requires_an_explicit_registry_row():
     registry = test_closures.load_registry()
     mutated = replace(registry, expected_modules=(*registry.expected_modules, "future"))

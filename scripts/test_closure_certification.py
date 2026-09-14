@@ -556,7 +556,12 @@ def _run_collection(command: tuple[str, ...], root: Path) -> tuple[str, ...]:
     if "-n" in adjusted_parts:
         adjusted_parts[adjusted_parts.index("-n") + 1] = "0"
     completed = subprocess.run(
-        tuple(adjusted_parts), cwd=root, check=False, capture_output=True, text=True
+        tuple(adjusted_parts),
+        cwd=root,
+        env=test_closures._pytest_environment(root),
+        check=False,
+        capture_output=True,
+        text=True,
     )
     if completed.returncode:
         raise RuntimeError(completed.stdout + completed.stderr)
