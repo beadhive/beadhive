@@ -981,6 +981,11 @@ def _demo_experience_envelope(artifact_bytes: bytes, manifest_bytes: bytes) -> d
     planning = _object(lanes.get("planning"), "demo planning lane")
     activity = _object(lanes.get("activity"), "demo activity lane")
     assistant = _object(lanes.get("assistant"), "demo assistant lane")
+    if any(
+        lane.get("authority", "generated") != "generated"
+        for lane in (operator, planning, activity, assistant)
+    ):
+        raise CatalogValidationError("packaged demo experience contains mixed provenance")
     coverage = _object(experience.get("coverage"), "demo experience coverage")
     required = _array(coverage.get("required"), "demo required coverage", maximum=128)
     exercised = _array(coverage.get("exercised"), "demo exercised coverage", maximum=128)
