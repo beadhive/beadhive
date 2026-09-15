@@ -335,8 +335,8 @@
         "artifacts": [
           {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "8a909107e498262574e50feab2dd359857823f4ae664ece5e44b6cbf0ab97d71"},
           {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "b4c578846521dfdd5f495a5363d86da233e4477ba86e7433fac98478cef842cb"},
-          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "4485b5e44f78050f6911d3d4eaac7151d89e6404b1f57a9e7fe42efbf93d058b"},
-          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "5b9d67304e0ad06dcd7f304bb8e43c6c41e58a6610757b46657bc90764e23fa2"}
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "cf752090296154813b54775c6e998258158fe5af796156dbd89d68e504c625ee"},
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "1f5e2fc7daeb91dea8e3866f98d27c2596c2e7ede6abe064d1f36b4bc38e5cee"}
         ]
       },
       "package_and_entry_point": {
