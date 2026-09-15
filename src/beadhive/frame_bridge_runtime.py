@@ -16,8 +16,12 @@ from joserfc.jwk import KeySet
 from . import config as bh_config
 from . import daemon_auth, gateway_read, otel
 from .frame_bridge import (
+    CLOUD_APP_ORIGIN,
+    CLOUD_GATEWAY_ORIGIN,
     DEVELOPMENT_INSTANCE_ID,
     DEVELOPMENT_ISSUER,
+    LOCAL_DESKTOP_APP_ORIGIN,
+    LOCAL_DESKTOP_GATEWAY_ORIGIN,
     ClerkTokenVerifier,
     DevelopmentFrameBridgeConfig,
     DevelopmentInstanceRegistry,
@@ -27,8 +31,8 @@ from .frame_bridge import (
     build_development_frame_bridge_application,
 )
 
-APP_ORIGIN = "https://app-dev.beadhive.cloud"
-GATEWAY_ORIGIN = "https://gateway-dev.beadhive.cloud"
+APP_ORIGIN = CLOUD_APP_ORIGIN
+GATEWAY_ORIGIN = CLOUD_GATEWAY_ORIGIN
 AUDIENCE = "beadhive-gateway-dev"
 LOOPBACK_ORIGIN = "http://127.0.0.1:8420"
 HIVE_ID = "github/beadhive/beadhive"
@@ -37,6 +41,16 @@ _SUBJECT = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _DEMO_STATUSES = frozenset({"open", "in_progress", "blocked"})
 _INTERNAL_WORK_ITEM_TYPES = frozenset({"event", "gate"})
 SOURCE_MODE_ENV = "BEADHIVE_FRAME_BRIDGE_SOURCE_MODE"
+NETWORK_PROFILE_ENV = "BEADHIVE_FRAME_BRIDGE_NETWORK_PROFILE"
+
+
+def network_origins(profile: str | None) -> tuple[str, str]:
+    """Resolve one complete DEV network tuple; never compose origins independently."""
+    if profile in {None, "cloud"}:
+        return CLOUD_APP_ORIGIN, CLOUD_GATEWAY_ORIGIN
+    if profile == "local-desktop":
+        return LOCAL_DESKTOP_APP_ORIGIN, LOCAL_DESKTOP_GATEWAY_ORIGIN
+    raise RuntimeError(f"{NETWORK_PROFILE_ENV} must be cloud or local-desktop")
 
 
 class _LoopbackDaemonAuth(httpx.Auth):
@@ -215,11 +229,12 @@ def create_application():
             credentials / "daemon-bearer",
         )
     )
+    app_origin, gateway_origin = network_origins(os.environ.get(NETWORK_PROFILE_ENV))
     config = DevelopmentFrameBridgeConfig(
         issuer=DEVELOPMENT_ISSUER,
         audience=AUDIENCE,
-        app_origin=APP_ORIGIN,
-        gateway_origin=GATEWAY_ORIGIN,
+        app_origin=app_origin,
+        gateway_origin=gateway_origin,
     )
     authorized_subjects = _authorized_subjects(subjects_path)
     source_mode = os.environ.get(SOURCE_MODE_ENV)

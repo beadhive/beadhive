@@ -37,6 +37,16 @@ CONTRACT_VERSION = "gateway.v1"
 SCHEMA_VERSION = 1
 DEVELOPMENT_INSTANCE_ID = "dev/demo"
 DEVELOPMENT_ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
+CLOUD_APP_ORIGIN = "https://app-dev.beadhive.cloud"
+CLOUD_GATEWAY_ORIGIN = "https://gateway-dev.beadhive.cloud"
+LOCAL_DESKTOP_APP_ORIGIN = "tauri://localhost"
+LOCAL_DESKTOP_GATEWAY_ORIGIN = "http://127.0.0.1:8787"
+_APPROVED_NETWORK_PROFILES = frozenset(
+    {
+        (CLOUD_APP_ORIGIN, CLOUD_GATEWAY_ORIGIN),
+        (LOCAL_DESKTOP_APP_ORIGIN, LOCAL_DESKTOP_GATEWAY_ORIGIN),
+    }
+)
 _ALGORITHM = "RS256"
 
 
@@ -64,16 +74,10 @@ class DevelopmentFrameBridgeConfig:
         if self.audience != "beadhive-gateway-dev":
             raise ValueError("Development Frame Bridge audience must be beadhive-gateway-dev")
         _require_exact_https_origin(self.issuer, "issuer")
-        _require_exact_https_origin(self.app_origin, "application origin")
-        _require_exact_https_origin(self.gateway_origin, "gateway origin")
-        if self.app_origin != "https://app-dev.beadhive.cloud":
-            raise ValueError(
-                "Development Frame Bridge requires the canonical Development app origin"
-            )
-        if self.gateway_origin != "https://gateway-dev.beadhive.cloud":
-            raise ValueError("Development Frame Bridge requires the canonical Gateway host")
         if self.issuer != DEVELOPMENT_ISSUER:
             raise ValueError("Development Frame Bridge requires the exact Clerk Development issuer")
+        if (self.app_origin, self.gateway_origin) not in _APPROVED_NETWORK_PROFILES:
+            raise ValueError("Development Frame Bridge requires one approved network profile")
 
 
 def _require_exact_https_origin(value: str, label: str) -> None:

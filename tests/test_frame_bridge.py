@@ -27,6 +27,8 @@ ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 AUDIENCE = "beadhive-gateway-dev"
 APP_ORIGIN = "https://app-dev.beadhive.cloud"
 GATEWAY_ORIGIN = "https://gateway-dev.beadhive.cloud"
+LOCAL_APP_ORIGIN = "tauri://localhost"
+LOCAL_GATEWAY_ORIGIN = "http://127.0.0.1:8787"
 INSTANCE_ID = "dev/demo"
 SUBJECT = "user_dev_demo"
 CORRELATION_ID = "123e4567-e89b-42d3-a456-426614174000"
@@ -169,6 +171,97 @@ def _exercise(app, action):
 
 def _headers(token: str, *, origin: str = APP_ORIGIN) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}", "Origin": origin}
+
+
+def test_local_desktop_network_profile_is_exact_and_browser_origins_stay_refused() -> None:
+    local = frame_bridge.DevelopmentFrameBridgeConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=LOCAL_APP_ORIGIN,
+        gateway_origin=LOCAL_GATEWAY_ORIGIN,
+    )
+    assert local.app_origin == LOCAL_APP_ORIGIN
+    assert local.gateway_origin == LOCAL_GATEWAY_ORIGIN
+
+    for app_origin, gateway_origin in (
+        (APP_ORIGIN, LOCAL_GATEWAY_ORIGIN),
+        (LOCAL_APP_ORIGIN, GATEWAY_ORIGIN),
+        ("http://127.0.0.1", LOCAL_GATEWAY_ORIGIN),
+        ("http://localhost", LOCAL_GATEWAY_ORIGIN),
+    ):
+        with pytest.raises(ValueError, match="approved network profile"):
+            frame_bridge.DevelopmentFrameBridgeConfig(
+                issuer=ISSUER,
+                audience=AUDIENCE,
+                app_origin=app_origin,
+                gateway_origin=gateway_origin,
+            )
+
+
+def test_runtime_network_profile_defaults_cloud_and_requires_exact_local_opt_in() -> None:
+    assert frame_bridge_runtime.network_origins(None) == (APP_ORIGIN, GATEWAY_ORIGIN)
+    assert frame_bridge_runtime.network_origins("cloud") == (APP_ORIGIN, GATEWAY_ORIGIN)
+    assert frame_bridge_runtime.network_origins("local-desktop") == (
+        LOCAL_APP_ORIGIN,
+        LOCAL_GATEWAY_ORIGIN,
+    )
+    with pytest.raises(RuntimeError, match="BEADHIVE_FRAME_BRIDGE_NETWORK_PROFILE"):
+        frame_bridge_runtime.network_origins("local")
+
+
+def test_local_desktop_profile_admits_tauri_authenticated_read_and_rejects_browser_origin() -> None:
+    private_key, public_key = _keys()
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=LOCAL_APP_ORIGIN,
+        gateway_origin=LOCAL_GATEWAY_ORIGIN,
+    )
+    app = frame_bridge.build_development_frame_bridge_application(
+        config=config,
+        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        registry=frame_bridge.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: frame_bridge.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({SUBJECT}),
+                    snapshot=_read_snapshot,
+                    online=_online,
+                )
+            }
+        ),
+    )
+
+    async def run():
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5000))
+        async with httpx.AsyncClient(transport=transport, base_url=LOCAL_GATEWAY_ORIGIN) as client:
+            token = _token(private_key)
+            admitted = await client.get(
+                "/v1/instances",
+                params={"limit": "50"},
+                headers=_headers(token, origin=LOCAL_APP_ORIGIN),
+            )
+            rejected = await client.get(
+                "/v1/instances",
+                params={"limit": "50"},
+                headers=_headers(token, origin="http://127.0.0.1:3000"),
+            )
+            preflight = await client.options(
+                "/v1/instances",
+                headers={
+                    "Origin": LOCAL_APP_ORIGIN,
+                    "Access-Control-Request-Method": "GET",
+                    "Access-Control-Request-Headers": "Authorization",
+                },
+            )
+            return admitted, rejected, preflight
+
+    admitted, rejected, preflight = asyncio.run(run())
+    assert admitted.status_code == 200
+    assert admitted.headers["access-control-allow-origin"] == LOCAL_APP_ORIGIN
+    assert rejected.status_code == 403
+    assert preflight.status_code == 204
+    assert preflight.headers["access-control-allow-origin"] == LOCAL_APP_ORIGIN
 
 
 def test_authorized_subject_discovers_only_dev_demo_and_reads_redacted_snapshot() -> None:

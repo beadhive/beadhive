@@ -13,8 +13,10 @@ host daemon's loopback Operator API.
 
 - issuer: `https://rapid-snail-6758.clerk.accounts.dev`
 - audience: `beadhive-gateway-dev`
-- browser origin: `https://app-dev.beadhive.cloud`
-- gateway origin: `https://gateway-dev.beadhive.cloud`
+- default cloud browser origin: `https://app-dev.beadhive.cloud`
+- default cloud gateway origin: `https://gateway-dev.beadhive.cloud`
+- opt-in local-desktop app origin: `tauri://localhost`
+- opt-in local-desktop gateway origin: `http://127.0.0.1:8787`
 - logical instance: `dev/demo`
 - JWS algorithm: RS256
 
@@ -45,7 +47,8 @@ registry receive no runtime access.
   its cursor and resulting snapshot revision. Clients fetch a fresh snapshot after invalidation;
   event payloads never duplicate work-item, agent, transcript, or workspace data.
 
-All calls require `Authorization: Bearer <token>` and the exact Development `Origin`. Browser
+All calls require `Authorization: Bearer <token>` and the exact Origin from one complete
+Development network profile. Cloud and local-desktop values cannot be mixed. Browser
 preflight permits GET with Authorization, or POST to the exact refresh route with Authorization
 and Content-Type. All responses are `no-store`; the profile exposes no generic write, terminal,
 transcript, local-path, or event-stream capability in this version.
@@ -102,15 +105,27 @@ systemd, the default names are `clerk-jwks.json`, `authorized-subjects.json`, an
 below `CREDENTIALS_DIRECTORY`; optional explicit paths exist for other service managers. The
 daemon bearer requires only `operator:read`, is attached only to the fixed loopback daemon
 snapshot and event requests, and is never derived from or replaced by a remote caller token.
-The process never accepts keys, subjects, bearer values, origins, audiences, instance IDs,
-listener addresses, or local source locations as command arguments. The optional environment
+The process never accepts keys, subjects, bearer values, free-form origins, audiences, instance
+IDs, listener addresses, or local source locations as command arguments. The optional environment
 variables `BEADHIVE_FRAME_BRIDGE_JWKS_FILE`, `BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE`, and
 `BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE` carry file paths only; the unreleased
 `BEADHIVE_GATEWAY_*` aliases are absent.
 
+Cloud is the default network profile. Local testing of an installed `Beadhive-Dev.app` opts into
+the only other sealed tuple at process startup:
+
+```sh
+BEADHIVE_FRAME_BRIDGE_NETWORK_PROFILE=local-desktop beadhive-frame-bridge
+```
+
+That process still binds only `127.0.0.1:8787`; it admits `Origin: tauri://localhost` and rejects
+ordinary browser origins such as `http://127.0.0.1` and `http://localhost`. An unknown profile
+value fails startup. The profile selector carries no endpoint value or credential.
+
 [`deploy/systemd/beadhive-frame-bridge-dev.service.example`](../deploy/systemd/beadhive-frame-bridge-dev.service.example)
 is the least-privilege user-service template. It has no capabilities, writable home, device
-access, or mutable system paths. Cloudflared remains a separate service and credential boundary.
+access, or mutable system paths. Cloudflared remains a separate service and credential boundary
+for the default cloud profile; the opt-in local-desktop profile connects directly over loopback.
 The local health probe is:
 
 ```sh
