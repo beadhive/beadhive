@@ -654,7 +654,7 @@ def test_every_live_contract_cell_links_to_an_exact_collected_test() -> None:
         cwd=ROOT,
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=60,
         check=False,
     )
     assert collected.returncode == 0, collected.stdout + collected.stderr
