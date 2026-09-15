@@ -8,7 +8,7 @@ from typing import Any, Literal
 
 from . import frame_bridge, gateway_read
 
-WireFamily = Literal["gateway.v1", "gateway.read.v1"]
+WireFamily = Literal["gateway.v1", "gateway.read.v1", "gateway.experience.v1"]
 _CONTRACT_ID_PREFIX = "urn:beadhive:gateway-wire-contract:"
 
 
@@ -18,15 +18,20 @@ def _canonical_bytes(value: object) -> bytes:
 
 def _declarations() -> dict[WireFamily, dict[str, Any]]:
     return {
+        "gateway.read.v1": {
+            "contractVersion": gateway_read.CONTRACT_VERSION,
+            "schemaVersion": gateway_read.SCHEMA_VERSION,
+            "schemas": gateway_read.gateway_wire_schemas(),
+        },
         "gateway.v1": {
             "contractVersion": frame_bridge.CONTRACT_VERSION,
             "schemaVersion": frame_bridge.SCHEMA_VERSION,
             "schemas": frame_bridge.gateway_wire_schemas(),
         },
-        "gateway.read.v1": {
-            "contractVersion": gateway_read.CONTRACT_VERSION,
+        "gateway.experience.v1": {
+            "contractVersion": "gateway.experience.v1",
             "schemaVersion": gateway_read.SCHEMA_VERSION,
-            "schemas": gateway_read.gateway_wire_schemas(),
+            "schemas": gateway_read.experience_wire_schemas(),
         },
     }
 
@@ -42,7 +47,7 @@ def documents() -> tuple[dict[str, Any], ...]:
             f"{declaration['schemaVersion']}:{digest}"
         )
         rendered.append({"$id": contract_id, "digest": digest, **declaration})
-    return tuple(sorted(rendered, key=lambda contract: contract["contractVersion"]))
+    return tuple(rendered)
 
 
 def schema_ref(family: WireFamily, schema: str) -> str:

@@ -611,12 +611,13 @@
           "excluded_declarations": [],
           "exclusion_reason": null,
           "observed_source": "live Starlette route table",
-          "projection_declaration_count": 18
+          "projection_declaration_count": 20
         },
         "declared": [
           "GET /healthz",
           "GET /v1/instances",
           "GET /v1/instances/{stage}/{slug}/events",
+          "GET /v1/instances/{stage}/{slug}/experience",
           "GET /v1/instances/{stage}/{slug}/hives",
           "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
           "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
@@ -625,6 +626,7 @@
           "OPTIONS /v1/instances",
           "OPTIONS /v1/instances/{stage}/{slug}/commands/refresh",
           "OPTIONS /v1/instances/{stage}/{slug}/events",
+          "OPTIONS /v1/instances/{stage}/{slug}/experience",
           "OPTIONS /v1/instances/{stage}/{slug}/hives",
           "OPTIONS /v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
           "OPTIONS /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
@@ -633,13 +635,14 @@
           "POST /v1/instances/{stage}/{slug}/commands/refresh",
           "POST /v1/instances/{stage}/{slug}/commands/{command}"
         ],
-        "declared_count": 18,
+        "declared_count": 20,
         "delta": 0,
         "matches": true,
         "observed": [
           "GET /healthz",
           "GET /v1/instances",
           "GET /v1/instances/{stage}/{slug}/events",
+          "GET /v1/instances/{stage}/{slug}/experience",
           "GET /v1/instances/{stage}/{slug}/hives",
           "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
           "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
@@ -648,6 +651,7 @@
           "OPTIONS /v1/instances",
           "OPTIONS /v1/instances/{stage}/{slug}/commands/refresh",
           "OPTIONS /v1/instances/{stage}/{slug}/events",
+          "OPTIONS /v1/instances/{stage}/{slug}/experience",
           "OPTIONS /v1/instances/{stage}/{slug}/hives",
           "OPTIONS /v1/instances/{stage}/{slug}/hives/{hive_id:path}/events",
           "OPTIONS /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
@@ -656,7 +660,7 @@
           "POST /v1/instances/{stage}/{slug}/commands/refresh",
           "POST /v1/instances/{stage}/{slug}/commands/{command}"
         ],
-        "observed_count": 18,
+        "observed_count": 20,
         "removals": [],
         "runtime_proof": "tests/test_transport_inventory.py::test_gateway_inventory_matches_every_registered_runtime_route",
         "surface": "gateway"

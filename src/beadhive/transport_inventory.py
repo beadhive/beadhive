@@ -589,6 +589,17 @@ def _gateway_projections() -> tuple[ProjectionSpec, ...]:
         ),
         _gateway(
             "GET",
+            "/v1/instances/{stage}/{slug}/experience",
+            "composite",
+            composes=("work.list", "work.schedule"),
+            wire_family="gateway.experience.v1",
+            wire_request_schema="experienceRequest",
+            wire_result_schema="experienceResponse",
+            reason="one coherent server-selected generated Development experience",
+            shape="coarser",
+        ),
+        _gateway(
+            "GET",
             "/v1/instances/{stage}/{slug}/hives",
             "catalog-entry",
             operation="hive.list",
@@ -664,7 +675,11 @@ def _gateway_projections() -> tuple[ProjectionSpec, ...]:
             shape="transport-only",
         ),
     )
-    read_options_paths = tuple(spec.identifier.removeprefix("GET ") for spec in functional[1:7])
+    read_options_paths = tuple(
+        spec.identifier.removeprefix("GET ")
+        for spec in functional
+        if spec.identifier.startswith("GET ") and spec.identifier != "GET /healthz"
+    )
     mechanics = tuple(
         _gateway(
             "OPTIONS",
