@@ -7,6 +7,7 @@ import hashlib
 import json
 import time
 from importlib import resources
+from pathlib import Path
 
 import httpx
 import pytest
@@ -14,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from joserfc import jwt
 from joserfc.jwk import RSAKey
 from joserfc.jws import JWSRegistry
+from jsonschema import Draft202012Validator
 
 from beadhive import frame_bridge, frame_bridge_runtime, gateway_read
 
@@ -22,6 +24,7 @@ AUDIENCE = "beadhive-gateway-dev"
 APP_ORIGIN = "https://app-dev.beadhive.cloud"
 GATEWAY_ORIGIN = "https://gateway-dev.beadhive.cloud"
 SUBJECT = "user_dev_demo"
+EXPERIENCE_CORPUS = Path(__file__).parent / "fixtures" / "gateway_experience_v1"
 
 
 def _keys() -> tuple[RSAKey, RSAKey]:
@@ -106,6 +109,14 @@ def _catalog_bytes() -> tuple[bytes, bytes]:
     return (
         package.joinpath(gateway_read.CATALOG_FILE).read_bytes(),
         package.joinpath(gateway_read.MANIFEST_FILE).read_bytes(),
+    )
+
+
+def _experience_bytes() -> tuple[bytes, bytes]:
+    package = resources.files("beadhive").joinpath("catalog")
+    return (
+        package.joinpath(gateway_read.DEMO_EXPERIENCE_FILE).read_bytes(),
+        package.joinpath(gateway_read.DEMO_EXPERIENCE_MANIFEST_FILE).read_bytes(),
     )
 
 
@@ -409,6 +420,166 @@ def test_experience_request_cancellation_and_shutdown_cancel_the_source_read() -
 
     asyncio.run(cancel_request())
     asyncio.run(stop_application())
+
+
+def test_pinned_gateway_experience_corpus_validates_the_authenticated_response() -> None:
+    lock = json.loads((EXPERIENCE_CORPUS / "corpus-lock.json").read_bytes())
+    assert lock["revision"] == "4ed2425b9860006f692fddfaa19cef4ec2a656f4"
+    for name, expected in lock["files"].items():
+        assert hashlib.sha256((EXPERIENCE_CORPUS / name).read_bytes()).hexdigest() == expected
+
+    cases = json.loads((EXPERIENCE_CORPUS / "demo-experience-cases.json").read_bytes())
+    schema = json.loads((EXPERIENCE_CORPUS / "demo-experience-v1.schema.json").read_bytes())
+    Draft202012Validator.check_schema(schema)
+    private_key, public_key = _keys()
+    source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    app = _application(public_key, None, experience_source=source)
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            return await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key)),
+            )
+
+    response = asyncio.run(exercise())
+    assert response.status_code == 200
+    body = response.json()
+    Draft202012Validator(schema).validate(body)
+    assert body["provider"]["authority"] == "generated"
+    assert body["provider"]["scenario"]["selectedBy"] == "gateway"
+    assert body["experience"]["lanes"]["operator"]["snapshot"]["advertisedActions"] == []
+    for case in cases["positive"]:
+        if capability := case.get("capability"):
+            assert capability in body["provider"]["capabilities"]
+        if case.get("field") == "experience.coverage":
+            assert (
+                body["experience"]["coverage"]["required"]
+                == body["experience"]["coverage"]["exercised"]
+            )
+
+
+def test_pinned_failure_policy_covers_generated_and_live_startup_modes() -> None:
+    failure_policy = json.loads(
+        (EXPERIENCE_CORPUS / "demo-provider-failure-cases.json").read_bytes()
+    )
+    error_schema = json.loads(
+        (EXPERIENCE_CORPUS / "demo-experience-errors-v1.schema.json").read_bytes()
+    )
+    Draft202012Validator.check_schema(error_schema)
+    cases = {case["id"]: case for case in failure_policy["cases"]}
+    private_key, public_key = _keys()
+    generated = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    generated_app = _application(
+        public_key,
+        None,
+        experience_source=generated,
+        authorized_subjects=frozenset({SUBJECT, "user_denied"}),
+    )
+    live_app = _application(public_key, None, experience_source=None)
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=generated_app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            unauthenticated = await client.get(
+                "/v1/instances/dev/demo/experience", headers={"Origin": APP_ORIGIN}
+            )
+            unauthorized = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key, subject="user_denied")),
+            )
+            selected = await client.get(
+                "/v1/instances/dev/demo/experience?scenario=dense",
+                headers=_headers(_token(private_key)),
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=live_app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            unavailable = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key)),
+            )
+        return unauthenticated, unauthorized, selected, unavailable
+
+    unauthenticated, unauthorized, selected, unavailable = asyncio.run(exercise())
+    for response, case_id in (
+        (unauthenticated, "authentication-failed"),
+        (unauthorized, "authorization-failed"),
+        (unavailable, "source-unavailable"),
+    ):
+        case = cases[case_id]
+        assert response.status_code == case["expectedStatus"]
+        assert response.json()["error"]["code"] == case["errorCode"]
+        assert response.json()["error"]["retryable"] is case["retryable"]
+        assert response.headers["cache-control"] == "no-store"
+        Draft202012Validator(error_schema).validate(response.json())
+    assert unavailable.headers["retry-after"] == "1"
+    assert failure_policy["sourcePolicy"]["modes"]["live"]["fallback"] == "forbidden"
+    assert (selected.status_code, selected.json()["error"]["code"]) == (
+        400,
+        "invalid_request",
+    )
+
+
+def test_generated_source_rejects_digest_valid_mixed_lane_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_bytes, manifest_bytes = _experience_bytes()
+    artifact = json.loads(artifact_bytes)
+    artifact["experience"]["lanes"]["planning"]["authority"] = "live"
+    digest_input = {
+        key: artifact[key]
+        for key in ("schemaVersion", "artifactVersion", "generatedBy", "descriptor", "experience")
+    }
+    artifact["digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                digest_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode()
+            + b"\n"
+        ).hexdigest()
+    )
+    artifact["byteCount"] = 0
+    for _ in range(3):
+        encoded_artifact = (
+            json.dumps(artifact, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            + b"\n"
+        )
+        artifact["byteCount"] = len(encoded_artifact)
+    encoded_artifact = (
+        json.dumps(artifact, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        + b"\n"
+    )
+    manifest = json.loads(manifest_bytes)
+    manifest["digest"] = artifact["digest"]
+    manifest["byteCount"] = artifact["byteCount"]
+    encoded_manifest = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    monkeypatch.setattr(
+        gateway_read,
+        "PINNED_DEMO_EXPERIENCE_SHA256",
+        hashlib.sha256(encoded_artifact).hexdigest(),
+    )
+    monkeypatch.setattr(
+        gateway_read,
+        "PINNED_DEMO_EXPERIENCE_MANIFEST_SHA256",
+        hashlib.sha256(encoded_manifest).hexdigest(),
+    )
+    monkeypatch.setattr(gateway_read, "PINNED_DEMO_EXPERIENCE_DIGEST", artifact["digest"])
+
+    with pytest.raises(gateway_read.CatalogValidationError, match="provenance"):
+        gateway_read.GeneratedExperienceReadSource(
+            encoded_artifact,
+            encoded_manifest,
+            authorized_subjects=frozenset({SUBJECT}),
+        )
 
 
 def test_packaged_catalog_refuses_tampered_artifact_or_manifest_before_use() -> None:
@@ -1037,18 +1208,21 @@ def test_runtime_factory_installs_validated_catalog_before_serving(tmp_path, mon
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
         ) as client:
-            return await client.get(
-                "/v1/instances/dev/demo/hives", headers=_headers(_token(private_key))
+            headers = _headers(_token(private_key))
+            return (
+                await client.get("/v1/instances/dev/demo/hives", headers=headers),
+                await client.get("/v1/instances/dev/demo/experience", headers=headers),
             )
 
-    response = asyncio.run(exercise())
-    assert response.status_code == 200
-    assert response.json()["contractVersion"] == "gateway.read.v1"
-    assert len(response.json()["items"]) == 3
+    directory, experience = asyncio.run(exercise())
+    assert directory.status_code == experience.status_code == 200
+    assert directory.json()["contractVersion"] == "gateway.read.v1"
+    assert len(directory.json()["items"]) == 3
+    assert experience.json()["provider"]["authority"] == "generated"
 
 
 def test_runtime_live_mode_never_loads_generated_artifacts(tmp_path, monkeypatch) -> None:
-    _private_key, public_key = _keys()
+    private_key, public_key = _keys()
     jwk = public_key.as_dict()
     jwk.update({"kid": "development-test", "use": "sig", "alg": "RS256"})
     jwks = tmp_path / "clerk-jwks.json"
@@ -1081,9 +1255,20 @@ def test_runtime_live_mode_never_loads_generated_artifacts(tmp_path, monkeypatch
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
         ) as client:
-            return await client.get("/healthz")
+            return (
+                await client.get("/healthz"),
+                await client.get(
+                    "/v1/instances/dev/demo/experience",
+                    headers=_headers(_token(private_key)),
+                ),
+            )
 
-    assert asyncio.run(exercise()).status_code == 200
+    health, experience = asyncio.run(exercise())
+    assert health.status_code == 200
+    assert (experience.status_code, experience.json()["error"]["code"]) == (
+        503,
+        "source_unavailable",
+    )
 
 
 def test_rich_requests_use_only_prevalidated_memory(monkeypatch) -> None:

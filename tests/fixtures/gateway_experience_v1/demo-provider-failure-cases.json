@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "gateway.read.v1",
+  "errorShape": "ErrorEnvelope",
+  "sourcePolicy": {
+    "provenanceBoundary": "whole-response",
+    "mixedProvenance": "forbidden",
+    "partialSuccess": "forbidden",
+    "modes": {
+      "live": {
+        "authority": "live",
+        "scenario": "forbidden",
+        "fallback": "forbidden",
+        "forbiddenFallbackSources": [
+          "local-demo",
+          "gateway-demo",
+          "hosted-static-demo"
+        ],
+        "onUnavailable": "source_unavailable"
+      },
+      "generated": {
+        "authority": "generated",
+        "scenarioSelectedBy": "gateway",
+        "mutationAuthority": "forbidden",
+        "onMalformedOrIncompatible": "artifact_incompatible",
+        "onUnsupportedRead": "capability_not_supported"
+      }
+    }
+  },
+  "cases": [
+    {
+      "id": "authentication-failed",
+      "condition": "The bearer credential is missing, invalid, expired, or for another audience.",
+      "expectedStatus": 401,
+      "errorCode": "authentication_failed",
+      "retryable": false,
+      "responseBody": "error-only"
+    },
+    {
+      "id": "authorization-failed",
+      "condition": "The authenticated principal is not permitted to read the selected experience.",
+      "expectedStatus": 403,
+      "errorCode": "authorization_failed",
+      "retryable": false,
+      "responseBody": "error-only"
+    },
+    {
+      "id": "artifact-malformed",
+      "condition": "The selected artifact cannot be decoded as the declared artifact shape.",
+      "expectedStatus": 503,
+      "errorCode": "artifact_incompatible",
+      "retryable": false,
+      "responseBody": "error-only"
+    },
+    {
+      "id": "artifact-incompatible",
+      "condition": "The selected artifact has an unsupported version, bad digest, or incoherent identity or provenance.",
+      "expectedStatus": 503,
+      "errorCode": "artifact_incompatible",
+      "retryable": false,
+      "responseBody": "error-only"
+    },
+    {
+      "id": "source-unavailable",
+      "condition": "The selected source cannot produce an honest complete response.",
+      "expectedStatus": 503,
+      "errorCode": "source_unavailable",
+      "retryable": true,
+      "retryAfter": "required",
+      "responseBody": "error-only"
+    },
+    {
+      "id": "capability-not-supported",
+      "condition": "The selected source does not advertise the capability required by the read.",
+      "expectedStatus": 409,
+      "errorCode": "capability_not_supported",
+      "retryable": false,
+      "responseBody": "error-only"
+    }
+  ]
+}

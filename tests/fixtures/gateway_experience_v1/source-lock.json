@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "gateway.read.v1",
+  "owner": {
+    "repository": "https://github.com/beadhive/beadhive-gateway",
+    "bead": "bh-gw-8ow.1"
+  },
+  "sources": [
+    {
+      "role": "six-scenario-catalog",
+      "repository": "https://github.com/beadhive/beadhive-ui",
+      "bead": "bhui-49u3.1",
+      "revision": "d8e360af8ba7f1cc1838938fba0395e8a37c868f",
+      "mergeRevision": "2276c5fe3a5cef8c4d1455129e953e2a97d5ce37",
+      "files": {
+        "packages/operator-testkit/catalog/gateway-read-v1-development.json": {
+          "bytes": 330030,
+          "sha256": "c45b4b80553f16d7973ff3758fae866415f624e4083c742c161bdc31fda5991b"
+        },
+        "packages/operator-testkit/catalog/gateway-read-v1-development.manifest.json": {
+          "bytes": 601,
+          "sha256": "8d7f767309723bdffd43e792021d88665a2bd6da8325968187159ba54f9b66d3"
+        },
+        "packages/operator-testkit/src/gatewayReadCatalog.ts": {
+          "sha256": "ecebd880d1666d88287d9489712df5aa01ba7d49144fa70eb018d83640930f9f"
+        },
+        "packages/operator-testkit/test/gateway-read-catalog.test.ts": {
+          "sha256": "b4dd73fa2b7400d6e027b58157de111493a7e4cf7cb1b53094fb7bed13ad6afa"
+        },
+        "scripts/check-gateway-read-demo-catalog.ts": {
+          "sha256": "ba7f0b5ef2a129eacac64111a600283b60825bd45bbb7f632b2105aff1866ef8"
+        },
+        "scripts/gateway-read-demo-catalog.ts": {
+          "sha256": "85f289e5f1eb9a619094cd1d5cafac2ea4e9cb5c3be25c72776b1a20b7519c14"
+        }
+      }
+    },
+    {
+      "role": "development-bridge",
+      "repository": "https://github.com/beadhive/beadhive",
+      "bead": "bh-tqarf.1",
+      "revision": "ea1e8c2c296b467ee074ee57201f806e663ffbaf",
+      "mergeRevision": "3cbc4b4685906d292397633bc7ab508fdee518a3",
+      "files": {
+        "src/beadhive/catalog/gateway-read-v1-development.json": {
+          "bytes": 330030,
+          "sha256": "c45b4b80553f16d7973ff3758fae866415f624e4083c742c161bdc31fda5991b"
+        },
+        "src/beadhive/catalog/gateway-read-v1-development.manifest.json": {
+          "bytes": 639,
+          "sha256": "894c31924af6706fb10191f89383e1439791bb09281c154274575e979dfd0d00"
+        },
+        "src/beadhive/gateway_read.py": {
+          "sha256": "1e8fcc3cb0955e09c429dc2390dc73bb69cc7ecad0cc2135f9cc4519660f7855"
+        },
+        "src/beadhive/remote_gateway.py": {
+          "sha256": "e9cdcf8a28c4cd1dca08740f03a84f5053fb928f229e2682b8d41f99f065023c"
+        },
+        "src/beadhive/remote_gateway_runtime.py": {
+          "sha256": "6c68c0a44902e602291531665b365bd607a14c6f45dc51123bec7276854cf6e6"
+        },
+        "tests/test_gateway_read.py": {
+          "sha256": "dd6021b9ad64f73544d039176daaa13c8b157a8e49a4bd9f775ee1bf59d4afed"
+        }
+      }
+    },
+    {
+      "role": "demo-scenarios-artifact",
+      "repository": "https://github.com/beadhive/beadhive-ui",
+      "bead": "bhui-z8ow",
+      "revision": "e463dd922c33b17e62e46eb56bd99e192cd317ac",
+      "mergeRevision": "174dc68b21229e9fad87ec1a4977aa284d4e000a",
+      "package": {
+        "name": "@beadhive/demo-scenarios",
+        "version": "0.1.0"
+      },
+      "artifact": {
+        "path": "packages/demo-scenarios/artifacts/tour-overview.json",
+        "manifestPath": "packages/demo-scenarios/artifacts/tour-overview.manifest.json",
+        "digest": "sha256:5106bc028061d2a0662eb96d2ca09213be4ca7a85a5df5f26dd120f7c71a7227",
+        "byteCount": 55006,
+        "bytes": 55006,
+        "fileSha256": "27103f5b5072de992a05665c06c9502cc5848567cb1a965add6dab0178a1b528"
+      },
+      "files": {
+        "packages/demo-scenarios/package.json": {
+          "bytes": 1694,
+          "sha256": "b991ec4fcf7cf7ea40ab944848522598561162a01384df4501f1b03513577086"
+        },
+        "packages/demo-scenarios/artifacts/tour-overview.json": {
+          "bytes": 55006,
+          "sha256": "27103f5b5072de992a05665c06c9502cc5848567cb1a965add6dab0178a1b528"
+        },
+        "packages/demo-scenarios/artifacts/tour-overview.manifest.json": {
+          "bytes": 397,
+          "sha256": "ad958fe05599532be823ab8e841a23c0eccb252a75f4c2b9439177618c6e93d3"
+        }
+      }
+    }
+  ]
+}

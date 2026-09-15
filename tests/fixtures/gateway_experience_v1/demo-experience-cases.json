@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "gateway.read.v1",
+  "sourceArtifact": "fixtures/demo-scenarios/tour-overview.json",
+  "generatedResponse": "examples/generated-tour-overview-response.json",
+  "positive": [
+    {
+      "id": "operator",
+      "capability": "operator.snapshot"
+    },
+    {
+      "id": "planning",
+      "capability": "planning.foresight"
+    },
+    {
+      "id": "activity",
+      "capability": "activity.replay"
+    },
+    {
+      "id": "assistant",
+      "capability": "assistant.transcript"
+    },
+    {
+      "id": "tour",
+      "capability": "tour.navigation"
+    },
+    {
+      "id": "coverage-manifest",
+      "field": "experience.coverage"
+    }
+  ],
+  "negative": [
+    {
+      "id": "incompatible-version",
+      "target": "artifact",
+      "mutation": {
+        "pointer": "/artifactVersion",
+        "value": 2
+      },
+      "expectedStatus": 503,
+      "errorCode": "artifact_incompatible",
+      "condition": "The selected artifact version is unsupported."
+    },
+    {
+      "id": "bad-digest",
+      "target": "artifact",
+      "mutation": {
+        "pointer": "/digest",
+        "value": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+      },
+      "expectedStatus": 503,
+      "errorCode": "artifact_incompatible",
+      "condition": "The selected artifact digest does not match its payload."
+    },
+    {
+      "id": "mixed-provenance",
+      "target": "response",
+      "mutation": {
+        "pointer": "/experience/lanes/planning/authority",
+        "value": "live"
+      },
+      "expectedStatus": 503,
+      "errorCode": "artifact_incompatible",
+      "condition": "The generated response contains mixed source authority."
+    },
+    {
+      "id": "unauthorized",
+      "target": "access",
+      "requiredCapability": "experience.read",
+      "grantedCapabilities": [],
+      "expectedStatus": 403,
+      "errorCode": "authorization_failed",
+      "condition": "The authenticated principal cannot read the selected experience."
+    }
+  ]
+}

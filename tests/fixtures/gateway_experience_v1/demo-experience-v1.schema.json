@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.ai/schemas/demo-experience-v1.json",
+  "title": "gateway.read.v1 generated experience response",
+  "type": "object",
+  "required": [
+    "schemaVersion", "contractVersion", "instanceId", "provider", "provenance", "experience"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "contractVersion": { "const": "gateway.read.v1" },
+    "instanceId": { "type": "string", "pattern": "^[a-z0-9-]+/[a-z0-9-]+$" },
+    "provider": { "$ref": "#/$defs/provider" },
+    "provenance": { "$ref": "#/$defs/provenance" },
+    "experience": { "$ref": "#/$defs/experience" }
+  },
+  "additionalProperties": true,
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "capability": {
+      "enum": [
+        "operator.snapshot",
+        "planning.foresight",
+        "activity.replay",
+        "assistant.transcript",
+        "tour.navigation"
+      ]
+    },
+    "scenario": {
+      "type": "object",
+      "required": ["id", "artifactVersion", "revision", "selectedBy"],
+      "properties": {
+        "id": { "const": "tour-overview" },
+        "artifactVersion": { "const": 1 },
+        "revision": { "$ref": "#/$defs/digest" },
+        "selectedBy": { "const": "gateway" }
+      },
+      "additionalProperties": false
+    },
+    "provider": {
+      "type": "object",
+      "required": ["source", "authority", "transport", "scenario", "capabilities"],
+      "properties": {
+        "source": { "const": "gateway-demo" },
+        "authority": { "const": "generated" },
+        "transport": { "const": "gateway" },
+        "scenario": { "$ref": "#/$defs/scenario" },
+        "capabilities": {
+          "type": "array",
+          "minItems": 5,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/capability" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "required": [
+        "package", "packageVersion", "artifact", "artifactVersion", "digest", "byteCount", "generatedBy"
+      ],
+      "properties": {
+        "package": { "const": "@beadhive/demo-scenarios" },
+        "packageVersion": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "artifact": { "const": "tour-overview.json" },
+        "artifactVersion": { "const": 1 },
+        "digest": { "$ref": "#/$defs/digest" },
+        "byteCount": { "type": "integer", "minimum": 1 },
+        "generatedBy": {
+          "type": "object",
+          "required": ["package", "version"],
+          "properties": {
+            "package": { "const": "@beadhive/operator-testkit" },
+            "version": { "type": "string", "minLength": 1, "maxLength": 128 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "required": [
+        "schemaVersion", "hive", "revision", "generatedAt", "cursor", "coverage",
+        "workItems", "dependencies", "epics", "gates", "agents", "assignments",
+        "schedules", "evidence", "advertisedActions"
+      ],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "hive": {
+          "type": "object",
+          "required": ["prefix", "provider", "org", "repo", "kind"],
+          "properties": {
+            "prefix": { "type": "string", "pattern": "^[^/]+/[^/]+/[^/]+$" },
+            "provider": { "type": "string", "minLength": 1 },
+            "org": { "type": "string", "minLength": 1 },
+            "repo": { "type": "string", "minLength": 1 },
+            "kind": { "type": "string" }
+          },
+          "additionalProperties": true
+        },
+        "revision": { "$ref": "#/$defs/digest" },
+        "generatedAt": { "type": "integer", "minimum": 0 },
+        "cursor": {
+          "type": "object",
+          "required": ["subscriptionId", "producerEpoch", "sequence", "observedAt"],
+          "properties": {
+            "subscriptionId": { "type": "string", "minLength": 1 },
+            "producerEpoch": { "type": "string", "minLength": 1 },
+            "sequence": { "type": "integer", "minimum": 0 },
+            "observedAt": { "type": "integer", "minimum": 0 }
+          },
+          "additionalProperties": false
+        },
+        "coverage": { "type": "object" },
+        "workItems": { "type": "array" },
+        "dependencies": { "type": "array" },
+        "epics": { "type": "array" },
+        "gates": { "type": "array" },
+        "agents": { "type": "array" },
+        "assignments": { "type": "array" },
+        "schedules": { "type": "array" },
+        "evidence": { "type": "array" },
+        "advertisedActions": { "type": "array", "maxItems": 0 }
+      },
+      "additionalProperties": true
+    },
+    "experience": {
+      "type": "object",
+      "required": ["schemaVersion", "id", "title", "narrative", "logicalEpoch", "lanes", "tourStops", "coverage"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "id": { "const": "tour-overview" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "narrative": { "type": "string", "minLength": 1, "maxLength": 2048 },
+        "logicalEpoch": { "type": "string", "minLength": 1, "maxLength": 256 },
+        "lanes": {
+          "type": "object",
+          "required": ["operator", "planning", "activity", "assistant"],
+          "properties": {
+            "operator": {
+              "type": "object",
+              "required": ["instanceId", "factoryId", "displayName", "snapshot"],
+              "properties": {
+                "instanceId": { "type": "string", "minLength": 1 },
+                "factoryId": { "type": "string", "minLength": 1 },
+                "displayName": { "type": "string", "minLength": 1 },
+                "snapshot": { "$ref": "#/$defs/snapshot" }
+              },
+              "additionalProperties": true
+            },
+            "planning": {
+              "type": "object",
+              "required": ["state", "detail", "provenance", "foresight", "risks"],
+              "properties": {
+                "state": { "const": "populated" },
+                "detail": { "type": "string", "minLength": 1 },
+                "provenance": { "type": "string", "minLength": 1 },
+                "foresight": { "type": "object" },
+                "risks": { "type": "object" }
+              },
+              "additionalProperties": true
+            },
+            "activity": {
+              "type": "object",
+              "required": ["producer", "frames"],
+              "properties": {
+                "producer": {
+                  "type": "object",
+                  "required": ["kind", "provenance"],
+                  "properties": {
+                    "kind": { "const": "fixture" },
+                    "provenance": { "type": "string", "pattern": "^fixture:.+" }
+                  },
+                  "additionalProperties": false
+                },
+                "frames": { "type": "array", "minItems": 1 }
+              },
+              "additionalProperties": true
+            },
+            "assistant": {
+              "type": "object",
+              "required": ["provenance", "frames"],
+              "properties": {
+                "provenance": { "type": "string", "minLength": 1 },
+                "frames": { "type": "array", "minItems": 1 }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        },
+        "tourStops": { "type": "array", "minItems": 1, "items": { "type": "object" } },
+        "coverage": {
+          "type": "object",
+          "required": ["required", "exercised"],
+          "properties": {
+            "required": { "type": "array", "items": { "type": "string" } },
+            "exercised": { "type": "array", "items": { "type": "string" } }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}
