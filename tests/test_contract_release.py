@@ -209,7 +209,10 @@ def test_published_baseline_is_distinct_complete_and_digest_pinned(
 ) -> None:
     baseline = published_baseline_root()
     assert baseline != release_root()
-    assert load_published_baseline() == build_release()
+    published = load_published_baseline()
+    candidate = build_release()
+    assert published != candidate
+    assert compatibility_errors(published, candidate) == []
 
     substituted = tmp_path / "baseline"
     shutil.copytree(baseline, substituted)

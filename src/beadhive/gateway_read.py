@@ -203,6 +203,51 @@ def gateway_wire_schemas() -> dict[str, dict[str, object]]:
     }
 
 
+def experience_wire_schemas() -> dict[str, dict[str, object]]:
+    """Return the additive generated-experience schemas without mutating gateway.read.v1."""
+
+    return {
+        "experienceRequest": {"type": "object", "additionalProperties": False},
+        "experienceResponse": {
+            "type": "object",
+            "additionalProperties": False,
+            "required": [
+                "schemaVersion",
+                "contractVersion",
+                "instanceId",
+                "provider",
+                "provenance",
+                "experience",
+            ],
+            "properties": {
+                "schemaVersion": {"const": SCHEMA_VERSION},
+                "contractVersion": {"const": CONTRACT_VERSION},
+                "instanceId": {"const": INSTANCE_ID},
+                "provider": {
+                    "type": "object",
+                    "required": ["source", "authority", "transport", "capabilities", "scenario"],
+                    "properties": {
+                        "source": {"const": "gateway-demo"},
+                        "authority": {"const": "generated"},
+                        "transport": {"const": "gateway"},
+                        "capabilities": {
+                            "type": "array",
+                            "prefixItems": [
+                                {"const": value} for value in DEMO_EXPERIENCE_CAPABILITIES
+                            ],
+                            "minItems": len(DEMO_EXPERIENCE_CAPABILITIES),
+                            "maxItems": len(DEMO_EXPERIENCE_CAPABILITIES),
+                        },
+                        "scenario": {"type": "object"},
+                    },
+                },
+                "provenance": {"type": "object"},
+                "experience": {"type": "object"},
+            },
+        },
+    }
+
+
 class CatalogValidationError(RuntimeError):
     """The packaged source cannot safely open readiness."""
 

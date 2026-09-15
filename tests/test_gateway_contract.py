@@ -316,6 +316,7 @@ def test_gateway_wire_references_resolve_to_versioned_digested_owned_contracts()
     assert [contract["contractVersion"] for contract in contracts] == [
         "gateway.read.v1",
         "gateway.v1",
+        "gateway.experience.v1",
     ]
     for contract in contracts:
         digest_payload = {

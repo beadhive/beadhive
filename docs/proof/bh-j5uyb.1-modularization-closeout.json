@@ -309,11 +309,11 @@
         "check": "just transport-artifact-check",
         "artifacts": [
           {"path": "docs/schemas/wire/v1.2.0/operation-catalog-v1.json", "sha256": "8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8"},
-          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "a6f04333c61cc2c735b2928a4a21976eb6b599c26d917094553cc5573719ac0f"},
+          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "cecb7744f6b284c438387cacb89dbe750b29e13490876bb6b96bec5c03a6b921"},
           {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "29046c0b29b1a6aa9dfd8ad1ca1f0f3f3356d0ef35da01dfa319d4885d1c293d"},
-          {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "570d759d9a640c717a27a66d900b308f29aac5be65b34bc47291dc9eba17a85a"},
+          {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "afbd7e8134c9efe6187550e5681c4a1d70752ba10934fac66fe691e57b6907b8"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
-          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "fcb85575daa2de392cad9f53a8f8920d3c250625ef285ef92785d4ab94f0261a"}
+          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "70001bd858aa7a80750dc5e8849db470cc7b36d80cdc2b22d3550926977602b6"}
         ]
       },
       "import_boundary": {
@@ -326,7 +326,7 @@
         "artifacts": [
           {"path": "docs/schemas/telemetry-event-envelope-v1.schema.json", "sha256": "1bf34e38b60d8e9cdf7b5c60477cb93f9dd24dac970e5c89a8d3b2695cd2d3c6"},
           {"path": "docs/schemas/wire/v1.0.0/release.json", "sha256": "c69fb7f1567f16e6f76549ef1c9c53b1f32f7cfde79fc8b0d2cc652a01b727e1"},
-          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "2a4be46cef5bd365be93ca45f0c3c03a8dc8b915d1b15f7d6dc34cf74b07082c"}
+          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "2e0e2fb42a7683b36f18f0132e09bb011bf56f9beff6598eae95af48dd7d46fc"}
         ]
       },
       "selective_ci": {

@@ -4198,6 +4198,43 @@
       "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "canonical_contracts": [
         {
+          "operation": "work.list",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.list#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        },
+        {
+          "operation": "work.schedule",
+          "privilege": "unprivileged-read",
+          "request_schema": "catalog:work.schedule#parameters",
+          "result_schema": "urn:beadhive:wire-schema:json-value:1",
+          "side_effects": "none"
+        }
+      ],
+      "classification": "composite",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "composes": [
+        "work.list",
+        "work.schedule"
+      ],
+      "identifier": "GET /v1/instances/{stage}/{slug}/experience",
+      "operation": null,
+      "privilege": "authenticated-development-subject",
+      "prompts": false,
+      "reason": "one coherent server-selected generated Development experience",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.experience.v1:1:sha256:6d2a8e4d2eacf7f9364153ffff83eb6c89e5b22f884fa3b1fc6b6943700c4afe#/schemas/experienceRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.experience.v1:1:sha256:6d2a8e4d2eacf7f9364153ffff83eb6c89e5b22f884fa3b1fc6b6943700c4afe#/schemas/experienceResponse",
+      "shape": "coarser",
+      "side_effects": "none",
+      "streaming": false,
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
+    },
+    {
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "canonical_contracts": [
+        {
           "operation": "hive.list",
           "privilege": "unprivileged-read",
           "request_schema": "catalog:hive.list#parameters",
@@ -4378,6 +4415,25 @@
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "composes": [],
       "identifier": "OPTIONS /v1/instances/{stage}/{slug}/events",
+      "operation": null,
+      "privilege": "network-admission",
+      "prompts": false,
+      "reason": "exact credentialed CORS preflight allowlist",
+      "request_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "result_schema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
+      "shape": "transport-only",
+      "side_effects": "none",
+      "streaming": false,
+      "surface": "gateway",
+      "transport_owner": "gateway-contract"
+    },
+    {
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "canonical_contracts": [],
+      "classification": "transport-mechanic",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "composes": [],
+      "identifier": "OPTIONS /v1/instances/{stage}/{slug}/experience",
       "operation": null,
       "privilege": "network-admission",
       "prompts": false,

@@ -595,6 +595,93 @@
           }
         }
       }
+    },
+    {
+      "$id": "urn:beadhive:gateway-wire-contract:gateway.experience.v1:1:sha256:6d2a8e4d2eacf7f9364153ffff83eb6c89e5b22f884fa3b1fc6b6943700c4afe",
+      "digest": "sha256:6d2a8e4d2eacf7f9364153ffff83eb6c89e5b22f884fa3b1fc6b6943700c4afe",
+      "contractVersion": "gateway.experience.v1",
+      "schemaVersion": 1,
+      "schemas": {
+        "experienceRequest": {
+          "type": "object",
+          "additionalProperties": false
+        },
+        "experienceResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "instanceId",
+            "provider",
+            "provenance",
+            "experience"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "instanceId": {
+              "const": "dev/demo"
+            },
+            "provider": {
+              "type": "object",
+              "required": [
+                "source",
+                "authority",
+                "transport",
+                "capabilities",
+                "scenario"
+              ],
+              "properties": {
+                "source": {
+                  "const": "gateway-demo"
+                },
+                "authority": {
+                  "const": "generated"
+                },
+                "transport": {
+                  "const": "gateway"
+                },
+                "capabilities": {
+                  "type": "array",
+                  "prefixItems": [
+                    {
+                      "const": "operator.snapshot"
+                    },
+                    {
+                      "const": "planning.foresight"
+                    },
+                    {
+                      "const": "activity.replay"
+                    },
+                    {
+                      "const": "assistant.transcript"
+                    },
+                    {
+                      "const": "tour.navigation"
+                    }
+                  ],
+                  "minItems": 5,
+                  "maxItems": 5
+                },
+                "scenario": {
+                  "type": "object"
+                }
+              }
+            },
+            "provenance": {
+              "type": "object"
+            },
+            "experience": {
+              "type": "object"
+            }
+          }
+        }
+      }
     }
   ],
   "operations": [
@@ -663,6 +750,38 @@
       "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "legacy coarse SSE compatibility mechanic"
+    },
+    {
+      "identifier": "GET /v1/instances/{stage}/{slug}/experience",
+      "method": "GET",
+      "path": "/v1/instances/{stage}/{slug}/experience",
+      "classification": "composite",
+      "shape": "coarser",
+      "canonicalContracts": [
+        {
+          "operation": "work.list",
+          "requestSchema": "catalog:work.list#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        },
+        {
+          "operation": "work.schedule",
+          "requestSchema": "catalog:work.schedule#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        }
+      ],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.experience.v1:1:sha256:6d2a8e4d2eacf7f9364153ffff83eb6c89e5b22f884fa3b1fc6b6943700c4afe#/schemas/experienceRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.experience.v1:1:sha256:6d2a8e4d2eacf7f9364153ffff83eb6c89e5b22f884fa3b1fc6b6943700c4afe#/schemas/experienceResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "authenticated-development-subject",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "one coherent server-selected generated Development experience"
     },
     {
       "identifier": "GET /v1/instances/{stage}/{slug}/hives",
@@ -825,6 +944,23 @@
       "identifier": "OPTIONS /v1/instances/{stage}/{slug}/events",
       "method": "OPTIONS",
       "path": "/v1/instances/{stage}/{slug}/events",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "network-admission",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "exact credentialed CORS preflight allowlist"
+    },
+    {
+      "identifier": "OPTIONS /v1/instances/{stage}/{slug}/experience",
+      "method": "OPTIONS",
+      "path": "/v1/instances/{stage}/{slug}/experience",
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
