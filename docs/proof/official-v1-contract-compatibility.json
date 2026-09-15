@@ -60,7 +60,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "gateway",
       "path": "artifacts/gateway-contracts-v1.json",
-      "sha256": "sha256:786cae1c30c8a85e3b3a97764abcfb4476d248cdde697ada4ce32c8e478b4f5a",
+      "sha256": "sha256:b22fd52a960f3dbafd1f3b4f5d55df78a521311b2338090b92fb309cde2eabd0",
       "source_owner": "beadhive.gateway_wire_contracts.documents"
     },
     {

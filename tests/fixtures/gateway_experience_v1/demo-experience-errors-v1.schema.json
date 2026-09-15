@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://beadhive.ai/schemas/demo-experience-errors-v1.json",
+  "title": "gateway.read.v1 generated experience errors",
+  "oneOf": [
+    { "$ref": "#/$defs/authenticationFailed" },
+    { "$ref": "#/$defs/authorizationFailed" },
+    { "$ref": "#/$defs/artifactIncompatible" },
+    { "$ref": "#/$defs/sourceUnavailable" },
+    { "$ref": "#/$defs/capabilityNotSupported" }
+  ],
+  "$defs": {
+    "errorEnvelope": {
+      "type": "object",
+      "required": ["error"],
+      "properties": {
+        "error": {
+          "type": "object",
+          "required": ["code", "message", "retryable", "requestId", "details"],
+          "properties": {
+            "code": { "type": "string" },
+            "message": { "type": "string", "minLength": 1, "maxLength": 512 },
+            "retryable": { "type": "boolean" },
+            "requestId": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "details": { "type": "object", "maxProperties": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "authenticationFailed": {
+      "allOf": [
+        { "$ref": "#/$defs/errorEnvelope" },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": { "const": "authentication_failed" },
+                "retryable": { "const": false }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "authorizationFailed": {
+      "allOf": [
+        { "$ref": "#/$defs/errorEnvelope" },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": { "const": "authorization_failed" },
+                "retryable": { "const": false }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "artifactIncompatible": {
+      "allOf": [
+        { "$ref": "#/$defs/errorEnvelope" },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": { "const": "artifact_incompatible" },
+                "retryable": { "const": false }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "sourceUnavailable": {
+      "allOf": [
+        { "$ref": "#/$defs/errorEnvelope" },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": { "const": "source_unavailable" },
+                "retryable": { "const": true }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "capabilityNotSupported": {
+      "allOf": [
+        { "$ref": "#/$defs/errorEnvelope" },
+        {
+          "properties": {
+            "error": {
+              "properties": {
+                "code": { "const": "capability_not_supported" },
+                "retryable": { "const": false }
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

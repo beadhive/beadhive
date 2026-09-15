@@ -647,6 +647,55 @@ def test_mcp_session_owner_can_forget_one_exact_session_idempotently() -> None:
     asyncio.run(exercise())
 
 
+def test_expired_mcp_session_keeps_capacity_until_its_active_request_releases() -> None:
+    async def exercise() -> None:
+        now = [100.0]
+        policy = daemon_network.SecureNetworkAdmissionPolicy(
+            _settings(
+                mcp={
+                    "max_sessions": 1,
+                    "session_idle_seconds": 20,
+                    "session_absolute_seconds": 20,
+                }
+            ),
+            monotonic=lambda: now[0],
+        )
+        create_scope = _scope("/mcp", scheme="https", client=REMOTE, host=HOST)
+        create_scope["method"] = "POST"
+        created = await policy.admit(create_scope)
+        await policy.observe_response_start(
+            created,
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"mcp-session-id", b"session-one")],
+            },
+        )
+        await policy.release(created)
+
+        now[0] = 119.0
+        request_scope = _scope(
+            "/mcp",
+            scheme="https",
+            client=REMOTE,
+            host=HOST,
+            headers=[(b"host", HOST.encode()), (b"mcp-session-id", b"session-one")],
+        )
+        active = await policy.admit(request_scope)
+        now[0] = 121.0
+        with pytest.raises(daemon_network.NetworkRejected) as caught:
+            await policy.admit(create_scope)
+        assert caught.value.code is daemon_network.NetworkErrorCode.SESSION_LIMIT_REACHED
+        assert policy.active_mcp_session_count == 1
+
+        await policy.release(active)
+        replacement = await policy.admit(create_scope)
+        assert policy.active_mcp_session_count == 0
+        await policy.release(replacement)
+
+    asyncio.run(exercise())
+
+
 def test_mcp_session_ceiling_reserves_concurrent_handshakes_and_releases_failures() -> None:
     async def exercise() -> None:
         handshake_entered = asyncio.Event()

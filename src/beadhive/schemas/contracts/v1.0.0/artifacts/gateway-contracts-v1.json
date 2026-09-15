@@ -586,6 +586,93 @@
           "type": "object"
         }
       }
+    },
+    {
+      "$id": "urn:beadhive:gateway-wire-contract:gateway.experience.v1:1:sha256:6d2a8e4d2eacf7f9364153ffff83eb6c89e5b22f884fa3b1fc6b6943700c4afe",
+      "contractVersion": "gateway.experience.v1",
+      "digest": "sha256:6d2a8e4d2eacf7f9364153ffff83eb6c89e5b22f884fa3b1fc6b6943700c4afe",
+      "schemaVersion": 1,
+      "schemas": {
+        "experienceRequest": {
+          "additionalProperties": false,
+          "type": "object"
+        },
+        "experienceResponse": {
+          "additionalProperties": false,
+          "properties": {
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "experience": {
+              "type": "object"
+            },
+            "instanceId": {
+              "const": "dev/demo"
+            },
+            "provenance": {
+              "type": "object"
+            },
+            "provider": {
+              "properties": {
+                "authority": {
+                  "const": "generated"
+                },
+                "capabilities": {
+                  "maxItems": 5,
+                  "minItems": 5,
+                  "prefixItems": [
+                    {
+                      "const": "operator.snapshot"
+                    },
+                    {
+                      "const": "planning.foresight"
+                    },
+                    {
+                      "const": "activity.replay"
+                    },
+                    {
+                      "const": "assistant.transcript"
+                    },
+                    {
+                      "const": "tour.navigation"
+                    }
+                  ],
+                  "type": "array"
+                },
+                "scenario": {
+                  "type": "object"
+                },
+                "source": {
+                  "const": "gateway-demo"
+                },
+                "transport": {
+                  "const": "gateway"
+                }
+              },
+              "required": [
+                "source",
+                "authority",
+                "transport",
+                "capabilities",
+                "scenario"
+              ],
+              "type": "object"
+            },
+            "schemaVersion": {
+              "const": 1
+            }
+          },
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "instanceId",
+            "provider",
+            "provenance",
+            "experience"
+          ],
+          "type": "object"
+        }
+      }
     }
   ],
   "format_version": 1,

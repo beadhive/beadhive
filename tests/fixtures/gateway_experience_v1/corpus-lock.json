@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "repository": "https://github.com/beadhive/beadhive-gateway",
+  "bead": "bh-gw-p7v",
+  "revision": "4ed2425b9860006f692fddfaa19cef4ec2a656f4",
+  "files": {
+    "demo-experience-v1.schema.json": "33497f2eb05caf17875b68c6484445b6a9e326be7bc7e4edbce7f878a4048d25",
+    "demo-experience-errors-v1.schema.json": "88e778f6671c60bb93783124c4a3996c3aa4d040897f929065a28eded5edbc90",
+    "demo-experience-cases.json": "8762c536af7e469b1cfa50848f5920f55791152c03b679b8382095b89b3f49ae",
+    "demo-provider-failure-cases.json": "9d3cf3d7ca20d04c866bfd9cd848fe0c2fc02da81e71bb91c1c0f0c1ba554faa",
+    "source-lock.json": "e4539f6bd16c295384e0a5ab47802397fe4993289615e4c2a94b3277709d298d"
+  }
+}

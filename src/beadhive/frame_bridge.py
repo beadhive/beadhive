@@ -867,6 +867,7 @@ def build_development_frame_bridge_application(
     registry: DevelopmentInstanceRegistry,
     runtime_calls: RuntimeCallPolicy | None = None,
     read_source: gateway_read_mod.GatewayReadSource | None = None,
+    experience_source: gateway_read_mod.ExperienceReadSource | None = None,
     telemetry: SemanticTelemetryPort | None = None,
 ) -> Starlette:
     """Build the Frame Bridge read profile without mutating the loopback application."""
@@ -952,9 +953,16 @@ def build_development_frame_bridge_application(
             headers=headers,
         )
 
-    def rich_response(request: Request, payload: Mapping[str, object]) -> Response:
+    def rich_response(
+        request: Request,
+        payload: Mapping[str, object],
+        *,
+        cache_boundary: str | None = None,
+    ) -> Response:
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-        boundary = read_source.cache_boundary.encode() if read_source is not None else b""
+        if cache_boundary is None:
+            cache_boundary = read_source.cache_boundary if read_source is not None else ""
+        boundary = cache_boundary.encode()
         etag = '"sha256:' + hashlib.sha256(boundary + b"\0" + encoded).hexdigest() + '"'
         conditional = request.headers.getlist("if-none-match")
         headers = {
@@ -970,6 +978,52 @@ def build_development_frame_bridge_application(
             else:
                 return Response(status_code=304, headers=headers)
         return JSONResponse(payload, headers=headers)
+
+    async def bridge_experience(request: Request) -> Response:
+        try:
+            subject = authorize(request)
+            if experience_source is None:
+                return rich_error(
+                    "source_unavailable",
+                    "The selected experience source is unavailable.",
+                    503,
+                    retryable=True,
+                )
+            if request.query_params:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+            instance_id = f"{request.path_params['stage']}/{request.path_params['slug']}"
+            envelope = await rich_read_calls.call(
+                subject,
+                lambda: experience_source.experience(subject, instance_id=instance_id),
+            )
+            return rich_response(
+                request,
+                envelope,
+                cache_boundary=experience_source.cache_boundary,
+            )
+        except PermissionError:
+            return rich_error("request_denied", "The request is not allowed.", 403)
+        except AuthenticationFailed:
+            return rich_error("authentication_failed", "Authentication failed.", 401)
+        except gateway_read_mod.ExperienceAuthorizationFailed:
+            return rich_error(
+                "authorization_failed",
+                "The authenticated principal cannot read the selected experience.",
+                403,
+            )
+        except gateway_read_mod.ReadSourceNotFound:
+            return rich_error("resource_not_found", "The resource was not found.", 404)
+        except gateway_read_mod.ReadSourceInvalidRequest:
+            return rich_error("invalid_request", "The request is not valid.", 400)
+        except RuntimeCallTimedOut:
+            return rich_error("rate_limited", "The read limit was exceeded.", 429, retryable=True)
+        except Exception:
+            return rich_error(
+                "source_unavailable",
+                "The selected experience source is unavailable.",
+                503,
+                retryable=True,
+            )
 
     def bridge_hive_id(request: Request, suffix: str) -> str:
         raw_path = request.scope.get("raw_path", b"")
@@ -1580,6 +1634,11 @@ def build_development_frame_bridge_application(
         routes=[
             Route("/healthz", health, methods=["GET"]),
             Route("/v1/instances", instances, methods=["GET"]),
+            Route(
+                "/v1/instances/{stage}/{slug}/experience",
+                bridge_experience,
+                methods=["GET"],
+            ),
             Route("/v1/instances/{stage}/{slug}/hives", bridge_hives, methods=["GET"]),
             Route(
                 "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
@@ -1596,6 +1655,11 @@ def build_development_frame_bridge_application(
             Route("/v1/instances/{stage}/{slug}/commands/refresh", refresh, methods=["POST"]),
             Route("/v1/instances/{stage}/{slug}/commands/{command}", absent, methods=["POST"]),
             Route("/v1/instances", preflight, methods=["OPTIONS"]),
+            Route(
+                "/v1/instances/{stage}/{slug}/experience",
+                preflight,
+                methods=["OPTIONS"],
+            ),
             Route("/v1/instances/{stage}/{slug}/hives", preflight, methods=["OPTIONS"]),
             Route(
                 "/v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
@@ -1619,6 +1683,7 @@ def build_development_frame_bridge_application(
         ],
         lifespan=lifespan,
     )
+    app.state.experience_source = experience_source
 
     async def cors_and_read_only(request: Request, call_next):
         is_command = (

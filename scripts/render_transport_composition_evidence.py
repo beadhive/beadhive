@@ -6,11 +6,8 @@ from __future__ import annotations
 import argparse
 import ast
 import asyncio
-import io
+import hashlib
 import json
-import subprocess
-import tarfile
-import tempfile
 from functools import cache
 from pathlib import Path
 from typing import Any
@@ -26,6 +23,8 @@ from beadhive.transport_inventory import (
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = ROOT / "docs" / "proof" / "bh-3qkmk.5-transport-composition.json"
+BASELINE = ROOT / "docs" / "proof" / "bh-3qkmk.5-transport-composition-baseline.json"
+BASELINE_SHA256 = "054358a2ab3abc4ce90abff5db72e7bf7777506be388b92b882e1d1b83846051"
 INTEGRATION_BASE = "6461a048c1b81ae2e3cf9071cb9384d8579f9ac2"
 BEFORE_MODULES = {
     "cli": "beadhive.cli",
@@ -42,16 +41,23 @@ REGISTRATION_OBSERVATION = {
 }
 
 
-def _checkout(revision: str, destination: Path) -> Path:
-    archive = subprocess.run(
-        ["git", "archive", revision, "src/beadhive"],
-        cwd=ROOT,
-        check=True,
-        capture_output=True,
-    ).stdout
-    with tarfile.open(fileobj=io.BytesIO(archive)) as bundle:
-        bundle.extractall(destination, filter="data")
-    return destination / "src"
+def _baseline_shapes() -> dict[str, dict[str, Any]]:
+    """Read the content-addressed historical facts shipped with every clone."""
+    encoded = BASELINE.read_bytes()
+    if hashlib.sha256(encoded).hexdigest() != BASELINE_SHA256:
+        raise RuntimeError("transport composition baseline digest does not match its pin")
+    value = json.loads(encoded)
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"format_version", "integration_base", "roots"}
+        or value["format_version"] != 1
+        or value["integration_base"] != INTEGRATION_BASE
+        or not isinstance(value["roots"], dict)
+        or set(value["roots"]) != set(BEFORE_MODULES)
+        or any(not isinstance(shape, dict) for shape in value["roots"].values())
+    ):
+        raise RuntimeError("transport composition baseline shape is incompatible")
+    return value["roots"]
 
 
 def _shape(source_root: Path, module: str) -> dict[str, Any]:
@@ -212,27 +218,26 @@ def document() -> dict[str, Any]:
     current_source = ROOT / "src"
     declared = _declared_registration_sets()
     observed = _observed_registration_sets()
-    with tempfile.TemporaryDirectory(prefix="bh-3qkmk-5-before-") as temporary:
-        before_source = _checkout(INTEGRATION_BASE, Path(temporary))
-        roots = []
-        for root in composition_roots():
-            drift = registration_drift(root.surface, declared[root.surface], observed[root.surface])
-            validate_registration_drift(drift)
-            roots.append(
-                {
-                    "surface": root.surface,
-                    "before": _shape(before_source, BEFORE_MODULES[root.surface]),
-                    "after": _shape(current_source, root.module),
-                    "test_closure": list(root.test_closure),
-                    "registration_drift": drift
-                    | {
-                        "comparison": _registration_comparison(
-                            root.surface, len(declared[root.surface])
-                        ),
-                        "runtime_proof": root.registration_drift_test,
-                    },
-                }
-            )
+    baseline = _baseline_shapes()
+    roots = []
+    for root in composition_roots():
+        drift = registration_drift(root.surface, declared[root.surface], observed[root.surface])
+        validate_registration_drift(drift)
+        roots.append(
+            {
+                "surface": root.surface,
+                "before": baseline[root.surface],
+                "after": _shape(current_source, root.module),
+                "test_closure": list(root.test_closure),
+                "registration_drift": drift
+                | {
+                    "comparison": _registration_comparison(
+                        root.surface, len(declared[root.surface])
+                    ),
+                    "runtime_proof": root.registration_drift_test,
+                },
+            }
+        )
     modules, edges, _dynamic = collect_imports(current_source)
     components, cyclic_edges = _cyclic_edges(modules, edges)
     return {

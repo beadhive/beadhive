@@ -7,6 +7,7 @@ import hashlib
 import json
 import time
 from importlib import resources
+from pathlib import Path
 
 import httpx
 import pytest
@@ -14,6 +15,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from joserfc import jwt
 from joserfc.jwk import RSAKey
 from joserfc.jws import JWSRegistry
+from jsonschema import Draft202012Validator
 
 from beadhive import frame_bridge, frame_bridge_runtime, gateway_read
 
@@ -22,6 +24,7 @@ AUDIENCE = "beadhive-gateway-dev"
 APP_ORIGIN = "https://app-dev.beadhive.cloud"
 GATEWAY_ORIGIN = "https://gateway-dev.beadhive.cloud"
 SUBJECT = "user_dev_demo"
+EXPERIENCE_CORPUS = Path(__file__).parent / "fixtures" / "gateway_experience_v1"
 
 
 def _keys() -> tuple[RSAKey, RSAKey]:
@@ -47,6 +50,7 @@ def _application(
     public_key: RSAKey,
     source: gateway_read.GatewayReadSource | None,
     *,
+    experience_source: gateway_read.ExperienceReadSource | None = None,
     fail_legacy_access: bool = False,
     authorized_subjects: frozenset[str] = frozenset({SUBJECT}),
     verifier_now=lambda: time.time(),
@@ -96,6 +100,7 @@ def _application(
         ),
         runtime_calls=runtime_calls,
         read_source=source,
+        experience_source=experience_source,
     )
 
 
@@ -104,6 +109,14 @@ def _catalog_bytes() -> tuple[bytes, bytes]:
     return (
         package.joinpath(gateway_read.CATALOG_FILE).read_bytes(),
         package.joinpath(gateway_read.MANIFEST_FILE).read_bytes(),
+    )
+
+
+def _experience_bytes() -> tuple[bytes, bytes]:
+    package = resources.files("beadhive").joinpath("catalog")
+    return (
+        package.joinpath(gateway_read.DEMO_EXPERIENCE_FILE).read_bytes(),
+        package.joinpath(gateway_read.DEMO_EXPERIENCE_MANIFEST_FILE).read_bytes(),
     )
 
 
@@ -147,6 +160,426 @@ def test_packaged_catalog_validates_every_scenario_and_canonical_hive_identity()
         "ready-kickoff": ("github/beadhive/beadhive-ui",),
     }
     assert source.selected_scenario_id == "multi-hive"
+
+
+def test_packaged_tour_overview_is_validated_and_read_from_memory() -> None:
+    source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+
+    async def exercise():
+        return await source.experience(SUBJECT, instance_id="dev/demo")
+
+    envelope = asyncio.run(exercise())
+    assert envelope["contractVersion"] == "gateway.read.v1"
+    assert envelope["instanceId"] == "dev/demo"
+    assert envelope["provider"]["authority"] == "generated"
+    assert envelope["provider"]["scenario"] == {
+        "id": "tour-overview",
+        "artifactVersion": 1,
+        "revision": envelope["experience"]["lanes"]["operator"]["snapshot"]["revision"],
+        "selectedBy": "gateway",
+    }
+    assert envelope["provenance"]["package"] == "@beadhive/demo-scenarios"
+    assert envelope["provenance"]["packageVersion"] == "0.1.0"
+
+    def forbidden_resource_access(*_args, **_kwargs):
+        raise AssertionError("experience read attempted package or filesystem discovery")
+
+    original = gateway_read.resources.files
+    gateway_read.resources.files = forbidden_resource_access
+    try:
+        assert asyncio.run(exercise()) == envelope
+    finally:
+        gateway_read.resources.files = original
+
+
+def test_authenticated_experience_route_serves_every_lane_from_one_source() -> None:
+    private_key, public_key = _keys()
+    source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    app = _application(
+        public_key,
+        None,
+        experience_source=source,
+        fail_legacy_access=True,
+    )
+
+    async def exercise():
+        expected = await source.experience(SUBJECT, instance_id="dev/demo")
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            response = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key)),
+            )
+        return expected, response
+
+    expected, response = asyncio.run(exercise())
+    assert response.status_code == 200
+    assert response.json() == expected
+    assert set(response.json()["experience"]["lanes"]) == {
+        "operator",
+        "planning",
+        "activity",
+        "assistant",
+    }
+    assert response.json()["provider"]["capabilities"] == list(
+        gateway_read.DEMO_EXPERIENCE_CAPABILITIES
+    )
+    assert response.json()["experience"]["lanes"]["operator"]["snapshot"]["advertisedActions"] == []
+
+
+def test_experience_route_has_specific_authentication_and_authorization_failures() -> None:
+    private_key, public_key = _keys()
+    source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    app = _application(
+        public_key,
+        None,
+        experience_source=source,
+        authorized_subjects=frozenset({SUBJECT, "user_denied"}),
+    )
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            missing = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers={"Origin": APP_ORIGIN},
+            )
+            denied = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key, subject="user_denied")),
+            )
+        return missing, denied
+
+    missing, denied = asyncio.run(exercise())
+    assert (missing.status_code, missing.json()["error"]["code"]) == (
+        401,
+        "authentication_failed",
+    )
+    assert (denied.status_code, denied.json()["error"]["code"]) == (
+        403,
+        "authorization_failed",
+    )
+    assert missing.headers["cache-control"] == denied.headers["cache-control"] == "no-store"
+
+
+def test_experience_validator_is_stable_until_gateway_restart_changes_its_epoch() -> None:
+    private_key, public_key = _keys()
+    first_source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    second_source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+
+    async def exercise():
+        headers = _headers(_token(private_key))
+        first_app = _application(public_key, None, experience_source=first_source)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=first_app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            first = await client.get("/v1/instances/dev/demo/experience", headers=headers)
+            unchanged = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers={**headers, "If-None-Match": first.headers["etag"]},
+            )
+        restarted_app = _application(public_key, None, experience_source=second_source)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=restarted_app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            restarted = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers={**headers, "If-None-Match": first.headers["etag"]},
+            )
+        return first, unchanged, restarted
+
+    first, unchanged, restarted = asyncio.run(exercise())
+    assert first.status_code == restarted.status_code == 200
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
+    assert unchanged.headers["etag"] == first.headers["etag"]
+    assert restarted.headers["etag"] != first.headers["etag"]
+    first_epoch = first.json()["experience"]["lanes"]["operator"]["snapshot"]["cursor"][
+        "producerEpoch"
+    ]
+    restarted_epoch = restarted.json()["experience"]["lanes"]["operator"]["snapshot"]["cursor"][
+        "producerEpoch"
+    ]
+    assert first_epoch == first_source.cache_boundary
+    assert restarted_epoch == second_source.cache_boundary
+    assert restarted_epoch != first_epoch
+
+
+def test_experience_reauthentication_never_reuses_an_authorized_cached_response() -> None:
+    private_key, public_key = _keys()
+    access = {"revoked": False}
+    source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    app = _application(
+        public_key,
+        None,
+        experience_source=source,
+        subject_is_revoked=lambda _subject: access["revoked"],
+    )
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            authorized = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key)),
+            )
+            access["revoked"] = True
+            denied = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers={
+                    **_headers(_token(private_key)),
+                    "If-None-Match": authorized.headers["etag"],
+                },
+            )
+        return authorized, denied
+
+    authorized, denied = asyncio.run(exercise())
+    assert authorized.status_code == 200
+    assert (denied.status_code, denied.json()["error"]["code"]) == (
+        401,
+        "authentication_failed",
+    )
+    assert denied.headers["cache-control"] == "no-store"
+    assert "etag" not in denied.headers
+    assert b'"experience"' not in denied.content
+
+
+def test_experience_request_cancellation_and_shutdown_cancel_the_source_read() -> None:
+    private_key, public_key = _keys()
+
+    class BlockingExperienceSource:
+        source_mode = "generated"
+
+        def __init__(self) -> None:
+            self.cache_boundary = "blocking-experience"
+            self.entered = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def experience(self, subject: str, *, instance_id: str):
+            assert subject == SUBJECT
+            assert instance_id == "dev/demo"
+            self.entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+    async def cancel_request() -> None:
+        source = BlockingExperienceSource()
+        app = _application(public_key, None, experience_source=source)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            request = asyncio.create_task(
+                client.get(
+                    "/v1/instances/dev/demo/experience",
+                    headers=_headers(_token(private_key)),
+                )
+            )
+            await source.entered.wait()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            await asyncio.wait_for(source.cancelled.wait(), timeout=0.5)
+
+    async def stop_application() -> None:
+        source = BlockingExperienceSource()
+        app = _application(public_key, None, experience_source=source)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            async with app.router.lifespan_context(app):
+                request = asyncio.create_task(
+                    client.get(
+                        "/v1/instances/dev/demo/experience",
+                        headers=_headers(_token(private_key)),
+                    )
+                )
+                await source.entered.wait()
+            await asyncio.wait_for(source.cancelled.wait(), timeout=0.5)
+            result = await asyncio.gather(request, return_exceptions=True)
+            assert isinstance(result[0], asyncio.CancelledError | RuntimeError)
+            if isinstance(result[0], RuntimeError):
+                assert str(result[0]) == "No response returned."
+
+    asyncio.run(cancel_request())
+    asyncio.run(stop_application())
+
+
+def test_pinned_gateway_experience_corpus_validates_the_authenticated_response() -> None:
+    lock = json.loads((EXPERIENCE_CORPUS / "corpus-lock.json").read_bytes())
+    assert lock["revision"] == "4ed2425b9860006f692fddfaa19cef4ec2a656f4"
+    for name, expected in lock["files"].items():
+        assert hashlib.sha256((EXPERIENCE_CORPUS / name).read_bytes()).hexdigest() == expected
+
+    cases = json.loads((EXPERIENCE_CORPUS / "demo-experience-cases.json").read_bytes())
+    schema = json.loads((EXPERIENCE_CORPUS / "demo-experience-v1.schema.json").read_bytes())
+    Draft202012Validator.check_schema(schema)
+    private_key, public_key = _keys()
+    source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    app = _application(public_key, None, experience_source=source)
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            return await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key)),
+            )
+
+    response = asyncio.run(exercise())
+    assert response.status_code == 200
+    body = response.json()
+    Draft202012Validator(schema).validate(body)
+    assert body["provider"]["authority"] == "generated"
+    assert body["provider"]["scenario"]["selectedBy"] == "gateway"
+    assert body["experience"]["lanes"]["operator"]["snapshot"]["advertisedActions"] == []
+    for case in cases["positive"]:
+        if capability := case.get("capability"):
+            assert capability in body["provider"]["capabilities"]
+        if case.get("field") == "experience.coverage":
+            assert (
+                body["experience"]["coverage"]["required"]
+                == body["experience"]["coverage"]["exercised"]
+            )
+
+
+def test_pinned_failure_policy_covers_generated_and_live_startup_modes() -> None:
+    failure_policy = json.loads(
+        (EXPERIENCE_CORPUS / "demo-provider-failure-cases.json").read_bytes()
+    )
+    error_schema = json.loads(
+        (EXPERIENCE_CORPUS / "demo-experience-errors-v1.schema.json").read_bytes()
+    )
+    Draft202012Validator.check_schema(error_schema)
+    cases = {case["id"]: case for case in failure_policy["cases"]}
+    private_key, public_key = _keys()
+    generated = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    generated_app = _application(
+        public_key,
+        None,
+        experience_source=generated,
+        authorized_subjects=frozenset({SUBJECT, "user_denied"}),
+    )
+    live_app = _application(public_key, None, experience_source=None)
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=generated_app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            unauthenticated = await client.get(
+                "/v1/instances/dev/demo/experience", headers={"Origin": APP_ORIGIN}
+            )
+            unauthorized = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key, subject="user_denied")),
+            )
+            selected = await client.get(
+                "/v1/instances/dev/demo/experience?scenario=dense",
+                headers=_headers(_token(private_key)),
+            )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=live_app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            unavailable = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key)),
+            )
+        return unauthenticated, unauthorized, selected, unavailable
+
+    unauthenticated, unauthorized, selected, unavailable = asyncio.run(exercise())
+    for response, case_id in (
+        (unauthenticated, "authentication-failed"),
+        (unauthorized, "authorization-failed"),
+        (unavailable, "source-unavailable"),
+    ):
+        case = cases[case_id]
+        assert response.status_code == case["expectedStatus"]
+        assert response.json()["error"]["code"] == case["errorCode"]
+        assert response.json()["error"]["retryable"] is case["retryable"]
+        assert response.headers["cache-control"] == "no-store"
+        Draft202012Validator(error_schema).validate(response.json())
+    assert unavailable.headers["retry-after"] == "1"
+    assert failure_policy["sourcePolicy"]["modes"]["live"]["fallback"] == "forbidden"
+    assert (selected.status_code, selected.json()["error"]["code"]) == (
+        400,
+        "invalid_request",
+    )
+
+
+def test_generated_source_rejects_digest_valid_mixed_lane_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact_bytes, manifest_bytes = _experience_bytes()
+    artifact = json.loads(artifact_bytes)
+    artifact["experience"]["lanes"]["planning"]["authority"] = "live"
+    digest_input = {
+        key: artifact[key]
+        for key in ("schemaVersion", "artifactVersion", "generatedBy", "descriptor", "experience")
+    }
+    artifact["digest"] = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                digest_input, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+            ).encode()
+            + b"\n"
+        ).hexdigest()
+    )
+    artifact["byteCount"] = 0
+    for _ in range(3):
+        encoded_artifact = (
+            json.dumps(artifact, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+            + b"\n"
+        )
+        artifact["byteCount"] = len(encoded_artifact)
+    encoded_artifact = (
+        json.dumps(artifact, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        + b"\n"
+    )
+    manifest = json.loads(manifest_bytes)
+    manifest["digest"] = artifact["digest"]
+    manifest["byteCount"] = artifact["byteCount"]
+    encoded_manifest = json.dumps(manifest, indent=2, sort_keys=True).encode() + b"\n"
+    monkeypatch.setattr(
+        gateway_read,
+        "PINNED_DEMO_EXPERIENCE_SHA256",
+        hashlib.sha256(encoded_artifact).hexdigest(),
+    )
+    monkeypatch.setattr(
+        gateway_read,
+        "PINNED_DEMO_EXPERIENCE_MANIFEST_SHA256",
+        hashlib.sha256(encoded_manifest).hexdigest(),
+    )
+    monkeypatch.setattr(gateway_read, "PINNED_DEMO_EXPERIENCE_DIGEST", artifact["digest"])
+
+    with pytest.raises(gateway_read.CatalogValidationError, match="provenance"):
+        gateway_read.GeneratedExperienceReadSource(
+            encoded_artifact,
+            encoded_manifest,
+            authorized_subjects=frozenset({SUBJECT}),
+        )
 
 
 def test_packaged_catalog_refuses_tampered_artifact_or_manifest_before_use() -> None:
@@ -767,6 +1200,7 @@ def test_runtime_factory_installs_validated_catalog_before_serving(tmp_path, mon
     monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_JWKS_FILE", str(jwks))
     monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE", str(subjects))
     monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE", str(daemon_bearer))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SOURCE_MODE", "generated")
 
     app = frame_bridge_runtime.create_application()
 
@@ -774,14 +1208,67 @@ def test_runtime_factory_installs_validated_catalog_before_serving(tmp_path, mon
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
         ) as client:
-            return await client.get(
-                "/v1/instances/dev/demo/hives", headers=_headers(_token(private_key))
+            headers = _headers(_token(private_key))
+            return (
+                await client.get("/v1/instances/dev/demo/hives", headers=headers),
+                await client.get("/v1/instances/dev/demo/experience", headers=headers),
             )
 
-    response = asyncio.run(exercise())
-    assert response.status_code == 200
-    assert response.json()["contractVersion"] == "gateway.read.v1"
-    assert len(response.json()["items"]) == 3
+    directory, experience = asyncio.run(exercise())
+    assert directory.status_code == experience.status_code == 200
+    assert directory.json()["contractVersion"] == "gateway.read.v1"
+    assert len(directory.json()["items"]) == 3
+    assert experience.json()["provider"]["authority"] == "generated"
+
+
+def test_runtime_live_mode_never_loads_generated_artifacts(tmp_path, monkeypatch) -> None:
+    private_key, public_key = _keys()
+    jwk = public_key.as_dict()
+    jwk.update({"kid": "development-test", "use": "sig", "alg": "RS256"})
+    jwks = tmp_path / "clerk-jwks.json"
+    subjects = tmp_path / "authorized-subjects.json"
+    daemon_bearer = tmp_path / "daemon-bearer"
+    jwks.write_text(json.dumps({"keys": [jwk]}), encoding="utf-8")
+    subjects.write_text(json.dumps([SUBJECT]), encoding="utf-8")
+    daemon_bearer.write_text("bh1.frame-bridge." + "d" * 43, encoding="ascii")
+    jwks.chmod(0o600)
+    subjects.chmod(0o600)
+    daemon_bearer.chmod(0o600)
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_JWKS_FILE", str(jwks))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE", str(subjects))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE", str(daemon_bearer))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SOURCE_MODE", "live")
+
+    def forbidden_generated_load(*_args, **_kwargs):
+        raise AssertionError("live startup attempted to load a generated artifact")
+
+    monkeypatch.setattr(gateway_read, "load_packaged_development_source", forbidden_generated_load)
+    monkeypatch.setattr(
+        gateway_read,
+        "load_packaged_development_experience_source",
+        forbidden_generated_load,
+    )
+
+    app = frame_bridge_runtime.create_application()
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            return (
+                await client.get("/healthz"),
+                await client.get(
+                    "/v1/instances/dev/demo/experience",
+                    headers=_headers(_token(private_key)),
+                ),
+            )
+
+    health, experience = asyncio.run(exercise())
+    assert health.status_code == 200
+    assert (experience.status_code, experience.json()["error"]["code"]) == (
+        503,
+        "source_unavailable",
+    )
 
 
 def test_rich_requests_use_only_prevalidated_memory(monkeypatch) -> None:

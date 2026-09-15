@@ -36,6 +36,7 @@ _HIVE_PATH = "/api/v1/hives/github%2Fbeadhive%2Fbeadhive"
 _SUBJECT = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _DEMO_STATUSES = frozenset({"open", "in_progress", "blocked"})
 _INTERNAL_WORK_ITEM_TYPES = frozenset({"event", "gate"})
+SOURCE_MODE_ENV = "BEADHIVE_FRAME_BRIDGE_SOURCE_MODE"
 
 
 class _LoopbackDaemonAuth(httpx.Auth):
@@ -221,9 +222,19 @@ def create_application():
         gateway_origin=GATEWAY_ORIGIN,
     )
     authorized_subjects = _authorized_subjects(subjects_path)
-    read_source = gateway_read.load_packaged_development_source(
-        authorized_subjects=authorized_subjects
-    )
+    source_mode = os.environ.get(SOURCE_MODE_ENV)
+    if source_mode not in {"generated", "live"}:
+        raise RuntimeError(f"{SOURCE_MODE_ENV} must be explicitly set to generated or live")
+    if source_mode == "generated":
+        read_source = gateway_read.load_packaged_development_source(
+            authorized_subjects=authorized_subjects
+        )
+        experience_source = gateway_read.load_packaged_development_experience_source(
+            authorized_subjects=authorized_subjects
+        )
+    else:
+        read_source = None
+        experience_source = None
     key_set = KeySet.import_key_set(_read_json(jwks_path))
     runtime = LoopbackDemoRuntime(daemon_bearer=daemon_auth.load_bearer_file(daemon_bearer_path))
     instance = RemoteInstance(
@@ -247,13 +258,16 @@ def create_application():
     except BaseException:
         # Frame Bridge correctness and listener construction never depend on observability.
         pass
-    return build_development_frame_bridge_application(
+    app = build_development_frame_bridge_application(
         config=config,
         verifier=ClerkTokenVerifier(config=config, key=key_set),
         registry=DevelopmentInstanceRegistry(instances={DEVELOPMENT_INSTANCE_ID: instance}),
         read_source=read_source,
+        experience_source=experience_source,
         telemetry=telemetry,
     )
+    app.state.source_mode = source_mode
+    return app
 
 
 def main() -> None:
