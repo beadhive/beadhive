@@ -13,6 +13,20 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.16.3 (2026-09-14)
+
+### Feat
+
+- **gateway**: serve pinned demo experience
+- **gateway**: load pinned experience source
+
+### Fix
+
+- **gateway**: rotate experience epoch on restart
+- **daemon**: retain MCP capacity during requests
+- **daemon**: defer MCP expiry during requests
+- **evidence**: ship transport composition baseline
+
 ## v0.16.2 (2026-09-14)
 
 ### Fix
