@@ -115,6 +115,7 @@ class NetworkAdmission:
     secure: bool
     session_kind: str | None
     mcp_session_key: bytes | None = field(default=None, repr=False)
+    mcp_session_active: bool = field(default=False, repr=False)
     mcp_reservation: int | None = field(default=None, repr=False)
 
 
@@ -122,6 +123,7 @@ class NetworkAdmission:
 class _McpSession:
     created_at: float
     last_seen_at: float
+    active_requests: int = 0
 
 
 class NetworkBoundaryMetrics:
@@ -314,7 +316,9 @@ class SecureNetworkAdmissionPolicy:
         idle = self.settings.mcp.session_idle_seconds
         absolute = self.settings.mcp.session_absolute_seconds
         for key, session in tuple(self._mcp_sessions.items()):
-            if now - session.last_seen_at >= idle or now - session.created_at >= absolute:
+            if session.active_requests == 0 and (
+                now - session.last_seen_at >= idle or now - session.created_at >= absolute
+            ):
                 del self._mcp_sessions[key]
 
     def _validated_origin(self, scope: Scope, headers: Mapping[bytes, list[bytes]]) -> str | None:
@@ -408,6 +412,7 @@ class SecureNetworkAdmissionPolicy:
         request_mcp_key = _mcp_session_key(headers, reject_invalid=True) if sessionful_mcp else None
         now = self._monotonic()
         mcp_reservation: int | None = None
+        mcp_session_active = False
 
         async with self._lock:
             if scope.get("path") != "/health" and scope.get("method") != "OPTIONS":
@@ -442,9 +447,19 @@ class SecureNetworkAdmissionPolicy:
             if sessionful_mcp:
                 if request_mcp_key in self._mcp_sessions:
                     session = self._mcp_sessions[request_mcp_key]
-                    session.last_seen_at = now
-                    self._mcp_sessions.move_to_end(request_mcp_key)
-                elif request_mcp_key is None and scope.get("method") == "POST":
+                    if (
+                        now - session.last_seen_at < self.settings.mcp.session_idle_seconds
+                        and now - session.created_at < self.settings.mcp.session_absolute_seconds
+                    ):
+                        session.last_seen_at = now
+                        session.active_requests += 1
+                        self._mcp_sessions.move_to_end(request_mcp_key)
+                        mcp_session_active = True
+                if (
+                    not mcp_session_active
+                    and request_mcp_key is None
+                    and scope.get("method") == "POST"
+                ):
                     if (
                         len(self._mcp_sessions) + len(self._mcp_reservations)
                         >= self._session_limits["mcp"]
@@ -468,6 +483,7 @@ class SecureNetworkAdmissionPolicy:
             secure,
             session_kind,
             request_mcp_key,
+            mcp_session_active,
             mcp_reservation,
         )
 
@@ -505,6 +521,13 @@ class SecureNetworkAdmissionPolicy:
             self._active_connections -= 1
             if admission.mcp_reservation is not None:
                 self._mcp_reservations.discard(admission.mcp_reservation)
+            if admission.mcp_session_active and admission.mcp_session_key is not None:
+                session = self._mcp_sessions.get(admission.mcp_session_key)
+                if session is not None:
+                    if session.active_requests <= 0:
+                        raise RuntimeError("MCP network request released more than once")
+                    session.active_requests -= 1
+                self._prune_mcp_sessions(self._monotonic())
             if admission.session_kind is not None and admission.session_kind != "mcp":
                 if self._active_sessions[admission.session_kind] <= 0:
                     raise RuntimeError("network session admission released more than once")

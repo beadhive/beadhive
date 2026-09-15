@@ -49,6 +49,12 @@ DOLT_MANIFEST = (
     "svj5n97a8eqbt3dt8hg2atp99em05nod:00000000000000000000000000000000:"
     "vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv:4376\n"
 )
+FD_DIRECTORY = Path("/proc/self/fd") if Path("/proc/self/fd").is_dir() else Path("/dev/fd")
+
+
+def _open_descriptor_count() -> int:
+    """Count this process's descriptors on Linux and macOS."""
+    return len(tuple(FD_DIRECTORY.iterdir()))
 
 
 class _Provider:
@@ -341,8 +347,7 @@ def test_run_directory_enumeration_is_anchored_and_closes_root_descriptors_durin
 
     monkeypatch.setattr(public_readers.os, "scandir", racing_scandir)
     monkeypatch.setattr(public_readers.os, "listdir", racing_listdir)
-    fd_root = Path("/proc/self/fd")
-    before = len(tuple(fd_root.iterdir()))
+    before = _open_descriptor_count()
 
     inventory = public_readers.read_run_directory(((HIVE_ONE, root),))
 
@@ -351,7 +356,7 @@ def test_run_directory_enumeration_is_anchored_and_closes_root_descriptors_durin
     assert inventory.coverage_reason == "source_unreadable"
     assert inventory.entries == ()
     assert "run-external" not in {entry.run_id for entry in inventory.entries}
-    assert len(tuple(fd_root.iterdir())) == before
+    assert _open_descriptor_count() == before
 
 
 def test_multiply_linked_journal_is_an_explicit_invalid_identity(tmp_path: Path) -> None:
@@ -488,8 +493,7 @@ def test_located_run_rejects_path_swap_and_closes_every_descriptor(
         path.symlink_to(external)
     else:
         external.replace(path)
-    fd_root = Path("/proc/self/fd")
-    before = len(tuple(fd_root.iterdir()))
+    before = _open_descriptor_count()
 
     for _ in range(3):
         with pytest.raises(operator_sources.OperatorSourceError) as caught:
@@ -499,7 +503,7 @@ def test_located_run_rejects_path_swap_and_closes_every_descriptor(
             503,
         )
 
-    assert len(tuple(fd_root.iterdir())) == before
+    assert _open_descriptor_count() == before
 
 
 def test_located_run_rejects_a_hard_link_added_after_discovery(tmp_path: Path) -> None:
@@ -530,8 +534,7 @@ def test_located_run_rejects_a_hard_link_added_after_discovery(tmp_path: Path) -
     path.write_text(json.dumps(record) + "\n")
     hive, located = sources.locate_run("run-linked-late")
     os.link(path, tmp_path / "external-link.jsonl")
-    fd_root = Path("/proc/self/fd")
-    before = len(tuple(fd_root.iterdir()))
+    before = _open_descriptor_count()
 
     with pytest.raises(operator_sources.OperatorSourceError) as caught:
         sources.read_run(hive, located, "run-linked-late")
@@ -540,7 +543,7 @@ def test_located_run_rejects_a_hard_link_added_after_discovery(tmp_path: Path) -
         "activity_source_changed",
         503,
     )
-    assert len(tuple(fd_root.iterdir())) == before
+    assert _open_descriptor_count() == before
 
 
 def test_read_run_rejects_a_post_inventory_symlinked_root_and_closes_descriptors(
@@ -573,8 +576,7 @@ def test_read_run_rejects_a_post_inventory_symlinked_root_and_closes_descriptors
     displaced_root = tmp_path / "displaced-root"
     path.parent.rename(displaced_root)
     path.parent.symlink_to(displaced_root, target_is_directory=True)
-    fd_root = Path("/proc/self/fd")
-    before = len(tuple(fd_root.iterdir()))
+    before = _open_descriptor_count()
 
     for _ in range(3):
         with pytest.raises(operator_sources.OperatorSourceError) as caught:
@@ -584,7 +586,7 @@ def test_read_run_rejects_a_post_inventory_symlinked_root_and_closes_descriptors
             503,
         )
 
-    assert len(tuple(fd_root.iterdir())) == before
+    assert _open_descriptor_count() == before
 
 
 def test_factory_reads_hq_dependency_without_fetching_legacy_status(

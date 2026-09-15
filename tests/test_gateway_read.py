@@ -149,6 +149,38 @@ def test_packaged_catalog_validates_every_scenario_and_canonical_hive_identity()
     assert source.selected_scenario_id == "multi-hive"
 
 
+def test_packaged_tour_overview_is_validated_and_read_from_memory() -> None:
+    source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+
+    async def exercise():
+        return await source.experience(SUBJECT, instance_id="dev/demo")
+
+    envelope = asyncio.run(exercise())
+    assert envelope["contractVersion"] == "gateway.read.v1"
+    assert envelope["instanceId"] == "dev/demo"
+    assert envelope["provider"]["authority"] == "generated"
+    assert envelope["provider"]["scenario"] == {
+        "id": "tour-overview",
+        "artifactVersion": 1,
+        "revision": envelope["experience"]["lanes"]["operator"]["snapshot"]["revision"],
+        "selectedBy": "gateway",
+    }
+    assert envelope["provenance"]["package"] == "@beadhive/demo-scenarios"
+    assert envelope["provenance"]["packageVersion"] == "0.1.0"
+
+    def forbidden_resource_access(*_args, **_kwargs):
+        raise AssertionError("experience read attempted package or filesystem discovery")
+
+    original = gateway_read.resources.files
+    gateway_read.resources.files = forbidden_resource_access
+    try:
+        assert asyncio.run(exercise()) == envelope
+    finally:
+        gateway_read.resources.files = original
+
+
 def test_packaged_catalog_refuses_tampered_artifact_or_manifest_before_use() -> None:
     artifact, manifest = _catalog_bytes()
 
@@ -767,6 +799,7 @@ def test_runtime_factory_installs_validated_catalog_before_serving(tmp_path, mon
     monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_JWKS_FILE", str(jwks))
     monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE", str(subjects))
     monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE", str(daemon_bearer))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SOURCE_MODE", "generated")
 
     app = frame_bridge_runtime.create_application()
 
@@ -782,6 +815,45 @@ def test_runtime_factory_installs_validated_catalog_before_serving(tmp_path, mon
     assert response.status_code == 200
     assert response.json()["contractVersion"] == "gateway.read.v1"
     assert len(response.json()["items"]) == 3
+
+
+def test_runtime_live_mode_never_loads_generated_artifacts(tmp_path, monkeypatch) -> None:
+    _private_key, public_key = _keys()
+    jwk = public_key.as_dict()
+    jwk.update({"kid": "development-test", "use": "sig", "alg": "RS256"})
+    jwks = tmp_path / "clerk-jwks.json"
+    subjects = tmp_path / "authorized-subjects.json"
+    daemon_bearer = tmp_path / "daemon-bearer"
+    jwks.write_text(json.dumps({"keys": [jwk]}), encoding="utf-8")
+    subjects.write_text(json.dumps([SUBJECT]), encoding="utf-8")
+    daemon_bearer.write_text("bh1.frame-bridge." + "d" * 43, encoding="ascii")
+    jwks.chmod(0o600)
+    subjects.chmod(0o600)
+    daemon_bearer.chmod(0o600)
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_JWKS_FILE", str(jwks))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE", str(subjects))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE", str(daemon_bearer))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SOURCE_MODE", "live")
+
+    def forbidden_generated_load(*_args, **_kwargs):
+        raise AssertionError("live startup attempted to load a generated artifact")
+
+    monkeypatch.setattr(gateway_read, "load_packaged_development_source", forbidden_generated_load)
+    monkeypatch.setattr(
+        gateway_read,
+        "load_packaged_development_experience_source",
+        forbidden_generated_load,
+    )
+
+    app = frame_bridge_runtime.create_application()
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            return await client.get("/healthz")
+
+    assert asyncio.run(exercise()).status_code == 200
 
 
 def test_rich_requests_use_only_prevalidated_memory(monkeypatch) -> None:
