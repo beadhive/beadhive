@@ -259,6 +259,158 @@ def test_experience_route_has_specific_authentication_and_authorization_failures
     assert missing.headers["cache-control"] == denied.headers["cache-control"] == "no-store"
 
 
+def test_experience_validator_is_stable_until_gateway_restart_changes_its_epoch() -> None:
+    private_key, public_key = _keys()
+    first_source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    second_source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+
+    async def exercise():
+        headers = _headers(_token(private_key))
+        first_app = _application(public_key, None, experience_source=first_source)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=first_app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            first = await client.get("/v1/instances/dev/demo/experience", headers=headers)
+            unchanged = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers={**headers, "If-None-Match": first.headers["etag"]},
+            )
+        restarted_app = _application(public_key, None, experience_source=second_source)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=restarted_app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            restarted = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers={**headers, "If-None-Match": first.headers["etag"]},
+            )
+        return first, unchanged, restarted
+
+    first, unchanged, restarted = asyncio.run(exercise())
+    assert first.status_code == restarted.status_code == 200
+    assert unchanged.status_code == 304
+    assert unchanged.content == b""
+    assert unchanged.headers["etag"] == first.headers["etag"]
+    assert restarted.headers["etag"] != first.headers["etag"]
+    first_epoch = first.json()["experience"]["lanes"]["operator"]["snapshot"]["cursor"][
+        "producerEpoch"
+    ]
+    restarted_epoch = restarted.json()["experience"]["lanes"]["operator"]["snapshot"]["cursor"][
+        "producerEpoch"
+    ]
+    assert first_epoch == first_source.cache_boundary
+    assert restarted_epoch == second_source.cache_boundary
+    assert restarted_epoch != first_epoch
+
+
+def test_experience_reauthentication_never_reuses_an_authorized_cached_response() -> None:
+    private_key, public_key = _keys()
+    access = {"revoked": False}
+    source = gateway_read.load_packaged_development_experience_source(
+        authorized_subjects=frozenset({SUBJECT})
+    )
+    app = _application(
+        public_key,
+        None,
+        experience_source=source,
+        subject_is_revoked=lambda _subject: access["revoked"],
+    )
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            authorized = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers=_headers(_token(private_key)),
+            )
+            access["revoked"] = True
+            denied = await client.get(
+                "/v1/instances/dev/demo/experience",
+                headers={
+                    **_headers(_token(private_key)),
+                    "If-None-Match": authorized.headers["etag"],
+                },
+            )
+        return authorized, denied
+
+    authorized, denied = asyncio.run(exercise())
+    assert authorized.status_code == 200
+    assert (denied.status_code, denied.json()["error"]["code"]) == (
+        401,
+        "authentication_failed",
+    )
+    assert denied.headers["cache-control"] == "no-store"
+    assert "etag" not in denied.headers
+    assert b'"experience"' not in denied.content
+
+
+def test_experience_request_cancellation_and_shutdown_cancel_the_source_read() -> None:
+    private_key, public_key = _keys()
+
+    class BlockingExperienceSource:
+        source_mode = "generated"
+
+        def __init__(self) -> None:
+            self.cache_boundary = "blocking-experience"
+            self.entered = asyncio.Event()
+            self.cancelled = asyncio.Event()
+
+        async def experience(self, subject: str, *, instance_id: str):
+            assert subject == SUBJECT
+            assert instance_id == "dev/demo"
+            self.entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled.set()
+                raise
+
+    async def cancel_request() -> None:
+        source = BlockingExperienceSource()
+        app = _application(public_key, None, experience_source=source)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            request = asyncio.create_task(
+                client.get(
+                    "/v1/instances/dev/demo/experience",
+                    headers=_headers(_token(private_key)),
+                )
+            )
+            await source.entered.wait()
+            request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await request
+            await asyncio.wait_for(source.cancelled.wait(), timeout=0.5)
+
+    async def stop_application() -> None:
+        source = BlockingExperienceSource()
+        app = _application(public_key, None, experience_source=source)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            async with app.router.lifespan_context(app):
+                request = asyncio.create_task(
+                    client.get(
+                        "/v1/instances/dev/demo/experience",
+                        headers=_headers(_token(private_key)),
+                    )
+                )
+                await source.entered.wait()
+            await asyncio.wait_for(source.cancelled.wait(), timeout=0.5)
+            result = await asyncio.gather(request, return_exceptions=True)
+            assert isinstance(result[0], asyncio.CancelledError | RuntimeError)
+            if isinstance(result[0], RuntimeError):
+                assert str(result[0]) == "No response returned."
+
+    asyncio.run(cancel_request())
+    asyncio.run(stop_application())
+
+
 def test_packaged_catalog_refuses_tampered_artifact_or_manifest_before_use() -> None:
     artifact, manifest = _catalog_bytes()
 

@@ -1038,9 +1038,16 @@ class GeneratedExperienceReadSource:
         *,
         authorized_subjects: frozenset[str],
     ) -> None:
-        self._envelope = _demo_experience_envelope(artifact, manifest)
+        envelope = _demo_experience_envelope(artifact, manifest)
         self._authorized_subjects = authorized_subjects
         self._incarnation = secrets.token_urlsafe(18)
+        experience = _object(envelope["experience"], "projected demo experience")
+        lanes = _object(experience["lanes"], "projected demo lanes")
+        operator = _object(lanes["operator"], "projected operator lane")
+        snapshot = _object(operator["snapshot"], "projected operator snapshot")
+        cursor = _object(snapshot["cursor"], "projected operator cursor")
+        cursor["producerEpoch"] = self._incarnation
+        self._envelope = envelope
 
     @property
     def cache_boundary(self) -> str:
