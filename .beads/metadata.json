@@ -1,7 +1,6 @@
 {
-  "backend": "dolt",
   "database": "dolt",
-  "dolt_database": "bh",
+  "backend": "dolt",
   "dolt_mode": "server",
-  "dolt_server_database": "bh"
+  "dolt_database": "bh"
 }
