@@ -411,7 +411,7 @@
       "scope": "core real-process host-daemon-to-Frame-Bridge validation; not sibling multi-frame Gateway integration or real-host supervisor certification",
       "coverage": ["health", "authenticated discovery", "redacted snapshot", "revision-checked refresh", "SSE delivery and reconnect", "credential failure", "secret redaction", "process/socket/credential/temp-state cleanup"],
       "test": {"path": "tests/test_frame_bridge_live.py", "node": "test_authenticated_daemon_to_installed_frame_bridge_real_process_path", "sha256": "c441f3b9574420a759de1e231f1df9b8debc03082b6dc3db96a414018c851db7"},
-      "harness": {"path": "tests/harness/frame_bridge_live.py", "sha256": "b244733042eea45027bd05dcfac9e6473f3a190f6ea9dc23d39713a2ff7ca960"}
+      "harness": {"path": "tests/harness/frame_bridge_live.py", "sha256": "ec5cb45940c3a1f4e907ea12cd230c6a134115a1e6c3384a01b7fd887896aa8d"}
     }
   },
   "remaining_debt": {
