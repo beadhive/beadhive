@@ -1,8 +1,9 @@
-"""Authenticated, read-only Beadhive Frame Bridge profile for Development.
+"""Read-only Beadhive Frame Bridge profiles for Development.
 
 This module is deliberately separate from :mod:`beadhive.operator_api`: the local profile keeps
-its loopback-only contract while the Frame Bridge authenticates and projects a small, explicitly
-allowlisted representation into the Gateway-owned ``gateway.v1`` wire contract.
+its loopback-only contract while the Frame Bridge projects a small, explicitly allowlisted
+representation into the Gateway-owned ``gateway.v1`` wire contract.  Cloud DEV authenticates
+with Clerk; the sealed local-desktop tuple admits only its exact loopback Host and Tauri Origin.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ CLOUD_APP_ORIGIN = "https://app-dev.beadhive.cloud"
 CLOUD_GATEWAY_ORIGIN = "https://gateway-dev.beadhive.cloud"
 LOCAL_DESKTOP_APP_ORIGIN = "tauri://localhost"
 LOCAL_DESKTOP_GATEWAY_ORIGIN = "http://127.0.0.1:8787"
+LOCAL_DESKTOP_SUBJECT = "local_desktop"
 _APPROVED_NETWORK_PROFILES = frozenset(
     {
         (CLOUD_APP_ORIGIN, CLOUD_GATEWAY_ORIGIN),
@@ -78,6 +80,13 @@ class DevelopmentFrameBridgeConfig:
             raise ValueError("Development Frame Bridge requires the exact Clerk Development issuer")
         if (self.app_origin, self.gateway_origin) not in _APPROVED_NETWORK_PROFILES:
             raise ValueError("Development Frame Bridge requires one approved network profile")
+
+    @property
+    def is_local_desktop(self) -> bool:
+        return (self.app_origin, self.gateway_origin) == (
+            LOCAL_DESKTOP_APP_ORIGIN,
+            LOCAL_DESKTOP_GATEWAY_ORIGIN,
+        )
 
 
 def _require_exact_https_origin(value: str, label: str) -> None:
@@ -867,7 +876,7 @@ async def _invoke_refresh(
 def build_development_frame_bridge_application(
     *,
     config: DevelopmentFrameBridgeConfig,
-    verifier: ClerkTokenVerifier,
+    verifier: ClerkTokenVerifier | None,
     registry: DevelopmentInstanceRegistry,
     runtime_calls: RuntimeCallPolicy | None = None,
     read_source: gateway_read_mod.GatewayReadSource | None = None,
@@ -875,6 +884,11 @@ def build_development_frame_bridge_application(
     telemetry: SemanticTelemetryPort | None = None,
 ) -> Starlette:
     """Build the Frame Bridge read profile without mutating the loopback application."""
+    if config.is_local_desktop:
+        if verifier is not None:
+            raise ValueError("local-desktop Frame Bridge must not configure Clerk authentication")
+    elif verifier is None:
+        raise ValueError("cloud Frame Bridge requires a Clerk verifier")
     runtime_calls = runtime_calls or RuntimeCallPolicy()
     gateway_host = urlsplit(config.gateway_origin).netloc
     discovery_availability_calls = _BoundedRuntimeCalls(
@@ -921,11 +935,16 @@ def build_development_frame_bridge_application(
         if origins != [config.app_origin]:
             raise PermissionError
         authorizations = request.headers.getlist("authorization")
+        if config.is_local_desktop:
+            if authorizations:
+                raise AuthenticationFailed
+            return LOCAL_DESKTOP_SUBJECT
         if len(authorizations) != 1 or not authorizations[0].startswith("Bearer "):
             raise AuthenticationFailed
         encoded = authorizations[0].removeprefix("Bearer ")
         if not encoded or encoded.strip() != encoded:
             raise AuthenticationFailed
+        assert verifier is not None
         return verifier.verify(encoded)
 
     def authorize_bridge(request: Request) -> str:
@@ -972,7 +991,9 @@ def build_development_frame_bridge_application(
         headers = {
             "Cache-Control": "private, max-age=0, must-revalidate",
             "ETag": etag,
-            "Vary": "Authorization, Origin, Accept",
+            "Vary": (
+                "Origin, Accept" if config.is_local_desktop else "Authorization, Origin, Accept"
+            ),
             "X-Content-Type-Options": "nosniff",
         }
         if conditional:
@@ -1543,24 +1564,30 @@ def build_development_frame_bridge_application(
             for item in value.split(",")
             if item.strip()
         }
+        expected_headers = set() if config.is_local_desktop else {"authorization"}
+        exact_header_shape = (
+            not requested_headers if config.is_local_desktop else len(requested_headers) == 1
+        )
         if (
             request.headers.getlist("host") != [gateway_host]
             or origins != [config.app_origin]
             or methods != ["GET"]
-            or len(requested_headers) != 1
-            or normalized != {"authorization"}
+            or not exact_header_shape
+            or normalized != expected_headers
         ):
             return _error("request_denied", "The request is not allowed.", 403)
+        headers = {
+            "Access-Control-Allow-Origin": config.app_origin,
+            "Access-Control-Allow-Methods": "GET",
+            "Vary": "Origin",
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        }
+        if not config.is_local_desktop:
+            headers["Access-Control-Allow-Headers"] = "Authorization"
         return Response(
             status_code=204,
-            headers={
-                "Access-Control-Allow-Origin": config.app_origin,
-                "Access-Control-Allow-Methods": "GET",
-                "Access-Control-Allow-Headers": "Authorization",
-                "Vary": "Origin",
-                "Cache-Control": "no-store",
-                "X-Content-Type-Options": "nosniff",
-            },
+            headers=headers,
         )
 
     async def command_preflight(request: Request) -> Response:
@@ -1573,11 +1600,15 @@ def build_development_frame_bridge_application(
             for item in value.split(",")
             if item.strip()
         }
+        expected_headers = (
+            {"content-type"} if config.is_local_desktop else {"authorization", "content-type"}
+        )
         if (
             request.headers.getlist("host") != [gateway_host]
             or origins != [config.app_origin]
             or methods != ["POST"]
-            or normalized != {"authorization", "content-type"}
+            or len(requested_headers) != 1
+            or normalized != expected_headers
         ):
             return _error("request_denied", "The request is not allowed.", 403)
         return Response(
@@ -1585,7 +1616,9 @@ def build_development_frame_bridge_application(
             headers={
                 "Access-Control-Allow-Origin": config.app_origin,
                 "Access-Control-Allow-Methods": "POST",
-                "Access-Control-Allow-Headers": "Authorization, Content-Type",
+                "Access-Control-Allow-Headers": (
+                    "Content-Type" if config.is_local_desktop else "Authorization, Content-Type"
+                ),
                 "Vary": "Origin",
                 "Cache-Control": "no-store",
                 "X-Content-Type-Options": "nosniff",

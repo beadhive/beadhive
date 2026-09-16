@@ -18,12 +18,15 @@ host daemon's loopback Operator API.
 - opt-in local-desktop app origin: `tauri://localhost`
 - opt-in local-desktop gateway origin: `http://127.0.0.1:8787`
 - logical instance: `dev/demo`
-- JWS algorithm: RS256
+- cloud DEV JWS algorithm: RS256
 
-The Frame Bridge verifies signature, exact issuer and audience, expiry, optional not-before, and a
-non-empty subject. It then resolves that subject against the server-owned instance registry.
-Tokens do not carry or select an instance scope. Revoked subjects and subjects absent from the
-registry receive no runtime access.
+Cloud DEV verifies signature, exact issuer and audience, expiry, optional not-before, and a
+non-empty Clerk subject. It then resolves that subject against the server-owned instance
+registry. Tokens do not carry or select an instance scope. Revoked subjects and subjects absent
+from the registry receive no runtime access. The exact local-desktop tuple does not construct a
+Clerk verifier or read Clerk JWKS/subject policy. Instead, exact loopback Host plus exact Tauri
+Origin selects one fixed server-owned local principal; that principal is authorized only for the
+sealed `dev/demo` composition.
 
 ## Endpoints
 
@@ -47,11 +50,13 @@ registry receive no runtime access.
   its cursor and resulting snapshot revision. Clients fetch a fresh snapshot after invalidation;
   event payloads never duplicate work-item, agent, transcript, or workspace data.
 
-All calls require `Authorization: Bearer <token>` and the exact Origin from one complete
-Development network profile. Cloud and local-desktop values cannot be mixed. Browser
-preflight permits GET with Authorization, or POST to the exact refresh route with Authorization
-and Content-Type. All responses are `no-store`; the profile exposes no generic write, terminal,
-transcript, local-path, or event-stream capability in this version.
+All calls require the exact Host and Origin from one complete Development network profile. Cloud
+DEV additionally requires `Authorization: Bearer <token>`; its preflight permits GET with
+Authorization, or POST to the exact refresh route with Authorization and Content-Type. The
+local-desktop profile accepts no Authorization header: its GET preflight requests no headers and
+its refresh preflight requests Content-Type only. Cloud and local-desktop values cannot be mixed,
+and ordinary browser origins remain denied. All responses are `no-store`; the profile exposes no
+generic write, terminal, transcript, local-path, or event-stream capability in this version.
 
 The command body is bounded to 2 KiB and has no free-form argument. At invocation time the
 Frame Bridge verifies the token again, resolves the subject against the server-owned instance
@@ -65,9 +70,9 @@ runtime returns only retained successors. A stale cursor, retention gap, or prod
 returns the fixed `resnapshot_required` response before streaming begins. An epoch change,
 sequence gap, or malformed event observed after streaming begins emits one fixed
 `resnapshot-required` control event and closes. Stream opens have a deadline, live streams have a
-separate concurrency limit, and the Frame Bridge re-verifies the token and current instance
-policy at least once per second even while the source is idle. Scope or identity loss closes the
-stream without disclosing which policy changed.
+separate concurrency limit, and the Frame Bridge re-verifies the cloud token or the sealed local
+request boundary plus current instance policy at least once per second even while the source is
+idle. Scope or identity loss closes the stream without disclosing which policy changed.
 
 ## Stable errors
 
@@ -99,10 +104,11 @@ refresh of that authoritative source. The Development demo projection includes c
 `gate` records. The Frame Bridge's independent 1,000-item fail-closed bound still applies after this
 selection.
 
-The launcher accepts Clerk public JWKS, the authorized Development subject list, and one
+The cloud launcher accepts Clerk public JWKS, the authorized Development subject list, and one
 independently scoped host-daemon bearer only through mode-0600 service credential files. Under
 systemd, the default names are `clerk-jwks.json`, `authorized-subjects.json`, and `daemon-bearer`
 below `CREDENTIALS_DIRECTORY`; optional explicit paths exist for other service managers. The
+local-desktop profile requires only `daemon-bearer` and does not read the Clerk files. The
 daemon bearer requires only `operator:read`, is attached only to the fixed loopback daemon
 snapshot and event requests, and is never derived from or replaced by a remote caller token.
 The process never accepts keys, subjects, bearer values, free-form origins, audiences, instance
@@ -118,9 +124,11 @@ the only other sealed tuple at process startup:
 BEADHIVE_FRAME_BRIDGE_NETWORK_PROFILE=local-desktop beadhive-frame-bridge
 ```
 
-That process still binds only `127.0.0.1:8787`; it admits `Origin: tauri://localhost` and rejects
-ordinary browser origins such as `http://127.0.0.1` and `http://localhost`. An unknown profile
-value fails startup. The profile selector carries no endpoint value or credential.
+That process still binds only `127.0.0.1:8787`; it admits requests without Authorization only
+when Host is exactly `127.0.0.1:8787` and Origin is exactly `tauri://localhost`. It rejects Clerk
+bearers in this mode, ordinary browser origins such as `http://127.0.0.1` and `http://localhost`,
+and alternate Host spellings. An unknown profile value fails startup. The profile selector
+carries no endpoint value or credential.
 
 [`deploy/systemd/beadhive-frame-bridge-dev.service.example`](../deploy/systemd/beadhive-frame-bridge-dev.service.example)
 is the least-privilege user-service template. It has no capabilities, writable home, device
@@ -130,10 +138,10 @@ The local health probe is:
 
 ```sh
 curl --fail --silent --show-error \
-  --header 'Host: gateway-dev.beadhive.cloud' \
+  --header 'Host: 127.0.0.1:8787' \
   http://127.0.0.1:8787/healthz
 ```
 
 The health response contains only liveness and `gateway.v1`; requests carrying a browser Origin
-are refused. Readiness of the real data source remains visible through authenticated discovery as
-`online` or `offline`.
+are refused. Readiness of the real data source remains visible through profile-authorized
+discovery as `online` or `offline`.

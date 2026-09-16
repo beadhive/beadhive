@@ -22,6 +22,7 @@ from .frame_bridge import (
     DEVELOPMENT_ISSUER,
     LOCAL_DESKTOP_APP_ORIGIN,
     LOCAL_DESKTOP_GATEWAY_ORIGIN,
+    LOCAL_DESKTOP_SUBJECT,
     ClerkTokenVerifier,
     DevelopmentFrameBridgeConfig,
     DevelopmentInstanceRegistry,
@@ -236,7 +237,13 @@ def create_application():
         app_origin=app_origin,
         gateway_origin=gateway_origin,
     )
-    authorized_subjects = _authorized_subjects(subjects_path)
+    if config.is_local_desktop:
+        authorized_subjects = frozenset({LOCAL_DESKTOP_SUBJECT})
+        verifier = None
+    else:
+        authorized_subjects = _authorized_subjects(subjects_path)
+        key_set = KeySet.import_key_set(_read_json(jwks_path))
+        verifier = ClerkTokenVerifier(config=config, key=key_set)
     source_mode = os.environ.get(SOURCE_MODE_ENV)
     if source_mode not in {"generated", "live"}:
         raise RuntimeError(f"{SOURCE_MODE_ENV} must be explicitly set to generated or live")
@@ -250,7 +257,6 @@ def create_application():
     else:
         read_source = None
         experience_source = None
-    key_set = KeySet.import_key_set(_read_json(jwks_path))
     runtime = LoopbackDemoRuntime(daemon_bearer=daemon_auth.load_bearer_file(daemon_bearer_path))
     instance = RemoteInstance(
         display_name="Development demo",
@@ -275,7 +281,7 @@ def create_application():
         pass
     app = build_development_frame_bridge_application(
         config=config,
-        verifier=ClerkTokenVerifier(config=config, key=key_set),
+        verifier=verifier,
         registry=DevelopmentInstanceRegistry(instances={DEVELOPMENT_INSTANCE_ID: instance}),
         read_source=read_source,
         experience_source=experience_source,

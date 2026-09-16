@@ -209,8 +209,7 @@ def test_runtime_network_profile_defaults_cloud_and_requires_exact_local_opt_in(
         frame_bridge_runtime.network_origins("local")
 
 
-def test_local_desktop_profile_admits_tauri_authenticated_read_and_rejects_browser_origin() -> None:
-    private_key, public_key = _keys()
+def test_local_desktop_profile_admits_tauri_without_clerk_and_rejects_browser_origin() -> None:
     config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=ISSUER,
         audience=AUDIENCE,
@@ -219,12 +218,12 @@ def test_local_desktop_profile_admits_tauri_authenticated_read_and_rejects_brows
     )
     app = frame_bridge.build_development_frame_bridge_application(
         config=config,
-        verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
+        verifier=None,
         registry=frame_bridge.DevelopmentInstanceRegistry(
             instances={
                 INSTANCE_ID: frame_bridge.RemoteInstance(
                     display_name="Development demo",
-                    authorized_subjects=frozenset({SUBJECT}),
+                    authorized_subjects=frozenset({frame_bridge.LOCAL_DESKTOP_SUBJECT}),
                     snapshot=_read_snapshot,
                     online=_online,
                 )
@@ -235,16 +234,74 @@ def test_local_desktop_profile_admits_tauri_authenticated_read_and_rejects_brows
     async def run():
         transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5000))
         async with httpx.AsyncClient(transport=transport, base_url=LOCAL_GATEWAY_ORIGIN) as client:
-            token = _token(private_key)
             admitted = await client.get(
                 "/v1/instances",
                 params={"limit": "50"},
-                headers=_headers(token, origin=LOCAL_APP_ORIGIN),
+                headers={"Origin": LOCAL_APP_ORIGIN},
+            )
+            snapshot = await client.get(
+                "/v1/instances/dev/demo/snapshot",
+                headers={"Origin": LOCAL_APP_ORIGIN},
             )
             rejected = await client.get(
                 "/v1/instances",
                 params={"limit": "50"},
-                headers=_headers(token, origin="http://127.0.0.1:3000"),
+                headers={"Origin": "http://127.0.0.1:3000"},
+            )
+            wrong_host = await client.get(
+                "/v1/instances",
+                params={"limit": "50"},
+                headers={"Host": "localhost:8787", "Origin": LOCAL_APP_ORIGIN},
+            )
+            preflight = await client.options(
+                "/v1/instances",
+                headers={
+                    "Origin": LOCAL_APP_ORIGIN,
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            return admitted, snapshot, rejected, wrong_host, preflight
+
+    admitted, snapshot, rejected, wrong_host, preflight = asyncio.run(run())
+    assert admitted.status_code == snapshot.status_code == 200
+    assert admitted.headers["access-control-allow-origin"] == LOCAL_APP_ORIGIN
+    assert rejected.status_code == 403
+    assert wrong_host.status_code == 403
+    assert preflight.status_code == 204
+    assert preflight.headers["access-control-allow-origin"] == LOCAL_APP_ORIGIN
+    assert "access-control-allow-headers" not in preflight.headers
+
+
+def test_local_desktop_profile_rejects_authorization_and_cloud_still_requires_it() -> None:
+    _, public_key = _keys()
+    local_config = frame_bridge.DevelopmentFrameBridgeConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=LOCAL_APP_ORIGIN,
+        gateway_origin=LOCAL_GATEWAY_ORIGIN,
+    )
+    local_app = frame_bridge.build_development_frame_bridge_application(
+        config=local_config,
+        verifier=None,
+        registry=frame_bridge.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: frame_bridge.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({frame_bridge.LOCAL_DESKTOP_SUBJECT}),
+                    snapshot=_read_snapshot,
+                    online=_online,
+                )
+            }
+        ),
+    )
+
+    async def local_action():
+        transport = httpx.ASGITransport(app=local_app, client=("127.0.0.1", 5000))
+        async with httpx.AsyncClient(transport=transport, base_url=LOCAL_GATEWAY_ORIGIN) as client:
+            request = await client.get(
+                "/v1/instances",
+                params={"limit": "50"},
+                headers={"Origin": LOCAL_APP_ORIGIN, "Authorization": "Bearer not-local"},
             )
             preflight = await client.options(
                 "/v1/instances",
@@ -254,14 +311,83 @@ def test_local_desktop_profile_admits_tauri_authenticated_read_and_rejects_brows
                     "Access-Control-Request-Headers": "Authorization",
                 },
             )
-            return admitted, rejected, preflight
+            return request, preflight
 
-    admitted, rejected, preflight = asyncio.run(run())
-    assert admitted.status_code == 200
-    assert admitted.headers["access-control-allow-origin"] == LOCAL_APP_ORIGIN
-    assert rejected.status_code == 403
+    local_request, local_preflight = asyncio.run(local_action())
+    assert (local_request.status_code, local_request.json()["error"]["code"]) == (
+        401,
+        "authentication_failed",
+    )
+    assert (local_preflight.status_code, local_preflight.json()["error"]["code"]) == (
+        403,
+        "request_denied",
+    )
+
+    cloud_app = _app(public_key)
+
+    async def cloud_action(client):
+        return await client.get(
+            "/v1/instances", params={"limit": "50"}, headers={"Origin": APP_ORIGIN}
+        )
+
+    cloud_request = _exercise(cloud_app, cloud_action)
+    assert (cloud_request.status_code, cloud_request.json()["error"]["code"]) == (
+        401,
+        "authentication_failed",
+    )
+
+
+def test_local_desktop_refresh_uses_content_type_only_preflight_and_no_bearer() -> None:
+    config = frame_bridge.DevelopmentFrameBridgeConfig(
+        issuer=ISSUER,
+        audience=AUDIENCE,
+        app_origin=LOCAL_APP_ORIGIN,
+        gateway_origin=LOCAL_GATEWAY_ORIGIN,
+    )
+    app = frame_bridge.build_development_frame_bridge_application(
+        config=config,
+        verifier=None,
+        registry=frame_bridge.DevelopmentInstanceRegistry(
+            instances={
+                INSTANCE_ID: frame_bridge.RemoteInstance(
+                    display_name="Development demo",
+                    authorized_subjects=frozenset({frame_bridge.LOCAL_DESKTOP_SUBJECT}),
+                    snapshot=_read_snapshot,
+                    online=_online,
+                    refresh=_refresh_reader(
+                        {"status": "completed", "revision": "sha256:" + "a" * 64}
+                    ),
+                )
+            }
+        ),
+    )
+
+    async def run():
+        transport = httpx.ASGITransport(app=app, client=("127.0.0.1", 5000))
+        async with httpx.AsyncClient(transport=transport, base_url=LOCAL_GATEWAY_ORIGIN) as client:
+            preflight = await client.options(
+                "/v1/instances/dev/demo/commands/refresh",
+                headers={
+                    "Origin": LOCAL_APP_ORIGIN,
+                    "Access-Control-Request-Method": "POST",
+                    "Access-Control-Request-Headers": "Content-Type",
+                },
+            )
+            command = await client.post(
+                "/v1/instances/dev/demo/commands/refresh",
+                headers={"Origin": LOCAL_APP_ORIGIN, "Content-Type": "application/json"},
+                json={
+                    "schemaVersion": 1,
+                    "correlationId": CORRELATION_ID,
+                    "expectedRevision": "sha256:" + "a" * 64,
+                },
+            )
+            return preflight, command
+
+    preflight, command = asyncio.run(run())
     assert preflight.status_code == 204
-    assert preflight.headers["access-control-allow-origin"] == LOCAL_APP_ORIGIN
+    assert preflight.headers["access-control-allow-headers"] == "Content-Type"
+    assert command.status_code == 200
 
 
 def test_authorized_subject_discovers_only_dev_demo_and_reads_redacted_snapshot() -> None:
