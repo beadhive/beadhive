@@ -180,6 +180,56 @@ def test_subject_policy_file_is_private_bounded_and_exact(tmp_path: Path) -> Non
         frame_bridge_runtime._authorized_subjects(policy)
 
 
+def test_local_desktop_factory_does_not_load_clerk_material(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    daemon_bearer = tmp_path / "daemon-bearer"
+    daemon_bearer.write_text(DAEMON_BEARER, encoding="ascii")
+    daemon_bearer.chmod(0o600)
+    monkeypatch.setenv(frame_bridge_runtime.NETWORK_PROFILE_ENV, "local-desktop")
+    monkeypatch.setenv(frame_bridge_runtime.SOURCE_MODE_ENV, "generated")
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_DAEMON_CREDENTIAL_FILE", str(daemon_bearer))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_JWKS_FILE", str(tmp_path / "absent-jwks"))
+    monkeypatch.setenv("BEADHIVE_FRAME_BRIDGE_SUBJECTS_FILE", str(tmp_path / "absent-subjects"))
+
+    def forbidden_subject_policy(_path: Path) -> frozenset[str]:
+        raise AssertionError("local-desktop must not read Clerk subject policy")
+
+    def forbidden_jwks(_value):
+        raise AssertionError("local-desktop must not import Clerk JWKS")
+
+    monkeypatch.setattr(frame_bridge_runtime, "_authorized_subjects", forbidden_subject_policy)
+    monkeypatch.setattr(frame_bridge_runtime.KeySet, "import_key_set", forbidden_jwks)
+    monkeypatch.setattr(
+        frame_bridge_runtime.bh_config,
+        "load",
+        lambda: (_ for _ in ()).throw(RuntimeError("telemetry unavailable")),
+    )
+
+    app = frame_bridge_runtime.create_application()
+
+    assert app.state.source_mode == "generated"
+
+    async def exercise() -> httpx.Response:
+        lifespan = app.router.lifespan_context(app)
+        await lifespan.__aenter__()
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport,
+                base_url=frame_bridge.LOCAL_DESKTOP_GATEWAY_ORIGIN,
+            ) as client:
+                return await client.get(
+                    "/v1/instances/dev/demo/experience",
+                    headers={"Origin": frame_bridge.LOCAL_DESKTOP_APP_ORIGIN},
+                )
+        finally:
+            await lifespan.__aexit__(None, None, None)
+
+    response = asyncio.run(exercise())
+    assert response.status_code == 200
+
+
 def test_public_health_is_exact_host_only_and_origin_free() -> None:
     config = frame_bridge.DevelopmentFrameBridgeConfig(
         issuer=frame_bridge.DEVELOPMENT_ISSUER,
