@@ -44,6 +44,11 @@ _INTEGRATION_BUBBLE = re.compile(r"^chore\(merge\): (bead|molecule|batch) (.+)$"
 # auditing them.
 _COMPOSITION_BUBBLE = re.compile(r"^chore\(merge\): compose (.+) onto (.+)$")
 
+# A container refresh is infrastructure topology, not an integration of a reviewed child. The
+# explicit branch and upstream names let the audit prove that narrow exception structurally.
+_REFRESH_BUBBLE = re.compile(r"^chore\(merge\): refresh (\S+) from (\S+)$")
+_REFRESH_PREFIX = "chore(merge): refresh"
+
 
 def is_review_gate_desc(desc: str) -> bool:
     """True iff `desc` is a convention review-gate description — the ONE selector every verb shares
@@ -296,6 +301,98 @@ def _reviewed_side_spine(
     )
 
 
+def _is_ancestor_of(entry, ancestor: str, ref: str) -> bool:
+    """Prove that ``ancestor`` remains reachable from ``ref``; unreadable refs fail closed."""
+    return bool(ancestor and ref and worktree.base_of(entry, ancestor, ref) == ancestor)
+
+
+def _refresh_identity_errors(entry, row: dict, branch: str, upstream: str) -> list[str]:
+    """Validate one claimed container-refresh merge without treating it as child provenance."""
+    sha = str(row.get("sha") or "")
+    short = str(row.get("short") or sha[:8])
+    subject = str(row.get("subject") or "")
+    expected = f"chore(merge): refresh {branch} from {upstream}"
+    match = _REFRESH_BUBBLE.fullmatch(subject)
+    if match is None:
+        return [
+            f"unsafe container refresh {short} has invalid subject {subject!r}; "
+            f"expected {expected!r}"
+        ]
+
+    named_branch, named_upstream = match.groups()
+    errors = []
+    if named_branch != branch:
+        errors.append(
+            f"unsafe container refresh {short} names container {named_branch}, expected {branch}"
+        )
+    if named_upstream != upstream:
+        errors.append(
+            f"unsafe container refresh {short} names upstream {named_upstream}, expected {upstream}"
+        )
+
+    parents = [str(value) for value in (row.get("parents") or [])]
+    if len(parents) != 2:
+        errors.append(f"unsafe container refresh {short} must have exactly two parents")
+        return errors
+
+    # A real non-FF `git merge <upstream>` records the diverged container line first and an
+    # upstream-ancestral second parent. The first check also rejects reversed parents.
+    if _is_ancestor_of(entry, parents[0], upstream):
+        errors.append(
+            f"unsafe container refresh {short} must keep the prior container as first parent"
+        )
+    if not _is_ancestor_of(entry, parents[1], upstream):
+        errors.append(
+            f"unsafe container refresh {short} must use an upstream-ancestral second parent"
+        )
+    return errors
+
+
+def _first_parent_spine_with_refreshes(
+    entry,
+    rows: list[dict],
+    branch_sha: str,
+    base: str,
+    branch: str,
+    upstream: str,
+) -> tuple[list[dict], set[str], list[str]]:
+    """Allow an old first-parent boundary only behind an explicit proven refresh."""
+    strict_spine, strict_errors = _first_parent_spine(rows, branch_sha, base)
+    if not strict_errors:
+        candidates = [
+            row for row in strict_spine if str(row.get("subject") or "").startswith(_REFRESH_PREFIX)
+        ]
+        verdicts = [
+            (row, _refresh_identity_errors(entry, row, branch, upstream)) for row in candidates
+        ]
+        return (
+            strict_spine,
+            {str(row.get("sha") or "") for row, row_errors in verdicts if not row_errors},
+            [error for _row, row_errors in verdicts for error in row_errors],
+        )
+
+    permissive_spine, permissive_errors = _first_parent_spine(
+        rows,
+        branch_sha,
+        base,
+        ancestor_boundary=lambda boundary: _is_ancestor_of(entry, boundary, upstream),
+    )
+    if permissive_errors:
+        return strict_spine, set(), strict_errors
+
+    candidates = [
+        row for row in permissive_spine if str(row.get("subject") or "").startswith(_REFRESH_PREFIX)
+    ]
+    if not candidates:
+        return strict_spine, set(), strict_errors
+    verdicts = [(row, _refresh_identity_errors(entry, row, branch, upstream)) for row in candidates]
+    return (
+        permissive_spine,
+        {str(row.get("sha") or "") for row, row_errors in verdicts if not row_errors},
+        [error for _row, row_errors in verdicts for error in row_errors],
+    )
+
+
 def _batch_members(group: str, merge_sha: str, children: list[dict]) -> list[dict]:
     """Direct members actually recorded against this particular batch bubble."""
     label = f"batch:{group}"
@@ -436,6 +533,8 @@ def _reviewed_epic_spine(
     base: str,
     epic: str,
     composition_target: str,
+    branch: str,
+    refresh_upstream: str,
 ) -> tuple[list[dict], set[str], list[str]]:
     """Return the child-integration spine behind one explicit root-first composition wrapper.
 
@@ -470,9 +569,11 @@ def _reviewed_epic_spine(
             entry, rows, branch_sha, base, wrapper, epic, composition_target
         )
 
-    spine, errors = _first_parent_spine(rows, branch_sha, base)
+    spine, refresh_topology, errors = _first_parent_spine_with_refreshes(
+        entry, rows, branch_sha, base, branch, refresh_upstream
+    )
     if errors:
-        return spine, set(), errors
+        return spine, refresh_topology, errors
 
     wrappers = [
         (index, row)
@@ -480,21 +581,25 @@ def _reviewed_epic_spine(
         if _COMPOSITION_BUBBLE.fullmatch(str(row.get("subject") or ""))
     ]
     if not wrappers:
-        return spine, set(), errors
+        return spine, refresh_topology, errors
     if len(wrappers) != 1:
         shorts = ", ".join(
             str(row.get("short") or str(row.get("sha") or "")[:8]) for _, row in wrappers
         )
         return (
             [],
-            set(),
+            refresh_topology,
             [f"composition wrapper appears more than once on the epic spine: {shorts}"],
         )
 
     wrapper_index, wrapper = wrappers[0]
     if wrapper_index != 0:
         short = str(wrapper.get("short") or str(wrapper.get("sha") or "")[:8])
-        return [], set(), [f"composition wrapper {short} must be the oldest epic boundary row"]
+        return (
+            [],
+            refresh_topology,
+            [f"composition wrapper {short} must be the oldest epic boundary row"],
+        )
 
     subject = str(wrapper.get("subject") or "")
     match = _COMPOSITION_BUBBLE.fullmatch(subject)
@@ -504,26 +609,30 @@ def _reviewed_epic_spine(
     short = str(wrapper.get("short") or sha[:8])
     parents = [str(value) for value in (wrapper.get("parents") or [])]
     if len(parents) != 2:
-        return [], set(), [f"composition wrapper {short} must have exactly two parents"]
+        return [], refresh_topology, [f"composition wrapper {short} must have exactly two parents"]
     errors.extend(_composition_identity_errors(wrapper, epic, composition_target))
     if parents[0] != base:
         errors.append(
             f"composition wrapper {short} must use the exact integration base as first parent"
         )
     if errors:
-        return [], set(), errors
+        return [], refresh_topology, errors
 
     nested_base = worktree.base_of(entry, parents[1], parents[0])
     if not nested_base:
-        return [], set(), [f"composition wrapper {short} has no merge base between its parents"]
+        return (
+            [],
+            refresh_topology,
+            [f"composition wrapper {short} has no merge base between its parents"],
+        )
     nested_rows = worktree.commit_rows(entry, nested_base, parents[1])
     if not nested_rows:
-        return [], set(), [f"composition wrapper {short} has an empty reviewed side"]
+        return [], refresh_topology, [f"composition wrapper {short} has an empty reviewed side"]
     nested_spine, nested_errors = _reviewed_side_spine(entry, nested_rows, parents[1], nested_base)
     if nested_errors:
         return (
             [],
-            set(),
+            refresh_topology,
             [
                 f"composition wrapper {short} has invalid reviewed-side topology: {error}"
                 for error in nested_errors
@@ -538,7 +647,7 @@ def _reviewed_epic_spine(
     if nested_wrappers:
         return (
             [],
-            set(),
+            refresh_topology,
             [
                 f"composition wrapper {short} has stacked reviewed-side wrapper(s): "
                 + ", ".join(nested_wrappers)
@@ -550,10 +659,10 @@ def _reviewed_epic_spine(
     if not (nested_shas | {sha}) <= outer_shas:
         return (
             [],
-            set(),
+            refresh_topology,
             [f"composition wrapper {short} reviewed side leaves the outer review range"],
         )
-    return [*nested_spine, *spine[1:]], {sha}, []
+    return [*nested_spine, *spine[1:]], {sha} | refresh_topology, []
 
 
 def epic_history_policy(
@@ -591,10 +700,12 @@ def epic_history_policy(
     epic_data = bd.show(epic, main) or {}
     parent = str(epic_data.get("parent") or "")
     composition_target = parent or integration_branch
+    refresh_upstream = worktree.integration_base(entry, epic, integration_branch)
     spine, topology_commits, spine_errors = _reviewed_epic_spine(
-        entry, rows, branch_sha, base, epic, composition_target
+        entry, rows, branch_sha, base, epic, composition_target, branch, refresh_upstream
     )
     errors.extend(spine_errors)
+    unsafe_refresh = any(error.startswith("unsafe container refresh") for error in spine_errors)
     accounted: set[str] = set(topology_commits)
     integrated: set[str] = set()
 
@@ -603,6 +714,10 @@ def epic_history_policy(
         short = str(row.get("short") or sha[:8])
         parents = [str(parent) for parent in (row.get("parents") or [])]
         subject = str(row.get("subject") or "")
+        if subject.startswith(_REFRESH_PREFIX):
+            # Proven refresh SHAs are topology commits; malformed refreshes already have a
+            # direct trust-boundary error. Neither form is a direct-child integration.
+            continue
         if len(parents) != 2:
             errors.append(
                 f"unaccounted direct epic commit {short} {subject!r}; expected a lifecycle "
@@ -664,16 +779,16 @@ def epic_history_policy(
 
     landed = {child_id for child_id, child in direct.items() if _landed_child(child)}
     missing_integrations = landed - integrated
-    if missing_integrations:
+    if missing_integrations and not unsafe_refresh:
         errors.append(
             "landed direct child missing a reviewed lifecycle integration: "
             + ", ".join(sorted(missing_integrations))
         )
-    if topology_commits and not integrated:
+    if topology_commits and not integrated and not unsafe_refresh:
         errors.append("composition wrapper contains no proven landed direct-child integration")
 
     unaccounted = range_shas - accounted
-    if unaccounted and not any("unaccounted" in error for error in errors):
+    if unaccounted and not unsafe_refresh and not any("unaccounted" in error for error in errors):
         examples = [
             f"{row.get('short')} {row.get('subject')}"
             for row in rows

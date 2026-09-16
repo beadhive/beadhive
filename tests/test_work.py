@@ -753,6 +753,24 @@ def test_submit_tolerates_container_refresh_merge(hive, fakebd):
     assert fakebd.states["mr-1.2"]["review"] == "pending"
 
 
+def test_claim_refuses_refresh_from_diverged_tracked_integration(hive, fakebd, capsys):
+    """A local-only main commit must not be made durable in an epic refresh bubble."""
+    _kicked_off_pair(fakebd)
+    _git("push", "-u", "-q", "origin", "main", cwd=hive.main)
+    work.claim(bead="mr-1.1", as_="", hive="myrepo")
+    seat = _wt(hive, "mr-1")
+    _commit(seat, "feat: container-side work", fname="container.txt")
+    _commit(hive.main, "fix: local only integration work", fname="mainfix.txt")
+    before = _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip()
+    capsys.readouterr()
+
+    work.claim(bead="mr-1.2", as_="", hive="myrepo")
+
+    assert "diverges from remote-tracking ref origin/main" in capsys.readouterr().err
+    assert _git("rev-parse", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == before
+    assert not (_wt_of(hive, "mr-1.2") / "mainfix.txt").exists()
+
+
 def test_claim_as_flag_overrides_identity(hive, fakebd):
     fakebd.seed("mr-1", title="t")
     work.claim(bead="mr-1", as_="dev/alice", hive="myrepo")
@@ -3464,6 +3482,82 @@ def _start_and_land_children(hive, fakebd, epic="mr-epic", count=6, dispatcher="
     return worktree.locate(config.load(), "myrepo", epic, kind="epic")[2]
 
 
+def _land_epic_child(hive, fakebd, epic, index):
+    child = f"{epic}.{index}"
+    fakebd.seed(child, title=f"child {index}", parent=epic)
+    work.claim(bead=child, as_="dev/child", hive="myrepo")
+    _commit(_wt_of(hive, child), f"feat: {child}", fname=f"child-{index}.txt")
+    work.submit(bead=child, as_="dev/child", hive="myrepo")
+    work.approve(bead=child, as_=f"review/child-{index}", hive="myrepo")
+    work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+    return child
+
+
+def _open_epic_with_refresh(hive, fakebd, epic):
+    fakebd.seed(epic, title="epic", issue_type="epic")
+    fakebd.states[epic] = {"kickoff": "approved"}
+    work.start(epic=epic, as_="disp/lead", hive="myrepo")
+    _land_epic_child(hive, fakebd, epic, 1)
+    _commit(hive.main, "fix: integration advanced", fname="main-advance.txt")
+    child = f"{epic}.2"
+    fakebd.seed(child, title="child 2", parent=epic)
+    work.claim(bead=child, as_="dev/child", hive="myrepo")
+    branch = f"wt/bead/epic/{epic}"
+    refresh = _git("rev-parse", branch, cwd=hive.main).stdout.strip()
+    return branch, refresh, child, _wt(hive, epic)
+
+
+def _malformed_container_refresh(hive, branch, refresh, malformation):
+    tree = _git("rev-parse", f"{refresh}^{{tree}}", cwd=hive.main).stdout.strip()
+    old_container, upstream = _git(
+        "show", "-s", "--format=%P", refresh, cwd=hive.main
+    ).stdout.split()
+    subject = f"chore(merge): refresh {branch} from main"
+    if malformation == "invalid-subject":
+        args = [
+            "commit-tree",
+            tree,
+            "-p",
+            old_container,
+            "-p",
+            upstream,
+            "-m",
+            "chore(merge): refresh",
+        ]
+    elif malformation == "wrong-container":
+        args = [
+            "commit-tree",
+            tree,
+            "-p",
+            old_container,
+            "-p",
+            upstream,
+            "-m",
+            "chore(merge): refresh wt/bead/epic/other from main",
+        ]
+    elif malformation == "wrong-upstream":
+        args = [
+            "commit-tree",
+            tree,
+            "-p",
+            old_container,
+            "-p",
+            upstream,
+            "-m",
+            f"chore(merge): refresh {branch} from release",
+        ]
+    elif malformation == "parent-count":
+        args = ["commit-tree", tree, "-p", old_container, "-m", subject]
+    elif malformation == "reversed":
+        args = ["commit-tree", tree, "-p", upstream, "-p", old_container, "-m", subject]
+    else:
+        disconnected = _git(
+            "commit-tree", tree, "-m", "chore: disconnected upstream", cwd=hive.main
+        ).stdout.strip()
+        args = ["commit-tree", tree, "-p", old_container, "-p", disconnected, "-m", subject]
+    return _git(*args, cwd=hive.main).stdout.strip()
+
+
 def _wrap_reviewed_epic_over_advanced_root(
     hive,
     fakebd,
@@ -3513,6 +3607,75 @@ def _land_reviewed_suffix_children(hive, fakebd, *, epic: str, start: int, count
         work.submit(bead=child, as_="dev/suffix", hive="myrepo")
         work.approve(bead=child, as_=f"review/suffix-{index}", hive="myrepo")
         work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+
+
+def test_epic_finish_accepts_proven_container_refresh_topology(hive, fakebd, capsys):
+    """A normal lifecycle refresh crosses the moving merge-base without becoming child work."""
+    epic = "mr-safe-refresh"
+    branch, refresh, child, _seat = _open_epic_with_refresh(hive, fakebd, epic)
+    assert _git("log", "-1", "--format=%s", refresh, cwd=hive.main).stdout.strip() == (
+        f"chore(merge): refresh {branch} from main"
+    )
+    assert _git("show", "-s", "--format=%P", refresh, cwd=hive.main).stdout.split()[1] == (
+        _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    )
+    _commit(_wt_of(hive, child), f"feat: {child}", fname="child-2.txt")
+    work.submit(bead=child, as_="dev/child", hive="myrepo")
+    work.approve(bead=child, as_="review/child-2", hive="myrepo")
+    work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert policy["valid"], policy["errors"]
+    assert policy["direct_children"] == policy["integrated_children"] == 2
+    assert policy["effective_max_commits"] == 5
+    assert "linked/topology" in policy["basis"]
+
+    work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    work.approve(bead=epic, as_="review/refresh", hive="myrepo")
+    work.finish(epic=epic, hive="myrepo")
+
+    assert fakebd.beads[epic]["status"] == "closed"
+
+
+@pytest.mark.parametrize(
+    ("malformation", "expected"),
+    [
+        ("invalid-subject", "invalid subject"),
+        ("wrong-container", "names container"),
+        ("wrong-upstream", "names upstream"),
+        ("parent-count", "must have exactly two parents"),
+        ("reversed", "prior container as first parent"),
+        ("unreachable", "upstream-ancestral second parent"),
+    ],
+)
+def test_epic_history_rejects_malformed_container_refresh(
+    hive, fakebd, capsys, malformation, expected
+):
+    """Every refresh allowance is structural; malformed real-Git bubbles fail directly."""
+    epic = f"mr-refresh-{malformation}"
+    branch, refresh, child, seat = _open_epic_with_refresh(hive, fakebd, epic)
+    malformed = _malformed_container_refresh(hive, branch, refresh, malformation)
+    _git("update-ref", f"refs/heads/{branch}", malformed, cwd=hive.main)
+    _git("reset", "--hard", malformed, cwd=seat)
+    child_wt = _wt_of(hive, child)
+    _git("reset", "--hard", malformed, cwd=child_wt)
+    _commit(child_wt, f"feat: {child}", fname="child-2.txt")
+    work.submit(bead=child, as_="dev/child", hive="myrepo")
+    work.approve(bead=child, as_="review/child-2", hive="myrepo")
+    work.merge(bead=child, hive="myrepo", rm=False, molecule=False)
+
+    capsys.readouterr()
+    work.show(bead=epic, view=["log"], json_out=True, hive="myrepo")
+    policy = json.loads(capsys.readouterr().out)["history_policy"]
+    assert not policy["valid"]
+    assert any(expected in error for error in policy["errors"])
+    assert not any("landed direct child missing" in error for error in policy["errors"])
+
+    with pytest.raises(typer.Exit):
+        work.submit(bead=epic, as_="disp/lead", hive="myrepo")
+    assert not fakebd.did("set-state", epic, "review=pending")
 
 
 def test_epic_submit_accepts_root_first_wrapper_and_recurses_into_reviewed_topology(

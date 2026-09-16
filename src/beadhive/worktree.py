@@ -995,6 +995,28 @@ def refresh_container(entry, branch: str, upstream: str) -> None:
     `base..child` only. NEVER blocks dispatch: a dirty seat or a conflicting merge warns loudly
     (merge aborted, seat left clean) and provisioning proceeds from the stale base."""
     main = registry.hive_dir(entry)
+    tracking = _run_git(
+        ["git", "-C", str(main), "rev-parse", "--abbrev-ref", f"{upstream}@{{upstream}}"],
+        check=False,
+        capture=True,
+    )
+    tracking_ref = (tracking.stdout or "").strip() if tracking.returncode == 0 else ""
+    if tracking_ref:
+        local = _run_git(["git", "-C", str(main), "rev-parse", upstream], check=False, capture=True)
+        tracked = _run_git(
+            ["git", "-C", str(main), "rev-parse", tracking_ref], check=False, capture=True
+        )
+        if (
+            local.returncode != 0
+            or tracked.returncode != 0
+            or (local.stdout or "").strip() != (tracked.stdout or "").strip()
+        ):
+            typer.echo(
+                f"WARNING: refusing refresh of {branch} from {upstream}: local {upstream} "
+                f"diverges from remote-tracking ref {tracking_ref}",
+                err=True,
+            )
+            return
     res = _run_git(
         ["git", "-C", str(main), "rev-list", "--count", f"{branch}..{upstream}"],
         check=False,
