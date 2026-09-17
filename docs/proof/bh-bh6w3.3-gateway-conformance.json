@@ -15,11 +15,11 @@
     "publicAdapterListener": "forbidden"
   },
   "beadhive": {
-    "conformanceCommit": "dd984216074770d537affbbdb5dc0c06ee732d70",
-    "conformanceTree": "76b4c1f3188e57016acf5cef1afd435d7e919f43",
+    "conformanceCommit": "376ba96c0122943a0f2b72bf62a9bbb11063b334",
+    "conformanceTree": "a85d88304c69b061d2ed6dcae9823c836a5b7445",
     "focusedCommand": "uv run pytest tests/test_frame_bridge_upstream.py tests/test_frame_bridge_factory.py -q",
     "focusedResult": {
-      "passed": 19,
+      "passed": 20,
       "failed": 0
     }
   },
@@ -28,6 +28,8 @@
     "tree": "7f3f3b30c747fa7fd4def6ea583a300df4ced630",
     "contractCasesPath": "conformance/frame-bridge-upstream-v1-cases.json",
     "contractCasesSha256": "22c102911d8c346814db24dcd0ad70d6f9a6691c12a512072b2ae1116d1e52e9",
+    "verifiedFixturePath": "tests/fixtures/frame_bridge_gateway_e482/frame-bridge-upstream-v1-cases.json",
+    "executableMatrixTest": "tests/test_frame_bridge_upstream.py::test_pinned_gateway_case_matrix_is_immutable_and_covered",
     "counterpartRegistrationMismatchTest": "internal/gateway/certification_test.go:TestAggregateGatewayCertification/registration-mismatch",
     "counterpartTestExecution": "not-run: the exact source was available locally but no go executable is installed in this environment"
   },
