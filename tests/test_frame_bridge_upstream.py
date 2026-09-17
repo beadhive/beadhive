@@ -244,16 +244,19 @@ def _headers(
     }
 
 
-def _gateway_registration_matches(value: object) -> bool:
-    """Mirror the pinned Gateway's fixed-host registration admission rule."""
+def _pinned_gateway_registration_admission(value: object) -> tuple[int, str] | None:
+    """Apply e482's fixed Factory registration admission result locally."""
 
-    return value == {
+    expected = {
         "schemaVersion": 1,
         "contractVersion": upstream.UPSTREAM_CONTRACT,
         "hostId": "factory",
         "hostEpoch": EPOCH,
         "instances": [upstream.RegisteredInstance().to_wire()],
     }
+    if value == expected:
+        return None
+    return (409, "registration_mismatch")
 
 
 @asynccontextmanager
@@ -655,8 +658,10 @@ def test_pinned_aggregate_gateway_reads_over_factory_unix_socket(
 
     assert registration.status_code == 200
     registration_body = registration.json()
-    assert _gateway_registration_matches(registration_body)
-    assert not _gateway_registration_matches({**registration_body, "hostId": "replacement"})
+    assert _pinned_gateway_registration_admission(registration_body) is None
+    assert _pinned_gateway_registration_admission(
+        {**registration_body, "hostId": "replacement"}
+    ) == (409, "registration_mismatch")
     assert registration_body["schemaVersion"] == 1
     assert registration_body["contractVersion"] == upstream.UPSTREAM_CONTRACT
     assert registration_body["hostId"] == "factory"
@@ -895,6 +900,18 @@ def test_pinned_gateway_case_matrix_is_immutable_and_covered() -> None:
     }
     registration = next(item for item in matrix["operations"] if item["id"] == "registration")
     assert registration["errorResponses"]["409"] == ["registration_mismatch"]
+    upstream_test = "tests/test_frame_bridge_upstream.py::"
+    operation_coverage = {
+        "liveness": upstream_test + "test_private_events_and_liveness_never_need_browser_authority",
+        "readiness": upstream_test + "test_pinned_aggregate_gateway_reads_over_factory_unix_socket",
+        "registration": upstream_test
+        + "test_pinned_aggregate_gateway_reads_over_factory_unix_socket",
+        "directory": upstream_test + "test_pinned_aggregate_gateway_reads_over_factory_unix_socket",
+        "snapshot": upstream_test + "test_pinned_aggregate_gateway_reads_over_factory_unix_socket",
+        "events": upstream_test + "test_private_events_and_liveness_never_need_browser_authority",
+        "refresh": upstream_test + "test_private_refresh_is_revision_guarded_and_idempotency_bound",
+    }
+    assert set(operation_coverage) == {item["id"] for item in matrix["operations"]}
 
     case_ids = {item["id"] for item in matrix["negativeCases"]}
     factory_socket_test = (
@@ -905,16 +922,180 @@ def test_pinned_gateway_case_matrix_is_immutable_and_covered() -> None:
         "tests/test_frame_bridge_upstream.py::"
         "test_pinned_aggregate_gateway_rejects_bad_authority_and_source_failures"
     )
-    executable_coverage = {
+    authority_test = (
+        upstream_test + "test_private_authority_failures_are_fail_closed_before_daemon_access"
+    )
+    operations_test = (
+        upstream_test
+        + "test_private_registration_readiness_and_source_operations_are_request_bound"
+    )
+    registration_test = (
+        upstream_test + "test_pinned_aggregate_gateway_reads_over_factory_unix_socket"
+    )
+    events_test = upstream_test + "test_private_events_and_liveness_never_need_browser_authority"
+    refresh_test = upstream_test + "test_private_refresh_is_revision_guarded_and_idempotency_bound"
+    source_test = (
+        upstream_test + "test_host_daemon_adapter_is_loopback_only_and_rejects_malformed_snapshots"
+    )
+    verifier_test = (
+        upstream_test + "test_verifier_configuration_rejects_unknown_fields_and_unsafe_file_modes"
+    )
+    reload_test = (
+        upstream_test
+        + "test_invalid_verifier_reload_retains_active_set_but_marks_readiness_unready"
+    )
+    # A complete test-reference index; execution status is classified below.
+    case_test_index = {
+        "client-socket-selector": factory_socket_test,
+        "client-host-selector": authority_test,
+        "duplicate-instance-route": authority_test,
+        "socket-path-symlink": factory_socket_test,
         "direct-tcp-access": factory_socket_test,
-        "forwarded-clerk-token": "test_gateway_and_daemon_authority_do_not_cross_the_private_seam",
+        "forwarded-header": authority_test,
+        "spoofed-private-identity-header": rejection_test,
+        "forwarded-clerk-token": upstream_test
+        + "test_gateway_and_daemon_authority_do_not_cross_the_private_seam",
         "missing-attestation": rejection_test,
+        "expired-attestation": authority_test,
+        "replayed-attestation": authority_test,
+        "wrong-key": rejection_test,
+        "signer-config-wrong-mode": factory_socket_test,
+        "jku-header": rejection_test,
+        "unknown-kid": rejection_test,
+        "revoked-kid": verifier_test,
+        "verifier-config-symlink": verifier_test,
+        "verifier-config-wrong-mode": verifier_test,
+        "verifier-invalid-reload": reload_test,
+        "verifier-overlap-rotation": verifier_test,
+        "verifier-emergency-revocation": verifier_test,
+        "verifier-digest-mismatch": verifier_test,
+        "wrong-issuer": authority_test,
+        "wrong-audience": authority_test,
+        "wrong-scope": authority_test,
         "wrong-host": rejection_test,
         "wrong-instance": rejection_test,
-        "registration-drift": "test_pinned_aggregate_gateway_reads_over_factory_unix_socket",
+        "wrong-factory": authority_test,
+        "wrong-method": authority_test,
+        "wrong-target-hash": authority_test,
+        "registration-drift": registration_test,
         "daemon-unavailable": rejection_test,
+        "deadline-expired": rejection_test,
+        "admission-exhausted": rejection_test,
+        "malformed-json": source_test,
+        "oversized-response": source_test,
+        "wrong-contract-version": source_test,
+        "mixed-host-identity": source_test,
+        "mixed-hive-identity": source_test,
+        "stale-cursor": refresh_test,
+        "refresh-idempotency-conflict": refresh_test,
+        "partial-response-reset": source_test,
+        "event-disconnect": events_test,
+        "refresh-disconnect": refresh_test,
+        "public-cancellation": events_test,
+        "generated-fallback-on-live-failure": operations_test,
+        "empty-directory-on-source-failure": operations_test,
         "frame-bridge-as-tunnel-origin": factory_socket_test,
     }
-    assert set(executable_coverage) <= case_ids
+    local_executed = {
+        case_id: case_test_index[case_id]
+        for case_id in {
+            "direct-tcp-access",
+            "forwarded-header",
+            "spoofed-private-identity-header",
+            "forwarded-clerk-token",
+            "missing-attestation",
+            "replayed-attestation",
+            "verifier-config-wrong-mode",
+            "verifier-invalid-reload",
+            "wrong-scope",
+            "wrong-host",
+            "wrong-instance",
+            "wrong-method",
+            "registration-drift",
+            "daemon-unavailable",
+            "malformed-json",
+            "refresh-idempotency-conflict",
+            "frame-bridge-as-tunnel-origin",
+        }
+    }
+    gateway_owned_unexecuted = {
+        "client-socket-selector",
+        "client-host-selector",
+        "duplicate-instance-route",
+        "socket-path-symlink",
+        "expired-attestation",
+        "wrong-key",
+        "signer-config-wrong-mode",
+        "jku-header",
+        "unknown-kid",
+        "revoked-kid",
+        "verifier-config-symlink",
+        "verifier-overlap-rotation",
+        "verifier-emergency-revocation",
+        "verifier-digest-mismatch",
+        "wrong-issuer",
+        "wrong-audience",
+        "wrong-factory",
+        "wrong-target-hash",
+        "deadline-expired",
+        "admission-exhausted",
+        "oversized-response",
+        "wrong-contract-version",
+        "mixed-host-identity",
+        "mixed-hive-identity",
+        "stale-cursor",
+        "partial-response-reset",
+        "event-disconnect",
+        "refresh-disconnect",
+        "public-cancellation",
+        "generated-fallback-on-live-failure",
+        "empty-directory-on-source-failure",
+    }
+    assert set(local_executed).isdisjoint(gateway_owned_unexecuted)
+    assert set(local_executed) | gateway_owned_unexecuted == case_ids
+    assert all(test.startswith("tests/") for test in local_executed.values())
+
+    case_coverage = {
+        **{case_id: ("local-executed", test) for case_id, test in local_executed.items()},
+        **{
+            case_id: ("gateway-owned/unexecuted", str(fixture))
+            for case_id in gateway_owned_unexecuted
+        },
+    }
+    assert set(case_coverage) == case_ids
+    assert {
+        case_id for case_id, (kind, _) in case_coverage.items() if kind == "local-executed"
+    } == set(local_executed)
+    assert {
+        case_id
+        for case_id, (kind, evidence) in case_coverage.items()
+        if kind == "gateway-owned/unexecuted" and evidence == str(fixture)
+    } == gateway_owned_unexecuted
+
+    assert set(case_test_index) == case_ids
+    assert all(test.startswith("tests/") for test in operation_coverage.values())
+    assert all(test.startswith("tests/") for test in case_test_index.values())
+    assert case_test_index["registration-drift"] == registration_test
     assert proof["aggregateGateway"]["commit"] == GATEWAY_REVISION
     assert proof["aggregateGateway"]["contractCasesSha256"] == GATEWAY_CONTRACT_CASES_SHA256
+    assert proof["aggregateGateway"]["matrixCoverage"] == {
+        "operations": {"localExecuted": len(operation_coverage), "gatewayOwnedUnexecuted": 0},
+        "negativeCases": {
+            "localExecuted": len(local_executed),
+            "gatewayOwnedUnexecuted": len(gateway_owned_unexecuted),
+        },
+        "registrationDrift": (
+            "local pinned e482 admission in "
+            "test_pinned_aggregate_gateway_reads_over_factory_unix_socket"
+        ),
+    }
+    assert proof["aggregateGateway"]["gatewayRuntime"] == {
+        "status": "unavailable",
+        "reason": (
+            "the Go executable is absent; Gateway-owned cases are verified only by the immutable "
+            "e482 fixture"
+        ),
+        "gatewayOwnedCasesClaimedExecuted": False,
+    }
+    assert "counterpartRegistrationMismatchTest" not in proof["aggregateGateway"]
+    assert "counterpartTestExecution" not in proof["aggregateGateway"]
