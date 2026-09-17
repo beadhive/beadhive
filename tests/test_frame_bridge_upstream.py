@@ -6,7 +6,9 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import socket
+import tempfile
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -258,6 +260,13 @@ def _gateway_registration_matches(value: object) -> bool:
 async def _private_unix_client(app: object, socket_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Exercise the production listener shape without opening a TCP socket."""
 
+    # Linux AF_UNIX paths are capped at 108 bytes.  The clean-checkout gate's
+    # pytest tmpdir is deliberately nested enough to exceed that limit, so use
+    # a still-private, unique short directory when necessary.
+    socket_dir: tempfile.TemporaryDirectory[str] | None = None
+    if len(os.fsencode(str(socket_path))) >= 100:
+        socket_dir = tempfile.TemporaryDirectory(prefix="bh-frame-bridge-")
+        socket_path = Path(socket_dir.name) / socket_path.name
     socket_path.parent.mkdir(mode=0o750)
     socket_path.parent.chmod(0o750)
     monkeypatch.setattr(frame_bridge_factory, "_FACTORY_SOCKET", socket_path)
@@ -284,6 +293,8 @@ async def _private_unix_client(app: object, socket_path: Path, monkeypatch: pyte
         if listener.fileno() != -1:
             listener.close()
         frame_bridge_factory._remove_stale_socket(socket_path)
+        if socket_dir is not None:
+            socket_dir.cleanup()
 
 
 def test_private_registration_readiness_and_source_operations_are_request_bound() -> None:
