@@ -161,21 +161,24 @@ def test_main_binds_only_the_private_unix_socket(
 
 
 def test_factory_socket_has_group_only_permissions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    paths = _paths(tmp_path)
-    monkeypatch.setattr(frame_bridge_factory, "_FACTORY_SOCKET", paths.socket_path)
+    runtime_directory = Path("/tmp") / f"bh-{uuid.uuid4().hex[:8]}"
+    runtime_directory.mkdir(mode=0o750)
+    socket_path = runtime_directory / "factory.sock"
+    monkeypatch.setattr(frame_bridge_factory, "_FACTORY_SOCKET", socket_path)
 
-    listener = frame_bridge_factory._bind_factory_socket(paths.socket_path)
+    listener = frame_bridge_factory._bind_factory_socket(socket_path)
     try:
-        info = paths.socket_path.stat()
+        info = socket_path.stat()
         assert stat.S_ISSOCK(info.st_mode)
         assert stat.S_IMODE(info.st_mode) == 0o660
         assert info.st_uid == os.geteuid()
         assert info.st_gid == os.getegid()
     finally:
         listener.close()
-        frame_bridge_factory._remove_stale_socket(paths.socket_path)
+        frame_bridge_factory._remove_stale_socket(socket_path)
+        runtime_directory.rmdir()
 
 
 def test_socket_cleanup_refuses_non_socket(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
