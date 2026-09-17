@@ -1,0 +1,340 @@
+{
+  "schemaVersion": 1,
+  "contractVersion": "frame-bridge.upstream.v1",
+  "transport": {
+    "protocol": "http1-unix",
+    "socketRoot": "/run/beadhive/frame-bridge",
+    "tcpListener": "forbidden",
+    "publicExposure": "forbidden"
+  },
+  "reviewPolicy": {
+    "state": "candidate",
+    "requiredOwners": ["gateway", "frame-bridge"],
+    "evidenceAuthority": "AGF:bh-gw-e2s.1",
+    "requiredEvidenceFields": ["ownerRole", "reviewedCommit", "verdict"],
+    "sourceClaimsApproval": false
+  },
+  "identity": {
+    "algorithm": "EdDSA",
+    "audience": "frame-bridge.upstream.v1",
+    "maxTokenLifetimeSeconds": 10,
+    "maxClockSkewSeconds": 2,
+    "replayRetentionAfterExpirySeconds": 30,
+    "forwardClerkToken": false,
+    "verifierTrust": {
+      "path": "/etc/beadhive/frame-bridge/gateway-verifiers.json",
+      "signerPath": "/run/credentials/beadhive-gateway/attestation-ed25519.jwk",
+      "signerMode": "0400",
+      "fileType": "regular-no-links",
+      "owner": "root",
+      "mode": "0640",
+      "canonicalization": "RFC8785",
+      "digest": "sha256",
+      "keyType": "OKP-Ed25519",
+      "remoteDiscovery": "forbidden",
+      "unknownKid": "fail-closed",
+      "invalidReload": "retain-last-valid-and-unready",
+      "reload": "whole-set-atomic-swap",
+      "reloadTrigger": "SIGHUP",
+      "protectedHeaderFields": ["alg", "kid", "typ"],
+      "forbiddenHeaderFields": ["jku", "jwk", "x5u", "x5c", "crit", "b64"],
+      "rotationOverlapMinimumSeconds": 42,
+      "revocation": "atomic-and-immediate"
+    },
+    "requiredClaims": [
+      "iss",
+      "sub",
+      "aud",
+      "iat",
+      "nbf",
+      "exp",
+      "jti",
+      "request_id",
+      "method",
+      "target_sha256",
+      "host_id",
+      "instance_id",
+      "factory_id",
+      "principal_sub",
+      "scope"
+    ],
+    "scopes": [
+      "upstream:registration",
+      "upstream:health",
+      "upstream:read",
+      "upstream:events",
+      "upstream:refresh"
+    ]
+  },
+  "limits": {
+    "maximumJsonBytes": 1048576,
+    "eventIdleMilliseconds": 30000,
+    "retryAttempts": 2,
+    "retryJitterMinimumMilliseconds": 50,
+    "retryJitterMaximumMilliseconds": 100,
+    "retryableOperations": [
+      "liveness",
+      "readiness",
+      "registration",
+      "directory",
+      "snapshot"
+    ],
+    "neverRetryOperations": ["events", "refresh"]
+  },
+  "operations": [
+    {
+      "id": "liveness",
+      "method": "GET",
+      "path": "/frame-bridge/upstream/v1/livez",
+      "scope": null,
+      "connectMilliseconds": 250,
+      "headersMilliseconds": 750,
+      "totalMilliseconds": 1000,
+      "errorResponses": {}
+    },
+    {
+      "id": "readiness",
+      "method": "GET",
+      "path": "/frame-bridge/upstream/v1/readyz",
+      "scope": "upstream:health",
+      "connectMilliseconds": 250,
+      "headersMilliseconds": 750,
+      "totalMilliseconds": 1000,
+      "errorResponses": {
+        "400": ["invalid_request"],
+        "401": ["upstream_authentication_failed"],
+        "403": ["upstream_authorization_failed"],
+        "429": ["upstream_busy"],
+        "500": ["upstream_internal"],
+        "503": ["source_unavailable"],
+        "504": ["upstream_timeout"]
+      }
+    },
+    {
+      "id": "registration",
+      "method": "GET",
+      "path": "/frame-bridge/upstream/v1/registration",
+      "scope": "upstream:registration",
+      "connectMilliseconds": 250,
+      "headersMilliseconds": 750,
+      "totalMilliseconds": 1000,
+      "errorResponses": {
+        "400": ["invalid_request"],
+        "401": ["upstream_authentication_failed"],
+        "403": ["upstream_authorization_failed"],
+        "409": ["registration_mismatch"],
+        "429": ["upstream_busy"],
+        "500": ["upstream_internal"],
+        "503": ["source_unavailable"],
+        "504": ["upstream_timeout"]
+      }
+    },
+    {
+      "id": "directory",
+      "method": "GET",
+      "path": "/frame-bridge/upstream/v1/instances/{instance_id}/hives",
+      "scope": "upstream:read",
+      "connectMilliseconds": 250,
+      "headersMilliseconds": 1000,
+      "totalMilliseconds": 5000,
+      "errorResponses": {
+        "400": ["invalid_request"],
+        "401": ["upstream_authentication_failed"],
+        "403": ["upstream_authorization_failed"],
+        "404": ["source_not_found"],
+        "429": ["upstream_busy"],
+        "500": ["upstream_internal"],
+        "503": ["source_unavailable"],
+        "504": ["upstream_timeout"]
+      }
+    },
+    {
+      "id": "snapshot",
+      "method": "GET",
+      "path": "/frame-bridge/upstream/v1/instances/{instance_id}/hives/{hive_id}/snapshot",
+      "scope": "upstream:read",
+      "connectMilliseconds": 250,
+      "headersMilliseconds": 1000,
+      "totalMilliseconds": 5000,
+      "errorResponses": {
+        "400": ["invalid_request"],
+        "401": ["upstream_authentication_failed"],
+        "403": ["upstream_authorization_failed"],
+        "404": ["source_not_found"],
+        "429": ["upstream_busy"],
+        "500": ["upstream_internal"],
+        "503": ["source_unavailable"],
+        "504": ["upstream_timeout"]
+      }
+    },
+    {
+      "id": "events",
+      "method": "GET",
+      "path": "/frame-bridge/upstream/v1/instances/{instance_id}/hives/{hive_id}/events",
+      "scope": "upstream:events",
+      "connectMilliseconds": 250,
+      "headersMilliseconds": 1000,
+      "idleMilliseconds": 30000,
+      "errorResponses": {
+        "400": ["invalid_request"],
+        "401": ["upstream_authentication_failed"],
+        "403": ["upstream_authorization_failed"],
+        "404": ["source_not_found"],
+        "409": ["resnapshot_required"],
+        "429": ["upstream_busy"],
+        "500": ["upstream_internal"],
+        "503": ["source_unavailable"],
+        "504": ["upstream_timeout"]
+      }
+    },
+    {
+      "id": "refresh",
+      "method": "POST",
+      "path": "/frame-bridge/upstream/v1/instances/{instance_id}/hives/{hive_id}/refresh",
+      "scope": "upstream:refresh",
+      "connectMilliseconds": 250,
+      "headersMilliseconds": 1000,
+      "totalMilliseconds": 10000,
+      "errorResponses": {
+        "400": ["invalid_request"],
+        "401": ["upstream_authentication_failed"],
+        "403": ["upstream_authorization_failed"],
+        "404": ["source_not_found"],
+        "409": ["resnapshot_required", "idempotency_conflict"],
+        "429": ["upstream_busy"],
+        "500": ["upstream_internal"],
+        "503": ["source_unavailable"],
+        "504": ["upstream_timeout"]
+      }
+    }
+  ],
+  "errors": [
+    {
+      "code": "invalid_request",
+      "status": 400,
+      "retryable": false,
+      "publicStatus": 503,
+      "publicCode": "source_unavailable"
+    },
+    {
+      "code": "upstream_authentication_failed",
+      "status": 401,
+      "retryable": false,
+      "publicStatus": 503,
+      "publicCode": "source_unavailable"
+    },
+    {
+      "code": "upstream_authorization_failed",
+      "status": 403,
+      "retryable": false,
+      "publicStatus": 503,
+      "publicCode": "source_unavailable"
+    },
+    {
+      "code": "source_not_found",
+      "status": 404,
+      "retryable": false,
+      "publicStatus": 503,
+      "publicCode": "source_unavailable"
+    },
+    {
+      "code": "registration_mismatch",
+      "status": 409,
+      "retryable": false,
+      "publicStatus": 503,
+      "publicCode": "source_unavailable"
+    },
+    {
+      "code": "resnapshot_required",
+      "status": 409,
+      "retryable": false,
+      "publicStatus": 409,
+      "publicCode": "resnapshot_required"
+    },
+    {
+      "code": "idempotency_conflict",
+      "status": 409,
+      "retryable": false,
+      "publicStatus": 409,
+      "publicCode": "invalid_request"
+    },
+    {
+      "code": "upstream_busy",
+      "status": 429,
+      "retryable": true,
+      "publicStatus": 503,
+      "publicCode": "source_unavailable"
+    },
+    {
+      "code": "source_unavailable",
+      "status": 503,
+      "retryable": true,
+      "publicStatus": 503,
+      "publicCode": "source_unavailable"
+    },
+    {
+      "code": "upstream_timeout",
+      "status": 504,
+      "retryable": true,
+      "publicStatus": 503,
+      "publicCode": "source_unavailable"
+    },
+    {
+      "code": "upstream_internal",
+      "status": 500,
+      "retryable": false,
+      "publicStatus": 503,
+      "publicCode": "source_unavailable"
+    }
+  ],
+  "negativeCases": [
+    {"id": "client-socket-selector", "expected": "reject-before-selection"},
+    {"id": "client-host-selector", "expected": "reject-before-selection"},
+    {"id": "duplicate-instance-route", "expected": "gateway-unready"},
+    {"id": "socket-path-symlink", "expected": "gateway-unready"},
+    {"id": "direct-tcp-access", "expected": "no-listener"},
+    {"id": "forwarded-header", "expected": "invalid_request"},
+    {"id": "spoofed-private-identity-header", "expected": "strip-at-gateway"},
+    {"id": "forwarded-clerk-token", "expected": "never-forward"},
+    {"id": "missing-attestation", "expected": "upstream_authentication_failed"},
+    {"id": "expired-attestation", "expected": "upstream_authentication_failed"},
+    {"id": "replayed-attestation", "expected": "upstream_authentication_failed"},
+    {"id": "wrong-key", "expected": "upstream_authentication_failed"},
+    {"id": "signer-config-wrong-mode", "expected": "gateway-unready"},
+    {"id": "jku-header", "expected": "upstream_authentication_failed"},
+    {"id": "unknown-kid", "expected": "upstream_authentication_failed"},
+    {"id": "revoked-kid", "expected": "upstream_authentication_failed"},
+    {"id": "verifier-config-symlink", "expected": "bridge-refuses-start"},
+    {"id": "verifier-config-wrong-mode", "expected": "bridge-refuses-start"},
+    {"id": "verifier-invalid-reload", "expected": "retain-last-valid-and-unready"},
+    {"id": "verifier-overlap-rotation", "expected": "accept-both-active-kids"},
+    {"id": "verifier-emergency-revocation", "expected": "reject-immediately"},
+    {"id": "verifier-digest-mismatch", "expected": "gateway-unready"},
+    {"id": "wrong-issuer", "expected": "upstream_authentication_failed"},
+    {"id": "wrong-audience", "expected": "upstream_authentication_failed"},
+    {"id": "wrong-scope", "expected": "upstream_authorization_failed"},
+    {"id": "wrong-host", "expected": "upstream_authorization_failed"},
+    {"id": "wrong-instance", "expected": "upstream_authorization_failed"},
+    {"id": "wrong-factory", "expected": "upstream_authorization_failed"},
+    {"id": "wrong-method", "expected": "upstream_authorization_failed"},
+    {"id": "wrong-target-hash", "expected": "upstream_authorization_failed"},
+    {"id": "registration-drift", "expected": "registration_mismatch"},
+    {"id": "daemon-unavailable", "expected": "source_unavailable"},
+    {"id": "deadline-expired", "expected": "upstream_timeout"},
+    {"id": "admission-exhausted", "expected": "upstream_busy"},
+    {"id": "malformed-json", "expected": "discard-and-mark-unhealthy"},
+    {"id": "oversized-response", "expected": "discard-and-mark-unhealthy"},
+    {"id": "wrong-contract-version", "expected": "discard-and-mark-unhealthy"},
+    {"id": "mixed-host-identity", "expected": "discard-and-mark-unhealthy"},
+    {"id": "mixed-hive-identity", "expected": "discard-and-mark-unhealthy"},
+    {"id": "stale-cursor", "expected": "resnapshot_required"},
+    {"id": "refresh-idempotency-conflict", "expected": "idempotency_conflict"},
+    {"id": "partial-response-reset", "expected": "no-retry"},
+    {"id": "event-disconnect", "expected": "no-upstream-retry"},
+    {"id": "refresh-disconnect", "expected": "no-upstream-retry"},
+    {"id": "public-cancellation", "expected": "cancel-upstream"},
+    {"id": "generated-fallback-on-live-failure", "expected": "forbidden"},
+    {"id": "empty-directory-on-source-failure", "expected": "forbidden"},
+    {"id": "frame-bridge-as-tunnel-origin", "expected": "forbidden"}
+  ]
+}

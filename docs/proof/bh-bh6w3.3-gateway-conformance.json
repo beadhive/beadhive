@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "bead": "bh-bh6w3.3",
+  "component": "private Factory Frame Bridge upstream",
+  "release": {
+    "repairOf": "v0.16.4 Gateway support",
+    "target": "v0.16.5",
+    "consumerFacingApi": "unchanged"
+  },
+  "contract": {
+    "version": "frame-bridge.upstream.v1",
+    "transport": "http1-unix",
+    "socketPath": "/run/beadhive/frame-bridge/factory.sock",
+    "tcpListener": "forbidden",
+    "publicAdapterListener": "forbidden"
+  },
+  "beadhive": {
+    "conformanceCommit": "8c36583d0caf8f996abdbf20d1e14aa2c67e73fc",
+    "conformanceTree": "df2bc5a753bac205a6e0c34c669786f74df9f6de",
+    "focusedCommand": "uv run pytest tests/test_frame_bridge_upstream.py tests/test_frame_bridge_factory.py -q",
+    "focusedResult": {
+      "passed": 20,
+      "failed": 0
+    }
+  },
+  "aggregateGateway": {
+    "commit": "e482bb44ad9f89dd9a751ce42d4332bec0b311e6",
+    "tree": "7f3f3b30c747fa7fd4def6ea583a300df4ced630",
+    "contractCasesPath": "conformance/frame-bridge-upstream-v1-cases.json",
+    "contractCasesSha256": "22c102911d8c346814db24dcd0ad70d6f9a6691c12a512072b2ae1116d1e52e9",
+    "verifiedFixturePath": "tests/fixtures/frame_bridge_gateway_e482/frame-bridge-upstream-v1-cases.json",
+    "executableMatrixTest": "tests/test_frame_bridge_upstream.py::test_pinned_gateway_case_matrix_is_immutable_and_covered",
+    "matrixCoverage": {
+      "operations": {"localExecuted": 7, "gatewayOwnedUnexecuted": 0},
+      "negativeCases": {"localExecuted": 17, "gatewayOwnedUnexecuted": 31},
+      "registrationDrift": "local pinned e482 admission in test_pinned_aggregate_gateway_reads_over_factory_unix_socket"
+    },
+    "gatewayRuntime": {
+      "status": "unavailable",
+      "reason": "the Go executable is absent; Gateway-owned cases are verified only by the immutable e482 fixture",
+      "gatewayOwnedCasesClaimedExecuted": false
+    }
+  },
+  "evidence": [
+    {
+      "requirement": "positive Gateway registration, readiness, directory, and snapshot reads over a real protected Unix socket",
+      "executable": "tests/test_frame_bridge_upstream.py::test_pinned_aggregate_gateway_reads_over_factory_unix_socket"
+    },
+    {
+      "requirement": "invalid attestation, wrong host or instance scope, malformed request, daemon unavailability, and Clerk-header rejection fail closed before source access",
+      "executable": "tests/test_frame_bridge_upstream.py::test_pinned_aggregate_gateway_rejects_bad_authority_and_source_failures"
+    },
+    {
+      "requirement": "Gateway attestation never reaches the daemon; the daemon bearer never crosses back to Gateway, and Clerk authority is rejected at the private seam",
+      "executable": "tests/test_frame_bridge_upstream.py::test_gateway_and_daemon_authority_do_not_cross_the_private_seam"
+    },
+    {
+      "requirement": "Factory socket custody is mode 0660 under the service-owned directory, with no TCP or public adapter listener",
+      "executable": "tests/test_frame_bridge_factory.py::test_factory_socket_has_group_only_permissions; tests/test_frame_bridge_factory.py::test_factory_systemd_profile_keeps_socket_private_and_has_no_tcp_listener"
+    },
+    {
+      "requirement": "Pinned e482 registration admission maps any drift from the fixed Factory registration to registration_mismatch before public reads",
+      "executable": "tests/test_frame_bridge_upstream.py::test_pinned_aggregate_gateway_reads_over_factory_unix_socket"
+    }
+  ]
+}
