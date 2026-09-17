@@ -15,8 +15,8 @@
     "publicAdapterListener": "forbidden"
   },
   "beadhive": {
-    "conformanceCommit": "376ba96c0122943a0f2b72bf62a9bbb11063b334",
-    "conformanceTree": "a85d88304c69b061d2ed6dcae9823c836a5b7445",
+    "conformanceCommit": "8c36583d0caf8f996abdbf20d1e14aa2c67e73fc",
+    "conformanceTree": "df2bc5a753bac205a6e0c34c669786f74df9f6de",
     "focusedCommand": "uv run pytest tests/test_frame_bridge_upstream.py tests/test_frame_bridge_factory.py -q",
     "focusedResult": {
       "passed": 20,
@@ -30,8 +30,16 @@
     "contractCasesSha256": "22c102911d8c346814db24dcd0ad70d6f9a6691c12a512072b2ae1116d1e52e9",
     "verifiedFixturePath": "tests/fixtures/frame_bridge_gateway_e482/frame-bridge-upstream-v1-cases.json",
     "executableMatrixTest": "tests/test_frame_bridge_upstream.py::test_pinned_gateway_case_matrix_is_immutable_and_covered",
-    "counterpartRegistrationMismatchTest": "internal/gateway/certification_test.go:TestAggregateGatewayCertification/registration-mismatch",
-    "counterpartTestExecution": "not-run: the exact source was available locally but no go executable is installed in this environment"
+    "matrixCoverage": {
+      "operations": {"localExecuted": 7, "gatewayOwnedUnexecuted": 0},
+      "negativeCases": {"localExecuted": 17, "gatewayOwnedUnexecuted": 31},
+      "registrationDrift": "local pinned e482 admission in test_pinned_aggregate_gateway_reads_over_factory_unix_socket"
+    },
+    "gatewayRuntime": {
+      "status": "unavailable",
+      "reason": "the Go executable is absent; Gateway-owned cases are verified only by the immutable e482 fixture",
+      "gatewayOwnedCasesClaimedExecuted": false
+    }
   },
   "evidence": [
     {
@@ -51,8 +59,8 @@
       "executable": "tests/test_frame_bridge_factory.py::test_factory_socket_has_group_only_permissions; tests/test_frame_bridge_factory.py::test_factory_systemd_profile_keeps_socket_private_and_has_no_tcp_listener"
     },
     {
-      "requirement": "Gateway detects registration drift before public reads",
-      "executable": "pinned aggregate Gateway counterpart test recorded above"
+      "requirement": "Pinned e482 registration admission maps any drift from the fixed Factory registration to registration_mismatch before public reads",
+      "executable": "tests/test_frame_bridge_upstream.py::test_pinned_aggregate_gateway_reads_over_factory_unix_socket"
     }
   ]
 }
