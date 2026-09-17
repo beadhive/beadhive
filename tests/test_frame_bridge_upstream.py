@@ -242,6 +242,18 @@ def _headers(
     }
 
 
+def _gateway_registration_matches(value: object) -> bool:
+    """Mirror the pinned Gateway's fixed-host registration admission rule."""
+
+    return value == {
+        "schemaVersion": 1,
+        "contractVersion": upstream.UPSTREAM_CONTRACT,
+        "hostId": "factory",
+        "hostEpoch": EPOCH,
+        "instances": [upstream.RegisteredInstance().to_wire()],
+    }
+
+
 @asynccontextmanager
 async def _private_unix_client(app: object, socket_path: Path, monkeypatch: pytest.MonkeyPatch):
     """Exercise the production listener shape without opening a TCP socket."""
@@ -632,6 +644,8 @@ def test_pinned_aggregate_gateway_reads_over_factory_unix_socket(
 
     assert registration.status_code == 200
     registration_body = registration.json()
+    assert _gateway_registration_matches(registration_body)
+    assert not _gateway_registration_matches({**registration_body, "hostId": "replacement"})
     assert registration_body["schemaVersion"] == 1
     assert registration_body["contractVersion"] == upstream.UPSTREAM_CONTRACT
     assert registration_body["hostId"] == "factory"
@@ -832,3 +846,64 @@ def test_gateway_and_daemon_authority_do_not_cross_the_private_seam() -> None:
     assert gateway_attestation not in daemon_authorizations[0]
     assert daemon_bearer not in accepted.text
     assert gateway_attestation not in accepted.text
+
+
+def test_pinned_gateway_case_matrix_is_immutable_and_covered() -> None:
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "frame_bridge_gateway_e482"
+        / "frame-bridge-upstream-v1-cases.json"
+    )
+    raw = fixture.read_bytes()
+    matrix = json.loads(raw)
+    proof = json.loads(
+        (Path(__file__).parents[1] / "docs/proof/bh-bh6w3.3-gateway-conformance.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert hashlib.sha256(raw).hexdigest() == GATEWAY_CONTRACT_CASES_SHA256
+    assert matrix["schemaVersion"] == 1
+    assert matrix["contractVersion"] == upstream.UPSTREAM_CONTRACT
+    assert matrix["transport"] == {
+        "protocol": "http1-unix",
+        "socketRoot": "/run/beadhive/frame-bridge",
+        "tcpListener": "forbidden",
+        "publicExposure": "forbidden",
+    }
+    assert matrix["identity"]["forwardClerkToken"] is False
+    assert {item["id"]: (item["method"], item["scope"]) for item in matrix["operations"]} == {
+        "liveness": ("GET", None),
+        "readiness": ("GET", "upstream:health"),
+        "registration": ("GET", "upstream:registration"),
+        "directory": ("GET", "upstream:read"),
+        "snapshot": ("GET", "upstream:read"),
+        "events": ("GET", "upstream:events"),
+        "refresh": ("POST", "upstream:refresh"),
+    }
+    registration = next(item for item in matrix["operations"] if item["id"] == "registration")
+    assert registration["errorResponses"]["409"] == ["registration_mismatch"]
+
+    case_ids = {item["id"] for item in matrix["negativeCases"]}
+    factory_socket_test = (
+        "tests/test_frame_bridge_factory.py::"
+        "test_factory_systemd_profile_keeps_socket_private_and_has_no_tcp_listener"
+    )
+    rejection_test = (
+        "tests/test_frame_bridge_upstream.py::"
+        "test_pinned_aggregate_gateway_rejects_bad_authority_and_source_failures"
+    )
+    executable_coverage = {
+        "direct-tcp-access": factory_socket_test,
+        "forwarded-clerk-token": "test_gateway_and_daemon_authority_do_not_cross_the_private_seam",
+        "missing-attestation": rejection_test,
+        "wrong-host": rejection_test,
+        "wrong-instance": rejection_test,
+        "registration-drift": "test_pinned_aggregate_gateway_reads_over_factory_unix_socket",
+        "daemon-unavailable": rejection_test,
+        "frame-bridge-as-tunnel-origin": factory_socket_test,
+    }
+    assert set(executable_coverage) <= case_ids
+    assert proof["aggregateGateway"]["commit"] == GATEWAY_REVISION
+    assert proof["aggregateGateway"]["contractCasesSha256"] == GATEWAY_CONTRACT_CASES_SHA256
