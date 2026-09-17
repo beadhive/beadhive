@@ -267,7 +267,7 @@ async def _private_unix_client(app: object, socket_path: Path, monkeypatch: pyte
     if len(os.fsencode(str(socket_path))) >= 100:
         socket_dir = tempfile.TemporaryDirectory(prefix="bh-frame-bridge-")
         socket_path = Path(socket_dir.name) / socket_path.name
-    socket_path.parent.mkdir(mode=0o750)
+    socket_path.parent.mkdir(mode=0o750, exist_ok=True)
     socket_path.parent.chmod(0o750)
     monkeypatch.setattr(frame_bridge_factory, "_FACTORY_SOCKET", socket_path)
     listener = frame_bridge_factory._bind_factory_socket(socket_path)
