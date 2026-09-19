@@ -91,7 +91,10 @@ import os
 import secrets
 import shlex
 import time
+from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 
@@ -99,12 +102,36 @@ from . import otel, private_paths, registry, test_report, validation_records
 from .config_consumer_ports import work_settings as config
 from .run import missing_binary, run
 
+if TYPE_CHECKING:
+    from .modules.work.domain.impact import AttestKey, ImpactReceipt
+
 # Read-only compatibility input from 0.15.1. New writes never touch it: rows are imported once
 # into manifests and the green pointer is rebuilt from those manifests.
 LEGACY_LEDGER_FILENAME = "bh-validation-ledger.json"
 DEFAULT_TTL = config.DEFAULT_LEDGER_TTL  # "P1D" — the 24h bh-dfx0 shipped, as a duration
 LEDGER_TTL_SECONDS = config.duration_seconds(DEFAULT_TTL)  # the default, in seconds
 _MAX_SHAS = 20  # per entry: observed-commit metadata, capped like everything else here
+
+
+class KeyVerdictState(StrEnum):
+    """The three deliberately distinct states of one configured attest key."""
+
+    CURRENT = "current"
+    CARRIED = "carried"
+    ABSENT = "absent"
+
+
+@dataclass(frozen=True)
+class KeyVerdict:
+    """One key's state at one tree; ``record`` contains current or carry provenance."""
+
+    key: str
+    tree: str
+    command_hash: str
+    state: KeyVerdictState
+    record: dict | None = None
+    reason: str = ""
+
 
 # Public consumer seam: every outer boundary asks the same typed predicate.
 is_qualifying_green = validation_records.is_qualifying_green
@@ -308,6 +335,29 @@ def _verdict_path_in(root: Path | None, tree: str, command_hash: str) -> Path | 
     ):
         return None
     return root / "verdicts" / tree / f"{command_hash}.json"
+
+
+def _carried_path(entry, tree: str, command_hash: str, *, create: bool = False) -> Path | None:
+    """The separate carried-record slot for a key at ``tree``.
+
+    Current pointers retain their existing shape.  Keeping carries in their own namespace makes
+    it impossible for an old reader (or an index rebuild) to mistake a transfer for a run.
+    """
+    if (
+        not tree
+        or not command_hash
+        or any(
+            value in {".", ".."} or "/" in value or "\\" in value for value in (tree, command_hash)
+        )
+    ):
+        return None
+    hive = registry.hive_dir(entry)
+    root = (
+        private_paths.ensure_git_private_root(hive)
+        if create
+        else private_paths.git_private_root(hive)
+    )
+    return root / "validation" / "carried" / tree / f"{command_hash}.json" if root else None
 
 
 def _read_index(path: Path | None) -> dict | None:
@@ -830,3 +880,131 @@ def green_verdict(entry, rev: str, cmd: str, ttl: int | None = None, cfg=None) -
     if not _always_run_ok(entry, cfg):
         return None
     return hit
+
+
+def carry_key_verdict(
+    entry,
+    key: AttestKey,
+    receipt: ImpactReceipt,
+    ttl: int | None = None,
+    cfg=None,
+) -> bool:
+    """Materialize one receipt-proven green transfer, returning whether it was written.
+
+    The source lookup deliberately uses :func:`verdict`, not this function's carried namespace:
+    only a key that actually ran at ``receipt.base_tree`` can be a source.  The source timestamp
+    is copied unchanged, so repeated carries cannot refresh TTL even if a caller retries.
+    """
+    if (
+        not receipt.base_tree
+        or not receipt.head_tree
+        or receipt.base_tree == receipt.head_tree
+        or receipt.is_fallback
+        or not receipt.is_unaffected(key.name)
+    ):
+        return False
+    source = verdict(entry, receipt.base_tree, key.cmd, ttl, cfg)
+    if source is None or not validation_records.is_qualifying_green(source):
+        return False
+    # A command mismatch cannot be hidden behind a key name: the slot and source manifest must
+    # both be for this exact opaque command.
+    command_hash = cmd_hash(key.cmd)
+    if source.get("command_hash") != command_hash or source.get("tree") != receipt.base_tree:
+        return False
+    path = _carried_path(entry, receipt.head_tree, command_hash, create=True)
+    if path is None:
+        return False
+    payload = {
+        "schema": 1,
+        "kind": "carried",
+        "key": key.name,
+        "tree": receipt.head_tree,
+        "command_hash": command_hash,
+        "source_tree": receipt.base_tree,
+        "source_run_id": source.get("run_id"),
+        "at": source.get("at"),
+        "receipt_digest": receipt.digest,
+        "backend": receipt.backend,
+        "backend_version": receipt.backend_version,
+        "receipt": receipt.to_dict(),
+    }
+    try:
+        _write_index(path, payload)
+    except OSError:
+        return False
+    return True
+
+
+def key_verdict(
+    entry,
+    rev: str,
+    key: AttestKey,
+    ttl: int | None = None,
+    cfg=None,
+) -> KeyVerdict:
+    """Return ``current``, ``carried``, or ``absent`` for one key at ``rev``.
+
+    Exit 75 is the typed unknown outcome and therefore remains absent rather than becoming a
+    current red.  A malformed carry, an expired source, or any missing provenance fails closed
+    to absent.  Current always wins, including a real red result.
+    """
+    tree = tree_of(entry, rev)
+    command_hash = cmd_hash(key.cmd)
+    current = verdict(entry, tree, key.cmd, ttl, cfg)
+    if current is not None:
+        if current.get("exit_code") == 75:
+            return KeyVerdict(
+                key.name, tree, command_hash, KeyVerdictState.ABSENT, reason="unknown"
+            )
+        return KeyVerdict(key.name, tree, command_hash, KeyVerdictState.CURRENT, current)
+
+    carried = _read_index(_carried_path(entry, tree, command_hash))
+    if carried is None:
+        return KeyVerdict(key.name, tree, command_hash, KeyVerdictState.ABSENT, reason="missing")
+    try:
+        from .modules.work.domain.impact import ImpactReceipt
+
+        receipt = ImpactReceipt.from_dict(carried["receipt"])
+    except (KeyError, TypeError, ValueError):
+        return KeyVerdict(
+            key.name, tree, command_hash, KeyVerdictState.ABSENT, reason="invalid-carry"
+        )
+    if (
+        carried.get("schema") != 1
+        or carried.get("kind") != "carried"
+        or carried.get("key") != key.name
+        or carried.get("tree") != tree
+        or carried.get("command_hash") != command_hash
+        or carried.get("source_tree") != receipt.base_tree
+        or carried.get("receipt_digest") != receipt.digest
+        or carried.get("backend") != receipt.backend
+        or carried.get("backend_version") != receipt.backend_version
+        or receipt.head_tree != tree
+        or receipt.is_fallback
+        or not receipt.is_unaffected(key.name)
+    ):
+        return KeyVerdict(
+            key.name, tree, command_hash, KeyVerdictState.ABSENT, reason="invalid-carry"
+        )
+    source = verdict(entry, receipt.base_tree, key.cmd, ttl, cfg)
+    if (
+        source is None
+        or not validation_records.is_qualifying_green(source)
+        or source.get("run_id") != carried.get("source_run_id")
+        or source.get("at") != carried.get("at")
+    ):
+        return KeyVerdict(
+            key.name, tree, command_hash, KeyVerdictState.ABSENT, reason="source-missing"
+        )
+    return KeyVerdict(key.name, tree, command_hash, KeyVerdictState.CARRIED, carried)
+
+
+def key_verdicts(
+    entry,
+    rev: str,
+    keys: tuple[AttestKey, ...],
+    ttl: int | None = None,
+    cfg=None,
+) -> dict[str, KeyVerdict]:
+    """Look up a configured catalog.  An absent catalog returns no states (legacy behavior)."""
+    return {key.name: key_verdict(entry, rev, key, ttl, cfg) for key in keys}
