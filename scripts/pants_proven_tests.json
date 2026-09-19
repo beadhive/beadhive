@@ -62,6 +62,7 @@
     "tests/unit/modules/config/test_module_evidence.py": {"status": "unproven", "reason": "pure target still shares generated target dependencies"},
     "tests/unit/modules/config/test_schema_artifacts.py": {"status": "unproven", "reason": "pure target still shares generated target dependencies"},
     "tests/unit/modules/planning/test_planning_services.py": {"status": "unproven", "reason": "pure target still shares generated target dependencies"},
-    "tests/unit/modules/work/test_impact.py": {"status": "unproven", "reason": "pure target still shares generated target dependencies"}
+    "tests/unit/modules/work/test_impact.py": {"status": "unproven", "reason": "pure target still shares generated target dependencies"},
+    "tests/unit/modules/work/test_impact_pants.py": {"status": "unproven", "reason": "resolver fixtures name the docs attest key but do not read docs at runtime"}
   }
 }

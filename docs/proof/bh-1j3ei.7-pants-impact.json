@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "bead": "bh-1j3ei.7",
+  "historical_change": "894d69d2",
+  "method": "single representative sample (not p95): replay the merge's two-file docs delta on the current Pants graph",
+  "pants_version": "2.32.1",
+  "wall_seconds": 39.705,
+  "resolver_elapsed_ms": 39703,
+  "changed_paths": [
+    "docs/design/jev-decision-engine-spike-matrix.md",
+    "docs/design/loop-ownership-and-execution-memory-adr.md"
+  ],
+  "invalidated_keys": [
+    "always-run",
+    "docs"
+  ],
+  "unaffected_keys": [
+    "architecture-contracts",
+    "integration",
+    "package",
+    "stateful",
+    "unit"
+  ],
+  "fallback_reason": "",
+  "receipt_digest": "sha256:ec8318c249462f56654f6a3c21e1f90dd5970cbe131f3e13027b502bac18df4d"
+}

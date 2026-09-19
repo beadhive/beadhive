@@ -313,7 +313,7 @@
           {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "29046c0b29b1a6aa9dfd8ad1ca1f0f3f3356d0ef35da01dfa319d4885d1c293d"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "dc211495dbf26074479680664e7fe73031fc551b10ebda3fedd59fce2a87d0b0"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
-          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "dd8ab3487724456f0734cc851da6ab20a24376fdd4ca4cac308377538f1c1a3a"}
+          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "ccb84e3a17ec4d2bd5e7e2bfd28834e2a072b40f3c873efc54a26d494af9eaa5"}
         ]
       },
       "import_boundary": {

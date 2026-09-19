@@ -115,6 +115,10 @@ class ImpactRequest:
     changed: tuple[ChangedPath, ...]
     keys: tuple[AttestKey, ...]
     timeout_seconds: float
+    # Backends such as Pants need the commit-ish for their VCS query; a tree id is deliberately
+    # insufficient to ``git diff`` even though receipts and ledger identity remain tree-keyed.
+    base_rev: str = ""
+    head_rev: str = ""
 
 
 @dataclass(frozen=True)
