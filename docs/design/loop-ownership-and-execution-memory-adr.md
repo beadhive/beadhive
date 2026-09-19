@@ -5,6 +5,10 @@
 boundary that decision left open — its invariant says a runtime "MAY keep a richer *execution*
 record (retry counts, timings, the parent chain, why something was retried)" without ever saying
 where that permission stops. This ADR draws the line, and in v1 draws it at **zero**.
+**Amended by:** [Amendment 1](#amendment-1--the-boundary-governs-primary-operating-data-not-telemetry-or-evaluation-data)
+(2026-09-19). Decision 2's boundary governs **primary operating data**. Telemetry and
+experiment/evaluation data kept for operator-side analysis, and never read by the loop, are
+outside it.
 **Related:** [roles-rbac-matrix.md](roles-rbac-matrix.md) (the seats, §2.1 and §2.2),
 [temporal-control-plane-adr.md](temporal-control-plane-adr.md) (tier 2's topology, untouched here),
 [cli-mcp-naming-conventions-adr.md](cli-mcp-naming-conventions-adr.md) (the surface conventions the
@@ -91,6 +95,11 @@ would take it — retry counts, bounce history, stall reasons, a token window. T
 it.
 
 ### The line
+
+> **Scope, per [Amendment 1](#amendment-1--the-boundary-governs-primary-operating-data-not-telemetry-or-evaluation-data).**
+> This table classifies **primary operating data**: what the loop or a lifecycle verb reads to
+> decide what to do next. Telemetry and experiment/evaluation data are governed by the
+> amendment's conditions, not by this table.
 
 | Kind of memory | Where it lives | Survives restart? |
 |---|---|---|
@@ -374,3 +383,70 @@ every seat binary.
    closed if an unattended loop acts outside its row.
 5. **No trace in v1.** Diagnosing why the loop chose what it chose means reading process logs; the
    wisp-based per-pass trace in Decision 3 is named, not built.
+
+---
+
+## Amendment 1 — the boundary governs primary operating data, not telemetry or evaluation data
+
+**Recorded 2026-09-19**, amending this ADR in place. Amends **Decision 2**; the other Decisions
+stand as filed. **Status:** accepted (operator decision, 2026-09-19, in review of bead
+`bh-hhpuo.1`).
+
+### Why
+
+Decision 2 concludes that *"v1 persists nothing outside beads."* Read literally, that bars
+stores that were never execution memory:
+
+- the OTEL self-check attributes of `bh-trgcd.2`;
+- the process logs that Limitation 5 names as today's only diagnostic trace;
+- the retro skill's run directories under `~/.beadhive/retros/`;
+- spike artifacts;
+- the Jev **shadow corpus** proposed in
+  [jev-decision-engine-spike-matrix.md §4.6](jev-decision-engine-spike-matrix.md#46-shadow-mode-as-a-training-and-replay-corpus).
+  That corpus stores sanitized decision inputs, Jev's answers, and outcome links, so new model
+  versions can be replayed before a pin moves.
+
+The first three exist already and are consistent with the intent of Decision 2: none of them
+changes what the loop does next. The literal wording is the defect, not the stores. This
+amendment names what Decision 2 was always about.
+
+### The three classes
+
+| Class | What it is | Examples | Rule |
+|---|---|---|---|
+| **Primary operating data** | Anything the loop, a lifecycle verb, or a decision engine **reads to decide what to do next** | Claims, gates, leases, the merge slot, failure causes, bounce/retry counts, the future token-budget window | **Decision 2 unchanged.** Beads only, or in-process state that dies with the loop. The v1 carve-out stays **zero**. The budget governor is still the first crossing and still needs its own amendment |
+| **Telemetry data** | Emitted to observe a run | OTEL spans and metrics, `bh-trgcd.2` attributes, process and dispatch logs, `SeatRun` envelopes as logged | May persist outside beads under the conditions below |
+| **Experiment / evaluation data** | Collected for **operator-side analysis** | Retro run directories, spike artifacts, labelled sets, the Jev shadow corpus and its replay results | May persist outside beads under the conditions below |
+
+### Conditions on telemetry and evaluation stores
+
+1. **Write-only from the loop's side.** No loop, lifecycle verb, or decision engine reads the
+   store to make a live decision. The test: **delete the store, and every live decision is
+   unchanged.** A store that fails this test is primary operating data, whatever it is called.
+2. **Never authoritative about lifecycle facts.** When the store and beads disagree, beads win.
+   Nothing reconciles from the store into beads automatically.
+3. **Local and operator-scoped.** Not pushed to the hive remote and not written into beads.
+   This keeps the bead archive, which has no compaction tier until `bh-3vs6c`, free of analysis
+   volume.
+4. **Collected content is sanitized, and retention is bounded.** Where a store holds collected
+   data (logs, transcripts, diffs), it holds only sanitized content under the outbound-data
+   rules ([jev-decision-engine-spike-matrix.md §4.5](jev-decision-engine-spike-matrix.md#45-outbound-data-safety--one-sanitizer-for-every-inference-call)),
+   with a retention setting.
+
+### Crossing from analysis back into operation
+
+Analysis may change what the loop does, but only through a **reviewed artifact**: a config change
+(a pinned model id, a confidence threshold, a `GO_POINTS` entry) or a code change. Never by the
+loop reading the store. The Jev shadow corpus is the worked example. Replaying it against a new
+Jev version produces *proposed* thresholds and a *proposed* pin, and moving either is a reviewed
+config change. At runtime the loop reads the config, which is operating state it already reads,
+and never the corpus.
+
+### Consequences
+
+- The Jev shadow corpus is **compatible** with this ADR as designed.
+- OTEL, logs, retro run directories, and spike artifacts are **explicitly** in bounds, where
+  before they were only tacitly so.
+- The zero carve-out for operating data is **unchanged**. Any future proposal to *read* a
+  telemetry or evaluation store at runtime, such as a cache of verdicts or a learned threshold
+  loaded from the corpus, is primary operating data and **requires its own amendment**.

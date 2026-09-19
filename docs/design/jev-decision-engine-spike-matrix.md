@@ -150,7 +150,8 @@ net_saving_per_100_beads = f × [ coverage × (C_base − C_jev)
    runtime state. When a verdict drives a transition, its evidence is recorded in the
    `bd set-state … --reason` text, which is already the durable audit trail. Everything else goes
    to OTEL span attributes, following the `bh-trgcd.2` precedent. No verdict cache, no sidecar
-   DB.
+   DB. (ADR Amendment 1 draws the line: telemetry and the §4.6 evaluation corpus may persist
+   locally because the loop never reads them.)
 4. **Hooks are verbs, not generated scripts** (hooks-as-functionality ADR). Hooks call a `bh`
    verb and honor its exit code. `bh` never writes a hook body.
 5. **Plugins bind ports; domain code never queries a registry** (plugin-kernel v1). Each decision
@@ -385,10 +386,14 @@ point when TypeSafe ships a new Jev version.
 - **Where:** `~/.beadhive/jev/shadow/<hive>/<point>/<yyyy-mm>.jsonl`, the same pattern as the
   retro skill's run directories. Local, opt-in, with a per-hive retention setting. Never pushed
   to the hive remote, never written into beads.
-- **Why this keeps loop-ownership Decision 2 intact.** The loop **never reads** this corpus.
-  It is write-only analysis output, like OTEL spans and retro artifacts, not execution memory.
-  Anything that reads it to make a live decision is an ADR amendment, not an implementation
-  detail. The ADR owner should confirm this reading when the implementation molecule is filed.
+- **Compatible with the loop-ownership ADR, per its
+  [Amendment 1](loop-ownership-and-execution-memory-adr.md#amendment-1--the-boundary-governs-primary-operating-data-not-telemetry-or-evaluation-data)**
+  (operator decision, 2026-09-19). Decision 2's zero carve-out governs **primary operating
+  data**. This corpus is **experiment/evaluation data**: write-only from the loop's side, never
+  authoritative about lifecycle facts, local, and sanitized. Its test: delete the corpus, and
+  every live decision is unchanged. Results flow back only through reviewed config (a pin, a
+  threshold). Anything that *reads* the corpus at runtime would be operating data and would
+  need its own amendment.
 - **Labels accrue.** Contested outcomes and Jev-vs-baseline disagreements go to the §7.2
   teacher tier. Each point's corpus becomes its growing regression set.
 - **Model-version replay.** When `GET /v1/models` shows a new version (`jev-preview` moves
@@ -961,3 +966,7 @@ Per-tier reporting is the mitigation for all four.
 6. **Shadow mode is also the replay corpus.** It records sanitized states, full answer
    distributions, and outcome links, so every new Jev version and every question rewording can
    be replayed against real history before a pin moves (§4.6).
+7. **The corpus is compatible with the loop-ownership ADR.** Amendment 1 to that ADR, filed in
+   this bead, limits Decision 2's zero carve-out to **primary operating data**. Telemetry and
+   experiment/evaluation data kept for operator-side analysis may persist locally, provided the
+   loop never reads them and results return only through reviewed config.
