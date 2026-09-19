@@ -1,6 +1,7 @@
 python_sources(
     name="lib",
     sources=["*.py"],
+    tags=["attest:architecture-contracts"],
     # These scripts import a same-directory sibling by its bare name (the convention for
     # `python scripts/<file>.py` direct execution, which puts scripts/ itself on sys.path).
     # Pants can't infer that edge because the module lives under the `scripts.` namespace

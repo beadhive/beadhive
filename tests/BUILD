@@ -2,27 +2,32 @@ python_source(
     name="root-conftest",
     source="conftest.py",
     dependencies=[":watchdog-diagnostics"],
+    tags=["attest:stateful"],
 )
 
 python_source(
     name="watchdog-diagnostics",
     source="harness/watchdog_diagnostics.py",
+    tags=["attest:stateful"],
 )
 
 python_source(
     name="stateful-fixtures",
     source="stateful_fixtures.py",
+    tags=["attest:stateful"],
 )
 
 python_sources(
     name="harness",
     sources=["harness/**/*.py"],
+    tags=["attest:stateful"],
 )
 
 python_tests(
     name="pure-tests",
     sources=["unit/**/test_*.py"],
     dependencies=[":root-conftest"],
+    tags=["attest:unit"],
 )
 
 python_tests(
@@ -36,6 +41,7 @@ python_tests(
         ":root-conftest",
         ":stateful-fixtures",
     ],
+    tags=["attest:stateful"],
 )
 
 resources(
@@ -51,6 +57,7 @@ resources(
 python_sources(
     name="package-markers",
     sources=["unit/**/__init__.py"],
+    tags=["attest:unit"],
 )
 
 # Ownership only (bh-1j3ei.2): config/fixture files no test target's sources glob reaches,
