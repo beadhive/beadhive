@@ -23,7 +23,7 @@ from beadhive.modules.config.application.schema_artifacts import (
 
 ROOT = Path(__file__).parents[4]
 WIRE = ROOT / "docs/schemas/wire/v1.4.0"
-ARTIFACT = WIRE / "config-v1.schema.json"
+ARTIFACT = ROOT / "src/beadhive/schemas/contracts/v1.0.0/artifacts/config-v1.schema.json"
 
 
 def test_schema_generation_is_deterministic_and_matches_checked_artifact():

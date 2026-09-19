@@ -313,7 +313,7 @@
           {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "29046c0b29b1a6aa9dfd8ad1ca1f0f3f3356d0ef35da01dfa319d4885d1c293d"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "dc211495dbf26074479680664e7fe73031fc551b10ebda3fedd59fce2a87d0b0"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
-          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "4608487d663a745fcbb334256c77604fd146fe8ff390086efbe0383f6c097515"}
+          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "9045e9911aa6d33d9ac6f654f3522bff192f538c30d61770828af611c8a23e9b"}
         ]
       },
       "import_boundary": {
@@ -326,7 +326,7 @@
         "artifacts": [
           {"path": "docs/schemas/telemetry-event-envelope-v1.schema.json", "sha256": "1bf34e38b60d8e9cdf7b5c60477cb93f9dd24dac970e5c89a8d3b2695cd2d3c6"},
           {"path": "docs/schemas/wire/v1.0.0/release.json", "sha256": "c69fb7f1567f16e6f76549ef1c9c53b1f32f7cfde79fc8b0d2cc652a01b727e1"},
-          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "588f0b14e085338cc1322d29d156acc79bda43ad409be33216fdee755264fb8c"}
+          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "68b980be6cd094dd0d800f0b243eda1b74e849c492b0f5116bb09929bbe513c6"}
         ]
       },
       "selective_ci": {
@@ -335,8 +335,8 @@
         "artifacts": [
           {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "8a909107e498262574e50feab2dd359857823f4ae664ece5e44b6cbf0ab97d71"},
           {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "b4c578846521dfdd5f495a5363d86da233e4477ba86e7433fac98478cef842cb"},
-          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "4a51c6db453f81209b8f12b6ea8f393b2d555211c588675c85ef2b37f43a57d4"},
-          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "004c6e2b0fb716871f1832f3fb7bed63de76e059da10d0336399e9b25fa06643"}
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "de84f0024084b1f98509da108619f639536a62cc27b2533c03d117ed4ff18c1d"},
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "25e331bb6e8648b11205b72f5badcf2fb9ab12f32b9758c8f475d3c9089e9f09"}
         ]
       },
       "package_and_entry_point": {
