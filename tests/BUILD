@@ -41,6 +41,13 @@ python_tests(
         ":root-conftest",
         ":stateful-fixtures",
     ],
+    overrides={
+        # Sandbox-qualified by bh-1j3ei.4. These are the complete runtime file inputs of
+        # test_docs_role_vocabulary.py: three root docs plus INSTALL.md.
+        "test_docs_role_vocabulary.py": {
+            "dependencies": ["//docs:docs-root", "//:root-config"],
+        },
+    },
     tags=["attest:stateful"],
 )
 
