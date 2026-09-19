@@ -309,11 +309,11 @@
         "check": "just transport-artifact-check",
         "artifacts": [
           {"path": "docs/schemas/wire/v1.2.0/operation-catalog-v1.json", "sha256": "8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8"},
-          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "cecb7744f6b284c438387cacb89dbe750b29e13490876bb6b96bec5c03a6b921"},
+          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "9646ab4541ef42c542c0ce68c7ae9423af4459486f083d387b510895178992ae"},
           {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "29046c0b29b1a6aa9dfd8ad1ca1f0f3f3356d0ef35da01dfa319d4885d1c293d"},
-          {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "afbd7e8134c9efe6187550e5681c4a1d70752ba10934fac66fe691e57b6907b8"},
+          {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "81f7e401113a9feac9c33259f983d19f1a7edbb56194f29e60eb39a2f9d63d5d"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
-          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "d61292659e0f5e1d48a88ab8083ea02f5880549dc5baaf97ca4e2dedcbac2bd0"}
+          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "4608487d663a745fcbb334256c77604fd146fe8ff390086efbe0383f6c097515"}
         ]
       },
       "import_boundary": {
