@@ -455,7 +455,7 @@
     "generator": "sha256:1044e0e6f263de5211b567f011de06ecc1703ce8a102b4d4f8461435b12eab44",
     "promotion": "sha256:de84f0024084b1f98509da108619f639536a62cc27b2533c03d117ed4ff18c1d",
     "registry": "sha256:e1e73848a03e794bb4c2c594455a9983aab71d582df060a3e9ef01cccf1ba093",
-    "shadow": "sha256:b4c578846521dfdd5f495a5363d86da233e4477ba86e7433fac98478cef842cb"
+    "shadow": "sha256:fcbf9db12eda396aa3ced54e876ff7748fba961f871fc280ba803ee2eb55e260"
   },
   "invalidation": {
     "boundary-change": {
