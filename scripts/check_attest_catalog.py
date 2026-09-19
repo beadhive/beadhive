@@ -8,13 +8,24 @@ import subprocess
 import sys
 
 KEY_RECIPES = {
-    "docs": "attest-docs",
-    "unit": "attest-unit",
-    "stateful": "attest-stateful",
-    "integration": "attest-integration",
-    "architecture-contracts": "attest-architecture-contracts",
-    "package": "attest-package",
-    "always-run": "attest-always-run",
+    "docs": ("attest-docs", ("lint-md",)),
+    "unit": ("attest-unit", ("lint", "license-check")),
+    "stateful": ("attest-stateful", ("test",)),
+    "integration": ("attest-integration", ("test-integration-land",)),
+    "architecture-contracts": (
+        "attest-architecture-contracts",
+        (
+            "architecture-check",
+            "transport-artifact-check",
+            "wire-schema-compat",
+            "proof-digest-check",
+        ),
+    ),
+    "package": ("attest-package", ("pants-attest",)),
+    "always-run": (
+        "attest-always-run",
+        ("require-bd", "demo-local-loop", "demo-live-ingress"),
+    ),
 }
 
 
@@ -34,16 +45,17 @@ def main() -> int:
     )
     recipes = json.loads(result.stdout)["recipes"]
     declared = _dependency_names(recipes["check-all"])
-    expected = list(KEY_RECIPES.values())
+    expected = [leaf for _, leaves in KEY_RECIPES.values() for leaf in leaves]
     errors: list[str] = []
-    if declared != expected:
+    if sorted(declared) != sorted(expected) or len(declared) != len(set(declared)):
         errors.append(f"check-all keys differ: expected {expected!r}, got {declared!r}")
 
     owners: dict[str, str] = {}
-    for key, recipe_name in KEY_RECIPES.items():
-        leaves = _dependency_names(recipes[recipe_name])
-        if not leaves:
-            errors.append(f"{key}: {recipe_name} has no gate steps")
+    for key, (recipe_name, leaves) in KEY_RECIPES.items():
+        body = [row[0] for row in recipes[recipe_name]["body"]]
+        missing = [leaf for leaf in leaves if not any(f"just {leaf}" in line for line in body)]
+        if missing:
+            errors.append(f"{key}: {recipe_name} does not invoke {missing!r}")
         for leaf in leaves:
             previous = owners.setdefault(leaf, key)
             if previous != key:

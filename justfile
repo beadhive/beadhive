@@ -51,7 +51,7 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check test
+check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check check-attest-catalog test
 
 # Current-candidate proof rows are generated evidence and must match the exact release tree.
 proof-digest-check:
@@ -139,26 +139,39 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: attest-docs attest-unit attest-stateful attest-integration attest-architecture-contracts attest-package attest-always-run
+check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
 # Attest-key commands deliberately partition check-all. Keep this list and the fleet's
 # work.attest.keys catalog aligned; check-attest-catalog verifies the recipe graph so adding a
 # new full-gate step cannot silently fall out of selective CI (bh-1j3ei.5).
-attest-docs: lint-md
+attest-docs:
+    just lint-md
 
-attest-unit: lint license-check
+attest-unit:
+    just lint
+    just license-check
 
-attest-stateful: (test FAST)
+attest-stateful:
+    just test "{{FAST}}"
 
-attest-integration: test-integration-land
+attest-integration:
+    just test-integration-land
 
-attest-architecture-contracts: architecture-check transport-artifact-check wire-schema-compat proof-digest-check
+attest-architecture-contracts:
+    just architecture-check
+    just transport-artifact-check
+    just wire-schema-compat
+    just proof-digest-check
 
-attest-package: pants-attest
+attest-package:
+    just pants-attest
 
 # Selectorless by design: git metadata and operator demos cannot be proven safe by a tree-scoped
 # build-graph receipt, so this key is paid whenever a cached verdict is reused.
-attest-always-run: require-bd demo-local-loop demo-live-ingress
+attest-always-run:
+    just require-bd
+    just demo-local-loop
+    just demo-live-ingress
 
 check-attest-catalog:
     uv run python scripts/check_attest_catalog.py
@@ -167,7 +180,6 @@ check-attest-catalog:
 # network — except check_pants_ownership, which queries the local Pants engine (no network;
 # it only reads BUILD files) to keep every tracked file owned (bh-1j3ei.2).
 architecture-check:
-    uv run python scripts/check_attest_catalog.py
     uv run python scripts/check_import_boundaries.py
     uv run python scripts/test_closure_certification.py --check
     uv run python scripts/test_closure_shadow_policy.py --check
