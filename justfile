@@ -51,7 +51,7 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check check-attest-catalog test
+check: lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check test
 
 # Current-candidate proof rows are generated evidence and must match the exact release tree.
 proof-digest-check:

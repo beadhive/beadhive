@@ -10,6 +10,7 @@ python_sources(
     overrides={
         "capability_closeout.py": {"dependencies": ["./check_import_boundaries.py:lib"]},
         "capability_module_map.py": {"dependencies": ["./check_import_boundaries.py:lib"]},
+        "check_pants_ownership.py": {"dependencies": ["./check_attest_catalog.py:lib"]},
         "render_transport_composition_evidence.py": {
             "dependencies": ["./check_import_boundaries.py:lib"]
         },

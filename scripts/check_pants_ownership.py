@@ -15,10 +15,12 @@ import sys
 from pathlib import Path
 
 try:
+    from scripts import check_attest_catalog
     from scripts.pants_launcher import launcher
 except ModuleNotFoundError:
     # Runtime fallback for `python scripts/check_pants_ownership.py` (scripts/ on sys.path,
     # not repo root). The `scripts.` import above already gives Pants a real dependency edge.
+    import check_attest_catalog  # pants: no-infer-dep
     from pants_launcher import launcher  # pants: no-infer-dep
 
 ROOT = Path(__file__).parents[1]
@@ -90,6 +92,8 @@ def report(unowned_paths: set[str]) -> str:
 
 
 def main() -> int:
+    if check_attest_catalog.main():
+        return 1
     try:
         tracked = tracked_files()
         owned = pants_owned_files()
