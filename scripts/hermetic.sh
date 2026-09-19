@@ -140,7 +140,12 @@ fi
 # and makes it read-only — which broke `bd backup add` in the storage-migrate integration test
 # with a finding that looked like a migration bug. Left unbound it lands on the tmpfs: writable,
 # empty, and gone when the run ends.
-for dir in .local/bin .local/lib .nix-profile; do
+#
+# .local/share/mise is the one ~/.local/share subpath added to that list (bh-1j3ei.2): it is
+# mise's own tool-install cache (scie-pants, uv, ...), disjoint from ~/.local/share/beadhive's
+# bh/bd state, and `scripts/pants_launcher.py`'s `mise which scie-pants` fallback needs it to
+# find Pants — otherwise `just architecture-check`'s ownership check can't run fenced at all.
+for dir in .local/bin .local/lib .local/share/mise .nix-profile; do
     [ -e "${HOME}/${dir}" ] && args+=(--ro-bind "${HOME}/${dir}" "${HOME}/${dir}")
 done
 
@@ -149,6 +154,19 @@ done
 # content-addressed download cache, not project or hive state, so it is outside what this fence
 # exists to protect — the git config, the bead stores and the operator's HOME still are not.
 [ -e "${HOME}/.cache/uv" ] && args+=(--bind "${HOME}/.cache/uv" "${HOME}/.cache/uv")
+
+# Same reasoning for Pants (bh-1j3ei.2): `~/.cache/nce` is scie-pants's own bootstrap cache
+# (its downloaded interpreter + the Pants engine venv). It is content-addressed, but NOT
+# read-only safe like the toolchain dirs above — every invocation has pants_loader chmod its
+# cached `sandboxer` binary executable again, so a ro-bind dies with "Read-only file system".
+# `~/.cache/beadhive/pants` is scripts/pants_cache.py's local store/worktree cache and, like
+# uv's, takes its own lock and gets written to on every run, so it needs to stay WRITABLE too.
+# Both are unbound (i.e. still hidden on the tmpfs) unless already populated on the host — a
+# first-ever Pants invocation still needs network to seed them, same as a first-ever `uv sync`
+# needing network to seed ~/.cache/uv.
+[ -e "${HOME}/.cache/nce" ] && args+=(--bind "${HOME}/.cache/nce" "${HOME}/.cache/nce")
+[ -e "${HOME}/.cache/beadhive/pants" ] &&
+    args+=(--bind "${HOME}/.cache/beadhive/pants" "${HOME}/.cache/beadhive/pants")
 
 # NOT `exec`: exec replaces this shell, so the EXIT trap never fires and $SCRATCH — which is
 # TMPDIR inside the fence, i.e. pytest's whole tmp tree of dolt stores and hive clones — is left
