@@ -14,7 +14,14 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from check_import_boundaries import ImportEdge, _cyclic_edges, collect_imports
+# Bare sibling import for `python scripts/capability_module_map.py` (scripts/ on sys.path,
+# not repo root); Pants can't infer it since the module lives under the `scripts.` namespace.
+# The real edge is declared explicitly in scripts/BUILD.
+from check_import_boundaries import (
+    ImportEdge,  # pants: no-infer-dep
+    _cyclic_edges,  # pants: no-infer-dep
+    collect_imports,  # pants: no-infer-dep
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_REVISION = "287061f089764dac29b5f584ebcdbb5f25f86c26"

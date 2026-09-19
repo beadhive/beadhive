@@ -1,6 +1,7 @@
 python_sources(
     name="lib",
     sources=["**/*.py"],
+    tags=["attest:package"],
 )
 
 resources(
@@ -9,6 +10,11 @@ resources(
         "**/*.json",
         "**/*.md",
         "**/*.yaml",
+        "**/*.yml",
+        "**/*.sh",
+        "**/*.js",
+        "**/*.example",
+        "**/.gitkeep",
     ],
 )
 
@@ -20,4 +26,5 @@ pex_binary(
         ":package-data",
     ],
     output_path="bh.pex",
+    tags=["attest:package"],
 )
