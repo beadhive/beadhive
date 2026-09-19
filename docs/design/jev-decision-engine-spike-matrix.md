@@ -64,12 +64,18 @@ Operating facts that drive the design (from the docs, `jev-1.13`):
   customer data, but ZDR is enterprise-only. **Operator decision (2026-09-19): diffs and logs
   may be sent.** The code lands on a public repo anyway, and TypeSafe is trusted as a
   reputable vendor. Two guards stay: egress remains an explicit per-hive opt-in (§4.4), and
-  log state builders strip credentials and tokens before sending, because a log can leak
-  what the public repo never contains.
+  **every** outbound payload passes a local secret sanitizer first, because a log or
+  transcript can leak what the public repo never contains. The sanitizer and its
+  gateway-level counterpart get their own spikes (§4.5).
 
 ---
 
 ## 3. Cost model — where savings exist and where they cannot
+
+**Units under subscriptions.** The fleet runs on Claude and Codex subscriptions, so the real
+currency is **quota (tokens) and wall-clock**, not invoices. The dollar figures below are
+list-price proxies that make token volumes comparable across engines. The savings case is
+quota recouped by moving decisions to Jev.
 
 ### 3.1 Price references
 
@@ -79,7 +85,7 @@ Operating facts that drive the design (from the docs, `jev-1.13`):
 | Claude Haiku 4.5 | 1.00 | 5.00 | 0.10 | 1.25 |
 | Claude Sonnet 5 (AGF default seat tier) | 2.00 | 10.00 | 0.20 | 2.50 |
 | Claude Opus 5 (escalation tier) | 5.00 | 25.00 | 0.50 | 6.25 |
-| Claude Fable 5.1 (operator-invoked only) | 10.00 | 50.00 | 0.25 | 12.50 |
+| Claude Fable 5.1 (reference only; not available to this fleet) | 10.00 | 50.00 | 0.25 | 12.50 |
 
 Claude rates are first-party list prices as of 2026-09. Jev's rate is from the TypeSafe models
 page, reviewed 2026-09-17.
@@ -152,6 +158,9 @@ net_saving_per_100_beads = f × [ coverage × (C_base − C_jev)
 6. **Best-effort by default.** A missing key, a 4xx/5xx, a timeout, or low confidence must
    **never block** a transition. The point falls back to its baseline engine, and the fallback
    provenance is recorded (the same shape as `ComplexityResult.fallback`).
+7. **Nothing collected leaves the host unsanitized** (§4.5). This is the design's one
+   *fail-closed* rule: if the sanitizer errors or times out, the payload is not sent and the
+   decision abstains to its baseline. It closes the egress, never the transition.
 
 ### 4.2 Shape
 
@@ -188,7 +197,7 @@ net_saving_per_100_beads = f × [ coverage × (C_base − C_jev)
 | Mode | Engine that *acts* | Jev runs? | Purpose |
 |---|---|---|---|
 | `off` | baseline | no | default |
-| `shadow` | baseline | yes; both verdicts logged | **benchmarking** (every spike runs here first) |
+| `shadow` | baseline | yes; both verdicts recorded | **benchmarking** (every spike runs here first) and the **replay corpus** for future Jev versions (§4.6) |
 | `advise` | the agent, which receives Jev's verdict as a one-line hint | yes | cuts agent turns while keeping the agent's judgment (the skill-suggestion cookbook pattern) |
 | `act` | code acts on a Jev verdict above threshold; `ABSTAIN` falls to the baseline | yes | removes the turn or seat entirely |
 
@@ -248,8 +257,148 @@ but the dependency-taxonomy ADR requires it to be recorded.
 `jev.probe-key` sends one minimal request, equivalent to `jev auth test`. On failure, every port
 stays bound to its baseline, and `bh doctor` reports why. Config also carries
 `plugins.jev.egress: {diffs: bool, logs: bool}`. Per the operator decision in §2, both default
-to `true` for this fleet's hives once the plugin is enabled. A private hive can still turn them
-off and run on bead text alone.
+to `true` for this fleet's hives once the plugin is enabled, **after** the §4.5 sanitizer. Until
+spike S2 is GO, both are forced to `false`, and points run on bead text alone. A private hive
+can keep them off permanently.
+
+### 4.5 Outbound data safety — one sanitizer for every inference call
+
+The operator has allowed diffs and logs to be sent. What we *collect*, though, is not the public
+repo: failure output dumps environments, transcripts quote tokens a tool printed, and bead text
+sometimes carries pasted config. The exposure is not specific to Jev. Every inference call that
+sends collected data carries it:
+
+- Jev decisions.
+- Teacher labelling (§7.2), which sends history to Claude and Codex.
+- The shadow corpus (§4.6), which writes that data to disk.
+- Harness traffic, if it is ever routed through a managed gateway.
+
+So this is a **core** concern, not a Jev plugin feature.
+
+- **`OutboundSanitizer` port in core:** `sanitize(payload, policy) -> Sanitized(clean, findings)`.
+  Every outbound state builder calls it: Jev, the teacher harness runner, and shadow-corpus
+  writes. `findings` hold detector, type, and span counts, **never values**. They go to OTEL
+  like every other decision attribute.
+- **Typed, stable placeholders:** `<secret:github_token#1>`, `<secret:high_entropy#2>`. The
+  structure survives, so a judgment such as "the log says a credential is missing" can still
+  be made on sanitized text.
+- **Fail-closed** as §4.1 rule 7 describes, and never on the transition path.
+- **Two layers, spiked independently.** S2 is the source filter: mandatory, local, CPU-only.
+  S3 is a gateway guardrail: an optional second layer that adds central control.
+
+#### Spike S2 (`J-SEC-SRC`) — potential-secrets filter on collected data
+
+- **Question:** can a **local, CPU-only** filter redact secrets from everything we collect
+  (check and CI logs, diffs, session transcripts, bead text, env and config dumps)? Its recall
+  must be high enough to permit egress, without over-redaction that breaks the judgments that
+  consume the text.
+- **Candidate layers, cheapest first.** The spike measures each layer alone and the stack:
+  1. **Known-value matching.** Exact-match redaction of the secret values this host actually
+     holds:
+     - env vars whose names match credential patterns;
+     - the sources `credentials.py` resolves;
+     - `gh auth token`;
+     - harness auth files;
+     - `.env` files in the hive.
+
+     Near-total recall for *our own* secrets at near-zero cost, but blind to everything else.
+  2. **Pattern + entropy scanners run offline:** gitleaks, detect-secrets, and trufflehog with
+     verification off (no network). These cover provider key formats, private-key blocks, JWTs,
+     connection strings, and high-entropy strings in assignment context.
+  3. **A local CPU classifier for the residue:** context-dependent cases that no pattern
+     covers, such as a password in prose, internal hostnames, or customer data in a log.
+     Candidates to benchmark include Presidio-style recognizers and a small token-classification
+     model served on CPU (ONNX or similar).
+- **Must not:** use Jev or any remote model to *find* secrets. That sends the secret.
+- **False-positive traps** that must survive un-redacted, because over-redacting them breaks
+  J-CHK and J-MRG: commit SHAs, bead ids, UUIDs, content hashes, dolt refs, base64 test
+  fixtures, and dummy tokens under `tests/`.
+- **Eval corpus:**
+  - real history (transcripts, check logs), scanned locally;
+  - **planted canaries**: fake secrets in every provider format injected into real logs;
+  - locally generated synthetic secrets;
+  - the trap set.
+
+  The corpus and its labels never leave the host.
+- **Measure:** recall per class (known-value canaries, provider formats, generic); the
+  over-redaction rate on traps; **Jev agreement with and without sanitization** on the J-CHK
+  and J-MRG sets, i.e. does redaction hurt the decision; CPU time per MB at p50 and p95.
+- **GO bar:**
+  - 100% recall on known-value canaries;
+  - ≥ 99% recall on provider-format synthetics;
+  - ≤ 1% over-redaction on traps;
+  - no measurable drop in Jev agreement from redaction;
+  - p95 ≤ 200 ms for a 32k-token payload on one core, which keeps it inside Jev's own latency
+    envelope.
+
+  A partial GO (layers 1–2, with layer 3 deferred) is an acceptable verdict.
+
+#### Spike S3 (`J-SEC-GW`) — gateway guardrails and TypeSafe protocol support
+
+- **Question:** should outbound inference route through a **Beadhive-managed gateway**
+  (Bifrost, LiteLLM, or similar) that enforces secret guardrails centrally? And can such a
+  gateway carry TypeSafe's protocol today?
+- **What is known (2026-09-19, from `jev-cli` @ `980cb98`).** Jev is already served by two
+  hosted gateways, each with its **own** protocol:
+  - **Vercel AI Gateway** at `/v4/ai/evaluation-model`, with a translated shape: Noul becomes
+    `boolean` with a `probability` field, and the model id moves into a header.
+  - **OpenRouter** at `/api/alpha/decisions`, native shape, alpha.
+
+  `jev-cli`'s `custom` provider targets any proxy that speaks native `/v1/systemone`. None of
+  these is OpenAI-chat-compatible, so a generic OpenAI-compatible gateway can carry Jev only
+  through a pass-through or custom-provider route. bh's routing config already names Bifrost
+  and OpenAI-compatible endpoints for **chat** inference ([COMPLEXITY-ROUTING.md](../COMPLEXITY-ROUTING.md)).
+- **Method.** For each candidate (Bifrost and LiteLLM, with Vercel and OpenRouter as
+  references):
+  1. **Protocol:** can it proxy native `/v1/systemone`? Does its guardrail hook see the JSON
+     `state` body, or only chat `messages`?
+  2. **Guardrails:** pre-call secret/PII detection with redact vs block, custom guardrail
+     plugins, and audit logging that never logs values. The central question: can the gateway
+     call **the S2 filter itself** as its guardrail, so there is one detector and not two?
+  3. **Credential custody:** the gateway holds `TYPESAFE_API_KEY` and the model keys, so hosts
+     do not.
+  4. **Operational fit:** runs as a container or service beside the host daemon; the latency
+     it adds; what happens when it is down (answer: abstain to baseline).
+  5. **Reach beyond Jev:** teacher labelling and harness traffic (`claude`, `codex`) through
+     the same gateway. Which harnesses accept a base-URL override under subscription auth?
+- **GO bar:** a gateway that carries chat inference **and** TypeSafe traffic (natively or
+  through a thin adapter we own), with a guardrail hook that runs the S2 filter, adding ≤ 50 ms
+  at p95.
+- **Likely verdict:** GO for chat traffic now, and "Jev pending gateway support". In that case
+  S2 at the source is the only layer on Jev traffic. That is why **S2 is mandatory and S3 is
+  optional**: an S3 NO-GO does not block the programme, but an S2 NO-GO blocks log and diff
+  egress.
+
+### 4.6 Shadow mode as a training and replay corpus
+
+Shadow mode benchmarks each point first. It is also the durable corpus for re-evaluating a
+point when TypeSafe ships a new Jev version.
+
+- **Recorded per shadow decision:**
+  - point id, `question_set_version`, and pinned model id;
+  - the **sanitized** state (post-S2 only);
+  - Jev's raw answers (full probability distributions, not just the argmax);
+  - the baseline engine's verdict and which engine acted;
+  - timestamps;
+  - an **outcome link**: the bead id plus the later event that confirmed or contested the
+    decision (the §7.2 tier H filter, applied automatically).
+- **Where:** `~/.beadhive/jev/shadow/<hive>/<point>/<yyyy-mm>.jsonl`, the same pattern as the
+  retro skill's run directories. Local, opt-in, with a per-hive retention setting. Never pushed
+  to the hive remote, never written into beads.
+- **Why this keeps loop-ownership Decision 2 intact.** The loop **never reads** this corpus.
+  It is write-only analysis output, like OTEL spans and retro artifacts, not execution memory.
+  Anything that reads it to make a live decision is an ADR amendment, not an implementation
+  detail. The ADR owner should confirm this reading when the implementation molecule is filed.
+- **Labels accrue.** Contested outcomes and Jev-vs-baseline disagreements go to the §7.2
+  teacher tier. Each point's corpus becomes its growing regression set.
+- **Model-version replay.** When `GET /v1/models` shows a new version (`jev-preview` moves
+  first), a replay re-asks the corpus's stored states and questions against the candidate
+  model. It then compares agreement, calibration, and coverage-at-threshold **per label tier**
+  against the pinned version, and proposes re-tuned thresholds. During the spikes the replay is
+  an artifact script; in the plugin it becomes `bh decide replay`. Moving the pin is a reviewed
+  config change, never alias drift.
+- **Question-set replay:** a reworded question is evaluated the same way, as a new
+  `question_set_version` over stored states. Question iteration stops needing fresh traffic.
 
 ---
 
@@ -634,7 +783,8 @@ Suggested molecules:
 
 | Molecule | Spikes | Why grouped |
 |---|---|---|
-| **M0 — Foundations** | **S0** decision-locus spend share (from J-RET corpus + `SeatRun.cost_usd` + OTEL); **S1** label pipeline (§7.2) + shadow harness (`jev-cli` driven, artifact code); **J-RET** | Every other GO bar needs S0's cost distribution, S1's labels, and S1's harness |
+| **M-SEC — Outbound data safety** | **S2** source secret filter (mandatory); **S3** gateway guardrails + TypeSafe protocol support (optional) | Gates every egress of collected data, including teacher labelling. Runs first, alongside M0 |
+| **M0 — Foundations** | **S0** decision-locus spend share (from J-RET corpus + `SeatRun.cost_usd` + OTEL); **S1** label pipeline (§7.2) + shadow harness (`jev-cli` driven, artifact code); **J-RET** | Every other GO bar needs S0's cost distribution, S1's labels, and S1's harness. S1's teacher and Jev passes over *real* history wait on S2. Local extraction and synthetic-only work can start at once |
 | **M1 — Tracer** | **J-CPX** | Existing Protocol seam proves plugin binding, key probe, provenance, pinning |
 | **M2 — Integration-plane routers** | **J-CHK, J-BNC, J-MRG, J-SEAT** | Highest direct savings; the first two pay in both modes. All are Choice routers over closed sets, at the loop's impure edge or the dispatcher's gate step |
 | **M3 — Gates and cascades** | **J-STOP, J-SUB, J-REV** | Share the per-criterion Noul question set and the hunk-filtering state builder |
@@ -700,26 +850,39 @@ What tier H does and does not measure:
 - **Rare classes are thin.** Infra failures, spurious `blocks` edges, and some blocked causes
   are under-represented. Tier S fills them.
 
-**Tier T — teacher labels from a high-reasoning model.** Every tier H case, plus every case tier
-H cannot label, is labelled independently by **Claude Opus 5 at `xhigh` effort**:
+**Tier T — teacher labels from high-reasoning models, across two vendors.** Every tier H case,
+plus every case tier H cannot label, is labelled independently by **two teachers from different
+vendors**:
 
-- **Input:** the same `state` Jev will see, plus a rubric compiled from the role skill text and
-  the card's option definitions.
-- **Output:** a label and a short rationale, as structured output.
-- **Adjudicator:** Claude Fable 5.1 labels only the cases where tier H and Opus disagree.
+- **Claude Opus 5** at `xhigh` effort.
+- **Codex Sol** (`gpt-5.6-sol`), the default Codex teacher.
 
-Because the production baseline *is* an agent, the teacher is the right reference for "can Jev
-stand in for the agent". It also answers the baseline-cost half of §3.4 on the same cases.
+Each receives the same `state` Jev will see, plus a rubric compiled from the role skill text and
+the card's option definitions. Each returns a label and a short rationale as structured output.
+Two model families agreeing is much stronger evidence than one model agreeing with itself, and
+this directly weakens the agent-agreement bias listed below.
 
-- **Circularity guard:** the teacher never sees Jev's answer. Teacher rationales may inform
+- **Codex Astra** is the adjudicator, used only in **exceptional** cases. Those are cases where
+  the two teachers disagree **and** the case is safety-relevant (J-RO, `blocks` edges in J-DEP)
+  or sits at an `act`-mode threshold.
+- **Codex Terra** may label **simple** classes, where the rubric is near-mechanical: J-RET
+  segment labels, J-CHK `lint_format_only`, and J-DUP exact-restatement pairs. It may also run
+  the cheap independent validation pass on tier S cases for those classes.
+- **How it runs:** headless, through the harnesses bh already drives (`claude -p` and
+  `codex exec`, per `deps.py`), on subscription quota. No per-case API billing, so no cost
+  estimate is carried here. The quota spent is recouped once decisions move to Jev.
+- **Every teacher input goes through the §4.5 sanitizer first.** Teacher labelling is outbound
+  inference like any other.
+
+Because the production baseline *is* an agent, the teachers are the right reference for "can
+Jev stand in for the agent". Their `usage` envelopes also give the baseline-token half of §3.4
+on the same cases.
+
+- **Circularity guard:** teachers never see Jev's answer. Teacher rationales may inform
   *question wording* only through the dev split, never the test split.
-- **Cost:** about 6k input and 0.8k output tokens per case on Opus 5, so ≈ \$0.05. For roughly
-  200 cases per point across 20 points, that is **≈ \$200**. The Message Batches API halves it
-  (≈ \$100), and prompt-caching the per-point rubric lowers it further. Fable 5.1 adjudication
-  adds a few dollars per point.
 
-**Tier S — synthetic cases generated to order.** The same teacher writes realistic cases **per
-class**, seeded with 3–5 real tier H exemplars of that class, with emphasis on:
+**Tier S — synthetic cases generated to order.** A teacher (Opus 5 or Sol) writes realistic
+cases **per class**, seeded with 3–5 real tier H exemplars of that class, with emphasis on:
 
 - rare classes;
 - boundary pairs, where one detail flips the label;
@@ -727,7 +890,8 @@ class**, seeded with 3–5 real tier H exemplars of that class, with emphasis on
   `jev-1.13` weak spot).
 
 Every generated case carries its intended label by construction. It survives only if an
-**independent** labelling pass (fresh context, no generation prompt) reproduces that label. Each
+**independent** labelling pass reproduces that label. The pass runs in a fresh context with no
+generation prompt, and **by the other vendor's model**, or by Terra for simple classes. Each
 point then follows two rules:
 
 - Tier S is **at most 40% of the test split**.
@@ -739,21 +903,22 @@ come from agreement across tiers:
 
 | Agreement | Treatment |
 |---|---|
-| H and T agree, or S survives validation | **Consensus**: used as a reference label |
-| H and T disagree, and Fable resolves it | Used, flagged as adjudicated, reported separately |
-| Fable is uncertain, or the case is safety-relevant (J-RO, `blocks` edges in J-DEP, `act`-mode thresholds) | **Human queue** |
+| H and both teachers agree, or S survives cross-vendor validation | **Consensus**: used as a reference label |
+| The teachers disagree with each other or with H, and the case is ordinary | The two-teacher majority with H decides. Used, flagged as adjudicated, reported separately |
+| A split on a safety-relevant or `act`-threshold case | **Astra** adjudicates. If Astra is uncertain, the case goes to the **human queue** |
 
 The human queue is expected at **≈ 10–25 cases per point**, a skim-and-confirm pass rather than
 labelling from scratch. It is the only human labelling the programme needs.
 
-**Shadow mode keeps producing labels.** Once a point ships in `shadow`, every production
-decision where Jev and the acting engine disagree goes through the same tier-T adjudication.
-The labelled set grows from real traffic, and the offline tiers matter less over time.
+**Shadow mode keeps producing labels** (§4.6). Once a point ships in `shadow`, every production
+decision where Jev and the acting engine disagree, or where the outcome link contests the
+decision, goes through the same tier-T labelling. The labelled set grows from real traffic, and
+the offline tiers matter less over time.
 
 **Validity threats every spike must state.**
 
 - **Agent-agreement bias:** tier T and the baseline are both agents, so a shared blind spot looks
-  like correctness.
+  like correctness. Two vendors reduce this but do not remove it.
 - **Survivorship in tier H:** only the decisions that were made are visible.
 - **Distribution shift in tier S.**
 - **Leakage** from the dev split into the question wording.
@@ -786,3 +951,13 @@ Per-tier reporting is the mitigation for all four.
 3. **No budget for 50–150 hand labels per point.** Labels now come from historical revealed
    choices with an outcome filter, a high-reasoning teacher, and validated synthetic cases.
    Human time is limited to ≈ 10–25 adjudications per point (§7.2).
+4. **Secret safety is its own programme.** A core `OutboundSanitizer` sits in front of **every**
+   inference call that carries collected data. It is spiked as a local CPU source filter (S2,
+   mandatory; blocks log and diff egress until GO) and as gateway-level guardrails, including
+   which gateways can carry TypeSafe's protocol (S3, optional) (§4.5).
+5. **Teachers are Claude and Codex, not Fable.** Opus 5 and Codex Sol label everything
+   independently. Codex Astra adjudicates only exceptional splits, and Codex Terra may handle
+   simple classes. Runs use subscription quota, so labelling cost is not estimated (§7.2).
+6. **Shadow mode is also the replay corpus.** It records sanitized states, full answer
+   distributions, and outcome links, so every new Jev version and every question rewording can
+   be replayed against real history before a pin moves (§4.6).
