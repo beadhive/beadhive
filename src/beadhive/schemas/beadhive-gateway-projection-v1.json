@@ -11,11 +11,15 @@
   },
   "wireContracts": [
     {
-      "$id": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a",
-      "digest": "sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a",
+      "$id": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52",
+      "digest": "sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52",
       "contractVersion": "gateway.read.v1",
       "schemaVersion": 1,
       "schemas": {
+        "factoryOverviewRequest": {
+          "type": "object",
+          "additionalProperties": false
+        },
         "hiveListRequest": {
           "type": "object",
           "additionalProperties": false,
@@ -211,6 +215,160 @@
         "eventStreamResponse": {
           "type": "string",
           "contentMediaType": "text/event-stream"
+        },
+        "canonicalHiveListResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "factoryId",
+            "detailLevel",
+            "items",
+            "nextCursor"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "factoryId": {
+              "const": "development"
+            },
+            "detailLevel": {
+              "const": "summary"
+            },
+            "items": {
+              "type": "array"
+            },
+            "nextCursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "canonicalSnapshotResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "factoryId",
+            "hiveId",
+            "detailLevel",
+            "source",
+            "snapshot"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "factoryId": {
+              "const": "development"
+            },
+            "hiveId": {
+              "type": "string",
+              "minLength": 1
+            },
+            "detailLevel": {
+              "const": "live"
+            },
+            "source": {
+              "type": "object"
+            },
+            "snapshot": {
+              "type": "object",
+              "required": [
+                "advertisedActions",
+                "agents",
+                "assignments",
+                "coverage",
+                "cursor",
+                "dependencies",
+                "epics",
+                "evidence",
+                "gates",
+                "generatedAt",
+                "hive",
+                "revision",
+                "schedules",
+                "schemaVersion",
+                "workItems"
+              ],
+              "properties": {
+                "advertisedActions": {},
+                "agents": {},
+                "assignments": {},
+                "coverage": {},
+                "cursor": {},
+                "dependencies": {},
+                "epics": {},
+                "evidence": {},
+                "gates": {},
+                "generatedAt": {},
+                "hive": {},
+                "revision": {},
+                "schedules": {},
+                "schemaVersion": {},
+                "workItems": {}
+              }
+            }
+          }
+        },
+        "factoryOverviewResponse": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schemaVersion",
+            "contractVersion",
+            "factoryId",
+            "detailLevel",
+            "groups",
+            "coverage",
+            "consistency"
+          ],
+          "properties": {
+            "schemaVersion": {
+              "const": 1
+            },
+            "contractVersion": {
+              "const": "gateway.read.v1"
+            },
+            "factoryId": {
+              "const": "development"
+            },
+            "detailLevel": {
+              "const": "overview"
+            },
+            "groups": {
+              "type": "object"
+            },
+            "coverage": {
+              "type": "object"
+            },
+            "consistency": {
+              "type": "object",
+              "required": [
+                "atomicAcrossHives",
+                "ordering"
+              ],
+              "properties": {
+                "atomicAcrossHives": {
+                  "const": false
+                },
+                "ordering": {
+                  "const": "per-hive"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -703,6 +861,105 @@
       "reason": "gateway liveness mechanic"
     },
     {
+      "identifier": "GET /v1/factories/{factory_id}",
+      "method": "GET",
+      "path": "/v1/factories/{factory_id}",
+      "classification": "composite",
+      "shape": "coarser",
+      "canonicalContracts": [
+        {
+          "operation": "hive.list",
+          "requestSchema": "catalog:hive.list#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        }
+      ],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/factoryOverviewRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/factoryOverviewResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "authenticated-development-subject",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "canonical factory overview with explicit per-group freshness and coverage"
+    },
+    {
+      "identifier": "GET /v1/factories/{factory_id}/hives",
+      "method": "GET",
+      "path": "/v1/factories/{factory_id}/hives",
+      "classification": "catalog-entry",
+      "shape": "richer",
+      "canonicalContracts": [
+        {
+          "operation": "hive.list",
+          "requestSchema": "catalog:hive.list#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        }
+      ],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/hiveListRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/canonicalHiveListResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "authenticated-development-subject",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "canonical factory-qualified hive directory"
+    },
+    {
+      "identifier": "GET /v1/factories/{factory_id}/hives/{hive_id:path}/events",
+      "method": "GET",
+      "path": "/v1/factories/{factory_id}/hives/{hive_id:path}/events",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/eventsRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/eventStreamResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "authenticated-development-subject",
+      "sideEffects": "none",
+      "streaming": true,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "canonical factory-qualified SSE cursor/replay mechanic"
+    },
+    {
+      "identifier": "GET /v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
+      "method": "GET",
+      "path": "/v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
+      "classification": "composite",
+      "shape": "coarser",
+      "canonicalContracts": [
+        {
+          "operation": "work.list",
+          "requestSchema": "catalog:work.list#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        },
+        {
+          "operation": "work.schedule",
+          "requestSchema": "catalog:work.schedule#parameters",
+          "resultSchema": "urn:beadhive:wire-schema:json-value:1",
+          "privilege": "unprivileged-read",
+          "sideEffects": "none"
+        }
+      ],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/snapshotRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/canonicalSnapshotResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "authenticated-development-subject",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "canonical factory-qualified bounded hive state composite"
+    },
+    {
       "identifier": "GET /v1/instances",
       "method": "GET",
       "path": "/v1/instances",
@@ -798,8 +1055,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/hiveListRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/hiveListResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/hiveListRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/hiveListResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -815,8 +1072,8 @@
       "classification": "transport-mechanic",
       "shape": "transport-only",
       "canonicalContracts": [],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/eventsRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/eventStreamResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/eventsRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/eventStreamResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -847,8 +1104,8 @@
           "sideEffects": "none"
         }
       ],
-      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/snapshotRequest",
-      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:4022ec82928652d18623c8b430a23bfc48465946bd16d8a28b4357f6df8f105a#/schemas/snapshotResponse",
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/snapshotRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.read.v1:1:sha256:f098ff5e346190d6eb31e5b4b9522b7612a79aab5402979fb7c3001dfeb3df52#/schemas/snapshotResponse",
       "transportOwner": "gateway-contract",
       "transportPrivilege": "authenticated-development-subject",
       "sideEffects": "none",
@@ -905,6 +1162,74 @@
       "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
       "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
       "reason": "closed-world not-found fallback"
+    },
+    {
+      "identifier": "OPTIONS /v1/factories/{factory_id}",
+      "method": "OPTIONS",
+      "path": "/v1/factories/{factory_id}",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "network-admission",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "exact credentialed CORS preflight allowlist"
+    },
+    {
+      "identifier": "OPTIONS /v1/factories/{factory_id}/hives",
+      "method": "OPTIONS",
+      "path": "/v1/factories/{factory_id}/hives",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "network-admission",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "exact credentialed CORS preflight allowlist"
+    },
+    {
+      "identifier": "OPTIONS /v1/factories/{factory_id}/hives/{hive_id:path}/events",
+      "method": "OPTIONS",
+      "path": "/v1/factories/{factory_id}/hives/{hive_id:path}/events",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "network-admission",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "exact credentialed CORS preflight allowlist"
+    },
+    {
+      "identifier": "OPTIONS /v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
+      "method": "OPTIONS",
+      "path": "/v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
+      "classification": "transport-mechanic",
+      "shape": "transport-only",
+      "canonicalContracts": [],
+      "wireRequestSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/readPreflightRequest",
+      "wireResultSchema": "urn:beadhive:gateway-wire-contract:gateway.v1:1:sha256:d4d54166092daccc7c3c5f69809027b8129f30ebfdf680925c4062550aaae9f9#/schemas/emptyResponse",
+      "transportOwner": "gateway-contract",
+      "transportPrivilege": "network-admission",
+      "sideEffects": "none",
+      "streaming": false,
+      "availability": "Development Frame Bridge only; local CLI/stdio remain independent",
+      "compatibility": "gateway.read.v1 and recursive disclosure allowlists",
+      "reason": "exact credentialed CORS preflight allowlist"
     },
     {
       "identifier": "OPTIONS /v1/instances",

@@ -667,6 +667,124 @@ def test_authenticated_bridge_lists_selected_hives_and_returns_rich_generated_sn
     assert set(_hive_ids(envelope["snapshot"])) <= {envelope["hiveId"]}
 
 
+def test_canonical_factory_routes_alias_generated_bridge_payloads_without_instance_identity() -> (
+    None
+):
+    private_key, public_key = _keys()
+    source = gateway_read.load_packaged_development_source(authorized_subjects=frozenset({SUBJECT}))
+    app = _application(public_key, source)
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            headers = _headers(_token(private_key))
+            bridge_directory = await client.get(
+                "/v1/instances/dev/demo/hives", params={"limit": "1"}, headers=headers
+            )
+            canonical_directory = await client.get(
+                "/v1/factories/development/hives", params={"limit": "1"}, headers=headers
+            )
+            hive = "github%2Fbeadhive%2Fbaml-harness"
+            bridge_snapshot = await client.get(
+                f"/v1/instances/dev/demo/hives/{hive}/snapshot", headers=headers
+            )
+            canonical_snapshot = await client.get(
+                f"/v1/factories/development/hives/{hive}/snapshot", headers=headers
+            )
+            return bridge_directory, canonical_directory, bridge_snapshot, canonical_snapshot
+
+    bridge_directory, canonical_directory, bridge_snapshot, canonical_snapshot = asyncio.run(
+        exercise()
+    )
+    assert canonical_directory.status_code == canonical_snapshot.status_code == 200
+    expected_directory = bridge_directory.json()
+    expected_directory.pop("instanceId")
+    assert canonical_directory.json() == expected_directory
+    expected_snapshot = bridge_snapshot.json()
+    expected_snapshot.pop("instanceId")
+    assert canonical_snapshot.json() == expected_snapshot
+    assert bridge_directory.json()["instanceId"] == "dev/demo"
+    assert bridge_snapshot.json()["instanceId"] == "dev/demo"
+
+
+def test_factory_overview_discloses_group_freshness_and_non_atomic_aggregate_coverage() -> None:
+    private_key, public_key = _keys()
+    source = gateway_read.load_packaged_development_source(authorized_subjects=frozenset({SUBJECT}))
+    app = _application(public_key, source)
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            headers = _headers(_token(private_key))
+            overview = await client.get("/v1/factories/development", headers=headers)
+            missing = await client.get("/v1/factories/production", headers=headers)
+            unauthorized = await client.get(
+                "/v1/factories/development", headers={"Origin": APP_ORIGIN}
+            )
+            return overview, missing, unauthorized
+
+    overview, missing, unauthorized = asyncio.run(exercise())
+    assert overview.status_code == 200
+    assert overview.json() == {
+        "schemaVersion": 1,
+        "contractVersion": "gateway.read.v1",
+        "factoryId": "development",
+        "detailLevel": "overview",
+        "groups": {
+            "hives": {
+                "freshness": {
+                    "state": "fresh",
+                    "asOf": 1777000000000,
+                    "expiresAt": None,
+                    "detail": (
+                        "Each hive is observed independently; timestamps do not imply atomic "
+                        "cross-hive ordering."
+                    ),
+                },
+                "coverage": {"state": "complete", "requested": 3, "returned": 3},
+            }
+        },
+        "coverage": {"state": "complete", "groupsRequested": 1, "groupsReturned": 1},
+        "consistency": {"atomicAcrossHives": False, "ordering": "per-hive"},
+    }
+    assert missing.status_code == 404
+    assert unauthorized.status_code == 401
+
+
+def test_canonical_directory_cursor_is_bound_to_exact_factory_selector() -> None:
+    private_key, public_key = _keys()
+    source = gateway_read.load_packaged_development_source(authorized_subjects=frozenset({SUBJECT}))
+    app = _application(public_key, source)
+
+    async def exercise():
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+        ) as client:
+            headers = _headers(_token(private_key))
+            first = await client.get(
+                "/v1/factories/development/hives", params={"limit": "1"}, headers=headers
+            )
+            cursor = first.json()["nextCursor"]
+            resumed = await client.get(
+                "/v1/factories/development/hives",
+                params={"limit": "1", "after": cursor},
+                headers=headers,
+            )
+            wrong_factory = await client.get(
+                "/v1/factories/production/hives",
+                params={"limit": "1", "after": cursor},
+                headers=headers,
+            )
+            return first, resumed, wrong_factory
+
+    first, resumed, wrong_factory = asyncio.run(exercise())
+    assert first.status_code == resumed.status_code == 200
+    assert first.json()["items"] != resumed.json()["items"]
+    assert wrong_factory.status_code == 404
+
+
 def test_directory_advertises_events_only_when_the_selected_hive_has_replayable_events() -> None:
     artifact, packaged_manifest = _catalog_bytes()
 
@@ -685,7 +803,16 @@ def test_directory_advertises_events_only_when_the_selected_hive_has_replayable_
     assert asyncio.run(capabilities_for("dense")) == ["snapshot"]
 
 
-def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_scope() -> None:
+@pytest.mark.parametrize(
+    ("route_prefix", "has_legacy_instance"),
+    [
+        ("/v1/instances/dev/demo", True),
+        ("/v1/factories/development", False),
+    ],
+)
+def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_scope(
+    route_prefix: str, has_legacy_instance: bool
+) -> None:
     private_key, public_key = _keys()
     artifact, packaged_manifest = _catalog_bytes()
     manifest, manifest_digest = _manifest_select(packaged_manifest, "small")
@@ -710,17 +837,17 @@ def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_s
         ) as client:
             headers = _headers(_token(private_key))
             snapshot = await client.get(
-                "/v1/instances/dev/demo/hives/github%2Fbeadhive%2Fbeadhive-ui/snapshot",
+                f"{route_prefix}/hives/github%2Fbeadhive%2Fbeadhive-ui/snapshot",
                 headers=headers,
             )
             cursor = snapshot.json()["snapshot"]["cursor"]
             wrong_scope = await client.get(
-                "/v1/instances/dev/demo/hives/github%2Fbeadhive%2Fbeadhive-ui/events",
+                f"{route_prefix}/hives/github%2Fbeadhive%2Fbeadhive-ui/events",
                 params={"subscription": "wrong", "after": f"{cursor['producerEpoch']}:10"},
                 headers=headers,
             )
             conflicting = await client.get(
-                "/v1/instances/dev/demo/hives/github%2Fbeadhive%2Fbeadhive-ui/events",
+                f"{route_prefix}/hives/github%2Fbeadhive%2Fbeadhive-ui/events",
                 params={
                     "subscription": cursor["subscriptionId"],
                     "after": f"{cursor['producerEpoch']}:10",
@@ -729,7 +856,7 @@ def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_s
             )
             stream_task = asyncio.create_task(
                 client.get(
-                    "/v1/instances/dev/demo/hives/github%2Fbeadhive%2Fbeadhive-ui/events",
+                    f"{route_prefix}/hives/github%2Fbeadhive%2Fbeadhive-ui/events",
                     params={
                         "subscription": cursor["subscriptionId"],
                         "after": f"{cursor['producerEpoch']}:{cursor['sequence']}",
@@ -751,6 +878,7 @@ def test_generated_sse_replays_only_catalog_events_and_requires_exact_snapshot_s
     assert '"contractVersion":"gateway.read.v1"' in stream.text
     assert '"factoryId":"development"' in stream.text
     assert '"hiveId":"github/beadhive/beadhive-ui"' in stream.text
+    assert ('"instanceId":"dev/demo"' in stream.text) is has_legacy_instance
     assert '"kind":"entity-upsert"' in stream.text
     assert "fixture-subscription" not in stream.text
     assert "fixture-epoch-1" not in stream.text

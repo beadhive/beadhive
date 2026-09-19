@@ -110,7 +110,8 @@ def gateway_wire_schemas() -> dict[str, dict[str, object]]:
         "factoryId": {"type": "string", "minLength": 1},
         "hiveId": {"type": "string", "minLength": 1},
     }
-    return {
+    schemas = {
+        "factoryOverviewRequest": {"type": "object", "additionalProperties": False},
         "hiveListRequest": {
             "type": "object",
             "additionalProperties": False,
@@ -201,6 +202,44 @@ def gateway_wire_schemas() -> dict[str, dict[str, object]]:
             "contentMediaType": "text/event-stream",
         },
     }
+    for canonical_name, bridge_name in (
+        ("canonicalHiveListResponse", "hiveListResponse"),
+        ("canonicalSnapshotResponse", "snapshotResponse"),
+    ):
+        canonical = copy.deepcopy(schemas[bridge_name])
+        canonical["required"].remove("instanceId")
+        del canonical["properties"]["instanceId"]
+        schemas[canonical_name] = canonical
+    schemas["factoryOverviewResponse"] = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "schemaVersion",
+            "contractVersion",
+            "factoryId",
+            "detailLevel",
+            "groups",
+            "coverage",
+            "consistency",
+        ],
+        "properties": {
+            "schemaVersion": schema_version,
+            "contractVersion": contract_version,
+            "factoryId": {"const": FACTORY_ID},
+            "detailLevel": {"const": "overview"},
+            "groups": {"type": "object"},
+            "coverage": {"type": "object"},
+            "consistency": {
+                "type": "object",
+                "required": ["atomicAcrossHives", "ordering"],
+                "properties": {
+                    "atomicAcrossHives": {"const": False},
+                    "ordering": {"const": "per-hive"},
+                },
+            },
+        },
+    }
+    return schemas
 
 
 def experience_wire_schemas() -> dict[str, dict[str, object]]:
