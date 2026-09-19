@@ -956,6 +956,26 @@ def build_development_frame_bridge_application(
             raise gateway_read_mod.ReadSourceNotFound
         return subject
 
+    def authorize_gateway_read(request: Request) -> str:
+        """Authorize either the legacy instance bridge or its canonical factory alias."""
+        if "factory_id" not in request.path_params:
+            return authorize_bridge(request)
+        subject = authorize(request)
+        if request.path_params.get(
+            "factory_id"
+        ) != gateway_read_mod.FACTORY_ID or gateway_read_mod.INSTANCE_ID not in registry.authorized(
+            subject
+        ):
+            raise gateway_read_mod.ReadSourceNotFound
+        return subject
+
+    def canonical_payload(request: Request, payload: Mapping[str, object]) -> Mapping[str, object]:
+        if "factory_id" not in request.path_params:
+            return payload
+        projected = dict(payload)
+        projected.pop("instanceId", None)
+        return projected
+
     def rich_error(
         code: str, message: str, status_code: int, *, retryable: bool = False
     ) -> JSONResponse:
@@ -1054,9 +1074,16 @@ def build_development_frame_bridge_application(
         raw_path = request.scope.get("raw_path", b"")
         if not isinstance(raw_path, bytes):
             raise gateway_read_mod.ReadSourceInvalidRequest
+        prefix = (
+            rb"/v1/factories/development/hives/"
+            if "factory_id" in request.path_params
+            else rb"/v1/instances/dev/demo/hives/"
+        )
         pattern = (
-            rb"/v1/instances/dev/demo/hives/"
-            rb"([A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+)" + suffix.encode() + rb"\Z"
+            prefix
+            + rb"([A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+%2F[A-Za-z0-9._~-]+)"
+            + suffix.encode()
+            + rb"\Z"
         )
         match = re.fullmatch(pattern, raw_path.split(b"?", 1)[0])
         if match is None:
@@ -1070,7 +1097,7 @@ def build_development_frame_bridge_application(
         try:
             if read_source is None:
                 raise gateway_read_mod.ReadSourceNotFound
-            subject = authorize_bridge(request)
+            subject = authorize_gateway_read(request)
             if set(request.query_params) - {"limit", "after"}:
                 raise gateway_read_mod.ReadSourceInvalidRequest
             limits = request.query_params.getlist("limit")
@@ -1090,7 +1117,7 @@ def build_development_frame_bridge_application(
                     after=after_values[0] if after_values else None,
                 ),
             )
-            return rich_response(request, page)
+            return rich_response(request, canonical_payload(request, page))
         except PermissionError:
             return rich_error("request_denied", "The request is not allowed.", 403)
         except AuthenticationFailed:
@@ -1114,7 +1141,7 @@ def build_development_frame_bridge_application(
         try:
             if read_source is None:
                 raise gateway_read_mod.ReadSourceNotFound
-            subject = authorize_bridge(request)
+            subject = authorize_gateway_read(request)
             hive_id = bridge_hive_id(request, "/snapshot")
             if set(request.query_params) - {"detail"}:
                 raise gateway_read_mod.ReadSourceInvalidRequest
@@ -1130,7 +1157,7 @@ def build_development_frame_bridge_application(
                     detail="live",
                 ),
             )
-            return rich_response(request, envelope)
+            return rich_response(request, canonical_payload(request, envelope))
         except PermissionError:
             return rich_error("request_denied", "The request is not allowed.", 403)
         except AuthenticationFailed:
@@ -1151,7 +1178,7 @@ def build_development_frame_bridge_application(
         try:
             if read_source is None:
                 raise gateway_read_mod.ReadSourceNotFound
-            subject = authorize_bridge(request)
+            subject = authorize_gateway_read(request)
             hive_id = bridge_hive_id(request, "/events")
             if set(request.query_params) - {"subscription", "after"}:
                 raise gateway_read_mod.ReadSourceInvalidRequest
@@ -1210,7 +1237,7 @@ def build_development_frame_bridge_application(
                             {next_event}, timeout=runtime_calls.stream_reauthorize_seconds
                         )
                         try:
-                            current_subject = authorize_bridge(request)
+                            current_subject = authorize_gateway_read(request)
                         except (
                             AuthenticationFailed,
                             PermissionError,
@@ -1262,7 +1289,9 @@ def build_development_frame_bridge_application(
                         expected_epoch = epoch
                         previous_sequence = sequence
                         cursor = f"{epoch}:{sequence}"
-                        data = json.dumps(envelope, separators=(",", ":"))
+                        data = json.dumps(
+                            canonical_payload(request, envelope), separators=(",", ":")
+                        )
                         next_event = asyncio.create_task(
                             anext(iterator), name="beadhive-frame-bridge-rich-event-next"
                         )
@@ -1314,6 +1343,88 @@ def build_development_frame_bridge_application(
         finally:
             if admitted_subject is not None:
                 stream_admission.release(admitted_subject)
+
+    async def factory_overview(request: Request) -> Response:
+        try:
+            if read_source is None:
+                raise gateway_read_mod.ReadSourceNotFound
+            subject = authorize_gateway_read(request)
+            if request.query_params:
+                raise gateway_read_mod.ReadSourceInvalidRequest
+
+            async def collect_hives() -> list[Mapping[str, object]]:
+                items: list[Mapping[str, object]] = []
+                after: str | None = None
+                for _ in range(50):
+                    page = await read_source.list_hives(subject, limit=200, after=after)
+                    raw_items = page.get("items")
+                    if not isinstance(raw_items, list) or any(
+                        not isinstance(item, Mapping) for item in raw_items
+                    ):
+                        raise FrameBridgeProjectionFailed("gateway read directory is incompatible")
+                    items.extend(raw_items)
+                    next_cursor = page.get("nextCursor")
+                    if next_cursor is None:
+                        return items
+                    if not isinstance(next_cursor, str) or next_cursor == after:
+                        raise FrameBridgeProjectionFailed(
+                            "gateway read directory cursor is incompatible"
+                        )
+                    after = next_cursor
+                raise FrameBridgeProjectionFailed("gateway read directory exceeds overview bound")
+
+            hives = await rich_read_calls.call(subject, collect_hives)
+            freshness = [item.get("freshness") for item in hives]
+            states = {item.get("state") for item in freshness if isinstance(item, Mapping)}
+            as_of_values = [
+                item.get("asOf")
+                for item in freshness
+                if isinstance(item, Mapping) and type(item.get("asOf")) is int
+            ]
+            freshness_state = "fresh" if freshness and states == {"fresh"} else "unknown"
+            count = len(hives)
+            coverage = {"state": "complete", "requested": count, "returned": count}
+            overview = {
+                "schemaVersion": gateway_read_mod.SCHEMA_VERSION,
+                "contractVersion": gateway_read_mod.CONTRACT_VERSION,
+                "factoryId": gateway_read_mod.FACTORY_ID,
+                "detailLevel": "overview",
+                "groups": {
+                    "hives": {
+                        "freshness": {
+                            "state": freshness_state,
+                            "asOf": min(as_of_values) if as_of_values else None,
+                            "expiresAt": None,
+                            "detail": (
+                                "Each hive is observed independently; timestamps do not imply "
+                                "atomic cross-hive ordering."
+                            ),
+                        },
+                        "coverage": coverage,
+                    }
+                },
+                "coverage": {
+                    "state": "complete",
+                    "groupsRequested": 1,
+                    "groupsReturned": 1,
+                },
+                "consistency": {"atomicAcrossHives": False, "ordering": "per-hive"},
+            }
+            return rich_response(request, overview)
+        except PermissionError:
+            return rich_error("request_denied", "The request is not allowed.", 403)
+        except AuthenticationFailed:
+            return rich_error("authentication_failed", "Authentication failed.", 401)
+        except gateway_read_mod.ReadSourceNotFound:
+            return rich_error("resource_not_found", "The resource was not found.", 404)
+        except gateway_read_mod.ReadSourceInvalidRequest:
+            return rich_error("invalid_request", "The request is not valid.", 400)
+        except RuntimeCallTimedOut:
+            return rich_error("rate_limited", "The read limit was exceeded.", 429, retryable=True)
+        except Exception:
+            return rich_error(
+                "read_plane_unavailable", "The read plane is unavailable.", 503, retryable=True
+            )
 
     async def read_availability(calls: _BoundedRuntimeCalls, instance: RemoteInstance) -> bool:
         availability = await calls.call(instance.online)
@@ -1670,6 +1781,18 @@ def build_development_frame_bridge_application(
     app = Starlette(
         routes=[
             Route("/healthz", health, methods=["GET"]),
+            Route("/v1/factories/{factory_id}", factory_overview, methods=["GET"]),
+            Route("/v1/factories/{factory_id}/hives", bridge_hives, methods=["GET"]),
+            Route(
+                "/v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
+                bridge_snapshot,
+                methods=["GET"],
+            ),
+            Route(
+                "/v1/factories/{factory_id}/hives/{hive_id:path}/events",
+                bridge_events,
+                methods=["GET"],
+            ),
             Route("/v1/instances", instances, methods=["GET"]),
             Route(
                 "/v1/instances/{stage}/{slug}/experience",
@@ -1692,6 +1815,18 @@ def build_development_frame_bridge_application(
             Route("/v1/instances/{stage}/{slug}/commands/refresh", refresh, methods=["POST"]),
             Route("/v1/instances/{stage}/{slug}/commands/{command}", absent, methods=["POST"]),
             Route("/v1/instances", preflight, methods=["OPTIONS"]),
+            Route("/v1/factories/{factory_id}", preflight, methods=["OPTIONS"]),
+            Route("/v1/factories/{factory_id}/hives", preflight, methods=["OPTIONS"]),
+            Route(
+                "/v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
+                preflight,
+                methods=["OPTIONS"],
+            ),
+            Route(
+                "/v1/factories/{factory_id}/hives/{hive_id:path}/events",
+                preflight,
+                methods=["OPTIONS"],
+            ),
             Route(
                 "/v1/instances/{stage}/{slug}/experience",
                 preflight,

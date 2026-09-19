@@ -63,7 +63,7 @@ def test_generated_cli_and_mcp_inventory_exactly_covers_the_catalog() -> None:
         counts[row.surface] = counts.get(row.surface, 0) + 1
     assert counts == {
         "cli": 213,
-        "gateway": 20,
+        "gateway": 28,
         "mcp-resource": 21,
         "mcp-tool": 10,
         "operator-api": 13,
@@ -111,6 +111,7 @@ def test_one_operation_meaning_has_promised_parity_and_explicit_transport_differ
     }
     assert {row.identifier for row in composites} == {
         "GET /api/v1/hives/{hive_id:path}/snapshot",
+        "GET /v1/factories/{factory_id}/hives/{hive_id:path}/snapshot",
         "GET /v1/instances/{stage}/{slug}/experience",
         "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot",
         "GET /v1/instances/{stage}/{slug}/snapshot",
