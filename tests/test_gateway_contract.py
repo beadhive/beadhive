@@ -292,6 +292,20 @@ def test_every_live_non_streaming_success_response_validates_resolved_wire_schem
                         headers=auth,
                     )
                 ),
+                "GET /v1/factories/{factory_id}": await client.get(
+                    "/v1/factories/development", headers=auth
+                ),
+                "GET /v1/factories/{factory_id}/hives": await client.get(
+                    "/v1/factories/development/hives",
+                    params={"limit": "50"},
+                    headers=auth,
+                ),
+                "GET /v1/factories/{factory_id}/hives/{hive_id:path}/snapshot": (
+                    await client.get(
+                        "/v1/factories/development/hives/github%2Fbeadhive%2Fbaml-harness/snapshot",
+                        headers=auth,
+                    )
+                ),
                 "GET /v1/instances/{stage}/{slug}/snapshot": await client.get(
                     "/v1/instances/dev/demo/snapshot", headers=auth
                 ),
@@ -363,6 +377,20 @@ def test_gateway_wire_references_resolve_to_versioned_digested_owned_contracts()
     assert rich_snapshot["properties"]["snapshot"]["required"] == sorted(
         gateway_read._SNAPSHOT_REQUIRED
     )
+
+    canonical_schemas = {
+        operation["identifier"]: operation["wireResultSchema"].rsplit("/", 1)[-1]
+        for operation in document["operations"]
+        if operation["identifier"].startswith("GET /v1/factories/")
+        and not operation["identifier"].endswith("/events")
+    }
+    assert canonical_schemas == {
+        "GET /v1/factories/{factory_id}": "factoryOverviewResponse",
+        "GET /v1/factories/{factory_id}/hives": "canonicalHiveListResponse",
+        "GET /v1/factories/{factory_id}/hives/{hive_id:path}/snapshot": (
+            "canonicalSnapshotResponse"
+        ),
+    }
 
 
 def test_checked_legacy_event_cursor_schema_matches_runtime_grammar() -> None:

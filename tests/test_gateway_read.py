@@ -16,8 +16,11 @@ from joserfc import jwt
 from joserfc.jwk import RSAKey
 from joserfc.jws import JWSRegistry
 from jsonschema import Draft202012Validator
+from starlette.applications import Starlette
+from starlette.responses import JSONResponse, StreamingResponse
+from starlette.routing import Route
 
-from beadhive import frame_bridge, frame_bridge_runtime, gateway_read
+from beadhive import daemon_auth, frame_bridge, frame_bridge_runtime, gateway_read
 
 ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 AUDIENCE = "beadhive-gateway-dev"
@@ -706,6 +709,177 @@ def test_canonical_factory_routes_alias_generated_bridge_payloads_without_instan
     assert canonical_snapshot.json() == expected_snapshot
     assert bridge_directory.json()["instanceId"] == "dev/demo"
     assert bridge_snapshot.json()["instanceId"] == "dev/demo"
+
+
+def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_events() -> None:
+    private_key, public_key = _keys()
+    hive_id = "github/beadhive/beadhive-app"
+    encoded_hive = "github%2Fbeadhive%2Fbeadhive-app"
+    epoch = "123e4567e89b42d3a456426614174000"
+    revision = "sha256:" + "a" * 64
+    daemon_bearer = "bh1.frame-bridge." + "d" * 43
+    subscription = f"hive:{hive_id}"
+    snapshot = {
+        "schemaVersion": 1,
+        "hive": {
+            "prefix": hive_id,
+            "provider": "github",
+            "org": "beadhive",
+            "repo": "beadhive-app",
+            "kind": "org-native",
+        },
+        "revision": revision,
+        "generatedAt": 1_787_811_221_000,
+        "cursor": {
+            "subscriptionId": subscription,
+            "producerEpoch": epoch,
+            "sequence": 7,
+            "observedAt": 1_787_811_221_001,
+        },
+        "coverage": {"state": "complete", "generatedAt": 1_787_811_221_000},
+        **{name: [] for name in gateway_read._SNAPSHOT_COLLECTIONS},
+    }
+
+    async def directory(request):
+        assert request.headers["authorization"] == f"Bearer {daemon_bearer}"
+        limit = int(request.query_params["limit"])
+        return JSONResponse(
+            {
+                "schemaVersion": 1,
+                "revision": revision,
+                "generatedAt": 1_787_811_221_000,
+                "items": [
+                    {
+                        "id": hive_id,
+                        "displayLabel": "beadhive-app",
+                        "availability": {"state": "available", "reason": None},
+                        "revision": revision,
+                        "asOf": 1_787_811_221_000,
+                        "coverage": {"state": "complete", "reason": None},
+                    }
+                ],
+                "returnedCount": 1,
+                "limit": limit,
+                "truncated": False,
+                "nextCursor": None,
+                "warnings": [],
+            }
+        )
+
+    async def daemon_snapshot(request):
+        assert request.headers["authorization"] == f"Bearer {daemon_bearer}"
+        return JSONResponse(snapshot)
+
+    async def daemon_events(request):
+        assert request.headers["authorization"] == f"Bearer {daemon_bearer}"
+        assert dict(request.query_params) == {
+            "cursor": f"{epoch}:7",
+            "subscription": subscription,
+        }
+        event = {
+            "schemaVersion": 1,
+            "hiveId": hive_id,
+            "subscriptionId": subscription,
+            "producerEpoch": epoch,
+            "sequence": 8,
+            "baseSequence": 7,
+            "observedAt": 1_787_811_221_002,
+            "generatedAt": 1_787_811_221_002,
+            "source": "beads",
+            "revision": revision,
+            "entity": None,
+            "payload": {"kind": "heartbeat"},
+        }
+
+        async def stream():
+            yield (
+                f"id: {epoch}:8\nevent: operator-event\n"
+                f"data: {json.dumps(event, separators=(',', ':'))}\n\n"
+            )
+
+        return StreamingResponse(stream(), media_type="text/event-stream")
+
+    daemon_app = Starlette(
+        routes=[
+            Route("/api/v1/factory/hives", directory),
+            Route("/api/v1/hives/{hive_id:path}/snapshot", daemon_snapshot),
+            Route("/api/v1/hives/{hive_id:path}/events", daemon_events),
+        ]
+    )
+    daemon_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=daemon_app),
+        base_url=frame_bridge_runtime.LOOPBACK_ORIGIN,
+    )
+    source = frame_bridge_runtime.LoopbackGatewayReadSource(
+        daemon_bearer=daemon_auth.SecretBearer(daemon_bearer),
+        authorized_subjects=frozenset({SUBJECT}),
+        client=daemon_client,
+    )
+    app = _application(public_key, source)
+
+    async def exercise():
+        try:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url=GATEWAY_ORIGIN
+            ) as client:
+                headers = _headers(_token(private_key))
+                bridge_directory = await client.get("/v1/instances/dev/demo/hives", headers=headers)
+                canonical_directory = await client.get(
+                    "/v1/factories/development/hives", headers=headers
+                )
+                bridge_snapshot = await client.get(
+                    f"/v1/instances/dev/demo/hives/{encoded_hive}/snapshot", headers=headers
+                )
+                canonical_snapshot = await client.get(
+                    f"/v1/factories/development/hives/{encoded_hive}/snapshot", headers=headers
+                )
+                params = {"subscription": subscription, "after": f"{epoch}:7"}
+                bridge_events = await client.get(
+                    f"/v1/instances/dev/demo/hives/{encoded_hive}/events",
+                    params=params,
+                    headers=headers,
+                )
+                canonical_events = await client.get(
+                    f"/v1/factories/development/hives/{encoded_hive}/events",
+                    params=params,
+                    headers=headers,
+                )
+                return (
+                    bridge_directory,
+                    canonical_directory,
+                    bridge_snapshot,
+                    canonical_snapshot,
+                    bridge_events,
+                    canonical_events,
+                )
+        finally:
+            await daemon_client.aclose()
+
+    responses = asyncio.run(exercise())
+    assert all(response.status_code == 200 for response in responses)
+    (
+        bridge_directory,
+        canonical_directory,
+        bridge_snapshot,
+        canonical_snapshot,
+        bridge_events,
+        canonical_events,
+    ) = responses
+    expected_directory = bridge_directory.json() | {}
+    expected_directory.pop("instanceId")
+    assert canonical_directory.json() == expected_directory
+    expected_snapshot = bridge_snapshot.json() | {}
+    expected_snapshot.pop("instanceId")
+    assert canonical_snapshot.json() == expected_snapshot
+
+    def event_data(response: httpx.Response) -> dict[str, object]:
+        data = next(line for line in response.text.splitlines() if line.startswith("data: "))
+        return json.loads(data.removeprefix("data: "))
+
+    legacy_event = event_data(bridge_events)
+    canonical_event = event_data(canonical_events)
+    assert legacy_event.pop("instanceId") == "dev/demo"
+    assert canonical_event == legacy_event
 
 
 def test_factory_overview_discloses_group_freshness_and_non_atomic_aggregate_coverage() -> None:
