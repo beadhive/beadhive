@@ -106,6 +106,8 @@ class FailClosedResolver:
             changed=changed,
             keys=tuple(keys),
             timeout_seconds=self._timeout,
+            base_rev=base_rev,
+            head_rev=head_rev,
         )
 
         def fallback(reason: str) -> ImpactReceipt:
