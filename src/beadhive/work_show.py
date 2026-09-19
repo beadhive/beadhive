@@ -14,7 +14,7 @@ import json
 
 import typer
 
-from . import bd, work_group, work_logic, worktree
+from . import bd, selective_validation, work_group, work_logic, worktree
 from .config_consumer_ports import work_settings as config
 from .work_logic import flag_rows
 
@@ -327,7 +327,19 @@ def _legacy_review(
     if run_validate:
         cmd = config.validate_cmd(cfg, entry)
         typer.echo(f"\n## Validation ({cmd})")
-        rc = worktree.clean_checkout(entry, branch, cmd, reuse=not fresh)
+        if selective_validation.configured(cfg, entry):
+            rc = selective_validation.run(
+                entry,
+                cfg,
+                base_rev=base,
+                head_rev=branch,
+                repo_path=str(worktree.clone_for_branch(entry, branch)),
+                runner=lambda key_cmd: worktree.clean_checkout(
+                    entry, branch, key_cmd, reuse=not fresh
+                ),
+            )
+        else:
+            rc = worktree.clean_checkout(entry, branch, cmd, reuse=not fresh)
         typer.echo(f"— validate exit {rc}")
     if demo:
         cmd = config.demo_cmd(cfg, entry)
