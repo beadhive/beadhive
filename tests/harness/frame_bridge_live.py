@@ -295,7 +295,11 @@ def main() -> None:
         health = _wait_for_daemon_ready()
         assert health.status_code == 200
 
-        bridge_env = {**env, "CREDENTIALS_DIRECTORY": str(credentials)}
+        bridge_env = {
+            **env,
+            "CREDENTIALS_DIRECTORY": str(credentials),
+            "BEADHIVE_FRAME_BRIDGE_SOURCE_MODE": "live",
+        }
         bridge, bridge_log = _start(
             executable_dir / "beadhive-frame-bridge",
             cwd=hive,

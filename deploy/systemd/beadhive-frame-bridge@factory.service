@@ -1,0 +1,39 @@
+[Unit]
+Description=Beadhive private Factory Frame Bridge upstream (%i)
+Requires=beadhive-host.service
+After=beadhive-host.service network-online.target
+ConditionPathExists=/etc/beadhive/frame-bridge/gateway-verifiers.json
+
+[Service]
+Type=simple
+User=beadhive-frame-bridge
+Group=beadhive-gateway
+UMask=0007
+RuntimeDirectory=beadhive/frame-bridge
+RuntimeDirectoryMode=0750
+StateDirectory=beadhive/frame-bridge
+StateDirectoryMode=0700
+LoadCredential=daemon-bearer:/etc/beadhive/frame-bridge/daemon-bearer
+ExecStart=/opt/beadhive-frame-bridge/bin/python -m beadhive.frame_bridge_factory
+Restart=on-failure
+RestartSec=3s
+TimeoutStartSec=15s
+TimeoutStopSec=15s
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectControlGroups=true
+ProtectHome=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectSystem=strict
+CapabilityBoundingSet=
+IPAddressDeny=any
+IPAddressAllow=localhost
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

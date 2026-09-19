@@ -313,7 +313,7 @@
           {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "29046c0b29b1a6aa9dfd8ad1ca1f0f3f3356d0ef35da01dfa319d4885d1c293d"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "afbd7e8134c9efe6187550e5681c4a1d70752ba10934fac66fe691e57b6907b8"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
-          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "4acecf53f2a84b0d849d7b7f37ab47cfd4d6b6aded4cd4a0fd826443bec7e348"}
+          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "d61292659e0f5e1d48a88ab8083ea02f5880549dc5baaf97ca4e2dedcbac2bd0"}
         ]
       },
       "import_boundary": {
@@ -340,7 +340,7 @@
         ]
       },
       "package_and_entry_point": {
-        "manifest": {"path": "pyproject.toml", "sha256": "e90f31670069d33bb03a6ef7381ea8db9c0e0b66320e5b3c39bb1fa0b4948e4b"},
+        "manifest": {"path": "pyproject.toml", "sha256": "c74a0ffedeb4bcb3e3bef518d551964341b21612e1652b72b94879c603bce129"},
         "wheel_test": "tests/test_frame_bridge_handoff.py::test_wheel_contains_only_the_frame_bridge_core_entry_point",
         "console_script": "beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main",
         "packaged_modules": ["beadhive/bootstrap/frame_bridge.py", "beadhive/frame_bridge.py", "beadhive/frame_bridge_runtime.py"],
@@ -411,7 +411,7 @@
       "scope": "core real-process host-daemon-to-Frame-Bridge validation; not sibling multi-frame Gateway integration or real-host supervisor certification",
       "coverage": ["health", "authenticated discovery", "redacted snapshot", "revision-checked refresh", "SSE delivery and reconnect", "credential failure", "secret redaction", "process/socket/credential/temp-state cleanup"],
       "test": {"path": "tests/test_frame_bridge_live.py", "node": "test_authenticated_daemon_to_installed_frame_bridge_real_process_path", "sha256": "c441f3b9574420a759de1e231f1df9b8debc03082b6dc3db96a414018c851db7"},
-      "harness": {"path": "tests/harness/frame_bridge_live.py", "sha256": "b244733042eea45027bd05dcfac9e6473f3a190f6ea9dc23d39713a2ff7ca960"}
+      "harness": {"path": "tests/harness/frame_bridge_live.py", "sha256": "ec5cb45940c3a1f4e907ea12cd230c6a134115a1e6c3384a01b7fd887896aa8d"}
     }
   },
   "remaining_debt": {

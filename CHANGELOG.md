@@ -13,6 +13,13 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.16.4 (2026-09-16)
+
+### Fix
+
+- **release**: configure live Frame Bridge harness
+- **work**: validate safe epic container refreshes
+
 ## v0.16.3 (2026-09-14)
 
 ### Feat
