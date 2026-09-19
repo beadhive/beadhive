@@ -12,7 +12,9 @@ from pathlib import Path
 try:
     from scripts.pants_launcher import launcher
 except ModuleNotFoundError:
-    from pants_launcher import launcher
+    # Runtime fallback for `python scripts/pants_attest.py` (scripts/ on sys.path, not repo
+    # root). The `scripts.` import above already gives Pants a real dependency edge.
+    from pants_launcher import launcher  # pants: no-infer-dep
 
 ROOT = Path(__file__).parents[1]
 PIN = "2.32.1"

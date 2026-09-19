@@ -141,7 +141,9 @@ gateway-contract-check:
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
-# Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
+# Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or
+# network — except check_pants_ownership, which queries the local Pants engine (no network;
+# it only reads BUILD files) to keep every tracked file owned (bh-1j3ei.2).
 architecture-check:
     uv run python scripts/check_import_boundaries.py
     uv run python scripts/test_closure_certification.py --check
@@ -149,6 +151,7 @@ architecture-check:
     uv run python scripts/test_closure_promotion_policy.py --check
     uv run python scripts/test_closure_operational_report.py --check
     uv run python scripts/pants_shadow_evidence.py
+    uv run python scripts/check_pants_ownership.py
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.

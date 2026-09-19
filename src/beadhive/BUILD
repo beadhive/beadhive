@@ -9,6 +9,11 @@ resources(
         "**/*.json",
         "**/*.md",
         "**/*.yaml",
+        "**/*.yml",
+        "**/*.sh",
+        "**/*.js",
+        "**/*.example",
+        "**/.gitkeep",
     ],
 )
 

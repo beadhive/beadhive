@@ -8,9 +8,26 @@ remote_cache_read = false
 remote_cache_write = false
 local_store_processes_max_size_bytes = 2147483648
 local_store_files_max_size_bytes = 2147483648
+# The default pants_ignore hides ALL dot-directories (".*/", with only .semgrep/ and .github/
+# un-ignored). .beads/ and .claude/ are real tracked config, not tooling scratch space, so
+# un-ignore them too — otherwise they can never get an owning target (bh-1j3ei.2). The root
+# CLAUDE.md is also tracked despite .gitignore's bare `CLAUDE.md` line (which exists to keep
+# *nested*, worktree-generated copies untracked) — pants_ignore_use_gitignore would otherwise
+# hide the one real, tracked copy from Pants too. Likewise docs/schemas/*.example.jsonl is
+# tracked despite .gitignore's blanket `*.jsonl` (scratch run-journal output elsewhere).
+pants_ignore.add = [
+  "!.beads/",
+  "!.claude/",
+  "!/CLAUDE.md",
+  "!/docs/schemas/run-journal-v1.example.jsonl",
+]
 
 [source]
-root_patterns = ["/src", "/tests"]
+# "/src" and "/tests" are the Python import roots. "/" is the fallback for everything else
+# tracked in the repo (docs, scripts, deploy, root config) so every file gets an owning
+# target (bh-1j3ei.2) — it is more specific patterns (/src, /tests) that win for files under
+# them, since Pants picks the longest matching root for a given path.
+root_patterns = ["/src", "/tests", "/"]
 
 [python]
 enable_resolves = true

@@ -16,7 +16,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-import test_closure_shadow_policy as shadow
+# Bare sibling import for `python scripts/test_closure_shadow_verifier.py` (scripts/ on
+# sys.path, not repo root); Pants can't infer it since the module lives under the `scripts.`
+# namespace. The real edge is declared explicitly in scripts/BUILD.
+import test_closure_shadow_policy as shadow  # pants: no-infer-dep
 
 TRUSTED_GIT_EXECUTABLE = Path("/usr/bin/git")
 TRUSTED_COMMAND_PATH = "/usr/bin:/bin"

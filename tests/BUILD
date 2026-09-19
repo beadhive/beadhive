@@ -45,3 +45,24 @@ resources(
         "fixtures/**/*",
     ],
 )
+
+# Package marker for tests/unit/integrations so imports resolve; the test_*.py siblings there
+# are already covered by :pure-tests.
+python_sources(
+    name="package-markers",
+    sources=["unit/**/__init__.py"],
+)
+
+# Ownership only (bh-1j3ei.2): config/fixture files no test target's sources glob reaches,
+# plus standalone proof scripts that are invoked directly (justfile), never imported.
+files(
+    name="test-config",
+    sources=[
+        "closures.toml",
+        "fixture_config.yaml",
+        "fixture_workspace.toml",
+        "selective-ci-policy.toml",
+        "proof/**/*",
+        "schemas/**/*",
+    ],
+)

@@ -12,7 +12,14 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from check_import_boundaries import _cyclic_edges, _strong_components, collect_imports
+# Bare sibling import for `python scripts/render_transport_composition_evidence.py`
+# (scripts/ on sys.path, not repo root); Pants can't infer it since the module lives under
+# the `scripts.` namespace. The real edge is declared explicitly in scripts/BUILD.
+from check_import_boundaries import (
+    _cyclic_edges,  # pants: no-infer-dep
+    _strong_components,  # pants: no-infer-dep
+    collect_imports,  # pants: no-infer-dep
+)
 
 from beadhive.transport_inventory import (
     composition_roots,
