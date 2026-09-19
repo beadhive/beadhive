@@ -55,8 +55,12 @@ def _operation(row) -> dict[str, Any]:
 def generate_document() -> dict[str, Any]:
     """Generate from declarations only; never consume the artifact being checked."""
 
+    gateway_rows = [row for row in projections() if row.surface == "gateway"]
     rows = sorted(
-        (row for row in projections() if row.surface == "gateway"),
+        (row for row in gateway_rows if "/v1/factories/" not in row.identifier),
+        key=lambda row: row.identifier,
+    ) + sorted(
+        (row for row in gateway_rows if "/v1/factories/" in row.identifier),
         key=lambda row: row.identifier,
     )
     return {
