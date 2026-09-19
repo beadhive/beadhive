@@ -1,5 +1,7 @@
 {
   "schema_version": 1,
+  "status": "superseded",
+  "superseded_by": "bh-1j3ei ImpactResolver receipts and graph-derived attest keys",
   "evidence_date": "2026-09-13",
   "inputs": {
     "pants.toml": "sha256:843e0f2ffbfad405f37d5c38e7c245b52862dc428715129623f3bfed0cce68f8",
@@ -32,8 +34,8 @@
     {"mutation":"unrelated-test","selector_reason":"shadow-known-unrelated","fallback_reason":"native-oracle-only","executed_count":0,"avoided_count":1,"cache_served_count":0,"edit_to_result_seconds":0.009,"pants_result":"avoided","native_result":"green"}
   ],
   "promotion": {
-    "activation_eligible": true,
-    "promoted_pants_routes": 1,
+    "activation_eligible": false,
+    "promoted_pants_routes": 0,
     "production_activation": false,
     "fallback_observations": 7,
     "selected_green_native_red_escapes": 0,

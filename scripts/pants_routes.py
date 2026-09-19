@@ -12,6 +12,15 @@ import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+from beadhive.adapters.impact_git import GitTreeDiff
+from beadhive.adapters.impact_pants import PantsImpactBackend
+from beadhive.modules.work.application.impact import select_resolver
+from beadhive.modules.work.domain.impact import AttestKey, ImpactReceipt
+
+if TYPE_CHECKING:
+    from beadhive.modules.work.contracts.impact import ImpactResolver
 
 try:
     from scripts.pants_launcher import launcher
@@ -25,6 +34,11 @@ QUALIFIED_TEST = "tests/unit/modules/config/test_resolution.py"
 QUALIFIED_SOURCE = "src/beadhive/modules/config/application/resolution.py"
 QUALIFIED = frozenset({QUALIFIED_TEST, QUALIFIED_SOURCE})
 QUALIFIED_CLOSURE_COUNT = 1
+UNIT_KEY = AttestKey(
+    name="unit",
+    cmd="just test",
+    selectors={"pants": "attest:unit"},
+)
 
 
 @dataclass
@@ -61,70 +75,17 @@ def changed_paths(base: str) -> list[str]:
     return sorted({line for line in (result.stdout or "").splitlines() if line})
 
 
-def classify(paths: Sequence[str]) -> tuple[str, str | None]:
-    if not paths:
+def classify(receipt: ImpactReceipt) -> tuple[str, str | None]:
+    """Choose a route from the build graph's receipt, never from path-name heuristics."""
+    if not receipt.changed_paths:
         return "avoid", None
-    if all(path in QUALIFIED for path in paths):
+    if receipt.is_fallback:
+        return "native", receipt.fallback_reason
+    if UNIT_KEY.name in receipt.invalidated_keys:
         return "pants", None
-    if all(path.endswith(".md") and path != "docs/PANTS.md" for path in paths):
+    if receipt.is_unaffected(UNIT_KEY.name):
         return "avoid", None
-
-    reasons: list[tuple[str, bool]] = [
-        (
-            "dependency-lock",
-            any(Path(p).name in {"uv.lock", "beadhive.lock", "pyproject.toml"} for p in paths),
-        ),
-        (
-            "build-config",
-            any(
-                Path(p).name in {"pants.toml", "BUILD", "BUILDROOT"} or p == "docs/PANTS.md"
-                for p in paths
-            ),
-        ),
-        (
-            "test-infrastructure",
-            any(
-                p.startswith("tests/harness/")
-                or p in {"tests/conftest.py", "tests/stateful_fixtures.py"}
-                for p in paths
-            ),
-        ),
-        ("plugin-dynamic", any("plugin" in Path(p).name for p in paths)),
-        (
-            "generated",
-            any(
-                "generated" in p or "schema_artifacts" in p or p.startswith("docs/schemas/")
-                for p in paths
-            ),
-        ),
-        ("shared-contract", any("contract" in Path(p).name for p in paths)),
-        (
-            "compatibility",
-            any(p in {"src/beadhive/config.py", "src/beadhive/config_store.py"} for p in paths),
-        ),
-        (
-            "installed-console-script",
-            any("console" in p or p.endswith("test_cli.py") for p in paths),
-        ),
-        (
-            "ambiguous-integration",
-            any(p.startswith("tests/") and not p.startswith("tests/unit/") for p in paths),
-        ),
-        (
-            "multi-module",
-            len(
-                {
-                    p.split("/")[3]
-                    for p in paths
-                    if p.startswith("src/beadhive/modules/") and len(p.split("/")) > 3
-                }
-            )
-            > 1,
-        ),
-    ]
-    return "native", next(
-        (reason for reason, applies in reasons if applies), "unknown-or-unqualified"
-    )
+    return "native", "impact-receipt-missing-unit-key"
 
 
 def _pants_command(pants: str, args: Sequence[str]) -> list[str]:
@@ -142,6 +103,7 @@ def route(
     *,
     pants: str,
     native_command: Sequence[str],
+    resolver: ImpactResolver | None = None,
 ) -> int:
     started = time.monotonic()
     if os.environ.get("BH_PANTS_ROUTING", "1").lower() in {"0", "false", "off", "no"}:
@@ -162,13 +124,21 @@ def route(
                 result.returncode,
             )
         )
-    try:
-        paths = changed_paths(selector) if action == "changed" else [selector]
-    except Exception as exc:
-        paths = []
-        decision, fallback = "native", f"selector-error: {exc}"
-    else:
-        decision, fallback = classify(paths)
+    paths = [selector]
+    decision, fallback = "pants", None
+    if action == "changed":
+        try:
+            selected = resolver or select_resolver(
+                "pants",
+                tree_diff=GitTreeDiff(),
+                backends={"pants": PantsImpactBackend(ROOT)},
+            )
+            receipt = selected.resolve(str(ROOT), selector, "HEAD", (UNIT_KEY,))
+            paths = list(receipt.changed_paths)
+            decision, fallback = classify(receipt)
+        except Exception as exc:
+            paths = []
+            decision, fallback = "native", f"selector-error: {exc}"
 
     if decision == "avoid":
         return _emit(

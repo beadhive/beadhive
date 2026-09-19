@@ -21,6 +21,8 @@ PAYLOAD = json.loads(shadow.EVIDENCE.read_text(encoding="utf-8"))
 
 def test_checked_shadow_evidence_is_current_and_complete() -> None:
     assert shadow.validate(PAYLOAD) == []
+    assert PAYLOAD["status"] == "superseded"
+    assert "ImpactResolver" in PAYLOAD["superseded_by"]
 
 
 def test_selected_green_native_red_escape_blocks_activation() -> None:
@@ -31,6 +33,7 @@ def test_selected_green_native_red_escape_blocks_activation() -> None:
 
 def test_missing_stale_or_incompatible_evidence_fails_closed(tmp_path) -> None:
     payload = copy.deepcopy(PAYLOAD)
+    payload["status"] = "active"
     payload["inputs"] = {"missing": "sha256:nope"}
     payload["schema_version"] = 2
     errors = shadow.validate(payload, tmp_path)
@@ -39,9 +42,15 @@ def test_missing_stale_or_incompatible_evidence_fails_closed(tmp_path) -> None:
 
 
 def test_operational_volume_and_attest_handoff_are_explicit() -> None:
-    assert PAYLOAD["promotion"]["promoted_pants_routes"] == 1
+    assert PAYLOAD["promotion"]["promoted_pants_routes"] == 0
     assert PAYLOAD["promotion"]["fallback_observations"] == 7
     assert PAYLOAD["promotion"]["production_activation"] is False
     docs = (ROOT / "docs/PANTS-SHADOW-QUALIFICATION.md").read_text(encoding="utf-8")
     assert "just check-all" in docs
     assert "without replacing" in docs
+
+
+def test_superseded_evidence_cannot_activate_a_route() -> None:
+    payload = copy.deepcopy(PAYLOAD)
+    payload["promotion"]["activation_eligible"] = True
+    assert "superseded evidence cannot promote or activate a route" in shadow.validate(payload)
