@@ -17,6 +17,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 import beadhive.contract_release as contract_release
+from beadhive import gateway_wire_contracts
 from beadhive.contract_release import (
     OFFICIAL_V1_FAMILIES,
     RELEASE_VERSION,
@@ -153,6 +154,21 @@ def test_bundle_inventory_is_complete_canonical_and_source_owned() -> None:
         "mcp-resource",
         "mcp-tool",
     }
+
+
+def test_gateway_catalog_preserves_published_contracts_before_current_digests() -> None:
+    baseline = json.loads(
+        (published_baseline_root() / "artifacts/gateway-contracts-v1.json").read_bytes()
+    )["contracts"]
+    gateway = _artifact(build_release(), "gateway")["document"]["contracts"]
+    baseline_ids = [contract["$id"] for contract in baseline]
+    current_ids = [contract["$id"] for contract in gateway_wire_contracts.documents()]
+
+    assert [contract["$id"] for contract in gateway[: len(baseline)]] == baseline_ids
+    assert [contract["$id"] for contract in gateway] == [
+        *baseline_ids,
+        *(contract_id for contract_id in current_ids if contract_id not in baseline_ids),
+    ]
 
 
 def test_generator_is_offline_and_byte_identical_across_two_clean_runs(

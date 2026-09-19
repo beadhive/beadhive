@@ -302,9 +302,24 @@ def _projection_document(surface: str) -> dict[str, Any]:
 
 
 def _gateway_document() -> dict[str, Any]:
+    published_path = published_baseline_root() / "artifacts/gateway-contracts-v1.json"
+    published = json.loads(published_path.read_bytes())
+    if not isinstance(published, dict) or not isinstance(published.get("contracts"), list):
+        raise ValueError("published gateway contract catalog is incompatible")
+    contracts = deepcopy(published["contracts"])
+    published_ids = {contract.get("$id") for contract in contracts if isinstance(contract, dict)}
+    if len(published_ids) != len(contracts) or not all(
+        isinstance(contract_id, str) for contract_id in published_ids
+    ):
+        raise ValueError("published gateway contract catalog identities are incompatible")
+    contracts.extend(
+        contract
+        for contract in gateway_wire_contracts.documents()
+        if contract["$id"] not in published_ids
+    )
     return {
         "format_version": 1,
-        "contracts": list(gateway_wire_contracts.documents()),
+        "contracts": contracts,
     }
 
 

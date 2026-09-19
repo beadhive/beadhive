@@ -87,7 +87,7 @@
       "id": "urn:beadhive:wire-catalog:gateway-contracts:1",
       "kind": "catalog",
       "path": "artifacts/gateway-contracts-v1.json",
-      "sha256": "sha256:b22fd52a960f3dbafd1f3b4f5d55df78a521311b2338090b92fb309cde2eabd0",
+      "sha256": "sha256:f9e280614f11cb15229488e5830b6143cc06074142e2996c8dccdae07e2f7da2",
       "source_owner": "beadhive.gateway_wire_contracts.documents",
       "version": 1
     },
