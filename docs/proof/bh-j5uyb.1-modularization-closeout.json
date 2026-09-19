@@ -326,7 +326,7 @@
         "artifacts": [
           {"path": "docs/schemas/telemetry-event-envelope-v1.schema.json", "sha256": "1bf34e38b60d8e9cdf7b5c60477cb93f9dd24dac970e5c89a8d3b2695cd2d3c6"},
           {"path": "docs/schemas/wire/v1.0.0/release.json", "sha256": "c69fb7f1567f16e6f76549ef1c9c53b1f32f7cfde79fc8b0d2cc652a01b727e1"},
-          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "2e0e2fb42a7683b36f18f0132e09bb011bf56f9beff6598eae95af48dd7d46fc"}
+          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "588f0b14e085338cc1322d29d156acc79bda43ad409be33216fdee755264fb8c"}
         ]
       },
       "selective_ci": {
