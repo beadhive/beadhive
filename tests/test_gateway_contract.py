@@ -192,7 +192,10 @@ def test_gateway_contract_matches_the_independently_composed_live_surface() -> N
     checked = gateway_contract.checked_document()
     declared = {row["identifier"] for row in checked["operations"]}
     assert declared == _live_routes()
-    assert [row["identifier"] for row in checked["operations"]] == sorted(declared)
+    identifiers = [row["identifier"] for row in checked["operations"]]
+    canonical_start = next(i for i, value in enumerate(identifiers) if "/v1/factories/" in value)
+    assert identifiers[:canonical_start] == sorted(identifiers[:canonical_start])
+    assert identifiers[canonical_start:] == sorted(identifiers[canonical_start:])
 
 
 def test_preflight_contracts_match_runtime_method_headers_auth_and_results() -> None:

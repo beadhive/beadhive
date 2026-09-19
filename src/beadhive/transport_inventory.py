@@ -604,9 +604,9 @@ def _gateway_projections() -> tuple[ProjectionSpec, ...]:
             "composite",
             composes=("hive.list",),
             wire_family="gateway.read.v1",
-            wire_request_schema="factoryOverviewRequest",
-            wire_result_schema="factoryOverviewResponse",
-            reason="canonical factory overview with explicit per-group freshness and coverage",
+            wire_request_schema="hiveListRequest",
+            wire_result_schema="hiveListResponse",
+            reason="export-gated canonical factory overview candidate",
             shape="coarser",
         ),
         _gateway(
@@ -616,8 +616,8 @@ def _gateway_projections() -> tuple[ProjectionSpec, ...]:
             operation="hive.list",
             wire_family="gateway.read.v1",
             wire_request_schema="hiveListRequest",
-            wire_result_schema="canonicalHiveListResponse",
-            reason="canonical factory-qualified hive directory",
+            wire_result_schema="hiveListResponse",
+            reason="export-gated canonical factory-qualified hive directory alias",
             shape="richer",
         ),
         _gateway(
@@ -627,8 +627,8 @@ def _gateway_projections() -> tuple[ProjectionSpec, ...]:
             composes=("work.list", "work.schedule"),
             wire_family="gateway.read.v1",
             wire_request_schema="snapshotRequest",
-            wire_result_schema="canonicalSnapshotResponse",
-            reason="canonical factory-qualified bounded hive state composite",
+            wire_result_schema="snapshotResponse",
+            reason="export-gated canonical factory-qualified hive snapshot alias",
             shape="coarser",
         ),
         _gateway(
@@ -639,7 +639,7 @@ def _gateway_projections() -> tuple[ProjectionSpec, ...]:
             wire_family="gateway.read.v1",
             wire_request_schema="eventsRequest",
             wire_result_schema="eventStreamResponse",
-            reason="canonical factory-qualified SSE cursor/replay mechanic",
+            reason="export-gated canonical factory-qualified SSE alias",
             shape="transport-only",
         ),
         _gateway(
