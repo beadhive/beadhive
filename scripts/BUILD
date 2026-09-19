@@ -21,6 +21,12 @@ python_sources(
 )
 
 files(
+    name="pants-proven-manifest",
+    sources=["pants_proven_tests.json"],
+    tags=["attest:architecture-contracts"],
+)
+
+files(
     name="shell",
     sources=[
         "*.sh",

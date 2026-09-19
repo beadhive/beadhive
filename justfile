@@ -187,6 +187,7 @@ architecture-check:
     uv run python scripts/test_closure_operational_report.py --check
     uv run python scripts/pants_shadow_evidence.py
     uv run python scripts/check_pants_ownership.py
+    uv run python scripts/check_pants_proven.py
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
