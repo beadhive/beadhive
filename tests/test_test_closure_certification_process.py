@@ -246,6 +246,7 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "uv run python scripts/test_closure_promotion_policy.py --check",
         "uv run python scripts/test_closure_operational_report.py --check",
         "uv run python scripts/pants_shadow_evidence.py",
+        "uv run python scripts/check_pants_ownership.py",
     ]
     check_dependencies = {item["recipe"] for item in check["dependencies"]}
     check_all_dependencies = {item["recipe"] for item in check_all["dependencies"]}
