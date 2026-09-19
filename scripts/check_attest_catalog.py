@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 KEY_RECIPES = {
     "docs": ("attest-docs", ("lint-md",)),
@@ -27,6 +28,7 @@ KEY_RECIPES = {
         ("require-bd", "demo-local-loop", "demo-live-ingress"),
     ),
 }
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _dependency_names(recipe: dict[str, object]) -> list[str]:
@@ -41,6 +43,7 @@ def main() -> int:
         ["just", "--dump", "--dump-format", "json"],
         check=True,
         capture_output=True,
+        cwd=ROOT,
         text=True,
     )
     recipes = json.loads(result.stdout)["recipes"]
