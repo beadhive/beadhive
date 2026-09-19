@@ -462,6 +462,108 @@ class RoutingConfig(_Section):
     )
 
 
+#: An attest key's name: a lowercase slug, stable because receipts and ledger records cite it.
+_ATTEST_KEY_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+
+
+class AttestKeyConfig(_Section):
+    """One attest key (Attested Green ADR, Amendment 1): an OPAQUE command bh runs verbatim and
+    never parses, a policy, and per-backend selectors only the named impact backend reads."""
+
+    name: str = Field(
+        ...,
+        description=(
+            "Stable key name, a lowercase slug (letters, digits, '.', '_', '-'). Receipts and "
+            "verdict records cite it."
+        ),
+    )
+    cmd: str = Field(
+        ...,
+        min_length=1,
+        description="The command, run verbatim like validate_cmd. bh never parses it.",
+    )
+    policy: Literal["required", "optional"] = Field(
+        "required",
+        description=(
+            "required (default) blocks when the key is absent or red | optional passes when "
+            "absent but still blocks on a real failure."
+        ),
+    )
+    selectors: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Opaque {backend: selector} map (e.g. a build-graph tag) read only by that impact "
+            "backend. A key with no selector for the active backend is invalidated by any "
+            "change — give none to a key that reads git metadata."
+        ),
+    )
+
+    @field_validator("name")
+    @classmethod
+    def _slug_name(cls, v):
+        if not _ATTEST_KEY_NAME.fullmatch(v):
+            raise ValueError(f"attest key name must be a lowercase slug (a-z0-9._-): {v!r}")
+        return v
+
+    @field_validator("cmd")
+    @classmethod
+    def _non_blank_cmd(cls, v):
+        if not v.strip():
+            raise ValueError("attest key cmd must not be blank")
+        return v
+
+
+class AttestImpactConfig(_Section):
+    """Which impact resolver backend decides which keys a change invalidates."""
+
+    backend: str = Field(
+        "native-full",
+        description=(
+            "Impact resolver backend. native-full (default) invalidates every key on every "
+            "change — today's all-or-nothing gate, byte for byte. Any other name must be a "
+            "backend bound on this host; an unavailable one degrades to native-full."
+        ),
+    )
+    timeout_seconds: float = Field(
+        300.0,
+        gt=0,
+        description=(
+            "Wall-clock budget for one backend answer; a slower answer is discarded and the "
+            "resolution falls back to native-full."
+        ),
+    )
+
+    @field_validator("backend")
+    @classmethod
+    def _slug_backend(cls, v):
+        if not _ATTEST_KEY_NAME.fullmatch(v):
+            raise ValueError(f"impact backend must be a lowercase slug (a-z0-9._-): {v!r}")
+        return v
+
+
+class AttestConfig(_Section):
+    """The attest key catalog and impact resolver (Attested Green ADR, Amendment 1). Absent (the
+    default) is today's behavior: no keys, native-full."""
+
+    keys: list[AttestKeyConfig] = Field(
+        default_factory=list,
+        description="Named attest keys, each an opaque command with a policy and selectors.",
+    )
+    impact: AttestImpactConfig = Field(
+        default_factory=AttestImpactConfig,
+        description="Impact resolver backend selection.",
+    )
+
+    @field_validator("keys")
+    @classmethod
+    def _unique_names(cls, v):
+        names = [key.name for key in v]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        if duplicates:
+            raise ValueError(f"duplicate attest key names: {duplicates}")
+        return v
+
+
 class WorkConfig(_Section):
     """Integration-plane driver (`bh work`) settings — drives a bead assigned -> merged."""
 
@@ -653,6 +755,13 @@ class WorkConfig(_Section):
             raise ValueError(f"ledger_ttl must not be negative (want PT30M / PT4H / P1D): {v!r}")
         return v
 
+    attest: AttestConfig = Field(
+        default_factory=AttestConfig,
+        description=(
+            "Attest key catalog + impact resolver (Attested Green ADR, Amendment 1). Absent is "
+            "today's whole-tree gate: no keys, native-full."
+        ),
+    )
     dispatch: DispatchConfig = Field(default_factory=DispatchConfig)
     identity: IdentityConfig | None = Field(
         None,
@@ -1587,6 +1696,9 @@ def suggest_key(dotted: str, keys: list[str] | None = None, cutoff: float = 0.8)
 __all__ = (
     "AlertsConfig",
     "ArchiveConfig",
+    "AttestConfig",
+    "AttestImpactConfig",
+    "AttestKeyConfig",
     "BackupConfig",
     "BeadhiveConfig",
     "ClaudeConfig",

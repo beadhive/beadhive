@@ -12,7 +12,8 @@ from beadhive.modules.config.application.schema_artifacts import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
-ARTIFACT = ROOT / "docs/schemas/wire/v1.4.0/config-v1.schema.json"
+ARTIFACT_ROOT = ROOT / "src/beadhive/schemas/contracts/v1.0.0/artifacts"
+ARTIFACT = ARTIFACT_ROOT / "config-v1.schema.json"
 
 
 def main() -> int:
@@ -22,9 +23,7 @@ def main() -> int:
     artifacts = [(ARTIFACT, generate_config_json_schema_bytes())]
     artifacts.extend(
         (
-            ROOT
-            / "docs/schemas/wire/v1.4.0"
-            / f"plugin-config-{fragment.plugin_id}-v1.schema.json",
+            ARTIFACT_ROOT / f"plugin-config-{fragment.plugin_id}-v1.schema.json",
             payload,
         )
         for fragment, payload in plugin_fragment_artifacts()

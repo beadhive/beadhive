@@ -49,6 +49,88 @@
       "title": "ArchiveConfig",
       "type": "object"
     },
+    "AttestConfig": {
+      "additionalProperties": false,
+      "description": "The attest key catalog and impact resolver (Attested Green ADR, Amendment 1). Absent (the\ndefault) is today's behavior: no keys, native-full.",
+      "properties": {
+        "impact": {
+          "$ref": "#/$defs/AttestImpactConfig",
+          "description": "Impact resolver backend selection."
+        },
+        "keys": {
+          "description": "Named attest keys, each an opaque command with a policy and selectors.",
+          "items": {
+            "$ref": "#/$defs/AttestKeyConfig"
+          },
+          "title": "Keys",
+          "type": "array"
+        }
+      },
+      "title": "AttestConfig",
+      "type": "object"
+    },
+    "AttestImpactConfig": {
+      "additionalProperties": false,
+      "description": "Which impact resolver backend decides which keys a change invalidates.",
+      "properties": {
+        "backend": {
+          "default": "native-full",
+          "description": "Impact resolver backend. native-full (default) invalidates every key on every change — today's all-or-nothing gate, byte for byte. Any other name must be a backend bound on this host; an unavailable one degrades to native-full.",
+          "title": "Backend",
+          "type": "string"
+        },
+        "timeout_seconds": {
+          "default": 300.0,
+          "description": "Wall-clock budget for one backend answer; a slower answer is discarded and the resolution falls back to native-full.",
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "title": "AttestImpactConfig",
+      "type": "object"
+    },
+    "AttestKeyConfig": {
+      "additionalProperties": false,
+      "description": "One attest key (Attested Green ADR, Amendment 1): an OPAQUE command bh runs verbatim and\nnever parses, a policy, and per-backend selectors only the named impact backend reads.",
+      "properties": {
+        "cmd": {
+          "description": "The command, run verbatim like validate_cmd. bh never parses it.",
+          "minLength": 1,
+          "title": "Cmd",
+          "type": "string"
+        },
+        "name": {
+          "description": "Stable key name, a lowercase slug (letters, digits, '.', '_', '-'). Receipts and verdict records cite it.",
+          "title": "Name",
+          "type": "string"
+        },
+        "policy": {
+          "default": "required",
+          "description": "required (default) blocks when the key is absent or red | optional passes when absent but still blocks on a real failure.",
+          "enum": [
+            "required",
+            "optional"
+          ],
+          "title": "Policy",
+          "type": "string"
+        },
+        "selectors": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Opaque {backend: selector} map (e.g. a build-graph tag) read only by that impact backend. A key with no selector for the active backend is invalidated by any change — give none to a key that reads git metadata.",
+          "title": "Selectors",
+          "type": "object"
+        }
+      },
+      "required": [
+        "name",
+        "cmd"
+      ],
+      "title": "AttestKeyConfig",
+      "type": "object"
+    },
     "BackupConfig": {
       "additionalProperties": false,
       "description": "Retention policy for the four backup roots (``bh backup``, bh-cmqp.2 / bh-5009a — see\n``docs/design/backup-retention-boundary-adr.md`` for the boundary between them). Host-scoped:\nhow much of THIS host's disk each root may keep is a local tuning knob, not fleet policy.",
@@ -1852,6 +1934,10 @@
           "description": "OPTIONAL command run before any recorded validation verdict is honored — the small set a TREE hash cannot vouch for, because it reads git METADATA rather than file content (`git describe`, commit counts, tag-derived versions). E.g. `./scripts/hermetic.sh uv run pytest -m always_run`. Spawned opaquely in the hive's own clone; bh never learns what it selects. Absent (the default) is fully supported: a hit is honored whole, exactly as before. A non-zero exit REFUSES the hit and seals the ledger for the rest of the process, so that failure can never become an attestation (attested-green ADR, git-metadata asterisk; bh-ehmd8). It is paid on every HIT, so keep it seconds, not minutes.",
           "title": "Always Run",
           "type": "string"
+        },
+        "attest": {
+          "$ref": "#/$defs/AttestConfig",
+          "description": "Attest key catalog + impact resolver (Attested Green ADR, Amendment 1). Absent is today's whole-tree gate: no keys, native-full."
         },
         "batch_max_size": {
           "default": 5,

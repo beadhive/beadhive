@@ -231,7 +231,7 @@ def test_the_variable_is_exported_with_no_opt_in_and_no_bh_config(tmp_path, monk
     assert drop and drop != "", "BH_TEST_REPORT_DIR was not exported into the validation child"
 
     fields = set(config_schema.WorkConfig.model_fields)
-    assert not {f for f in fields if "report" in f or "test" in f}, (
+    assert not {f for f in fields if "report" in f or f.startswith("test_")}, (
         f"tier 1 added an operator-facing key: {fields}"
     )
 
