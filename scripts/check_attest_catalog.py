@@ -3,8 +3,7 @@
 
 from __future__ import annotations
 
-import json
-import subprocess
+import re
 import sys
 from pathlib import Path
 
@@ -31,23 +30,23 @@ KEY_RECIPES = {
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def _dependency_names(recipe: dict[str, object]) -> list[str]:
-    dependencies = recipe.get("dependencies", [])
-    if not isinstance(dependencies, list):
-        raise ValueError("recipe dependencies are not a list")
-    return [str(dependency["recipe"]) for dependency in dependencies]
+def _check_all_dependencies(justfile: str) -> list[str]:
+    declaration = next(line for line in justfile.splitlines() if line.startswith("check-all:"))
+    return [
+        parenthesized or plain
+        for parenthesized, plain in re.findall(r"\(([-\w]+)[^)]*\)|([-\w]+)", declaration)
+        if (parenthesized or plain) != "check-all"
+    ]
+
+
+def _recipe_body(justfile: str, recipe: str) -> list[str]:
+    match = re.search(rf"(?m)^{re.escape(recipe)}:\n((?:    .*\n)+)", justfile)
+    return match.group(1).splitlines() if match else []
 
 
 def main() -> int:
-    result = subprocess.run(
-        ["just", "--dump", "--dump-format", "json"],
-        check=True,
-        capture_output=True,
-        cwd=ROOT,
-        text=True,
-    )
-    recipes = json.loads(result.stdout)["recipes"]
-    declared = _dependency_names(recipes["check-all"])
+    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+    declared = _check_all_dependencies(justfile)
     expected = [leaf for _, leaves in KEY_RECIPES.values() for leaf in leaves]
     errors: list[str] = []
     if sorted(declared) != sorted(expected) or len(declared) != len(set(declared)):
@@ -55,7 +54,7 @@ def main() -> int:
 
     owners: dict[str, str] = {}
     for key, (recipe_name, leaves) in KEY_RECIPES.items():
-        body = [row[0] for row in recipes[recipe_name]["body"]]
+        body = _recipe_body(justfile, recipe_name)
         missing = [leaf for leaf in leaves if not any(f"just {leaf}" in line for line in body)]
         if missing:
             errors.append(f"{key}: {recipe_name} does not invoke {missing!r}")
