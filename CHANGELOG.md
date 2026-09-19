@@ -13,6 +13,19 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.16.5 (2026-09-19)
+
+### Fix
+
+- **frame-bridge**: cover pinned Gateway matrix
+- **frame-bridge**: harden UDS conformance fixture
+- **frame-bridge**: bound conformance socket path
+- **frame-bridge**: pin Gateway contract matrix
+- **frame-bridge**: certify private Gateway upstream
+- **frame-bridge**: make socket custody test portable
+- **frame-bridge**: restore Factory service custody
+- **frame-bridge**: restore private upstream server
+
 ## v0.16.4 (2026-09-16)
 
 ### Fix
