@@ -336,7 +336,7 @@
           {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "8a909107e498262574e50feab2dd359857823f4ae664ece5e44b6cbf0ab97d71"},
           {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "fcbf9db12eda396aa3ced54e876ff7748fba961f871fc280ba803ee2eb55e260"},
           {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "653739da5169fe90299a09668da6c346b73c44024d47a1002c397510ffe0ada0"},
-          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "959e3577fe5d226ad2d81db3b6bf22bc805fe8581eda83825882a872512baa20"}
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "fe7925c17030902e5755f47d843e83a6d424c1d56a0c31d9ad1e9c12000896cd"}
         ]
       },
       "package_and_entry_point": {
