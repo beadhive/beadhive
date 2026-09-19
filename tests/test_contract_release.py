@@ -157,9 +157,7 @@ def test_bundle_inventory_is_complete_canonical_and_source_owned() -> None:
 
 
 def test_gateway_catalog_preserves_published_contracts_before_current_digests() -> None:
-    baseline = json.loads(
-        (published_baseline_root() / "artifacts/gateway-contracts-v1.json").read_bytes()
-    )["contracts"]
+    baseline = _artifact(load_published_baseline(), "gateway")["document"]["contracts"]
     gateway = _artifact(build_release(), "gateway")["document"]["contracts"]
     baseline_ids = [contract["$id"] for contract in baseline]
     current_ids = [contract["$id"] for contract in gateway_wire_contracts.documents()]
@@ -169,6 +167,27 @@ def test_gateway_catalog_preserves_published_contracts_before_current_digests() 
         *baseline_ids,
         *(contract_id for contract_id in current_ids if contract_id not in baseline_ids),
     ]
+
+
+def test_gateway_candidate_rejects_coherently_substituted_published_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    substituted = tmp_path / "baseline"
+    shutil.copytree(published_baseline_root(), substituted)
+    inventory_path = substituted / "inventory.json"
+    inventory = json.loads(inventory_path.read_bytes())
+    row = next(item for item in inventory["artifacts"] if item["family"] == "gateway")
+    artifact_path = substituted / row["path"]
+    document = json.loads(artifact_path.read_bytes())
+    document["contracts"][0]["digest"] = "sha256:" + "0" * 64
+    payload = _canonical_json(document)
+    artifact_path.write_bytes(payload)
+    row["sha256"] = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+    _write_json(inventory_path, inventory)
+    monkeypatch.setattr(contract_release, "published_baseline_root", lambda: substituted)
+
+    with pytest.raises(ValueError, match="published snapshot digest mismatch"):
+        build_release()
 
 
 def test_generator_is_offline_and_byte_identical_across_two_clean_runs(

@@ -302,8 +302,19 @@ def _projection_document(surface: str) -> dict[str, Any]:
 
 
 def _gateway_document() -> dict[str, Any]:
-    published_path = published_baseline_root() / "artifacts/gateway-contracts-v1.json"
-    published = json.loads(published_path.read_bytes())
+    # Candidate generation may only inherit history after the complete published
+    # snapshot has crossed its pinned integrity boundary.  The loader reconstructs
+    # stored release documents and never calls build_release(), so this does not
+    # create a candidate-generation cycle.
+    published_release = load_published_baseline()
+    published = next(
+        (
+            artifact["document"]
+            for artifact in published_release["artifacts"]
+            if artifact["id"] == "urn:beadhive:wire-catalog:gateway-contracts:1"
+        ),
+        None,
+    )
     if not isinstance(published, dict) or not isinstance(published.get("contracts"), list):
         raise ValueError("published gateway contract catalog is incompatible")
     contracts = deepcopy(published["contracts"])
