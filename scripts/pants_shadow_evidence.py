@@ -31,10 +31,17 @@ def validate(payload: dict, root: Path = ROOT) -> list[str]:
     errors: list[str] = []
     if payload.get("schema_version") != 1:
         errors.append("unsupported schema")
+    status = payload.get("status", "active")
+    if status not in {"active", "superseded"}:
+        errors.append("unsupported evidence status")
+    if status == "superseded" and not payload.get("superseded_by"):
+        errors.append("superseded evidence must name its replacement")
     inputs = payload.get("inputs", {})
     for relative, expected in inputs.items():
         path = root / relative
-        if not path.is_file() or digest(path) != expected:
+        # A superseded record preserves the exact inputs its historical measurements used.
+        # Its hashes are intentionally not rewritten to bless a new routing policy.
+        if not path.is_file() or (status == "active" and digest(path) != expected):
             errors.append(f"stale or missing input: {relative}")
     observations = payload.get("observations", [])
     kinds = {row.get("mutation") for row in observations}
@@ -61,6 +68,12 @@ def validate(payload: dict, root: Path = ROOT) -> list[str]:
     if metrics.get("warm_seconds", 10**9) >= metrics.get("cold_seconds", 0):
         errors.append("warm observation is not an improvement")
     promotion = payload.get("promotion", {})
+    if status == "superseded" and (
+        promotion.get("activation_eligible")
+        or promotion.get("production_activation")
+        or promotion.get("promoted_pants_routes") != 0
+    ):
+        errors.append("superseded evidence cannot promote or activate a route")
     if errors or promotion.get("selected_green_native_red_escapes") != 0:
         if promotion.get("activation_eligible"):
             errors.append("unsafe evidence cannot be activation eligible")
@@ -79,9 +92,10 @@ def main() -> int:
             print(f"- {error}")
         print("route: native/full")
         return 1
+    status = payload.get("status", "active")
     print(
         "pants-shadow-evidence: OK "
-        f"({len(payload['observations'])} mutations; "
+        f"({status}; {len(payload['observations'])} mutations; "
         f"{payload['promotion']['promoted_pants_routes']} promoted Pants route)"
     )
     return 0

@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 import pytest
+from scripts.pants_launcher import launcher as pants_launcher
 
 from beadhive import host, validation_ledger, validation_records
 
@@ -26,6 +27,9 @@ MISSING_AUTHORITY = "candidate checkout has no authoritative matching full-gate 
 PROCESS_TIMEOUT_SECONDS = 30.0
 TERMINATION_GRACE_SECONDS = 2.0
 PRODUCTION_JUST = shutil.which("just")
+# Captured while pytest imports this module, before the compatibility fixture
+# replaces HOME with its isolated test home.
+PRODUCTION_PANTS = pants_launcher()
 
 
 def _terminate_process_group(process: subprocess.Popen[str]) -> None:
@@ -246,6 +250,8 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "uv run python scripts/test_closure_promotion_policy.py --check",
         "uv run python scripts/test_closure_operational_report.py --check",
         "uv run python scripts/pants_shadow_evidence.py",
+        "uv run python scripts/check_pants_ownership.py",
+        "uv run python scripts/check_pants_proven.py",
     ]
     check_dependencies = {item["recipe"] for item in check["dependencies"]}
     check_all_dependencies = {item["recipe"] for item in check_all["dependencies"]}
@@ -326,6 +332,11 @@ def test_real_gate_receipts_authorize_only_their_exact_candidate_process(
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", sys.prefix)
     monkeypatch.setenv("UV_NO_SYNC", "1")
     monkeypatch.setenv("UV_OFFLINE", "1")
+    # The candidate clone lives at a new, intentionally disposable path.  Resolve
+    # Pants from the trusted source checkout before entering that clone so mise's
+    # per-directory trust policy cannot make the production architecture recipe
+    # look launcher-less.
+    monkeypatch.setenv("PANTS_BIN", PRODUCTION_PANTS)
 
     # Ordinary check: stale and foreign green evidence stays red; the real running
     # manifest bootstraps the certifier; its completion then authorizes both reuse

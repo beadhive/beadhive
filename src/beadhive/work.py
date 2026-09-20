@@ -48,6 +48,7 @@ from . import (
     otel,
     registry,  # noqa: F401 - injected lifecycle collaborator
     release_order,  # noqa: F401 - injected lifecycle collaborator
+    selective_validation,  # noqa: F401 - injected validation collaborator
     test_report,  # noqa: F401 - injected submission collaborator
     triage_store,  # noqa: F401 - injected submission collaborator
     validation_admission,  # noqa: F401 - injected submission collaborator

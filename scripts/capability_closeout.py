@@ -14,7 +14,15 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-from check_import_boundaries import _cycle_digest, _cyclic_edges, check, collect_imports
+# Bare sibling import for `python scripts/capability_closeout.py` (scripts/ on sys.path, not
+# repo root); Pants can't infer it since the module lives under the `scripts.` namespace.
+# The real edge is declared explicitly in scripts/BUILD.
+from check_import_boundaries import (
+    _cycle_digest,  # pants: no-infer-dep
+    _cyclic_edges,  # pants: no-infer-dep
+    check,  # pants: no-infer-dep
+    collect_imports,  # pants: no-infer-dep
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_REVISION = "ad4077d7ee5ae40c966f089920ca794006538090"

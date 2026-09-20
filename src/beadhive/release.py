@@ -417,7 +417,24 @@ def attest(
         raise typer.Exit(REFUSED)
 
     if not background:
-        rc = worktree.clean_checkout(entry, sha, cmd, reuse=if_needed)
+        if if_needed:
+            from . import selective_validation
+
+            parent = subprocess.run(
+                ["git", "-C", str(main), "rev-parse", f"{sha}^"],
+                capture_output=True,
+                text=True,
+                check=False,
+            ).stdout.strip()
+            rc = selective_validation.run(
+                entry,
+                config.load(),
+                base_rev=parent or sha,
+                head_rev=sha,
+                runner=lambda key_cmd: worktree.clean_checkout(entry, sha, key_cmd, reuse=True),
+            )
+        else:
+            rc = worktree.clean_checkout(entry, sha, cmd, reuse=False)
         typer.echo(
             f"{'✓ attested green' if rc == 0 else f'✗ RED (exit {rc}) — recorded, not attested'}"
             f": {sha[:12]} under {cmd!r}",

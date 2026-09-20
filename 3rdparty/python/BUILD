@@ -42,4 +42,42 @@ python_requirement(name="pytest-xdist", requirements=["pytest-xdist>=3"], module
 python_requirement(name="pytest-cov", requirements=["pytest-cov>=5"], modules=["pytest_cov"])
 python_requirement(name="ruff", requirements=["ruff>=0.6"])
 python_requirement(name="jsonschema", requirements=["jsonschema>=4"])
+# Transitive dep of joserfc, already resolved in the lock; declared directly because
+# tests/harness/frame_bridge_live.py imports it at module scope (bh-1j3ei.2).
+python_requirement(
+    name="cryptography",
+    requirements=["cryptography>=42"],
+    modules=["cryptography"],
+)
+# Transitive dep of fastmcp, already resolved in the lock; imported directly by tests that
+# exercise the websocket transport (bh-1j3ei.2).
+python_requirement(
+    name="websockets",
+    requirements=["websockets>=13"],
+    modules=["websockets"],
+)
+# Transitive dep (pulled in by several resolved packages), already resolved in the lock;
+# imported directly by tests that parse version strings (bh-1j3ei.2).
+python_requirement(
+    name="packaging",
+    requirements=["packaging>=24"],
+    modules=["packaging"],
+)
+# Transitive dep of typer (click), already resolved in the lock; imported directly by tests
+# that drive the CLI's click internals (bh-1j3ei.2).
+python_requirement(name="click", requirements=["click>=8"], modules=["click"])
+# Transitive dep of jsonschema, already resolved in the lock; imported directly by tests
+# that build jsonschema Resource/Registry objects (bh-1j3ei.2).
+python_requirement(
+    name="referencing",
+    requirements=["referencing>=0.35"],
+    modules=["referencing"],
+)
 python_requirement(name="commitizen", requirements=["commitizen>=4.16.4"], modules=["commitizen"])
+
+# Ownership only (bh-1j3ei.2): uv-lock metadata Pants itself writes/reads; not a source of
+# any target, but a tracked file that still needs an owner.
+files(
+    name="lock-metadata",
+    sources=["beadhive.lock.metadata"],
+)

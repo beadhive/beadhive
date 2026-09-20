@@ -16,40 +16,88 @@ sys.modules[SPEC.name] = routes
 SPEC.loader.exec_module(routes)
 
 
-def test_every_unqualified_boundary_falls_back() -> None:
-    cases = {
-        "tests/conftest.py": "test-infrastructure",
-        "uv.lock": "dependency-lock",
-        "pants.toml": "build-config",
-        "src/beadhive/config.py": "compatibility",
-        "src/beadhive/modules/config/contracts.py": "shared-contract",
-        "src/beadhive/modules/config/application/plugin_fragments.py": "plugin-dynamic",
-        "docs/schemas/example.json": "generated",
-        "tests/test_cli.py": "installed-console-script",
-        "tests/test_work.py": "ambiguous-integration",
-        "some/new_file.py": "unknown-or-unqualified",
-    }
-    for path, expected in cases.items():
-        assert routes.classify([path]) == ("native", expected)
+def impact_receipt(
+    path: str = "docs/README.md",
+    *,
+    invalidated: tuple[str, ...] = (),
+    unaffected: tuple[str, ...] = (),
+    fallback: str = "",
+):
+    return routes.ImpactReceipt(
+        backend="pants",
+        backend_version="2.24.0",
+        base_tree="base",
+        head_tree="head",
+        changed_paths=(path,),
+        unowned_paths=(),
+        global_inputs_hit=(),
+        invalidated_keys=invalidated,
+        unaffected_keys=unaffected,
+        evidence={},
+        fallback_reason=fallback,
+    )
 
 
-def test_known_unrelated_docs_avoid_and_qualified_edit_selects() -> None:
-    assert routes.classify(["docs/README.md"]) == ("avoid", None)
-    assert routes.classify([routes.QUALIFIED_SOURCE]) == ("pants", None)
-    assert routes.classify([routes.QUALIFIED_TEST]) == ("pants", None)
+def test_classify_uses_impact_receipt_as_its_only_authority() -> None:
+    assert routes.classify(impact_receipt(invalidated=("unit",))) == ("pants", None)
+    assert routes.classify(impact_receipt(unaffected=("unit",))) == ("avoid", None)
+    assert routes.classify(impact_receipt(fallback="pants: query failed")) == (
+        "native",
+        "pants: query failed",
+    )
+
+
+def test_doc_read_by_test_routes_to_that_test(monkeypatch, capsys) -> None:
+    class Resolver:
+        def resolve(self, repo, base_rev, head_rev, keys):
+            assert base_rev == "BASE"
+            assert keys == (routes.UNIT_KEY,)
+            return impact_receipt("docs/operator-guide.md", invalidated=("unit",))
+
+    calls: list[list[str]] = []
+
+    def fake_run(command, *, capture=False):
+        calls.append(list(command))
+        return subprocess.CompletedProcess(command, 0, "1 passed\n")
+
+    monkeypatch.setattr(routes, "_run", fake_run)
+    assert (
+        routes.route(
+            "changed",
+            "BASE",
+            pants="pants",
+            native_command=["just", "check"],
+            resolver=Resolver(),
+        )
+        == 0
+    )
+    assert calls[-1][-1] == routes.QUALIFIED_TEST
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["changed"] == ["docs/operator-guide.md"]
 
 
 def test_selector_error_cannot_skip_native_fallback(monkeypatch, capsys) -> None:
     calls: list[list[str]] = []
 
+    class BrokenResolver:
+        def resolve(self, repo, base_rev, head_rev, keys):
+            raise RuntimeError("broken selector")
+
     def fake_run(command, *, capture=False):
         calls.append(list(command))
-        if command[:2] == ["git", "diff"]:
-            raise RuntimeError("broken selector")
         return subprocess.CompletedProcess(command, 17)
 
     monkeypatch.setattr(routes, "_run", fake_run)
-    assert routes.route("changed", "HEAD", pants="pants", native_command=["just", "check"]) == 17
+    assert (
+        routes.route(
+            "changed",
+            "HEAD",
+            pants="pants",
+            native_command=["just", "check"],
+            resolver=BrokenResolver(),
+        )
+        == 17
+    )
     receipt = json.loads(capsys.readouterr().out)
     assert calls[-1] == ["just", "check"]
     assert receipt["fallback_reason"].startswith("selector-error:")

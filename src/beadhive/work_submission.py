@@ -40,6 +40,21 @@ def _impl_check_unadmitted(api, bead, hive, *, permit=None):
     cmd = api.config.validate_cmd(cfg, entry)
     sha = api.worktree.head_full_sha(target)
     clean_sha = api._checked_sha(target)
+    if clean_sha and api.selective_validation.configured(cfg, entry):
+        base = api.worktree.integration_base(entry, bead, api.config.integration_branch(cfg, entry))
+        rc = api.selective_validation.run(
+            entry,
+            cfg,
+            base_rev=base,
+            head_rev=sha,
+            repo_path=str(target),
+            runner=lambda key_cmd: api.worktree.clean_checkout(
+                entry, sha, key_cmd, reuse=False, bead=bead, phase="check"
+            ),
+        )
+        if rc:
+            raise api.typer.Exit(rc)
+        return
     tree = api.validation_ledger.tree_of(entry, clean_sha) if clean_sha else ""
     artifact_root_config = api.config.work_value(cfg, entry, "validation_artifact_root", "")
     try:
@@ -432,15 +447,29 @@ def impl__validate_submit_checkout(api, entry, branch, cfg, bead=None):
         # coalesced outcome the submit actually waited for.
         observed_active_run_id = active["run_id"]
     v_start = api.time.perf_counter()
-    rc = api.worktree.clean_checkout(
-        entry,
-        branch,
-        command,
-        reuse=True,
-        bead=bead,
-        phase="submit",
-        observed_active_run_id=observed_active_run_id,
-    )
+    selective = getattr(api, "selective_validation", None)
+    if selective is not None and selective.configured(cfg, entry):
+        base = api.worktree.integration_base(entry, bead, api.config.integration_branch(cfg, entry))
+        rc = selective.run(
+            entry,
+            cfg,
+            base_rev=base,
+            head_rev=branch,
+            repo_path=str(api.worktree.clone_for_branch(entry, branch)),
+            runner=lambda key_cmd: api.worktree.clean_checkout(
+                entry, branch, key_cmd, reuse=True, bead=bead, phase="submit"
+            ),
+        )
+    else:
+        rc = api.worktree.clean_checkout(
+            entry,
+            branch,
+            command,
+            reuse=True,
+            bead=bead,
+            phase="submit",
+            observed_active_run_id=observed_active_run_id,
+        )
     api.otel.record_validation_duration(
         api.time.perf_counter() - v_start,
         {

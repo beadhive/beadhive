@@ -476,6 +476,33 @@ def claim_authority(cfg, entry) -> str:
     return str(merged.get("authority") or "local")
 
 
+def attest_config(cfg, entry):
+    """The typed `work.attest` section (Attested Green ADR, Amendment 1), layered per-hive over
+    global field by field: `keys` (a per-hive list replaces the global one), `impact.backend`,
+    `impact.timeout_seconds`.
+
+    Absent is today's behavior — no keys, `native-full`. A hand-edited invalid catalog degrades
+    to NO keys and an invalid impact section to `native-full`: both only ever invalidate more,
+    never less. `bh config validate` remains the loud diagnostic gate."""
+    from .modules.config.contracts import AttestConfig, AttestImpactConfig, AttestKeyConfig
+
+    raw_keys = layered(cfg, entry, "work.attest", "keys", []) or []
+    try:
+        keys = AttestConfig(keys=TypeAdapter(list[AttestKeyConfig]).validate_python(raw_keys)).keys
+    except ValueError:
+        keys = []
+    impact = {}
+    for field in ("backend", "timeout_seconds"):
+        value = layered(cfg, entry, "work.attest.impact", field, None)
+        if value is not None:
+            impact[field] = value
+    try:
+        impact_cfg = AttestImpactConfig(**impact)
+    except ValueError:
+        impact_cfg = AttestImpactConfig()
+    return AttestConfig(keys=keys, impact=impact_cfg)
+
+
 # ---- release (release-order planning, bh-k2j8) -------------------------------
 # Advisory release-order policy consulted by the dispatcher's start-verdict and the
 # merger's merge-order (release_order.py, sibling beads) — never obeyed blindly, and a
@@ -527,4 +554,5 @@ __all__ = [
     "precious_min_bytes",
     "work_identity",
     "claim_authority",
+    "attest_config",
 ]

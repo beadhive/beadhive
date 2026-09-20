@@ -141,7 +141,44 @@ gateway-contract-check:
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
 check-all: require-bd lint lint-md license-check architecture-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest (test FAST) test-integration-land demo-local-loop demo-live-ingress
 
-# Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or network.
+# Attest-key commands deliberately partition check-all. Keep this list and the fleet's
+# work.attest.keys catalog aligned; check-attest-catalog verifies the recipe graph so adding a
+# new full-gate step cannot silently fall out of selective CI (bh-1j3ei.5).
+attest-docs:
+    just lint-md
+
+attest-unit:
+    just lint
+    just license-check
+
+attest-stateful:
+    just test "{{FAST}}"
+
+attest-integration:
+    just test-integration-land
+
+attest-architecture-contracts:
+    just architecture-check
+    just transport-artifact-check
+    just wire-schema-compat
+    just proof-digest-check
+
+attest-package:
+    just pants-attest
+
+# Selectorless by design: git metadata and operator demos cannot be proven safe by a tree-scoped
+# build-graph receipt, so this key is paid whenever a cached verdict is reused.
+attest-always-run:
+    just require-bd
+    just demo-local-loop
+    just demo-live-ingress
+
+check-attest-catalog:
+    uv run python scripts/check_attest_catalog.py
+
+# Parse source with the stdlib AST only: no product import, discovery, transport, Dolt, or
+# network — except check_pants_ownership, which queries the local Pants engine (no network;
+# it only reads BUILD files) to keep every tracked file owned (bh-1j3ei.2).
 architecture-check:
     uv run python scripts/check_import_boundaries.py
     uv run python scripts/test_closure_certification.py --check
@@ -149,6 +186,8 @@ architecture-check:
     uv run python scripts/test_closure_promotion_policy.py --check
     uv run python scripts/test_closure_operational_report.py --check
     uv run python scripts/pants_shadow_evidence.py
+    uv run python scripts/check_pants_ownership.py
+    uv run python scripts/check_pants_proven.py
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.

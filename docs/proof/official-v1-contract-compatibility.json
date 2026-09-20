@@ -51,7 +51,7 @@
       "compatibility_policy": "json-schema-additive-v1",
       "family": "config",
       "path": "artifacts/config-v1.schema.json",
-      "sha256": "sha256:a6db5e41fe2a3d3ca4954c7e5f4c3118a5b4c24c89a041b5a5553f006dba4a88",
+      "sha256": "sha256:2e32a26dffded10768a713fc5ffb802421c566cc76f8dff0364dd402a5569735",
       "source_owner": "beadhive.modules.config.application.schema_artifacts.generate_config_json_schema"
     },
     {
@@ -2107,9 +2107,26 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-schema:config:1",
-      "candidate_sha256": "sha256:a6db5e41fe2a3d3ca4954c7e5f4c3118a5b4c24c89a041b5a5553f006dba4a88",
-      "classification": "identical",
-      "differences": [],
+      "candidate_sha256": "sha256:2e32a26dffded10768a713fc5ffb802421c566cc76f8dff0364dd402a5569735",
+      "classification": "compatible-additive",
+      "differences": [
+        {
+          "kind": "added",
+          "path": "/$defs/AttestConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestImpactConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/AttestKeyConfig"
+        },
+        {
+          "kind": "added",
+          "path": "/$defs/WorkConfig/properties/attest"
+        }
+      ],
       "historical_manifest": "docs/schemas/wire/v1.4.0/release.json",
       "historical_path": "docs/schemas/wire/v1.4.0/config-v1.schema.json",
       "historical_release": "1.4.0",
@@ -3600,8 +3617,8 @@
   "summary": {
     "candidate_artifacts": 23,
     "classifications": {
-      "compatible-additive": 2,
-      "identical": 7,
+      "compatible-additive": 3,
+      "identical": 6,
       "legacy-only-retained": 39,
       "policy-divergence-retained": 2
     },

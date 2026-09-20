@@ -11,6 +11,11 @@
 > permanent per-ecosystem environment knowledge, the same coupling this epic already rejects for
 > test runners. Design doc:
 > <https://claude.ai/code/artifact/a2eff74a-132b-4847-b505-2f4598eb0568>
+>
+> **Amended 2026-09-19** by
+> [Amendment 1](#amendment-1--key-scoped-verdict-transfer-proven-by-build-graph-impact) (epic
+> bh-1j3ei): one *key's* verdict may carry from one tree to another when a build-graph resolver
+> receipt proves none of that key's inputs changed. The whole-tree rules below stand.
 
 ## Context
 
@@ -104,6 +109,9 @@ amount of provisioning makes `git describe` a function of the tree.
 **Same patch, new base** and **same subtree hash** never transfer: neither the full combination
 tested nor (for same-patch) the resulting content is known to match, so there is nothing sound
 to reuse.
+
+Amendment 1 adds a fifth row, *same key input closure, proven by a resolver receipt*. It is
+scoped to one key, not the tree, and it does not soften either **Never** row above.
 
 ## Settled decisions
 
@@ -293,3 +301,198 @@ or a push proceed as though green were proven, and no flag converts a refusal in
   (bh-ku9n9.4): a built-in attestation provider in Python that never owns the run, one new
   operator-facing key (`work.validate_subset`), and zero configuration for machine-readable
   results.
+
+## Amendment 1 — key-scoped verdict transfer, proven by build-graph impact
+
+**Date:** 2026-09-19 · **Amends:** "Four kinds of the same" (the equality matrix), and through
+it **Decision 4**. **Status:** decided. The operator gave the GO on 2026-09-19 (epic
+bh-1j3ei). The detailed rules below (no chaining, age preservation, green-only carry, and the
+per-key assembly in Decision 4) were settled in the bh-1j3ei.1 review. Replans bh-uz03f and
+folds in bh-ehusd. **No code carries a verdict across trees until this amendment is on main.**
+
+### Why the ADR needs a new row
+
+A docs-only change pays for the whole gate. Landing bh-hhpuo (two markdown files, no code) ran
+`just check-all` twice, 8+ minutes each, because the verdict is all-or-nothing by tree: any byte
+changed anywhere invalidates every check. Epic bh-1j3ei splits the gate into named **attest
+keys**. Each key is an opaque command with a `required` / `optional` policy and a
+backend-specific **selector**. An **impact resolver** maps `(base tree, head tree)` to the set of
+keys whose inputs changed, and writes a **receipt** that records how it knows.
+
+Carrying key K's green verdict from tree T0 to tree T1 because a receipt proves none of K's
+inputs changed is a transfer the matrix above does not allow. T0 and T1 are different trees, so
+Decision 4's "exact tree match only" would refuse it. This amendment adds that transfer as a
+new, narrower row. It does not reinterpret the existing rows.
+
+### The new equality level
+
+| Relationship | Content | History | Combination tested | Transfers a verdict? |
+|---|---|---|---|---|
+| Same key input closure, proven by a resolver receipt | Y *for K's inputs*, N for the tree | N | Y *for K* | **Transfers K only** |
+
+The claim is narrow. Every file key K's command can read is byte-identical between T0 and T1,
+and a build graph that is complete and enforced says so in a receipt. It transfers **one key's
+verdict**, never the tree's verdict and never another key's.
+
+**Why this is not the rejected "same subtree hash" row.** A subtree hash is a claim about a
+*path*: "nothing under `src/` changed." It says nothing about what a command reads outside that
+path, and nothing checks the claim. Measured on 2026-09-19, 74 test files read `docs/` at
+runtime, so "docs cannot affect the tests" is false in this repo. A `when: ["**/*.md"]` glob
+(bh-uz03f's replaced design) makes the same unproven path claim, and so does the existing
+`scripts/pants_routes.py` `classify()` suffix shortcut. The new row differs on three counts:
+
+1. **It is derived, not asserted.** The input set comes from the build graph's ownership and
+   transitive dependents, not from a glob a person wrote.
+2. **It is complete, or it does not apply.** A changed path the graph cannot attribute fails
+   closed (rule 1 below). "No target matched" means *unowned*, never *safe*.
+3. **It is enforced, or it does not apply.** A declared dependency is trustworthy only if
+   something fails when it is missing. A key counts as graph-proven only once its units have
+   passed in a sandbox that exposes nothing but declared inputs (rule 4 below).
+
+"Same subtree hash" stays **Never**. So does "same patch, new base".
+
+### The five fail-closed rules (every backend)
+
+A receipt may list a key as *unaffected* only if none of these fire. Each rule can only
+*invalidate*; none can ever mark a key unaffected.
+
+1. **Unowned paths invalidate everything.** Any changed path the backend cannot attribute to an
+   owning unit invalidates **all** keys. Deleted paths count, and are attributed through the
+   **base** tree.
+2. **Global inputs invalidate everything.** Any changed path among the backend's global build
+   inputs invalidates **all** keys. For Pants in this repo: `pants.toml`, `BUILD` files,
+   lockfiles, `pyproject.toml`, `uv.lock`, `justfile`, `.mise.toml`, `scripts/hermetic.sh`.
+   Globs may appear **only** here, and only to **add** invalidation, never to remove it.
+3. **Resolver failure falls back to full.** Any resolver error, timeout, or backend-version
+   mismatch falls back to `native-full` (every key invalidated) and sets `fallback_reason` on
+   the receipt. A resolver that cannot answer never produces a partial answer.
+4. **Unproven keys depend on everything.** A key whose selected units are not yet proven (for
+   Pants, its tests have not passed in the sandbox with declared inputs) is invalidated by any
+   change. So is a key that has no selector for the active backend. Correctness never rests on an
+   unenforced declaration.
+5. **The git-metadata class never carries.** The "asterisk" class above (tests that read commit
+   history, tags, `git describe`, commit counts) has no file inputs for a graph to prove
+   unchanged. It never carries forward. `work.always_run` still runs on every reuse, carried or
+   exact, as it does today. A key whose command reads git metadata has no selector, so rule 4
+   invalidates it on every change.
+
+The default backend is **`native-full`**, which invalidates every key on every change. It
+reproduces today's all-or-nothing behavior exactly. The speedup is opt-in per hive
+(`work.attest.impact.backend`), and switching it off restores this ADR's original behavior
+byte for byte.
+
+### What a carried verdict records, and why it never chains
+
+A **carried** verdict for key K at tree T1 records at least:
+
+- **source tree:** T0, the tree where K last *ran* green;
+- **receipt digest:** the content hash of the `ImpactReceipt` whose `base_tree` is T0, whose
+  `head_tree` is T1, which lists K as unaffected, and whose `fallback_reason` is empty;
+- **backend and backend version:** the resolver that produced the receipt.
+
+**Carrying never chains through an unproven hop.** A carry's source is always a **current**
+verdict, meaning one K actually earned by running on its source tree. A carried verdict is
+never itself a source. To carry K onward to T2, the resolver diffs T0 against T2 directly and
+must prove K unaffected across that whole span. It does not compose the T0→T1 and T1→T2
+receipts. If T0's verdict has aged out, there is nothing left to carry from.
+
+A carry also preserves age. The carried verdict's timestamp is the source run's, so Decision 3's
+TTL runs from when K last actually ran, and carrying never refreshes it. **Only green carries.**
+A red verdict is never carried, and a red key re-runs.
+
+### Per-key verdict states: current, carried, absent
+
+From bh-ehusd, following beadhive-app's `bh-app-av1o` receipt (current / drift / absent), every
+key at a given tree is in exactly one of three states, and they stay distinct:
+
+| State | Meaning |
+|---|---|
+| **current** | K ran on this exact tree. A fresh `(tree, cmd_hash)` record, green or red. |
+| **carried** | K did not run here. A green current verdict on a source tree was carried by a receipt as above. |
+| **absent** | Neither. K was invalidated and not yet run, never ran, or ran and returned the "unknown" exit code 75. |
+
+"Absent" keeps its reason. "Invalidated, not yet run" must stay distinguishable from "ran, came
+back unknown", even though neither blocks an optional key.
+
+The gate reads those states against each key's policy (these semantics are settled by bh-uz03f):
+
+| Key policy | current green | carried | absent | current red (real nonzero, not 75) |
+|---|---|---|---|---|
+| `required` (default) | pass | pass | **block** | **block** |
+| `optional` | pass | pass | pass | **block** |
+
+`optional` never ignores a real failure.
+
+### Keys stay opaque commands, so Options A and C stay rejected
+
+A key's `cmd` is run verbatim, exactly as `validate_cmd` is today. bh never parses it, never
+injects a flag, never probes for a test framework, and never learns what a key "means". The
+selector is backend data (a Pants tag, a Turborepo task name, a Bazel tag) that the **resolver**
+reads; the runner never reads it. The key catalog is therefore *which commands exist and which
+graph units vouch for them*, not a per-hive results or runner configuration.
+[`attested-green-provider-adr.md`](attested-green-provider-adr.md)'s NO-GO on **Option A** (a
+registered test-runner shim) and its rejection of **Option C** (per-hive results config) as the
+answer both stand unchanged. The ledger's `(tree, cmd_hash)` slot needs no schema change for
+current verdicts, and a carried record is stored as its own kind so it can never pass for a
+current one.
+
+### One contract, three backend shapes
+
+The port is build-system-agnostic: `ImpactResolver.resolve(repo, base_rev, head_rev, keys) ->
+ImpactReceipt`. The receipt carries backend and version, both trees, changed / unowned paths,
+global inputs hit, invalidated / unaffected keys, per-key evidence (backend unit ids),
+`fallback_reason`, elapsed time, and its own digest. A backend only has to answer three
+questions: *who owns each changed path*, *what transitively depends on those owners*, and
+*which keys select those dependents*. The five rules apply unchanged whichever backend answers
+them. Pants is the backend bh-1j3ei implements. The other two are recorded here to show the
+contract's shape, not as commitments:
+
+| Backend | Affected units | Units → keys | Global inputs (rule 2) | Proven (rule 4) |
+|---|---|---|---|---|
+| **Pants** (implemented) | `pants --changed-since=<base> --changed-dependents=transitive peek`; owners via `peek` / `filedeps` | target tag `attest:<name>` | `pants.toml`, `BUILD`, lockfiles, and the list in rule 2 | test target passed under `pants test`'s sandbox with declared inputs |
+| **Turborepo** (documented) | `turbo run <tasks> --filter=...[<base>] --dry=json` | task name | `globalDependencies` | task declares `inputs` and ran with them enforced |
+| **Bazel** (documented) | `rdeps(//..., set(<changed files>))` | intersect with `attr(tags, "attest:<name>", //...)` | `MODULE.bazel` / `WORKSPACE`, `.bazelrc`, toolchains | sandboxed actions (Bazel's default) |
+
+A backend that cannot answer one of the three questions for a changed path hits rule 1 or rule 3
+and degrades to `native-full`. None of them can degrade to a pass.
+
+### Decision 4, extended
+
+Decision 4 let landing boundaries reuse a verdict on exact tree match only. With this
+amendment, the verdict for the exact tree being landed, pushed, or bumped may be **assembled
+per key**: every required key is current or carried *at that exact tree*, and no key is current
+red. The exact-tree condition still governs the tree being landed. What changes is only how one
+key's green reaches that tree. A rebase, a near-miss, or a subtree match still runs fresh. The
+`push-main` safety property is unchanged and one-directional: exit 0 only when every required
+key is green (current or carried) for the exact tree being pushed. Every other outcome,
+including a resolver fallback, runs the full gate inline.
+
+### What stands unchanged
+
+- **The load-bearing choice.** Verdicts are keyed on the tree, not the commit, and a current
+  verdict's slot stays `(tree, cmd_hash)`.
+- **Decision 1.** The confirming run is mandatory. A carry is not a converged result. It
+  transfers a verdict that one clean, confirming run of K already earned, and never launders a
+  retry into green.
+- **Decision 2.** Tree equality is still sufficient evidence, and an exact tree match still
+  reuses without any receipt.
+- **Decision 3.** TTL is global, ISO-8601, and defaults to P1D. Carrying never extends it.
+- **Decision 5.** The matrix is still the starting shape. This amendment is the evolution
+  Decision 5 anticipated, and the two **Never** rows are unchanged.
+- **Decision 6.** Cross-host attestation stays out of scope. Receipts and carried verdicts are
+  host-local like the rest of the ledger (bh-1ha1o).
+- **The trust model.** A receipt is a proof of correct invalidation, not an authorization. A
+  carried record gets the same host-local integrity check as a current one, and it defends
+  against the same things: corruption and accidental reuse, not intent.
+- **The git-metadata asterisk and `work.always_run`.** Both are unchanged, and rule 5 keeps them
+  out of every carry.
+- **The provider ADR.** Option B stands. Options A and C stay rejected.
+
+### What this amendment does not decide
+
+The receipt's serialized form, the carried-record ledger shape, and the key catalog's config
+keys belong to bh-1j3ei.3 and bh-1j3ei.6. Which checks become which keys in this repo belongs
+to bh-1j3ei.5. The Pants backend itself is bh-1j3ei.7. Making the repo-wide dependents graph
+resolve (today it fails with `UnownedDependencyError` on `cryptography`) is bh-1j3ei.2. Until
+those land, every hive runs `native-full`, and this ADR behaves exactly as it did before the
+amendment.
