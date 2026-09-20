@@ -28,6 +28,40 @@ python_tests(
     sources=["unit/**/test_*.py"],
     dependencies=[":root-conftest"],
     tags=["attest:unit"],
+    overrides={
+        # bh-t8t7r: these files pass from a Pants sandbox with no stateful fixture
+        # target and form the first CAS-backed slice of attest:stateful.  Keep the
+        # list byte-for-byte aligned with pants_proven_tests.json; the partition
+        # verifier fails closed if either side drifts.
+        (
+            "unit/integrations/test_herdr_adapter.py",
+            "unit/integrations/test_herdr_agent_lifecycle_adapter.py",
+            "unit/kernel/lifecycle/test_contracts.py",
+            "unit/kernel/lifecycle/test_dispatcher.py",
+            "unit/kernel/plugins/test_binding.py",
+            "unit/kernel/plugins/test_discovery.py",
+            "unit/kernel/telemetry/test_instrumentation.py",
+            "unit/modules/agents/test_agent_contracts.py",
+            "unit/modules/agents/test_agent_services.py",
+            "unit/modules/config/test_config_contracts.py",
+            "unit/modules/config/test_consumer_settings.py",
+            "unit/modules/config/test_migrations.py",
+            "unit/modules/config/test_plugin_fragments.py",
+            "unit/modules/config/test_resolution.py",
+            "unit/modules/hives/test_hive_identity.py",
+            "unit/modules/hives/test_hive_independence.py",
+            "unit/modules/hives/test_hive_services.py",
+            "unit/modules/planning/test_planning_services.py",
+            "unit/modules/state/test_state_services.py",
+            "unit/modules/work/test_impact_pants.py",
+            "unit/modules/work/test_work_independence.py",
+            "unit/modules/work/test_work_lifecycle_services.py",
+            "unit/modules/worktrees/test_adapters.py",
+            "unit/modules/worktrees/test_policy.py",
+            "unit/modules/worktrees/test_services.py",
+            "unit/testing/test_conformance_testkit.py",
+        ): {"tags": ["attest:unit", "attest:stateful", "pants:proven"]},
+    },
 )
 
 python_tests(

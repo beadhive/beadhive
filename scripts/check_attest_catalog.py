@@ -10,7 +10,7 @@ from pathlib import Path
 KEY_RECIPES = {
     "docs": ("attest-docs", ("lint-md",)),
     "unit": ("attest-unit", ("lint", "license-check")),
-    "stateful": ("attest-stateful", ("test",)),
+    "stateful": ("attest-stateful", ("stateful-pants", "stateful-native")),
     "integration": ("attest-integration", ("test-integration-land",)),
     "architecture-contracts": (
         "attest-architecture-contracts",

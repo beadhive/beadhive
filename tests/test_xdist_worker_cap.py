@@ -13,7 +13,9 @@ def _parallel_pytest_lines() -> list[str]:
     return [
         line.strip()
         for line in JUSTFILE.read_text().splitlines()
-        if "pytest" in line and "-n auto" in line and not line.lstrip().startswith("#")
+        if ("pytest" in line or "pants_ci.py native" in line)
+        and "-n auto" in line
+        and not line.lstrip().startswith("#")
     ]
 
 
@@ -22,7 +24,7 @@ def test_every_parallel_pytest_recipe_uses_the_shared_xdist_ceiling() -> None:
     text = JUSTFILE.read_text()
     assert f"export {AUTO_WORKER_ENV} := shell(" in text
     assert f"${{{AUTO_WORKER_ENV}:-6}}" in text
-    assert len(_parallel_pytest_lines()) == 3
+    assert len(_parallel_pytest_lines()) == 4
     assert all("-n auto" in line for line in _parallel_pytest_lines())
 
 

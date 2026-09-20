@@ -258,6 +258,7 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "uv run python scripts/pants_shadow_evidence.py",
         "uv run python scripts/check_pants_ownership.py",
         "uv run python scripts/check_pants_proven.py",
+        "uv run python scripts/pants_ci.py verify",
     ]
     selective_body = [row[0] for row in selective_architecture["body"]]
     assert selective_body == [
@@ -283,10 +284,10 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     assert full_only.isdisjoint(check_dependencies)
     assert full_only <= check_all_dependencies
     assert check_all_dependencies != check_dependencies
-    check_test = next(item for item in check["dependencies"] if item["recipe"] == "test")
-    check_all_test = next(item for item in check_all["dependencies"] if item["recipe"] == "test")
+    check_test = next(item for item in check["dependencies"] if item["recipe"] == "test-changed")
     assert check_test["arguments"] == []
-    assert "FAST" in json.dumps(check_all_test["arguments"])
+    assert {"stateful-pants", "stateful-native"} <= check_all_dependencies
+    assert "test" not in check_all_dependencies
 
 
 def _manifests(repo: Path) -> list[dict[str, object]]:
