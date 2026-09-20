@@ -234,6 +234,8 @@ def test_just_gate_checks_promotion_evidence_without_renaming_full_gates() -> No
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
 
     assert "uv run python scripts/test_closure_promotion_policy.py --check" in justfile
-    assert "check: lint lint-md license-check architecture-check" in justfile
-    assert "check-all: require-bd lint lint-md license-check architecture-check" in justfile
+    assert "check: lint lint-md license-check architecture-structural-check" in justfile
+    assert (
+        "check-all: require-bd lint lint-md license-check architecture-structural-check" in justfile
+    )
     assert promotion.load_policy(CONFIG).mode == "certified"
