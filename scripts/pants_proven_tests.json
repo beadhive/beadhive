@@ -49,6 +49,7 @@
     "tests/test_structural_closeout.py": {"status": "unproven", "reason": "not yet isolated from stateful target"},
     "tests/test_telemetry_contract.py": {"status": "unproven", "reason": "requires process fixtures"},
     "tests/test_test_closure_certification.py": {"status": "unproven", "reason": "requires repository subprocesses"},
+    "tests/test_test_closure_certification_process.py": {"status": "unproven", "reason": "requires repository subprocesses"},
     "tests/test_test_closure_operational_report.py": {"status": "unproven", "reason": "requires repository subprocesses"},
     "tests/test_test_closure_promotion_policy.py": {"status": "unproven", "reason": "requires repository subprocesses"},
     "tests/test_test_closure_shadow_policy.py": {"status": "unproven", "reason": "requires repository subprocesses"},

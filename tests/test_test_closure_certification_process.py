@@ -23,6 +23,8 @@ from scripts.pants_launcher import launcher as pants_launcher
 from beadhive import host, validation_ledger, validation_records
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPT = ROOT / "scripts" / "test_closure_certification.py"
+EVIDENCE = ROOT / "docs" / "proof" / "bh-ck1t6.1-test-closure-certification.json"
 MISSING_AUTHORITY = "candidate checkout has no authoritative matching full-gate receipt"
 PROCESS_TIMEOUT_SECONDS = 30.0
 TERMINATION_GRACE_SECONDS = 2.0
@@ -237,9 +239,13 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     recipes = graph["recipes"]
     assert isinstance(recipes, dict)
     architecture = recipes["architecture-check"]
+    selective_architecture = recipes["architecture-structural-check"]
+    attest_architecture = recipes["attest-architecture-contracts"]
     check = recipes["check"]
     check_all = recipes["check-all"]
     assert isinstance(architecture, dict)
+    assert isinstance(selective_architecture, dict)
+    assert isinstance(attest_architecture, dict)
     assert isinstance(check, dict)
     assert isinstance(check_all, dict)
     architecture_body = [row[0] for row in architecture["body"]]
@@ -253,6 +259,16 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "uv run python scripts/check_pants_ownership.py",
         "uv run python scripts/check_pants_proven.py",
     ]
+    selective_body = [row[0] for row in selective_architecture["body"]]
+    assert selective_body == [
+        line.replace("--check", "--check-structural")
+        if "test_closure_certification.py" in line
+        else line
+        for line in architecture_body
+    ]
+    attest_body = [row[0] for row in attest_architecture["body"]]
+    assert "just architecture-structural-check" in attest_body
+    assert "just architecture-check" not in attest_body
     check_dependencies = {item["recipe"] for item in check["dependencies"]}
     check_all_dependencies = {item["recipe"] for item in check_all["dependencies"]}
     full_only = {
@@ -277,6 +293,38 @@ def _manifests(repo: Path) -> list[dict[str, object]]:
     return [json.loads(path.read_text()) for path in sorted(root.glob("*/manifest.json"))]
 
 
+def test_structural_mode_bootstraps_without_receipt_but_remains_fail_closed(
+    tmp_path: Path,
+) -> None:
+    evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    valid = tmp_path / "valid.json"
+    stale = tmp_path / "stale.json"
+    valid.write_text(json.dumps(evidence), encoding="utf-8")
+    evidence["source_revision"] = "sha256:" + "0" * 64
+    stale.write_text(json.dumps(evidence), encoding="utf-8")
+
+    structural = _bounded_run(
+        (sys.executable, str(SCRIPT), "--check-structural", "--output", str(valid)), cwd=ROOT
+    )
+    strict = _bounded_run(
+        (sys.executable, str(SCRIPT), "--check", "--output", str(valid)), cwd=ROOT
+    )
+    stale_structural = _bounded_run(
+        (sys.executable, str(SCRIPT), "--check-structural", "--output", str(stale)), cwd=ROOT
+    )
+    stale_strict = _bounded_run(
+        (sys.executable, str(SCRIPT), "--check", "--output", str(stale)), cwd=ROOT
+    )
+
+    assert structural.returncode == 0, structural.stdout + structural.stderr
+    assert strict.returncode == 1
+    assert "receipt" in strict.stdout
+    assert stale_structural.returncode == 1
+    assert "source revision" in stale_structural.stdout
+    assert stale_strict.returncode == 1
+    assert "source revision" in stale_strict.stdout
+
+
 def _assert_scratch_clean(repo: Path, worktrees_root: Path) -> None:
     registered = [
         line.removeprefix("worktree ")
@@ -287,6 +335,10 @@ def _assert_scratch_clean(repo: Path, worktrees_root: Path) -> None:
     assert not list(worktrees_root.glob("github/beadhive/beadhive/verify-*"))
     assert not list((repo / ".git/bh/validation/active").glob("*.json"))
     assert all(manifest["lifecycle"] == "completed" for manifest in _manifests(repo))
+
+
+def test_selective_architecture_recipe_uses_only_explicit_structural_mode() -> None:
+    _assert_production_full_gate_wiring(ROOT)
 
 
 def test_bounded_probe_terminates_and_reaps_nested_children(tmp_path: Path) -> None:

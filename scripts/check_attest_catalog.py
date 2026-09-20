@@ -27,6 +27,10 @@ KEY_RECIPES = {
         ("require-bd", "demo-local-loop", "demo-live-ingress"),
     ),
 }
+# The selective architecture key deliberately performs the same structural work without the
+# strict receipt handshake owned by the full-gate recipe. Keep the full-gate leaf in KEY_RECIPES
+# so partition checking remains exact, and map only the selective invocation.
+SELECTIVE_RECIPE_OVERRIDES = {"architecture-check": "architecture-structural-check"}
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -55,7 +59,13 @@ def main() -> int:
     owners: dict[str, str] = {}
     for key, (recipe_name, leaves) in KEY_RECIPES.items():
         body = _recipe_body(justfile, recipe_name)
-        missing = [leaf for leaf in leaves if not any(f"just {leaf}" in line for line in body)]
+        missing = [
+            leaf
+            for leaf in leaves
+            if not any(
+                f"just {SELECTIVE_RECIPE_OVERRIDES.get(leaf, leaf)}" in line for line in body
+            )
+        ]
         if missing:
             errors.append(f"{key}: {recipe_name} does not invoke {missing!r}")
         for leaf in leaves:
