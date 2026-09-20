@@ -426,13 +426,23 @@ def attest(
                 text=True,
                 check=False,
             ).stdout.strip()
+            selective = selective_validation.configured(cfg := config.load(), entry)
             rc = selective_validation.run(
                 entry,
-                config.load(),
+                cfg,
                 base_rev=parent or sha,
                 head_rev=sha,
                 runner=lambda key_cmd: worktree.clean_checkout(entry, sha, key_cmd, reuse=True),
             )
+            if rc == 0 and selective and selective_validation.all_keys_green(entry, cfg, sha):
+                validation_ledger.record(entry, sha, cmd, 0)
+            elif rc == 0 and selective:
+                typer.echo(
+                    "✗ selective policy passed, but not every key is green — "
+                    "the full gate was not attested",
+                    err=True,
+                )
+                rc = REFUSED
         else:
             rc = worktree.clean_checkout(entry, sha, cmd, reuse=False)
         typer.echo(

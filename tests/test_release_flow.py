@@ -1607,6 +1607,35 @@ def test_if_needed_asks_for_prove_or_skip_rather_than_a_second_lookup(hive, monk
     assert seen["reuse"] is True
 
 
+def test_selective_attest_seals_the_aggregate_only_after_every_key_is_green(hive, monkeypatch):
+    from beadhive import selective_validation
+
+    monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
+    monkeypatch.setattr(selective_validation, "run", lambda *a, **k: 0)
+    monkeypatch.setattr(selective_validation, "all_keys_green", lambda *a, **k: True)
+
+    result = _run(hive, "attest", "--if-needed", "--gate", GATE_CMD)
+
+    assert result.exit_code == 0
+    assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] is True
+
+
+def test_selective_attest_does_not_claim_aggregate_green_when_an_optional_key_is_missing(
+    hive, monkeypatch
+):
+    from beadhive import selective_validation
+
+    monkeypatch.setattr(selective_validation, "configured", lambda *a, **k: True)
+    monkeypatch.setattr(selective_validation, "run", lambda *a, **k: 0)
+    monkeypatch.setattr(selective_validation, "all_keys_green", lambda *a, **k: False)
+
+    result = _run(hive, "attest", "--if-needed", "--gate", GATE_CMD)
+
+    assert result.exit_code == 1
+    assert "full gate was not attested" in result.output
+    assert prepush.check_push_main(hive["sha"], hive_id="mr", gate_cmd=GATE_CMD)[0] is False
+
+
 def test_attest_still_defaults_to_running_the_gate_for_real(hive, monkeypatch):
     """The default must stay OFF. `attest`'s designed job is the tree `cz bump` just wrote, which
     by construction has no verdict to reuse — a reusing default would make a bump-tree attestation
