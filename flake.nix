@@ -33,46 +33,104 @@
       # PROVEN STATE, do not assume beyond it: x86_64-linux (beadhive-factory, 2026-08-05 —
       # `bh setup check` 4/4) and aarch64-darwin (macOS 14.5 / Apple Silicon, 2026-08-06 —
       # `nix build .#default` cold in 130s: 155 paths substituted, ONE source build,
-      # `beadsRc`; zero Rust builds, `git-workspace` came from the cache). aarch64-linux
+      # `beadsRelease`; zero Rust builds, `git-workspace` came from the cache). aarch64-linux
       # EVALUATES and nothing more — in scope for local-install and untested only because no
       # arm64 Linux host was available; treat a first run there as unproven.
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAll = nixpkgs.lib.genAttrs systems;
       pkgsFor = system: import nixpkgs { inherit system; };
 
-      # `beads` v1.3.0-rc.1 is explicitly pinned rather than taking nixpkgs' 1.0.3. Releases
-      # through v1.2.2 embed a dolt older than v2.2.0, whose `bd dolt pull` hangs indefinitely
-      # on a large store (upstream beads#4770) — and bh's multi-host sync runs that pull.
-      #
-      # RC.1's go.mod pins dolt v0.40.5-0.20260715172757-a6690826d767, dated 2026-07-15 — the
-      # v2.2.0 era — so it carries the fix. Its schema migrations cover this hive's v62 store
-      # through v66.
-      #
-      beadsRc = pkgs: pkgs.beads.overrideAttrs (_: {
-        version = "1.3.0-rc.1";
-        src = pkgs.fetchFromGitHub {
-          owner = "gastownhall";
-          repo = "beads";
-          rev = "9c6a69ec12350959ec8c495c74eeb02902d629b6";
-          hash = "sha256-C9qooToa+Z6PBnOMVixcIVNEnjkFVRhxXrcZh50tqYs=";
+      # Package the immutable upstream release archives, rather than rebuilding either CLI from
+      # source. The version, release commit and GitHub-published archive digests are kept together
+      # here so the binary that is qualified is exactly the binary installed. Beads v1.3.0 was
+      # cut at f45b249ce6b40ba62aecc03949e6371e8f7c79d8 and supports this hive's v62 -> v66
+      # migration; that migration remains a later, explicitly gated operation.
+      beadsReleaseCommit = "f45b249ce6b40ba62aecc03949e6371e8f7c79d8";
+      beadsReleaseAssets = {
+        x86_64-linux = {
+          asset = "beads_1.3.0_linux_amd64.tar.gz";
+          hash = "sha256-L5K5BOzzW2B+RNxcOSKRc69pxU8Rg+jXCfF3NUDNzzs=";
         };
-        vendorHash = "sha256-DFS9dSZX3v3q3Yk6+bfnoEN1uIULs2h8t/P9W2tk6l8=";
-        doCheck = false;
-      });
+        aarch64-linux = {
+          asset = "beads_1.3.0_linux_arm64.tar.gz";
+          hash = "sha256-TOlEamjtwTICt2yEpH1m+z2tJ4e2RkyVIqEI+vnBxgg=";
+        };
+        aarch64-darwin = {
+          asset = "beads_1.3.0_darwin_arm64.tar.gz";
+          hash = "sha256-fMdzZ9C4TFAkOhEIvB9zZIaZIRJX1BS5F1QL+Gjmu4U=";
+        };
+      };
+      beadsRelease = pkgs:
+        let release = beadsReleaseAssets.${pkgs.stdenv.hostPlatform.system}; in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "beads";
+          version = "1.3.0";
+          src = pkgs.fetchurl {
+            url = "https://github.com/gastownhall/beads/releases/download/v1.3.0/${release.asset}";
+            inherit (release) hash;
+          };
+          sourceRoot = ".";
+          installPhase = ''
+            runHook preInstall
+            install -Dm755 bd "$out/bin/bd"
+            install -Dm644 LICENSE "$out/share/licenses/beads/LICENSE"
+            install -Dm644 README.md CHANGELOG.md -t "$out/share/doc/beads"
+            runHook postInstall
+          '';
+          passthru.releaseCommit = beadsReleaseCommit;
+          meta = {
+            description = "Beads issue tracker for coding agents";
+            homepage = "https://github.com/gastownhall/beads";
+            license = pkgs.lib.licenses.mit;
+            mainProgram = "bd";
+            platforms = builtins.attrNames beadsReleaseAssets;
+          };
+        };
 
-      # Keep the standalone CLI on the last released 2.3.x version. It is useful for an
-      # operator-managed external server, but it does not determine the embedded Dolt used by
-      # bd. Use an explicit source pin instead of the moving nixpkgs package.
-      dolt231 = pkgs: pkgs.dolt.overrideAttrs (_: {
-        version = "2.3.1";
-        src = pkgs.fetchFromGitHub {
-          owner = "dolthub";
-          repo = "dolt";
-          rev = "v2.3.1";
-          hash = "sha256-KwN0na1G2M9hnPQqraRF8UhU8P3efv6DYXj3WEBCBDA=";
+      # In this hive's shared-server mode the standalone Dolt CLI IS the server, so its version
+      # governs every database on the server. Dolt 2.3.5 was functionally smoke-tested in
+      # bh-28emy.5 from this same official archive; installing it does not authorize opening or
+      # migrating a production hive. The release target is ad65af6cc937d10fa3c88e2041fed4325968b581.
+      doltReleaseCommit = "ad65af6cc937d10fa3c88e2041fed4325968b581";
+      doltReleaseAssets = {
+        x86_64-linux = {
+          asset = "dolt-linux-amd64.tar.gz";
+          hash = "sha256-xJ1MPgBM8VgboNSgDFAjom+E6y7BXV/odu7TbVND9GM=";
         };
-        vendorHash = "sha256-28lZ8rL/X/Lgxi1kwg62Wk97M/lEFqhllUAmnq8v54c=";
-      });
+        aarch64-linux = {
+          asset = "dolt-linux-arm64.tar.gz";
+          hash = "sha256-nOcPyB5QE56XdY739NxX6Vg+Tl7wWtdddTXDDKoWE4c=";
+        };
+        aarch64-darwin = {
+          asset = "dolt-darwin-arm64.tar.gz";
+          hash = "sha256-rR43cKzLt+igWQaSKOrSK99vJ1kTEhJFG0T1GGYbjkA=";
+        };
+      };
+      doltRelease = pkgs:
+        let release = doltReleaseAssets.${pkgs.stdenv.hostPlatform.system}; in
+        pkgs.stdenvNoCC.mkDerivation {
+          pname = "dolt";
+          version = "2.3.5";
+          src = pkgs.fetchurl {
+            url = "https://github.com/dolthub/dolt/releases/download/v2.3.5/${release.asset}";
+            inherit (release) hash;
+          };
+          sourceRoot = builtins.replaceStrings [ ".tar.gz" ] [ "" ] release.asset;
+          installPhase = ''
+            runHook preInstall
+            mkdir -p "$out"
+            cp -R . "$out/"
+            runHook postInstall
+          '';
+          passthru.releaseCommit = doltReleaseCommit;
+          meta = {
+            description = "Dolt version-controlled SQL database";
+            homepage = "https://github.com/dolthub/dolt";
+            license = pkgs.lib.licenses.asl20;
+            mainProgram = "dolt";
+            platforms = builtins.attrNames doltReleaseAssets;
+          };
+        };
 
       # Exactly what `bh` requires unconditionally, plus what it shells out to at runtime.
       # The source of truth is `src/beadhive/deps.py` — every row with `required == "always"`;
@@ -99,8 +157,8 @@
       # and adding it would make every `nix develop` here fail without `allowUnfree` — which
       # is the same "you accept those terms yourself" line `harness.py` already draws.
       toolchainFor = pkgs: [
-        (beadsRc pkgs)        # bd — deps.py, required always
-        (dolt231 pkgs)        #      deps.py, required always
+        (beadsRelease pkgs)   # bd — deps.py, required always
+        (doltRelease pkgs)    #      deps.py, required always
         pkgs.gh               #      deps.py, required always
         pkgs.git-workspace    #      deps.py, required always. 1.10.1 prebuilt — the mise/brew
                               #      routes both needed a Rust toolchain plus apt libssl-dev
@@ -197,7 +255,7 @@
     in {
       packages = forAll (system:
         let pkgs = pkgsFor system; in {
-          beads = beadsRc pkgs;
+          beads = beadsRelease pkgs;
           default = pkgs.buildEnv {
             name = "beadhive-local-install-toolchain";
             paths = toolchainFor pkgs;

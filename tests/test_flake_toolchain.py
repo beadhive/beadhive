@@ -14,21 +14,23 @@ drift a red test. Pure Python — this needs no `nix`, and so runs on macOS too.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 
 from beadhive import deps
 
 FLAKE = Path(__file__).resolve().parent.parent / "flake.nix"
+METADATA = FLAKE.parent / "docker" / "toolchain-metadata.json"
 
 #: dep name -> the nix attribute or override that supplies it. Hand-written on purpose: `bd`
-#: is a `beadsRc pkgs` override carrying its own rev/hash, not `pkgs.bd`, so no derivation
+#: is a `beadsRelease pkgs` archive derivation, not `pkgs.bd`, so no derivation
 #: reproduces this map.
 NIX_ATTR: dict[str, str] = {
     "git-workspace": "pkgs.git-workspace",
     "gh": "pkgs.gh",
-    "bd": "(beadsRc pkgs)",
-    "dolt": "(dolt231 pkgs)",
+    "bd": "(beadsRelease pkgs)",
+    "dolt": "(doltRelease pkgs)",
     # `ps` (bh-x2yy0). Present in `toolchainFor` because it is a HOST requirement, and filtered
     # back out of `imageToolchainFor` for exactly git's reason: GPL, and the image's apt layer
     # already supplies it. See the delta comment block in flake.nix.
@@ -68,6 +70,58 @@ def test_the_flake_points_at_deps_py_rather_than_annotating_each_line():
     match = re.search(r"toolchainFor = pkgs: \[(.*?)\n      \];", text, re.DOTALL)
     assert match
     assert "PROBE_TABLE" not in match.group(1)
+
+
+def test_beads_is_the_final_immutable_130_release_archive():
+    text = FLAKE.read_text()
+    assert 'version = "1.3.0";' in text
+    assert 'beadsReleaseCommit = "f45b249ce6b40ba62aecc03949e6371e8f7c79d8";' in text
+    assert 'asset = "beads_1.3.0_linux_amd64.tar.gz";' in text
+    assert 'hash = "sha256-L5K5BOzzW2B+RNxcOSKRc69pxU8Rg+jXCfF3NUDNzzs=";' in text
+    assert "github.com/gastownhall/beads/releases/download/v1.3.0/" in text
+    assert "fetchFromGitHub" not in text
+    assert "vendorHash" not in text
+    assert "1.3.0-rc" not in text
+    assert "beadsRc" not in text
+    for asset, hash_ in {
+        "beads_1.3.0_linux_amd64.tar.gz": "sha256-L5K5BOzzW2B+RNxcOSKRc69pxU8Rg+jXCfF3NUDNzzs=",
+        "beads_1.3.0_linux_arm64.tar.gz": "sha256-TOlEamjtwTICt2yEpH1m+z2tJ4e2RkyVIqEI+vnBxgg=",
+        "beads_1.3.0_darwin_arm64.tar.gz": "sha256-fMdzZ9C4TFAkOhEIvB9zZIaZIRJX1BS5F1QL+Gjmu4U=",
+    }.items():
+        assert f'asset = "{asset}";' in text
+        assert f'hash = "{hash_}";' in text
+
+
+def test_dolt_is_the_immutable_235_release_archive():
+    text = FLAKE.read_text()
+    assert 'version = "2.3.5";' in text
+    assert 'doltReleaseCommit = "ad65af6cc937d10fa3c88e2041fed4325968b581";' in text
+    assert 'asset = "dolt-linux-amd64.tar.gz";' in text
+    assert 'hash = "sha256-xJ1MPgBM8VgboNSgDFAjom+E6y7BXV/odu7TbVND9GM=";' in text
+    assert "github.com/dolthub/dolt/releases/download/v2.3.5/" in text
+    assert "dolt231" not in text
+    assert "2.3.1" not in text
+    for asset, hash_ in {
+        "dolt-linux-amd64.tar.gz": "sha256-xJ1MPgBM8VgboNSgDFAjom+E6y7BXV/odu7TbVND9GM=",
+        "dolt-linux-arm64.tar.gz": "sha256-nOcPyB5QE56XdY739NxX6Vg+Tl7wWtdddTXDDKoWE4c=",
+        "dolt-darwin-arm64.tar.gz": "sha256-rR43cKzLt+igWQaSKOrSK99vJ1kTEhJFG0T1GGYbjkA=",
+    }.items():
+        assert f'asset = "{asset}";' in text
+        assert f'hash = "{hash_}";' in text
+
+
+def test_toolchain_uses_release_asset_derivations_and_metadata_matches():
+    text = FLAKE.read_text()
+    assert text.count("pkgs.stdenvNoCC.mkDerivation {") >= 2
+    assert text.count("src = pkgs.fetchurl {") >= 2
+    assert "pkgs.beads.overrideAttrs" not in text
+    assert "pkgs.dolt.overrideAttrs" not in text
+
+    rows = {row["name"]: row for row in json.loads(METADATA.read_text())}
+    assert rows["bd"]["package"] == "beads"
+    assert rows["bd"]["version"] == "1.3.0"
+    assert rows["dolt"]["package"] == "dolt"
+    assert rows["dolt"]["version"] == "2.3.5"
 
 
 def test_no_group_member_is_supplied_by_the_flake():
