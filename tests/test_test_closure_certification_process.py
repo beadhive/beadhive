@@ -278,7 +278,8 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
         "demo-local-loop",
         "demo-live-ingress",
     }
-    assert "architecture-check" in check_dependencies & check_all_dependencies
+    assert "architecture-structural-check" in check_dependencies & check_all_dependencies
+    assert "architecture-check" not in check_dependencies | check_all_dependencies
     assert full_only.isdisjoint(check_dependencies)
     assert full_only <= check_all_dependencies
     assert check_all_dependencies != check_dependencies
