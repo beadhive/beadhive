@@ -317,12 +317,12 @@ def test_expected_future_module_requires_an_explicit_registry_row():
     assert "expected modules without explicit closure rows: ['future']" in errors
 
 
-def test_just_check_keeps_the_existing_full_test_selection():
+def test_just_check_uses_affected_pants_and_authoritative_native_residual():
     check_line = next(
         line for line in (ROOT / "justfile").read_text().splitlines() if line.startswith("check:")
     )
 
     assert (
         check_line == "check: lint lint-md license-check architecture-structural-check "
-        "transport-artifact-check wire-schema-compat proof-digest-check test"
+        "transport-artifact-check wire-schema-compat proof-digest-check test-changed"
     )

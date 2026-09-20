@@ -38,14 +38,16 @@ def main() -> int:
     listed = set(entries)
     actual = doc_readers()
     errors = []
-    if listed != actual:
-        errors.append(f"missing={sorted(actual - listed)!r} extra={sorted(listed - actual)!r}")
+    if not actual <= listed:
+        errors.append(f"missing doc readers={sorted(actual - listed)!r}")
     for path, record in entries.items():
         status = record.get("status")
         if status not in {"proven", "unproven"}:
             errors.append(f"{path}: invalid status {status!r}")
         if status == "proven" and not record.get("dependencies"):
             errors.append(f"{path}: proven entry has no declared dependencies")
+        if record.get("partition") == "pants" and status != "proven":
+            errors.append(f"{path}: only proven tests may enter the Pants partition")
         if status == "unproven" and not record.get("reason"):
             errors.append(f"{path}: unproven entry has no reason")
     if errors:
@@ -54,7 +56,7 @@ def main() -> int:
     proven = sum(row["status"] == "proven" for row in entries.values())
     print(
         f"pants-proven: OK "
-        f"({len(entries)} readers: {proven} proven, {len(entries) - proven} unproven)"
+        f"({len(entries)} inventoried: {proven} proven, {len(entries) - proven} unproven)"
     )
     return 0
 

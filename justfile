@@ -51,7 +51,7 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check architecture-structural-check transport-artifact-check wire-schema-compat proof-digest-check test
+check: lint lint-md license-check architecture-structural-check transport-artifact-check wire-schema-compat proof-digest-check test-changed
 
 # Current-candidate proof rows are generated evidence and must match the exact release tree.
 proof-digest-check:
@@ -139,7 +139,7 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check architecture-structural-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest (test FAST) test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md license-check architecture-structural-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress
 
 # Attest-key commands deliberately partition check-all. Keep this list and the fleet's
 # work.attest.keys catalog aligned; check-attest-catalog verifies the recipe graph so adding a
@@ -152,7 +152,8 @@ attest-unit:
     just license-check
 
 attest-stateful:
-    just test "{{FAST}}"
+    just stateful-pants
+    just stateful-native
 
 attest-integration:
     just test-integration-land
@@ -173,6 +174,13 @@ attest-always-run:
     just demo-local-loop
     just demo-live-ingress
 
+# Report the selectorless floor independently; never fold this number into Pants cache savings.
+measure-always-run-floor:
+    uv run python scripts/pants_ci_benchmark.py sample --change-class selectorless-floor --phase floor -- just attest-always-run
+
+pants-ci-benchmark-check:
+    uv run python scripts/pants_ci_benchmark.py check
+
 check-attest-catalog:
     uv run python scripts/check_attest_catalog.py
 
@@ -188,6 +196,8 @@ architecture-check:
     uv run python scripts/pants_shadow_evidence.py
     uv run python scripts/check_pants_ownership.py
     uv run python scripts/check_pants_proven.py
+    uv run python scripts/pants_ci.py verify
+    uv run python scripts/pants_ci_benchmark.py check
 
 # Lifecycle gates cannot require the full-gate receipt they are in the process of establishing.
 # This explicit entry point checks the same structural evidence and freshness invariants for
@@ -201,6 +211,8 @@ architecture-structural-check:
     uv run python scripts/pants_shadow_evidence.py
     uv run python scripts/check_pants_ownership.py
     uv run python scripts/check_pants_proven.py
+    uv run python scripts/pants_ci.py verify
+    uv run python scripts/pants_ci_benchmark.py check
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
@@ -611,8 +623,25 @@ test_timeout_seconds := env_var_or_default("BH_TEST_TIMEOUT_SECONDS", "900")
 # The suspect ran in the unfenced half for the fence's entire existence.
 # run the suite for a marker selection — fenced and parallel (default: the fast unit-only set)
 test set=FAST:
+    {{ if set == "FAST" { "just stateful-pants" } else if set == "" { "just stateful-pants" } else { "true" } }}
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run pytest -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
+        ./scripts/hermetic.sh uv run python scripts/pants_ci.py native -- -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
+
+# Developer feedback: query from the integration merge-base and execute only affected proven
+# Pants targets. Affected unproven tests route to the native residual; global, unowned, or failed
+# analysis routes to both complete partitions. The residual is never an unconditional floor.
+test-changed:
+    uv run python scripts/pants_ci.py affected "$(git merge-base "${BH_INTEGRATION_BASE:-main}" HEAD)"
+
+# Submission/merge closure: every graduated target (including reverse dependents through its
+# declared graph) plus every explicitly unproven native test. Pants serves unchanged processes
+# from CAS; native never recollects a graduated file.
+stateful-pants:
+    uv run python scripts/pants_ci.py all
+
+stateful-native:
+    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run python scripts/pants_ci.py native -- -n auto -m "{{FAST}}"
 
 # Advisory module/plugin closures. These commands never replace `just check` or `just check-all`;
 # the checked impact map adds shared-contract and reverse-dependent selectors to each direct set.

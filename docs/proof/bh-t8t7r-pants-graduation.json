@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "bead": "bh-t8t7r",
+  "pants_version": "2.32.1",
+  "cohort": {
+    "discovered_test_files": 442,
+    "pants_proven_files": 26,
+    "native_residual_files": 416,
+    "partition_check": "uv run python scripts/pants_ci.py verify",
+    "result": "disjoint-and-exhaustive"
+  },
+  "execution": {
+    "developer": "affected proven targets and their transitive dependents from the integration merge-base; native residual remains authoritative",
+    "submit_merge": "complete proven Pants closure plus native residual from the clean lifecycle checkout",
+    "main_attestation": "aggregate receipt only after every required attest key is green"
+  },
+  "cache_observations": [
+    {
+      "cache_state": "partially warm after sandbox qualification",
+      "selected_files": 26,
+      "cache_served_processes": 25,
+      "elapsed_seconds": 34.341,
+      "exit_code": 0
+    },
+    {
+      "cache_state": "unchanged-input repeat",
+      "selected_files": 26,
+      "cache_served_processes": 26,
+      "elapsed_seconds": 14.343,
+      "exit_code": 0
+    }
+  ],
+  "developer_route_benchmark": "docs/proof/bh-t8t7r-ci-benchmark.json",
+  "fail_closed": {
+    "unowned_changes": "scripts/check_pants_ownership.py invalidates the gate",
+    "missing_or_stale_partition_entry": "scripts/pants_ci.py verify exits nonzero",
+    "affected_query_failure": "developer route exits nonzero; no empty selection is inferred",
+    "global_inputs": "Pants impact resolver invalidates every attest key"
+  },
+  "selectorless_floor": {
+    "command": "just measure-always-run-floor",
+    "included_in_pants_savings": false,
+    "components": ["require-bd", "demo-local-loop", "demo-live-ingress"]
+  }
+}

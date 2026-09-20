@@ -59,6 +59,7 @@ def test_unowned_imports_fail_closed_and_pure_tests_exclude_stateful_fixtures() 
     assert '":root-conftest"' in pure
     assert "stateful-fixtures" not in pure
     assert '":stateful-fixtures"' in stateful
+    assert '"pants:proven"' in pure
 
 
 def test_package_target_owns_runtime_resources() -> None:

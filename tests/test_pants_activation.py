@@ -73,7 +73,9 @@ def test_mise_pins_official_scie_pants_launcher() -> None:
     assert 'scie-pants = "0.13.2"' in (ROOT / ".mise.toml").read_text(encoding="utf-8")
 
 
-def test_attest_runs_version_shadow_package_then_qualified_tests(monkeypatch, capsys) -> None:
+def test_attest_runs_version_shadow_package_then_partition_verification(
+    monkeypatch, capsys
+) -> None:
     monkeypatch.setattr(attest, "launcher", lambda: "/pants")
     calls: list[list[str]] = []
 
@@ -86,8 +88,8 @@ def test_attest_runs_version_shadow_package_then_qualified_tests(monkeypatch, ca
     assert calls[0][-1] == "version"
     assert calls[1][-1] == "scripts/pants_shadow_evidence.py"
     assert calls[2][-2:] == ["package", "src/beadhive:bh"]
-    assert calls[3][-2:] == ["test", attest.QUALIFIED]
-    assert "native check-all follows" in capsys.readouterr().out
+    assert calls[3][-2:] == ["scripts/pants_ci.py", "verify"]
+    assert "proven partition verified" in capsys.readouterr().out
 
 
 def test_disable_switch_invokes_native_and_preserves_failure(monkeypatch) -> None:

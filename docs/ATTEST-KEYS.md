@@ -17,7 +17,7 @@ with the recipes in `justfile`; `just check-attest-catalog` enforces that partit
 |---|---|---|---|
 | `docs` | `just attest-docs` | `attest:docs` | Markdown lint |
 | `unit` | `just attest-unit` | `attest:unit` | Ruff and licence policy |
-| `stateful` | `just attest-stateful` | `attest:stateful` | Fast stateful tests |
+| `stateful` | `just attest-stateful` | `attest:stateful` | Proven Pants tests plus the residual native fast suite |
 | `integration` | `just attest-integration` | `attest:integration` | Landing integration tests |
 | `architecture-contracts` | `just attest-architecture-contracts` | `attest:architecture-contracts` | Architecture, transport, wire, and proof contracts |
 | `package` | `just attest-package` | `attest:package` | Pants package attestation |
@@ -30,6 +30,19 @@ always blocks.
 
 The selectorless `always-run` key is intentional. Its commands observe state outside a build
 graph's file model, so it must run whenever a tree changes and can never carry.
+
+The stateful command is itself a checked partition. Tests carrying `pants:proven` run as
+individual sandboxed Pants processes and are omitted from the native pytest collection; every
+other test defaults to native. `scripts/pants_ci.py verify` proves the sets are disjoint and
+exhaustive, rejects a missing source or BUILD override, and is part of both architecture gates.
+Developer checks query changed targets and transitive dependents from the integration merge
+base. A proven-only impact runs only those Pants tests; affected unproven tests run the native
+residual, while global inputs and uncertain or unowned executable changes fail closed to both
+complete partitions. Submit/merge attestation always runs the complete proven closure plus the
+native residual from a clean checkout. `just pants-ci-benchmark-check` verifies the raw sample
+counts and percentile claims in `docs/proof/bh-t8t7r-ci-benchmark.json`. Use
+`just measure-always-run-floor` to time the selectorless demos separately; that floor is not a
+Pants saving.
 
 ## Receipt and backend contract
 

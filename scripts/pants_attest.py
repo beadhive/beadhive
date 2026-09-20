@@ -18,7 +18,6 @@ except ModuleNotFoundError:
 
 ROOT = Path(__file__).parents[1]
 PIN = "2.32.1"
-QUALIFIED = "tests/unit/modules/config/test_resolution.py"
 
 
 def configuration_errors(root: Path = ROOT) -> list[str]:
@@ -61,14 +60,14 @@ def main() -> int:
         [*coordinator, "version"],
         [sys.executable, "scripts/pants_shadow_evidence.py"],
         [*coordinator, "package", "src/beadhive:bh"],
-        [*coordinator, "--test-output=all", "test", QUALIFIED],
+        [sys.executable, "scripts/pants_ci.py", "verify"],
     ]
     for command in steps:
         status = run(command)
         if status:
             print(f"pants-attest: failed closed with exit {status}", file=sys.stderr)
             return status
-    print("pants-attest: OK (Pants 2.32.1; package; 58 qualified tests; native check-all follows)")
+    print("pants-attest: OK (Pants 2.32.1; package; proven partition verified)")
     return 0
 
 
