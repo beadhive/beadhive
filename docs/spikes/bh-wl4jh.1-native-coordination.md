@@ -23,6 +23,40 @@ The probe assigned one issue to pool `crew`, raced `dev/a` and `dev/b`, exercise
 unclaim and guarded update mismatches, and attempted a heartbeat after release. It did not touch
 the hive database.
 
+## Current Beadhive versus the v1.3 opportunity
+
+This molecule's adoption priorities are ranked below. Only rank 3 is decided by this spike;
+`bh-wl4jh.2` owns schema/projection/payload/provenance evidence and `bh-wl4jh.3` owns
+sync/conflict/federation evidence. Those bead ids, not guessed conclusions, are the
+cross-reference.
+
+| rank | current Beadhive shape | v1.3 leverage to evaluate | impact from this spike |
+|---|---|---|---|
+| **1 — `bd serve` API + typed schema** | lifecycle code shells out, parses CLI JSON, and maintains local boundary models | one resident transport plus generated request/response types could remove process and schema drift | **defer to `.2`**; leases remain store-local under either CLI or HTTP, and server actors remain caller-asserted rather than seat authorization |
+| **2 — token/payload reduction** | broad issue records and repeated reads cross agent/tool boundaries | brief projections and schema-selected fields may reduce bytes and model context | **defer to `.2`**; use its measured payload/token deltas, not an estimate here |
+| **3 — atomic lifecycle operations** | ready/read then claim, member-by-member batch claims, and multi-step release/reassignment leave inter-command windows | `claimNext`, guarded CAS, transactional batch, and guarded release could make one authority change one operation | **highest proven coordination win here:** adopt available claim/CAS/lease primitives narrowly; require empirical capability evidence for native `claimNext` or batch atomics before deleting orchestration |
+| **4 — native provenance** | Beadhive stamps lifecycle state and derives audit meaning across issue/gate/event surfaces | a native append-only provenance stream could reduce duplicate writes and reconciliation | **defer to `.2`**; provenance does not replace seat authorization or reviewed-SHA binding |
+| **5 — sync/federation simplification** | Beadhive carries remote/fence policy around Dolt state | native sync/conflict surfaces may centralize correctness-sensitive reconciliation | **defer to `.3`** and weight primarily for correctness, not speed; node-local leases explicitly do not solve federation |
+
+The operation-count opportunity at rank 3 is concrete even though not every proposed atomic is
+confirmed in this build:
+
+- scheduler selection plus claim is currently at least **two database operations** (ready/read,
+  then `update --claim`) with a race window between them; a native `claimNext` would be **one**
+  transaction, a 50% operation reduction and zero selection-to-claim window;
+- a batch of *N* members currently performs **N claim mutations** and must compensate after any
+  partial failure; a real transactional batch claim would be **one** mutation, removing *N − 1*
+  inter-member windows (80% fewer claim calls at the configured five-member cap);
+- provisioning rollback already has enough native surface to become **one guarded unclaim**
+  instead of read/compare/unconditional-release choreography; measured stale guards make zero
+  writes and return a distinguishable exit code;
+- a compound "record reason + release" or guarded reassignment atomic would collapse two writes
+  to one, but v1.3's measured CLI exposes only guarded field update and guarded unclaim. Treat the
+  compound form as a `.2` capability question, not as shipped fact.
+
+These reductions improve iteration speed and close correctness windows; they do **not** justify
+collapsing the checks that decide whether an actor may attempt the atomic operation.
+
 ## Native contracts, exactly
 
 | primitive | success | contention / stale precondition | durability and scope |
