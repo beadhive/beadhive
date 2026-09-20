@@ -18,6 +18,26 @@ def configured(cfg, entry) -> bool:
     return bool(config.attest_config(cfg, entry).keys)
 
 
+def all_keys_green(entry, cfg, rev: str) -> bool:
+    """Return whether every configured key proves ``rev`` green.
+
+    Optionality controls whether a lifecycle boundary may proceed; it never turns missing or
+    red evidence into proof that the aggregate full-gate command passed.
+    """
+    keys = attest_keys(config.attest_config(cfg, entry))
+    if not keys:
+        return False
+    verdicts = validation_ledger.key_verdicts(entry, rev, keys, cfg=cfg)
+    return all(
+        verdict.state == validation_ledger.KeyVerdictState.CARRIED
+        or (
+            verdict.state == validation_ledger.KeyVerdictState.CURRENT
+            and validation_ledger.is_qualifying_green(verdict.record or {})
+        )
+        for verdict in verdicts.values()
+    )
+
+
 def run(
     entry,
     cfg,
@@ -94,4 +114,4 @@ def run(
     return 1 if blocked else 0
 
 
-__all__ = ["configured", "run"]
+__all__ = ["all_keys_green", "configured", "run"]
