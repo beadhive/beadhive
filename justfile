@@ -158,7 +158,7 @@ attest-integration:
     just test-integration-land
 
 attest-architecture-contracts:
-    just architecture-check
+    just architecture-structural-check
     just transport-artifact-check
     just wire-schema-compat
     just proof-digest-check
@@ -182,6 +182,19 @@ check-attest-catalog:
 architecture-check:
     uv run python scripts/check_import_boundaries.py
     uv run python scripts/test_closure_certification.py --check
+    uv run python scripts/test_closure_shadow_policy.py --check
+    uv run python scripts/test_closure_promotion_policy.py --check
+    uv run python scripts/test_closure_operational_report.py --check
+    uv run python scripts/pants_shadow_evidence.py
+    uv run python scripts/check_pants_ownership.py
+    uv run python scripts/check_pants_proven.py
+
+# Selective CI cannot require the full-gate receipt it is in the process of establishing.
+# This explicit entry point checks the same structural evidence and freshness invariants while
+# leaving architecture-check's ordinary full-gate receipt requirement intact.
+architecture-structural-check:
+    uv run python scripts/check_import_boundaries.py
+    uv run python scripts/test_closure_certification.py --check-structural
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
     uv run python scripts/test_closure_operational_report.py --check

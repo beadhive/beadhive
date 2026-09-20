@@ -1180,16 +1180,22 @@ def _render(value: dict[str, Any]) -> str:
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--check", action="store_true")
+    check_mode = parser.add_mutually_exclusive_group()
+    check_mode.add_argument("--check", action="store_true")
+    check_mode.add_argument(
+        "--check-structural",
+        action="store_true",
+        help="validate evidence and freshness without requiring a full-gate receipt",
+    )
     parser.add_argument("--collect", action="store_true")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args(argv)
-    if args.check:
+    if args.check or args.check_structural:
         if not args.output.exists():
             print(f"test-closure certification evidence missing: {args.output}")
             return 1
         evidence = json.loads(args.output.read_text(encoding="utf-8"))
-        errors = validate_evidence(evidence, ROOT, verify_receipt=True)
+        errors = validate_evidence(evidence, ROOT, verify_receipt=args.check)
         if errors:
             print("test-closure certification: FAILED")
             print("\n".join(f"- {error}" for error in errors))
