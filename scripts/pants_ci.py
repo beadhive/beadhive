@@ -9,11 +9,13 @@ between those runners; malformed or stale entries fail before either runner star
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import subprocess
 import sys
 import time
 from collections.abc import Sequence
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 try:
@@ -24,10 +26,37 @@ except ModuleNotFoundError:
 ROOT = Path(__file__).parents[1]
 MANIFEST = ROOT / "scripts/pants_proven_tests.json"
 BUILD = ROOT / "tests/BUILD"
+GLOBAL_INPUTS = (
+    "pants.toml",
+    "BUILD",
+    "**/BUILD",
+    "*.lock",
+    "**/*.lock",
+    "pyproject.toml",
+    "uv.lock",
+    "justfile",
+    ".mise.toml",
+    "scripts/hermetic.sh",
+    "scripts/pants_ci.py",
+    "scripts/pants_proven_tests.json",
+)
+SAFE_NON_CODE_PREFIXES = ("docs/", ".beads/")
+SAFE_NON_CODE_FILES = ("README.md", "CHANGELOG.md", "LICENSE")
 
 
 class PartitionError(RuntimeError):
     """The checked partition cannot prove complete test coverage."""
+
+
+@dataclass(frozen=True)
+class ChangeRoute:
+    """A fail-closed developer route over the complete Pants/native partition."""
+
+    changed: tuple[str, ...]
+    pants_tests: tuple[str, ...]
+    run_native: bool
+    run_all_pants: bool
+    reason: str
 
 
 def load_manifest(root: Path = ROOT) -> dict[str, dict[str, object]]:
@@ -110,7 +139,7 @@ def run_pants(paths: Sequence[str], *, action: str) -> int:
     return result.returncode
 
 
-def affected(base: str, selected: Sequence[str]) -> tuple[str, ...]:
+def _query_affected(base: str) -> list[dict[str, object]]:
     command = [
         launcher(),
         "--no-pantsd",
@@ -126,11 +155,113 @@ def affected(base: str, selected: Sequence[str]) -> tuple[str, ...]:
         rows = json.loads(result.stdout)
     except json.JSONDecodeError as exc:
         raise PartitionError(f"Pants affected query returned invalid JSON: {exc}") from exc
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise PartitionError("Pants affected query must return a JSON array of targets")
+    return rows
+
+
+def affected(base: str, selected: Sequence[str]) -> tuple[str, ...]:
+    rows = _query_affected(base)
     selected_set = set(selected)
     affected_sources = {
         source for row in rows for source in row.get("sources", ()) if source in selected_set
     }
     return tuple(sorted(affected_sources))
+
+
+def changed_paths(base: str) -> tuple[str, ...]:
+    result = subprocess.run(
+        ["git", "diff", "--name-only", "--diff-filter=ACDMRTUXB", base, "--"],
+        cwd=ROOT,
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.returncode:
+        detail = result.stderr.strip() or f"exit {result.returncode}"
+        raise PartitionError(f"git changed-path query failed closed: {detail}")
+    return tuple(sorted({line for line in result.stdout.splitlines() if line}))
+
+
+def _is_global(path: str) -> bool:
+    return any(fnmatch.fnmatch(path, pattern) for pattern in GLOBAL_INPUTS)
+
+
+def _is_safe_non_code(path: str) -> bool:
+    return path in SAFE_NON_CODE_FILES or path.startswith(SAFE_NON_CODE_PREFIXES)
+
+
+def plan_changed(
+    base: str,
+    selected: Sequence[str],
+    *,
+    changes: Sequence[str] | None = None,
+    rows: Sequence[dict[str, object]] | None = None,
+) -> ChangeRoute:
+    """Classify developer feedback without treating uncertainty as no impact."""
+    changed = tuple(sorted(changes if changes is not None else changed_paths(base)))
+    if not changed:
+        return ChangeRoute(changed, (), False, False, "no-changes")
+    if any(_is_global(path) for path in changed):
+        return ChangeRoute(changed, tuple(selected), True, True, "global-input")
+
+    affected_rows = tuple(rows if rows is not None else _query_affected(base))
+    selected_set = set(selected)
+    pants_tests: set[str] = set()
+    native_tests: set[str] = set()
+    for row in affected_rows:
+        sources = row.get("sources") or ()
+        if not isinstance(sources, (list, tuple)) or not all(
+            isinstance(source, str) for source in sources
+        ):
+            raise PartitionError("Pants affected target has invalid sources")
+        if row.get("target_type") not in {"python_test", "python_tests"}:
+            continue
+        for source in sources:
+            if source in selected_set:
+                pants_tests.add(source)
+            elif source.startswith("tests/") and Path(source).name.startswith("test_"):
+                native_tests.add(source)
+
+    if native_tests:
+        return ChangeRoute(
+            changed,
+            tuple(sorted(pants_tests)),
+            True,
+            False,
+            "affected-unproven-tests",
+        )
+    if pants_tests:
+        return ChangeRoute(
+            changed,
+            tuple(sorted(pants_tests)),
+            False,
+            False,
+            "affected-proven-tests",
+        )
+    if all(_is_safe_non_code(path) for path in changed):
+        return ChangeRoute(changed, (), False, False, "non-code-only")
+    # Empty ownership and non-test graph results are not proof that executable changes are safe.
+    return ChangeRoute(changed, tuple(selected), True, True, "unproven-or-unowned-impact")
+
+
+def run_changed(base: str, selected: Sequence[str]) -> int:
+    try:
+        route = plan_changed(base, selected)
+    except (OSError, ValueError, PartitionError, RuntimeError) as exc:
+        route = ChangeRoute(
+            changed=(),
+            pants_tests=tuple(selected),
+            run_native=True,
+            run_all_pants=True,
+            reason=f"analysis-failed-closed: {exc}",
+        )
+    print(json.dumps({"event": "pants-ci-route", **asdict(route)}, sort_keys=True))
+    pants_paths = selected if route.run_all_pants else route.pants_tests
+    pants_status = run_pants(pants_paths, action="developer-affected")
+    if pants_status or not route.run_native:
+        return pants_status
+    return subprocess.run(["just", "stateful-native"], cwd=ROOT, check=False).returncode
 
 
 def run_native(pytest_args: Sequence[str], selected: Sequence[str]) -> int:
@@ -161,7 +292,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if options.action == "all":
             return run_pants(selected, action="complete-closure")
         if options.action == "affected":
-            return run_pants(affected(options.base, selected), action="affected-closure")
+            return run_changed(options.base, selected)
         args = list(options.pytest_args)
         if args[:1] == ["--"]:
             args = args[1:]

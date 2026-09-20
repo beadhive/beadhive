@@ -176,7 +176,10 @@ attest-always-run:
 
 # Report the selectorless floor independently; never fold this number into Pants cache savings.
 measure-always-run-floor:
-    /usr/bin/time -f 'always_run_elapsed_seconds=%e' just attest-always-run
+    uv run python scripts/pants_ci_benchmark.py sample --change-class selectorless-floor --phase floor -- just attest-always-run
+
+pants-ci-benchmark-check:
+    uv run python scripts/pants_ci_benchmark.py check
 
 check-attest-catalog:
     uv run python scripts/check_attest_catalog.py
@@ -194,6 +197,7 @@ architecture-check:
     uv run python scripts/check_pants_ownership.py
     uv run python scripts/check_pants_proven.py
     uv run python scripts/pants_ci.py verify
+    uv run python scripts/pants_ci_benchmark.py check
 
 # Lifecycle gates cannot require the full-gate receipt they are in the process of establishing.
 # This explicit entry point checks the same structural evidence and freshness invariants for
@@ -208,6 +212,7 @@ architecture-structural-check:
     uv run python scripts/check_pants_ownership.py
     uv run python scripts/check_pants_proven.py
     uv run python scripts/pants_ci.py verify
+    uv run python scripts/pants_ci_benchmark.py check
 
 # Compare the candidate wire release with the target branch and validate its shared fixtures.
 # CI may set BH_WIRE_SCHEMA_BASE_REF to its actual target ref; local work defaults to main.
@@ -623,11 +628,10 @@ test set=FAST:
         ./scripts/hermetic.sh uv run python scripts/pants_ci.py native -- -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
 # Developer feedback: query from the integration merge-base and execute only affected proven
-# Pants targets.  The residual native partition remains authoritative until each file earns the
-# pants:proven tag; its --ignore list is generated from the same checked manifest.
+# Pants targets. Affected unproven tests route to the native residual; global, unowned, or failed
+# analysis routes to both complete partitions. The residual is never an unconditional floor.
 test-changed:
     uv run python scripts/pants_ci.py affected "$(git merge-base "${BH_INTEGRATION_BASE:-main}" HEAD)"
-    just stateful-native
 
 # Submission/merge closure: every graduated target (including reverse dependents through its
 # declared graph) plus every explicitly unproven native test. Pants serves unchanged processes

@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "bead": "bh-t8t7r",
+  "captured_at": "2026-09-20",
+  "minimum_samples_per_class": 10,
+  "method": {
+    "collector": "uv run python scripts/pants_ci_benchmark.py sample --change-class CLASS --phase PHASE -- COMMAND",
+    "checker": "uv run python scripts/pants_ci_benchmark.py check",
+    "percentile": "nearest-rank",
+    "notes": "Five samples permit explicitly provisional percentiles; ten are required before the result is labeled measured. Singleton lifecycle observations never receive percentile labels."
+  },
+  "comparison": {
+    "proven_leaf_after_p90_seconds": 30.891,
+    "old_unconditional_native_component_seconds": 287.42,
+    "minimum_observed_savings_percent": 89.25,
+    "interpretation": "The old end-to-end route was necessarily slower than its directly observed 287.42s native component. The new directly observed p90 is 30.891s, so 89.25% is a conservative measured lower bound, not a Pants-only cache comparison."
+  },
+  "observations": [
+    {
+      "change_class": "proven-leaf",
+      "phase": "before",
+      "command": "just stateful-native",
+      "route": "pre-fix developer floor",
+      "sample_count": 1,
+      "raw_elapsed_seconds": [287.42],
+      "statistics_status": "pending",
+      "measurement_scope": "required native component; old end-to-end route also paid selection and Pants execution",
+      "source": "authoritative bh work check native-stateful key"
+    },
+    {
+      "change_class": "proven-leaf",
+      "phase": "after",
+      "command": "BH_INTEGRATION_BASE=HEAD just test-changed",
+      "route": "affected-proven-tests; one Pants test; native skipped",
+      "sample_count": 5,
+      "raw_elapsed_seconds": [29.664, 29.420, 29.604, 30.891, 30.612],
+      "statistics_status": "provisional",
+      "p50_seconds": 29.664,
+      "p90_seconds": 30.891,
+      "source": "single uncommitted edit to tests/unit/modules/work/test_impact_pants.py; warm local CAS"
+    },
+    {
+      "change_class": "unproven-native-impact",
+      "phase": "after",
+      "command": "just test-changed",
+      "route": "affected-unproven-tests; residual native required",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"residual_native_seconds": 287.42},
+      "source": "end-to-end class sampling pending; component observation is not counted as a route sample"
+    },
+    {
+      "change_class": "global-input",
+      "phase": "after",
+      "command": "just test-changed",
+      "route": "complete Pants plus residual native",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"pants_seconds": 46.724, "residual_native_seconds": 287.42},
+      "source": "direct end-to-end class sampling pending; components are not summed into a synthetic raw sample"
+    },
+    {
+      "change_class": "selectorless-floor",
+      "phase": "floor",
+      "command": "just measure-always-run-floor",
+      "route": "always-run only; excluded from selective-CI savings",
+      "sample_count": 1,
+      "raw_elapsed_seconds": [155.693],
+      "statistics_status": "pending",
+      "source": "direct standalone collector run on the benchmark commit; intentionally excluded from selective-CI savings"
+    }
+  ]
+}

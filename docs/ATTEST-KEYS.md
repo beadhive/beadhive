@@ -36,9 +36,13 @@ individual sandboxed Pants processes and are omitted from the native pytest coll
 other test defaults to native. `scripts/pants_ci.py verify` proves the sets are disjoint and
 exhaustive, rejects a missing source or BUILD override, and is part of both architecture gates.
 Developer checks query changed targets and transitive dependents from the integration merge
-base. Submit/merge attestation runs the complete proven closure plus the native residual from a
-clean checkout. Use `just measure-always-run-floor` to time the selectorless demos separately;
-that floor is not a Pants saving.
+base. A proven-only impact runs only those Pants tests; affected unproven tests run the native
+residual, while global inputs and uncertain or unowned executable changes fail closed to both
+complete partitions. Submit/merge attestation always runs the complete proven closure plus the
+native residual from a clean checkout. `just pants-ci-benchmark-check` verifies the raw sample
+counts and percentile claims in `docs/proof/bh-t8t7r-ci-benchmark.json`. Use
+`just measure-always-run-floor` to time the selectorless demos separately; that floor is not a
+Pants saving.
 
 ## Receipt and backend contract
 

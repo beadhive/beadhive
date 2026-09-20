@@ -30,6 +30,7 @@
       "exit_code": 0
     }
   ],
+  "developer_route_benchmark": "docs/proof/bh-t8t7r-ci-benchmark.json",
   "fail_closed": {
     "unowned_changes": "scripts/check_pants_ownership.py invalidates the gate",
     "missing_or_stale_partition_entry": "scripts/pants_ci.py verify exits nonzero",
