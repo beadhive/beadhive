@@ -11,6 +11,10 @@ already exist — `bd` (Beads), [`bh worktree`](WORKTREES.md), and per-agent ide
 > `gh pr create`. Before using a scratch directory, follow the
 > [worktree safety guidance](WORKTREES.md#never-copy-a-linked-worktree-as-a-scratch-directory).
 
+Validation can be split into graph-derived keys instead of rerunning the whole gate at every
+boundary. See [Graph-derived attest keys](ATTEST-KEYS.md) for the key catalog, safety rules,
+backend contract, rollback, and the docs-only timing example.
+
 ## Lifecycle
 
 ```text
