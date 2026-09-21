@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import subprocess
 from dataclasses import dataclass
 from typing import Protocol
@@ -25,6 +26,8 @@ FEDERATION_TIMEOUT = 60.0  # seconds — federation status is a real network fet
 # a WEDGED remote, not to police slow ones: past this, `_state_call` degrades to the warning
 # path `work._pull_state` already documents rather than hanging the hive (bh-uxew).
 STATE_TIMEOUT = 120.0
+FSCK_TIMEOUT = 300
+PUSH_STATE_TIMEOUT = FSCK_TIMEOUT + 60.0
 
 
 @dataclass(frozen=True)
@@ -334,7 +337,7 @@ class BdEngine:
             pin_process_cwd=pin_process_cwd,
         )
 
-    def _state_call(self, args, cwd, actor="", *, timeout=STATE_TIMEOUT):
+    def _state_call(self, args, cwd, actor="", *, timeout=STATE_TIMEOUT, env=None):
         """Run a network-touching dolt state verb under a bounded timeout.
 
         A wedged remote surfaces as a NON-ZERO CompletedProcess (exit 124, the conventional
@@ -344,7 +347,7 @@ class BdEngine:
         `bd dolt pull` wedges `bh work claim`/`resume` for the whole hive, because a hang is
         not a failure: the call never returns, so there is no returncode to inspect (bh-uxew).
         """
-        return self.invoke(args, cwd=cwd, actor=actor, capture=True, timeout=timeout)
+        return self.invoke(args, cwd=cwd, actor=actor, capture=True, timeout=timeout, env=env)
 
     def export_jsonl(self, cwd, out_path, *, env=None):
         # Extracted from hub.py's `sync()` (per-hive export ahead of hub `repo add`/`sync`).
@@ -419,7 +422,23 @@ class BdEngine:
                 stderr=f"epoch-fence preflight refused state push: {exc}",
             )
 
-        pushed = self._state_call(args, cwd, actor=actor)
+        push_env = dict(os.environ)
+        push_env.setdefault("BEADS_FSCK_TIMEOUT", str(FSCK_TIMEOUT))
+        pushed = self._state_call(
+            args, cwd, actor=actor, timeout=PUSH_STATE_TIMEOUT, env=push_env
+        )
+        stderr = (getattr(pushed, "stderr", "") or "").lower()
+        if pushed.returncode and "fsck" in stderr and "timed out" in stderr:
+            prior = (getattr(pushed, "stderr", "") or "").rstrip()
+            pushed = subprocess.CompletedProcess(
+                args=getattr(pushed, "args", ["bd", *args]),
+                returncode=pushed.returncode,
+                stdout=getattr(pushed, "stdout", "") or "",
+                stderr=(
+                    f"{prior}\nRetry safely with BEADS_FSCK_TIMEOUT={FSCK_TIMEOUT * 2} "
+                    "bh hive sync --push; the timeout alone does not indicate corruption."
+                ),
+            )
         if pushed.returncode or reservation is None:
             return pushed
         try:

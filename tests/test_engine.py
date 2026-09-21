@@ -344,7 +344,26 @@ def test_state_verbs_pass_a_timeout(verb, call, monkeypatch):
     call(engine.BdEngine())
 
     assert kwargs, f"dolt {verb} made no subprocess call"
-    assert all(k.get("timeout") == engine.STATE_TIMEOUT for k in kwargs)
+    expected = {engine.STATE_TIMEOUT}
+    if verb == "push":
+        expected.add(engine.PUSH_STATE_TIMEOUT)
+        push = next(k for k in kwargs if k.get("timeout") == engine.PUSH_STATE_TIMEOUT)
+        assert push["env"]["BEADS_FSCK_TIMEOUT"] == str(engine.FSCK_TIMEOUT)
+    assert {k.get("timeout") for k in kwargs} == expected
+
+
+def test_push_fsck_timeout_reports_an_exact_safe_retry(monkeypatch):
+    def run(cmd, **kwargs):
+        if cmd[-2:] == ["dolt", "push"]:
+            return Completed(1, "", "pre-push fsck timed out")
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(bd, "_run", run)
+    res = engine.BdEngine().push_state("/hive", message="m")
+
+    assert res.returncode == 1
+    assert "BEADS_FSCK_TIMEOUT=600 bh hive sync --push" in res.stderr
+    assert "does not indicate corruption" in res.stderr
 
 
 def test_pull_state_converts_a_hang_into_a_nonzero_result(monkeypatch):
