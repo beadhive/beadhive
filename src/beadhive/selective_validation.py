@@ -13,6 +13,11 @@ from .bootstrap.impact import attest_keys, impact_resolver
 
 Runner = Callable[[str], int]
 
+# A resolver failure is neither a key verdict (75/UNKNOWN) nor a release/decision answer
+# (1=refuse, 2=route/half-done, 3=unmeasurable). 76 is sysexits EX_PROTOCOL: the configured
+# impact-analysis protocol did not produce an answer strict mode may act on.
+UNRESOLVED_IMPACT_EXIT = 76
+
 
 def warn_impact_fallback(reason: str) -> None:
     """Make fail-closed expansion visible even in long validation logs."""
@@ -20,6 +25,15 @@ def warn_impact_fallback(reason: str) -> None:
     typer.echo("!!! WARNING: IMPACT RESOLUTION FALLBACK !!!", err=True)
     typer.echo(f"    {reason}", err=True)
     typer.echo("    Selective carry-forward is disabled; running every attestation key.", err=True)
+    typer.echo("", err=True)
+
+
+def error_unresolved_impact(reason: str) -> None:
+    """Report strict-mode refusal without claiming that the all-key fallback will run."""
+    typer.echo("", err=True)
+    typer.echo("!!! ERROR: IMPACT RESOLUTION UNRESOLVED (STRICT MODE) !!!", err=True)
+    typer.echo(f"    {reason}", err=True)
+    typer.echo("    No attestation key ran; strict mode refuses the all-key fallback.", err=True)
     typer.echo("", err=True)
 
 
@@ -87,6 +101,9 @@ def run(
         resolver = NativeFullResolver(GitTreeDiff())
     receipt = resolver.resolve(repo, base_rev, head_rev, active_keys)
     if receipt.fallback_reason:
+        if attest.impact.on_unresolved == "strict":
+            error_unresolved_impact(receipt.fallback_reason)
+            return UNRESOLVED_IMPACT_EXIT
         warn_impact_fallback(receipt.fallback_reason)
 
     by_name = {key.name: key for key in active_keys}
@@ -128,4 +145,11 @@ def run(
     return 1 if blocked else 0
 
 
-__all__ = ["all_keys_green", "configured", "run", "warn_impact_fallback"]
+__all__ = [
+    "UNRESOLVED_IMPACT_EXIT",
+    "all_keys_green",
+    "configured",
+    "error_unresolved_impact",
+    "run",
+    "warn_impact_fallback",
+]

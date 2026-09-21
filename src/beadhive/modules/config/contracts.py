@@ -577,6 +577,13 @@ class AttestImpactConfig(_Section):
             "resolution falls back to native-full."
         ),
     )
+    on_unresolved: Literal["fallback", "strict"] = Field(
+        "fallback",
+        description=(
+            "Policy when the impact resolver cannot answer. fallback (the production default) "
+            "runs every key; strict is a development diagnostic that exits before any key runs."
+        ),
+    )
 
     @field_validator("backend")
     @classmethod

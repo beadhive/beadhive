@@ -18,8 +18,9 @@ def test_impact_fallback_warning_is_prominent_and_sent_to_stderr(capsys) -> None
 
 
 class _Resolver:
-    def __init__(self):
+    def __init__(self, fallback_reason=""):
         self.seen = []
+        self.fallback_reason = fallback_reason
 
     def resolve(self, _repo, _base, _head, keys):
         self.seen.append(tuple(key.name for key in keys))
@@ -34,6 +35,7 @@ class _Resolver:
             invalidated_keys=tuple(key.name for key in keys),
             unaffected_keys=(),
             evidence={key.name: KeyEvidence("native-full") for key in keys},
+            fallback_reason=self.fallback_reason,
         )
 
 
@@ -41,8 +43,8 @@ def _attest(*keys):
     return AttestConfig.model_validate({"keys": list(keys)})
 
 
-def _run(monkeypatch, attest, runner):
-    resolver = _Resolver()
+def _run(monkeypatch, attest, runner, *, fallback_reason=""):
+    resolver = _Resolver(fallback_reason)
     monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
     monkeypatch.setattr(selective_validation, "impact_resolver", lambda *_a, **_k: resolver)
     rc = selective_validation.run(
@@ -54,6 +56,59 @@ def _run(monkeypatch, attest, runner):
         runner=runner,
     )
     return rc, resolver
+
+
+def test_unresolved_impact_defaults_to_byte_compatible_fallback(monkeypatch, capsys) -> None:
+    key = {"name": "unit", "cmd": "just unit"}
+
+    def once(attest):
+        calls = []
+        rc, resolver = _run(
+            monkeypatch,
+            attest,
+            lambda cmd: calls.append(cmd) or 0,
+            fallback_reason="pants: unavailable",
+        )
+        captured = capsys.readouterr()
+        return rc, resolver.seen, calls, captured.out, captured.err
+
+    default = once(_attest(key))
+    explicit = once(
+        AttestConfig.model_validate({"keys": [key], "impact": {"on_unresolved": "fallback"}})
+    )
+
+    assert default == explicit
+    assert default[:3] == (0, [("unit",)], ["just unit"])
+    assert "IMPACT RESOLUTION FALLBACK" in default[4]
+    assert "pants: unavailable" in default[4]
+
+
+def test_unresolved_impact_strict_exits_before_any_key_runs(monkeypatch, capsys) -> None:
+    calls = []
+    attest = AttestConfig.model_validate(
+        {
+            "keys": [{"name": "unit", "cmd": "just unit"}],
+            "impact": {"on_unresolved": "strict"},
+        }
+    )
+
+    rc, resolver = _run(
+        monkeypatch,
+        attest,
+        lambda cmd: calls.append(cmd) or 0,
+        fallback_reason="pants: backend not available",
+    )
+
+    captured = capsys.readouterr()
+    assert rc == selective_validation.UNRESOLVED_IMPACT_EXIT == 76
+    assert rc not in {1, 2, 3, 75}
+    assert resolver.seen == [("unit",)]
+    assert calls == []
+    assert captured.out == ""
+    assert "STRICT MODE" in captured.err
+    assert "pants: backend not available" in captured.err
+    assert "No attestation key ran" in captured.err
+    assert "running every attestation key" not in captured.err
 
 
 def test_disabled_key_is_loudly_absent_from_resolution_execution_and_policy(
