@@ -593,6 +593,10 @@ FULL := ""
 # rejects non-integer values instead of falling back to unbounded CPU discovery.
 export PYTEST_XDIST_AUTO_NUM_WORKERS := shell("workers=${PYTEST_XDIST_AUTO_NUM_WORKERS:-6}; case $workers in 0|*[!0-9]*) echo 'PYTEST_XDIST_AUTO_NUM_WORKERS must be a positive integer' >&2; exit 2;; *) printf %s $workers;; esac")
 test_timeout_seconds := env_var_or_default("BH_TEST_TIMEOUT_SECONDS", "900")
+# The live partition owns shared local Dolt/runtime fixtures and therefore has a stricter,
+# host-independent ceiling than unit work.  Twelve workers produced 5 failures in 440.48s;
+# six workers is the bounded capacity verified by bh-s26g9.3.
+integration_workers := "6"
 
 # run the suite for a marker selection (default: the fast unit-only set)
 #   just test               → unit only (fast)    just test integration → real-bd harness only
@@ -711,7 +715,7 @@ test-system-smoke:
 # the LAND gate's complete integration pass — fenced and parallel
 test-integration-land:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run pytest -n auto -m "integration"
+        ./scripts/hermetic.sh uv run pytest -n {{integration_workers}} -m "integration"
 
 # ^ the FENCE's own quarantine (test_storage_migrate_int's furnished-hive test) is GONE, not
 # forgotten (bh-gsg8x). It was never a fence incompatibility: in a linked worktree the tmpfs HOME
