@@ -3189,7 +3189,7 @@ def wt_status(
     worktree.status_cmd(hive=hive, as_json=as_json)
 
 
-@wt_app.command("prune", help="remove ALL managed worktrees (or one hive's) + prune admin files.")
+@wt_app.command("prune", help="remove SAFE managed worktrees (or one hive's) + prune admin files.")
 def wt_prune(hive: str = typer.Option("", "--hive", help="limit to one hive")):
     from . import worktree
 

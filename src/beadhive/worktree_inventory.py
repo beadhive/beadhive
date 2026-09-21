@@ -10,9 +10,9 @@ import base64
 import contextlib
 import hashlib
 import json
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import replace
 from pathlib import Path
 
 import typer
@@ -229,11 +229,15 @@ def impl_managed(cfg):
 
 
 def impl__emit(out, entry, root, path, brref):
+    # Git's registry is authoritative.  Filtering it through the *current* configured root
+    # made worktrees created under a previous persistent root disappear after switching to the
+    # ephemeral root.  Exclude only the primary checkout; retain every linked worktree at its
+    # recorded path so status, prune, and rm all act on the same inventory.
     try:
-        under = Path(path).resolve().is_relative_to(root)
+        is_main = Path(path).resolve() == registry.hive_dir(entry).resolve()
     except OSError:
-        under = path.startswith(root + os.sep)
-    if under:
+        is_main = path == str(registry.hive_dir(entry))
+    if not is_main:
         out.append((str(entry["prefix"]), path, brref or "(detached)"))
 
 
@@ -1048,7 +1052,7 @@ def impl__classify_entry(
     def _landed_fn(_e, branch, base, close_reason):
         return is_landed(entry, branch, base, close_reason)
 
-    return wt_status.classify(
+    statuses = wt_status.classify(
         hive_prefix=str(entry.get("prefix", "")),
         managed_rows=rows,
         meta_branches=meta_branches,
@@ -1065,6 +1069,16 @@ def impl__classify_entry(
         bead_disposition_relations=disposition_relations,
         batch_evidence=batch_evidence,
     )
+    active_root = config.worktrees_root(cfg).resolve()
+    return [
+        replace(
+            status,
+            legacy_root=not Path(status.path).resolve().is_relative_to(active_root),
+        )
+        if hasattr(status, "path")
+        else status
+        for status in statuses
+    ]
 
 
 def impl__status_tags(st) -> str:
@@ -1085,6 +1099,11 @@ def impl__status_tags(st) -> str:
         tags += f"  (under: {str(st.underlying).upper()})"
     if st.safe:
         tags += "  SAFE"
+    elif getattr(st, "precious", ()):
+        paths = ",".join(f"{item.path}({item.bytes}B)" for item in st.precious)
+        tags += f"  precious={paths}"
+    if getattr(st, "legacy_root", False):
+        tags += "  legacy-root"
     if getattr(st, "disposition_reason", ""):
         tags += f"  reason={st.disposition_reason}"
     if getattr(st, "citing_bead", ""):

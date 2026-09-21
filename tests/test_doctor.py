@@ -2171,11 +2171,16 @@ def test_epoch_fence_posture_exposes_non_atomic_and_raw_bd_bypasses(
 # YAML.
 
 
-def test_layout_clean_default_host_has_no_findings():
+def test_layout_clean_default_host_has_no_findings(monkeypatch):
     """A freshly-seeded home (just config.yaml, ephemeral worktrees — the conftest default)
     reports nothing: every fixed/known entry is either absent or accounted for."""
+    monkeypatch.setattr(config, "worktrees_root", lambda _cfg=None: config.home() / "active")
     d = doctor._data_layout({})
-    assert d == {"unclassified": [], "legacy_worktrees_root": None}
+    assert d == {
+        "unclassified": [],
+        "legacy_worktrees_root": None,
+        "stray_worktree_dirs": [],
+    }
 
 
 def test_layout_flags_an_unrecognized_entry():
@@ -2235,7 +2240,15 @@ def test_legacy_worktrees_root_absent_is_not_reported():
 
 def test_legacy_worktrees_root_ignored_when_worktrees_ephemeral():
     (config.home() / "worktrees").mkdir()
-    assert doctor._data_layout({})["legacy_worktrees_root"] is None
+    assert doctor._data_layout({})["legacy_worktrees_root"] == str(config.home() / "worktrees")
+
+
+def test_layout_reports_stray_leaf_under_legacy_root(monkeypatch):
+    monkeypatch.setattr(config, "worktrees_root", lambda _cfg=None: config.home() / "active")
+    stray = config.home() / "worktrees" / "github" / "o" / "r" / "orphan"
+    stray.mkdir(parents=True)
+
+    assert doctor._data_layout({})["stray_worktree_dirs"] == [str(stray)]
 
 
 def test_legacy_worktrees_root_none_when_it_IS_the_active_root():

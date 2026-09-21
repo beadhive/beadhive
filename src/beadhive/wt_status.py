@@ -29,6 +29,9 @@ class WtClassification(StrEnum):
     SAFE = "safe"
     """Closed bead + branch merged into parent + no uncommitted changes. Auto-prune eligible."""
 
+    HELD = "held"
+    """Otherwise SAFE worktree retained because it contains precious local-only content."""
+
     REVIEW = "review"
     """Branch is merged and worktree is clean but the bead is not yet closed.  Waiting on
     a human to close / approve — do not auto-prune."""
@@ -171,6 +174,9 @@ class WtStatus:
 
     citing_bead: str = ""
     """Queryable bead that retains or supersedes this branch, when one was recorded."""
+
+    legacy_root: bool = False
+    """True when Git registers this worktree outside the currently configured worktree root."""
 
     def as_dict(self) -> dict:
         """JSON-serializable dict with ``classification`` / ``underlying`` as strings and
@@ -501,6 +507,8 @@ def classify(
             WtClassification.SUPERSEDED,
         )
         safe = base_safe and not precious
+        if base_safe and precious:
+            underlying, cls = cls, WtClassification.HELD
 
         results.append(
             WtStatus(

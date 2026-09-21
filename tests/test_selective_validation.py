@@ -132,6 +132,34 @@ def test_unaffected_optional_key_without_source_remains_unknown(monkeypatch, cap
     assert "advisory: not required (optional unknown)" in out
 
 
+def test_invalidated_key_reuses_qualifying_exact_tree_verdict(monkeypatch, capsys) -> None:
+    calls = []
+    ledger = selective_validation.validation_ledger
+
+    def current(_entry, rev, key, cfg=None):  # noqa: ARG001
+        return ledger.KeyVerdict(
+            key.name,
+            rev,
+            "cmd-hash",
+            ledger.KeyVerdictState.CURRENT,
+            {"exit_code": 0, "verdict_confidence": "attested"},
+        )
+
+    monkeypatch.setattr(ledger, "key_verdict", current)
+    monkeypatch.setattr(ledger, "is_qualifying_green", lambda record: record["exit_code"] == 0)
+    rc, _resolver = _run(
+        monkeypatch,
+        _attest({"name": "unit", "cmd": "just unit"}),
+        lambda cmd: calls.append(cmd) or 0,
+    )
+
+    assert rc == 0
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "unit: exact-tree verdict reused" in out
+    assert "selective validation total:" in out
+
+
 def test_unresolved_impact_defaults_to_byte_compatible_fallback(monkeypatch, capsys) -> None:
     key = {"name": "unit", "cmd": "just unit"}
 

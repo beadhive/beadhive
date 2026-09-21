@@ -13,7 +13,7 @@ from collections import namedtuple
 
 import pytest
 
-from beadhive import bd, config, engine, host_fence
+from beadhive import bd, config, engine, host_fence, store_locator
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -344,7 +344,43 @@ def test_state_verbs_pass_a_timeout(verb, call, monkeypatch):
     call(engine.BdEngine())
 
     assert kwargs, f"dolt {verb} made no subprocess call"
-    assert all(k.get("timeout") == engine.STATE_TIMEOUT for k in kwargs)
+    expected = {engine.STATE_TIMEOUT}
+    if verb == "push":
+        push_timeout = engine._fsck_timeout("/hive") + 60.0
+        expected.add(push_timeout)
+        push = next(k for k in kwargs if k.get("timeout") == push_timeout)
+        assert push["env"]["BEADS_FSCK_TIMEOUT"] == str(engine.FSCK_TIMEOUT)
+    assert {k.get("timeout") for k in kwargs} == expected
+
+
+def test_push_fsck_timeout_reports_an_exact_safe_retry(monkeypatch):
+    def run(cmd, **kwargs):
+        if cmd[-2:] == ["dolt", "push"]:
+            return Completed(1, "", "pre-push fsck timed out")
+        return Completed(0, "", "")
+
+    monkeypatch.setattr(bd, "_run", run)
+    res = engine.BdEngine().push_state("/hive", message="m")
+
+    assert res.returncode == 1
+    assert "BEADS_FSCK_TIMEOUT=600 bh hive sync --push" in res.stderr
+    assert "does not indicate corruption" in res.stderr
+    assert "CALL DOLT_GC()" in res.stderr
+    assert "offline `dolt gc`" in res.stderr
+
+
+def test_fsck_timeout_scales_with_store_size(monkeypatch):
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 3 * 1024**3)
+    assert engine._fsck_timeout("/hive") == engine.FSCK_TIMEOUT + 180
+
+
+def test_state_store_size_uses_mode_aware_dolt_database(tmp_path, monkeypatch):
+    database = tmp_path / "shared-server" / "dolt" / "hive_db"
+    database.mkdir(parents=True)
+    (database / "chunk").write_bytes(b"x" * 17)
+    monkeypatch.setattr(store_locator, "database_dir", lambda _cwd: database)
+
+    assert engine._state_store_bytes(tmp_path / "hive") == 17
 
 
 def test_pull_state_converts_a_hang_into_a_nonzero_result(monkeypatch):

@@ -12,8 +12,11 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import subprocess
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from . import bd as bd_mod
@@ -25,6 +28,28 @@ FEDERATION_TIMEOUT = 60.0  # seconds — federation status is a real network fet
 # a WEDGED remote, not to police slow ones: past this, `_state_call` degrades to the warning
 # path `work._pull_state` already documents rather than hanging the hive (bh-uxew).
 STATE_TIMEOUT = 120.0
+FSCK_TIMEOUT = 300
+MAX_FSCK_TIMEOUT = 900
+
+
+def _state_store_bytes(cwd) -> int:
+    from . import store_locator
+
+    total = 0
+    root = store_locator.database_dir(Path(cwd))
+    try:
+        for path in root.rglob("*"):
+            if path.is_file():
+                total += path.stat().st_size
+    except OSError:
+        return total
+    return total
+
+
+def _fsck_timeout(cwd) -> int:
+    gib = 1024**3
+    extra = ((_state_store_bytes(cwd) + gib - 1) // gib) * 60
+    return min(MAX_FSCK_TIMEOUT, FSCK_TIMEOUT + extra)
 
 
 @dataclass(frozen=True)
@@ -334,7 +359,7 @@ class BdEngine:
             pin_process_cwd=pin_process_cwd,
         )
 
-    def _state_call(self, args, cwd, actor="", *, timeout=STATE_TIMEOUT):
+    def _state_call(self, args, cwd, actor="", *, timeout=STATE_TIMEOUT, env=None):
         """Run a network-touching dolt state verb under a bounded timeout.
 
         A wedged remote surfaces as a NON-ZERO CompletedProcess (exit 124, the conventional
@@ -344,7 +369,7 @@ class BdEngine:
         `bd dolt pull` wedges `bh work claim`/`resume` for the whole hive, because a hang is
         not a failure: the call never returns, so there is no returncode to inspect (bh-uxew).
         """
-        return self.invoke(args, cwd=cwd, actor=actor, capture=True, timeout=timeout)
+        return self.invoke(args, cwd=cwd, actor=actor, capture=True, timeout=timeout, env=env)
 
     def export_jsonl(self, cwd, out_path, *, env=None):
         # Extracted from hub.py's `sync()` (per-hive export ahead of hub `repo add`/`sync`).
@@ -419,7 +444,29 @@ class BdEngine:
                 stderr=f"epoch-fence preflight refused state push: {exc}",
             )
 
-        pushed = self._state_call(args, cwd, actor=actor)
+        store_bytes = _state_store_bytes(cwd)
+        fsck_timeout = _fsck_timeout(cwd)
+        push_env = dict(os.environ)
+        push_env.setdefault("BEADS_FSCK_TIMEOUT", str(fsck_timeout))
+        started = time.monotonic()
+        pushed = self._state_call(args, cwd, actor=actor, timeout=fsck_timeout + 60.0, env=push_env)
+        elapsed = time.monotonic() - started
+        stderr = (getattr(pushed, "stderr", "") or "").lower()
+        if pushed.returncode and "fsck" in stderr and "timed out" in stderr:
+            prior = (getattr(pushed, "stderr", "") or "").rstrip()
+            pushed = subprocess.CompletedProcess(
+                args=getattr(pushed, "args", ["bd", *args]),
+                returncode=pushed.returncode,
+                stdout=getattr(pushed, "stdout", "") or "",
+                stderr=(
+                    f"{prior}\nIntegrity scan timed out after {elapsed:.1f}s for a "
+                    f"{store_bytes}-byte local store. Retry safely with "
+                    f"BEADS_FSCK_TIMEOUT={min(MAX_FSCK_TIMEOUT, fsck_timeout * 2)} "
+                    "bh hive sync --push; the timeout alone does not indicate corruption. "
+                    "For a running shared server use SQL `CALL DOLT_GC()`; use offline "
+                    "`dolt gc` only when that server is stopped."
+                ),
+            )
         if pushed.returncode or reservation is None:
             return pushed
         try:

@@ -118,13 +118,13 @@ def test_safe_requires_closed_merged_clean():
     assert st.safe is True
 
 
-def test_precious_content_clears_safe_without_changing_base_classification():
-    """Precious content is an orthogonal overlay, not a lifecycle classification."""
+def test_precious_content_is_a_distinct_held_classification():
     item = PreciousFile(".env", 8, "precious", ".env")
 
     st = _run(bead_status="closed", merged=True, dirty=False, precious=[item])
 
-    assert st.classification == WtClassification.SAFE
+    assert st.classification == WtClassification.HELD
+    assert st.underlying == WtClassification.SAFE
     assert st.safe is False
     assert st.precious == (item,)
 
@@ -664,7 +664,8 @@ def test_precious_content_also_clears_landed_rebased_safety():
         precious=(item,),
     )
 
-    assert st.classification == WtClassification.LANDED_REBASED
+    assert st.classification == WtClassification.HELD
+    assert st.underlying == WtClassification.LANDED_REBASED
     assert st.safe is False
     assert st.precious == (item,)
 

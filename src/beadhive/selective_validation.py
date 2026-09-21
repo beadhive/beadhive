@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
 import typer
@@ -109,8 +110,31 @@ def run(
 
     by_name = {key.name: key for key in active_keys}
     outcomes: dict[str, int | None] = {}
+    validation_started = time.perf_counter()
+
+    def run_key(key) -> tuple[int, float]:
+        started = time.perf_counter()
+        return runner(key.cmd), time.perf_counter() - started
+
+    def reuse_exact_tree(key) -> bool:
+        """Reuse only an already-qualifying verdict for this exact tree and command."""
+        try:
+            verdict = validation_ledger.key_verdict(entry, head_rev, key, cfg=cfg)
+        except (KeyError, OSError, ValueError):
+            return False
+        if verdict.state == validation_ledger.KeyVerdictState.CARRIED or (
+            verdict.state == validation_ledger.KeyVerdictState.CURRENT
+            and validation_ledger.is_qualifying_green(verdict.record or {})
+        ):
+            typer.echo(f"  ✓ {key.name}: exact-tree verdict reused")
+            outcomes[key.name] = 0
+            return True
+        return False
+
     for name in receipt.unaffected_keys:
         key = by_name[name]
+        if reuse_exact_tree(key):
+            continue
         carried = validation_ledger.carry_key_verdict(entry, key, receipt, cfg=cfg)
         verdict = validation_ledger.key_verdict(entry, head_rev, key, cfg=cfg)
         if carried or verdict.state == validation_ledger.KeyVerdictState.CARRIED:
@@ -121,12 +145,12 @@ def run(
             )
             outcomes[name] = 0
         elif key.policy == "required":
-            rc = runner(key.cmd)
+            rc, elapsed = run_key(key)
             outcomes[name] = rc
             state = "ran green" if rc == 0 else "unknown" if rc == 75 else f"ran red (exit {rc})"
             typer.echo(
                 f"  {'✓' if rc == 0 else '?' if rc == 75 else '✗'} {name}: {state} "
-                "(no qualifying source verdict)"
+                f"(no qualifying source verdict) [{elapsed:.3f}s]"
             )
         else:
             typer.echo(f"  ? {name}: unknown (no qualifying source verdict)")
@@ -134,10 +158,14 @@ def run(
 
     for name in receipt.invalidated_keys:
         key = by_name[name]
-        rc = runner(key.cmd)
+        if reuse_exact_tree(key):
+            continue
+        rc, elapsed = run_key(key)
         outcomes[name] = rc
         state = "ran green" if rc == 0 else "unknown" if rc == 75 else f"ran red (exit {rc})"
-        typer.echo(f"  {'✓' if rc == 0 else '?' if rc == 75 else '✗'} {name}: {state}")
+        typer.echo(
+            f"  {'✓' if rc == 0 else '?' if rc == 75 else '✗'} {name}: {state} ({elapsed:.3f}s)"
+        )
 
     blocked = False
     for key in active_keys:
@@ -151,6 +179,7 @@ def run(
                 typer.echo(f"  · {key.name}: not required (optional unknown)")
         else:
             blocked = True
+    typer.echo(f"  selective validation total: {time.perf_counter() - validation_started:.3f}s")
     return 1 if blocked else 0
 
 

@@ -1156,7 +1156,7 @@ def test_cwd_worktree_dir_none_at_repo_level(tmp_path, monkeypatch):
 # ---- managed() path-prefix filter -------------------------------------------
 
 
-def test_managed_filters_to_shadow_root(tmp_path, monkeypatch):
+def test_managed_uses_git_registry_across_current_and_legacy_roots(tmp_path, monkeypatch):
     ws_root = tmp_path / "ws"
     repo = ws_root / "github" / "myorg" / "myrepo"
     repo.mkdir(parents=True)
@@ -1183,7 +1183,7 @@ def test_managed_filters_to_shadow_root(tmp_path, monkeypatch):
     paths = [p for _, p, _ in rows]
 
     assert any(str(inside) == p or p.endswith("/feat") for p in paths)
-    assert all("hand-made" not in p for p in paths)
+    assert str(outside) in paths
     assert ("mr", str(inside), "feat") in [(pre, p, br) for pre, p, br in rows] or any(
         br == "feat" for _, _, br in rows
     )
@@ -3304,7 +3304,7 @@ def test_prune_classifies_hives_concurrently(monkeypatch):
     assert [status.hive for status in skipped] == ["first", "second"]
 
 
-def test_prune_lists_precious_base_safe_row_in_skipped_set(monkeypatch):
+def test_prune_lists_precious_base_safe_row_in_skipped_set(monkeypatch, capsys):
     """The existing safe-only prune partition automatically withholds precious content."""
     item = worktree.precious.PreciousFile(".env", 8, "precious", ".env")
     status = wt_status.WtStatus(
@@ -3327,6 +3327,9 @@ def test_prune_lists_precious_base_safe_row_in_skipped_set(monkeypatch):
 
     assert safe == []
     assert skipped == [status]
+    worktree._prune_report_skipped(skipped)
+    rendered = capsys.readouterr().out
+    assert "HELD (base: safe; precious: .env (8 bytes))" in rendered
 
 
 def test_retained_is_skipped_by_two_consecutive_prune_classifications(monkeypatch):
@@ -3948,6 +3951,31 @@ def test_retained_row_renders_reason_and_citing_bead_inline(capsys):
     assert "RETAINED" in out
     assert "reason=pivot" in out
     assert "citing=port" in out
+
+
+def test_held_legacy_root_row_renders_size_and_location(capsys):
+    item = worktree.precious.PreciousFile(".env", 8, "precious", ".env")
+    st = wt_status.WtStatus(
+        hive="mr",
+        leaf="old-root",
+        branch="wt/bead/issue/old-root",
+        path="/old/wts/old-root",
+        bead_id="old-root",
+        classification=wt_status.WtClassification.HELD,
+        merged=True,
+        dirty=False,
+        safe=False,
+        underlying=wt_status.WtClassification.SAFE,
+        precious=(item,),
+        legacy_root=True,
+    )
+
+    worktree._render_status([st])
+
+    out = capsys.readouterr().out
+    assert "HELD" in out
+    assert ".env(8B)" in out
+    assert "legacy-root" in out
 
 
 def test_a_dirty_row_renders_what_it_is_masking(capsys):
