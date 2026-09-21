@@ -51,8 +51,7 @@ def _bd_stub(*, status_total=0, schema_version=1, remote_add_ok=True, version="H
 
 
 def _wire_run(monkeypatch, bd_fake):
-    """Real `git`, faked `bd` — the two subprocess families `hq._git`/`hq._bd` both route
-    through the single `hq.run` symbol this patches."""
+    """Real `git`, faked `bd` through the consolidated bd seam."""
     from beadhive.run import run as real_run
 
     def _run(cmd, **kw):
@@ -61,6 +60,12 @@ def _wire_run(monkeypatch, bd_fake):
         return real_run(cmd, **kw)
 
     monkeypatch.setattr(hq, "run", _run)
+
+    def _run_bd(args, cwd, **kw):
+        cmd = ["bd", *args] if cwd is None else ["bd", "-C", str(cwd), *args]
+        return bd_fake(cmd, **kw)
+
+    monkeypatch.setattr(hq, "run_bd", _run_bd)
 
 
 class _StubEngine:
@@ -553,6 +558,10 @@ class _BackupEngine:
             Path(dest).mkdir(parents=True, exist_ok=True)
             (Path(dest) / "manifest").write_bytes(self.write_bytes)
         return subprocess.CompletedProcess(["bd", "backup"], self.returncode, "", self.stderr)
+
+    def invoke(self, args, cwd, **kwargs):  # noqa: ARG002
+        assert args == ["status", "--json", "--no-activity"]
+        return subprocess.CompletedProcess(["bd", *args], 0, '{"summary": {"total_issues": 0}}', "")
 
 
 def test_backup_dolt_native_verified_on_real_content(tmp_path, monkeypatch):

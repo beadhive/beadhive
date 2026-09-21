@@ -1,7 +1,7 @@
 """GH#2455 dirty-config bypass (bh-areg.2) — ``onboard._bypass_gh2455_dirty_config`` (the one
 named unit) and its wiring into ``onboard._act_bd_init``'s three paths.
 
-Hermetic: ``hive.run`` is faked throughout, so no real ``bd``/dolt process ever runs.
+Hermetic: ``onboard.bd_mod.run`` is faked throughout, so no real ``bd``/dolt process ever runs.
 ``Ctx._derived`` is pre-set ``True`` so ``_ensure_derived`` is a no-op — these tests exercise
 ``_act_bd_init`` in isolation from registry/classify lookups (see ``test_onboard_dag.py`` for
 the full-DAG, real-git-repo harness).
@@ -25,7 +25,7 @@ _DIRTY_STATUS = '[{"staged": 0, "status": "modified", "table_name": "config"}]'
 
 
 class _Result:
-    """Minimal ``subprocess.CompletedProcess``-shaped stand-in — matches what ``hive.run``
+    """Minimal ``subprocess.CompletedProcess``-shaped stand-in — matches what ``bd.run``
     actually returns, read via ``getattr`` in the production code (never attribute access
     directly), so this fake only needs to support the same shape."""
 
@@ -51,13 +51,14 @@ def _ctx(tmp_path, *, furnish: bool) -> onboard.Ctx:
 
 
 def _fake_run_factory(*, dolt_status_responses):
-    """Fake ``hive.run``: a ``bd sql --json ... dolt_status`` call pops the next entry from
+    """Fake ``bd.run``: a ``bd sql --json ... dolt_status`` call pops the next entry from
     *dolt_status_responses* (in call order); every other command succeeds trivially. Records
     every command received, in order."""
     calls: list[list[str]] = []
     responses = list(dolt_status_responses)
 
-    def _fake_run(cmd, **kw):  # noqa: ARG001
+    def _fake_run(args, _cwd, **kw):  # noqa: ARG001
+        cmd = ["bd", *args]
         calls.append(list(cmd))
         if cmd[:3] == ["bd", "sql", "--json"]:
             return responses.pop(0)
@@ -100,7 +101,7 @@ def test_embedded_mode_probe_failure_is_silent_noop(tmp_path, monkeypatch, capsy
     calls, fake_run = _fake_run_factory(
         dolt_status_responses=[_Result(returncode=1, stderr="not yet supported in embedded mode")]
     )
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._bypass_gh2455_dirty_config(_ctx(tmp_path, furnish=True))
 
@@ -114,7 +115,7 @@ def test_clean_status_is_silent_noop(tmp_path, monkeypatch, capsys):
     calls, fake_run = _fake_run_factory(
         dolt_status_responses=[_Result(returncode=0, stdout=_CLEAN_STATUS)]
     )
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._bypass_gh2455_dirty_config(_ctx(tmp_path, furnish=True))
 
@@ -131,7 +132,7 @@ def test_dirty_status_applies_the_documented_bypass_visibly(tmp_path, monkeypatc
             _Result(returncode=0, stdout=_CLEAN_STATUS),  # post-bypass verify
         ]
     )
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._bypass_gh2455_dirty_config(_ctx(tmp_path, furnish=True))
 
@@ -156,7 +157,7 @@ def test_bypass_never_claims_sanctioned_bd_behavior(tmp_path, monkeypatch, capsy
             _Result(returncode=0, stdout=_CLEAN_STATUS),
         ]
     )
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._bypass_gh2455_dirty_config(_ctx(tmp_path, furnish=True))
 
@@ -173,7 +174,7 @@ def test_never_points_at_gh2455_as_a_public_issue(tmp_path, monkeypatch, capsys)
             _Result(returncode=0, stdout=_CLEAN_STATUS),
         ]
     )
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._bypass_gh2455_dirty_config(_ctx(tmp_path, furnish=True))
 
@@ -190,7 +191,7 @@ def test_bypass_that_fails_to_clear_warns_distinctly(tmp_path, monkeypatch, caps
             _Result(returncode=0, stdout=_DIRTY_STATUS),  # verify: STILL dirty
         ]
     )
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._bypass_gh2455_dirty_config(_ctx(tmp_path, furnish=True))
 
@@ -209,7 +210,7 @@ def test_verify_probe_erroring_is_treated_as_still_dirty(tmp_path, monkeypatch, 
             _Result(returncode=1, stderr="transient"),
         ]
     )
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._bypass_gh2455_dirty_config(_ctx(tmp_path, furnish=True))
 
@@ -239,7 +240,7 @@ def test_furnished_path_probes_after_bd_init(tmp_path, monkeypatch):
     calls, fake_run = _fake_run_factory(
         dolt_status_responses=[_Result(returncode=0, stdout=_CLEAN_STATUS)]
     )
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=True))
 
@@ -255,7 +256,7 @@ def test_zero_footprint_path_probes_after_bd_init(tmp_path, monkeypatch):
     calls, fake_run = _fake_run_factory(
         dolt_status_responses=[_Result(returncode=0, stdout=_CLEAN_STATUS)]
     )
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=False))
 
@@ -270,7 +271,7 @@ def test_bootstrap_path_never_probes_dolt_status(tmp_path, monkeypatch):
     _patch_common(monkeypatch)
     monkeypatch.setattr(onboard, "_origin_has_dolt_data", lambda ctx: True)
     calls, fake_run = _fake_run_factory(dolt_status_responses=[])
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=False))
 
@@ -283,7 +284,8 @@ def test_bootstrap_path_never_probes_dolt_status(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _embedded_fake_run(cmd, **kw):  # noqa: ARG001
+def _embedded_fake_run(args, _cwd, **kw):  # noqa: ARG001
+    cmd = ["bd", *args]
     if cmd[:3] == ["bd", "sql", "--json"]:
         return _Result(returncode=1, stderr="Error: 'bd sql' is not yet supported in embedded mode")
     return _Result(returncode=0)
@@ -297,7 +299,7 @@ def test_furnished_embedded_onboarding_output_is_byte_for_byte_unaffected(
     unit leaks into stdout/stderr. This is the regression the bead's acceptance bar names
     explicitly."""
     _patch_common(monkeypatch)
-    monkeypatch.setattr(hive, "run", _embedded_fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", _embedded_fake_run)
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=True))
 
@@ -312,7 +314,7 @@ def test_zero_footprint_embedded_onboarding_output_is_byte_for_byte_unaffected(
     _patch_common(monkeypatch)
     monkeypatch.setattr(onboard, "_origin_has_dolt_data", lambda ctx: False)
     monkeypatch.setattr(hive, "_relocate_bd_gitignore", lambda base: False)
-    monkeypatch.setattr(hive, "run", _embedded_fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", _embedded_fake_run)
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=False))
 
@@ -328,7 +330,7 @@ def test_bootstrap_embedded_onboarding_output_is_byte_for_byte_unaffected(
     pins that down explicitly alongside its two siblings above."""
     _patch_common(monkeypatch)
     monkeypatch.setattr(onboard, "_origin_has_dolt_data", lambda ctx: True)
-    monkeypatch.setattr(hive, "run", _embedded_fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", _embedded_fake_run)
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=False))
 

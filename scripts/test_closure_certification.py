@@ -29,7 +29,17 @@ FULL_GATE_COMMAND = "just check"
 FULL_GATE_COMMAND_HASH = hashlib.sha256(FULL_GATE_COMMAND.encode()).hexdigest()[:16]
 RELEASE_GATE_COMMAND = "just check-all"
 RELEASE_GATE_COMMAND_HASH = hashlib.sha256(RELEASE_GATE_COMMAND.encode()).hexdigest()[:16]
-CHECKOUT_IDENTITY_EXCLUDES = (EVIDENCE_RELATIVE_PATH,)
+# Certification and its generated downstream views cannot identity-bind one another without a
+# digest cycle.  Each dependent remains independently generator-checked; exclude only those
+# outputs while keeping their generators, policy inputs, and every product/test source bound.
+CHECKOUT_IDENTITY_EXCLUDES = (
+    EVIDENCE_RELATIVE_PATH,
+    "docs/proof/bh-ck1t6.3-shadow-activation.json",
+    "docs/proof/bh-ck1t6.4-promotion-policy.json",
+    "docs/proof/bh-ck1t6.5-selective-ci-operations.json",
+    "docs/SELECTIVE-CI-OPERATIONS.md",
+    "docs/proof/bh-j5uyb.1-modularization-closeout.json",
+)
 REQUIRED_RELATIONSHIPS = (
     "import",
     "reverse-dependency",

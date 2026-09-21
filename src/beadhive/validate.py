@@ -11,8 +11,9 @@ import json
 
 import typer
 
-from . import bd, complexity, config
+from . import complexity, config
 from .registry import closed_dimensions, required_violations
+from .run import run
 
 
 def _label_val(labels, prefix):
@@ -61,8 +62,17 @@ def _issues_and_problems(cfg, cwd=None):
     root causes (bh-9iiz). Closed-bead problems land in the separate `historical` bucket:
     reported by `validate`, but NEVER folded into `problems` — historical debt must not flip
     `has_violations` or force history rewrites (bh-vfx9). `_issue_checks` is a thin public
-    wrapper over this that keeps its `(problems, db_ok)` return format unchanged."""
-    res = bd.run(["list", "--all", "--limit", "0", "--json"], cwd, capture=True)
+    wrapper over this that keeps its `(problems, db_ok)` return format unchanged.
+
+    bd-seam-justified: validation is imported by bd for its single-bead write gate; routing
+    validation's whole-corpus read through bd would create a static and runtime import cycle.
+    """
+    res = run(
+        ["bd", "list", "--all", "--limit", "0", "--json"],
+        check=False,
+        capture=True,
+        cwd=cwd,
+    )
     if res.returncode != 0:
         return [], [], [], False
     issues = json.loads(res.stdout or "[]")

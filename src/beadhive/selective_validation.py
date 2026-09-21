@@ -119,6 +119,14 @@ def run(
                 f"via receipt {receipt.digest[:12]}"
             )
             outcomes[name] = 0
+        elif key.policy == "required":
+            rc = runner(key.cmd)
+            outcomes[name] = rc
+            state = "ran green" if rc == 0 else "unknown" if rc == 75 else f"ran red (exit {rc})"
+            typer.echo(
+                f"  {'✓' if rc == 0 else '?' if rc == 75 else '✗'} {name}: {state} "
+                "(no qualifying source verdict)"
+            )
         else:
             typer.echo(f"  ? {name}: unknown (no qualifying source verdict)")
             outcomes[name] = None

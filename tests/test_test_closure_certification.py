@@ -38,6 +38,24 @@ def test_checked_source_identity_is_recomputed_from_historical_git_objects() -> 
     assert evidence["same_tree_full_gate_oracle"]["input_identity"] == identity
 
 
+def test_checkout_identity_excludes_only_certification_generated_outputs() -> None:
+    assert certification.CHECKOUT_IDENTITY_EXCLUDES == (
+        "docs/proof/bh-ck1t6.1-test-closure-certification.json",
+        "docs/proof/bh-ck1t6.3-shadow-activation.json",
+        "docs/proof/bh-ck1t6.4-promotion-policy.json",
+        "docs/proof/bh-ck1t6.5-selective-ci-operations.json",
+        "docs/SELECTIVE-CI-OPERATIONS.md",
+        "docs/proof/bh-j5uyb.1-modularization-closeout.json",
+    )
+
+    tracked = {
+        relative for relative, _mode, _content in certification._tracked_checkout_entries(ROOT)
+    }
+    assert tracked.isdisjoint(certification.CHECKOUT_IDENTITY_EXCLUDES)
+    assert "scripts/test_closure_certification.py" in tracked
+    assert "scripts/test_closure_promotion_policy.py" in tracked
+
+
 def test_unrelated_descendant_does_not_invalidate_the_historical_snapshot() -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     snapshot = certification._historical_snapshot_commit(ROOT)

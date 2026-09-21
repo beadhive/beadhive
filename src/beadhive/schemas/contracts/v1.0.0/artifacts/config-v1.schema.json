@@ -79,6 +79,16 @@
           "title": "Backend",
           "type": "string"
         },
+        "on_unresolved": {
+          "default": "fallback",
+          "description": "Policy when the impact resolver cannot answer. fallback (the production default) runs every key; strict is a development diagnostic that exits before any key runs.",
+          "enum": [
+            "fallback",
+            "strict"
+          ],
+          "title": "On Unresolved",
+          "type": "string"
+        },
         "timeout_seconds": {
           "default": 300.0,
           "description": "Wall-clock budget for one backend answer; a slower answer is discarded and the resolution falls back to native-full.",

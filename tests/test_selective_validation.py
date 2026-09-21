@@ -39,6 +39,22 @@ class _Resolver:
         )
 
 
+class _UnaffectedResolver:
+    def resolve(self, _repo, _base, _head, keys):
+        return ImpactReceipt(
+            backend="pants",
+            backend_version="1",
+            base_tree="base",
+            head_tree="head",
+            changed_paths=("notes/readme.md",),
+            unowned_paths=(),
+            global_inputs_hit=(),
+            invalidated_keys=(),
+            unaffected_keys=tuple(key.name for key in keys),
+            evidence={key.name: KeyEvidence("pants") for key in keys},
+        )
+
+
 def _attest(*keys):
     return AttestConfig.model_validate({"keys": list(keys)})
 
@@ -56,6 +72,64 @@ def _run(monkeypatch, attest, runner, *, fallback_reason=""):
         runner=runner,
     )
     return rc, resolver
+
+
+def _run_unaffected_without_source(monkeypatch, attest, runner):
+    monkeypatch.setattr(selective_validation.config, "attest_config", lambda *_: attest)
+    monkeypatch.setattr(
+        selective_validation, "impact_resolver", lambda *_a, **_k: _UnaffectedResolver()
+    )
+    monkeypatch.setattr(
+        selective_validation.validation_ledger, "carry_key_verdict", lambda *_a, **_k: False
+    )
+
+    def absent(_entry, rev, key, cfg=None):  # noqa: ARG001
+        return selective_validation.validation_ledger.KeyVerdict(
+            key.name,
+            rev,
+            "cmd-hash",
+            selective_validation.validation_ledger.KeyVerdictState.ABSENT,
+        )
+
+    monkeypatch.setattr(selective_validation.validation_ledger, "key_verdict", absent)
+    return selective_validation.run(
+        {},
+        {},
+        base_rev="base",
+        head_rev="head",
+        repo_path="/repo",
+        runner=runner,
+    )
+
+
+def test_unaffected_required_key_without_source_runs_to_bootstrap_verdict(
+    monkeypatch, capsys
+) -> None:
+    calls = []
+    rc = _run_unaffected_without_source(
+        monkeypatch,
+        _attest({"name": "integration", "cmd": "just integration", "policy": "required"}),
+        lambda cmd: calls.append(cmd) or 0,
+    )
+
+    assert rc == 0
+    assert calls == ["just integration"]
+    assert "integration: ran green (no qualifying source verdict)" in capsys.readouterr().out
+
+
+def test_unaffected_optional_key_without_source_remains_unknown(monkeypatch, capsys) -> None:
+    calls = []
+    rc = _run_unaffected_without_source(
+        monkeypatch,
+        _attest({"name": "advisory", "cmd": "just advisory", "policy": "optional"}),
+        lambda cmd: calls.append(cmd) or 0,
+    )
+
+    assert rc == 0
+    assert calls == []
+    out = capsys.readouterr().out
+    assert "advisory: unknown (no qualifying source verdict)" in out
+    assert "advisory: not required (optional unknown)" in out
 
 
 def test_unresolved_impact_defaults_to_byte_compatible_fallback(monkeypatch, capsys) -> None:

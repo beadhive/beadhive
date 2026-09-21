@@ -84,7 +84,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import bd, config, fleet, store_locator
+from . import config, fleet, store_locator
 from .run import ps_argv, run
 
 # bd's own shared-server defaults (internal/doltserver/doltserver.go) — read-only CONSTANTS
@@ -576,9 +576,16 @@ def probe_server_schema_version(
     instructions forbid touching the one real shared-server hive that exists
     (`github/briancripe/testfoo`, port 3308). Best-effort and defensive by construction: any
     unexpected shape parses to ``None`` rather than raising, so an unverified assumption here
-    can degrade to "unknown" but never to a wrong number."""
-    res = bd.run(
-        ["sql", "-q", SCHEMA_MIGRATIONS_QUERY, "--json"], hive_dir, capture=True, timeout=timeout
+    can degrade to "unknown" but never to a wrong number.
+
+    bd-seam-justified: dolt_health is below fleet/metadata/route/bd in the legacy import graph;
+    importing the high-level bd adapter here closes that graph into a cycle.
+    """
+    res = run(
+        ["bd", "-C", str(hive_dir), "sql", "-q", SCHEMA_MIGRATIONS_QUERY, "--json"],
+        check=False,
+        capture=True,
+        timeout=timeout,
     )
     version = _parse_max_version(res.stdout)
     if version is not None:
@@ -733,8 +740,12 @@ def _local_cache_path() -> Path:
 
 
 def _read_local_bd_version_string(timeout: float) -> str | None:
-    """One `bd --version`. Not called directly — go through :func:`_local_bd_version_string`."""
-    res = bd.run(["--version"], None, capture=True, timeout=timeout, hive_aware=False)
+    """One `bd --version`. Not called directly — go through :func:`_local_bd_version_string`.
+
+    bd-seam-justified: this host-global probe must not add dolt_health -> bd to the cyclic legacy
+    graph; it retains the same explicit timeout at the lower process boundary.
+    """
+    res = run(["bd", "--version"], check=False, capture=True, timeout=timeout)
     if res.returncode != 0:
         return None
     out = (res.stdout or res.stderr or "").strip()
@@ -798,17 +809,20 @@ def _scratch_probe_local_version(timeout: float) -> SchemaProbeResult:
     --inspect`'s are the module docstring's two decoys). The EXISTING cache already keys on
     `bd --version`'s exact string (`local_bd_schema_version`), so this runs once per bd
     binary, not once per cache-clear — the cheaper fix bh-j68p3 asks for as a fallback is
-    already in place; there was nothing further to change there."""
+    already in place; there was nothing further to change there.
+
+    bd-seam-justified: this scratch-only probe must not add dolt_health -> bd to the cyclic
+    legacy graph; cwd and timeout remain explicit at the lower process boundary.
+    """
     with tempfile.TemporaryDirectory(prefix="bh-wnly-schema-probe-") as tmp:
         scratch = Path(tmp)
         prefix = f"schemaprobe{uuid.uuid4().hex[:8]}"
-        init = bd.run(
-            ["init", "--prefix", prefix, "--non-interactive"],
-            scratch,
+        init = run(
+            ["bd", "init", "--prefix", prefix, "--non-interactive"],
+            check=False,
             capture=True,
+            cwd=str(scratch),
             timeout=timeout,
-            hive_aware=False,
-            pin_process_cwd=True,
         )
         if init.returncode != 0:
             return _probe_failure(init, tool="bd init", target=scratch)

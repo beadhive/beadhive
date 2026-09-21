@@ -313,12 +313,12 @@
           {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "29046c0b29b1a6aa9dfd8ad1ca1f0f3f3356d0ef35da01dfa319d4885d1c293d"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "dc211495dbf26074479680664e7fe73031fc551b10ebda3fedd59fce2a87d0b0"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
-          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "a3d4ca4b8e15bb01f93668209c1092c3a6810abbe4eb1e91b4f9b064d88d2b01"}
+          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "9dfb7b253b9087491f1160353e9a099f0e9aa0528a697cad4c9a113abdadc3f4"}
         ]
       },
       "import_boundary": {
         "check": "uv run python scripts/check_import_boundaries.py",
-        "ledger": {"path": "docs/design/import-boundary-exceptions.toml", "sha256": "260b340385c9c923e555ae26749f94e447bd4e657dd7e3ff891fa348d590b5e7"},
+        "ledger": {"path": "docs/design/import-boundary-exceptions.toml", "sha256": "6553c0d9260afcd83798d252641522af715825ae39709266c8bb904ed883c68b"},
         "observed": {"python_files": 327, "import_edges": 2912, "owned_sccs": 8, "cyclic_edges": 155, "unowned_errors": 0}
       },
       "schema_release": {
@@ -326,17 +326,17 @@
         "artifacts": [
           {"path": "docs/schemas/telemetry-event-envelope-v1.schema.json", "sha256": "1bf34e38b60d8e9cdf7b5c60477cb93f9dd24dac970e5c89a8d3b2695cd2d3c6"},
           {"path": "docs/schemas/wire/v1.0.0/release.json", "sha256": "c69fb7f1567f16e6f76549ef1c9c53b1f32f7cfde79fc8b0d2cc652a01b727e1"},
-          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "fe92873c0c05976de1ef24057059df0d8359ac54585c0776d010f873707053e7"}
+          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "59939de5843b16e627738ea6c8e2cf57f3992245e1062120b0dd6ec762cad198"}
         ]
       },
       "selective_ci": {
         "check": "just architecture-check",
         "classification": "Canonical historical certification plus current applicability checks; all closures remain uncertified and every production route fails closed to the full lane.",
         "artifacts": [
-          {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "8a909107e498262574e50feab2dd359857823f4ae664ece5e44b6cbf0ab97d71"},
-          {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "fcbf9db12eda396aa3ced54e876ff7748fba961f871fc280ba803ee2eb55e260"},
-          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "74fb092fc2b2b8e4731cca6c8176a6d314df1c208ed4e821c52844d2246112ca"},
-          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "dd5e21b86eed7449baf32b10aeb4e52f768cb9c9e96f53de541c65e9a560f81a"}
+          {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "4be8cb0128b7efa300611768fa7063a05499423ed154719ae3c1b1405a26ea99"},
+          {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "23fbd47b3fb8126c733e56ee9b765928ad1d9a4d41b5aee40b49f3544be4111a"},
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "6492efdb2bb0ccb22de7d938ee5e1fba2c1968d081868c74756708c40b063199"},
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "d3bc7544255bb018e928cd52d5309fe62b98e5ab087e1016f7f4f709a97b185c"}
         ]
       },
       "package_and_entry_point": {

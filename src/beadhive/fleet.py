@@ -97,7 +97,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypeVar
 
-from . import bd
+from .run import run
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -176,8 +176,17 @@ SQL_TIMEOUT = 60.0  # seconds per `bd sql` call — a local loopback query, gene
 
 
 def sql(store: Path, query: str, *, timeout: float = SQL_TIMEOUT):
-    """``bd -C <store> sql -q <query> --json``. Never raises; the caller reads ``returncode``."""
-    return bd.run(["sql", "-q", query, "--json"], store, capture=True, timeout=timeout)
+    """``bd -C <store> sql -q <query> --json``. Never raises; the caller reads ``returncode``.
+
+    bd-seam-justified: fleet is below metadata/route/bd in the legacy import graph, so routing
+    this bulk transport back through :mod:`beadhive.bd` closes that graph into a cycle.
+    """
+    return run(
+        ["bd", "-C", str(store), "sql", "-q", query, "--json"],
+        check=False,
+        capture=True,
+        timeout=timeout,
+    )
 
 
 def sql_rows(res):
