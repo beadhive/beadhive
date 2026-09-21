@@ -151,6 +151,51 @@ def state(bead, dim, cwd) -> str:
     return (res.stdout or "").strip() if res.returncode == 0 else ""
 
 
+def states_for(ids, dim, cwd) -> dict[str, str]:
+    """State ``dim`` for every requested id via one exact-id brief-list read.
+
+    The returned mapping keeps first-request order; duplicate ids intentionally collapse to one
+    key, while missing rows, blank ids, read failures, and unset dimensions remain exactly ``''``
+    to match :func:`state`. ``bd list --brief`` retains ``labels`` completely, and labels are the
+    only projection consumed here, so the projection rule "absence is request metadata, never a
+    fact" is NOT engaged for this label-only lookup.
+    """
+    requested = list(dict.fromkeys(str(bead_id) for bead_id in ids))
+    values = {bead_id: "" for bead_id in requested}
+    query_ids = [bead_id for bead_id in requested if bead_id]
+    if not query_ids:
+        return values
+
+    rows = json(
+        [
+            "list",
+            "--id",
+            ",".join(query_ids),
+            "--all",
+            "--include-infra",
+            "--limit",
+            "0",
+            "--brief",
+        ],
+        cwd,
+    )
+    if not isinstance(rows, list):
+        return values
+
+    prefix = f"{dim}:"
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        bead_id = str(row.get("id") or "")
+        if bead_id not in values:
+            continue
+        for label in row.get("labels") or []:
+            if str(label).startswith(prefix):
+                values[bead_id] = str(label)[len(prefix) :]
+                break
+    return values
+
+
 def store_prefix(cwd) -> str:
     """The issue prefix the STORE at *cwd* declares for itself, or "" when there is no store.
 

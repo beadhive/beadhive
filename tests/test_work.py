@@ -245,6 +245,22 @@ class FakeBd:
             bead["close_reason"] = ""
             return _CP(0, "", "")
         if sub == "list":
+            if "--id" in args:
+                wanted = args[args.index("--id") + 1].split(",")
+                rows = []
+                for bead_id in wanted:
+                    if bead_id not in self.beads:
+                        continue
+                    row = dict(self.beads[bead_id])
+                    labels = list(row.get("labels") or [])
+                    labels += [
+                        f"{dimension}:{value}"
+                        for dimension, value in self.states.get(bead_id, {}).items()
+                        if value
+                    ]
+                    row["labels"] = labels
+                    rows.append(row)
+                return _CP(0, json.dumps(rows), "")
             if "--parent" in args:
                 parent = args[args.index("--parent") + 1]
                 kids = [b for b in self.beads.values() if b.get("parent") == parent]
@@ -6318,8 +6334,13 @@ def test_merge_group_lands_one_bubble_with_per_bead_commits_and_closes_all(hive,
     preserved inside → bisectable), closes every member, and leaves the integration branch alone."""
     _submit_and_approve_batch(hive, fakebd)
     main_before = _git("rev-parse", "main", cwd=hive.main).stdout.strip()
+    calls_before_merge = len(fakebd.calls)
 
     work.merge(bead="", group="mr-1.1,mr-1.2", hive="myrepo")
+
+    merge_calls = [args for _actor, args in fakebd.calls[calls_before_merge:]]
+    assert sum(args[:1] == ["list"] and "--id" in args for args in merge_calls) == 1
+    assert not any(args[:1] == ["state"] for args in merge_calls)
 
     # ONE --no-ff bubble on the molecule branch, subject "chore(merge): batch <group>"
     assert _git("log", "-1", "--format=%s", "wt/bead/epic/mr-1", cwd=hive.main).stdout.strip() == (
