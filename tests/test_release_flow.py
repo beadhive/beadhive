@@ -10,10 +10,9 @@ are under test here and every test below is one of them:
     reversible moment. `preflight` READS a verdict and refuses without one; it never establishes
     green, because a place that establishes green is a place a red suite is discovered too late.
 
-2.  **THE HOLE THAT BIT 0.11.5.** `cz bump` writes pyproject.toml + CHANGELOG.md + uv.lock, so
-    the release commit is a NEW TREE WITH NO ATTESTATION. `attest --background` fires the gate on
-    that tree the moment it exists and `await` blocks on the verdict — instead of the ~371s gate
-    running inside a push holding an idle socket GitHub will close (bh-53o8f).
+2.  **THE HOLE THAT BIT 0.11.5.** A bump is a new tree, but its exact version-only metadata diff
+    can carry the fully-green parent's code attestations. Only its changelog key reruns; any
+    broader or semantically different diff fails closed instead of repeating a hidden full gate.
 
 3.  **THE MEASURED BRANCH.** `recover` decides between bh-67utw's two cases from the TAG and every
     advertised remote ref, read with `ls-remote` against the actual remote. Never assumed, never

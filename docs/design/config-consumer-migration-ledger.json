@@ -1295,49 +1295,49 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 100,
+        "line": 99,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 400,
+        "line": 399,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 412,
+        "line": 411,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 426,
+        "line": 425,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 953,
+        "line": 952,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 962,
+        "line": 961,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 1785,
+        "line": 1784,
         "path": "tests/test_release_flow.py",
         "target": "beadhive.config.load"
       },

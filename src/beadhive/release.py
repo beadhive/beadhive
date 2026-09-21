@@ -73,6 +73,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 import uuid
 from pathlib import Path
 
@@ -80,6 +81,91 @@ import typer
 
 from . import bd, config, private_paths, registry, validation_ledger, worktree
 from . import release_order as ro
+
+_RELEASE_METADATA_PATHS = {"CHANGELOG.md", "pyproject.toml", "uv.lock"}
+
+
+def _git_blob(repo: Path, rev: str, path: str) -> bytes:
+    result = subprocess.run(
+        ["git", "-C", str(repo), "show", f"{rev}:{path}"], capture_output=True, check=False
+    )
+    if result.returncode != 0:
+        raise ValueError(f"cannot read {path} at {rev[:12]}")
+    return result.stdout
+
+
+def _without_project_version(payload: dict) -> dict:
+    import copy
+
+    normalized = copy.deepcopy(payload)
+    normalized.get("project", {}).pop("version", None)
+    return normalized
+
+
+def _without_self_lock_version(payload: dict) -> dict:
+    import copy
+
+    normalized = copy.deepcopy(payload)
+    matches = [row for row in normalized.get("package", []) if row.get("name") == "beadhive"]
+    if len(matches) != 1:
+        raise ValueError("uv.lock must contain exactly one beadhive package")
+    matches[0].pop("version", None)
+    return normalized
+
+
+def _release_metadata_receipt(entry, main: Path, parent: str, sha: str, keys):
+    """Return a narrow receipt only for the exact semantic shape of a release bump."""
+    from .modules.work.domain.impact import ImpactReceipt, KeyEvidence
+
+    changed = subprocess.run(
+        ["git", "-C", str(main), "diff", "--name-only", parent, sha],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    if set(changed) != _RELEASE_METADATA_PATHS:
+        return None
+    before_project = tomllib.loads(_git_blob(main, parent, "pyproject.toml").decode())
+    after_project = tomllib.loads(_git_blob(main, sha, "pyproject.toml").decode())
+    before_lock = tomllib.loads(_git_blob(main, parent, "uv.lock").decode())
+    after_lock = tomllib.loads(_git_blob(main, sha, "uv.lock").decode())
+    before_version = str(before_project.get("project", {}).get("version", ""))
+    after_version = str(after_project.get("project", {}).get("version", ""))
+    lock_versions = [
+        str(row.get("version", ""))
+        for row in after_lock.get("package", [])
+        if row.get("name") == "beadhive"
+    ]
+    if (
+        not before_version
+        or before_version == after_version
+        or lock_versions != [after_version]
+        or _without_project_version(before_project) != _without_project_version(after_project)
+        or _without_self_lock_version(before_lock) != _without_self_lock_version(after_lock)
+    ):
+        return None
+    names = tuple(key.name for key in keys)
+    invalidated = tuple(name for name in names if name == "docs")
+    unaffected = tuple(name for name in names if name != "docs")
+    evidence = {
+        name: KeyEvidence(
+            reason="release changelog changed" if name == "docs" else "version metadata only"
+        )
+        for name in names
+    }
+    return ImpactReceipt(
+        backend="release-metadata",
+        backend_version="1",
+        base_tree=validation_ledger.tree_of(entry, parent),
+        head_tree=validation_ledger.tree_of(entry, sha),
+        changed_paths=tuple(changed),
+        unowned_paths=(),
+        global_inputs_hit=(),
+        invalidated_keys=invalidated,
+        unaffected_keys=unaffected,
+        evidence=evidence,
+    )
+
 
 # `prepush` is imported per-call, not here: it pulls `guard` + `host_fence` (~14ms measured) and
 # `cli.py` imports THIS module at startup, so a top-level import would tax every `bh` invocation
@@ -418,21 +504,35 @@ def attest(
 
     if not background:
         if if_needed:
-            from . import selective_validation
+            from . import config_work_settings, selective_validation
+            from .bootstrap.impact import attest_keys
 
-            parent = subprocess.run(
+            parent_result = subprocess.run(
                 ["git", "-C", str(main), "rev-parse", f"{sha}^"],
                 capture_output=True,
                 text=True,
                 check=False,
-            ).stdout.strip()
+            )
+            parent = parent_result.stdout.strip() if parent_result.returncode == 0 else ""
             selective = selective_validation.configured(cfg := config.load(), entry)
+            keys = attest_keys(config_work_settings.attest_config(cfg, entry))
+            release_receipt = (
+                _release_metadata_receipt(entry, main, parent, sha, keys) if parent else None
+            )
+            if release_receipt and not selective_validation.all_keys_green(entry, cfg, parent):
+                typer.echo(
+                    "✗ release metadata bump parent is not fully attested green — refusing "
+                    "carry-forward",
+                    err=True,
+                )
+                raise typer.Exit(REFUSED)
             rc = selective_validation.run(
                 entry,
                 cfg,
                 base_rev=parent or sha,
                 head_rev=sha,
                 runner=lambda key_cmd: worktree.clean_checkout(entry, sha, key_cmd, reuse=True),
+                receipt_override=release_receipt,
             )
             if rc == 0 and selective and selective_validation.all_keys_green(entry, cfg, sha):
                 validation_ledger.record(entry, sha, cmd, 0)
