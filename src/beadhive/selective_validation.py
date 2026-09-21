@@ -109,8 +109,26 @@ def run(
 
     by_name = {key.name: key for key in active_keys}
     outcomes: dict[str, int | None] = {}
+
+    def reuse_exact_tree(key) -> bool:
+        """Reuse only an already-qualifying verdict for this exact tree and command."""
+        try:
+            verdict = validation_ledger.key_verdict(entry, head_rev, key, cfg=cfg)
+        except (KeyError, OSError, ValueError):
+            return False
+        if verdict.state == validation_ledger.KeyVerdictState.CARRIED or (
+            verdict.state == validation_ledger.KeyVerdictState.CURRENT
+            and validation_ledger.is_qualifying_green(verdict.record or {})
+        ):
+            typer.echo(f"  ✓ {key.name}: exact-tree verdict reused")
+            outcomes[key.name] = 0
+            return True
+        return False
+
     for name in receipt.unaffected_keys:
         key = by_name[name]
+        if reuse_exact_tree(key):
+            continue
         carried = validation_ledger.carry_key_verdict(entry, key, receipt, cfg=cfg)
         verdict = validation_ledger.key_verdict(entry, head_rev, key, cfg=cfg)
         if carried or verdict.state == validation_ledger.KeyVerdictState.CARRIED:
@@ -134,6 +152,8 @@ def run(
 
     for name in receipt.invalidated_keys:
         key = by_name[name]
+        if reuse_exact_tree(key):
+            continue
         rc = runner(key.cmd)
         outcomes[name] = rc
         state = "ran green" if rc == 0 else "unknown" if rc == 75 else f"ran red (exit {rc})"
