@@ -4,8 +4,8 @@
   "current_graph": {
     "cyclic_components": 8,
     "cyclic_edges": 155,
-    "import_edges": 3010,
-    "python_files": 336
+    "import_edges": 3015,
+    "python_files": 337
   },
   "format_version": 1,
   "full_gate": "bh work check bh-3qkmk.5",
@@ -30,7 +30,7 @@
         "cycle_member": false,
         "cyclic_edges_touching_root": [],
         "direct_beadhive_dependencies": [
-          "beadhive.cli"
+          "beadhive.cli_entrypoint"
         ],
         "direct_beadhive_dependency_count": 1,
         "module": "beadhive.bootstrap.cli",
