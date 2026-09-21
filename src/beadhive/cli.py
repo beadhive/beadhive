@@ -3945,7 +3945,7 @@ def backup_export(
 
     out_dir = Path(dest) if dest else backup_mod.mirror_root()
     out_dir.mkdir(parents=True, exist_ok=True)
-    run(["bd", "export", "-o", f"{out_dir}/issues.jsonl", "--all"])
+    bd_mod.run(["export", "-o", f"{out_dir}/issues.jsonl", "--all"], Path.cwd())
     typer.echo(f"exported → {out_dir}/issues.jsonl")
 
 

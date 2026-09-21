@@ -107,11 +107,7 @@ def persist_shared_server_mode(store) -> None:
             "directly to .beads/metadata.json so a restore never trusts a stale mode.",
             err=True,
         )
-    run(
-        ["bd", "-C", str(store), "config", "set", _SHARED_SERVER_CONFIG_KEY, "true"],
-        check=False,
-        capture=True,
-    )
+    bd.run(["config", "set", _SHARED_SERVER_CONFIG_KEY, "true"], store, capture=True)
 
 
 # bd's idempotent re-add refusal — expected on every re-sync, not an error.
@@ -133,7 +129,7 @@ def _registered_repo_paths(hub) -> list[str]:
     """Additional repo paths registered in the hub (``bd repo list``), excluding the
     primary ``.``. Parses the human listing (``- <path>`` lines); ``--json`` is a no-op
     for this bd verb. Empty on a listing failure — reconcile then no-ops safely."""
-    res = run(["bd", "-C", str(hub), "repo", "list"], check=False, capture=True)
+    res = bd.run(["repo", "list"], hub, capture=True)
     if res.returncode:
         return []
     return [
@@ -198,7 +194,7 @@ def _reconcile_removed(hub, cfg, managed, marks: dict[str, str] | None = None) -
     for path in _registered_repo_paths(hub):
         if path in desired:
             continue
-        rm = run(["bd", "-C", str(hub), "repo", "remove", path], check=False, capture=True)
+        rm = bd.run(["repo", "remove", path], hub, capture=True)
         if rm.returncode:
             typer.echo(f"  ⚠ could not drop stale hub entry {path}: {bd.err_line(rm)}", err=True)
         else:
@@ -244,12 +240,7 @@ def ensure_store(store, prefix, *, database: str | None = None):
     disposable generated aggregate and its fixed database name, supplies it."""
     if not (store / ".beads").is_dir():
         store.mkdir(parents=True, exist_ok=True)
-        cmd = [
-            "bd",
-            "init",
-            "--prefix",
-            prefix,
-        ]
+        cmd = ["init", "--prefix", prefix]
         if database is not None:
             cmd.extend(["--database", database])
         cmd.extend(
@@ -261,7 +252,13 @@ def ensure_store(store, prefix, *, database: str | None = None):
             ]
         )
         try:
-            res = run(cmd, cwd=str(store), env=_bd_ni_env(), check=False)
+            res = bd.run(
+                cmd,
+                store,
+                env=_bd_ni_env(),
+                hive_aware=False,
+                pin_process_cwd=True,
+            )
         except FileNotFoundError:
             typer.echo(
                 "✗ `bd` not found on PATH — install beads before running "
@@ -284,11 +281,7 @@ def ensure_store(store, prefix, *, database: str | None = None):
                 "directly to .beads/metadata.json so a restore never trusts a stale mode.",
                 err=True,
             )
-        run(
-            ["bd", "-C", str(store), "config", "set", _SHARED_SERVER_CONFIG_KEY, "true"],
-            check=False,
-            capture=True,
-        )
+        bd.run(["config", "set", _SHARED_SERVER_CONFIG_KEY, "true"], store, capture=True)
     return store
 
 
@@ -534,12 +527,7 @@ def _ensure_shared_server_running(cache: Path) -> None:
 
     if dolt_health.probe_shared_server().reachable:
         return
-    run(
-        ["bd", "-C", str(cache), "dolt", "start", "--global"],
-        check=False,
-        capture=True,
-        env={**bootstrap_env()},
-    )
+    bd.run(["dolt", "start", "--global"], cache, capture=True, env={**bootstrap_env()})
 
 
 def _fetch_cache(cfg, entry):
@@ -779,7 +767,7 @@ def _sync_hive(hub, cfg, src, prefix, *, export: bool = True) -> bool:
         res = engine.get_engine(cfg).export_jsonl(src, jsonl, env=_bd_ni_env())
         if res.returncode:
             typer.echo(f"  ⚠ {prefix}: bd export failed: {bd.err_line(res)}", err=True)
-    add = run(["bd", "-C", str(hub), "repo", "add", str(src)], check=False, capture=True)
+    add = bd.run(["repo", "add", str(src)], hub, capture=True)
     if add.returncode and _ALREADY_CONFIGURED not in _output(add):
         typer.echo(f"  ✗ {prefix}: bd repo add failed: {bd.err_line(add)}", err=True)
         return False
@@ -936,9 +924,15 @@ def sync():
         bulk_hydrated = hub_bulk.run_bulk_pass(hub, bulk_entries)
 
     remainder = [(prefix, src) for prefix, src in added if prefix not in bulk_hydrated]
-    res = run(["bd", "-C", str(hub), "repo", "sync"], check=False, capture=True)
+    failure_markers = tuple(f"failed to import from {src}" for _, src in remainder)
+    res = bd.run(
+        ["repo", "sync"],
+        hub,
+        capture=True,
+        no_work_markers=failure_markers,
+    )
     report = (res.stdout or "") + (res.stderr or "")
-    if res.returncode:
+    if res.returncode and not getattr(res, "bd_no_work", False):
         typer.echo(f"  ✗ bd repo sync failed: {bd.err_line(res)}", err=True)
         failed.extend(prefix for prefix, _ in remainder)
         remainder = []
@@ -1108,6 +1102,11 @@ def bounded_bd(store, args, *, label: str, missing_hint: str):
     the host-wide read ceiling. The shared body of :func:`query` (the hub) and ``hq.query``
     (the HQ store); the bounds belong to the SPAWN, not to which store it happens to read, so
     splitting the two surfaces (bh-89wxf.2) must not accidentally leave one unbounded.
+
+    ``bd-seam-justified``: this streaming aggregate query uses ``run_bounded``'s process-group
+    supervisor so a timeout kills descendants too. The ordinary bd seam returns a completed
+    process but intentionally does not own process groups; flattening this path onto it would
+    regress cancellation of Dolt descendants.
 
     ``missing_hint`` is the whole message printed when the store isn't initialized, since
     "run `bh sync`" is right for the derived hub and wrong for HQ."""

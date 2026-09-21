@@ -293,8 +293,8 @@ def test_disabled_step_action_never_runs() -> None:
 
 
 def _capture_bd_calls(monkeypatch):
-    """Patch onboard's hive.run seam; return the list of commands it receives."""
-    from beadhive import hive
+    """Patch onboard's bd seam; return the list of commands it receives."""
+    from beadhive import onboard
 
     calls: list[list[str]] = []
 
@@ -302,7 +302,7 @@ def _capture_bd_calls(monkeypatch):
         calls.append(list(cmd))
         return _Ok()
 
-    monkeypatch.setattr(hive, "run", _fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "_run", _fake_run)
     return calls
 
 
@@ -329,7 +329,7 @@ def test_bd_init_unsets_remote_without_push_access(monkeypatch):
         cwd="/t",
     )
     onboard._guard_beads_remote(ctx)
-    assert ["bd", "config", "unset", "sync.remote"] in calls
+    assert any(call[-3:] == ["config", "unset", "sync.remote"] for call in calls)
 
 
 def test_bd_init_keeps_remote_with_push_access(monkeypatch):

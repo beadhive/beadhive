@@ -50,6 +50,7 @@ from pathlib import Path
 
 from . import cache_store, config
 from .bd import err_line
+from .bd import run as run_bd
 from .run import run
 from .wt_status import WtClassification
 
@@ -451,7 +452,7 @@ def _prune_keep_n(
 
 
 def _bd(args: list[str], cwd: Path):
-    return run(["bd", "-C", str(cwd), *args], check=False, capture=True, timeout=BD_TIMEOUT)
+    return run_bd(args, cwd, capture=True, timeout=BD_TIMEOUT)
 
 
 # ---- root 1: HQ pre-push backup ------------------------------------------------

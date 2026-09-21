@@ -504,7 +504,9 @@ def test_server_probe_uses_bd_sql(tmp_path, monkeypatch):
         calls.append(cmd)
         return Completed(0, _json_bare_array(max_version=12), "")
 
-    monkeypatch.setattr(dolt_health, "run", fake_run)
+    monkeypatch.setattr(
+        dolt_health.bd, "run", lambda args, cwd, **kw: fake_run(["bd", *args], **kw)
+    )
     result = dolt_health.probe_server_schema_version(tmp_path)
     assert result.version == 12
     assert calls[0][0] == "bd"
@@ -520,7 +522,7 @@ def test_server_probe_succeeds_despite_nonzero_exit_when_a_bd_warning_is_the_onl
     a future `bd`/`dolt` build ever DOES pair a nonzero exit with an all-warning stderr, the
     optimistic stdout-parse must still win — not read as a failed probe."""
     monkeypatch.setattr(
-        dolt_health,
+        dolt_health.bd,
         "run",
         lambda *a, **k: Completed(
             1,
@@ -538,7 +540,9 @@ def test_server_probe_fails_on_nonzero_exit_with_a_real_error_and_no_parseable_s
 ):
     """The opposite case must still fail: a nonzero exit with no usable stdout and a REAL
     error on stderr is a genuine probe failure, warning-filter or not."""
-    monkeypatch.setattr(dolt_health, "run", lambda *a, **k: Completed(1, "", "connection refused"))
+    monkeypatch.setattr(
+        dolt_health.bd, "run", lambda *a, **k: Completed(1, "", "connection refused")
+    )
     result = dolt_health.probe_server_schema_version(tmp_path)
     assert result.version is None
     assert "connection refused" in result.detail
@@ -552,7 +556,7 @@ def test_server_probe_reports_the_real_error_not_a_buried_warning(tmp_path, monk
     OLD detail extraction (`(res.stderr or res.stdout or ...).splitlines()[:1]`) reporting the
     first line, i.e. the harmless warning, and discarding the real error beneath it."""
     monkeypatch.setattr(
-        dolt_health,
+        dolt_health.bd,
         "run",
         lambda *a, **k: Completed(
             1,
@@ -641,7 +645,7 @@ def test_probe_raw_schema_version_dispatches_server_mode(tmp_path, monkeypatch):
 
 
 def test_local_bd_schema_version_none_when_bd_missing(monkeypatch):
-    monkeypatch.setattr(dolt_health, "run", lambda *a, **k: Completed(1, "", "not found"))
+    monkeypatch.setattr(dolt_health.bd, "run", lambda *a, **k: Completed(1, "", "not found"))
     result = dolt_health.local_bd_schema_version()
     assert result.version is None
 
@@ -671,6 +675,11 @@ def test_local_bd_schema_version_caches_by_bd_version_string(tmp_path, monkeypat
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(dolt_health, "run", fake_run)
+    monkeypatch.setattr(
+        dolt_health.bd,
+        "run",
+        lambda args, cwd, **kw: fake_run(["bd", *args], cwd=str(cwd) if cwd else None),
+    )
 
     first = dolt_health.local_bd_schema_version()
     second = dolt_health.local_bd_schema_version()
@@ -698,6 +707,11 @@ def test_local_bd_schema_version_reprobes_after_a_bd_upgrade(tmp_path, monkeypat
         raise AssertionError(cmd)
 
     monkeypatch.setattr(dolt_health, "run", fake_run)
+    monkeypatch.setattr(
+        dolt_health.bd,
+        "run",
+        lambda args, cwd, **kw: fake_run(["bd", *args], cwd=str(cwd) if cwd else None),
+    )
 
     before = dolt_health.local_bd_schema_version()
     state["version"] = "bd version 2.0.0"

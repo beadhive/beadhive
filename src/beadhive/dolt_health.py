@@ -84,7 +84,7 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import config, fleet, store_locator
+from . import bd, config, fleet, store_locator
 from .run import ps_argv, run
 
 # bd's own shared-server defaults (internal/doltserver/doltserver.go) — read-only CONSTANTS
@@ -577,11 +577,8 @@ def probe_server_schema_version(
     (`github/briancripe/testfoo`, port 3308). Best-effort and defensive by construction: any
     unexpected shape parses to ``None`` rather than raising, so an unverified assumption here
     can degrade to "unknown" but never to a wrong number."""
-    res = run(
-        ["bd", "-C", str(hive_dir), "sql", "-q", SCHEMA_MIGRATIONS_QUERY, "--json"],
-        check=False,
-        capture=True,
-        timeout=timeout,
+    res = bd.run(
+        ["sql", "-q", SCHEMA_MIGRATIONS_QUERY, "--json"], hive_dir, capture=True, timeout=timeout
     )
     version = _parse_max_version(res.stdout)
     if version is not None:
@@ -737,7 +734,7 @@ def _local_cache_path() -> Path:
 
 def _read_local_bd_version_string(timeout: float) -> str | None:
     """One `bd --version`. Not called directly — go through :func:`_local_bd_version_string`."""
-    res = run(["bd", "--version"], check=False, capture=True, timeout=timeout)
+    res = bd.run(["--version"], None, capture=True, timeout=timeout, hive_aware=False)
     if res.returncode != 0:
         return None
     out = (res.stdout or res.stderr or "").strip()
@@ -805,18 +802,13 @@ def _scratch_probe_local_version(timeout: float) -> SchemaProbeResult:
     with tempfile.TemporaryDirectory(prefix="bh-wnly-schema-probe-") as tmp:
         scratch = Path(tmp)
         prefix = f"schemaprobe{uuid.uuid4().hex[:8]}"
-        init = run(
-            [
-                "bd",
-                "init",
-                "--prefix",
-                prefix,
-                "--non-interactive",
-            ],
-            check=False,
+        init = bd.run(
+            ["init", "--prefix", prefix, "--non-interactive"],
+            scratch,
             capture=True,
-            cwd=str(scratch),
             timeout=timeout,
+            hive_aware=False,
+            pin_process_cwd=True,
         )
         if init.returncode != 0:
             return _probe_failure(init, tool="bd init", target=scratch)

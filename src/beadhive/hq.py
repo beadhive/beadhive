@@ -51,6 +51,7 @@ from . import (
     store_locator,
 )
 from .bd import err_line
+from .bd import run as run_bd
 from .run import run
 
 GIT_TIMEOUT = 30.0  # seconds — bounds a git ls-remote/fetch/push so a wedged remote can't hang
@@ -719,7 +720,7 @@ def _git(args: list[str], cwd: Path):
 
 
 def _bd(args: list[str], cwd: Path):
-    return run(["bd", "-C", str(cwd), *args], check=False, capture=True, timeout=BD_TIMEOUT)
+    return run_bd(args, cwd, capture=True, timeout=BD_TIMEOUT)
 
 
 def _remote_urls(remote: str) -> tuple[str, str]:
@@ -1246,7 +1247,7 @@ def _ref_safe(text: str) -> str:
 
 
 def _bd_version() -> str:
-    res = run(["bd", "--version"], check=False, capture=True, timeout=GIT_TIMEOUT)
+    res = run_bd(["--version"], None, capture=True, timeout=GIT_TIMEOUT, hive_aware=False)
     tokens = (res.stdout or res.stderr or "").split()
     # "bd version HEAD-af076b6 (Homebrew)" -> "HEAD-af076b6"; tolerate any other shape.
     raw = tokens[2] if len(tokens) >= 3 else (tokens[-1] if tokens else "unknown")

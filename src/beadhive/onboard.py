@@ -806,7 +806,13 @@ def _run_bd_mint(cmd: list[str], ctx: Ctx, *, env: dict) -> None:
     hint got a hive reported `✓ ready` whose store never existed."""
     from . import hive
 
-    res = hive.run(cmd, env=env, cwd=ctx.cwd, check=False)
+    res = bd_mod.run(
+        cmd[1:],
+        ctx.base,
+        env=env,
+        hive_aware=False,
+        pin_process_cwd=True,
+    )
     if getattr(res, "returncode", 1) == 0:
         return
     hive.cleanup_failed_bd_init(ctx.base)
@@ -936,8 +942,6 @@ def _ensure_server_mode_persisted(ctx: Ctx) -> None:
     `dolt.shared-server: true` in `.beads/config.yaml` — belt-and-suspenders durability so a
     later invocation never depends on the activating flag/env var being supplied again
     (mirrors `storage_migrate._persist_shared_server_config`)."""
-    from . import hive
-
     if store_locator.ensure_server_mode_persisted(ctx.base):
         # Defensive path only — not the measured common case (see docstring). Already written
         # by the shared helper; fix it visibly, never silently, matching
@@ -948,7 +952,7 @@ def _ensure_server_mode_persisted(ctx: Ctx) -> None:
             "a stale mode.",
             err=True,
         )
-    hive.run(["bd", "config", "set", SHARED_SERVER_CONFIG_KEY, "true"], cwd=ctx.cwd, check=False)
+    bd_mod.run(["config", "set", SHARED_SERVER_CONFIG_KEY, "true"], ctx.base)
 
 
 def _repo_has_git_remote(base: Path) -> bool:
@@ -969,11 +973,9 @@ def _enable_backup_if_remote(ctx: Ctx) -> None:
     condition embedded's own default uses (a git remote present) rather than unconditionally —
     a remote-less prototype would have defaulted OFF in embedded too, so leave bd's own default
     alone there instead of manufacturing a difference that was never real."""
-    from . import hive
-
     if not _repo_has_git_remote(ctx.base):
         return
-    hive.run(["bd", "config", "set", "backup.enabled", "true"], cwd=ctx.cwd, check=False)
+    bd_mod.run(["config", "set", "backup.enabled", "true"], ctx.base)
 
 
 # GH#2455 dirty-config bypass (bh-areg.2) — ONE named unit, removable without archaeology.
@@ -1015,14 +1017,8 @@ def _bypass_gh2455_dirty_config(ctx: Ctx) -> None:
     for gastownhall/beads#4934 or #5111 — i.e. once a bd-native `bd dolt commit`/`bd dolt add`
     clears the dirty `config` row on a fresh server-mode init without this SQL bypass.
     """
-    from . import hive  # via hive.run so it honors the same run binding hive.init used
-
-    probe = hive.run(
-        ["bd", "sql", "--json", "SELECT * FROM dolt_status"],
-        cwd=ctx.cwd,
-        check=False,
-        capture=True,
-        timeout=30,
+    probe = bd_mod.run(
+        ["sql", "--json", "SELECT * FROM dolt_status"], ctx.base, capture=True, timeout=30
     )
     if getattr(probe, "returncode", 1) != 0:
         return  # embedded mode (`bd sql` unsupported), or nothing to probe yet — nothing to do
@@ -1036,22 +1032,15 @@ def _bypass_gh2455_dirty_config(ctx: Ctx) -> None:
         "`bd dolt pull` doesn't refuse.",
         err=True,
     )
-    hive.run(
-        ["bd", "sql", "CALL DOLT_ADD('-A')"], cwd=ctx.cwd, check=False, capture=True, timeout=30
-    )
-    hive.run(
-        ["bd", "sql", "CALL DOLT_COMMIT('-m', 'chore: clear bd dirty-config state (bh-areg.2)')"],
-        cwd=ctx.cwd,
-        check=False,
+    bd_mod.run(["sql", "CALL DOLT_ADD('-A')"], ctx.base, capture=True, timeout=30)
+    bd_mod.run(
+        ["sql", "CALL DOLT_COMMIT('-m', 'chore: clear bd dirty-config state (bh-areg.2)')"],
+        ctx.base,
         capture=True,
         timeout=30,
     )
-    verify = hive.run(
-        ["bd", "sql", "--json", "SELECT * FROM dolt_status"],
-        cwd=ctx.cwd,
-        check=False,
-        capture=True,
-        timeout=30,
+    verify = bd_mod.run(
+        ["sql", "--json", "SELECT * FROM dolt_status"], ctx.base, capture=True, timeout=30
     )
     still_dirty = getattr(verify, "returncode", 1) != 0 or _dolt_status_has_dirty_config(
         getattr(verify, "stdout", "")
@@ -1103,7 +1092,7 @@ def _configure_auto_export(ctx: Ctx) -> None:
     from . import hive
 
     for key, value in _EXPORT_CONFIG:
-        res = hive.run(["bd", "config", "set", key, value], cwd=ctx.cwd, check=False)
+        res = bd_mod.run(["config", "set", key, value], ctx.base)
         if getattr(res, "returncode", 1) != 0:
             # Advisory: never fail an onboard over an optional interop nicety. A bd that
             # predates these keys still produces a working hive.
@@ -1130,11 +1119,9 @@ def _guard_beads_remote(ctx: Ctx) -> None:
     would point our beads remote at THEIR upstream. Beads must live on a repo we own or nowhere
     (bh-dhl6): unless push access is confirmed (viewerPermission ADMIN/WRITE/MAINTAIN), unset the
     remote. Fail-closed — gh absent / non-github / probe error all leave the remote unset."""
-    from . import hive  # via hive.run so it honors the same run binding
-
     if registry.has_push_access(ctx.provider, ctx.org, ctx.repo):
         return
-    res = hive.run(["bd", "config", "unset", "sync.remote"], cwd=ctx.cwd, check=False, capture=True)
+    res = bd_mod.run(["config", "unset", "sync.remote"], ctx.base, capture=True)
     if getattr(res, "returncode", 0) == 0:
         typer.echo(
             "• beads remote: unset sync.remote — no confirmed push access to "
