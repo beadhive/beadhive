@@ -739,12 +739,8 @@ exact same logic and granularity (`_sandbox_subtree`, `_replace_for_hive`, `_git
 it writes this hive's own worktree subtree (`<root>/<provider>/<org>/<repo>`, never the whole
 shared root) into a marked block in the hive clone's **`.codex/config.toml`**
 (project-local, git-excluded — host-specific, just like `.claude/settings.local.json`), under
-`[sandbox_workspace_write] writable_roots = [...]`. The same managed block enables Codex's
-network proxy with an allow rule only for bd's resolved Dolt host (normally `127.0.0.1`), so
-sandboxed `bh`/`bd` commands can reach the local SQL endpoint without opening public outbound
-networking. Codex's domain rules are host-scoped rather than port-scoped; the diagnostic names
-the resolved Dolt port. Re-running after `worktrees.path` moves replaces the stale entry rather
-than piling on. Ephemeral worktrees still install the network portion with no added writable root.
+`[sandbox_workspace_write] writable_roots = [...]`. Re-running after `worktrees.path` moves
+replaces the stale entry rather than piling on.
 
 Empirically verified against the installed `codex` binary (codex-cli 0.147.0; see
 `src/beadhive/hive.py`'s `_install_codex_sandbox_grant` comment block for the full method) —
@@ -774,9 +770,10 @@ project look untrusted-gate-free when it wasn't):
   climbs from cwd to find `.codex/` the same way git finds `.git`.
 - The correct key is `[sandbox_workspace_write] writable_roots = [...]`, **not** the beta
   `[permissions.<name>]` form — confirmed live, not assumed from docs.
-- The writer never sets `sandbox_mode`: once trusted, `codex exec`'s own default is already
-  `workspace-write`. It sets that mode's writable roots and network access, with the enabled
-  proxy restricting command traffic to the resolved Dolt host.
+- The writer sets only `writable_roots`, never `sandbox_mode`: once trusted, `codex exec`'s
+  own default is already `workspace-write`, so the grant never overrides an operator's own
+  `-s`/`sandbox_mode` choice (and setting it wouldn't help an untrusted project anyway, per
+  the trust-gate finding above).
 - Known no-op, not an error: if the operator's ambient config already opted into the newer
   `default_permissions`/`[permissions.<name>]` scheme, it's mutually exclusive with
   `sandbox_workspace_write` per Codex's own docs — the grant is silently dropped from the
