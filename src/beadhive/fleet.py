@@ -97,7 +97,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TypeVar
 
-from .run import run
+from . import bd
 
 T = TypeVar("T")
 R = TypeVar("R")
@@ -177,12 +177,7 @@ SQL_TIMEOUT = 60.0  # seconds per `bd sql` call — a local loopback query, gene
 
 def sql(store: Path, query: str, *, timeout: float = SQL_TIMEOUT):
     """``bd -C <store> sql -q <query> --json``. Never raises; the caller reads ``returncode``."""
-    return run(
-        ["bd", "-C", str(store), "sql", "-q", query, "--json"],
-        check=False,
-        capture=True,
-        timeout=timeout,
-    )
+    return bd.run(["sql", "-q", query, "--json"], store, capture=True, timeout=timeout)
 
 
 def sql_rows(res):

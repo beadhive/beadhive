@@ -82,9 +82,8 @@ class _Recorder:
 
 def _wire(monkeypatch, rec, tmp_path, *, hq_present=True):
     """Point escalate + report at a fake bd and a tmp HQ store."""
-    # Patch both module-level `run` references (report.run and escalate.run).
+    # Both report creation and escalation metadata now meet at the shared bd subprocess seam.
     monkeypatch.setattr(report.bd, "_run", rec)
-    monkeypatch.setattr(escalate, "run", rec)
     # Intake validates only the NEW bead's labels; default them clean.
     monkeypatch.setattr(report.validate, "bead_violations", lambda *a, **kw: [])
 

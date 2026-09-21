@@ -49,34 +49,74 @@ def names_bead(desc: str, bead: str) -> bool:
     )
 
 
-def run(args, cwd, actor="", capture=False, text_input=None, pin_process_cwd=False):
+def run(
+    args,
+    cwd,
+    actor="",
+    capture=False,
+    text_input=None,
+    pin_process_cwd=False,
+    *,
+    timeout=120.0,
+    env=None,
+    hive_aware=True,
+    no_work_markers=(),
+):
     """Run a `bd` subcommand scoped to the hive via `-C <cwd>` (so the right Beads DB is hit
     regardless of the process cwd / `--hive`). Prepends `--actor <name>` for the audit trail;
     `text_input` feeds stdin (e.g. a JSONL record for `bd import -`). The one shared bd-invocation
-    helper the work/plan/triage/report layers all call — routed through the configured
-    `Engine.passthrough` (bh-dw3e.5; `bd` is the only engine today, so this is extraction-only).
+    helper the work/plan/triage/report layers all call — routed through the configured bounded
+    `Engine.invoke` seam (bh-dw3e.5; `bd` is the only engine today).
 
     `pin_process_cwd=True` (bh-s08me): also pins the CHILD PROCESS's real cwd to `cwd`, for a
     GIT-CONFIG-backed key (e.g. `beads.role`) that `-C` alone does not scope — see
     `Engine.passthrough`'s docstring. Leave False for ordinary beads-DB commands, which `-C`
-    already scopes correctly."""
+    already scopes correctly. ``hive_aware=False`` is the explicit ambient/process-cwd variant;
+    ``capture=False`` streams; and ``no_work_markers`` promotes bd's known exit-0 failure reports
+    into an ordinary non-zero completed result."""
     from . import engine  # lazy: engine imports bd, so keep the cycle import-safe
 
-    return engine.get_engine().passthrough(
+    return engine.get_engine().invoke(
         args,
-        cwd,
+        cwd=cwd,
         actor=actor,
         capture=capture,
         text_input=text_input,
         pin_process_cwd=pin_process_cwd,
+        timeout=timeout,
+        env=env,
+        hive_aware=hive_aware,
+        no_work_markers=tuple(no_work_markers),
     )
 
 
+_ADVISORY_LINE_PREFIXES = ("Notice:", "Hint:")
+
+
 def err_line(res) -> str:
-    """First non-empty output line — bd's `Error: …` headline, never its usage dump."""
+    """The significant bd failure line, skipping leading informational advisory blocks."""
+    first = ""
+    significant: list[str] = []
+    in_advisory_block = False
     for line in ((res.stdout or "") + (res.stderr or "")).splitlines():
-        if line.strip():
-            return line.strip()
+        stripped = line.strip()
+        if not stripped:
+            in_advisory_block = False
+            continue
+        if not first:
+            first = stripped
+        if in_advisory_block and line[:1].isspace():
+            continue
+        in_advisory_block = stripped.startswith(_ADVISORY_LINE_PREFIXES)
+        if not in_advisory_block:
+            significant.append(stripped)
+    for line in significant:
+        if line.startswith("Error:"):
+            return line
+    if significant:
+        return significant[0]
+    if first:
+        return first
     return f"exit {res.returncode}"
 
 
@@ -534,7 +574,14 @@ def create(create_args, cwd) -> tuple[int, str]:
                 f"'{config.BINARY_ALIAS} label validate'): " + "; ".join(problems)
             )
     extra = triplet_label_args(cwd)
-    return _rc_error(_run(["bd", "create", *create_args, *extra], check=False, cwd=cwd))
+    return _rc_error(
+        run(
+            ["create", *create_args, *extra],
+            cwd,
+            hive_aware=False,
+            pin_process_cwd=True,
+        )
+    )
 
 
 def _rc_error(res) -> tuple[int, str]:
@@ -737,7 +784,15 @@ def import_labeled(import_args, cwd) -> tuple[int, str]:
     always falls through to plain `bd import --help` — usage should print even with label
     violations, and without touching stdin/the identity triplet."""
     if _is_help(import_args):
-        return _run(["bd", "import", *import_args], check=False, cwd=cwd).returncode, ""
+        return (
+            run(
+                ["import", *import_args],
+                cwd,
+                hive_aware=False,
+                pin_process_cwd=True,
+            ).returncode,
+            "",
+        )
     ident = workspace_identity(cwd)
     if ident is None:
         return 1, "not inside a managed hive — cannot resolve the identity triplet for import."
@@ -792,7 +847,7 @@ def _import(import_args, cwd):
     return code
 
 
-_WISP_MOLECULE_QUERY = ["bd", "mol", "wisp", "list", "--all", "--json"]
+_WISP_MOLECULE_QUERY = ["mol", "wisp", "list", "--all", "--json"]
 
 # Cobra persistent flags are valid before, between, or after subcommands. Classification cannot
 # simply discard tokens beginning with ``-``: a value such as ``ops/a`` would remain and shift the
@@ -929,7 +984,13 @@ def wisp_cleanup_refusal(args, cwd) -> str:
     """
     if not _is_guarded_wisp_cleanup(args) or config._env_flag("debug"):
         return ""
-    res = _run(_WISP_MOLECULE_QUERY, check=False, capture=True, cwd=cwd)
+    res = run(
+        _WISP_MOLECULE_QUERY,
+        cwd,
+        capture=True,
+        hive_aware=False,
+        pin_process_cwd=True,
+    )
     if res.returncode != 0:
         return (
             "✗ refusing destructive wisp cleanup: could not verify hive-wide wisp molecule "
@@ -973,7 +1034,7 @@ def _run_one(args, cwd, cfg=None):
         return _create(args[1:], cwd)
     if args and args[0] == "import":
         return _import(args[1:], cwd)
-    return _run(["bd", *args], check=False, cwd=cwd).returncode
+    return run(args, cwd, hive_aware=False, pin_process_cwd=True).returncode
 
 
 def passthrough(mode, target, args):

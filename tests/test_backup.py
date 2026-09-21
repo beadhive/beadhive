@@ -514,7 +514,9 @@ def test_rotate_dry_run_previews_without_mutating(monkeypatch, tmp_path):
     (b / "chunk.darc").write_bytes(b"x" * 100)
 
     calls = []
-    monkeypatch.setattr(backup, "run", lambda *a, **k: calls.append(a) or _fake_bd_ok(*a, **k))
+    monkeypatch.setattr(
+        backup, "run_bd", lambda *a, **k: calls.append(a) or _fake_bd_ok(*a, **k)
+    )
 
     out = backup.rotate_hive_backup(
         hive_dir, {"backup": {"hive_cap_mb": 0}}, dry_run=True, confirm=True
@@ -550,11 +552,11 @@ def test_rotate_real_run_renames_reinits_and_syncs(monkeypatch, tmp_path):
 
     calls: list[list[str]] = []
 
-    def _fake_run(cmd, **kw):
-        calls.append(cmd)
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+    def _fake_run(args, cwd, **kw):
+        calls.append(args)
+        return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(backup, "run", _fake_run)
+    monkeypatch.setattr(backup, "run_bd", _fake_run)
 
     out = backup.rotate_hive_backup(
         hive_dir, {"backup": {"hive_cap_mb": 0}}, dry_run=False, confirm=True
@@ -565,10 +567,9 @@ def test_rotate_real_run_renames_reinits_and_syncs(monkeypatch, tmp_path):
     assert out.rotated_to.is_dir()
     assert (out.rotated_to / "chunk.darc").is_file()
     assert not b.exists()  # bd backup init was faked — nothing recreated it on disk
-    subs = [c[3:] for c in calls]  # ["bd", "-C", hive_dir, *sub]
-    assert subs[0] == ["backup", "remove"]
-    assert subs[1] == ["backup", "init", str(b)]
-    assert subs[2] == ["backup", "sync"]
+    assert calls[0] == ["backup", "remove"]
+    assert calls[1] == ["backup", "init", str(b)]
+    assert calls[2] == ["backup", "sync"]
 
 
 def test_rotate_force_ignores_the_cap(monkeypatch, tmp_path):
@@ -576,7 +577,9 @@ def test_rotate_force_ignores_the_cap(monkeypatch, tmp_path):
     b = hive_dir / ".beads" / "backup"
     b.mkdir(parents=True)
     (b / "chunk.darc").write_bytes(b"x" * 100)
-    monkeypatch.setattr(backup, "run", _fake_bd_ok)
+    monkeypatch.setattr(
+        backup, "run_bd", lambda args, cwd, **kw: _fake_bd_ok(args, **kw)
+    )
 
     out = backup.rotate_hive_backup(
         hive_dir, {"backup": {"hive_cap_mb": 99999}}, dry_run=False, confirm=True, force=True
@@ -592,12 +595,12 @@ def test_rotate_rolls_back_the_rename_on_bd_init_failure(monkeypatch, tmp_path):
     b.mkdir(parents=True)
     (b / "chunk.darc").write_bytes(b"x" * 100)
 
-    def _fake_run(cmd, **kw):
-        if cmd[3:5] == ["backup", "init"]:
-            return subprocess.CompletedProcess(cmd, 1, "", "boom")
-        return subprocess.CompletedProcess(cmd, 0, "", "")
+    def _fake_run(args, cwd, **kw):
+        if args[:2] == ["backup", "init"]:
+            return subprocess.CompletedProcess(args, 1, "", "boom")
+        return subprocess.CompletedProcess(args, 0, "", "")
 
-    monkeypatch.setattr(backup, "run", _fake_run)
+    monkeypatch.setattr(backup, "run_bd", _fake_run)
 
     out = backup.rotate_hive_backup(
         hive_dir, {"backup": {"hive_cap_mb": 0}}, dry_run=False, confirm=True
@@ -616,10 +619,10 @@ def test_rotate_bd_remove_failure_leaves_dir_untouched(monkeypatch, tmp_path):
     b.mkdir(parents=True)
     (b / "chunk.darc").write_bytes(b"x" * 100)
 
-    def _fake_run(cmd, **kw):
-        return subprocess.CompletedProcess(cmd, 1, "", "boom")
+    def _fake_run(args, cwd, **kw):
+        return subprocess.CompletedProcess(args, 1, "", "boom")
 
-    monkeypatch.setattr(backup, "run", _fake_run)
+    monkeypatch.setattr(backup, "run_bd", _fake_run)
 
     out = backup.rotate_hive_backup(
         hive_dir, {"backup": {"hive_cap_mb": 0}}, dry_run=False, confirm=True
@@ -799,7 +802,7 @@ def test_cli_backup_export_defaults_to_fixed_per_hive_path(monkeypatch, tmp_path
 
     import beadhive.cli as cli_mod
 
-    monkeypatch.setattr(cli_mod, "run", _fake_run)
+    monkeypatch.setattr(cli_mod.bd_mod, "run", lambda args, cwd, **kw: _fake_run(["bd", *args]))
     monkeypatch.chdir(repo / "sub")
 
     result = runner.invoke(app, ["backup", "export"])
@@ -822,7 +825,7 @@ def test_cli_backup_export_explicit_dest_still_works(monkeypatch, tmp_path):
 
     import beadhive.cli as cli_mod
 
-    monkeypatch.setattr(cli_mod, "run", _fake_run)
+    monkeypatch.setattr(cli_mod.bd_mod, "run", lambda args, cwd, **kw: _fake_run(["bd", *args]))
     dest = tmp_path / "explicit-dest"
 
     result = runner.invoke(app, ["backup", "export", str(dest)])
@@ -957,7 +960,9 @@ def test_cli_backup_reclaim_root_hive_confirmed(monkeypatch, tmp_path):
 
     import beadhive.backup as backup_mod
 
-    monkeypatch.setattr(backup_mod, "run", _fake_bd_ok)
+    monkeypatch.setattr(
+        backup_mod, "run_bd", lambda args, cwd, **kw: _fake_bd_ok(args, **kw)
+    )
 
     result = runner.invoke(app, ["backup", "reclaim", "--root", "hive", "--confirm"])
 

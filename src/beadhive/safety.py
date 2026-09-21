@@ -357,6 +357,11 @@ def _bd_dolt_status_payload(path: str) -> dict | None:
     Read-only: ``bd dolt status`` reports the engine's current state without mutating
     anything. Only called when ``.beads/`` already exists (see ``_scan_bd_dolt_state``), so
     a plain non-bd git repo never pays for a subprocess spawn here.
+
+    ``bd-seam-justified``: safety deliberately bypasses bh's child-environment constructor
+    and engine/config graph. Its scrubbed ``_clean_env`` is the security boundary documented
+    in :mod:`beadhive.run`; routing this probe through the normal seam would put resolved
+    ``GIT_*`` values back into an environment whose purpose is to exclude them.
     """
     try:
         result = subprocess.run(
@@ -397,6 +402,8 @@ def _bd_has_dolt_remote(path: str) -> bool:
     """True iff bd reports at least one configured Dolt remote for *path*.
 
     Read-only: ``bd dolt remote list`` inspects local remote configuration only.
+    ``bd-seam-justified`` for the same scrubbed-environment security boundary as
+    :func:`_bd_dolt_status_payload`.
     """
     try:
         result = subprocess.run(

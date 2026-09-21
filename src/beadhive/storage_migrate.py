@@ -191,44 +191,10 @@ ROLLBACK_NOTE = (
     "arrival) — that door does not reopen, and it has nothing to do with storage mode."
 )
 
-# bh-l90xk: lines starting with either prefix are bd telling the operator it is PROCEEDING
-# ("Using the shared server for this run"), never a refusal — `err_line`'s plain first-
-# non-empty-line rule picks these up as readily as a real `Error:` line, which is the trap.
-_ADVISORY_LINE_PREFIXES = ("Notice:", "Hint:")
-
 # bh-hqmcl's own territory (a shared dolt server started outside bd's bookkeeping, so bd sees a
 # busy port it cannot attribute to itself) — matched loosely (substring, not the exact port
 # number) so this still fires if the wording ever picks up a different port.
 _PORT_BUSY_UNATTRIBUTABLE_MARKER = "busy but cannot identify the process"
-
-
-def _significant_err_line(res) -> str:
-    """Like :func:`beadhive.bd.err_line`, but never lets an informational ``Notice:``/``Hint:``
-    line (or its indented continuation lines) stand in for the real failure reason — the SAME
-    two-phase-output trap ``hub.ensure_store``'s own docstring already documents for `bd init
-    --shared-server`, reintroduced here for `bd dolt start`/`bd bootstrap` (bh-l90xk). Prefers
-    the first ``Error:``-prefixed line when one is present (bd's own convention for the actual
-    headline); otherwise the first line that isn't part of an advisory block; falls back to
-    :func:`beadhive.bd.err_line`'s plain behavior only when every line turned out to be
-    advisory (never silently returns nothing)."""
-    lines = ((res.stdout or "") + (res.stderr or "")).splitlines()
-    significant: list[str] = []
-    in_advisory_block = False
-    for line in lines:
-        stripped = line.strip()
-        if not stripped:
-            in_advisory_block = False
-            continue
-        if in_advisory_block and line[:1].isspace():
-            continue  # an indented continuation of the notice/hint block just skipped
-        in_advisory_block = stripped.startswith(_ADVISORY_LINE_PREFIXES)
-        if in_advisory_block:
-            continue
-        significant.append(stripped)
-    for line in significant:
-        if line.startswith("Error:"):
-            return line
-    return significant[0] if significant else err_line(res)
 
 
 def _is_port_busy_unattributable(res) -> bool:
@@ -514,12 +480,16 @@ def _bd(
     `run.run`'s own `env=` kwarg IS the full child environment, not an overlay), so a caller only
     ever has to name the ONE variable it needs on top of everything else `bd` expects (`PATH`,
     `HOME`, ...)."""
-    cmd = ["bd", "-C", str(cwd)]
-    if actor:
-        cmd += ["--actor", actor]
-    cmd += args
     run_env = dict(os.environ, **env) if env else None
-    return run(cmd, check=False, capture=True, timeout=timeout, cwd=str(cwd), env=run_env)
+    return bd_mod.run(
+        args,
+        cwd,
+        actor=actor,
+        capture=True,
+        timeout=timeout,
+        pin_process_cwd=True,
+        env=run_env,
+    )
 
 
 def _reinit_shared_server(hive_dir: Path, prefix: str, db_name: str, actor: str):
@@ -1079,7 +1049,7 @@ def migrate_hive(
                 )
             if outcome.result.returncode:
                 result.status = "failed"
-                reason = _significant_err_line(outcome.result)
+                reason = err_line(outcome.result)
                 detail = f"{outcome.command_label} refused: {reason}"
                 if outcome.port_busy_unattributable:
                     detail += (

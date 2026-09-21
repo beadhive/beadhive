@@ -1,13 +1,11 @@
 """Engine seam — the swappable operations `bh` needs from a beads-compatible backend.
 
-Every bead operation `bh` runs today is a literal `bd` subprocess call, scattered inline across
-bd.py/hub.py/report.py (docs/design/bead-backend-abstraction.md#the-seam). This module is that
-seam: an `Engine` protocol naming exactly the operations `bh` itself needs (not a wrapper for
-every tracker verb), and `BdEngine`, a PURE EXTRACTION of the bodies that used to live inline at
-each call site — no behavior change, `bd` is still the only implementation. Modeled on dolt.py's
-container-backend dispatch: a config key (`beads.engine`) selects a thin implementation, not a
-plugin framework. `br`/`bw`/`nodb` adapters land in sibling beads (bh-dw3e.8/.9/.10); wiring
-push_state/pull_state into `bh work` verbs is bh-dw3e.6.
+This module owns the one documented `bd` process boundary. ``BdEngine.invoke`` preserves the
+real variants callers need — hive flag vs ambient cwd, optional process-cwd pinning, capture vs
+stream, environment and actor attribution — while applying one default timeout, timeout result,
+and exit-0/no-work policy. Higher operations compose that primitive; `bd` remains the only
+implementation. Modeled on dolt.py's container-backend dispatch: a config key (`beads.engine`)
+selects a thin implementation, not a plugin framework.
 """
 
 from __future__ import annotations
@@ -113,6 +111,29 @@ class Engine(Protocol):
 
     name: str
 
+    def invoke(
+        self,
+        args: list[str],
+        *,
+        cwd=None,
+        actor: str = "",
+        capture: bool = False,
+        text_input=None,
+        timeout: float = STATE_TIMEOUT,
+        pin_process_cwd: bool = False,
+        env=None,
+        hive_aware: bool = True,
+        no_work_markers: tuple[str, ...] = (),
+    ):
+        """Invoke the backend through the one bounded subprocess seam.
+
+        ``hive_aware`` scopes through ``-C``; ``pin_process_cwd`` additionally sets the
+        child's OS cwd for bd paths that consult git config. ``capture=False`` is the streaming
+        variant. ``no_work_markers`` promotes bd's known exit-0 failure reports to a normal
+        non-zero result instead of asking each caller to rediscover that edge case.
+        """
+        ...
+
     def passthrough(
         self,
         args: list[str],
@@ -120,13 +141,12 @@ class Engine(Protocol):
         actor: str = "",
         capture: bool = False,
         text_input=None,
-        timeout: float | None = None,
+        timeout: float = STATE_TIMEOUT,
         pin_process_cwd: bool = False,
     ):
         """Issue management (create/list/dep/close/…) — an arbitrary bd-shaped subcommand
         scoped to `cwd`, attributed to `actor` when given. `timeout` (seconds) bounds the
-        child so a wedged backend can't block forever; None keeps the historical
-        wait-indefinitely behaviour for local, non-network subcommands.
+        child so a wedged backend cannot block forever.
 
         `pin_process_cwd=True` (bh-s08me) additionally spawns the child with its OWN process
         cwd set to `cwd`, not just `bd -C <cwd>` on the command line. `bd`'s `-C` scopes which
@@ -227,20 +247,70 @@ class Engine(Protocol):
 
 
 class BdEngine:
-    """The `bd` (Dolt) adapter — today's only implementation. Every method is a pure
-    extraction of a body that used to live inline at its call site (bd.py/hub.py/report.py);
-    none of them change what gets run.
+    """The `bd` (Dolt) adapter — today's only implementation.
 
     `cwd=None` contract (audited bh-r7mq.1, which fixed one violation): `None` means "inherit
     the caller's process cwd" — the sentinel `route.targets`' default no-`-a`/`-r` mode hands
-    down. `import_jsonl` passes `cwd` straight to `_run`'s `cwd=` kwarg, so it must stay
-    unstringified (`str(None)` → the literal directory "None"). `passthrough`/`export_jsonl`/
-    `federation_status`/`sync_state` instead bake `str(cwd)` into a `bd -C <path>` cmd-line
-    flag — a distinct, safer failure mode (a clean `bd`-level "cannot use -C directory None"
-    exit, not a Python `FileNotFoundError`) — and none of their current callers ever pass
-    `cwd=None`, so left as-is; re-check this note if that ever changes."""
+    down. The invocation seam omits ``-C`` when cwd is None and passes the same sentinel through
+    unchanged when process-cwd pinning is explicitly requested; it never manufactures the
+    literal directory ``"None"``."""
 
     name = "bd"
+
+    def invoke(
+        self,
+        args,
+        *,
+        cwd=None,
+        actor="",
+        capture=False,
+        text_input=None,
+        timeout=STATE_TIMEOUT,
+        pin_process_cwd=False,
+        env=None,
+        hive_aware=True,
+        no_work_markers=(),
+    ):
+        """Run one bounded bd process while preserving its real invocation variants."""
+        cmd = ["bd"]
+        if hive_aware and cwd is not None:
+            cmd += ["-C", str(cwd)]
+        if actor:
+            cmd += ["--actor", actor]
+        cmd += list(args)
+        kw = {"check": False, "capture": capture, "timeout": timeout}
+        if text_input is not None:
+            kw["text_input"] = text_input
+        if pin_process_cwd:
+            kw["cwd"] = cwd if cwd is None else str(cwd)
+        if env is not None:
+            kw["env"] = env
+        try:
+            result = bd_mod._run(cmd, **kw)
+        except subprocess.TimeoutExpired:
+            return subprocess.CompletedProcess(
+                args=cmd,
+                returncode=124,
+                stdout="",
+                stderr=f"bd {' '.join(str(arg) for arg in args)} timed out after {timeout:g}s",
+            )
+
+        if result.returncode == 0 and no_work_markers:
+            output = f"{getattr(result, 'stdout', '') or ''}\n{getattr(result, 'stderr', '') or ''}"
+            folded = output.casefold()
+            marker = next((item for item in no_work_markers if item.casefold() in folded), "")
+            if marker:
+                prior = (getattr(result, "stderr", "") or "").rstrip()
+                detail = f"Error: bd exited 0 but reported failure: {marker}"
+                promoted = subprocess.CompletedProcess(
+                    args=getattr(result, "args", cmd),
+                    returncode=1,
+                    stdout=getattr(result, "stdout", "") or "",
+                    stderr=f"{prior}\n{detail}".lstrip(),
+                )
+                promoted.bd_no_work = True
+                return promoted
+        return result
 
     def passthrough(
         self,
@@ -249,26 +319,20 @@ class BdEngine:
         actor="",
         capture=False,
         text_input=None,
-        timeout=None,
+        timeout=STATE_TIMEOUT,
         pin_process_cwd=False,
     ):
         # Extracted from bd.py's `run()` (the shared bd-invocation helper work/plan/report/
         # triage all call).
-        cmd = ["bd", "-C", str(cwd)]
-        if actor:
-            cmd += ["--actor", actor]
-        cmd += list(args)
-        kw = {"check": False, "capture": capture, "text_input": text_input}
-        # Pass `timeout` only when set, so the call shape stays byte-identical for the many
-        # non-network callers — this method's contract is a PURE extraction of bd.py's inline
-        # `run()`, and the test doubles pin that shape (bh-uxew).
-        if timeout is not None:
-            kw["timeout"] = timeout
-        # bh-s08me: `-C` alone does not scope bd's git-config reads/writes (e.g. `beads.role`)
-        # — those resolve off the child's real process cwd. Pin it too, opt-in only.
-        if pin_process_cwd:
-            kw["cwd"] = str(cwd)
-        return bd_mod._run(cmd, **kw)
+        return self.invoke(
+            args,
+            cwd=cwd,
+            actor=actor,
+            capture=capture,
+            text_input=text_input,
+            timeout=timeout,
+            pin_process_cwd=pin_process_cwd,
+        )
 
     def _state_call(self, args, cwd, actor="", *, timeout=STATE_TIMEOUT):
         """Run a network-touching dolt state verb under a bounded timeout.
@@ -280,20 +344,11 @@ class BdEngine:
         `bd dolt pull` wedges `bh work claim`/`resume` for the whole hive, because a hang is
         not a failure: the call never returns, so there is no returncode to inspect (bh-uxew).
         """
-        try:
-            return self.passthrough(args, cwd, actor=actor, capture=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            return subprocess.CompletedProcess(
-                args=["bd", *args],
-                returncode=124,
-                stdout="",
-                stderr=f"bd {' '.join(args)} timed out after {timeout:g}s",
-            )
+        return self.invoke(args, cwd=cwd, actor=actor, capture=True, timeout=timeout)
 
     def export_jsonl(self, cwd, out_path, *, env=None):
         # Extracted from hub.py's `sync()` (per-hive export ahead of hub `repo add`/`sync`).
-        cmd = self.stream_export_command(cwd, out_path)
-        return bd_mod._run(cmd, env=env, check=False, capture=True)
+        return self.invoke(["export", "-o", str(out_path)], cwd=cwd, env=env, capture=True)
 
     def stream_export_command(self, cwd, out_path):
         """Return the same export command for the stream's process-tree supervisor."""
@@ -303,7 +358,9 @@ class BdEngine:
     def list_gates(self, cwd):
         """Read every gate once; ``--limit 0`` avoids bd's default 50-row truncation."""
 
-        return bd_mod._run(self.stream_gate_list_command(cwd), check=False, capture=True)
+        return self.invoke(
+            ["gate", "list", "--limit", "0", "--all", "--json"], cwd=cwd, capture=True
+        )
 
     def stream_gate_list_command(self, cwd):
         return ["bd", "-C", str(cwd), "gate", "list", "--limit", "0", "--all", "--json"]
@@ -316,7 +373,13 @@ class BdEngine:
         # route.targets' "cwd" mode, hits this with cwd=None), and `str(None)` silently
         # becomes the literal directory name "None" — bh-r7mq.1, a regression from b089341's
         # extraction (the original inline body used `cwd=cwd`).
-        return bd_mod._run(["bd", "import", *args], check=False, capture=True, cwd=cwd)
+        return self.invoke(
+            ["import", *args],
+            cwd=cwd,
+            capture=True,
+            hive_aware=False,
+            pin_process_cwd=True,
+        )
 
     def push_state(self, cwd, actor="", message="", *, remote="", force=False):
         # Extracted from report.py's `file_report()` cache-push tail: commit (result unchecked,
@@ -409,8 +472,13 @@ class BdEngine:
         # (hub.py's `_fetch_cache`) always passes a resolved cache Path, and str() was already
         # here pre-extraction (b089341^:hub.py). Left as-is rather than pre-emptively
         # rewritten — flag it if a future caller ever threads a possibly-None cwd through.
-        cmd = ["bd", "bootstrap", "--non-interactive"]
-        return bd_mod._run(cmd, cwd=str(cwd), env=env, check=False)
+        return self.invoke(
+            ["bootstrap", "--non-interactive"],
+            cwd=cwd,
+            env=env,
+            hive_aware=False,
+            pin_process_cwd=True,
+        )
 
     def state_channel(self, cwd) -> str:
         return "refs/dolt/data"
@@ -421,10 +489,10 @@ class BdEngine:
         # "pendingChanges":N,"schema_version":1}. `Status` may be absent and the counts are
         # -1/unknown when unreachable — parse with .get throughout and never coerce a
         # failure/unreachable result into looking in-sync.
-        cmd = ["bd", "-C", str(cwd), "federation", "status", "--json"]
-        try:
-            res = bd_mod._run(cmd, check=False, capture=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
+        res = self.invoke(
+            ["federation", "status", "--json"], cwd=cwd, capture=True, timeout=timeout
+        )
+        if res.returncode == 124:
             return FederationStatus(ok=False, error="timeout")
         if res.returncode != 0:
             return FederationStatus(ok=False, error=_stderr_tail(res) or f"exit {res.returncode}")
@@ -463,8 +531,7 @@ class BdEngine:
         # `.dolt/repo_state.json`) — no network fetch, so unlike `federation_status` this costs
         # nothing to ask. A failed/unparseable call reports no peers: the only caller uses this
         # to decide whether registration is NEEDED, and a failed `add_peer` reports itself.
-        cmd = ["bd", "-C", str(cwd), "federation", "list-peers", "--json"]
-        res = bd_mod._run(cmd, check=False, capture=True)
+        res = self.invoke(["federation", "list-peers", "--json"], cwd=cwd, capture=True)
         if res.returncode != 0:
             return ()
         try:
@@ -480,8 +547,7 @@ class BdEngine:
         # `bd federation add-peer <name> <url>` — bd's own surface for this; bd bootstrap
         # exposes no peer flag (checked `bd bootstrap --help`). NOT idempotent: verified against
         # a real bd binary, a second add of the same name exits 1 with "remote already exists".
-        cmd = ["bd", "-C", str(cwd), "federation", "add-peer", str(name), str(url)]
-        return bd_mod._run(cmd, check=False, capture=True)
+        return self.invoke(["federation", "add-peer", str(name), str(url)], cwd=cwd, capture=True)
 
     def sync_state(self, cwd, *, peer=None, strategy=None, timeout=FEDERATION_TIMEOUT * 2):
         # Verified output shapes (bd 2026-07): success → {"peers":["hub"],"results":[{"Peer",
@@ -489,15 +555,14 @@ class BdEngine:
         # failure → {"error":"...","schema_version":1} with rc=1. On conflicts with no
         # strategy bd pauses ("Run 'bd federation sync --strategy ours|theirs' to resolve
         # conflicts") and lists the conflicted tables per result.
-        cmd = ["bd", "-C", str(cwd), "federation", "sync"]
+        cmd = ["federation", "sync"]
         if peer:
             cmd += ["--peer", peer]
         if strategy:
             cmd += ["--strategy", strategy]
         cmd += ["--json"]
-        try:
-            res = bd_mod._run(cmd, check=False, capture=True, timeout=timeout)
-        except subprocess.TimeoutExpired:
+        res = self.invoke(cmd, cwd=cwd, capture=True, timeout=timeout)
+        if res.returncode == 124:
             return SyncOutcome(ok=False, error="timeout")
         try:
             data = json.loads(res.stdout or "")
