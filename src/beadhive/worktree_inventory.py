@@ -10,7 +10,6 @@ import base64
 import contextlib
 import hashlib
 import json
-import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
@@ -229,11 +228,15 @@ def impl_managed(cfg):
 
 
 def impl__emit(out, entry, root, path, brref):
+    # Git's registry is authoritative.  Filtering it through the *current* configured root
+    # made worktrees created under a previous persistent root disappear after switching to the
+    # ephemeral root.  Exclude only the primary checkout; retain every linked worktree at its
+    # recorded path so status, prune, and rm all act on the same inventory.
     try:
-        under = Path(path).resolve().is_relative_to(root)
+        is_main = Path(path).resolve() == registry.hive_dir(entry).resolve()
     except OSError:
-        under = path.startswith(root + os.sep)
-    if under:
+        is_main = path == str(registry.hive_dir(entry))
+    if not is_main:
         out.append((str(entry["prefix"]), path, brref or "(detached)"))
 
 
@@ -1085,6 +1088,9 @@ def impl__status_tags(st) -> str:
         tags += f"  (under: {str(st.underlying).upper()})"
     if st.safe:
         tags += "  SAFE"
+    elif getattr(st, "precious", ()):
+        paths = ",".join(item.path for item in st.precious)
+        tags += f"  HELD precious={paths}"
     if getattr(st, "disposition_reason", ""):
         tags += f"  reason={st.disposition_reason}"
     if getattr(st, "citing_bead", ""):
