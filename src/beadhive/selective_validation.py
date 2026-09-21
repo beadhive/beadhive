@@ -150,7 +150,7 @@ def run(
             state = "ran green" if rc == 0 else "unknown" if rc == 75 else f"ran red (exit {rc})"
             typer.echo(
                 f"  {'✓' if rc == 0 else '?' if rc == 75 else '✗'} {name}: {state} "
-                f"(no qualifying source verdict; {elapsed:.3f}s)"
+                f"(no qualifying source verdict) [{elapsed:.3f}s]"
             )
         else:
             typer.echo(f"  ? {name}: unknown (no qualifying source verdict)")

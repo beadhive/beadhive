@@ -1075,6 +1075,8 @@ def impl__classify_entry(
             status,
             legacy_root=not Path(status.path).resolve().is_relative_to(active_root),
         )
+        if hasattr(status, "path")
+        else status
         for status in statuses
     ]
 
