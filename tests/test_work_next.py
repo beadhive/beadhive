@@ -740,24 +740,9 @@ def test_max_action_retries_default_override_and_clamp():
 # run real concurrent `git worktree add` against the same clone would test git's own locking, not
 # the claim protocol these tests exist to prove.
 #
-# `config.load` is serialized (`_serialize_config_load`) for the same reason: its module-level
-# `ruamel.yaml.YAML()` parser is not thread-safe, and two threads racing it hit ruamel's OWN
-# threading bug, not anything about `bh work next`. A real unattended driver never hits this at
-# all — each invocation is its OWN process with its own interpreter — so serializing it here is
-# purely a test-harness accommodation for running two "drivers" as threads in one process, not a
-# weakening of the property under test.
-
-_config_load_lock = threading.Lock()
-
-
-def _serialize_config_load(monkeypatch):
-    orig_load = config.load
-
-    def locked_load(*a, **kw):
-        with _config_load_lock:
-            return orig_load(*a, **kw)
-
-    monkeypatch.setattr(config, "load", locked_load)
+# `config.load` now serializes its one cold parse and returns an isolated copy to every caller.
+# These tests intentionally exercise that production path directly: no test-only config lock is
+# needed to keep ruamel's mutable parser or the cached mapping out of this claim-protocol race.
 
 
 class RacyBd:
@@ -955,7 +940,6 @@ def test_next_race_two_real_drivers_one_bead_exactly_one_wins(nexthive, monkeypa
     fake = RacyBd(ready=[_open("b1")], contest={"b1": 2})
     monkeypatch.setattr(bd_mod, "_run", fake)
     _stub_provision(monkeypatch)
-    _serialize_config_load(monkeypatch)
     captured: list[dict] = []
     cap_lock = threading.Lock()
     monkeypatch.setattr(work.jsonout, "emit", lambda p: _capture(captured, cap_lock, p))
@@ -1003,7 +987,6 @@ def test_next_race_two_drivers_against_a_queue_no_double_claim_no_drop(nexthive,
     fake = RacyBd(ready=[_open(i) for i in ids], contest={ids[0]: 2})
     monkeypatch.setattr(bd_mod, "_run", fake)
     _stub_provision(monkeypatch)
-    _serialize_config_load(monkeypatch)
     captured: list[dict] = []
     cap_lock = threading.Lock()
     monkeypatch.setattr(work.jsonout, "emit", lambda p: _capture(captured, cap_lock, p))
@@ -1042,7 +1025,6 @@ def test_claim_won_reverify_is_load_bearing_without_it_both_drivers_win(nexthive
     fake = RacyBd(ready=[_open("b1")], contest={"b1": 2})
     monkeypatch.setattr(bd_mod, "_run", fake)
     _stub_provision(monkeypatch)
-    _serialize_config_load(monkeypatch)
     monkeypatch.setattr(work_next, "claim_won", lambda *_a, **_k: True)  # THE MUTATION
     captured: list[dict] = []
     cap_lock = threading.Lock()
