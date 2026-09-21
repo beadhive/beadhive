@@ -92,6 +92,40 @@ def _dotted(loc) -> str:
     return ".".join(str(part) for part in loc)
 
 
+def _attest_disable_problems(validated: BeadhiveConfig) -> list[dict]:
+    """Visible, non-gating findings for every explicitly disabled attest key.
+
+    Schema validation owns the invalid cases (missing reason or timezone). This helper reports
+    valid-but-degraded operation, including stale metadata whose expiry has already re-enabled
+    the key fail-closed.
+    """
+    catalogs = [("work.attest", validated.work.attest.keys)]
+    catalogs.extend(
+        (
+            f"managed_repos[{i}].work.attest",
+            entry.work.attest.keys,
+        )
+        for i, entry in enumerate(validated.managed_repos)
+        if entry.work is not None and entry.work.attest.keys
+    )
+    problems: list[dict] = []
+    for scope, keys in catalogs:
+        for key in keys:
+            if key.enabled:
+                continue
+            expiry = key.disabled_until.isoformat() if key.disabled_until else ""
+            if key.is_disabled():
+                until = f" until {expiry}" if expiry else " with no expiry"
+                message = f"`{scope}` key `{key.name}` is DISABLED{until} — {key.disabled_reason}"
+            else:
+                message = (
+                    f"`{scope}` key `{key.name}` has an expired disable ({expiry}) — it runs "
+                    "fail-closed now; set `enabled: true` or remove the stale disable metadata."
+                )
+            problems.append(_problem("warning", message))
+    return problems
+
+
 def _schema_version_problem(cfg: Mapping) -> dict | None:
     """A ``schema_version`` staleness problem, or None when it matches the current schema.
 
@@ -142,8 +176,9 @@ def validate_config(cfg) -> list[dict]:
     if sv_problem is not None:
         problems.append(sv_problem)
 
+    validated = None
     try:
-        BeadhiveConfig.model_validate(raw)
+        validated = BeadhiveConfig.model_validate(raw)
     except ValidationError as exc:
         for err in exc.errors():
             dotted = _dotted(err["loc"])
@@ -168,6 +203,9 @@ def validate_config(cfg) -> list[dict]:
                     problems.append(_problem("error", message))
             else:
                 problems.append(_problem("error", f"`{dotted}`: {err['msg']}"))
+
+    if validated is not None:
+        problems.extend(_attest_disable_problems(validated))
 
     for dotted, value in _string_leaves(raw):
         if any(marker in value for marker in OLD_HOME_MARKERS):

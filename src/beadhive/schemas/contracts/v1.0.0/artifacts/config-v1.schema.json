@@ -92,13 +92,46 @@
     },
     "AttestKeyConfig": {
       "additionalProperties": false,
-      "description": "One attest key (Attested Green ADR, Amendment 1): an OPAQUE command bh runs verbatim and\nnever parses, a policy, and per-backend selectors only the named impact backend reads.",
+      "description": "One attest key (Attested Green ADR, Amendment 1): an OPAQUE command bh runs verbatim and\nnever parses, an execution state, an evidence policy, and per-backend selectors only the\nnamed impact backend reads.",
       "properties": {
         "cmd": {
           "description": "The command, run verbatim like validate_cmd. bh never parses it.",
           "minLength": 1,
           "title": "Cmd",
           "type": "string"
+        },
+        "disabled_reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Required non-blank operator reason whenever enabled is false.",
+          "title": "Disabled Reason"
+        },
+        "disabled_until": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional timezone-aware expiry. Once reached, a disabled key automatically runs again (fail-closed) even while enabled remains false.",
+          "title": "Disabled Until"
+        },
+        "enabled": {
+          "default": true,
+          "description": "Whether this key executes. Disabled keys are deliberately absent: they neither run, block, satisfy the aggregate, nor produce carryable proof.",
+          "title": "Enabled",
+          "type": "boolean"
         },
         "name": {
           "description": "Stable key name, a lowercase slug (letters, digits, '.', '_', '-'). Receipts and verdict records cite it.",

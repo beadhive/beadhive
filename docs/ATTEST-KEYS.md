@@ -24,9 +24,30 @@ with the recipes in `justfile`; `just check-attest-catalog` enforces that partit
 | `always-run` | `just attest-always-run` | none | Git/state checks and operator demos |
 
 Keys are policy, not test-framework plugins. `cmd` is an opaque string that Beadhive executes
-verbatim. A key is required unless configured with `required: false`. An optional key may be
+verbatim. A key is required unless configured with `policy: optional`. An optional key may be
 absent or return the explicit unknown exit code 75 without blocking, but a real nonzero result
 always blocks.
+
+Execution state is a separate axis from evidence policy. Set `enabled: false` only with a
+non-blank `disabled_reason`; the key is then visibly skipped on every selective run and is
+absent from impact resolution, aggregate proof, and the carry ledger. `bh config validate` and
+`bh doctor` warn while the deviation remains configured. An optional timezone-aware
+`disabled_until` makes a temporary exception fail closed: at or after that instant the key runs
+again even if `enabled` was not restored. For example:
+
+```yaml
+- name: stateful
+  cmd: just attest-stateful
+  policy: required
+  enabled: false
+  disabled_reason: "temporary capacity incident bh-example"
+  disabled_until: "2026-09-22T00:00:00Z"
+  selectors: {pants: "attest:stateful"}
+```
+
+Re-enable by setting `enabled: true`; retained reason/expiry metadata is inert, so toggling the
+single execution flag restores the enabled behavior without changing the key's command, policy,
+or selectors.
 
 The selectorless `always-run` key is intentional. Its commands observe state outside a build
 graph's file model, so it must run whenever a tree changes and can never carry.

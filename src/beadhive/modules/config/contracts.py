@@ -468,7 +468,8 @@ _ATTEST_KEY_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 
 class AttestKeyConfig(_Section):
     """One attest key (Attested Green ADR, Amendment 1): an OPAQUE command bh runs verbatim and
-    never parses, a policy, and per-backend selectors only the named impact backend reads."""
+    never parses, an execution state, an evidence policy, and per-backend selectors only the
+    named impact backend reads."""
 
     name: str = Field(
         ...,
@@ -487,6 +488,24 @@ class AttestKeyConfig(_Section):
         description=(
             "required (default) blocks when the key is absent or red | optional passes when "
             "absent but still blocks on a real failure."
+        ),
+    )
+    enabled: bool = Field(
+        True,
+        description=(
+            "Whether this key executes. Disabled keys are deliberately absent: they neither "
+            "run, block, satisfy the aggregate, nor produce carryable proof."
+        ),
+    )
+    disabled_reason: str | None = Field(
+        None,
+        description="Required non-blank operator reason whenever enabled is false.",
+    )
+    disabled_until: datetime.datetime | None = Field(
+        None,
+        description=(
+            "Optional timezone-aware expiry. Once reached, a disabled key automatically runs "
+            "again (fail-closed) even while enabled remains false."
         ),
     )
     selectors: dict[str, str] = Field(
@@ -511,6 +530,32 @@ class AttestKeyConfig(_Section):
         if not v.strip():
             raise ValueError("attest key cmd must not be blank")
         return v
+
+    @field_validator("disabled_until")
+    @classmethod
+    def _aware_disabled_until(cls, v):
+        if v is not None and (v.tzinfo is None or v.utcoffset() is None):
+            raise ValueError("attest key disabled_until must include a timezone")
+        return v
+
+    @model_validator(mode="after")
+    def _disabled_has_reason(self) -> AttestKeyConfig:
+        if not self.enabled and not (self.disabled_reason or "").strip():
+            raise ValueError("disabled attest key requires a non-blank disabled_reason")
+        return self
+
+    def is_disabled(self, at: datetime.datetime | None = None) -> bool:
+        """Whether the execution disable is active at ``at`` (UTC now by default).
+
+        Expiry deliberately fails closed: at or after ``disabled_until`` the key is enabled
+        again, even if an operator forgot to clean up the stale disable metadata.
+        """
+        if self.enabled:
+            return False
+        if self.disabled_until is None:
+            return True
+        now = at or datetime.datetime.now(datetime.UTC)
+        return now < self.disabled_until
 
 
 class AttestImpactConfig(_Section):

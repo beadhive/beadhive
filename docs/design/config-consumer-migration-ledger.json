@@ -448,14 +448,14 @@
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2363,
+        "line": 2412,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2376,
+        "line": 2425,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },

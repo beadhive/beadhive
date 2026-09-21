@@ -30,6 +30,7 @@ import hashlib
 import json
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from types import MappingProxyType
 from typing import Any, Literal
 
@@ -75,6 +76,9 @@ class AttestKey:
     cmd: str
     policy: KeyPolicy = "required"
     selectors: Mapping[str, str] = field(default_factory=dict)
+    enabled: bool = True
+    disabled_reason: str = ""
+    disabled_until: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -83,11 +87,25 @@ class AttestKey:
             raise ValueError(f"attest key {self.name!r}: cmd must be non-empty")
         if self.policy not in KEY_POLICIES:
             raise ValueError(f"attest key {self.name!r}: policy must be one of {KEY_POLICIES}")
+        if not self.enabled and not self.disabled_reason.strip():
+            raise ValueError(f"attest key {self.name!r}: disabled key requires a reason")
+        if self.disabled_until is not None and (
+            self.disabled_until.tzinfo is None or self.disabled_until.utcoffset() is None
+        ):
+            raise ValueError(f"attest key {self.name!r}: disabled_until must include a timezone")
         object.__setattr__(self, "selectors", _frozen_mapping(self.selectors))
 
     def selector(self, backend: str) -> str | None:
         """This key's selector for ``backend``, or ``None`` (rule 4: then it is unproven)."""
         return self.selectors.get(backend)
+
+    def is_disabled(self, at: datetime | None = None) -> bool:
+        """Whether execution is disabled, with expiry re-enabling fail-closed."""
+        if self.enabled:
+            return False
+        if self.disabled_until is None:
+            return True
+        return (at or datetime.now(UTC)) < self.disabled_until
 
 
 @dataclass(frozen=True, order=True)
