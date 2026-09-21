@@ -14,7 +14,9 @@ import importlib
 import json
 import os
 import subprocess
+import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from . import bd as bd_mod
@@ -27,7 +29,24 @@ FEDERATION_TIMEOUT = 60.0  # seconds — federation status is a real network fet
 # path `work._pull_state` already documents rather than hanging the hive (bh-uxew).
 STATE_TIMEOUT = 120.0
 FSCK_TIMEOUT = 300
-PUSH_STATE_TIMEOUT = FSCK_TIMEOUT + 60.0
+MAX_FSCK_TIMEOUT = 900
+
+
+def _state_store_bytes(cwd) -> int:
+    total = 0
+    try:
+        for path in (Path(cwd) / ".beads").rglob("*"):
+            if path.is_file():
+                total += path.stat().st_size
+    except OSError:
+        return total
+    return total
+
+
+def _fsck_timeout(cwd) -> int:
+    gib = 1024**3
+    extra = ((_state_store_bytes(cwd) + gib - 1) // gib) * 60
+    return min(MAX_FSCK_TIMEOUT, FSCK_TIMEOUT + extra)
 
 
 @dataclass(frozen=True)
@@ -422,9 +441,13 @@ class BdEngine:
                 stderr=f"epoch-fence preflight refused state push: {exc}",
             )
 
+        store_bytes = _state_store_bytes(cwd)
+        fsck_timeout = _fsck_timeout(cwd)
         push_env = dict(os.environ)
-        push_env.setdefault("BEADS_FSCK_TIMEOUT", str(FSCK_TIMEOUT))
-        pushed = self._state_call(args, cwd, actor=actor, timeout=PUSH_STATE_TIMEOUT, env=push_env)
+        push_env.setdefault("BEADS_FSCK_TIMEOUT", str(fsck_timeout))
+        started = time.monotonic()
+        pushed = self._state_call(args, cwd, actor=actor, timeout=fsck_timeout + 60.0, env=push_env)
+        elapsed = time.monotonic() - started
         stderr = (getattr(pushed, "stderr", "") or "").lower()
         if pushed.returncode and "fsck" in stderr and "timed out" in stderr:
             prior = (getattr(pushed, "stderr", "") or "").rstrip()
@@ -433,8 +456,12 @@ class BdEngine:
                 returncode=pushed.returncode,
                 stdout=getattr(pushed, "stdout", "") or "",
                 stderr=(
-                    f"{prior}\nRetry safely with BEADS_FSCK_TIMEOUT={FSCK_TIMEOUT * 2} "
-                    "bh hive sync --push; the timeout alone does not indicate corruption."
+                    f"{prior}\nIntegrity scan timed out after {elapsed:.1f}s for a "
+                    f"{store_bytes}-byte local store. Retry safely with "
+                    f"BEADS_FSCK_TIMEOUT={min(MAX_FSCK_TIMEOUT, fsck_timeout * 2)} "
+                    "bh hive sync --push; the timeout alone does not indicate corruption. "
+                    "For a running shared server use SQL `CALL DOLT_GC()`; use offline "
+                    "`dolt gc` only when that server is stopped."
                 ),
             )
         if pushed.returncode or reservation is None:

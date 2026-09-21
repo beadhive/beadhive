@@ -3329,7 +3329,7 @@ def test_prune_lists_precious_base_safe_row_in_skipped_set(monkeypatch, capsys):
     assert skipped == [status]
     worktree._prune_report_skipped(skipped)
     rendered = capsys.readouterr().out
-    assert "HELD (base: safe; precious: .env)" in rendered
+    assert "HELD (base: safe; precious: .env (8 bytes))" in rendered
 
 
 def test_retained_is_skipped_by_two_consecutive_prune_classifications(monkeypatch):
@@ -3951,6 +3951,31 @@ def test_retained_row_renders_reason_and_citing_bead_inline(capsys):
     assert "RETAINED" in out
     assert "reason=pivot" in out
     assert "citing=port" in out
+
+
+def test_held_legacy_root_row_renders_size_and_location(capsys):
+    item = worktree.precious.PreciousFile(".env", 8, "precious", ".env")
+    st = wt_status.WtStatus(
+        hive="mr",
+        leaf="old-root",
+        branch="wt/bead/issue/old-root",
+        path="/old/wts/old-root",
+        bead_id="old-root",
+        classification=wt_status.WtClassification.HELD,
+        merged=True,
+        dirty=False,
+        safe=False,
+        underlying=wt_status.WtClassification.SAFE,
+        precious=(item,),
+        legacy_root=True,
+    )
+
+    worktree._render_status([st])
+
+    out = capsys.readouterr().out
+    assert "HELD" in out
+    assert ".env(8B)" in out
+    assert "legacy-root" in out
 
 
 def test_a_dirty_row_renders_what_it_is_masking(capsys):

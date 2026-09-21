@@ -270,7 +270,8 @@ def test_classify_entry_scans_real_configured_ignored_content(tmp_path, monkeypa
 
     [status] = worktree._classify_entry(entry, rows, cfg)
 
-    assert status.classification is wt_status.WtClassification.SAFE
+    assert status.classification is wt_status.WtClassification.HELD
+    assert status.underlying is wt_status.WtClassification.SAFE
     assert status.safe is False
     assert status.precious == (worktree.precious.PreciousFile(".env", 13, "precious", ".env"),)
 

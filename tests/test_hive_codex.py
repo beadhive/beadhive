@@ -124,6 +124,19 @@ def test_install_grant_refuses_to_clobber_unmanaged_table(tmp_path, monkeypatch,
     assert "unmanaged" in capsys.readouterr().err
 
 
+def test_install_grant_refuses_existing_feature_network_proxy(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".codex").mkdir()
+    existing = "[features]\nnetwork_proxy = true\n"
+    target = tmp_path / ".codex" / "config.toml"
+    target.write_text(existing)
+
+    hive._install_codex_sandbox_grant({"worktrees": {"ephemeral": True}}, "github", "o", "r")
+
+    assert target.read_text() == existing
+    assert "unmanaged or invalid sandbox/network settings" in capsys.readouterr().err
+
+
 def test_codex_granted_subtree_and_grant_is_current(tmp_path, monkeypatch):
     monkeypatch.setenv("BH_WORKTREES", str(Path.home() / ".ws-codex-new"))
     clone = tmp_path / "clone"

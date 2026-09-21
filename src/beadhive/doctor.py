@@ -1814,8 +1814,6 @@ def _legacy_worktrees_root(cfg) -> Path | None:
     persistent root is a different directory: orphaned content left behind when a host
     set/changed `worktrees.path` without migrating what was already there. See
     docs/design/beadhive-home-layout-contract.md's Migration section for cleanup steps."""
-    if config.worktrees_ephemeral(cfg):
-        return None
     legacy = config.home() / "worktrees"
     active = config.worktrees_root(cfg)
     return legacy if legacy != active and legacy.is_dir() else None
@@ -1837,9 +1835,20 @@ def _data_layout(cfg) -> dict:
             # don't also report it as a generic unclassified entry
             if p.name not in known and p != legacy
         )
+    roots = {config.worktrees_root(cfg)}
+    if legacy:
+        roots.add(legacy)
+    stray_worktree_dirs = sorted(
+        str(path)
+        for root in roots
+        if root.is_dir()
+        for path in root.glob("*/*/*/*")
+        if path.is_dir() and not (path / ".git").exists()
+    )
     return {
         "unclassified": unclassified,
         "legacy_worktrees_root": str(legacy) if legacy else None,
+        "stray_worktree_dirs": stray_worktree_dirs,
     }
 
 
@@ -1929,6 +1938,10 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
             "docs/design/beadhive-home-layout-contract.md (Migration: wt/ vs worktrees/ "
             "drift) for cleanup steps"
         )
+    warns += [
+        f"stray worktree-shaped directory is not registered with Git: {path}"
+        for path in layout["stray_worktree_dirs"]
+    ]
     for o in sorted(gw_orgs - set(cfg_orgs) - excluded_orgs):
         warns.append(
             f"org '{o}' from git-workspace not in config.yaml "

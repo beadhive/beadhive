@@ -1060,18 +1060,31 @@ def _write_codex_grant_block(f: Path, value: str, replace_fn, label: str) -> boo
         # `text[end:]` already carries the newline that followed the old end marker — splice in
         # `block` WITHOUT its own trailing newline so re-running never accumulates blank lines.
         new_text = text[:start] + block.rstrip("\n") + text[end:]
-    elif "[sandbox_workspace_write]" in text or "[features.network_proxy]" in text:
+    else:
+        try:
+            unmanaged = tomllib.loads(text) if text else {}
+        except tomllib.TOMLDecodeError:
+            unmanaged = {"invalid": True}
+        feature_network = (unmanaged.get("features") or {}).get("network_proxy")
+    if _CODEX_MARK_START in text:
+        pass
+    elif (
+        "[sandbox_workspace_write]" in text
+        or "[features.network_proxy]" in text
+        or feature_network is not None
+        or unmanaged.get("invalid")
+    ):
         # An unmanaged table already exists (hand-written, or from another tool) — writing our
         # own [sandbox_workspace_write] table here would be a duplicate-key TOML parse error.
         # Leave the file untouched rather than corrupt it; tell the operator the exact value.
         typer.echo(
-            f"⚠ {label}: {f} already has an unmanaged [sandbox_workspace_write] table — not "
+            f"⚠ {label}: {f} already has unmanaged or invalid sandbox/network settings — not "
             f"touching it; add writable root {value!r} and allow only "
             f"{network_host}:{network_port} manually",
             err=True,
         )
         return False
-    else:
+    elif _CODEX_MARK_START not in text:
         sep = "" if not text or text.endswith("\n") else "\n"
         new_text = text + sep + ("\n" if text else "") + block
     f.write_text(new_text if new_text.endswith("\n") else new_text + "\n")

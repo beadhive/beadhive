@@ -346,8 +346,9 @@ def test_state_verbs_pass_a_timeout(verb, call, monkeypatch):
     assert kwargs, f"dolt {verb} made no subprocess call"
     expected = {engine.STATE_TIMEOUT}
     if verb == "push":
-        expected.add(engine.PUSH_STATE_TIMEOUT)
-        push = next(k for k in kwargs if k.get("timeout") == engine.PUSH_STATE_TIMEOUT)
+        push_timeout = engine._fsck_timeout("/hive") + 60.0
+        expected.add(push_timeout)
+        push = next(k for k in kwargs if k.get("timeout") == push_timeout)
         assert push["env"]["BEADS_FSCK_TIMEOUT"] == str(engine.FSCK_TIMEOUT)
     assert {k.get("timeout") for k in kwargs} == expected
 
@@ -364,6 +365,13 @@ def test_push_fsck_timeout_reports_an_exact_safe_retry(monkeypatch):
     assert res.returncode == 1
     assert "BEADS_FSCK_TIMEOUT=600 bh hive sync --push" in res.stderr
     assert "does not indicate corruption" in res.stderr
+    assert "CALL DOLT_GC()" in res.stderr
+    assert "offline `dolt gc`" in res.stderr
+
+
+def test_fsck_timeout_scales_with_store_size(monkeypatch):
+    monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 3 * 1024**3)
+    assert engine._fsck_timeout("/hive") == engine.FSCK_TIMEOUT + 180
 
 
 def test_pull_state_converts_a_hang_into_a_nonzero_result(monkeypatch):

@@ -155,7 +155,9 @@ def test_invalidated_key_reuses_qualifying_exact_tree_verdict(monkeypatch, capsy
 
     assert rc == 0
     assert calls == []
-    assert "unit: exact-tree verdict reused" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "unit: exact-tree verdict reused" in out
+    assert "selective validation total:" in out
 
 
 def test_unresolved_impact_defaults_to_byte_compatible_fallback(monkeypatch, capsys) -> None:

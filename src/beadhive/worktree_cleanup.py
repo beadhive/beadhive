@@ -303,8 +303,9 @@ def impl__prune_report_skipped(skipped: list) -> None:
         typer.echo(f"  {len(skipped)} skipped (not SAFE):")
         for s in skipped:
             if getattr(s, "precious", ()):
-                paths = ", ".join(item.path for item in s.precious)
-                typer.echo(f"    {s.leaf}  HELD (base: {s.classification}; precious: {paths})")
+                paths = ", ".join(f"{item.path} ({item.bytes} bytes)" for item in s.precious)
+                base = s.underlying or s.classification
+                typer.echo(f"    {s.leaf}  HELD (base: {base}; precious: {paths})")
             else:
                 typer.echo(f"    {s.leaf}  {s.classification}")
 
