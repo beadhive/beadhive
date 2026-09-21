@@ -13,6 +13,61 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.17.0 (2026-09-21)
+
+### Feat
+
+- **attest**: add strict unresolved impact mode
+- **validation**: route attest keys by graph category
+- **attest**: add reversible disabled key state
+- **gate**: run graph-selected attest keys
+- **gate**: add Pants impact backend
+- **gate**: add receipt-proven key verdict carry
+- **gate**: add fail-closed impact resolver port
+- **gateway**: add canonical factory read routes
+- **gateway**: bridge live operator reads
+- **frame-bridge**: add local desktop profile
+
+### Fix
+
+- **test**: bound stateful validation workers
+- **plan**: project kickoff state during repair
+- **test**: bound live integration workers
+- **validation**: break certification evidence cycle
+- **validation**: repair E4 integration gates
+- **config**: reconcile E4 stateful evidence
+- **architecture**: remove E4 import cycle
+- **plan**: narrow swarm existence lookup
+- **pants**: move sandboxes to managed storage
+- **frame**: enforce deterministic toolchain path
+- **ci**: make developer checks affected-only
+- **attest**: seal aggregate selective verdict
+- **push**: break full-gate receipt bootstrap cycle
+- **attest**: break architecture receipt bootstrap cycle
+- **gate**: verify catalog without tool subprocesses
+- **gate**: resolve catalog from repository root
+- **gate**: validate catalog through ownership check
+- **gate**: preserve direct full-gate wiring
+- **hermetic**: expose Pants's own caches to the bubblewrap fence
+- **contracts**: verify inherited gateway baseline
+- **contracts**: retain published gateway digests
+- **gateway**: align canonical read contracts
+- **gateway**: keep canonical export append-only
+- **frame-bridge**: admit sealed local desktop requests
+
+### Refactor
+
+- **bd**: consolidate bounded invocation seam
+- **pants**: route changes from impact receipts
+
+### Perf
+
+- **release**: carry attestations across version bumps
+- **plan**: collapse status state reads
+- **cli**: bypass command tree for version
+- **config**: memoize effective config loads
+- **ci**: graduate proven tests to Pants
+
 ## v0.16.5 (2026-09-19)
 
 ### Fix
