@@ -620,9 +620,12 @@ def test_current_root_descendant_consumes_snapshot_and_reports_other_closure_dri
         "closure-not-certified",
         "missing-or-stale-coverage",
     } <= set(plan["fallback_reasons"])
-    # The remote config-policy change intentionally invalidates the historical config-store
-    # closure. Selective validation is still disabled, and the selector must report that
-    # unrelated current drift instead of implying the whole historical snapshot is current.
+    # The removed config-store drift is current again. This branch's plan-repair source change
+    # legitimately invalidates module.planning instead, and the selector still reports that
+    # real current-input mismatch fail closed.
+    assert applicability["config.store"]["applicable"] is True
+    assert applicability["module.planning"]["applicable"] is False
+    assert applicability["module.planning"]["fallback_reasons"] == ["input-digest-mismatch"]
     assert {
         "current-applicability-not-proven",
         "current-input-digest-mismatch",
