@@ -27,15 +27,15 @@ def test_e6_gc_closed_refuses_and_names_every_open_molecule_hive_wide(monkeypatc
     _allow_host_write(monkeypatch)
     calls = []
 
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
+    def fake_run(cmd, cwd, **kwargs):
+        calls.append((cmd, cwd, kwargs))
         return _wisps(
             {"id": "rl-wisp-amf", "title": "release 0.12.1", "status": "in_progress"},
             {"id": "pat-wisp-one", "title": "daily patrol", "status": "open"},
             {"id": "old-wisp-done", "title": "finished", "status": "closed"},
         )
 
-    monkeypatch.setattr(bd, "_run", fake_run)
+    monkeypatch.setattr(bd, "run", fake_run)
 
     assert bd._run_one(["mol", "wisp", "gc", "--closed", "--force"], "/hive", {}) == 1
 
@@ -44,7 +44,13 @@ def test_e6_gc_closed_refuses_and_names_every_open_molecule_hive_wide(monkeypatc
     assert "rl-wisp-amf (release 0.12.1)" in error
     assert "pat-wisp-one (daily patrol)" in error
     assert "old-wisp-done" not in error
-    assert [call[0] for call in calls] == [bd._WISP_MOLECULE_QUERY]
+    assert calls == [
+        (
+            bd._WISP_MOLECULE_QUERY,
+            "/hive",
+            {"capture": True, "hive_aware": False, "pin_process_cwd": True},
+        )
+    ]
 
 
 def test_e7_squash_refuses_on_an_in_flight_molecule(monkeypatch, capsys):
@@ -52,15 +58,21 @@ def test_e7_squash_refuses_on_an_in_flight_molecule(monkeypatch, capsys):
     _allow_host_write(monkeypatch)
     calls = []
 
-    def fake_run(cmd, **kwargs):
-        calls.append(cmd)
+    def fake_run(cmd, cwd, **kwargs):
+        calls.append((cmd, cwd, kwargs))
         return _wisps({"id": "rl-wisp-amf", "title": "release 0.12.1", "status": "open"})
 
-    monkeypatch.setattr(bd, "_run", fake_run)
+    monkeypatch.setattr(bd, "run", fake_run)
 
     assert bd._run_one(["mol", "squash", "rl-wisp-amf"], "/hive", {}) == 1
     assert "rl-wisp-amf" in capsys.readouterr().err
-    assert calls == [bd._WISP_MOLECULE_QUERY]
+    assert calls == [
+        (
+            bd._WISP_MOLECULE_QUERY,
+            "/hive",
+            {"capture": True, "hive_aware": False, "pin_process_cwd": True},
+        )
+    ]
 
 
 @pytest.mark.parametrize(
@@ -90,15 +102,15 @@ def test_bh_debug_is_an_explicit_operator_override(monkeypatch):
     monkeypatch.setenv("BH_DEBUG", "1")
     calls = []
 
-    def fake_run(cmd, **kwargs):
-        calls.append((cmd, kwargs))
+    def fake_run(cmd, cwd, **kwargs):
+        calls.append((cmd, cwd, kwargs))
         return Completed(23, "", "underlying result")
 
-    monkeypatch.setattr(bd, "_run", fake_run)
+    monkeypatch.setattr(bd, "run", fake_run)
     args = ["mol", "squash", "rl-wisp-amf"]
 
     assert bd._run_one(args, "/hive", {}) == 23
-    assert calls == [(["bd", *args], {"check": False, "cwd": "/hive"})]
+    assert calls == [(args, "/hive", {"hive_aware": False, "pin_process_cwd": True})]
 
 
 def test_gc_and_squash_are_unchanged_when_no_wisp_molecule_is_open(monkeypatch):
@@ -106,23 +118,31 @@ def test_gc_and_squash_are_unchanged_when_no_wisp_molecule_is_open(monkeypatch):
     _allow_host_write(monkeypatch)
     commands = []
 
-    def fake_run(cmd, **kwargs):
-        commands.append((cmd, kwargs))
+    def fake_run(cmd, cwd, **kwargs):
+        commands.append((cmd, cwd, kwargs))
         if cmd == bd._WISP_MOLECULE_QUERY:
             return _wisps({"id": "done-wisp", "title": "finished", "status": "closed"})
         return Completed(0, "forwarded", "")
 
-    monkeypatch.setattr(bd, "_run", fake_run)
+    monkeypatch.setattr(bd, "run", fake_run)
     gc_args = ["mol", "wisp", "gc", "--closed", "--force"]
     squash_args = ["mol", "--actor", "ops/a", "squash", "done-wisp"]
 
     assert bd._run_one(gc_args, "/hive", {}) == 0
     assert bd._run_one(squash_args, "/hive", {}) == 0
     assert commands == [
-        (bd._WISP_MOLECULE_QUERY, {"check": False, "capture": True, "cwd": "/hive"}),
-        (["bd", *gc_args], {"check": False, "cwd": "/hive"}),
-        (bd._WISP_MOLECULE_QUERY, {"check": False, "capture": True, "cwd": "/hive"}),
-        (["bd", *squash_args], {"check": False, "cwd": "/hive"}),
+        (
+            bd._WISP_MOLECULE_QUERY,
+            "/hive",
+            {"capture": True, "hive_aware": False, "pin_process_cwd": True},
+        ),
+        (gc_args, "/hive", {"hive_aware": False, "pin_process_cwd": True}),
+        (
+            bd._WISP_MOLECULE_QUERY,
+            "/hive",
+            {"capture": True, "hive_aware": False, "pin_process_cwd": True},
+        ),
+        (squash_args, "/hive", {"hive_aware": False, "pin_process_cwd": True}),
     ]
 
 
@@ -131,12 +151,14 @@ def test_non_closed_gc_modes_are_outside_the_specific_guard(monkeypatch):
     _allow_host_write(monkeypatch)
     calls = []
     monkeypatch.setattr(
-        bd, "_run", lambda cmd, **kwargs: calls.append((cmd, kwargs)) or Completed(0, "", "")
+        bd,
+        "run",
+        lambda cmd, cwd, **kwargs: calls.append((cmd, cwd, kwargs)) or Completed(0, "", ""),
     )
 
     args = ["mol", "wisp", "gc", "--age", "24h", "--force"]
     assert bd._run_one(args, "/hive", {}) == 0
-    assert calls == [(["bd", *args], {"check": False, "cwd": "/hive"})]
+    assert calls == [(args, "/hive", {"hive_aware": False, "pin_process_cwd": True})]
 
 
 def test_failed_or_malformed_safety_query_fails_closed(monkeypatch, capsys):
@@ -145,7 +167,7 @@ def test_failed_or_malformed_safety_query_fails_closed(monkeypatch, capsys):
         Completed(2, "", "database unavailable"),
         Completed(0, '{"wisps":"not-a-list"}', ""),
     ]
-    monkeypatch.setattr(bd, "_run", lambda *a, **k: results.pop(0))
+    monkeypatch.setattr(bd, "run", lambda *a, **k: results.pop(0))
     args = ["mol", "squash", "rl-wisp-amf"]
 
     assert bd._run_one(args, "/hive", {}) == 1
@@ -182,7 +204,7 @@ def test_missing_root_type_fails_closed(monkeypatch, capsys):
         json.dumps({"wisps": [{"id": "unknown-root", "status": "open"}]}),
         "",
     )
-    monkeypatch.setattr(bd, "_run", lambda *a, **k: malformed)
+    monkeypatch.setattr(bd, "run", lambda *a, **k: malformed)
 
     assert bd._run_one(["mol", "--actor", "ops/a", "squash", "unknown-root"], "/hive", {}) == 1
     assert "missing type" in capsys.readouterr().err
