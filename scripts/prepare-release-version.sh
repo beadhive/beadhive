@@ -9,4 +9,3 @@ if [ -n "${UV_EXEC:-}" ]; then
 else
     uv version --no-sync "${version}"
 fi
-python3 scripts/refresh_modularization_closeout.py --write

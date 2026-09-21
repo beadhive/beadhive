@@ -17,6 +17,16 @@ REPORT = ROOT / "docs/proof/bh-j5uyb.1-modularization-closeout.json"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
+def _artifact_bytes(relative: str, candidate: Path) -> bytes:
+    """Hash pyproject structure independently of the release-only version scalar."""
+    content = candidate.read_bytes()
+    if relative == "pyproject.toml":
+        content = re.sub(
+            rb'(?m)^(version\s*=\s*)"[^"]+"$', rb'\1"<release-version>"', content, count=1
+        )
+    return content
+
+
 def _artifact_rows(report: dict[str, object]) -> Iterator[dict[str, object]]:
     current = report["evidence_inventory"]["current_candidate"]
 
@@ -50,7 +60,7 @@ def _digests(root: Path, rows: list[dict[str, object]]) -> tuple[dict[str, str],
         if not candidate.is_file():
             errors.append(f"{relative}: artifact is missing")
             continue
-        digests[relative] = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        digests[relative] = hashlib.sha256(_artifact_bytes(relative, candidate)).hexdigest()
     return digests, errors
 
 

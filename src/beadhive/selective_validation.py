@@ -70,6 +70,7 @@ def run(
     runner: Runner,
     repo_path: str | None = None,
     full: bool = False,
+    receipt_override=None,
 ) -> int:
     """Resolve impact, carry proven greens, run invalidated keys, and aggregate policy.
 
@@ -99,7 +100,7 @@ def run(
         from .modules.work.application.impact import NativeFullResolver
 
         resolver = NativeFullResolver(GitTreeDiff())
-    receipt = resolver.resolve(repo, base_rev, head_rev, active_keys)
+    receipt = receipt_override or resolver.resolve(repo, base_rev, head_rev, active_keys)
     if receipt.fallback_reason:
         if attest.impact.on_unresolved == "strict":
             error_unresolved_impact(receipt.fallback_reason)

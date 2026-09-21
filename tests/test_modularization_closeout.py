@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from scripts import validate_final_refactor_parity as parity
+from scripts.refresh_modularization_closeout import _artifact_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "docs/proof/bh-j5uyb.1-modularization-closeout.json"
@@ -189,7 +190,9 @@ def test_current_candidate_artifact_digests_are_reproducible() -> None:
     for row in rows:
         path = ROOT / row["path"]
         assert path.is_file(), row["path"]
-        assert hashlib.sha256(path.read_bytes()).hexdigest() == row["sha256"], row["path"]
+        assert hashlib.sha256(_artifact_bytes(row["path"], path)).hexdigest() == row["sha256"], row[
+            "path"
+        ]
 
 
 def test_frame_bridge_ownership_and_follow_up_debt_are_unambiguous() -> None:

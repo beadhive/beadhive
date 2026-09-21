@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parents[1]
 GATE = "just check-all"
 RELEASE_FILES = {
     "CHANGELOG.md",
-    "docs/proof/bh-j5uyb.1-modularization-closeout.json",
     "pyproject.toml",
     "uv.lock",
 }
