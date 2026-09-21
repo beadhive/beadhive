@@ -681,7 +681,7 @@ def test_ensure_hub_missing_bd_is_friendly(tmp_path, monkeypatch, capsys):
     def raise_fnf(cmd, **k):
         raise FileNotFoundError("bd")
 
-    monkeypatch.setattr(hub, "run", raise_fnf)
+    monkeypatch.setattr(bd, "_run", raise_fnf)
     with pytest.raises(typer.Exit):
         hub.ensure_hub()
     assert "`bd` not found" in capsys.readouterr().err
@@ -697,7 +697,7 @@ def test_ensure_hub_init_failure_is_friendly(tmp_path, monkeypatch, capsys):
     # Same WS_HOME isolation — see test_ensure_hub_missing_bd_is_friendly.
     monkeypatch.setenv("WS_HOME", str(tmp_path))
     monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: Completed(1, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(1, "", ""))
     with pytest.raises(typer.Exit):
         hub.ensure_hub()
     err = capsys.readouterr().err
@@ -720,7 +720,7 @@ def test_ensure_store_passes_shared_server_flag_on_a_fresh_store(tmp_path, monke
         calls.append(cmd)
         return Completed(0, "", "")
 
-    monkeypatch.setattr(hub, "run", fake_run)
+    monkeypatch.setattr(bd, "_run", fake_run)
     from beadhive import store_locator
 
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda store: False)
@@ -753,7 +753,7 @@ def test_missing_hub_reuses_its_known_shared_server_database(tmp_path, monkeypat
         calls.append(cmd)
         return Completed(0, "", "")
 
-    monkeypatch.setattr(hub, "run", fake_run)
+    monkeypatch.setattr(bd, "_run", fake_run)
     from beadhive import store_locator
 
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda path: False)
@@ -787,7 +787,7 @@ def test_missing_hub_does_not_attach_an_unproven_database(tmp_path, monkeypatch,
     monkeypatch.setenv("WS_HUB", str(store))
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(shared))
     calls = []
-    monkeypatch.setattr(hub, "run", lambda cmd, **kwargs: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **kwargs: calls.append(cmd) or Completed(0, "", ""))
     from beadhive import store_locator
 
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda path: False)
@@ -808,7 +808,7 @@ def test_generic_store_never_infers_hq_or_hive_database(tmp_path, monkeypatch):
     marker.write_text("authoritative")
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(shared))
     calls = []
-    monkeypatch.setattr(hub, "run", lambda cmd, **kwargs: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **kwargs: calls.append(cmd) or Completed(0, "", ""))
     from beadhive import store_locator
 
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda path: False)
@@ -822,7 +822,7 @@ def test_generic_store_never_infers_hq_or_hive_database(tmp_path, monkeypatch):
 def test_ensure_store_warns_visibly_when_dolt_mode_needed_fixing(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("WS_HOME", str(tmp_path))
     monkeypatch.setenv("WS_HUB", str(tmp_path / "hub"))
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: Completed(0, "", ""))
     from beadhive import store_locator
 
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda store: True)
@@ -842,7 +842,7 @@ def test_ensure_store_leaves_an_existing_store_untouched(tmp_path, monkeypatch):
     store = tmp_path / "hub"
     (store / ".beads").mkdir(parents=True)
     calls = []
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
     monkeypatch.setenv("WS_HUB", str(store))
 
     hub.ensure_store(store, "hub")
@@ -1079,7 +1079,7 @@ def test_persist_shared_server_mode_refuses_when_nothing_landed_on_the_server(
     )
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(tmp_path / "shared"))
     calls = []
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
 
     hub.persist_shared_server_mode(store)
 
@@ -1100,7 +1100,7 @@ def test_persist_shared_server_mode_stamps_a_store_that_really_is_on_the_server(
     (tmp_path / "shared" / "dolt" / "hq").mkdir(parents=True)
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(tmp_path / "shared"))
     calls = []
-    monkeypatch.setattr(hub, "run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
+    monkeypatch.setattr(bd, "_run", lambda cmd, **k: calls.append(cmd) or Completed(0, "", ""))
 
     hub.persist_shared_server_mode(store)
 

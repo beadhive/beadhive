@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 import typer
 
-from beadhive import registry, storage_migrate
+from beadhive import bd, registry, storage_migrate
 from beadhive.run import run as real_run
 from harness.world import git_env
 
@@ -218,7 +218,7 @@ def test_significant_err_line_skips_a_leading_notice_block_and_prefers_the_error
         "Check with: lsof -i :3308",
     )
 
-    line = storage_migrate._significant_err_line(res)
+    line = bd.err_line(res)
 
     assert line.startswith("Error: cannot start dolt server on port 3308")
     assert "Notice" not in line
@@ -229,14 +229,14 @@ def test_significant_err_line_falls_back_to_the_first_line_when_only_notices_exi
     fallback still gives the caller something rather than an empty string."""
     res = subprocess.CompletedProcess(["bd"], 1, "", "Notice: informational only\n  continuation")
 
-    line = storage_migrate._significant_err_line(res)
+    line = bd.err_line(res)
 
     assert line == "Notice: informational only"
 
 
 def test_significant_err_line_is_a_noop_on_an_ordinary_single_line_error():
     res = subprocess.CompletedProcess(["bd"], 1, "", "Error: boom")
-    assert storage_migrate._significant_err_line(res) == "Error: boom"
+    assert bd.err_line(res) == "Error: boom"
 
 
 def test_bootstrap_shared_server_skips_dolt_start_when_a_server_is_already_reachable(
@@ -607,9 +607,9 @@ def test_migrate_hive_already_migrated_is_a_noop_but_heals_config(tmp_path, monk
 
     healed = []
     monkeypatch.setattr(
-        storage_migrate,
+        storage_migrate.bd_mod,
         "run",
-        lambda cmd, **kw: healed.append(cmd) or _ok(),
+        lambda args, cwd, **kw: healed.append(args) or _ok(),
     )
 
     result = storage_migrate.migrate_hive(_entry(), {})
@@ -840,6 +840,11 @@ def test_migrate_hive_leaves_dolt_database_repointed_after_a_successful_bootstra
     # so neutralize it rather than fight it.
     monkeypatch.setattr(storage_migrate, "_persist_shared_server_config", lambda hd, actor: None)
     monkeypatch.setattr(storage_migrate, "_persist_backup_enabled", lambda hd, actor: None)
+    monkeypatch.setattr(
+        storage_migrate.dolt_health,
+        "probe_raw_schema_version",
+        lambda *a, **k: storage_migrate.dolt_health.SchemaProbeResult(66, "test"),
+    )
 
     storage_migrate.migrate_hive(_entry(), {})
 
@@ -882,6 +887,7 @@ def test_migrate_hive_already_migrated_stays_a_noop_when_the_embedded_store_is_r
     monkeypatch.setattr(registry, "hive_dir", lambda entry: hive_dir)
     monkeypatch.setattr(storage_migrate.bd_mod, "json", lambda args, cwd: {"value": "h1"})
     monkeypatch.setattr(storage_migrate, "run", lambda cmd, **kw: _ok())
+    monkeypatch.setattr(storage_migrate.bd_mod, "run", lambda args, cwd, **kw: _ok())
 
     result = storage_migrate.migrate_hive(_entry(), {})
 
@@ -1514,6 +1520,7 @@ def test_migrate_hive_real_run_on_a_furnished_hive_ends_fully_clean_and_bd_backu
     # gitignore helpers) goes through this SAME `run`, so it must still report success rather
     # than raise, which `_ok()` does either way.
     monkeypatch.setattr(storage_migrate, "run", lambda cmd, **kw: _ok())
+    monkeypatch.setattr(storage_migrate.bd_mod, "run", lambda args, cwd, **kw: _ok())
 
     result = storage_migrate.migrate_hive(_entry(prefix="frn"), {}, dry_run=False, actor="test")
 
@@ -1580,6 +1587,7 @@ def test_migrate_hive_already_migrated_heals_a_dangling_backup_registration(tmp_
 
     monkeypatch.setattr(storage_migrate.engine, "get_engine", lambda cfg: _RepointEngine())
     monkeypatch.setattr(storage_migrate, "run", lambda cmd, **kw: _ok())
+    monkeypatch.setattr(storage_migrate.bd_mod, "run", lambda args, cwd, **kw: _ok())
 
     result = storage_migrate.migrate_hive(_entry(prefix="frn"), {})
 

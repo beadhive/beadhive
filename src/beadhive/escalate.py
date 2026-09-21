@@ -52,9 +52,8 @@ import sys
 
 import typer
 
-from . import config, registry
+from . import bd, config, registry
 from .identity import _env_actor
-from .run import run
 from .state import ORIGIN_ESCALATION
 
 # Seat-prefix → canonical role label value.  Extend as new seat prefixes land.
@@ -137,18 +136,16 @@ def _stamp_extra(label_kv: str, new_id: str, hq_dir, actor: str) -> None:
 
     Failures are silently swallowed: the escalation bead is already filed and the raiser
     must not be blocked by a non-critical metadata stamp."""
-    run(
+    bd.run(
         [
-            "bd",
-            "-C",
-            str(hq_dir),
             "set-state",
             new_id,
             label_kv,
             "--reason",
             f"{config.BINARY_ALIAS} escalate metadata",
         ],
-        check=False,
+        hq_dir,
+        actor=actor,
         capture=True,
     )
 

@@ -72,7 +72,7 @@ def test_passthrough_matches_bd_run_shape(monkeypatch):
 
     cmd, kwargs = calls[0]
     assert cmd == ["bd", "-C", "/hive", "--actor", "dev/a", "show", "mr-1"]
-    assert kwargs == {"check": False, "capture": True, "text_input": None}
+    assert kwargs == {"check": False, "capture": True, "timeout": engine.STATE_TIMEOUT}
 
 
 def test_passthrough_omits_actor_flag_when_unset(monkeypatch):
@@ -92,7 +92,12 @@ def test_export_jsonl_matches_hub_sync_shape(monkeypatch):
 
     cmd, kwargs = calls[0]
     assert cmd == ["bd", "-C", "/hive", "export", "-o", "/hive/.beads/issues.jsonl"]
-    assert kwargs == {"env": {"X": "1"}, "check": False, "capture": True}
+    assert kwargs == {
+        "env": {"X": "1"},
+        "check": False,
+        "capture": True,
+        "timeout": engine.STATE_TIMEOUT,
+    }
 
 
 def test_stream_gate_list_reads_all_states_without_default_limit(monkeypatch):
@@ -113,7 +118,7 @@ def test_stream_gate_list_reads_all_states_without_default_limit(monkeypatch):
         "--all",
         "--json",
     ]
-    assert kwargs == {"check": False, "capture": True}
+    assert kwargs == {"check": False, "capture": True, "timeout": engine.STATE_TIMEOUT}
 
 
 def test_import_jsonl_matches_import_labeled_shape(monkeypatch):
@@ -124,7 +129,12 @@ def test_import_jsonl_matches_import_labeled_shape(monkeypatch):
 
     cmd, kwargs = calls[0]
     assert cmd == ["bd", "import", "--dry-run", "/tmp/x.jsonl"]
-    assert kwargs == {"check": False, "capture": True, "cwd": "/hive"}
+    assert kwargs == {
+        "check": False,
+        "capture": True,
+        "cwd": "/hive",
+        "timeout": engine.STATE_TIMEOUT,
+    }
 
 
 def test_import_jsonl_passes_none_cwd_through_unstringified(monkeypatch):
@@ -151,7 +161,13 @@ def test_bootstrap_matches_hub_fetch_cache_shape(monkeypatch):
 
     cmd, kwargs = calls[0]
     assert cmd == ["bd", "bootstrap", "--non-interactive"]
-    assert kwargs == {"cwd": "/cache", "env": {"BD_NON_INTERACTIVE": "1"}, "check": False}
+    assert kwargs == {
+        "cwd": "/cache",
+        "env": {"BD_NON_INTERACTIVE": "1"},
+        "check": False,
+        "capture": False,
+        "timeout": engine.STATE_TIMEOUT,
+    }
 
 
 def test_push_state_commits_then_pushes_matching_report_shape(monkeypatch):
@@ -495,7 +511,11 @@ def test_list_peers_returns_the_configured_names_and_pays_no_network_timeout(mon
 
     cmd, kwargs = calls[0]
     assert cmd == ["bd", "-C", "/hive", "federation", "list-peers", "--json"]
-    assert kwargs == {"check": False, "capture": True}  # local state — no fetch, so no timeout
+    assert kwargs == {
+        "check": False,
+        "capture": True,
+        "timeout": engine.STATE_TIMEOUT,
+    }
     assert got == ("origin",)
 
 
@@ -530,7 +550,7 @@ def test_add_peer_builds_the_bd_command(monkeypatch):
         "origin",
         "git+ssh://git@github.com/acme/app.git",
     ]
-    assert kwargs == {"check": False, "capture": True}
+    assert kwargs == {"check": False, "capture": True, "timeout": engine.STATE_TIMEOUT}
     assert got.returncode == 0
 
 
@@ -661,15 +681,28 @@ def test_bd_run_routes_through_get_engine(monkeypatch):
     calls = []
 
     class FakeEngine:
-        def passthrough(
-            self, args, cwd, actor="", capture=False, text_input=None, pin_process_cwd=False
-        ):
-            calls.append((args, cwd, actor, capture, text_input, pin_process_cwd))
+        def invoke(self, args, **kwargs):
+            calls.append((args, kwargs))
             return Completed(0, "faked", "")
 
     monkeypatch.setattr(engine, "get_engine", lambda: FakeEngine())
 
     res = bd.run(["list"], "/hive", actor="dev/a", capture=True)
 
-    assert calls == [(["list"], "/hive", "dev/a", True, None, False)]
+    assert calls == [
+        (
+            ["list"],
+            {
+                "cwd": "/hive",
+                "actor": "dev/a",
+                "capture": True,
+                "text_input": None,
+                "pin_process_cwd": False,
+                "timeout": engine.STATE_TIMEOUT,
+                "env": None,
+                "hive_aware": True,
+                "no_work_markers": (),
+            },
+        )
+    ]
     assert res.stdout == "faked"

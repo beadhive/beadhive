@@ -77,6 +77,12 @@ def _patch_neighbors(monkeypatch):
     monkeypatch.setattr(onboard, "_bypass_gh2455_dirty_config", lambda ctx: None)
 
 
+def _patch_runs(monkeypatch, fake_run):
+    """Git stays on ``hive.run``; every bd call meets at the engine subprocess seam."""
+    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "_run", fake_run)
+
+
 # ---------------------------------------------------------------------------
 # All three paths activate server mode
 # ---------------------------------------------------------------------------
@@ -86,7 +92,7 @@ def test_furnished_path_passes_shared_server_flag(tmp_path, monkeypatch):
     _patch_neighbors(monkeypatch)
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda base: False)
     calls, fake_run = _fake_run_factory()
-    monkeypatch.setattr(hive, "run", fake_run)
+    _patch_runs(monkeypatch, fake_run)
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=True))
 
@@ -101,7 +107,7 @@ def test_zero_footprint_path_passes_shared_server_flag(tmp_path, monkeypatch):
     monkeypatch.setattr(hive, "_relocate_bd_gitignore", lambda base: False)
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda base: False)
     calls, fake_run = _fake_run_factory()
-    monkeypatch.setattr(hive, "run", fake_run)
+    _patch_runs(monkeypatch, fake_run)
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=False))
 
@@ -125,7 +131,7 @@ def test_bootstrap_path_activates_shared_server_via_env_var(tmp_path, monkeypatc
         envs.append(kw.get("env") or {})
         return fake_run(cmd, **kw)
 
-    monkeypatch.setattr(hive, "run", _capturing_run)
+    _patch_runs(monkeypatch, _capturing_run)
 
     onboard._act_bd_init(_ctx(tmp_path, furnish=False))
 
@@ -143,11 +149,11 @@ def test_ensure_server_mode_persisted_asserts_config_key_even_when_no_write_need
 ):
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda base: False)
     calls, fake_run = _fake_run_factory()
-    monkeypatch.setattr(hive, "run", fake_run)
+    _patch_runs(monkeypatch, fake_run)
 
     onboard._ensure_server_mode_persisted(_ctx(tmp_path, furnish=True))
 
-    assert ["bd", "config", "set", "dolt.shared-server", "true"] in calls
+    assert any(call[-4:] == ["config", "set", "dolt.shared-server", "true"] for call in calls)
     assert capsys.readouterr().err == ""  # measured common case: silent
 
 
@@ -156,11 +162,11 @@ def test_ensure_server_mode_persisted_warns_visibly_when_it_had_to_fix_drift(
 ):
     monkeypatch.setattr(store_locator, "ensure_server_mode_persisted", lambda base: True)
     calls, fake_run = _fake_run_factory()
-    monkeypatch.setattr(hive, "run", fake_run)
+    _patch_runs(monkeypatch, fake_run)
 
     onboard._ensure_server_mode_persisted(_ctx(tmp_path, furnish=True))
 
-    assert ["bd", "config", "set", "dolt.shared-server", "true"] in calls
+    assert any(call[-4:] == ["config", "set", "dolt.shared-server", "true"] for call in calls)
     err = capsys.readouterr().err
     assert "dolt_mode" in err
     assert "⚠" in err
@@ -173,18 +179,18 @@ def test_ensure_server_mode_persisted_warns_visibly_when_it_had_to_fix_drift(
 
 def test_enable_backup_sets_it_when_a_git_remote_exists(tmp_path, monkeypatch):
     calls, fake_run = _fake_run_factory(git_remote_stdout="origin\n")
-    monkeypatch.setattr(hive, "run", fake_run)
+    _patch_runs(monkeypatch, fake_run)
 
     onboard._enable_backup_if_remote(_ctx(tmp_path, furnish=True))
 
-    assert ["bd", "config", "set", "backup.enabled", "true"] in calls
+    assert any(call[-4:] == ["config", "set", "backup.enabled", "true"] for call in calls)
 
 
 def test_enable_backup_leaves_default_alone_without_a_remote(tmp_path, monkeypatch):
     """A remote-less prototype would have defaulted OFF in embedded too — never manufacture a
     difference that was never real by turning it on unconditionally."""
     calls, fake_run = _fake_run_factory(git_remote_stdout="")
-    monkeypatch.setattr(hive, "run", fake_run)
+    _patch_runs(monkeypatch, fake_run)
 
     onboard._enable_backup_if_remote(_ctx(tmp_path, furnish=True))
 
@@ -194,13 +200,13 @@ def test_enable_backup_leaves_default_alone_without_a_remote(tmp_path, monkeypat
 @pytest.mark.parametrize("stdout", ["origin\n", "origin\nupstream\n", "  origin  \n"])
 def test_repo_has_git_remote_true_shapes(tmp_path, monkeypatch, stdout):
     _, fake_run = _fake_run_factory(git_remote_stdout=stdout)
-    monkeypatch.setattr(hive, "run", fake_run)
+    _patch_runs(monkeypatch, fake_run)
     assert onboard._repo_has_git_remote(tmp_path) is True
 
 
 def test_repo_has_git_remote_false_when_empty(tmp_path, monkeypatch):
     _, fake_run = _fake_run_factory(git_remote_stdout="")
-    monkeypatch.setattr(hive, "run", fake_run)
+    _patch_runs(monkeypatch, fake_run)
     assert onboard._repo_has_git_remote(tmp_path) is False
 
 
@@ -258,7 +264,7 @@ def test_run_bd_mint_translates_a_failure_into_a_legible_exit(tmp_path, monkeypa
     """`check=False` + an explicit exit — never a raw `subprocess.CalledProcessError` escaping
     to bh's generic top-level handler (a traceback plus a structlog JSON blob a first-time
     user has no way to parse)."""
-    monkeypatch.setattr(hive, "run", lambda cmd, **kw: _Result(returncode=1))
+    monkeypatch.setattr(onboard.bd_mod, "_run", lambda cmd, **kw: _Result(returncode=1))
     monkeypatch.setattr(hive, "cleanup_failed_bd_init", lambda base: None)
 
     with pytest.raises(typer.Exit) as exc:
@@ -278,7 +284,7 @@ def test_run_bd_mint_cleans_up_wreckage_before_exiting(tmp_path, monkeypatch):
     by the time `_run_bd_mint` returns control to the caller, so an immediate retry's
     `.beads`-exists skip is never fooled into reporting a hive ready that has no store."""
     cleaned = []
-    monkeypatch.setattr(hive, "run", lambda cmd, **kw: _Result(returncode=1))
+    monkeypatch.setattr(onboard.bd_mod, "_run", lambda cmd, **kw: _Result(returncode=1))
     monkeypatch.setattr(hive, "cleanup_failed_bd_init", lambda base: cleaned.append(base))
 
     with pytest.raises(typer.Exit):
@@ -289,7 +295,7 @@ def test_run_bd_mint_cleans_up_wreckage_before_exiting(tmp_path, monkeypatch):
 
 def test_run_bd_mint_never_calls_cleanup_on_success(tmp_path, monkeypatch):
     cleaned = []
-    monkeypatch.setattr(hive, "run", lambda cmd, **kw: _Result(returncode=0))
+    monkeypatch.setattr(onboard.bd_mod, "_run", lambda cmd, **kw: _Result(returncode=0))
     monkeypatch.setattr(hive, "cleanup_failed_bd_init", lambda base: cleaned.append(base))
 
     onboard._run_bd_mint(["bd", "init"], _ctx(tmp_path, furnish=True), env={})
