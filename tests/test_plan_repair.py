@@ -87,7 +87,7 @@ def _child(cid, *, deps=(), labels=(), acceptance="done means done", status="ope
 
 class FakeBdRepair:
     """Stateful bd stand-in: serves the reads repair/verify make (show, list --parent,
-    swarm list, gate list [--all], state) from mutable fields, and APPLIES the writes
+    dep list, gate list [--all], state) from mutable fields, and APPLIES the writes
     (swarm create, gate create, set-state, label add) to them."""
 
     def __init__(
@@ -152,9 +152,13 @@ class FakeBdRepair:
             return _CP(0, json.dumps([epic]) + "\n", "")
         if args[:1] == ["list"] and "--parent" in args:
             return _CP(0, json.dumps(self.children) + "\n", "")
-        if args[:2] == ["swarm", "list"]:
-            swarms = [{"epic_id": "epic-1"}] if self.has_swarm else []
-            return _CP(0, json.dumps({"schema_version": 1, "swarms": swarms}) + "\n", "")
+        if args[:2] == ["dep", "list"]:
+            related = (
+                [{"id": "sw-1", "issue_type": "molecule", "mol_type": "swarm"}]
+                if self.has_swarm
+                else []
+            )
+            return _CP(0, json.dumps(related) + "\n", "")
         if args[:2] == ["swarm", "create"]:
             self.has_swarm = True
             return _CP(0, "", "")

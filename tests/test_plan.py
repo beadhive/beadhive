@@ -1450,7 +1450,7 @@ def _good_children():
 
 class FakeBdVerify(FakeBd):
     """Serves the read-only queries verify makes: `bd show <epic>`, `bd list --parent <epic>`,
-    `bd swarm list`, `bd gate list`, and `bd state <epic> kickoff`. Every field is configurable
+    `bd dep list`, `bd gate list`, and `bd state <epic> kickoff`. Every field is configurable
     so each test can flip exactly one convention."""
 
     def __init__(
@@ -1496,9 +1496,13 @@ class FakeBdVerify(FakeBd):
             return _CP(0, json.dumps([epic]) + "\n", "")
         if args and args[0] == "list" and "--parent" in args:
             return _CP(0, json.dumps(self._children) + "\n", "")
-        if len(args) >= 2 and args[0] == "swarm" and args[1] == "list":
-            swarms = [{"epic_id": e} for e in self._swarm_epics]
-            return _CP(0, json.dumps({"schema_version": 1, "swarms": swarms}) + "\n", "")
+        if len(args) >= 3 and args[0] == "dep" and args[1] == "list":
+            related = (
+                [{"id": "sw-1", "issue_type": "molecule", "mol_type": "swarm"}]
+                if args[2] in self._swarm_epics
+                else []
+            )
+            return _CP(0, json.dumps(related) + "\n", "")
         if len(args) >= 2 and args[0] == "gate" and args[1] == "list":
             gates = [
                 {"id": f"g-{i}", "status": "open", "description": d}
@@ -1614,6 +1618,25 @@ def test_verify_missing_swarm_exits_nonzero(hive, monkeypatch):
     result = _verify(hive, monkeypatch, swarm_epics=())
     assert result.exit_code != 0
     assert "no bd swarm" in result.output
+
+
+def test_verify_uses_narrow_stored_swarm_relation(hive, monkeypatch):
+    """Existence reads one epic's related beads, never the computed all-swarms dashboard."""
+    fb = FakeBdVerify()
+    monkeypatch.setattr(bd_mod, "_run", fb)
+    result = _runner.invoke(app, ["plan", "verify", "epic-1", "--hive", "myrepo"])
+
+    assert result.exit_code == 0, result.output
+    calls = [args for _actor, args in fb.calls]
+    assert any(
+        args[:3] == ["dep", "list", "epic-1"]
+        and "--direction" in args
+        and "up" in args
+        and "--type" in args
+        and "relates-to" in args
+        for args in calls
+    )
+    assert not any(args[:2] == ["swarm", "list"] for args in calls)
 
 
 def test_verify_missing_kickoff_gate_exits_nonzero(hive, monkeypatch):
