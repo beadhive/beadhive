@@ -44,6 +44,7 @@ class CacheLayout:
     pants_subprocessdir: Path
     uv_cache: Path
     pex_root: Path
+    sandbox_root: Path
     maintenance_lock: Path
 
     def environment(self) -> dict[str, str]:
@@ -54,6 +55,7 @@ class CacheLayout:
             "PANTS_SUBPROCESSDIR": str(self.pants_subprocessdir),
             "UV_CACHE_DIR": str(self.uv_cache),
             "PEX_ROOT": str(self.pex_root),
+            "PANTS_LOCAL_EXECUTION_ROOT_DIR": str(self.sandbox_root),
         }
 
 
@@ -68,6 +70,12 @@ def cache_layout(repository: Path, environ: Mapping[str, str] | None = None) -> 
         cache_root = (xdg / "beadhive" / "pants").resolve()
     key = hashlib.sha256(os.fsencode(repository)).hexdigest()[:20]
     worktree_root = cache_root / "worktrees" / key
+    configured_sandbox = env.get("BH_PANTS_SANDBOX_ROOT")
+    sandbox_root = (
+        Path(configured_sandbox).expanduser().resolve()
+        if configured_sandbox
+        else worktree_root / "sandboxes"
+    )
     return CacheLayout(
         repository=repository,
         cache_root=cache_root,
@@ -78,6 +86,7 @@ def cache_layout(repository: Path, environ: Mapping[str, str] | None = None) -> 
         pants_subprocessdir=worktree_root / "pantsd",
         uv_cache=worktree_root / "uv",
         pex_root=worktree_root / "pex",
+        sandbox_root=sandbox_root,
         maintenance_lock=cache_root / ".maintenance.lock",
     )
 
@@ -110,12 +119,37 @@ def capacity(path: Path) -> dict[str, int]:
     }
 
 
+def _device_id(path: Path) -> int:
+    return path.stat().st_dev
+
+
+def capacities(layout: CacheLayout) -> tuple[dict[str, object], ...]:
+    """Report capacity once per device used by Pants' high-volume write roots."""
+    devices: dict[int, dict[str, object]] = {}
+    for role, path in (
+        ("local_store", layout.local_store),
+        ("worktree_root", layout.worktree_root),
+        ("sandbox_root", layout.sandbox_root),
+    ):
+        device = _device_id(path)
+        if device not in devices:
+            devices[device] = {
+                "device": device,
+                "roots": {},
+                **capacity(path),
+            }
+        roots = devices[device]["roots"]
+        assert isinstance(roots, dict)
+        roots[role] = str(path)
+    return tuple(devices[device] for device in sorted(devices))
+
+
 def prepare(
     layout: CacheLayout,
     *,
     min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
     min_free_inodes: int = DEFAULT_MIN_FREE_INODES,
-) -> dict[str, int]:
+) -> tuple[dict[str, object], ...]:
     _ensure_directory(layout.cache_root, SHARED_MODE)
     _ensure_directory(layout.local_store, SHARED_MODE)
     _ensure_directory(layout.worktree_root, PRIVATE_MODE)
@@ -125,18 +159,27 @@ def prepare(
         layout.pants_subprocessdir,
         layout.uv_cache,
         layout.pex_root,
+        layout.sandbox_root,
     ):
         _ensure_directory(path, PRIVATE_MODE)
-    observed = capacity(layout.cache_root)
-    if observed["free_bytes"] < min_free_bytes:
-        raise CacheSafetyError(
-            f"cache filesystem has {observed['free_bytes']} free bytes; reserve is {min_free_bytes}"
-        )
-    if observed["free_inodes"] < min_free_inodes:
-        raise CacheSafetyError(
-            f"cache filesystem has {observed['free_inodes']} free inodes; reserve is "
-            f"{min_free_inodes}"
-        )
+    observed = capacities(layout)
+    for device in observed:
+        roots = device["roots"]
+        free_bytes = device["free_bytes"]
+        free_inodes = device["free_inodes"]
+        if not isinstance(roots, dict) or not isinstance(free_bytes, int):
+            raise CacheSafetyError("invalid filesystem capacity observation")
+        if not isinstance(free_inodes, int):
+            raise CacheSafetyError("invalid filesystem inode observation")
+        description = f"device {device['device']} ({', '.join(sorted(roots))})"
+        if free_bytes < min_free_bytes:
+            raise CacheSafetyError(
+                f"{description} has {free_bytes} free bytes; reserve is {min_free_bytes}"
+            )
+        if free_inodes < min_free_inodes:
+            raise CacheSafetyError(
+                f"{description} has {free_inodes} free inodes; reserve is {min_free_inodes}"
+            )
     return observed
 
 
@@ -164,7 +207,7 @@ def status(layout: CacheLayout) -> dict[str, object]:
     return {
         "paths": {key: str(value) for key, value in paths.items()},
         "environment": layout.environment(),
-        "capacity": observed,
+        "capacity_by_device": observed,
         "modes": {
             "local_store": f"{stat.S_IMODE(layout.local_store.stat().st_mode):04o}",
             "worktree_root": f"{stat.S_IMODE(layout.worktree_root.stat().st_mode):04o}",
@@ -200,6 +243,7 @@ def reset_worktree_cache(layout: CacheLayout, name: str) -> Path:
         "pantsd": layout.pants_subprocessdir,
         "uv": layout.uv_cache,
         "pex": layout.pex_root,
+        "sandboxes": layout.sandbox_root,
     }
     if name not in allowed:
         raise CacheSafetyError(f"unknown mutable cache {name!r}; choose one of {sorted(allowed)}")
@@ -250,10 +294,10 @@ def run_pants(layout: CacheLayout, command: Sequence[str]) -> int:
         json.dumps(
             {
                 "event": "pants-cache-preflight",
-                "free_bytes": observed["free_bytes"],
-                "free_inodes": observed["free_inodes"],
+                "devices": observed,
                 "local_store": str(layout.local_store),
                 "worktree_root": str(layout.worktree_root),
+                "sandbox_root": str(layout.sandbox_root),
             },
             sort_keys=True,
         ),
@@ -295,7 +339,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(json.dumps(status(layout), indent=2, sort_keys=True))
         elif options.action == "check":
             observed = prepare(layout)
-            print(json.dumps({"status": "ok", **observed}, sort_keys=True))
+            print(json.dumps({"status": "ok", "devices": observed}, sort_keys=True))
         elif options.action == "run":
             command = options.command[1:] if options.command[:1] == ["--"] else options.command
             return run_pants(layout, command)

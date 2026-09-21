@@ -282,6 +282,48 @@ def test_bootstrap_defaults_to_native_full_and_maps_typed_config():
     )
 
 
+def test_bootstrap_maps_disabled_execution_state_orthogonally_to_policy():
+    configured = AttestConfig.model_validate(
+        {
+            "keys": [
+                {
+                    "name": "unit",
+                    "cmd": "just test",
+                    "policy": "optional",
+                    "enabled": False,
+                    "disabled_reason": "bounded maintenance",
+                    "disabled_until": "2999-01-01T00:00:00Z",
+                }
+            ]
+        }
+    )
+
+    [key] = attest_keys(configured)
+    assert key.policy == "optional"
+    assert key.is_disabled()
+    assert key.disabled_reason == "bounded maintenance"
+
+
+@pytest.mark.parametrize(
+    "raw,match",
+    [
+        ({"enabled": False}, "disabled_reason"),
+        ({"enabled": False, "disabled_reason": "   "}, "disabled_reason"),
+        (
+            {
+                "enabled": False,
+                "disabled_reason": "maintenance",
+                "disabled_until": "2999-01-01T00:00:00",
+            },
+            "timezone",
+        ),
+    ],
+)
+def test_disabled_config_requires_reason_and_timezone(raw, match):
+    with pytest.raises(ValueError, match=match):
+        AttestConfig.model_validate({"keys": [{"name": "unit", "cmd": "just test", **raw}]})
+
+
 @pytest.mark.parametrize(
     "raw",
     [

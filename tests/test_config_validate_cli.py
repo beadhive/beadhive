@@ -82,3 +82,21 @@ def test_missing_config_gives_guidance_not_traceback(tmp_path, monkeypatch):
     assert "config init" in result.output
     assert result.exception is None or isinstance(result.exception, SystemExit)
     assert "Traceback" not in result.output
+
+
+def test_disabled_attest_key_prints_warning_and_exits_zero(cfg_at):
+    cfg_at(
+        "schema_version: 1\n"
+        "work:\n"
+        "  attest:\n"
+        "    keys:\n"
+        "      - name: stateful\n"
+        "        cmd: just stateful\n"
+        "        enabled: false\n"
+        "        disabled_reason: bounded maintenance\n"
+    )
+
+    result = runner.invoke(app, ["config", "validate"])
+    assert result.exit_code == 0, result.output
+    assert "stateful" in result.output
+    assert "DISABLED" in result.output

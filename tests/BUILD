@@ -2,32 +2,32 @@ python_source(
     name="root-conftest",
     source="conftest.py",
     dependencies=[":watchdog-diagnostics"],
-    tags=["attest:stateful"],
+    tags=["category:test-only", "attest:stateful"],
 )
 
 python_source(
     name="watchdog-diagnostics",
     source="harness/watchdog_diagnostics.py",
-    tags=["attest:stateful"],
+    tags=["category:test-only", "attest:stateful"],
 )
 
 python_source(
     name="stateful-fixtures",
     source="stateful_fixtures.py",
-    tags=["attest:stateful"],
+    tags=["category:test-only", "attest:stateful"],
 )
 
 python_sources(
     name="harness",
     sources=["harness/**/*.py"],
-    tags=["attest:stateful"],
+    tags=["category:test-only", "attest:stateful"],
 )
 
 python_tests(
     name="pure-tests",
     sources=["unit/**/test_*.py"],
     dependencies=[":root-conftest"],
-    tags=["attest:unit"],
+    tags=["category:test-only", "attest:unit"],
     overrides={
         # bh-t8t7r: these files pass from a Pants sandbox with no stateful fixture
         # target and form the first CAS-backed slice of attest:stateful.  Keep the
@@ -60,7 +60,14 @@ python_tests(
             "unit/modules/worktrees/test_policy.py",
             "unit/modules/worktrees/test_services.py",
             "unit/testing/test_conformance_testkit.py",
-        ): {"tags": ["attest:unit", "attest:stateful", "pants:proven"]},
+        ): {
+            "tags": [
+                "category:test-only",
+                "attest:unit",
+                "attest:stateful",
+                "pants:proven",
+            ]
+        },
     },
 )
 
@@ -79,10 +86,10 @@ python_tests(
         # Sandbox-qualified by bh-1j3ei.4. These are the complete runtime file inputs of
         # test_docs_role_vocabulary.py: three root docs plus INSTALL.md.
         "test_docs_role_vocabulary.py": {
-            "dependencies": ["//docs:docs-root", "//:root-config"],
+            "dependencies": ["//docs:docs-root", "//:root-guide-doc"],
         },
     },
-    tags=["attest:stateful"],
+    tags=["category:test-only", "attest:stateful"],
 )
 
 resources(
@@ -91,6 +98,7 @@ resources(
         "harness/*.json",
         "fixtures/**/*",
     ],
+    tags=["category:test-only"],
 )
 
 # Package marker for tests/unit/integrations so imports resolve; the test_*.py siblings there
@@ -98,7 +106,7 @@ resources(
 python_sources(
     name="package-markers",
     sources=["unit/**/__init__.py"],
-    tags=["attest:unit"],
+    tags=["category:test-only", "attest:unit"],
 )
 
 # Ownership only (bh-1j3ei.2): config/fixture files no test target's sources glob reaches,
@@ -113,4 +121,5 @@ files(
         "proof/**/*",
         "schemas/**/*",
     ],
+    tags=["category:test-only"],
 )

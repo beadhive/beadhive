@@ -6,53 +6,53 @@
 files(
     name="docs-root",
     sources=["*.md"],
-    tags=["attest:docs"],
+    tags=["category:docs", "attest:docs"],
 )
 
 files(
     name="docs-assets",
     sources=["assets/**/*"],
-    tags=["attest:docs"],
+    tags=["category:docs", "attest:docs"],
 )
 
 files(
     name="docs-design",
     sources=["design/**/*"],
-    tags=["attest:docs"],
+    tags=["category:docs", "attest:docs"],
 )
 
 files(
     name="docs-examples",
     sources=["examples/**/*"],
-    tags=["attest:docs"],
+    tags=["category:docs", "attest:docs"],
 )
 
 files(
     name="docs-proof",
     sources=["proof/**/*"],
-    tags=["attest:architecture-contracts"],
+    tags=["category:docs", "attest:architecture-contracts"],
 )
 
 files(
     name="docs-releases",
     sources=["releases/**/*"],
-    tags=["attest:docs"],
+    tags=["category:docs", "attest:docs"],
 )
 
 files(
     name="docs-schemas",
     sources=["schemas/**/*"],
-    tags=["attest:architecture-contracts"],
+    tags=["category:docs", "attest:architecture-contracts"],
 )
 
 files(
     name="docs-spikes",
     sources=["spikes/**/*"],
-    tags=["attest:docs"],
+    tags=["category:docs", "attest:docs"],
 )
 
 files(
     name="docs-upstream",
     sources=["upstream/**/*"],
-    tags=["attest:docs"],
+    tags=["category:docs", "attest:docs"],
 )

@@ -25,7 +25,8 @@ class Diff:
 KEYS = (
     AttestKey("docs", "just attest-docs", selectors={"pants": "attest:docs"}),
     AttestKey("unit", "just attest-unit", selectors={"pants": "attest:unit"}),
-    AttestKey("always-run", "just attest-always-run"),
+    AttestKey("stateful", "just attest-stateful", selectors={"pants": "attest:stateful"}),
+    AttestKey("demos", "just attest-demos", selectors={"pants": "attest:demos"}),
 )
 
 
@@ -84,21 +85,36 @@ def resolve(repo: Path, changed, graph, affected, *, failing=False):
 
 def complete_graph():
     return [
-        target("manual:docs", sources=("manual/guide.md",), tags=("attest:docs",)),
+        target(
+            "manual:docs",
+            sources=("manual/guide.md",),
+            tags=("category:docs", "attest:docs"),
+        ),
         target(
             "tests:test_unit.py",
             sources=("tests/test_unit.py",),
-            tags=("attest:unit",),
+            tags=("category:test-only", "attest:unit"),
             target_type="python_test",
         ),
+        target(
+            "tests:stateful-fixtures",
+            sources=("tests/stateful_fixtures.py",),
+            tags=("category:test-only", "attest:stateful"),
+        ),
+        target(
+            "config:runtime",
+            sources=("config/runtime.yaml",),
+            tags=("category:config", "attest:demos"),
+        ),
+        target("scripts:demos", tags=("category:code", "attest:demos")),
     ]
 
 
-def test_docs_only_invalidates_docs_and_selectorless_always_run(repo):
+def test_docs_only_invalidates_docs_only(repo):
     graph = complete_graph()
     receipt, calls = resolve(repo, [ChangedPath("manual/guide.md")], graph, [graph[0]])
-    assert receipt.invalidated_keys == ("always-run", "docs")
-    assert receipt.unaffected_keys == ("unit",)
+    assert receipt.invalidated_keys == ("docs",)
+    assert receipt.unaffected_keys == ("demos", "stateful", "unit")
     assert receipt.backend_version == "2.32.1"
     assert receipt.evidence["docs"].reason == ImpactReason.AFFECTED
     assert receipt.evidence["unit"].reason == ImpactReason.UNAFFECTED
@@ -110,38 +126,115 @@ def test_docs_only_invalidates_docs_and_selectorless_always_run(repo):
 
 
 def test_source_change_invalidates_transitive_dependent_key(repo):
-    graph = complete_graph() + [target("src:lib", sources=("src/lib.py",))]
-    receipt, _ = resolve(repo, [ChangedPath("src/lib.py")], graph, [graph[2], graph[1]])
-    assert set(receipt.invalidated_keys) == {"unit", "always-run"}
+    graph = complete_graph() + [target("src:lib", sources=("src/lib.py",), tags=("category:code",))]
+    receipt, _ = resolve(
+        repo,
+        [ChangedPath("src/lib.py")],
+        graph,
+        [graph[5], graph[1], graph[4]],
+    )
+    assert receipt.invalidated_keys == ("demos", "unit")
     assert receipt.evidence["unit"].units == ("tests:test_unit.py",)
-    assert receipt.unaffected_keys == ("docs",)
+    assert receipt.unaffected_keys == ("docs", "stateful")
 
 
-@pytest.mark.parametrize("path", ["unowned.txt", "BUILD", "uv.lock"])
-def test_unowned_and_global_inputs_invalidate_every_key(repo, path):
+@pytest.mark.parametrize("path", ["unowned.txt", "BUILD"])
+def test_unowned_paths_invalidate_every_key(repo, path):
     graph = complete_graph()
     receipt, _ = resolve(repo, [ChangedPath(path)], graph, [])
-    assert receipt.invalidated_keys == ("always-run", "docs", "unit")
+    assert receipt.invalidated_keys == ("demos", "docs", "stateful", "unit")
+
+
+def test_build_system_category_invalidates_every_key(repo):
+    graph = complete_graph() + [
+        target(
+            "root:build-system",
+            sources=("tooling.cfg",),
+            tags=("category:build-system",),
+        )
+    ]
+    receipt, _ = resolve(repo, [ChangedPath("tooling.cfg")], graph, [graph[-1]])
+
+    assert receipt.invalidated_keys == ("demos", "docs", "stateful", "unit")
+    assert receipt.global_inputs_hit == ("tooling.cfg",)
+
+
+def test_untagged_owner_fails_closed_to_every_key(repo):
+    graph = complete_graph() + [target("misc:owned", sources=("misc/owned.txt",))]
+    receipt, _ = resolve(repo, [ChangedPath("misc/owned.txt")], graph, [graph[-1]])
+
+    assert receipt.is_fallback
+    assert "owner lacks exactly one known category tag" in receipt.fallback_reason
+    assert receipt.invalidated_keys == ("demos", "docs", "stateful", "unit")
+
+
+def test_multi_category_change_uses_union(repo):
+    graph = complete_graph()
+    receipt, _ = resolve(
+        repo,
+        [ChangedPath("manual/guide.md"), ChangedPath("config/runtime.yaml")],
+        graph,
+        [graph[0], graph[3]],
+    )
+
+    assert receipt.invalidated_keys == ("demos", "docs")
+    assert receipt.unaffected_keys == ("stateful", "unit")
+
+
+def test_readme_only_does_not_invalidate_stateful(repo):
+    graph = complete_graph() + [
+        target(
+            "root:prose",
+            sources=("README.md",),
+            tags=("category:docs", "attest:docs"),
+        )
+    ]
+    receipt, _ = resolve(repo, [ChangedPath("README.md")], graph, [graph[-1]])
+
+    assert receipt.invalidated_keys == ("docs",)
+    assert "stateful" in receipt.unaffected_keys
 
 
 def test_deleted_file_invalidates_every_key(repo):
     receipt, _ = resolve(repo, [ChangedPath("manual/guide.md", "D")], complete_graph(), [])
-    assert receipt.invalidated_keys == ("always-run", "docs", "unit")
+    assert receipt.invalidated_keys == ("demos", "docs", "stateful", "unit")
     assert receipt.unowned_paths == ("manual/guide.md",)
 
 
 def test_pants_failure_falls_back_to_native_full(repo):
-    receipt, _ = resolve(repo, [ChangedPath("manual/guide.md")], [], [], failing=True)
+    receipt, calls = resolve(repo, [ChangedPath("manual/guide.md")], [], [], failing=True)
     assert receipt.backend == "native-full"
     assert receipt.fallback_reason.startswith("pants: error: RuntimeError")
-    assert receipt.invalidated_keys == ("always-run", "docs", "unit")
+    assert receipt.invalidated_keys == ("demos", "docs", "stateful", "unit")
+    assert len(calls) == 2
+
+
+def test_transient_peek_failure_retries_before_fallback(repo):
+    graph = complete_graph()
+    calls: list[tuple[str, ...]] = []
+
+    def query(path, args, timeout):
+        call = tuple(args)
+        calls.append(call)
+        if len(calls) == 1:
+            raise RuntimeError("Pants peek failed (1): Filesystem changed during run")
+        return graph if call == ("peek", "::") else [graph[0]]
+
+    backend = PantsImpactBackend(repo, query=query, sleeper=lambda _: None)
+    receipt = FailClosedResolver(backend, Diff((ChangedPath("manual/guide.md"),))).resolve(
+        str(repo), "base", "head", KEYS
+    )
+
+    assert not receipt.is_fallback
+    assert calls[:2] == [("peek", "::"), ("peek", "::")]
+    assert calls[2] == ("--changed-since=base", "--changed-dependents=transitive", "peek")
 
 
 def test_unproven_selected_test_invalidates_its_key(repo):
     graph = complete_graph()
     graph[1]["sources"] = ["tests/test_not_proven.py"]
     receipt, _ = resolve(repo, [ChangedPath("manual/guide.md")], graph, graph)
-    assert receipt.invalidated_keys == ("always-run", "docs", "unit")
+    assert receipt.invalidated_keys == ("demos", "docs", "stateful", "unit")
     assert receipt.evidence["unit"].reason == ImpactReason.UNPROVEN
 
 
@@ -149,7 +242,7 @@ def test_unaffected_unproven_test_does_not_poison_an_unrelated_change(repo):
     graph = complete_graph()
     graph[1]["sources"] = ["tests/test_not_proven.py"]
     receipt, _ = resolve(repo, [ChangedPath("manual/guide.md")], graph, [graph[0]])
-    assert receipt.unaffected_keys == ("unit",)
+    assert receipt.unaffected_keys == ("demos", "stateful", "unit")
 
 
 def test_manifest_schema_failure_falls_back(repo):

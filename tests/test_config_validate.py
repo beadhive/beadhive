@@ -159,6 +159,78 @@ def test_old_ws_home_path_value_warns():
     )
 
 
+def test_disabled_attest_key_is_a_visible_non_gating_deviation():
+    problems = validate_config(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "work": {
+                "attest": {
+                    "keys": [
+                        {
+                            "name": "stateful",
+                            "cmd": "just stateful",
+                            "enabled": False,
+                            "disabled_reason": "host capacity incident bh-example",
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    assert _errors(problems) == []
+    assert any(
+        p["level"] == "warning"
+        and "stateful" in p["message"]
+        and "DISABLED" in p["message"]
+        and "host capacity incident" in p["message"]
+        for p in problems
+    )
+
+
+def test_expired_attest_disable_reports_fail_closed_reenablement():
+    problems = validate_config(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "work": {
+                "attest": {
+                    "keys": [
+                        {
+                            "name": "stateful",
+                            "cmd": "just stateful",
+                            "enabled": False,
+                            "disabled_reason": "past maintenance",
+                            "disabled_until": "2000-01-01T00:00:00Z",
+                        }
+                    ]
+                }
+            },
+        }
+    )
+
+    assert _errors(problems) == []
+    assert any(
+        "expired disable" in p["message"] and "fail-closed" in p["message"] for p in problems
+    )
+
+
+def test_invalid_attest_on_unresolved_is_reported():
+    problems = validate_config(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "work": {"attest": {"impact": {"on_unresolved": "silently-ignore"}}},
+        }
+    )
+
+    assert any(
+        p["level"] == "error"
+        and "work.attest.impact.on_unresolved" in p["message"]
+        and "fallback" in p["message"]
+        and "strict" in p["message"]
+        for p in problems
+    )
+
+
 # ---- rename table ------------------------------------------------------------
 
 

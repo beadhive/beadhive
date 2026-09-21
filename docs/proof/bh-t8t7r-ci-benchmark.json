@@ -1,8 +1,18 @@
 {
   "schema_version": 1,
   "bead": "bh-t8t7r",
-  "captured_at": "2026-09-20",
+  "captured_at": "2026-09-21",
   "minimum_samples_per_class": 10,
+  "change_class_vocabulary": {
+    "categories": ["build-system", "code", "config", "docs", "test-only"],
+    "legacy_mapping": {
+      "global-input": "build-system",
+      "proven-leaf": "test-only",
+      "unproven-native-impact": "test-only",
+      "selectorless-floor": "retired-unconditional-host-floor"
+    },
+    "semantics": "Categories are category:* tags on Pants owners. Legacy classes remain as historical route detail; the retired selectorless floor is deliberately not a change category."
+  },
   "method": {
     "collector": "uv run python scripts/pants_ci_benchmark.py sample --change-class CLASS --phase PHASE -- COMMAND",
     "checker": "uv run python scripts/pants_ci_benchmark.py check",
@@ -15,6 +25,24 @@
     "minimum_observed_savings_percent": 89.25,
     "interpretation": "The old end-to-end route was necessarily slower than its directly observed 287.42s native component. The new directly observed p90 is 30.891s, so 89.25% is a conservative measured lower bound, not a Pants-only cache comparison."
   },
+  "routing_proofs": [
+    {
+      "change_class": "docs",
+      "case": "README-only",
+      "source_revision": "3c8f6a0774b04428a6a58723d7aba5e912d7fb71",
+      "base_tree": "72eb01f47d0f92f75e8349ed0630ee5949fcf216",
+      "head_tree": "6187f1db9f40197a99105fc45160ac1ecbe58694",
+      "changed_paths": ["README.md"],
+      "backend": "pants",
+      "backend_version": "2.32.1",
+      "fallback_reason": "",
+      "invalidated_keys": ["docs"],
+      "unaffected_keys": ["architecture-contracts", "demos", "integration", "package", "stateful", "unit"],
+      "receipt_digest": "sha256:ad8e67c24eae6a9b8c276b9638547cd2c08e61489f9a7f5c775fd4e278367776",
+      "elapsed_ms": 38468,
+      "source": "real Git base/head resolved by PantsImpactBackend; temporary commit changed README.md only"
+    }
+  ],
   "observations": [
     {
       "change_class": "proven-leaf",
@@ -62,14 +90,123 @@
       "source": "direct end-to-end class sampling pending; components are not summed into a synthetic raw sample"
     },
     {
+      "change_class": "build-system",
+      "phase": "before",
+      "command": "just check-all",
+      "route": "full set; build inputs already invalidated the graph oracle",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"unit_ledger_p50_seconds": 4.2, "docs_ledger_p50_seconds": 9.2, "package_ledger_p50_seconds": 45.5, "architecture_contracts_ledger_p50_seconds": 61.2, "always_run_ledger_p50_seconds": 151.1, "integration_ledger_p50_seconds": 279.9, "stateful_ledger_p50_seconds": 319.4},
+      "source": "historical attestation ledger medians supplied with bh-vxuus; components are not summed into a synthetic sample"
+    },
+    {
+      "change_class": "build-system",
+      "phase": "after",
+      "command": "just check-all",
+      "route": "full set; category:build-system deliberately preserves the conservative route",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"policy_expected_full_set": 1},
+      "source": "route asserted by test_build_system_category_invalidates_every_key; timed boundary sample pending"
+    },
+    {
+      "change_class": "code",
+      "phase": "before",
+      "command": "selective boundary validation",
+      "route": "graph-selected code keys plus selectorless demos",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"always_run_ledger_p50_seconds": 151.1},
+      "source": "historical attestation ledger median supplied with bh-vxuus; affected code keys vary by owner"
+    },
+    {
+      "change_class": "code",
+      "phase": "after",
+      "command": "selective boundary validation",
+      "route": "union of affected attest targets; application dependents select demos",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"historical_demo_floor_seconds": 151.1},
+      "source": "demos moved from selectorless always-run to attest:demos; timed boundary sample pending"
+    },
+    {
+      "change_class": "config",
+      "phase": "before",
+      "command": "just attest-always-run",
+      "route": "selectorless demos ran for every tree, including config",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"always_run_ledger_p50_seconds": 151.1},
+      "source": "historical attestation ledger median supplied with bh-vxuus"
+    },
+    {
+      "change_class": "config",
+      "phase": "after",
+      "command": "just attest-demos",
+      "route": "category:config owners select attest:demos",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"pre_split_floor_direct_seconds": 155.693},
+      "source": "same hermetic demo pair as the direct pre-split floor observation; timed selector-backed boundary sample pending"
+    },
+    {
+      "change_class": "docs",
+      "phase": "before",
+      "command": "just attest-docs && just attest-always-run",
+      "route": "docs plus selectorless demos",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"docs_ledger_p50_seconds": 9.2, "always_run_ledger_p50_seconds": 151.1},
+      "source": "historical attestation ledger medians supplied with bh-vxuus; components are not summed into a synthetic sample"
+    },
+    {
+      "change_class": "docs",
+      "phase": "after",
+      "command": "just attest-docs",
+      "route": "docs only; demos, stateful, and integration carried",
+      "sample_count": 1,
+      "raw_elapsed_seconds": [6.749],
+      "statistics_status": "pending",
+      "source": "existing warm docs command observation; end-to-end category boundary sample pending fleet selector rollout"
+    },
+    {
+      "change_class": "test-only",
+      "phase": "before",
+      "command": "selective boundary validation",
+      "route": "affected tests plus selectorless demos",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"always_run_ledger_p50_seconds": 151.1},
+      "source": "historical attestation ledger median supplied with bh-vxuus; affected test cost varies by owner"
+    },
+    {
+      "change_class": "test-only",
+      "phase": "after",
+      "command": "BH_INTEGRATION_BASE=HEAD just test-changed",
+      "route": "affected test targets; demos carried (require-bd runs only if integration is selected)",
+      "sample_count": 0,
+      "raw_elapsed_seconds": [],
+      "statistics_status": "pending",
+      "component_observations": {"proven_leaf_p90_seconds": 30.891},
+      "source": "maps the existing proven-leaf observations into the category vocabulary; category boundary sample pending"
+    },
+    {
       "change_class": "selectorless-floor",
-      "phase": "floor",
+      "phase": "before",
       "command": "just measure-always-run-floor",
-      "route": "always-run only; excluded from selective-CI savings",
+      "route": "pre-split require-bd plus both demos; excluded from selective-CI savings",
       "sample_count": 1,
       "raw_elapsed_seconds": [155.693],
       "statistics_status": "pending",
-      "source": "direct standalone collector run on the benchmark commit; intentionally excluded from selective-CI savings"
+      "source": "direct standalone collector run on the pre-split benchmark commit; the command is intentionally absent after bh-bsb38.3 removed the floor"
     }
   ]
 }

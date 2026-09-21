@@ -11,7 +11,7 @@ KEY_RECIPES = {
     "docs": ("attest-docs", ("lint-md",)),
     "unit": ("attest-unit", ("lint", "license-check")),
     "stateful": ("attest-stateful", ("stateful-pants", "stateful-native")),
-    "integration": ("attest-integration", ("test-integration-land",)),
+    "integration": ("attest-integration", ("require-bd", "test-integration-land")),
     "architecture-contracts": (
         "attest-architecture-contracts",
         (
@@ -22,10 +22,7 @@ KEY_RECIPES = {
         ),
     ),
     "package": ("attest-package", ("pants-attest",)),
-    "always-run": (
-        "attest-always-run",
-        ("require-bd", "demo-local-loop", "demo-live-ingress"),
-    ),
+    "demos": ("attest-demos", ("demo-local-loop", "demo-live-ingress")),
 }
 ROOT = Path(__file__).resolve().parents[1]
 

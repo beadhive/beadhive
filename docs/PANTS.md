@@ -44,6 +44,9 @@ uv run python scripts/pants_cache.py run -- pants test tests/unit/modules/config
 `$XDG_CACHE_HOME/beadhive/pants` (or `~/.cache/beadhive/pants`). `local-store` is common to every
 worktree with mode 0775. A SHA-256 key of the absolute checkout path gives each worktree separate
 named caches, Pants workdir, pantsd subprocess directory, uv cache, and PEX root with mode 0700.
+Pants execution sandboxes also default to the managed per-worktree `sandboxes` directory instead
+of the system temporary filesystem. `BH_PANTS_SANDBOX_ROOT` may select another explicit path;
+setting it to a suitably provisioned tmpfs is the opt-in fast path for hosts with enough headroom.
 The coordinator holds a shared lease for the complete Pants process. Cleanup and recovery require
 an exclusive nonblocking lease and therefore refuse to run while any coordinated Pants process is
 active.
@@ -51,7 +54,8 @@ active.
 The preflight defaults reserve 2 GiB and 50,000 inodes. Operators can increase these thresholds
 with `BH_PANTS_MIN_FREE_BYTES` and `BH_PANTS_MIN_FREE_INODES`; reducing them is an explicit host
 choice. Pants separately bounds process and file stores at 2 GiB each in `pants.toml`. Every run
-emits a JSON preflight event containing free bytes, free inodes, and both cache paths. A reserve,
+emits a JSON preflight event containing free bytes, free inodes, and the participating roots for
+each distinct device used by the local store, per-worktree caches, and execution sandboxes. A reserve,
 ownership, mode, ENOSPC, launcher, or Pants failure remains nonzero and names `just check` as the
 authoritative fallback.
 
@@ -64,6 +68,8 @@ uv run python scripts/pants_cache.py cleanup --max-age-days 30
 uv run python scripts/pants_cache.py recover-local files/a/<full-entry-name>
 # Reset one mutable cache for only this checkout.
 uv run python scripts/pants_cache.py reset-worktree uv
+# Reset only this checkout's default managed execution sandbox root.
+uv run python scripts/pants_cache.py reset-worktree sandboxes
 ```
 
 `recover-local` rejects absolute paths, traversal, the store root, and broad top-level names. A

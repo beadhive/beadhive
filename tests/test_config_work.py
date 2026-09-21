@@ -275,3 +275,45 @@ def test_ledger_ttl_accepts_the_duration_forms_and_falls_back_on_junk():
     assert config.duration_seconds("PT90S") == 90
     assert config.duration_seconds("30 minutes") == 24 * 60 * 60  # not ISO-8601 → default
     assert config.ledger_ttl({"work": {"ledger_ttl": ""}}, {}) == 24 * 60 * 60
+
+
+# ---- work.attest.impact.on_unresolved -----------------------------------------
+
+
+def test_attest_on_unresolved_defaults_to_fallback_and_layers_per_hive():
+    assert config.attest_config({}, {}).impact.on_unresolved == "fallback"
+
+    glob = {
+        "work": {
+            "attest": {
+                "impact": {
+                    "backend": "pants",
+                    "timeout_seconds": 12,
+                    "on_unresolved": "strict",
+                }
+            }
+        }
+    }
+    global_impact = config.attest_config(glob, {}).impact
+    assert (global_impact.backend, global_impact.timeout_seconds, global_impact.on_unresolved) == (
+        "pants",
+        12,
+        "strict",
+    )
+
+    hive_impact = config.attest_config(
+        glob, {"work": {"attest": {"impact": {"on_unresolved": "fallback"}}}}
+    ).impact
+    assert (hive_impact.backend, hive_impact.timeout_seconds, hive_impact.on_unresolved) == (
+        "pants",
+        12,
+        "fallback",
+    )
+
+
+def test_invalid_attest_on_unresolved_degrades_to_normative_fallback():
+    impact = config.attest_config(
+        {"work": {"attest": {"impact": {"on_unresolved": "silently-ignore"}}}}, {}
+    ).impact
+
+    assert impact.on_unresolved == "fallback"

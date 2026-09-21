@@ -93,6 +93,12 @@ def _pants_command(pants: str, args: Sequence[str]) -> list[str]:
 
 
 def _emit(receipt: Receipt) -> int:
+    if receipt.fallback_reason:
+        print(
+            "!!! WARNING: PANTS IMPACT FALLBACK — "
+            f"{receipt.fallback_reason}; running the native full route !!!",
+            file=sys.stderr,
+        )
     print(json.dumps({"event": "pants-selective-route", **asdict(receipt)}, sort_keys=True))
     return receipt.exit_code
 
