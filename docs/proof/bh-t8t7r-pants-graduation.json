@@ -37,9 +37,17 @@
     "affected_query_failure": "developer route exits nonzero; no empty selection is inferred",
     "global_inputs": "Pants impact resolver invalidates every attest key"
   },
-  "selectorless_floor": {
-    "command": "just measure-always-run-floor",
+  "retired_selectorless_floor": {
+    "historical_command": "just measure-always-run-floor",
     "included_in_pants_savings": false,
-    "components": ["require-bd", "demo-local-loop", "demo-live-ingress"]
+    "before_components": ["require-bd", "demo-local-loop", "demo-live-ingress"],
+    "after": "removed; require-bd is local to attest-integration and demos are selector-backed"
+  },
+  "selector_backed_demos": {
+    "command": "just attest-demos",
+    "selector": "attest:demos",
+    "declared_inputs": ["scripts/demo_local_loop.py:demos", "scripts/demo_live_ingress_matrix.py:demos", "src/beadhive:lib", "tests:test-resources"],
+    "external_tools": ["git", "bd", "bh"],
+    "external_tool_policy": "git and bh execute the checked-out tree; each demo preflights required executables and fails rather than skips"
   }
 }

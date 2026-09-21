@@ -156,6 +156,9 @@ attest-stateful:
     just stateful-native
 
 attest-integration:
+    # The integration selection skips when bd is absent; keep its non-vacuity probe local to
+    # this key instead of taxing every unrelated graph route.
+    just require-bd
     just test-integration-land
 
 attest-architecture-contracts:
@@ -167,16 +170,12 @@ attest-architecture-contracts:
 attest-package:
     just pants-attest
 
-# Selectorless by design: git metadata and operator demos cannot be proven safe by a tree-scoped
-# build-graph receipt, so this key is paid whenever a cached verdict is reused.
-attest-always-run:
-    just require-bd
+# The demos execute declared application and fixture inputs, and config owners carry the same
+# selector. They therefore run for graph-implicated code/config changes without taxing docs-only
+# or test-only changes.
+attest-demos:
     just demo-local-loop
     just demo-live-ingress
-
-# Report the selectorless floor independently; never fold this number into Pants cache savings.
-measure-always-run-floor:
-    uv run python scripts/pants_ci_benchmark.py sample --change-class selectorless-floor --phase floor -- just attest-always-run
 
 pants-ci-benchmark-check:
     uv run python scripts/pants_ci_benchmark.py check

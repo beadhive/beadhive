@@ -10,7 +10,9 @@ import tempfile
 import time
 from pathlib import Path
 
-import pymysql
+# Standalone release probe dependency supplied by the operator environment, not the project
+# resolve.  Declaring that fact keeps repo-wide Pants peek usable as the impact oracle.
+import pymysql  # pants: no-infer-dep
 
 
 def _unused_loopback_port() -> int:

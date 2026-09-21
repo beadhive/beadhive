@@ -14,6 +14,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 DEFAULT_EVIDENCE = ROOT / "docs/proof/bh-t8t7r-ci-benchmark.json"
+CHANGE_CATEGORIES = ("build-system", "code", "config", "docs", "test-only")
+LEGACY_CHANGE_CLASS_MAP = {
+    "global-input": "build-system",
+    "proven-leaf": "test-only",
+    "unproven-native-impact": "test-only",
+    "selectorless-floor": "retired-unconditional-host-floor",
+}
 
 
 class BenchmarkError(RuntimeError):
@@ -39,6 +46,13 @@ def check_evidence(path: Path) -> None:
         raise BenchmarkError("benchmark evidence must use schema version 1")
     if payload.get("minimum_samples_per_class") != 10:
         raise BenchmarkError("benchmark evidence must target at least 10 samples per class")
+    vocabulary = payload.get("change_class_vocabulary")
+    if not isinstance(vocabulary, dict):
+        raise BenchmarkError("benchmark evidence needs change_class_vocabulary")
+    if vocabulary.get("categories") != list(CHANGE_CATEGORIES):
+        raise BenchmarkError(f"change categories must be {list(CHANGE_CATEGORIES)!r}")
+    if vocabulary.get("legacy_mapping") != LEGACY_CHANGE_CLASS_MAP:
+        raise BenchmarkError("legacy change classes are not reconciled with category vocabulary")
     observations = payload.get("observations")
     if not isinstance(observations, list) or not observations:
         raise BenchmarkError("benchmark evidence has no observations")
@@ -72,8 +86,13 @@ def check_evidence(path: Path) -> None:
             expected_p90 = nearest_rank(samples, 0.9)
             if row.get("p50_seconds") != expected_p50 or row.get("p90_seconds") != expected_p90:
                 raise BenchmarkError(f"{identity} percentile values do not match raw samples")
-    if not any(row["change_class"] == "selectorless-floor" for row in observations):
-        raise BenchmarkError("selectorless floor must be measured separately")
+    identities = {(row["change_class"], row["phase"]) for row in observations}
+    if ("selectorless-floor", "before") not in identities:
+        raise BenchmarkError("retired selectorless floor needs a historical before observation")
+    for category in CHANGE_CATEGORIES:
+        for phase in ("before", "after"):
+            if (category, phase) not in identities:
+                raise BenchmarkError(f"{category} needs a {phase} observation")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -82,7 +101,11 @@ def parser() -> argparse.ArgumentParser:
     check = sub.add_parser("check")
     check.add_argument("path", nargs="?", type=Path, default=DEFAULT_EVIDENCE)
     sample = sub.add_parser("sample")
-    sample.add_argument("--change-class", required=True)
+    sample.add_argument(
+        "--change-class",
+        choices=(*CHANGE_CATEGORIES, *LEGACY_CHANGE_CLASS_MAP),
+        required=True,
+    )
     sample.add_argument("--phase", choices=("before", "after", "floor"), required=True)
     sample.add_argument("command", nargs=argparse.REMAINDER)
     return result

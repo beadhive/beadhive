@@ -80,4 +80,5 @@ python_requirement(name="commitizen", requirements=["commitizen>=4.16.4"], modul
 files(
     name="lock-metadata",
     sources=["beadhive.lock.metadata"],
+    tags=["category:build-system"],
 )
