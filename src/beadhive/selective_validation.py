@@ -14,6 +14,15 @@ from .bootstrap.impact import attest_keys, impact_resolver
 Runner = Callable[[str], int]
 
 
+def warn_impact_fallback(reason: str) -> None:
+    """Make fail-closed expansion visible even in long validation logs."""
+    typer.echo("", err=True)
+    typer.echo("!!! WARNING: IMPACT RESOLUTION FALLBACK !!!", err=True)
+    typer.echo(f"    {reason}", err=True)
+    typer.echo("    Selective carry-forward is disabled; running every attestation key.", err=True)
+    typer.echo("", err=True)
+
+
 def configured(cfg, entry) -> bool:
     return bool(config.attest_config(cfg, entry).keys)
 
@@ -73,7 +82,7 @@ def run(
         resolver = NativeFullResolver(GitTreeDiff())
     receipt = resolver.resolve(repo, base_rev, head_rev, keys)
     if receipt.fallback_reason:
-        typer.echo(f"  impact fallback: {receipt.fallback_reason}")
+        warn_impact_fallback(receipt.fallback_reason)
 
     by_name = {key.name: key for key in keys}
     outcomes: dict[str, int | None] = {}
@@ -114,4 +123,4 @@ def run(
     return 1 if blocked else 0
 
 
-__all__ = ["all_keys_green", "configured", "run"]
+__all__ = ["all_keys_green", "configured", "run", "warn_impact_fallback"]

@@ -35,6 +35,8 @@ PANTS_GLOBAL_INPUTS = (
 PROVEN_TESTS_MANIFEST = Path("scripts/pants_proven_tests.json")
 
 PantsQuery = Callable[[str, Sequence[str], float], list[dict[str, Any]]]
+PANTS_PEEK_ATTEMPTS = 2
+PANTS_PEEK_RETRY_DELAY_SECONDS = 0.25
 
 
 def _executable(candidate: str | None) -> str | None:
@@ -147,11 +149,13 @@ class PantsImpactBackend:
         manifest: str | Path = PROVEN_TESTS_MANIFEST,
         query: PantsQuery = query_pants,
         clock: Callable[[], float] = time.monotonic,
+        sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._repo = Path(repo).resolve()
         self._manifest = Path(manifest)
         self._query = query
         self._clock = clock
+        self._sleeper = sleeper
         config = tomllib.loads((self._repo / "pants.toml").read_text(encoding="utf-8"))
         self.version = str(config["GLOBAL"]["pants_version"])
 
@@ -167,6 +171,17 @@ class PantsImpactBackend:
                 raise TimeoutError(f"Pants impact analysis exceeded {request.timeout_seconds:g}s")
             return left
 
+        def query_with_retry(args: Sequence[str]) -> list[dict[str, Any]]:
+            """Retry one transient Pants process failure within the resolver's deadline."""
+            for attempt in range(1, PANTS_PEEK_ATTEMPTS + 1):
+                try:
+                    return self._query(str(repo), args, remaining())
+                except RuntimeError:
+                    if attempt == PANTS_PEEK_ATTEMPTS:
+                        raise
+                    self._sleeper(min(PANTS_PEEK_RETRY_DELAY_SECONDS, remaining()))
+            raise AssertionError("unreachable")
+
         # Pants calculates changes relative to the requested base and the checked-out head.
         current_tree = subprocess.run(
             ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"],
@@ -180,15 +195,13 @@ class PantsImpactBackend:
                 f"{current_tree} does not match requested head {request.head_tree}"
             )
 
-        graph = self._query(str(repo), ("peek", "::"), remaining())
-        affected_rows = self._query(
-            str(repo),
+        graph = query_with_retry(("peek", "::"))
+        affected_rows = query_with_retry(
             (
                 f"--changed-since={request.base_rev or request.base_tree}",
                 "--changed-dependents=transitive",
                 "peek",
             ),
-            remaining(),
         )
         proven_sources = _proven_test_sources(repo, self._manifest)
 
