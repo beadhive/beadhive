@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from .. import cli
-
 
 def main() -> None:
-    """Enter the compatibility CLI adapter and its process error lifecycle."""
-    cli.main()
+    """Enter the CLI through its import-lazy process boundary."""
+    from ..cli_entrypoint import main as cli_main
+
+    cli_main()
