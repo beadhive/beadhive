@@ -506,8 +506,9 @@ def merge_group(cfg, group_arg, hive, rm):
         datas[m] = data
     group = resolve_group(members, datas)
 
+    review_states = bd.states_for(members, "review", main)
     for m in members:
-        if bd.state(m, "review", main) == "changes-requested":
+        if review_states[m] == "changes-requested":
             typer.echo(f"✗ {m} has changes-requested — resume & resubmit, don't merge", err=True)
             raise typer.Exit(1)
         # ANY open gate blocks the batch (broad on purpose — security:* gates block in parallel

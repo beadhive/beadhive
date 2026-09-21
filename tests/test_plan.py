@@ -1320,6 +1320,22 @@ class FakeBdStatus(FakeBd):
             epic_id = args[2]
             data = self._swarm_status_by_epic.get(epic_id, {})
             return _CP(0, json.dumps(data) + "\n", "")
+        # bd list --id <csv> --brief [--json] (states_for)
+        if args[:1] == ["list"] and "--id" in args:
+            epic_ids = args[args.index("--id") + 1].split(",")
+            rows = [
+                {
+                    "id": epic_id,
+                    "labels": (
+                        [f"kickoff:{self._kickoff_by_epic[epic_id]}"]
+                        if self._kickoff_by_epic.get(epic_id)
+                        else []
+                    ),
+                }
+                for epic_id in epic_ids
+                if epic_id in self._kickoff_by_epic
+            ]
+            return _CP(0, json.dumps(rows) + "\n", "")
         # bd state <epic> kickoff  (plain text, no --json flag)
         if len(args) >= 2 and args[0] == "state":
             epic_id = args[1]
@@ -1374,6 +1390,41 @@ def test_status_list_unset_kickoff_shows_dash(hive, monkeypatch):
     result = _runner.invoke(app, ["plan", "status", "--hive", "myrepo"])
     assert result.exit_code == 0, result.output
     assert "—" in result.output
+
+
+def test_status_list_uses_two_bd_calls_and_preserves_legacy_rendering(hive, monkeypatch):
+    """Swarm count does not change call count; batching changes no output bytes."""
+    swarms = [
+        {
+            "epic_id": f"epic-{idx}",
+            "epic_title": f"Feature {idx}",
+            "completed_issues": idx % 4,
+            "total_issues": 5,
+        }
+        for idx in range(80)
+    ]
+    kickoff = {f"epic-{idx}": ("approved" if idx % 2 else "pending") for idx in range(80)}
+    fb = FakeBdStatus(swarms_list={"swarms": swarms}, kickoff_by_epic=kickoff)
+    monkeypatch.setattr(bd_mod, "_run", fb)
+
+    result = _runner.invoke(app, ["plan", "status", "--hive", "myrepo"])
+
+    expected = "".join(
+        f"  {sw['epic_id']}  {sw['epic_title']}  "
+        f"{sw['completed_issues']}/{sw['total_issues']}  "
+        f"kickoff={kickoff[sw['epic_id']]}\n"
+        for sw in swarms
+    )
+    assert result.exit_code == 0, result.output
+    rendered = "".join(
+        f"{line}\n" for line in result.output.splitlines() if line.startswith("  epic-")
+    )
+    assert rendered == expected
+    calls = [args for _actor, args in fb.calls]
+    assert len(calls) == 2
+    assert sum(args[:2] == ["swarm", "list"] for args in calls) == 1
+    assert sum(args[:1] == ["list"] and "--id" in args for args in calls) == 1
+    assert not any(args[:1] == ["state"] for args in calls)
 
 
 # ---- status: with epic arg ----------------------------------------------------
@@ -1494,6 +1545,14 @@ class FakeBdVerify(FakeBd):
                 "labels": self._epic_labels,
             }
             return _CP(0, json.dumps([epic]) + "\n", "")
+        if args[:1] == ["list"] and "--id" in args:
+            epic_ids = args[args.index("--id") + 1].split(",")
+            labels = [f"kickoff:{self._kickoff}"] if self._kickoff else []
+            return _CP(
+                0,
+                json.dumps([{"id": epic_id, "labels": labels} for epic_id in epic_ids]) + "\n",
+                "",
+            )
         if args and args[0] == "list" and "--parent" in args:
             return _CP(0, json.dumps(self._children) + "\n", "")
         if len(args) >= 3 and args[0] == "dep" and args[1] == "list":
@@ -1526,6 +1585,29 @@ def test_verify_wellformed_molecule_exits_zero(hive, monkeypatch):
     result = _verify(hive, monkeypatch)
     assert result.exit_code == 0, result.output
     assert "✓ verified" in result.output
+
+
+def test_verify_batches_kickoff_states_for_root_and_nested_coordinators(hive, monkeypatch):
+    """The batch-shaped verify read stays one exact-id query, never one state process per epic."""
+    children = _good_children() + [
+        _child(
+            "epic-1.3",
+            "nested coordinator",
+            labels=_TRIPLET,
+            issue_type="epic",
+            acceptance="",
+        )
+    ]
+    fb = FakeBdVerify(children=children, swarm_epics=("epic-1", "epic-1.3"))
+    monkeypatch.setattr(bd_mod, "_run", fb)
+
+    _runner.invoke(app, ["plan", "verify", "epic-1", "--hive", "myrepo"])
+
+    calls = [args for _actor, args in fb.calls]
+    state_lists = [args for args in calls if args[:1] == ["list"] and "--id" in args]
+    assert len(state_lists) == 1
+    assert state_lists[0][state_lists[0].index("--id") + 1] == "epic-1,epic-1.3"
+    assert not any(args[:1] == ["state"] for args in calls)
 
 
 def test_verify_ignores_adopted_origin_report_child(hive, monkeypatch):
