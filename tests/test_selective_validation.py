@@ -121,15 +121,15 @@ def test_unaffected_optional_key_without_source_remains_unknown(monkeypatch, cap
     calls = []
     rc = _run_unaffected_without_source(
         monkeypatch,
-        _attest({"name": "docs", "cmd": "just docs", "policy": "optional"}),
+        _attest({"name": "advisory", "cmd": "just advisory", "policy": "optional"}),
         lambda cmd: calls.append(cmd) or 0,
     )
 
     assert rc == 0
     assert calls == []
     out = capsys.readouterr().out
-    assert "docs: unknown (no qualifying source verdict)" in out
-    assert "docs: not required (optional unknown)" in out
+    assert "advisory: unknown (no qualifying source verdict)" in out
+    assert "advisory: not required (optional unknown)" in out
 
 
 def test_unresolved_impact_defaults_to_byte_compatible_fallback(monkeypatch, capsys) -> None:
