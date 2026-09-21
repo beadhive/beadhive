@@ -98,10 +98,12 @@ def test_selector_error_cannot_skip_native_fallback(monkeypatch, capsys) -> None
         )
         == 17
     )
-    receipt = json.loads(capsys.readouterr().out)
+    captured = capsys.readouterr()
+    receipt = json.loads(captured.out)
     assert calls[-1] == ["just", "check"]
     assert receipt["fallback_reason"].startswith("selector-error:")
     assert receipt["exit_code"] == 17
+    assert "WARNING: PANTS IMPACT FALLBACK" in captured.err
 
 
 def test_pants_execution_failure_is_red_and_observable(monkeypatch, capsys) -> None:

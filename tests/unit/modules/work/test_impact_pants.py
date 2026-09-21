@@ -131,10 +131,32 @@ def test_deleted_file_invalidates_every_key(repo):
 
 
 def test_pants_failure_falls_back_to_native_full(repo):
-    receipt, _ = resolve(repo, [ChangedPath("manual/guide.md")], [], [], failing=True)
+    receipt, calls = resolve(repo, [ChangedPath("manual/guide.md")], [], [], failing=True)
     assert receipt.backend == "native-full"
     assert receipt.fallback_reason.startswith("pants: error: RuntimeError")
     assert receipt.invalidated_keys == ("always-run", "docs", "unit")
+    assert len(calls) == 2
+
+
+def test_transient_peek_failure_retries_before_fallback(repo):
+    graph = complete_graph()
+    calls: list[tuple[str, ...]] = []
+
+    def query(path, args, timeout):
+        call = tuple(args)
+        calls.append(call)
+        if len(calls) == 1:
+            raise RuntimeError("Pants peek failed (1): Filesystem changed during run")
+        return graph if call == ("peek", "::") else [graph[0]]
+
+    backend = PantsImpactBackend(repo, query=query, sleeper=lambda _: None)
+    receipt = FailClosedResolver(backend, Diff((ChangedPath("manual/guide.md"),))).resolve(
+        str(repo), "base", "head", KEYS
+    )
+
+    assert not receipt.is_fallback
+    assert calls[:2] == [("peek", "::"), ("peek", "::")]
+    assert calls[2] == ("--changed-since=base", "--changed-dependents=transitive", "peek")
 
 
 def test_unproven_selected_test_invalidates_its_key(repo):

@@ -42,13 +42,35 @@ def test_worktrees_share_only_the_immutable_store(tmp_path) -> None:
         "PANTS_SUBPROCESSDIR",
         "UV_CACHE_DIR",
         "PEX_ROOT",
+        "PANTS_LOCAL_EXECUTION_ROOT_DIR",
     ):
         assert first.environment()[key] != second.environment()[key]
+
+    assert first.sandbox_root == first.worktree_root / "sandboxes"
+    assert first.environment()["PANTS_LOCAL_EXECUTION_ROOT_DIR"] == str(first.sandbox_root)
+
+
+def test_sandbox_root_is_configurable_for_hosts_with_provisioned_tmpfs(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    fast_root = tmp_path / "provisioned-tmpfs" / "pants-sandboxes"
+
+    layout = pants_cache.cache_layout(
+        repository,
+        {
+            "BH_PANTS_CACHE_ROOT": str(tmp_path / "host-cache"),
+            "BH_PANTS_SANDBOX_ROOT": str(fast_root),
+        },
+    )
+
+    assert layout.sandbox_root == fast_root
+    assert layout.environment()["PANTS_LOCAL_EXECUTION_ROOT_DIR"] == str(fast_root)
 
 
 def test_prepare_enforces_owner_modes_and_capacity_reserves(tmp_path) -> None:
     layout = _layout(tmp_path)
-    observed = pants_cache.prepare(layout, min_free_bytes=0, min_free_inodes=0)
+    devices = pants_cache.prepare(layout, min_free_bytes=0, min_free_inodes=0)
+    observed = devices[0]
 
     assert observed["free_bytes"] > 0
     assert layout.local_store.stat().st_uid == os.getuid()
@@ -59,6 +81,39 @@ def test_prepare_enforces_owner_modes_and_capacity_reserves(tmp_path) -> None:
         pants_cache.prepare(layout, min_free_bytes=observed["total_bytes"] + 1)
     with pytest.raises(pants_cache.CacheSafetyError, match="free inodes"):
         pants_cache.prepare(layout, min_free_bytes=0, min_free_inodes=observed["total_inodes"] + 1)
+
+
+def test_prepare_checks_local_store_and_sandbox_on_distinct_devices(tmp_path, monkeypatch) -> None:
+    layout = _layout(tmp_path)
+
+    def distinct_device(path: Path) -> int:
+        return 222 if path == layout.sandbox_root else 111
+
+    def observed_capacity(path: Path) -> dict[str, int]:
+        free = 50 if path == layout.sandbox_root else 500
+        return {
+            "free_bytes": free,
+            "free_inodes": free,
+            "total_bytes": 1_000,
+            "total_inodes": 1_000,
+        }
+
+    monkeypatch.setattr(pants_cache, "_device_id", distinct_device)
+    monkeypatch.setattr(pants_cache, "capacity", observed_capacity)
+
+    devices = pants_cache.prepare(layout, min_free_bytes=0, min_free_inodes=0)
+    assert [device["device"] for device in devices] == [111, 222]
+    assert devices[0]["roots"] == {
+        "local_store": str(layout.local_store),
+        "worktree_root": str(layout.worktree_root),
+    }
+    assert devices[1]["roots"] == {"sandbox_root": str(layout.sandbox_root)}
+
+    with pytest.raises(
+        pants_cache.CacheSafetyError,
+        match=r"device 222 \(sandbox_root\) has 50 free bytes",
+    ):
+        pants_cache.prepare(layout, min_free_bytes=100, min_free_inodes=0)
 
 
 def test_active_process_blocks_cleanup_and_exact_recovery(tmp_path, monkeypatch) -> None:
@@ -156,6 +211,8 @@ def test_status_is_machine_readable_and_remote_defaults_stay_off(tmp_path) -> No
     docs = (ROOT / "docs" / "PANTS.md").read_text(encoding="utf-8")
 
     assert report["environment"]["PANTS_LOCAL_STORE_DIR"] == str(layout.local_store)
+    assert report["environment"]["PANTS_LOCAL_EXECUTION_ROOT_DIR"] == str(layout.sandbox_root)
+    assert report["capacity_by_device"][0]["roots"]["sandbox_root"] == str(layout.sandbox_root)
     assert report["fallback"] == "just check"
     assert "remote_cache_read = false" in config
     assert "remote_cache_write = false" in config
