@@ -333,9 +333,9 @@
         "check": "just architecture-check",
         "classification": "Canonical historical certification plus current applicability checks; all closures remain uncertified and every production route fails closed to the full lane.",
         "artifacts": [
-          {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "ea378c7b22749de5c18a6dadaff1952652ba53b37970b3c7395f963e200ebbb6"},
+          {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "dcccd0df0b98b27a314cfe724eaa88fbf3e5b4f792f552d835d2c89c8c3db4e8"},
           {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "fcbf9db12eda396aa3ced54e876ff7748fba961f871fc280ba803ee2eb55e260"},
-          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "c2075d71550ae7fee0ee9f475553c9484a8920232a7ffde7ec5350a108de24ec"},
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "8aeaffd8254bfabc3e62605e3a0ee916849adca08f5126fa109f2af2790de5ac"},
           {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "dd5e21b86eed7449baf32b10aeb4e52f768cb9c9e96f53de541c65e9a560f81a"}
         ]
       },
