@@ -12,8 +12,9 @@ def test_invoke_owns_hive_actor_capture_env_and_default_timeout(monkeypatch):
     monkeypatch.setattr(
         bd,
         "_run",
-        lambda cmd, **kwargs: calls.append((cmd, kwargs))
-        or subprocess.CompletedProcess(cmd, 0, "ok", ""),
+        lambda cmd, **kwargs: (
+            calls.append((cmd, kwargs)) or subprocess.CompletedProcess(cmd, 0, "ok", "")
+        ),
     )
 
     result = engine.BdEngine().invoke(

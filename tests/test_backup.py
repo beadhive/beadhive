@@ -514,9 +514,7 @@ def test_rotate_dry_run_previews_without_mutating(monkeypatch, tmp_path):
     (b / "chunk.darc").write_bytes(b"x" * 100)
 
     calls = []
-    monkeypatch.setattr(
-        backup, "run_bd", lambda *a, **k: calls.append(a) or _fake_bd_ok(*a, **k)
-    )
+    monkeypatch.setattr(backup, "run_bd", lambda *a, **k: calls.append(a) or _fake_bd_ok(*a, **k))
 
     out = backup.rotate_hive_backup(
         hive_dir, {"backup": {"hive_cap_mb": 0}}, dry_run=True, confirm=True
@@ -577,9 +575,7 @@ def test_rotate_force_ignores_the_cap(monkeypatch, tmp_path):
     b = hive_dir / ".beads" / "backup"
     b.mkdir(parents=True)
     (b / "chunk.darc").write_bytes(b"x" * 100)
-    monkeypatch.setattr(
-        backup, "run_bd", lambda args, cwd, **kw: _fake_bd_ok(args, **kw)
-    )
+    monkeypatch.setattr(backup, "run_bd", lambda args, cwd, **kw: _fake_bd_ok(args, **kw))
 
     out = backup.rotate_hive_backup(
         hive_dir, {"backup": {"hive_cap_mb": 99999}}, dry_run=False, confirm=True, force=True
@@ -960,9 +956,7 @@ def test_cli_backup_reclaim_root_hive_confirmed(monkeypatch, tmp_path):
 
     import beadhive.backup as backup_mod
 
-    monkeypatch.setattr(
-        backup_mod, "run_bd", lambda args, cwd, **kw: _fake_bd_ok(args, **kw)
-    )
+    monkeypatch.setattr(backup_mod, "run_bd", lambda args, cwd, **kw: _fake_bd_ok(args, **kw))
 
     result = runner.invoke(app, ["backup", "reclaim", "--root", "hive", "--confirm"])
 

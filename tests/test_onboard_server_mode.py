@@ -153,9 +153,7 @@ def test_ensure_server_mode_persisted_asserts_config_key_even_when_no_write_need
 
     onboard._ensure_server_mode_persisted(_ctx(tmp_path, furnish=True))
 
-    assert any(
-        call[-4:] == ["config", "set", "dolt.shared-server", "true"] for call in calls
-    )
+    assert any(call[-4:] == ["config", "set", "dolt.shared-server", "true"] for call in calls)
     assert capsys.readouterr().err == ""  # measured common case: silent
 
 
@@ -168,9 +166,7 @@ def test_ensure_server_mode_persisted_warns_visibly_when_it_had_to_fix_drift(
 
     onboard._ensure_server_mode_persisted(_ctx(tmp_path, furnish=True))
 
-    assert any(
-        call[-4:] == ["config", "set", "dolt.shared-server", "true"] for call in calls
-    )
+    assert any(call[-4:] == ["config", "set", "dolt.shared-server", "true"] for call in calls)
     err = capsys.readouterr().err
     assert "dolt_mode" in err
     assert "⚠" in err
