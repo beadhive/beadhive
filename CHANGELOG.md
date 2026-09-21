@@ -13,6 +13,24 @@ upgrade note) never appears here even when it matters for the release above it. 
 needs more than its own commit list, [`docs/UPGRADING.md`](docs/UPGRADING.md) carries the
 narrative note.
 
+## v0.17.1 (2026-09-21)
+
+### Fix
+
+- **validation**: repair deterministic stateful checks
+- **attest**: validate transport evidence semantically
+- preserve validation and inventory boundaries
+- **runtime**: defer unsupported Codex Dolt grant
+- **sync**: size the active Dolt database
+- address v0.17.1 batch review
+- **runtime**: grant Codex access to local Dolt host
+- **worktree**: inventory legacy roots and explain held rows
+
+### Perf
+
+- **sync**: extend integrity checks for large stores
+- **validation**: reuse exact-tree key verdicts
+
 ## v0.17.0 (2026-09-21)
 
 ### Feat
