@@ -851,10 +851,10 @@ bump-preview:
 # Deliberately NOT probed for like `_await-bump-gate` is: an old `bh` here should fail the bump
 # loudly, not bump unproven. A release is exactly where "the check silently did not run" is
 # worst. Set BH_EXEC='uv run bh' to use this tree's bh.
-# BUMP: version + changelog + uv.lock + proof + signed LOCAL tag. Nothing leaves this machine.
+# BUMP: version + changelog + uv.lock + signed LOCAL tag. Nothing leaves this machine.
 bump expected_version:
     python3 scripts/release_transaction.py bump "{{ expected_version }}" --gate "just check-all"
-    ${BH_EXEC:-bh} release attest --background --gate "just check-all"
+    ${BH_EXEC:-bh} release attest --if-needed --gate "just check-all"
 
 # is the release path clear? READ-ONLY, and a SUPERSET of `bump-preview` above rather than its
 # sibling (bh-k5te9): `--next` runs that recipe's own scripts/next-version.sh for the number, then

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -202,7 +201,9 @@ def _install_git_wrapper(
     wrapper.chmod(0o755)
 
 
-def test_bump_creates_one_exact_signed_commit_and_tag_with_refreshed_proof(tmp_path: Path) -> None:
+def test_bump_creates_one_exact_signed_commit_and_tag_without_churning_proof(
+    tmp_path: Path,
+) -> None:
     release_repo = _release_repo(tmp_path)
 
     result = release_repo.transaction("bump", "0.16.2")
@@ -216,7 +217,6 @@ def test_bump_creates_one_exact_signed_commit_and_tag_with_refreshed_proof(tmp_p
         ).splitlines()
     ) == {
         "CHANGELOG.md",
-        "docs/proof/bh-j5uyb.1-modularization-closeout.json",
         "pyproject.toml",
         "uv.lock",
     }
@@ -226,8 +226,14 @@ def test_bump_creates_one_exact_signed_commit_and_tag_with_refreshed_proof(tmp_p
     report = json.loads(
         (release_repo.root / "docs/proof/bh-j5uyb.1-modularization-closeout.json").read_text()
     )
-    expected = hashlib.sha256((release_repo.root / "pyproject.toml").read_bytes()).hexdigest()
-    assert report["evidence_inventory"]["current_candidate"]["package"]["sha256"] == expected
+    before = json.loads(
+        _must_git(
+            release_repo.root,
+            "show",
+            f"{release_repo.start}:docs/proof/bh-j5uyb.1-modularization-closeout.json",
+        )
+    )
+    assert report == before
 
 
 def test_expected_version_mismatch_refuses_before_mutation(tmp_path: Path) -> None:
