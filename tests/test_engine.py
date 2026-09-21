@@ -13,7 +13,7 @@ from collections import namedtuple
 
 import pytest
 
-from beadhive import bd, config, engine, host_fence
+from beadhive import bd, config, engine, host_fence, store_locator
 
 Completed = namedtuple("Completed", "returncode stdout stderr")
 
@@ -372,6 +372,15 @@ def test_push_fsck_timeout_reports_an_exact_safe_retry(monkeypatch):
 def test_fsck_timeout_scales_with_store_size(monkeypatch):
     monkeypatch.setattr(engine, "_state_store_bytes", lambda _cwd: 3 * 1024**3)
     assert engine._fsck_timeout("/hive") == engine.FSCK_TIMEOUT + 180
+
+
+def test_state_store_size_uses_mode_aware_dolt_database(tmp_path, monkeypatch):
+    database = tmp_path / "shared-server" / "dolt" / "hive_db"
+    database.mkdir(parents=True)
+    (database / "chunk").write_bytes(b"x" * 17)
+    monkeypatch.setattr(store_locator, "database_dir", lambda _cwd: database)
+
+    assert engine._state_store_bytes(tmp_path / "hive") == 17
 
 
 def test_pull_state_converts_a_hang_into_a_nonzero_result(monkeypatch):

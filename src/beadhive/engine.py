@@ -33,9 +33,12 @@ MAX_FSCK_TIMEOUT = 900
 
 
 def _state_store_bytes(cwd) -> int:
+    from . import store_locator
+
     total = 0
+    root = store_locator.database_dir(Path(cwd))
     try:
-        for path in (Path(cwd) / ".beads").rglob("*"):
+        for path in root.rglob("*"):
             if path.is_file():
                 total += path.stat().st_size
     except OSError:

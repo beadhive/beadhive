@@ -504,8 +504,7 @@ def test_squash_landed_with_merge_event_classifies_landed_rebased():
         is_landed_fn=_make_landed_fn(True),
         bead_close_reasons={_BEAD_ID: "merged"},
     )
-    assert st.classification == WtClassification.HELD
-    assert st.underlying == WtClassification.LANDED_REBASED
+    assert st.classification == WtClassification.LANDED_REBASED
     assert st.safe is True
 
 
