@@ -779,20 +779,29 @@ def _check_epic_type(epic_data: dict, epic_id: str) -> list[str]:
 
 
 def _swarm_missing(epic_id: str, cwd) -> bool | None:
-    """True when no bd swarm covers the epic, False when one does, None when the swarm list is
-    unavailable. Shared by `_check_swarm` (verify) and plan_repair (backfill)."""
-    data = bd.json(["swarm", "list"], cwd)
-    swarms = data.get("swarms") if isinstance(data, dict) else None
-    if swarms is None:
+    """True when no stored swarm covers the epic, False when one does, None on read failure.
+
+    A swarm molecule relates to its epic, so the epic's upward ``relates-to`` edges are the
+    narrow stored-data query for this existence check.  Do not use ``swarm status <epic>``:
+    bd computes status for any epic, including one which has no swarm molecule.
+
+    Shared by `_check_swarm` (verify) and plan_repair (backfill).
+    """
+    related = bd.json(["dep", "list", epic_id, "--direction", "up", "--type", "relates-to"], cwd)
+    if not isinstance(related, list):
         return None
-    return not any(sw.get("epic_id") == epic_id for sw in swarms)
+    return not any(
+        row.get("issue_type") == "molecule" and row.get("mol_type") == "swarm"
+        for row in related
+        if isinstance(row, dict)
+    )
 
 
 def _check_swarm(epic_id: str, cwd) -> list[str]:
     """A bd swarm must have been created over the epic (`bd swarm create <epic>`)."""
     missing = _swarm_missing(epic_id, cwd)
     if missing is None:
-        return [f"could not retrieve swarm list to verify a swarm for {epic_id}"]
+        return [f"could not retrieve swarm relation to verify a swarm for {epic_id}"]
     if missing:
         return [f"no bd swarm for epic {epic_id} (expected `bd swarm create {epic_id}`)"]
     return []
@@ -1424,7 +1433,7 @@ def _repair_epic(request: RepairRequest) -> PlanningRepairResult:
     fixes: list[str] = []
     missing = _swarm_missing(epic_id, cwd)
     if missing is None:
-        raise PlanError(f"could not retrieve swarm list for {epic_id} — inspect the hive")
+        raise PlanError(f"could not retrieve swarm relation for {epic_id} — inspect the hive")
     if missing:
         if not _create_swarm(epic_id, cwd, actor):
             raise PlanError(f"`bd swarm create {epic_id}` failed — inspect the hive")
