@@ -16,7 +16,7 @@
     "successor_contracts": "beadhive.modules.config.contracts"
   },
   "current": {
-    "config_patch_point_count": 273,
+    "config_patch_point_count": 275,
     "config_patch_points": [
       {
         "facade_target": "beadhive.config.save_fleet",
@@ -446,16 +446,30 @@
         "target": "beadhive.config.work_identity"
       },
       {
+        "facade_target": "beadhive.config.worktrees_root",
+        "kind": "direct-facade",
+        "line": 2177,
+        "path": "tests/test_doctor.py",
+        "target": "beadhive.config.worktrees_root"
+      },
+      {
+        "facade_target": "beadhive.config.worktrees_root",
+        "kind": "direct-facade",
+        "line": 2247,
+        "path": "tests/test_doctor.py",
+        "target": "beadhive.config.worktrees_root"
+      },
+      {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2412,
+        "line": 2425,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
       {
         "facade_target": "beadhive.config.enforce_signing",
         "kind": "direct-facade",
-        "line": 2425,
+        "line": 2438,
         "path": "tests/test_doctor.py",
         "target": "beadhive.config.enforce_signing"
       },
@@ -1806,70 +1820,70 @@
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3377,
+        "line": 3380,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3408,
+        "line": 3411,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3437,
+        "line": 3440,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3457,
+        "line": 3460,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3513,
+        "line": 3516,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 3596,
+        "line": 3599,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4015,
+        "line": 4043,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4035,
+        "line": 4063,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4052,
+        "line": 4080,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
       {
         "facade_target": "beadhive.config.load",
         "kind": "direct-facade",
-        "line": 4066,
+        "line": 4094,
         "path": "tests/test_worktree.py",
         "target": "beadhive.config.load"
       },
@@ -1911,7 +1925,7 @@
       {
         "facade_target": "beadhive.config.integration_branch",
         "kind": "indirect-adapter",
-        "line": 285,
+        "line": 286,
         "path": "tests/test_worktree_inventory_boundaries.py",
         "target": "beadhive.worktree.config.integration_branch"
       },

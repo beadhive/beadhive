@@ -116,6 +116,7 @@ _WT_ESCALATE = frozenset(
         WtClassification.STALE,
         WtClassification.DETACHED,
         WtClassification.ABANDONED,
+        WtClassification.HELD,
         WtClassification.UNKNOWN,
     }
 )

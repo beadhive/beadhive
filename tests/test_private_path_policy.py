@@ -487,6 +487,7 @@ _EXACT_OWNERSHIP_EXCEPTIONS = frozenset(
     | _owned("dispatch_supervisor.py", "_systemd_user_dir", ".config")
     | _owned("doctor.py", "_missing_required_dep_warnings", ".nix-profile")
     | _owned("doctor.py", "_devshell_only_warnings", ".nix-profile")
+    | _owned("doctor.py", "_data_layout", ".git")
     | _owned("host.py", "discover_signing_key", ".ssh")
     | _owned("install_plane.py", "<module>", ".nix-profile")
     # Bounded compatibility readers/inventory for retired top-level `.git/bh-*` paths.
