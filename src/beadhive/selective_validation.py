@@ -34,7 +34,7 @@ def all_keys_green(entry, cfg, rev: str) -> bool:
     red evidence into proof that the aggregate full-gate command passed.
     """
     keys = attest_keys(config.attest_config(cfg, entry))
-    if not keys:
+    if not keys or any(key.is_disabled() for key in keys):
         return False
     verdicts = validation_ledger.key_verdicts(entry, rev, keys, cfg=cfg)
     return all(
@@ -66,6 +66,11 @@ def run(
     keys = attest_keys(attest)
     if not keys:
         return runner(config.validate_cmd(cfg, entry))
+    active_keys = tuple(key for key in keys if not key.is_disabled())
+    for key in keys:
+        if key.is_disabled():
+            expiry = f" (until {key.disabled_until.isoformat()})" if key.disabled_until else ""
+            typer.echo(f"  · {key.name}: DISABLED — {key.disabled_reason}{expiry}")
     from . import registry
 
     repo = repo_path or str(registry.hive_dir(entry))
@@ -80,11 +85,11 @@ def run(
         from .modules.work.application.impact import NativeFullResolver
 
         resolver = NativeFullResolver(GitTreeDiff())
-    receipt = resolver.resolve(repo, base_rev, head_rev, keys)
+    receipt = resolver.resolve(repo, base_rev, head_rev, active_keys)
     if receipt.fallback_reason:
         warn_impact_fallback(receipt.fallback_reason)
 
-    by_name = {key.name: key for key in keys}
+    by_name = {key.name: key for key in active_keys}
     outcomes: dict[str, int | None] = {}
     for name in receipt.unaffected_keys:
         key = by_name[name]
@@ -109,7 +114,7 @@ def run(
         typer.echo(f"  {'✓' if rc == 0 else '?' if rc == 75 else '✗'} {name}: {state}")
 
     blocked = False
-    for key in keys:
+    for key in active_keys:
         outcome = outcomes.get(key.name)
         if outcome == 0:
             continue

@@ -1804,6 +1804,55 @@ def test_data_warnings_diagnoses_bad_remote_only_hive_prefixes(monkeypatch, tmp_
     assert "host manifest remote_only_hives has unknown hive prefix: missing" in warns
 
 
+def test_doctor_reports_resolved_disabled_attest_key():
+    cfg = {
+        "work": {
+            "attest": {
+                "keys": [
+                    {
+                        "name": "stateful",
+                        "cmd": "just stateful",
+                        "enabled": False,
+                        "disabled_reason": "host capacity incident bh-example",
+                        "disabled_until": "2999-01-01T00:00:00Z",
+                    }
+                ]
+            }
+        }
+    }
+    entry = {"prefix": "bh"}
+
+    warns = doctor._disabled_attest_key_warnings(cfg, [entry])
+
+    assert len(warns) == 1
+    assert "hive 'bh'" in warns[0]
+    assert "stateful" in warns[0] and "DISABLED" in warns[0]
+    assert "host capacity incident" in warns[0]
+
+
+def test_doctor_reports_expired_disable_as_fail_closed():
+    cfg = {
+        "work": {
+            "attest": {
+                "keys": [
+                    {
+                        "name": "stateful",
+                        "cmd": "just stateful",
+                        "enabled": False,
+                        "disabled_reason": "past maintenance",
+                        "disabled_until": "2000-01-01T00:00:00Z",
+                    }
+                ]
+            }
+        }
+    }
+
+    warns = doctor._disabled_attest_key_warnings(cfg, [{"prefix": "bh"}])
+
+    assert len(warns) == 1
+    assert "expired disable" in warns[0] and "fail-closed" in warns[0]
+
+
 def test_furnish_drift_warns_on_tracked_beads(tmp_path):
     root = _furnish_drift_repo(tmp_path, track_beads=True)
     entry = {

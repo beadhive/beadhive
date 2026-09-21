@@ -1867,6 +1867,29 @@ def _epoch_fence_posture_warning(cfg, entry, path: Path) -> str | None:
     )
 
 
+def _disabled_attest_key_warnings(cfg, hives) -> list[str]:
+    """Report resolved disabled attest lanes, including expired fail-closed metadata."""
+    targets = list(hives) or [None]
+    warnings = []
+    for entry in targets:
+        label = f"hive '{entry.get('prefix', '?')}'" if entry is not None else "global work policy"
+        for key in config.attest_config(cfg, entry).keys:
+            if key.enabled:
+                continue
+            expiry = key.disabled_until.isoformat() if key.disabled_until else ""
+            if key.is_disabled():
+                until = f" until {expiry}" if expiry else " with no expiry"
+                warnings.append(
+                    f"{label}: attest key '{key.name}' is DISABLED{until} — {key.disabled_reason}"
+                )
+            else:
+                warnings.append(
+                    f"{label}: attest key '{key.name}' has an expired disable ({expiry}) — "
+                    "it runs fail-closed now; set enabled: true or remove stale metadata"
+                )
+    return warnings
+
+
 def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untracked):
     """Warnings section: config drift, prefix collisions, untracked/unrecognized folders,
     and per-hive checkout/beads/grant issues. Excluded orgs are out of scope — skipped."""
@@ -1892,6 +1915,7 @@ def _data_warnings(cfg, root: Path, hives, git_repos, nonrepo, unknown_top, untr
         f"{'/'.join(str(c) for c in v['choices'])} (using default {v['default']!r})"
         for v in config.literal_violations(cfg)
     ]
+    warns += _disabled_attest_key_warnings(cfg, hives)
     layout = _data_layout(cfg)
     warns += [
         f"unrecognized ~/.beadhive entry not in the layout contract "

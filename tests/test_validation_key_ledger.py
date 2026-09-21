@@ -117,3 +117,21 @@ def test_absent_attest_catalog_preserves_legacy_lookup(ledger):
 
     assert validation_ledger.key_verdicts(entry, "base", ()) == {}
     assert validation_ledger.green_verdict(entry, "base", key.cmd) is not None
+
+
+def test_disabled_key_ignores_existing_green_and_cannot_write_carry(ledger):
+    entry, key = ledger
+    disabled = AttestKey(
+        key.name,
+        key.cmd,
+        selectors=key.selectors,
+        enabled=False,
+        disabled_reason="bounded maintenance",
+    )
+    validation_ledger.record(entry, "base", key.cmd, 0)
+
+    found = validation_ledger.key_verdict(entry, "base", disabled)
+    assert found.state == validation_ledger.KeyVerdictState.ABSENT
+    assert found.reason == "disabled"
+    assert not validation_ledger.carry_key_verdict(entry, disabled, receipt(disabled))
+    assert validation_ledger.key_verdict(entry, "head", disabled).state == "absent"

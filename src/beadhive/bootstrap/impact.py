@@ -21,7 +21,15 @@ from ..modules.work.domain.impact import AttestKey
 def attest_keys(attest: AttestConfig) -> tuple[AttestKey, ...]:
     """The configured key catalog as domain values, in declared order."""
     return tuple(
-        AttestKey(name=k.name, cmd=k.cmd, policy=k.policy, selectors=dict(k.selectors))
+        AttestKey(
+            name=k.name,
+            cmd=k.cmd,
+            policy=k.policy,
+            selectors=dict(k.selectors),
+            enabled=k.enabled,
+            disabled_reason=k.disabled_reason or "",
+            disabled_until=k.disabled_until,
+        )
         for k in attest.keys
     )
 

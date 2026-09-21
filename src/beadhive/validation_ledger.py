@@ -896,7 +896,8 @@ def carry_key_verdict(
     is copied unchanged, so repeated carries cannot refresh TTL even if a caller retries.
     """
     if (
-        not receipt.base_tree
+        key.is_disabled()
+        or not receipt.base_tree
         or not receipt.head_tree
         or receipt.base_tree == receipt.head_tree
         or receipt.is_fallback
@@ -950,6 +951,8 @@ def key_verdict(
     """
     tree = tree_of(entry, rev)
     command_hash = cmd_hash(key.cmd)
+    if key.is_disabled():
+        return KeyVerdict(key.name, tree, command_hash, KeyVerdictState.ABSENT, reason="disabled")
     current = verdict(entry, tree, key.cmd, ttl, cfg)
     if current is not None:
         if current.get("exit_code") == 75:
