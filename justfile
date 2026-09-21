@@ -642,9 +642,13 @@ test-changed:
 stateful-pants:
     uv run python scripts/pants_ci.py all
 
+# Stateful tests include short-deadline process and local-Dolt fixtures. Twelve workers
+# produced eight contention failures; six is the measured safe capacity from bh-s26g9.6.
+stateful_workers := "6"
+
 stateful-native:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pants_ci.py native -- -n auto -m "{{FAST}}"
+        ./scripts/hermetic.sh uv run python scripts/pants_ci.py native -- -n {{stateful_workers}} -m "{{FAST}}"
 
 # Advisory module/plugin closures. These commands never replace `just check` or `just check-all`;
 # the checked impact map adds shared-contract and reverse-dependent selectors to each direct set.
