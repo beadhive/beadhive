@@ -150,6 +150,14 @@ class FakeBdRepair:
                 "labels": ["complexity:MEDIUM"],
             }
             return _CP(0, json.dumps([epic]) + "\n", "")
+        if args[:1] == ["list"] and "--id" in args:
+            epic_ids = args[args.index("--id") + 1].split(",")
+            labels = [f"kickoff:{self.kickoff}"] if self.kickoff else []
+            return _CP(
+                0,
+                json.dumps([{"id": epic_id, "labels": labels} for epic_id in epic_ids]) + "\n",
+                "",
+            )
         if args[:1] == ["list"] and "--parent" in args:
             return _CP(0, json.dumps(self.children) + "\n", "")
         if args[:2] == ["dep", "list"]:
