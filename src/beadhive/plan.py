@@ -1452,8 +1452,11 @@ def _repair_epic(request: RepairRequest) -> PlanningRepairResult:
         _create_kickoff_gate(root_id, epic_id, cwd, actor)
         fixes.append(f"created kickoff gate for root {root_id}")
 
-    # Repair needs one fresh read immediately before its possible mutation of this single epic.
-    if not bd.state(epic_id, "kickoff", cwd):
+    # Repair needs one fresh, bounded read immediately before its possible mutation of this
+    # single epic.  The label projection represents an absent dimension as ""; raw `bd state`
+    # may exit successfully with informational text that is not a state value.
+    kickoff = bd.states_for((epic_id,), "kickoff", cwd).get(epic_id, "")
+    if not kickoff:
         _set_kickoff_pending(epic_id, cwd, actor)
         fixes.append(f"set kickoff=pending on {epic_id}")
 
