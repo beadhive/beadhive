@@ -41,10 +41,16 @@ def test_subtree_matches_claude_subtree(monkeypatch):
     assert os.path.expanduser(sub) == str(worktree.wt_dir(entry, "leaf").parent)
 
 
-def test_install_grant_is_noop_when_ephemeral(tmp_path, monkeypatch):
+def test_install_grant_for_ephemeral_root_still_allows_only_local_dolt_host(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     hive._install_codex_sandbox_grant({"worktrees": {"ephemeral": True}}, "github", "o", "r")
-    assert not (tmp_path / ".codex" / "config.toml").exists()
+    parsed = tomllib.loads((tmp_path / ".codex" / "config.toml").read_text())
+    assert parsed["sandbox_workspace_write"]["writable_roots"] == []
+    assert parsed["sandbox_workspace_write"]["network_access"] is True
+    proxy = parsed["features"]["network_proxy"]
+    assert proxy["enabled"] is True
+    assert proxy["allow_upstream_proxy"] is False
+    assert proxy["domains"] == {"127.0.0.1": "allow"}
 
 
 def test_install_grant_writes_when_persistent(tmp_path, monkeypatch):
@@ -56,6 +62,7 @@ def test_install_grant_writes_when_persistent(tmp_path, monkeypatch):
     parsed = tomllib.loads(f.read_text())
     roots = parsed["sandbox_workspace_write"]["writable_roots"]
     assert any(r.endswith("/github/o/r") for r in roots)
+    assert parsed["features"]["network_proxy"]["domains"] == {"127.0.0.1": "allow"}
 
 
 def test_install_grant_git_excludes_the_file(tmp_path, monkeypatch):

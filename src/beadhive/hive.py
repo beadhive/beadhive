@@ -1008,12 +1008,18 @@ _CODEX_MARK_START = "# bh:codex-sandbox-grant:start (managed by `bh hive init --
 _CODEX_MARK_END = "# bh:codex-sandbox-grant:end"
 
 
-def _codex_grant_block(items: list[str]) -> str:
+def _codex_grant_block(items: list[str], network_host: str = "127.0.0.1") -> str:
     roots = ", ".join(json.dumps(x) for x in items)  # JSON string syntax is valid TOML too
+    host = json.dumps(network_host)
     return (
         f"{_CODEX_MARK_START}\n"
         "[sandbox_workspace_write]\n"
+        "network_access = true\n"
         f"writable_roots = [{roots}]\n"
+        "\n[features.network_proxy]\n"
+        "enabled = true\n"
+        "allow_upstream_proxy = false\n"
+        f"domains = {{{host} = \"allow\"}}\n"
         f"{_CODEX_MARK_END}\n"
     )
 
@@ -1044,20 +1050,24 @@ def _write_codex_grant_block(f: Path, value: str, replace_fn, label: str) -> boo
     f.parent.mkdir(parents=True, exist_ok=True)
     text = f.read_text() if f.exists() else ""
     updated = replace_fn(_codex_grant_roots(text))
-    block = _codex_grant_block(updated)
+    from . import dolt_health
+
+    network_host, network_port = dolt_health.server_endpoint()
+    block = _codex_grant_block(updated, network_host)
     if _CODEX_MARK_START in text:
         start = text.index(_CODEX_MARK_START)
         end = text.index(_CODEX_MARK_END, start) + len(_CODEX_MARK_END)
         # `text[end:]` already carries the newline that followed the old end marker — splice in
         # `block` WITHOUT its own trailing newline so re-running never accumulates blank lines.
         new_text = text[:start] + block.rstrip("\n") + text[end:]
-    elif "[sandbox_workspace_write]" in text:
+    elif "[sandbox_workspace_write]" in text or "[features.network_proxy]" in text:
         # An unmanaged table already exists (hand-written, or from another tool) — writing our
         # own [sandbox_workspace_write] table here would be a duplicate-key TOML parse error.
         # Leave the file untouched rather than corrupt it; tell the operator the exact value.
         typer.echo(
             f"⚠ {label}: {f} already has an unmanaged [sandbox_workspace_write] table — not "
-            f"touching it; add to its writable_roots manually: {value!r}",
+            f"touching it; add writable root {value!r} and allow only "
+            f"{network_host}:{network_port} manually",
             err=True,
         )
         return False
@@ -1071,19 +1081,30 @@ def _write_codex_grant_block(f: Path, value: str, replace_fn, label: str) -> boo
 def _install_codex_sandbox_grant(cfg, provider: str, org: str, repo: str, base=None) -> None:
     # Ephemeral worktrees live in the (already sandbox-writable) OS temp dir — no grant to
     # write. Grants are a persistent-mode (ephemeral=false) feature. Mirrors _install_sandbox_grant.
-    if config.worktrees_ephemeral(cfg):
-        typer.echo("✓ --codex: ephemeral worktrees (OS temp) — no sandbox grant needed")
-        return
     base = _base(base)
-    subtree = _sandbox_subtree(cfg, provider, org, repo)
+    subtree = (
+        _sandbox_subtree(cfg, provider, org, repo) if not config.worktrees_ephemeral(cfg) else ""
+    )
     triplet_suffix = f"{provider}/{org}/{repo}"
     f = base / ".codex" / "config.toml"
     if not _write_codex_grant_block(
-        f, subtree, lambda items: _replace_for_hive(items, subtree, triplet_suffix), "--codex"
+        f,
+        subtree,
+        lambda items: (
+            _replace_for_hive(items, subtree, triplet_suffix) if subtree else items
+        ),
+        "--codex",
     ):
         return
     _git_exclude(".codex/config.toml", base)
-    typer.echo(f"✓ --codex: sandbox grant → .codex/config.toml ({subtree})")
+    from . import dolt_health
+
+    host, port = dolt_health.server_endpoint()
+    root_note = subtree or "ephemeral worktrees need no added writable root"
+    typer.echo(
+        f"✓ --codex: sandbox grant → .codex/config.toml "
+        f"({root_note}; network limited to host {host} for Dolt port {port})"
+    )
 
 
 def codex_granted_subtree(clone: Path, provider: str, org: str, repo: str) -> str | None:
