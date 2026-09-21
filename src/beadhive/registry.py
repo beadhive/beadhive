@@ -16,7 +16,7 @@ import typer
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString as DQ
 
-from . import bd, config, gitworkspace
+from . import config, gitworkspace
 from .identity import workspace_identity, workspace_root
 from .run import run
 
@@ -743,8 +743,13 @@ def repos_sync():
 
 
 def report():
+    """Render label usage without importing the high-level bd adapter at module load.
+
+    bd-seam-justified: registry is imported by bd while bd is imported by validation; taking
+    this reporting-only subprocess through bd creates a runtime partial-initialization cycle.
+    """
     cfg = config.load()
-    res = bd.run(["label", "list-all", "--json"], Path.cwd(), capture=True)
+    res = run(["bd", "label", "list-all", "--json"], check=False, capture=True)
     labels = json.loads(res.stdout or "[]") if res.returncode == 0 else []
     typer.echo("# Usage by dimension")
     # identity triplet + whatever dimensions the config declares
