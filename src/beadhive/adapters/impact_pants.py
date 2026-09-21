@@ -32,6 +32,8 @@ PANTS_GLOBAL_INPUTS = (
     ".mise.toml",
     "scripts/hermetic.sh",
 )
+CHANGE_CATEGORY_PREFIX = "category:"
+CHANGE_CATEGORIES = frozenset({"code", "test-only", "build-system", "docs", "config"})
 PROVEN_TESTS_MANIFEST = Path("scripts/pants_proven_tests.json")
 
 PantsQuery = Callable[[str, Sequence[str], float], list[dict[str, Any]]]
@@ -206,6 +208,7 @@ class PantsImpactBackend:
         proven_sources = _proven_test_sources(repo, self._manifest)
 
         owners: dict[str, list[str]] = {change.path: [] for change in request.changed}
+        owner_categories: dict[str, tuple[str, ...]] = {}
         key_units: dict[str, list[str]] = {key.name: [] for key in request.keys}
         unit_test_sources: dict[str, tuple[str, ...]] = {}
         selectors = {key.name: key.selector(self.name) for key in request.keys}
@@ -219,11 +222,38 @@ class PantsImpactBackend:
                 if not change.deleted and change.path in sources:
                     owners[change.path].append(address)
             tags = set(_tags(target))
+            owner_categories[address] = tuple(
+                sorted(
+                    tag.removeprefix(CHANGE_CATEGORY_PREFIX)
+                    for tag in tags
+                    if tag.startswith(CHANGE_CATEGORY_PREFIX)
+                )
+            )
             for key_name, selector in selectors.items():
                 if selector and selector in tags:
                     key_units[key_name].append(address)
                     if target.get("target_type") in {"python_test", "python_tests"}:
                         unit_test_sources[address] = sources
+
+        # A category is a required dimension of an owning graph node, not a fallback path-glob
+        # classifier.  Refuse an owner with a missing, unknown, or ambiguous value so the
+        # resolver degrades to native-full.  Only changed owners matter: category debt elsewhere
+        # cannot make an unrelated, completely classified change pay the full gate.
+        invalid_categories: list[str] = []
+        build_system_paths: list[str] = []
+        for path, addresses in owners.items():
+            for address in addresses:
+                categories = owner_categories.get(address, ())
+                if len(categories) != 1 or categories[0] not in CHANGE_CATEGORIES:
+                    rendered = ",".join(categories) if categories else "untagged"
+                    invalid_categories.append(f"{path} -> {address} ({rendered})")
+                elif categories[0] == "build-system":
+                    build_system_paths.append(path)
+        if invalid_categories:
+            raise RuntimeError(
+                "Pants changed-path owner lacks exactly one known category tag: "
+                + "; ".join(sorted(invalid_categories))
+            )
 
         affected_units = frozenset(_address(target) for target in affected_rows)
         proven_keys = frozenset(
@@ -243,12 +273,17 @@ class PantsImpactBackend:
             affected_units=affected_units,
             key_units={name: tuple(sorted(set(units))) for name, units in key_units.items()},
             proven_keys=proven_keys,
-            global_inputs=PANTS_GLOBAL_INPUTS,
+            # Build-system inputs change the graph oracle itself, so their category always takes
+            # the conservative full route.  Exact changed paths extend the legacy static list;
+            # no second classifier is introduced.
+            global_inputs=(*PANTS_GLOBAL_INPUTS, *sorted(set(build_system_paths))),
         )
 
 
 __all__ = [
     "PANTS_GLOBAL_INPUTS",
+    "CHANGE_CATEGORIES",
+    "CHANGE_CATEGORY_PREFIX",
     "PROVEN_TESTS_MANIFEST",
     "PantsImpactBackend",
     "query_pants",

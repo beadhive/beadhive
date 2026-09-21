@@ -1,7 +1,23 @@
-# Ownership for tracked files at the repo root that aren't under /src, /tests, or another
-# owned directory (bh-1j3ei.2). No target infers deps from these; they exist so
-# `scripts/check_pants_ownership.py` (run from `just architecture-check`) sees zero unowned
-# tracked files.
+# Root ownership is split by change category.  Category tags are consumed by the same Pants
+# graph query as attest tags; they are not a parallel path classifier (bh-bsb38.3).
+files(
+    name="root-build-system",
+    sources=[
+        ".mise.toml",
+        "Brewfile",
+        "BUILD",
+        "docker-bake.hcl",
+        "flake.lock",
+        "flake.nix",
+        "justfile",
+        "lefthook.yml",
+        "pants.toml",
+        "pyproject.toml",
+        "uv.lock",
+    ],
+    tags=["category:build-system"],
+)
+
 files(
     name="root-config",
     sources=[
@@ -9,25 +25,30 @@ files(
         ".git-blame-ignore-revs",
         ".gitignore",
         ".markdownlint-cli2.jsonc",
-        ".mise.toml",
-        "Brewfile",
-        "BUILD",
+        "docker-compose.yml",
+        "osv-scanner.toml",
+    ],
+    tags=["category:config", "attest:demos"],
+)
+
+# Keep INSTALL separate: test_docs_role_vocabulary.py reads it at runtime.  Giving that test
+# this exact dependency prevents unrelated root prose (especially README.md) from acquiring a
+# reverse dependency on the stateful lane.
+files(
+    name="root-guide-doc",
+    sources=["INSTALL.md"],
+    tags=["category:docs", "attest:docs"],
+)
+
+files(
+    name="root-prose",
+    sources=[
         "CHANGELOG.md",
         "CLAUDE.md",
         "CONTRIBUTING.md",
-        "INSTALL.md",
         "LICENSE",
         "README.md",
         "SECURITY.md",
-        "docker-bake.hcl",
-        "docker-compose.yml",
-        "flake.lock",
-        "flake.nix",
-        "justfile",
-        "lefthook.yml",
-        "osv-scanner.toml",
-        "pants.toml",
-        "pyproject.toml",
-        "uv.lock",
     ],
+    tags=["category:docs", "attest:docs"],
 )

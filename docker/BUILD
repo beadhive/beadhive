@@ -1,5 +1,5 @@
 files(
     name="docker-config",
     sources=["**/*"],
-    tags=["attest:integration"],
+    tags=["category:build-system", "attest:integration"],
 )

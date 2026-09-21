@@ -1,7 +1,7 @@
 python_sources(
     name="lib",
     sources=["**/*.py"],
-    tags=["attest:package"],
+    tags=["category:code", "attest:package"],
 )
 
 resources(
@@ -16,6 +16,7 @@ resources(
         "**/*.example",
         "**/.gitkeep",
     ],
+    tags=["category:code", "attest:package"],
 )
 
 pex_binary(
@@ -26,5 +27,5 @@ pex_binary(
         ":package-data",
     ],
     output_path="bh.pex",
-    tags=["attest:package"],
+    tags=["category:code", "attest:demos", "attest:package"],
 )
