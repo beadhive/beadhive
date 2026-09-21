@@ -807,9 +807,9 @@ def _check_swarm(epic_id: str, cwd) -> list[str]:
     return []
 
 
-def _check_kickoff_state(epic_id: str, cwd) -> list[str]:
+def _check_kickoff_state(epic_id: str, kickoff_states: dict[str, str]) -> list[str]:
     """The epic must carry a kickoff state (pending after file, approved after approve)."""
-    if not bd.state(epic_id, "kickoff", cwd):
+    if not kickoff_states.get(epic_id, ""):
         return [f"kickoff state unset on {epic_id} (expected pending or approved)"]
     return []
 
@@ -919,7 +919,9 @@ def _check_child_labels(issues: list[dict], cfg) -> list[str]:
     return problems
 
 
-def _check_coordinator_children(issues: list[dict], cwd) -> list[str]:
+def _check_coordinator_children(
+    issues: list[dict], cwd, kickoff_states: dict[str, str]
+) -> list[str]:
     """Verify nested epic children as independent coordinator containers.
 
     Parent verification deliberately does not borrow a nested epic's kickoff gate or demand an
@@ -938,7 +940,7 @@ def _check_coordinator_children(issues: list[dict], cwd) -> list[str]:
         nested_data, nested_issues, _origin_reports = nested
         problems += _check_epic_type(nested_data, cid)
         problems += _check_swarm(cid, cwd)
-        problems += _check_kickoff_state(cid, cwd)
+        problems += _check_kickoff_state(cid, kickoff_states)
         problems += _check_kickoff_gates(cid, nested_issues, cwd)
     return problems
 
@@ -975,6 +977,8 @@ def _verify_loaded(
 ) -> list[str]:
     """The convention checks of `verify_epic` over an already-loaded molecule — shared with
     `check <epic>` so callers that also need the issue list load the molecule only once."""
+    coordinator_ids = [epic_id, *(i["handle"] for i in issues if i.get("type") == "epic")]
+    kickoff_states = bd.states_for(coordinator_ids, "kickoff", cwd)
     problems: list[str] = []
     problems += molecule.validate_spec(_spec_from_filed(epic_data, issues), cfg)
     problems += [
@@ -999,9 +1003,9 @@ def _verify_loaded(
     problems += _check_epic_type(epic_data, epic_id)
     problems += _check_swarm(epic_id, cwd)
     problems += _check_kickoff_gates(epic_id, issues, cwd)
-    problems += _check_kickoff_state(epic_id, cwd)
+    problems += _check_kickoff_state(epic_id, kickoff_states)
     problems += _check_child_labels(issues, cfg)
-    problems += _check_coordinator_children(issues, cwd)
+    problems += _check_coordinator_children(issues, cwd, kickoff_states)
     return problems
 
 
@@ -1380,17 +1384,19 @@ def status(
         if not swarms:
             typer.echo("no swarms found")
             return
+        kickoff_states = bd.states_for((sw.get("epic_id", "") for sw in swarms), "kickoff", cwd)
         for sw in swarms:
             eid = sw.get("epic_id", "")
             title = sw.get("epic_title", "")
             completed = sw.get("completed_issues", 0)
             total = sw.get("total_issues", 0)
-            kickoff = bd.state(eid, "kickoff", cwd) or "—"
+            kickoff = kickoff_states.get(eid, "") or "—"
             typer.echo(f"  {eid}  {title}  {completed}/{total}  kickoff={kickoff}")
     else:
         detail = bd.json(["swarm", "status", epic], cwd)
         if detail is None:
             _abort(f"could not retrieve swarm status for {epic}")
+        # Detail status is deliberately one fresh state read for one explicitly requested epic.
         kickoff = bd.state(epic, "kickoff", cwd) or "—"
         title = detail.get("epic_title", "")
         completed = len(detail.get("completed") or [])
@@ -1446,6 +1452,7 @@ def _repair_epic(request: RepairRequest) -> PlanningRepairResult:
         _create_kickoff_gate(root_id, epic_id, cwd, actor)
         fixes.append(f"created kickoff gate for root {root_id}")
 
+    # Repair needs one fresh read immediately before its possible mutation of this single epic.
     if not bd.state(epic_id, "kickoff", cwd):
         _set_kickoff_pending(epic_id, cwd, actor)
         fixes.append(f"set kickoff=pending on {epic_id}")

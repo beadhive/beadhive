@@ -87,6 +87,50 @@ def test_bd_json_returns_none_on_empty_stdout(monkeypatch):
     assert result is None
 
 
+# ---- bd.states_for: one exact-id brief read with state() parity -----------------------------
+
+
+def test_states_for_matches_state_for_set_unset_missing_and_duplicate_ids(monkeypatch):
+    """The batch seam preserves state()'s ``''`` fallback and request ordering in one read."""
+    calls = []
+    state_values = {"epic-1": "approved", "epic-2": "", "missing": "", "": ""}
+
+    def fake_run(cmd, **_kw):
+        args = list(cmd[3:])  # bd -C <hive> ...
+        calls.append(args)
+        if args[:1] == ["state"]:
+            return _CP(0, state_values.get(args[1], "") + "\n", "")
+        if args[:1] == ["list"]:
+            rows = [
+                {"id": "epic-1", "labels": ["kickoff:approved", "component:planning"]},
+                {"id": "epic-2", "labels": ["component:planning"]},
+                {"id": "not-requested", "labels": ["kickoff:pending"]},
+            ]
+            return _CP(0, json.dumps(rows), "")
+        return _CP(1, "", "unexpected")
+
+    monkeypatch.setattr(bd_mod, "_run", fake_run)
+    requested = ["epic-2", "epic-1", "epic-2", "missing", ""]
+
+    batch = bd_mod.states_for(requested, "kickoff", "/hive")
+    singles = {bead_id: bd_mod.state(bead_id, "kickoff", "/hive") for bead_id in batch}
+
+    assert batch == singles == {"epic-2": "", "epic-1": "approved", "missing": "", "": ""}
+    list_calls = [args for args in calls if args[:1] == ["list"]]
+    assert len(list_calls) == 1
+    assert list_calls[0] == [
+        "list",
+        "--id",
+        "epic-2,epic-1,missing",
+        "--all",
+        "--include-infra",
+        "--limit",
+        "0",
+        "--brief",
+        "--json",
+    ]
+
+
 # ---- bd.children: membership is the parent EDGE, not the id string (bh-89mrf) ----------------
 
 
