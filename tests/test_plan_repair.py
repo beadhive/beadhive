@@ -99,6 +99,7 @@ class FakeBdRepair:
         gates=None,
         kickoff="",
         exists=True,
+        raw_state_output=None,
     ):
         self.calls = []
         self.epic_type = epic_type
@@ -107,6 +108,7 @@ class FakeBdRepair:
         self.gates = list(gates or [])
         self.kickoff = kickoff
         self.exists = exists
+        self.raw_state_output = raw_state_output
         self._n = 0
 
     # -- helpers ---------------------------------------------------------
@@ -195,7 +197,8 @@ class FakeBdRepair:
                     g["status"] = "closed"
             return _CP(0, "", "")
         if args[:1] == ["state"]:
-            return _CP(0, self.kickoff + "\n", "")
+            output = self.kickoff if self.raw_state_output is None else self.raw_state_output
+            return _CP(0, output + "\n", "")
         if args[:1] == ["set-state"]:
             self.kickoff = args[2].split("=", 1)[1]
             return _CP(0, "", "")
@@ -249,6 +252,27 @@ def test_repair_backfills_swarm_gates_state_and_labels(hive, monkeypatch):
         assert fake.did("label", "add", "epic-1.1", label)
         assert fake.did("label", "add", "epic-1.2", label)
     assert "✓ repaired epic-1" in result.output
+
+
+def test_repair_projects_unset_kickoff_instead_of_trusting_raw_state_output(hive, monkeypatch):
+    """A successful raw ``bd state`` may print informational text for an unset dimension.
+
+    Repair must use the exact-id label projection, where absence is unambiguously empty, so
+    informational output cannot suppress the pending-state mutation.
+    """
+    fake = FakeBdRepair(
+        children=[_child("epic-1.1", labels=TRIPLET)],
+        has_swarm=True,
+        raw_state_output="No kickoff state set for epic-1",
+    )
+
+    result = _repair(hive, monkeypatch, fake)
+
+    assert result.exit_code == 0, result.output
+    assert fake.did("list", "--id", "epic-1")
+    assert not fake.did("state", "epic-1", "kickoff")
+    assert not fake.did("swarm", "list")
+    assert fake.did("set-state", "epic-1", "kickoff=pending")
 
 
 def test_repair_gate_rides_shared_contract(hive, monkeypatch):
