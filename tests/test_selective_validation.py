@@ -46,7 +46,7 @@ class _UnaffectedResolver:
             backend_version="1",
             base_tree="base",
             head_tree="head",
-            changed_paths=("docs/readme.md",),
+            changed_paths=("notes/readme.md",),
             unowned_paths=(),
             global_inputs_hit=(),
             invalidated_keys=(),
