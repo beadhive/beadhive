@@ -997,10 +997,10 @@
     "command": "just check",
     "receipt_reuse": "exact-tree full-gate receipts may be reused by existing lifecycle policy"
   },
-  "input_digest": "sha256:4d295d0ad4870d158bd916e7b283fe90e04b5714947f4357ca24cb1ed4102866",
+  "input_digest": "sha256:3c4bb35ed970c120e065a94f081bf28880c92935d5928db8a32f8fb5bc1412e7",
   "inputs": {
     "certification_artifact": {
-      "digest": "sha256:13e17c114a62579c3ba02e3b017d538415f671796880618abe673314cfd30b7d",
+      "digest": "sha256:4be8cb0128b7efa300611768fa7063a05499423ed154719ae3c1b1405a26ea99",
       "path": "docs/proof/bh-ck1t6.1-test-closure-certification.json"
     },
     "selector": {
