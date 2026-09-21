@@ -1019,7 +1019,7 @@ def _codex_grant_block(items: list[str], network_host: str = "127.0.0.1") -> str
         "\n[features.network_proxy]\n"
         "enabled = true\n"
         "allow_upstream_proxy = false\n"
-        f"domains = {{{host} = \"allow\"}}\n"
+        f'domains = {{{host} = "allow"}}\n'
         f"{_CODEX_MARK_END}\n"
     )
 
@@ -1090,9 +1090,7 @@ def _install_codex_sandbox_grant(cfg, provider: str, org: str, repo: str, base=N
     if not _write_codex_grant_block(
         f,
         subtree,
-        lambda items: (
-            _replace_for_hive(items, subtree, triplet_suffix) if subtree else items
-        ),
+        lambda items: _replace_for_hive(items, subtree, triplet_suffix) if subtree else items,
         "--codex",
     ):
         return

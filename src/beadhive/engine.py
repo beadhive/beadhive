@@ -424,9 +424,7 @@ class BdEngine:
 
         push_env = dict(os.environ)
         push_env.setdefault("BEADS_FSCK_TIMEOUT", str(FSCK_TIMEOUT))
-        pushed = self._state_call(
-            args, cwd, actor=actor, timeout=PUSH_STATE_TIMEOUT, env=push_env
-        )
+        pushed = self._state_call(args, cwd, actor=actor, timeout=PUSH_STATE_TIMEOUT, env=push_env)
         stderr = (getattr(pushed, "stderr", "") or "").lower()
         if pushed.returncode and "fsck" in stderr and "timed out" in stderr:
             prior = (getattr(pushed, "stderr", "") or "").rstrip()
