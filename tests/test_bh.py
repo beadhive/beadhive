@@ -238,12 +238,13 @@ def test_sync_reports_failed_hydration(tmp_path, monkeypatch, capsys):
     (good / ".beads").mkdir(parents=True)
     (bad / ".beads").mkdir(parents=True)
 
-    def fake_run(cmd, **k):
+    def fake_run(args, cwd, **k):
+        cmd = ["bd", "-C", str(cwd), *args]
         if cmd[-2:] == ["repo", "sync"]:  # repo sync surfaces per-hive import failures on stderr
             return Completed(0, "", f"Warning: failed to import from {bad}: reconcile error\n")
         return Completed(0, "", "")
 
-    monkeypatch.setattr(hub, "run", fake_run)
+    monkeypatch.setattr(hub.bd, "run", fake_run)
     monkeypatch.setattr(hub, "ensure_hub", lambda: tmp_path / "hub")
     monkeypatch.setattr(
         hub.config,
@@ -392,7 +393,7 @@ def test_bd_create_builds_triplet(monkeypatch, tmp_path):
     assert bd._create(["My title"], tmp_path) == 0
     cmd, cwd = cmds[-1]
     assert cmd == ["bd", "create", "My title", "-l", "provider:github,org:agentguides,repo:infra"]
-    assert cwd == tmp_path
+    assert cwd == str(tmp_path)
 
 
 def test_bd_create_help_bypasses_label_gate(monkeypatch, tmp_path):
@@ -411,7 +412,7 @@ def test_bd_create_help_bypasses_label_gate(monkeypatch, tmp_path):
     assert bd.create(["--help"], tmp_path) == (0, "")
     cmd, cwd = cmds[-1]
     assert cmd[:3] == ["bd", "create", "--help"]
-    assert cwd == tmp_path
+    assert cwd == str(tmp_path)
     # a real create is still gated
     code, error = bd.create(["title"], tmp_path)
     assert code == 1
@@ -574,7 +575,7 @@ def test_bd_import_help_bypasses_label_gate(monkeypatch, tmp_path):
     assert bd.import_labeled(["--help"], tmp_path) == (0, "")
     cmd, cwd = cmds[-1]
     assert cmd == ["bd", "import", "--help"]
-    assert cwd == tmp_path
+    assert cwd == str(tmp_path)
 
 
 def test_bd_import_swallows_nothing_to_commit(monkeypatch, tmp_path):

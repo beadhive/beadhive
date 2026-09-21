@@ -216,11 +216,7 @@ def test_hq_bead_validates_against_synthetic_identity(world, monkeypatch):
         "id": "hq-1",
         "labels": ["provider:local", "org:factory", "repo:hq"],
     }
-    monkeypatch.setattr(
-        validate.bd,
-        "run",
-        lambda *a, **k: Completed(0, _json.dumps([bead]), ""),
-    )
+    monkeypatch.setattr(validate, "run", lambda *a, **k: Completed(0, _json.dumps([bead]), ""))
     assert validate.has_violations(cfg) is False
 
 

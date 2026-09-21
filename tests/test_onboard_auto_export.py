@@ -45,11 +45,12 @@ def _ctx(base, *, furnish: bool):
 def test_turns_auto_export_on_and_pins_git_add_off(repo, monkeypatch):
     calls = []
 
-    def fake_run(cmd, **kw):
+    def fake_run(args, _cwd, **kw):
+        cmd = ["bd", *args]
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
-    monkeypatch.setattr(hive, "run", fake_run)
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
     onboard._configure_auto_export(_ctx(repo, furnish=False))
 
     written = {c[3]: c[4] for c in calls if c[:3] == ["bd", "config", "set"]}
@@ -61,9 +62,12 @@ def test_interval_is_left_at_bds_default(repo, monkeypatch):
     large fraction of wall-clock re-dumping. Writing no interval is the deliberate choice —
     assert it, so nobody 'helpfully' pins 5s later without revisiting the cost."""
     calls = []
-    monkeypatch.setattr(
-        hive, "run", lambda cmd, **kw: (calls.append(cmd), subprocess.CompletedProcess(cmd, 0))[1]
-    )
+    def fake_run(args, _cwd, **kw):
+        cmd = ["bd", *args]
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(onboard.bd_mod, "run", fake_run)
     onboard._configure_auto_export(_ctx(repo, furnish=False))
 
     assert not any("export.interval" in c for c in calls)
@@ -71,7 +75,11 @@ def test_interval_is_left_at_bds_default(repo, monkeypatch):
 
 def test_a_bd_that_rejects_the_key_does_not_fail_onboarding(repo, monkeypatch):
     """Auto-export is an interop nicety. An older bd must still produce a working hive."""
-    monkeypatch.setattr(hive, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, "", "x"))
+    monkeypatch.setattr(
+        onboard.bd_mod,
+        "run",
+        lambda args, _cwd, **kw: subprocess.CompletedProcess(["bd", *args], 1, "", "x"),
+    )
 
     onboard._configure_auto_export(_ctx(repo, furnish=True))  # must not raise
 
@@ -123,7 +131,11 @@ def test_the_exported_file_cannot_be_staged_after_exclusion(repo):
 def test_zero_footprint_hive_needs_no_separate_exclude(repo, monkeypatch):
     """Zero-footprint already excludes all of `.beads/`, so `_configure_auto_export` must not
     write a redundant entry — the furnished branch is the only one that needs it."""
-    monkeypatch.setattr(hive, "run", lambda cmd, **kw: subprocess.CompletedProcess(cmd, 0, "", ""))
+    monkeypatch.setattr(
+        onboard.bd_mod,
+        "run",
+        lambda args, _cwd, **kw: subprocess.CompletedProcess(["bd", *args], 0, "", ""),
+    )
     called = []
     monkeypatch.setattr(hive, "_ensure_export_exclude", lambda base: called.append(base))
 
