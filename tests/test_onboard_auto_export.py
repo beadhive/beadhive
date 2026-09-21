@@ -62,6 +62,7 @@ def test_interval_is_left_at_bds_default(repo, monkeypatch):
     large fraction of wall-clock re-dumping. Writing no interval is the deliberate choice —
     assert it, so nobody 'helpfully' pins 5s later without revisiting the cost."""
     calls = []
+
     def fake_run(args, _cwd, **kw):
         cmd = ["bd", *args]
         calls.append(cmd)

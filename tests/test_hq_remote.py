@@ -561,9 +561,7 @@ class _BackupEngine:
 
     def invoke(self, args, cwd, **kwargs):  # noqa: ARG002
         assert args == ["status", "--json", "--no-activity"]
-        return subprocess.CompletedProcess(
-            ["bd", *args], 0, '{"summary": {"total_issues": 0}}', ""
-        )
+        return subprocess.CompletedProcess(["bd", *args], 0, '{"summary": {"total_issues": 0}}', "")
 
 
 def test_backup_dolt_native_verified_on_real_content(tmp_path, monkeypatch):
