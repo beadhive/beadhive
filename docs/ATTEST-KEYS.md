@@ -127,7 +127,9 @@ Every backend follows the same rules:
    `pants.toml`, every `BUILD` and lock file, `pyproject.toml`, `uv.lock`, `justfile`,
    `.mise.toml`, and `scripts/hermetic.sh`.
 3. A resolver error, timeout, unavailable backend, or backend-version mismatch falls back to
-   `native-full` and records the reason.
+   `native-full` and records the reason. This `on_unresolved: fallback` policy is the normative
+   production mode. Developers diagnosing selection may opt one hive into `strict`, which exits
+   76 with the reason before any key runs instead of paying for the conservative all-key run.
 4. An owner with no category tag, an unknown category, or more than one category fails closed to
    every key.
 5. A selected unit that has not been sandbox-proven makes its key depend on every change. A key
@@ -146,6 +148,7 @@ work:
   attest:
     impact:
       backend: pants
+      on_unresolved: fallback  # production default; use strict only to diagnose selection
     keys:
       - name: docs
         cmd: just attest-docs
@@ -163,6 +166,14 @@ For a one-off diagnostic, request the consumer's `--full` mode where exposed. To
 hive, set `work.attest.impact.backend: native-full` (or remove the impact block). This retains
 the catalog but invalidates every key, reproducing the conservative all-key behavior. Removing
 the catalog restores the original single `validate_cmd` path. No ledger migration is needed.
+
+`work.attest.impact.on_unresolved` layers per hive over the global setting like `backend` and
+`timeout_seconds`. Its accepted values are `fallback` and `strict`; an invalid hand-edited value
+degrades to `fallback` at runtime and is reported by `bh config validate`. Strict mode is a
+deliberate development-only exception to the Attested Green invariant that impact uncertainty
+may only invalidate more work: it makes unresolved selection an explicit error so developers can
+observe and repair it. Exit 76 is distinct from key UNKNOWN (75) and from the release/decision
+0–3 vocabulary.
 
 ## Docs-only timing example
 

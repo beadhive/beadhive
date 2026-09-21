@@ -365,7 +365,11 @@ A receipt may list a key as *unaffected* only if none of these fire. Each rule c
    Globs may appear **only** here, and only to **add** invalidation, never to remove it.
 3. **Resolver failure falls back to full.** Any resolver error, timeout, or backend-version
    mismatch falls back to `native-full` (every key invalidated) and sets `fallback_reason` on
-   the receipt. A resolver that cannot answer never produces a partial answer.
+   the receipt. A resolver that cannot answer never produces a partial answer. This remains the
+   normative production policy (`work.attest.impact.on_unresolved: fallback`). The `strict`
+   setting is a deliberate development-only exception to the "only invalidate more, never less"
+   invariant: it exits 76 with the reason before any key runs so selector failures cannot hide
+   behind an expensive all-key run. Invalid policy values degrade to the normative fallback.
 4. **Unproven keys depend on everything.** A key whose selected units are not yet proven (for
    Pants, its tests have not passed in the sandbox with declared inputs) is invalidated by any
    change. So is a key that has no selector for the active backend. Correctness never rests on an

@@ -214,6 +214,23 @@ def test_expired_attest_disable_reports_fail_closed_reenablement():
     )
 
 
+def test_invalid_attest_on_unresolved_is_reported():
+    problems = validate_config(
+        {
+            "schema_version": SCHEMA_VERSION,
+            "work": {"attest": {"impact": {"on_unresolved": "silently-ignore"}}},
+        }
+    )
+
+    assert any(
+        p["level"] == "error"
+        and "work.attest.impact.on_unresolved" in p["message"]
+        and "fallback" in p["message"]
+        and "strict" in p["message"]
+        for p in problems
+    )
+
+
 # ---- rename table ------------------------------------------------------------
 
 

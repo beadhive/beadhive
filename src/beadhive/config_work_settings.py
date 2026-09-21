@@ -479,11 +479,14 @@ def claim_authority(cfg, entry) -> str:
 def attest_config(cfg, entry):
     """The typed `work.attest` section (Attested Green ADR, Amendment 1), layered per-hive over
     global field by field: `keys` (a per-hive list replaces the global one), `impact.backend`,
-    `impact.timeout_seconds`.
+    `impact.timeout_seconds`, `impact.on_unresolved`.
 
     Absent is today's behavior — no keys, `native-full`. A hand-edited invalid catalog degrades
     to NO keys and an invalid impact section to `native-full`: both only ever invalidate more,
-    never less. `bh config validate` remains the loud diagnostic gate."""
+    never less. `on_unresolved=strict` deliberately inverts that invariant as an opt-in
+    development diagnostic: it refuses to run any key when selection cannot answer. The
+    normative production mode is `fallback`; an invalid impact section degrades to that mode,
+    while `bh config validate` remains the loud diagnostic gate."""
     from .modules.config.contracts import AttestConfig, AttestImpactConfig, AttestKeyConfig
 
     raw_keys = layered(cfg, entry, "work.attest", "keys", []) or []
@@ -492,7 +495,7 @@ def attest_config(cfg, entry):
     except ValueError:
         keys = []
     impact = {}
-    for field in ("backend", "timeout_seconds"):
+    for field in ("backend", "timeout_seconds", "on_unresolved"):
         value = layered(cfg, entry, "work.attest.impact", field, None)
         if value is not None:
             impact[field] = value
