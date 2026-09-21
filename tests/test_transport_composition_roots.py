@@ -119,7 +119,10 @@ def test_checked_before_after_evidence_is_current_and_closes_every_root() -> Non
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    evidence = json.loads((ROOT / "docs/proof/bh-3qkmk.5-transport-composition.json").read_text())
+    sys.path.insert(0, str(ROOT / "scripts"))
+    from scripts import render_transport_composition_evidence as composition_evidence
+
+    evidence = json.loads(composition_evidence.render())
     assert evidence["integration_base"] == "6461a048c1b81ae2e3cf9071cb9384d8579f9ac2"
     assert {row["surface"] for row in evidence["roots"]} == set(ROOTS)
     for row in evidence["roots"]:
