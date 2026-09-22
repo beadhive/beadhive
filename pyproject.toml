@@ -27,6 +27,9 @@ dependencies = [
     # algorithms and validating Clerk claims must not depend on FastMCP's transitive graph.
     "joserfc>=1.7,<2",
     "httpx>=0.28,<1",
+    # `bh beads schema capture` validates the pinned upstream record definitions before it
+    # vendors any bytes. Draft 2020-12 support predates the supported 4.x line.
+    "jsonschema>=4",
     # Env var config (config._Env): declares the BH_* prefix once (env_prefix) instead of
     # repeating it per var, with AliasChoices carrying the deprecated WS_* fallback names
     #. Already resolved transitively via fastmcp/pydantic; pinned direct
@@ -84,10 +87,6 @@ dev = [
     # a per-commit gate. Combines across xdist workers on its own.
     "pytest-cov>=5",
     "ruff>=0.6",
-    # Validates the report-channel spec artifact (docs/schemas/*.json) against its example
-    # in tests/test_report_channel.py. Explicit (not leaned on as an mcp transitive) so the
-    # `just check` schema gate stands on its own. Draft 2020-12 support lands well before 4.x.
-    "jsonschema>=4",
     "commitizen>=4.16.4",
 ]
 

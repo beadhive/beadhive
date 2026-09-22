@@ -41,10 +41,11 @@ SIX_PANELS = {
 # that reading is simply wrong. `harness` (bh-pc2a.36) is singular English; its plural would be
 # `harnesses`. `alerts` is the deliberate public name of the normalized alert collection
 # (bh-ni515.1): the harness-hook contract is `bh alerts show`, not an invented singular that
-# would make the documented steering command drift. Renaming either group to satisfy the
-# heuristic would make the CLI worse to please a test, so the allowlist absorbs these explicit
-# exceptions instead.
-SINGULAR_ALLOWLIST: set[str] = {"alerts", "harness"}
+# would make the documented steering command drift. `beads` is the upstream product name and
+# the accepted upgrade command is explicitly `bh beads schema capture`. Renaming any group to
+# satisfy the heuristic would make the CLI worse to please a test, so the allowlist absorbs these
+# explicit exceptions instead.
+SINGULAR_ALLOWLIST: set[str] = {"alerts", "beads", "harness"}
 
 # MCP tools that intentionally do NOT map to a native `bh <group> <verb>` (documented exceptions).
 TOOL_MAP_EXCEPTIONS = {"bd_create"}  # maps to the `bd` passthrough, not a native bh verb

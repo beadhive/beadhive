@@ -101,6 +101,7 @@ dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "joserfc" },
+    { name = "jsonschema" },
     { name = "pydantic-settings" },
     { name = "ruamel-yaml" },
     { name = "starlette" },
@@ -119,7 +120,6 @@ otel = [
 [package.dev-dependencies]
 dev = [
     { name = "commitizen" },
-    { name = "jsonschema" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
@@ -131,6 +131,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=3.4,<4" },
     { name = "httpx", specifier = ">=0.28,<1" },
     { name = "joserfc", specifier = ">=1.7,<2" },
+    { name = "jsonschema", specifier = ">=4" },
     { name = "opentelemetry-exporter-otlp", marker = "extra == 'otel'", specifier = ">=1.37,<2" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.37,<2" },
     { name = "pydantic-settings", specifier = ">=2.11" },
@@ -146,7 +147,6 @@ provides-extras = ["mcp", "otel"]
 [package.metadata.requires-dev]
 dev = [
     { name = "commitizen", specifier = ">=4.16.4" },
-    { name = "jsonschema", specifier = ">=4" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-cov", specifier = ">=5" },
     { name = "pytest-xdist", specifier = ">=3" },

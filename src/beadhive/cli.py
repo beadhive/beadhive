@@ -22,6 +22,7 @@ from typer.core import TyperGroup
 
 from . import (
     alerts,
+    beads_schema,
     checkpoint,
     complexity_backfill,
     config,
@@ -95,6 +96,7 @@ contrib_profile_app = typer.Typer(
 )
 
 app.add_typer(setup_app, name="setup", rich_help_panel=ADMIN_PANEL)
+app.add_typer(beads_schema.app, name="beads", rich_help_panel=ADMIN_PANEL)
 app.add_typer(dep_cli.app, name="dep", rich_help_panel=ADMIN_PANEL)
 # `harness` is now a FILTER over `bh dep`, not a noun of its own — kept because bh-q160.3's
 # acceptance and the documented adoption sequences name it (bh-hsus.6). Hidden from the panels so

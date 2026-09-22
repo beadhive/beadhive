@@ -80,8 +80,8 @@ def test_migration_inventory_names_every_catalog_group() -> None:
 def test_assembled_tree_is_entirely_catalog_derived_and_idempotent() -> None:
     declarations = command_declarations()
     parents = parent_declarations()
-    assert len(declarations) == 213
-    assert len(parents) == 36
+    assert len(declarations) == 214
+    assert len(parents) == 38
     assert cli.CLI_PROJECTION.paths == tuple(row.path for row in declarations)
     assert cli.CLI_PROJECTION.operations == tuple(row.operation for row in declarations)
     assert cli.CLI_PROJECTION.parents == tuple(row.path for row in parents)
@@ -142,7 +142,7 @@ def test_generated_projection_preserves_help_and_every_migrated_flag() -> None:
     runner = CliRunner()
     invocation_env = {"COLUMNS": "120", "BH_SKIP_SETUP_CHECK": "1", "NO_COLOR": "1"}
     expected_help = {
-        (): "f29cac19a29f3527cabce08ab78c82700d2887716b7be4653e1b2074d3371fcf",
+        (): "e4df4b937715f1557ae68be69866629bf32a96df6461972aa453834af05ac9a6",
         ("work",): "0e2be538a1848edde4a75489b843e16ece7a988afad5ff87854585fcf0278fc3",
         ("plan",): "25562be42291d9cb0489760bb59061838e88562deb07cfe3b1e1fc20dc34af2b",
     }
