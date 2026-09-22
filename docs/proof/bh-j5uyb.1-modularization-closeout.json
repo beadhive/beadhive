@@ -318,7 +318,7 @@
       },
       "import_boundary": {
         "check": "uv run python scripts/check_import_boundaries.py",
-        "ledger": {"path": "docs/design/import-boundary-exceptions.toml", "sha256": "c26692c481f67caba51ff5997d3382e444ce036743dba94a3c93ce2316ccb519"},
+        "ledger": {"path": "docs/design/import-boundary-exceptions.toml", "sha256": "6553c0d9260afcd83798d252641522af715825ae39709266c8bb904ed883c68b"},
         "observed": {"python_files": 327, "import_edges": 2912, "owned_sccs": 8, "cyclic_edges": 155, "unowned_errors": 0}
       },
       "schema_release": {

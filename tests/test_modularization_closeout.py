@@ -8,7 +8,10 @@ from pathlib import Path
 
 import pytest
 from scripts import validate_final_refactor_parity as parity
-from scripts.refresh_modularization_closeout import _artifact_bytes
+from scripts.refresh_modularization_closeout import (
+    FROZEN_EVIDENCE_REVISION,
+    _normalized_artifact_bytes,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "docs/proof/bh-j5uyb.1-modularization-closeout.json"
@@ -188,11 +191,28 @@ def test_current_candidate_artifact_digests_are_reproducible() -> None:
 
     assert len({row["path"] for row in rows}) == len(rows)
     for row in rows:
-        path = ROOT / row["path"]
-        assert path.is_file(), row["path"]
-        assert hashlib.sha256(_artifact_bytes(row["path"], path)).hexdigest() == row["sha256"], row[
-            "path"
-        ]
+        artifact = subprocess.run(
+            ["git", "show", f"{FROZEN_EVIDENCE_REVISION}:{row['path']}"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+        ).stdout
+        digest = hashlib.sha256(_normalized_artifact_bytes(row["path"], artifact)).hexdigest()
+        assert digest == row["sha256"], row["path"]
+
+
+def test_historical_closeout_does_not_track_the_live_architecture_ledger() -> None:
+    report = _load_report()
+    ledger = report["evidence_inventory"]["current_candidate"]["import_boundary"]["ledger"]
+    historical = subprocess.run(
+        ["git", "show", f"{FROZEN_EVIDENCE_REVISION}:{ledger['path']}"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+
+    assert hashlib.sha256(historical).hexdigest() == ledger["sha256"]
+    assert hashlib.sha256(ARCHITECTURE_DEBT_LEDGER.read_bytes()).hexdigest() != ledger["sha256"]
 
 
 def test_frame_bridge_ownership_and_follow_up_debt_are_unambiguous() -> None:

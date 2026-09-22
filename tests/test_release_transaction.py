@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -9,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
+from scripts.refresh_modularization_closeout import _artifact_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
 TRANSACTION_SCRIPTS = (
@@ -97,7 +99,14 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
         json.dumps(
             {
                 "evidence_inventory": {
-                    "current_candidate": {"package": {"path": "pyproject.toml", "sha256": "0" * 64}}
+                    "current_candidate": {
+                        "package": {
+                            "path": "pyproject.toml",
+                            "sha256": hashlib.sha256(
+                                _artifact_bytes("pyproject.toml", pyproject)
+                            ).hexdigest(),
+                        }
+                    }
                 }
             },
             indent=2,
@@ -135,11 +144,6 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
         ("tag.gpgsign", "false"),
     ):
         _must_git(repo, "config", key_name, value)
-    subprocess.run(
-        [sys.executable, "scripts/refresh_modularization_closeout.py", "--write"],
-        cwd=repo,
-        check=True,
-    )
     _must_git(repo, "add", "-A")
     _must_git(repo, "commit", "-qm", "chore: seed release fixture")
     _must_git(repo, "tag", "-a", "v0.16.1", "-m", "v0.16.1")
