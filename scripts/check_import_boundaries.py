@@ -60,6 +60,8 @@ _REQUIRED_EXCEPTION_FIELDS = {
 }
 _VALID_STATUSES = {"active", "removable", "removed"}
 _CONSUMER_GROUPS = {"production", "tests", "docs", "external"}
+_VALID_SUCCESSOR_KINDS = {"live_bead", "retained_owner"}
+_VALID_OVERLAP_DISPOSITIONS = {"adopt", "depend", "exclude"}
 _KIND_FIELDS = {
     "cycle_exception": {"importer", "importer_path", "imported_module", "symbols"},
     "boundary_exception": {"importer", "importer_path", "imported_module", "symbol"},
@@ -406,11 +408,70 @@ def check(source_root: Path, ledger_path: Path) -> CheckResult:
     if ledger.get("format_version") != 1:
         errors.append("ledger format_version must be 1")
 
+    successor_owners: set[str] = set()
+    for owner in ledger.get("successor_owner", []):
+        owner_id = owner.get("id")
+        missing = sorted({"id", "kind", "scope", "rationale"} - owner.keys())
+        if missing:
+            errors.append(
+                f"ledger successor_owner {owner_id or '<unknown>'}: missing {', '.join(missing)}"
+            )
+        for field in ("id", "scope", "rationale"):
+            value = owner.get(field)
+            if field in owner and (not isinstance(value, str) or not value.strip()):
+                errors.append(
+                    f"ledger successor_owner {owner_id or '<unknown>'}: "
+                    f"{field} must be a non-empty string"
+                )
+        if owner.get("kind") not in _VALID_SUCCESSOR_KINDS:
+            errors.append(f"ledger successor_owner {owner_id or '<unknown>'}: invalid kind")
+        if _has_wildcard(owner):
+            errors.append(
+                f"ledger successor_owner {owner_id or '<unknown>'}: wildcards are forbidden"
+            )
+        if isinstance(owner_id, str) and owner_id.strip():
+            if owner_id in successor_owners:
+                errors.append(f"ledger successor_owner {owner_id}: duplicate id")
+            successor_owners.add(owner_id)
+
+    overlap_ids: set[str] = set()
+    for overlap in ledger.get("overlap_disposition", []):
+        overlap_id = overlap.get("id")
+        missing = sorted({"id", "disposition", "scope", "rationale"} - overlap.keys())
+        if missing:
+            errors.append(
+                f"ledger overlap_disposition {overlap_id or '<unknown>'}: "
+                f"missing {', '.join(missing)}"
+            )
+        for field in ("id", "scope", "rationale"):
+            value = overlap.get(field)
+            if field in overlap and (not isinstance(value, str) or not value.strip()):
+                errors.append(
+                    f"ledger overlap_disposition {overlap_id or '<unknown>'}: "
+                    f"{field} must be a non-empty string"
+                )
+        if overlap.get("disposition") not in _VALID_OVERLAP_DISPOSITIONS:
+            errors.append(
+                f"ledger overlap_disposition {overlap_id or '<unknown>'}: invalid disposition"
+            )
+        if _has_wildcard(overlap):
+            errors.append(
+                f"ledger overlap_disposition {overlap_id or '<unknown>'}: wildcards are forbidden"
+            )
+        if isinstance(overlap_id, str) and overlap_id.strip():
+            if overlap_id in overlap_ids:
+                errors.append(f"ledger overlap_disposition {overlap_id}: duplicate id")
+            overlap_ids.add(overlap_id)
+
     exception_keys: set[tuple[str, str, str, tuple[str, ...]]] = set()
     for item in ledger.get("cycle_exception", []):
         _validate_metadata("cycle_exception", item, errors)
         if item.get("status") != "active":
             continue
+        if item.get("successor") not in successor_owners:
+            errors.append(
+                f"ledger cycle_exception {item.get('id')}: active successor is not registered"
+            )
         key = (
             str(item.get("importer", "")),
             str(item.get("importer_path", "")),
@@ -424,6 +485,11 @@ def check(source_root: Path, ledger_path: Path) -> CheckResult:
     for item in ledger.get("boundary_exception", []):
         _validate_metadata("boundary_exception", item, errors)
         if item.get("status") == "active":
+            if item.get("successor") not in successor_owners:
+                errors.append(
+                    f"ledger boundary_exception {item.get('id')}: "
+                    "active successor is not registered"
+                )
             boundary_exceptions.add(
                 (
                     str(item.get("importer_path", "")),
@@ -434,6 +500,8 @@ def check(source_root: Path, ledger_path: Path) -> CheckResult:
             )
     for item in ledger.get("facade", []):
         _validate_metadata("facade", item, errors)
+        if item.get("status") == "active" and item.get("successor") not in successor_owners:
+            errors.append(f"ledger facade {item.get('id')}: active successor is not registered")
         facade_path = item.get("facade_path")
         if facade_path and not (source_root.parent / str(facade_path)).is_file():
             errors.append(f"ledger facade {item.get('id')}: missing {facade_path}")

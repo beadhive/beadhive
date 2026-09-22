@@ -26,6 +26,12 @@ def _write_ledger(root: Path, extra: str = "") -> Path:
         f"""\
 format_version = 1
 
+[[successor_owner]]
+id = "bh-inqwc"
+kind = "live_bead"
+scope = "test fixture"
+rationale = "The fixture models an exact registered successor."
+
 [cycle_snapshot]
 sha256 = "{_EMPTY_SHA256}"
 components = 0
@@ -241,6 +247,45 @@ def test_empty_ownership_or_expiry_metadata_is_rejected(tmp_path: Path, field: s
     )
 
     assert any(f"{field} must be a non-empty string" in error for error in result.errors)
+
+
+def test_active_record_rejects_an_unregistered_successor(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    _write_source(
+        tmp_path,
+        "beadhive/modules/orders/application/handler.py",
+        "from beadhive.cli import app\n",
+    )
+    _write_source(tmp_path, "beadhive/cli.py", "app = object()\n")
+
+    result = boundaries.check(
+        source_root,
+        _write_ledger(tmp_path, _boundary_exception(successor="bh-closed")),
+    )
+
+    assert "active successor is not registered" in "\n".join(result.errors)
+
+
+def test_successor_owner_and_overlap_disposition_reject_wildcards(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    extra = """
+[[successor_owner]]
+id = "retained-owner:*"
+kind = "retained_owner"
+scope = "fixture"
+rationale = "bad wildcard fixture"
+
+[[overlap_disposition]]
+id = "bh-*"
+disposition = "exclude"
+scope = "fixture"
+rationale = "bad wildcard fixture"
+"""
+
+    result = boundaries.check(source_root, _write_ledger(tmp_path, extra))
+
+    assert "ledger successor_owner retained-owner:*: wildcards are forbidden" in result.errors
+    assert "ledger overlap_disposition bh-*: wildcards are forbidden" in result.errors
 
 
 def test_domain_import_of_opentelemetry_sdk_fails(tmp_path: Path) -> None:
