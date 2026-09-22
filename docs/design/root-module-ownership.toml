@@ -243,5 +243,3 @@ paths = [
   "src/beadhive/worktree_verify.py",
   "src/beadhive/wt_status.py",
 ]
-
-
