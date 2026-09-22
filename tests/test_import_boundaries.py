@@ -26,6 +26,12 @@ def _write_ledger(root: Path, extra: str = "") -> Path:
         f"""\
 format_version = 1
 
+[[successor_owner]]
+id = "bh-inqwc"
+kind = "live_bead"
+scope = "test fixture"
+rationale = "The fixture models an exact registered successor."
+
 [cycle_snapshot]
 sha256 = "{_EMPTY_SHA256}"
 components = 0
@@ -37,6 +43,42 @@ symbols = 0
 """,
         encoding="utf-8",
     )
+    return path
+
+
+def _write_root_manifest(
+    root: Path,
+    *,
+    public_facades: tuple[str, ...] = (),
+    composition_boundaries: tuple[str, ...] = (),
+    legacy_implementations: tuple[str, ...] = (),
+) -> Path:
+    classes = [("package_metadata", ("src/beadhive/__init__.py",))]
+    classes.extend(
+        (role, paths)
+        for role, paths in (
+            ("public_facade", public_facades),
+            ("composition_boundary", composition_boundaries),
+            ("legacy_implementation", legacy_implementations),
+        )
+        if paths
+    )
+    rows = ["format_version = 1", ""]
+    for role, paths in classes:
+        rows.extend(
+            [
+                "[[root_class]]",
+                f'role = "{role}"',
+                'owner = "fixture owner"',
+                'rationale = "fixture classification"',
+                "paths = [",
+                *(f'  "{path}",' for path in paths),
+                "]",
+                "",
+            ]
+        )
+    path = root / "root-ownership.toml"
+    path.write_text("\n".join(rows), encoding="utf-8")
     return path
 
 
@@ -65,6 +107,28 @@ def _boundary_exception(*, omit: str = "", **overrides: str) -> str:
         'docs = "fixture", external = "none" }'
     )
     return "\n".join(lines)
+
+
+def _facade(*, facade_path: str) -> str:
+    return f"""
+[[facade]]
+id = "fixture-facade"
+status = "active"
+facade_path = "{facade_path}"
+preserved_symbols = ["public_api"]
+target_owner_package = "modules/orders"
+successor = "bh-inqwc"
+reason = "test fixture facade"
+consumer_inventory.production = "fixture"
+consumer_inventory.tests = "fixture"
+consumer_inventory.docs = "fixture"
+consumer_inventory.external = "none"
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "focused"
+introduced_commit = "fixture-introduction"
+last_verified_commit = "fixture-verification"
+expiry_trigger = "remove after the fixture consumer inventory reaches zero"
+"""
 
 
 def test_allowed_application_imports_its_domain_without_executing_source(tmp_path: Path) -> None:
@@ -241,6 +305,116 @@ def test_empty_ownership_or_expiry_metadata_is_rejected(tmp_path: Path, field: s
     )
 
     assert any(f"{field} must be a non-empty string" in error for error in result.errors)
+
+
+def test_active_record_rejects_an_unregistered_successor(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    _write_source(
+        tmp_path,
+        "beadhive/modules/orders/application/handler.py",
+        "from beadhive.cli import app\n",
+    )
+    _write_source(tmp_path, "beadhive/cli.py", "app = object()\n")
+
+    result = boundaries.check(
+        source_root,
+        _write_ledger(tmp_path, _boundary_exception(successor="bh-closed")),
+    )
+
+    assert "active successor is not registered" in "\n".join(result.errors)
+
+
+def test_successor_owner_and_overlap_disposition_reject_wildcards(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    extra = """
+[[successor_owner]]
+id = "retained-owner:*"
+kind = "retained_owner"
+scope = "fixture"
+rationale = "bad wildcard fixture"
+
+[[overlap_disposition]]
+id = "bh-*"
+disposition = "exclude"
+scope = "fixture"
+rationale = "bad wildcard fixture"
+"""
+
+    result = boundaries.check(source_root, _write_ledger(tmp_path, extra))
+
+    assert "ledger successor_owner retained-owner:*: wildcards are forbidden" in result.errors
+    assert "ledger overlap_disposition bh-*: wildcards are forbidden" in result.errors
+
+
+def test_registered_root_facade_is_allowed_without_importing_source(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    _write_source(tmp_path, "beadhive/__init__.py")
+    _write_source(
+        tmp_path,
+        "beadhive/orders.py",
+        "public_api = object()\nraise RuntimeError('the root guard imported production source')\n",
+    )
+    facade_path = "src/beadhive/orders.py"
+
+    result = boundaries.check(
+        source_root,
+        _write_ledger(tmp_path, _facade(facade_path=facade_path)),
+        _write_root_manifest(tmp_path, public_facades=(facade_path,)),
+    )
+
+    assert result.errors == ()
+
+
+def test_documented_root_composition_boundary_is_allowed(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    _write_source(tmp_path, "beadhive/__init__.py")
+    _write_source(
+        tmp_path,
+        "beadhive/process_root.py",
+        "def main() -> int:\n    return 0\n",
+    )
+
+    result = boundaries.check(
+        source_root,
+        _write_ledger(tmp_path),
+        _write_root_manifest(
+            tmp_path,
+            composition_boundaries=("src/beadhive/process_root.py",),
+        ),
+    )
+
+    assert result.errors == ()
+
+
+def test_unowned_root_implementation_is_rejected(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    _write_source(tmp_path, "beadhive/__init__.py")
+    _write_source(tmp_path, "beadhive/unowned.py", "def behavior() -> None: ...\n")
+
+    result = boundaries.check(
+        source_root,
+        _write_ledger(tmp_path),
+        _write_root_manifest(tmp_path),
+    )
+
+    assert result.errors == ("unowned package-root implementation: src/beadhive/unowned.py",)
+
+
+def test_root_facade_classification_requires_active_ledger_record(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    _write_source(tmp_path, "beadhive/__init__.py")
+    _write_source(tmp_path, "beadhive/unregistered_facade.py", "public_api = object()\n")
+    facade_path = "src/beadhive/unregistered_facade.py"
+
+    result = boundaries.check(
+        source_root,
+        _write_ledger(tmp_path),
+        _write_root_manifest(tmp_path, public_facades=(facade_path,)),
+    )
+
+    assert result.errors == (
+        f"root public facade is not active in exception ledger: {facade_path}",
+    )
 
 
 def test_domain_import_of_opentelemetry_sdk_fails(tmp_path: Path) -> None:

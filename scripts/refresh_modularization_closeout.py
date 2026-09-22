@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check or refresh current-candidate artifact digests in the modularization closeout."""
+"""Check or restore the frozen artifact digests in the modularization closeout."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -15,11 +16,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 REPORT = ROOT / "docs/proof/bh-j5uyb.1-modularization-closeout.json"
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+# The closeout remained byte-identical after this accepted source snapshot.  Its
+# legacy ``current_candidate`` label describes that snapshot, not the live tree.
+FROZEN_EVIDENCE_REVISION = "1e1682e92ffaa004debf958f7926385dbae670d9"
 
 
 def _artifact_bytes(relative: str, candidate: Path) -> bytes:
     """Hash pyproject structure independently of the release-only version scalar."""
-    content = candidate.read_bytes()
+    return _normalized_artifact_bytes(relative, candidate.read_bytes())
+
+
+def _normalized_artifact_bytes(relative: str, content: bytes) -> bytes:
     if relative == "pyproject.toml":
         content = re.sub(
             rb'(?m)^(version\s*=\s*)"[^"]+"$', rb'\1"<release-version>"', content, count=1
@@ -43,24 +50,33 @@ def _artifact_rows(report: dict[str, object]) -> Iterator[dict[str, object]]:
     yield from walk(current)
 
 
-def _digests(root: Path, rows: list[dict[str, object]]) -> tuple[dict[str, str], list[str]]:
+def _digests(
+    root: Path,
+    rows: list[dict[str, object]],
+    frozen_revision: str,
+) -> tuple[dict[str, str], list[str]]:
     digests: dict[str, str] = {}
     errors: list[str] = []
     for row in rows:
         relative = str(row["path"])
-        candidate = (root / relative).resolve()
-        try:
-            candidate.relative_to(root.resolve())
-        except ValueError:
+        path = Path(relative)
+        if path.is_absolute() or ".." in path.parts:
             errors.append(f"{relative}: path escapes repository root")
             continue
         if relative in digests:
             errors.append(f"{relative}: duplicate current-candidate artifact path")
             continue
-        if not candidate.is_file():
-            errors.append(f"{relative}: artifact is missing")
+        candidate = subprocess.run(
+            ["git", "show", f"{frozen_revision}:{relative}"],
+            cwd=root,
+            capture_output=True,
+            check=False,
+        )
+        if candidate.returncode != 0:
+            errors.append(f"{relative}: artifact is missing at frozen closeout revision")
             continue
-        digests[relative] = hashlib.sha256(_artifact_bytes(relative, candidate)).hexdigest()
+        content = _normalized_artifact_bytes(relative, candidate.stdout)
+        digests[relative] = hashlib.sha256(content).hexdigest()
     return digests, errors
 
 
@@ -92,14 +108,20 @@ def _updated_text(
     return updated
 
 
-def refresh(root: Path, report_path: Path, *, write: bool) -> tuple[int, list[str]]:
+def refresh(
+    root: Path,
+    report_path: Path,
+    *,
+    write: bool,
+    frozen_revision: str = FROZEN_EVIDENCE_REVISION,
+) -> tuple[int, list[str]]:
     original = report_path.read_text(encoding="utf-8")
     report = json.loads(original)
     rows = list(_artifact_rows(report))
     if not rows:
         return 1, ["closeout report declares no current-candidate artifact digests"]
 
-    digests, errors = _digests(root, rows)
+    digests, errors = _digests(root, rows, frozen_revision)
     for row in rows:
         relative = str(row["path"])
         recorded = row.get("sha256")
@@ -142,8 +164,8 @@ def refresh(root: Path, report_path: Path, *, write: bool) -> tuple[int, list[st
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--check", action="store_true", help="report every stale artifact")
-    mode.add_argument("--write", action="store_true", help="atomically refresh stale digests")
+    mode.add_argument("--check", action="store_true", help="check the frozen evidence snapshot")
+    mode.add_argument("--write", action="store_true", help="restore frozen evidence digests")
     parser.add_argument("--root", type=Path, default=ROOT, help=argparse.SUPPRESS)
     parser.add_argument("--report", type=Path, default=REPORT, help=argparse.SUPPRESS)
     args = parser.parse_args()
