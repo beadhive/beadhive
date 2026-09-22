@@ -4,6 +4,13 @@ Beadhive's module-local commands are advisory developer feedback. They do not re
 authoritative `just check` submit gate or the `just check-all` land/release gate. A green local
 closure must not be reported as either full-gate verdict.
 
+All seven capability module directories and their `tests/closures.toml` rows are now present.
+They remain uncertified for production selective routing, so landed physical ownership does not
+weaken the full gates. Fixture independence follows the current
+[fixture scope inventory](design/test-fixture-scope-inventory.md), and new production placement
+follows the [repository physical-organization ADR](design/repository-physical-organization-adr.md)
+and exact [root ownership manifest](design/root-module-ownership.toml).
+
 The checked prerequisite certification is
 [`docs/proof/bh-ck1t6.1-test-closure-certification.json`](proof/bh-ck1t6.1-test-closure-certification.json).
 It binds every closure to the content of its owned implementation, public port, mandatory tests,
@@ -36,7 +43,7 @@ complete land integration selection; host-fence coverage is not quarantined.
 | Registry and drift validation | `just test-closure-check` |
 | Advisory impact plan | `just test-impact-plan <base> [head]` |
 | Kernel | `just test-kernel` |
-| Future or migrated module | `just test-module <module>` |
+| Capability module | `just test-module <module>` |
 | Adapters | `just test-adapters` |
 | Registered plugin | `just test-plugin <plugin>` |
 | Shared contracts | `just test-contracts` |
