@@ -109,7 +109,7 @@ def _boundary_exception(*, omit: str = "", **overrides: str) -> str:
     return "\n".join(lines)
 
 
-def _facade(*, facade_path: str) -> str:
+def _facade(*, facade_path: str, successor: str = "bh-inqwc") -> str:
     return f"""
 [[facade]]
 id = "fixture-facade"
@@ -117,7 +117,7 @@ status = "active"
 facade_path = "{facade_path}"
 preserved_symbols = ["public_api"]
 target_owner_package = "modules/orders"
-successor = "bh-inqwc"
+successor = "{successor}"
 reason = "test fixture facade"
 consumer_inventory.production = "fixture"
 consumer_inventory.tests = "fixture"
@@ -128,6 +128,30 @@ test_closure = "focused"
 introduced_commit = "fixture-introduction"
 last_verified_commit = "fixture-verification"
 expiry_trigger = "remove after the fixture consumer inventory reaches zero"
+"""
+
+
+def _cycle_exception(*, successor: str) -> str:
+    return f"""
+[[cycle_exception]]
+id = "fixture-cycle"
+status = "active"
+importer = "beadhive.first"
+importer_path = "src/beadhive/first.py"
+imported_module = "beadhive.second"
+symbols = ["beadhive.second"]
+target_owner_package = "src/beadhive"
+successor = "{successor}"
+reason = "test fixture exception"
+consumer_inventory.production = "fixture"
+consumer_inventory.tests = "fixture"
+consumer_inventory.docs = "fixture"
+consumer_inventory.external = "none"
+executable_test = "tests/test_import_boundaries.py"
+test_closure = "focused"
+introduced_commit = "fixture-introduction"
+last_verified_commit = "fixture-verification"
+expiry_trigger = "remove the exact fixture import"
 """
 
 
@@ -307,7 +331,29 @@ def test_empty_ownership_or_expiry_metadata_is_rejected(tmp_path: Path, field: s
     assert any(f"{field} must be a non-empty string" in error for error in result.errors)
 
 
-def test_active_record_rejects_an_unregistered_successor(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "kind, record_id, record",
+    [
+        (
+            "cycle_exception",
+            "fixture-cycle",
+            _cycle_exception(successor="bh-closed"),
+        ),
+        (
+            "boundary_exception",
+            "application-cli-app",
+            _boundary_exception(successor="bh-closed"),
+        ),
+        (
+            "facade",
+            "fixture-facade",
+            _facade(facade_path="src/beadhive/orders.py", successor="bh-closed"),
+        ),
+    ],
+)
+def test_active_record_rejects_an_unregistered_successor(
+    tmp_path: Path, kind: str, record_id: str, record: str
+) -> None:
     source_root = tmp_path / "src"
     _write_source(
         tmp_path,
@@ -315,13 +361,13 @@ def test_active_record_rejects_an_unregistered_successor(tmp_path: Path) -> None
         "from beadhive.cli import app\n",
     )
     _write_source(tmp_path, "beadhive/cli.py", "app = object()\n")
+    _write_source(tmp_path, "beadhive/orders.py", "public_api = object()\n")
+    _write_source(tmp_path, "beadhive/first.py", "from beadhive import second\n")
+    _write_source(tmp_path, "beadhive/second.py", "from beadhive import first\n")
 
-    result = boundaries.check(
-        source_root,
-        _write_ledger(tmp_path, _boundary_exception(successor="bh-closed")),
-    )
+    result = boundaries.check(source_root, _write_ledger(tmp_path, record))
 
-    assert "active successor is not registered" in "\n".join(result.errors)
+    assert f"ledger {kind} {record_id}: active successor is not registered" in result.errors
 
 
 def test_successor_owner_and_overlap_disposition_reject_wildcards(tmp_path: Path) -> None:
