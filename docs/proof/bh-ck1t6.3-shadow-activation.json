@@ -9,7 +9,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "kernel",
-      "input_digest": "sha256:4ad4219e215399c70fe5847f8f927c664a353a67c1ae71afc52821447f5ec64b",
+      "input_digest": "sha256:bb64c476b86681b6e24cf3c1792991f51f5e98dae79de779d1d37eae1f38e7dc",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -91,7 +91,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "kernel.plugins",
-      "input_digest": "sha256:c5ebc3cd05e3d94631c97c5adcb60858b61175985bae0909ee13446ee073a089",
+      "input_digest": "sha256:1e45273a4c2f5fc1a7b857c73fcf990557a23e928b5d0bb2789f5d6ccf6de665",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -132,7 +132,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "kernel.telemetry",
-      "input_digest": "sha256:ed4d84b369a4c22dd48268ddda50eb80b949718697dfc276b9916d7d8d3d5cf7",
+      "input_digest": "sha256:3305913effb4a472e4260a73dbf3850f9f6e00b70fee87098423a305cc74f5b9",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -214,7 +214,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.config",
-      "input_digest": "sha256:4d3eabac73de5cfc47cfd71c91aa909a9b88119d36127aa83547b3a87c2fdb4a",
+      "input_digest": "sha256:76faa69a22c9a49522763c3cc9b2f6e843e7ab5fb39f87942ba0a4dc41d655f3",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -255,7 +255,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "config.pure",
-      "input_digest": "sha256:776dd1693310cd864d9fc693fdbf0363e25a49b18aa35f8d19d572251ee45c85",
+      "input_digest": "sha256:43a733d8fb4527a7729d78894f685b7be2036bce92fb3baf7a81de0ce00094ad",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -337,7 +337,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "config.fragments",
-      "input_digest": "sha256:e60e6a0a8482e3f3c3e760eaab0f4f7dd4d565382f5a3dc3ac0c6a6c4bcaf16a",
+      "input_digest": "sha256:e72a8ae885acc72730b1e96bc23c75ca71f30c23b1ed3317b7eb3e9f280d3433",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -378,7 +378,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.hives",
-      "input_digest": "sha256:8c1f98bb75fd6629d46c3f9a74f2ca740d5a499ac54b18d4237a8dd71c842005",
+      "input_digest": "sha256:f9e95b3255522653bb03dd09d8dc13cd3b8533bf4ae9e1b8604a4253a81f3cba",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -419,7 +419,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.planning",
-      "input_digest": "sha256:0b575d2f50e20566cd1ef4c45104e998a447351d3d7cd45f4f8b1136ee2415f9",
+      "input_digest": "sha256:c7afb45a6f8b4f264f95802b399891ffe290707d4159851c86f93ac89613b208",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -460,7 +460,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.state",
-      "input_digest": "sha256:395780d805c983ecd5009b0ef977716fa1fc4d0f855425055dc8d2ca0cb0f7b5",
+      "input_digest": "sha256:807e3db2fb0ccac1253fad09f626ec38a1097837972c3f89de945006a173b62b",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -501,7 +501,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.work",
-      "input_digest": "sha256:95dcd13ab13085fbf9e89f2262ca4f676dc21b4926b0c67264069a41c3787a49",
+      "input_digest": "sha256:fce50aa8bbea022d310e1d37ff0fefd36ef2397d903384c46425b6fdf369d234",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -542,7 +542,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "module.worktrees",
-      "input_digest": "sha256:e63207de5fe295dcbd49cbee76985a04fda71b7c869b00b935cf7d224797aab1",
+      "input_digest": "sha256:dfa1c6f1f346452c0199bddb59ebfbdc01fc4dc11fed36d7e6d180aada028e37",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -583,7 +583,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "adapters",
-      "input_digest": "sha256:34056288cbd79e47ffd8ca6b730728b4f9c3fe6042a46471b6169720cc7da91b",
+      "input_digest": "sha256:d419e5d765ac24b0d8beb97540348d65cde531b61690a99b7cb6511f5332f9bd",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -625,7 +625,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.herdr",
-      "input_digest": "sha256:10a726fb845abb13a6bd9f147410eafa0b4022b2f4affa55d454622b7b06f9b9",
+      "input_digest": "sha256:8c927857a27a57aacb36520db243bbdccaf7c5574cf9bb50c4baa98ba880d8b3",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -666,7 +666,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.hitch",
-      "input_digest": "sha256:999008b1e093c08c847efd23e0c6e878bb037894975ffe4516e693f5ef9dca78",
+      "input_digest": "sha256:a6b792c595f4dc2df82c57a064a66b1b292e5f2c48294f6b502fe5c071ebfd12",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -707,7 +707,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.observaloop",
-      "input_digest": "sha256:1ce9d1fe7d5964615fb3045b75dc4a66e33e20a3535059e3ef4ebc4be7fd9852",
+      "input_digest": "sha256:b5fbaa8a98c3a94a1855490289f3c2a92d54c8df0fcc46ce0befd14b6f307b11",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -748,7 +748,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.orca",
-      "input_digest": "sha256:7addf9afe657035f7bbb6d76e96607b56090c72271959a762e6d1926382d3ff5",
+      "input_digest": "sha256:ca2e36f53122760c241ee2a5637022644f36a7f82a6e88dfdfa82ef5a39f2bf1",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -789,7 +789,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "plugin.repowise",
-      "input_digest": "sha256:88793f02d6a6f6a6b41542b7b6d44e65b7d312993156f5d4ea4f0142197f05c8",
+      "input_digest": "sha256:742b8dbc2e1355b0baa34b7385a72b69e4484a064d1b94d99e4464f8da199a66",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -871,7 +871,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "contracts",
-      "input_digest": "sha256:d39549f7965b48b7c551418beefaac5fd55b09b36d508c0317c3c44f0c2d836f",
+      "input_digest": "sha256:cbbaaa1cb13ee548d3b2c7f906ecb4c687a49c4c901c8ef8fdf544968dc84e09",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -912,7 +912,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "integration",
-      "input_digest": "sha256:628052c58a72cb54db3c794cc859f745ef7662f6d2e274f8ff5ae1768ecdb6b0",
+      "input_digest": "sha256:28f3511fbfc7dc10cc4023b160087e91da29a3c92e1b5a10bdd05433978fef8e",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -954,7 +954,7 @@
       "eligible": false,
       "evidence_mode": "none",
       "id": "system-smoke",
-      "input_digest": "sha256:7d9c7fc413b123a0cf6a333ea6067c753e0e1cf2b845a13c61610db9aea00f5c",
+      "input_digest": "sha256:7bc7ac92eefea36f5eeed7e991ca167ae3ef576d2601a22b5c7527b81b834b23",
       "measurements": {
         "fallback_count": 0,
         "fallback_rate": null,
@@ -997,10 +997,10 @@
     "command": "just check",
     "receipt_reuse": "exact-tree full-gate receipts may be reused by existing lifecycle policy"
   },
-  "input_digest": "sha256:3c4bb35ed970c120e065a94f081bf28880c92935d5928db8a32f8fb5bc1412e7",
+  "input_digest": "sha256:a61554887649a534927aab06e3eb21772756056c1ef69b0bb7009d0cf508ec76",
   "inputs": {
     "certification_artifact": {
-      "digest": "sha256:4be8cb0128b7efa300611768fa7063a05499423ed154719ae3c1b1405a26ea99",
+      "digest": "sha256:8efb518241d8e4c0d2bfb9a9ffb1e322c84906d223f67c66eff4a66b18dd870e",
       "path": "docs/proof/bh-ck1t6.1-test-closure-certification.json"
     },
     "selector": {
