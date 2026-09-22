@@ -1,0 +1,18 @@
+[
+  {
+    "id": "bh-merge-slot",
+    "title": "Merge Slot",
+    "status": "open",
+    "priority": 0,
+    "issue_type": "task",
+    "created_at": "2026-07-12T01:27:35Z",
+    "updated_at": "2026-09-22T06:36:52Z",
+    "started_at": "2026-07-12T01:27:35Z",
+    "labels": [
+      "gt:slot"
+    ],
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  }
+]

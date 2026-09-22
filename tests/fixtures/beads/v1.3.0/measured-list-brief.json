@@ -1,0 +1,58 @@
+[
+  {
+    "id": "bh-rfp5z.1",
+    "title": "perf(release): selectively attest constrained version-only bump commits",
+    "status": "closed",
+    "priority": 0,
+    "issue_type": "bug",
+    "assignee": "dev/codex",
+    "owner": "brian@xenophon.dev",
+    "created_at": "2026-09-21T18:12:05Z",
+    "created_by": "Brian Cripe",
+    "updated_at": "2026-09-21T19:07:22Z",
+    "started_at": "2026-09-21T18:13:10Z",
+    "closed_at": "2026-09-21T19:07:22Z",
+    "close_reason": "merged",
+    "metadata": {
+      "git.commits": "[\"1e1682e92ffaa004debf958f7926385dbae670d9\", \"a720b26777d8e99eb4e2634c5bec259203d88a10\"]"
+    },
+    "labels": [
+      "complexity:MEDIUM",
+      "component:release",
+      "org:beadhive",
+      "provider:github",
+      "repo:beadhive",
+      "size:m"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "bh-rfp5z.1",
+        "depends_on_id": "bh-1altw",
+        "type": "blocks",
+        "created_at": "2026-09-21T18:12:08Z",
+        "created_by": "Brian Cripe",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "bh-rfp5z.1",
+        "depends_on_id": "bh-rfp5z",
+        "type": "parent-child",
+        "created_at": "2026-09-21T18:12:05Z",
+        "created_by": "Brian Cripe",
+        "metadata": "{}"
+      },
+      {
+        "issue_id": "bh-rfp5z.1",
+        "depends_on_id": "bh-l8g6s",
+        "type": "blocks",
+        "created_at": "2026-09-21T19:05:50Z",
+        "created_by": "dev/codex",
+        "metadata": "{}"
+      }
+    ],
+    "dependency_count": 2,
+    "dependent_count": 0,
+    "comment_count": 0,
+    "parent": "bh-rfp5z"
+  }
+]

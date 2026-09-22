@@ -1,0 +1,15 @@
+{
+  "id": "bh-1altw",
+  "title": "Gate: human",
+  "description": "Ad-hoc gate blocking bh-rfp5z.1\n\nReason: kickoff bh-rfp5z",
+  "status": "closed",
+  "priority": 2,
+  "issue_type": "gate",
+  "owner": "brian@xenophon.dev",
+  "created_at": "2026-09-21T18:12:08Z",
+  "created_by": "Brian Cripe",
+  "updated_at": "2026-09-21T18:12:29Z",
+  "closed_at": "2026-09-21T18:12:29Z",
+  "await_type": "human",
+  "dependency_type": "blocks"
+}

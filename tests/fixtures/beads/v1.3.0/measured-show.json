@@ -1,0 +1,20 @@
+[
+  {
+    "id": "bh-merge-slot",
+    "title": "Merge Slot",
+    "description": "Exclusive access slot for serialized conflict resolution in the merge queue.",
+    "status": "open",
+    "priority": 0,
+    "issue_type": "task",
+    "created_at": "2026-07-12T01:27:35Z",
+    "updated_at": "2026-09-22T06:36:52Z",
+    "started_at": "2026-07-12T01:27:35Z",
+    "labels": [
+      "gt:slot"
+    ],
+    "dependent_count": 0,
+    "dependency_count": 0,
+    "comment_count": 0,
+    "revision": "-4644301661091750736"
+  }
+]

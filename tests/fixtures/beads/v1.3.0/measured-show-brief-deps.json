@@ -1,0 +1,67 @@
+[
+  {
+    "id": "bh-rfp5z.1",
+    "title": "perf(release): selectively attest constrained version-only bump commits",
+    "description": "Correct the bump/attest path so a release from fully-green main completes in seconds instead\nof repeating the complete suite. Preserve fail-closed behavior for any unexpected release\ndiff and for a parent without complete qualifying attestation.\n",
+    "acceptance_criteria": "- The bump refuses unless its parent tree has fresh qualifying green evidence for every\n  required attestation key.\n- The accepted bump diff is limited to CHANGELOG.md, the project version in pyproject.toml,\n  and the matching beadhive self-version in uv.lock; any other change fails closed.\n- Version-only pyproject.toml and uv.lock changes do not invalidate code, unit, stateful,\n  architecture, package, or license attestations; their green parent verdicts carry forward.\n- Only changelog/release-metadata lint runs on the bump tree and finishes in seconds.\n- Ordinary pyproject.toml or lockfile dependency changes still invalidate the appropriate\n  attestations.\n- docs/proof/bh-j5uyb.1-modularization-closeout.json is no longer rewritten by every bump,\n  while its meaningful structural invariant remains checked.\n- `just release` still waits for proof of the exact bump tree and atomically pushes main and\n  the signed tag.\n- Targeted release-flow tests cover fast carry-forward and all fail-closed cases.\n",
+    "status": "closed",
+    "priority": 0,
+    "issue_type": "bug",
+    "assignee": "dev/codex",
+    "owner": "brian@xenophon.dev",
+    "created_at": "2026-09-21T18:12:05Z",
+    "created_by": "Brian Cripe",
+    "updated_at": "2026-09-21T19:07:22Z",
+    "started_at": "2026-09-21T18:13:10Z",
+    "closed_at": "2026-09-21T19:07:22Z",
+    "close_reason": "merged",
+    "metadata": {
+      "git.commits": "[\"1e1682e92ffaa004debf958f7926385dbae670d9\", \"a720b26777d8e99eb4e2634c5bec259203d88a10\"]"
+    },
+    "labels": [
+      "complexity:MEDIUM",
+      "component:release",
+      "org:beadhive",
+      "provider:github",
+      "repo:beadhive",
+      "size:m"
+    ],
+    "dependencies": [
+      {
+        "id": "bh-1altw",
+        "title": "Gate: human",
+        "status": "closed",
+        "priority": 2,
+        "issue_type": "gate",
+        "created_at": "0001-01-01T00:00:00Z",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "dependency_type": "blocks"
+      },
+      {
+        "id": "bh-rfp5z",
+        "title": "perf(release): carry green attestations across metadata-only version bumps",
+        "status": "closed",
+        "priority": 2,
+        "issue_type": "epic",
+        "created_at": "0001-01-01T00:00:00Z",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "dependency_type": "parent-child"
+      },
+      {
+        "id": "bh-l8g6s",
+        "title": "Gate: human",
+        "status": "closed",
+        "priority": 2,
+        "issue_type": "gate",
+        "created_at": "0001-01-01T00:00:00Z",
+        "updated_at": "0001-01-01T00:00:00Z",
+        "dependency_type": "blocks"
+      }
+    ],
+    "parent": "bh-rfp5z",
+    "dependent_count": 1,
+    "dependency_count": 3,
+    "comment_count": 0,
+    "revision": "-1960731855721551851"
+  }
+]
