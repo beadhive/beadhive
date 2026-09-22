@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import fnmatch
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import typer
 
@@ -62,6 +63,114 @@ def all_keys_green(entry, cfg, rev: str) -> bool:
     )
 
 
+#: Three-way triage verdicts, matching the vocabulary this codebase already uses for an
+#: honest non-answer (ComplexityResult's UNKNOWN, and exit 75 here). UNKNOWN is a
+#: first-class answer, not an error: "I cannot tell" differs from "no", and a
+#: fall-through filter must be able to say so rather than guess.
+TRIVIAL_YES = "yes"
+TRIVIAL_NO = "no"
+TRIVIAL_UNKNOWN = "unknown"
+
+
+def path_verdict(attest, changed_paths: Sequence[str]) -> str:
+    """Does the configured glob policy call this change trivial?
+
+    UNKNOWN when the policy is unconfigured or there is nothing to judge -- distinct from NO,
+    so an unconfigured hive is never mistaken for one that considered the change and
+    rejected it.
+    """
+    policy = getattr(attest, "trivial", None)
+    if policy is None or not policy.enabled or not policy.paths or not policy.keys:
+        return TRIVIAL_UNKNOWN
+    if not changed_paths:
+        return TRIVIAL_UNKNOWN
+    if all(
+        any(fnmatch.fnmatch(path, pattern) for pattern in policy.paths) for path in changed_paths
+    ):
+        return TRIVIAL_YES
+    return TRIVIAL_NO
+
+
+def trivial_selection(attest, changed_paths: Sequence[str], keys: Sequence, triage=None):
+    """``(selected_keys | None, record)`` -- the keys a trivial change runs, and why.
+
+    TWO INDEPENDENT JUDGES MUST AGREE before anything is skipped:
+
+      * the configured path globs, and
+      * an optional semantic ``triage(changed_paths) -> yes | no | unknown``.
+
+    Neither can skip alone. A glob list that is too BROAD is vetoed by a triage answering
+    ``no``; a list that is too NARROW simply never fires, and the record says so, which is the
+    signal that the config drifted. Misconfiguration is the failure mode this guards, so the
+    guard cannot itself be a single config value.
+
+    Every uncertain outcome -- UNKNOWN from either judge, a triage that raises, an empty
+    selection -- resolves to the normal route. Running a key that was not needed costs minutes;
+    skipping one that was needed ships a regression.
+    """
+    paths = tuple(changed_paths)
+    pv = path_verdict(attest, paths)
+    record = {
+        "path_verdict": pv,
+        "triage_verdict": TRIVIAL_UNKNOWN,
+        "applied": False,
+        "changed_count": len(paths),
+    }
+
+    tv = TRIVIAL_UNKNOWN
+    if triage is not None and pv in (TRIVIAL_YES, TRIVIAL_NO):
+        try:
+            tv = triage(paths)
+        except Exception as exc:  # noqa: BLE001 - any failure means "cannot tell"
+            tv = TRIVIAL_UNKNOWN
+            record["triage_error"] = f"{type(exc).__name__}: {exc}"[:200]
+        if tv not in (TRIVIAL_YES, TRIVIAL_NO, TRIVIAL_UNKNOWN):
+            record["triage_error"] = f"unknown triage verdict {tv!r}"
+            tv = TRIVIAL_UNKNOWN
+    record["triage_verdict"] = tv
+
+    # The two disagreement cases are the ones worth naming, because each is a config bug.
+    if pv == TRIVIAL_YES and tv == TRIVIAL_NO:
+        record["disagreement"] = (
+            "globs call this trivial but triage does not — globs may be too broad"
+        )
+        return None, record
+    if pv == TRIVIAL_NO and tv == TRIVIAL_YES:
+        record["disagreement"] = (
+            "triage calls this trivial but globs do not — globs may be too narrow"
+        )
+        return None, record
+    if pv != TRIVIAL_YES:
+        return None, record
+
+    policy = attest.trivial
+    wanted = set(policy.keys)
+    selected = tuple(key for key in keys if key.name in wanted)
+    if not selected:
+        # Skipping everything is the one outcome this policy must never produce.
+        record["error"] = "trivial.keys matched no configured key"
+        return None, record
+    record["applied"] = True
+    record["ran"] = sorted(key.name for key in selected)
+    return selected, record
+
+
+def _changed_paths_for_policy(repo: str, base_rev: str, head_rev: str) -> tuple[str, ...] | None:
+    """Changed paths for the policy check, or ``None`` when git cannot answer.
+
+    ``None`` means the policy does not apply, so an unreadable diff runs the full route.
+    """
+    try:
+        from .adapters.impact_git import GitTreeDiff
+
+        diff = GitTreeDiff()
+        base_tree = diff.tree_of(repo, base_rev)
+        head_tree = diff.tree_of(repo, head_rev)
+        return tuple(change.path for change in diff.changed_paths(repo, base_tree, head_tree))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def run(
     entry,
     cfg,
@@ -95,6 +204,26 @@ def run(
         backends = {"pants": pants}
     except (OSError, KeyError, ValueError):
         backends = {}
+    changed_for_policy = _changed_paths_for_policy(repo, base_rev, head_rev)
+    selected, trivial_record = (
+        trivial_selection(attest, changed_for_policy, active_keys)
+        if changed_for_policy is not None
+        else (None, {"path_verdict": TRIVIAL_UNKNOWN, "applied": False})
+    )
+    if trivial_record.get("disagreement"):
+        typer.echo(f"  · trivial-change triage: {trivial_record['disagreement']}")
+    if trivial_record.get("triage_error"):
+        typer.echo(f"  · trivial-change triage unavailable: {trivial_record['triage_error']}")
+    if selected is not None:
+        chosen = {key.name for key in selected}
+        for key in active_keys:
+            if key.name not in chosen:
+                typer.echo(
+                    f"  · {key.name}: SKIPPED — trivial-change policy "
+                    f"(no proof carried; this revision is not fully attested)"
+                )
+        active_keys = selected
+
     resolver = impact_resolver(attest, backends=backends)
     if full:
         from .adapters.impact_git import GitTreeDiff
