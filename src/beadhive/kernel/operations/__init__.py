@@ -52,6 +52,7 @@ backup migrate-layout|dry_run:boolean:o,confirm:boolean:o
 backup reclaim|root:string:o,hive_id:string:o,dry_run:boolean:o,confirm:boolean:o,force:boolean:o
 backup usage|as_json:boolean:o
 bd|
+beads schema capture|repo:string:o,bd_binary:string:o
 checkpoint run|bead:string:r,key:string:r,value:string:r,step:string:o,hive:string:o
 config get|key:string:r,scope:string:o
 config init|force:boolean:o
@@ -339,6 +340,8 @@ _HIDDEN_PATHS = {
 _CLI_PARENT_ROWS = """
 alerts|false|Fleet / HQ
 backup|false|Admin / infra
+beads|false|Admin / infra
+beads schema|false|
 checkpoint|false|Integration plane
 config|false|Admin / infra
 contrib|false|Integration plane

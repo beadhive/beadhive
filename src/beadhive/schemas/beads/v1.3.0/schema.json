@@ -1,0 +1,390 @@
+{
+  "schema_version": 1,
+  "types": {
+    "dependency": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://github.com/steveyegge/beads/internal/types/dependency",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "issue_id": {
+          "type": "string"
+        },
+        "depends_on_id": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "enum": [
+            "blocks",
+            "parent-child",
+            "conditional-blocks",
+            "waits-for",
+            "related",
+            "discovered-from",
+            "replies-to",
+            "relates-to",
+            "duplicates",
+            "supersedes",
+            "authored-by",
+            "assigned-to",
+            "approved-by",
+            "attests",
+            "tracks",
+            "until",
+            "caused-by",
+            "validates",
+            "delegated-from"
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "created_by": {
+          "type": "string"
+        },
+        "metadata": {
+          "type": "string"
+        },
+        "thread_id": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "issue_id",
+        "depends_on_id",
+        "type",
+        "created_at"
+      ]
+    },
+    "issue": {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "$id": "https://github.com/steveyegge/beads/internal/types/issue",
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "design": {
+          "type": "string"
+        },
+        "acceptance_criteria": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "string"
+        },
+        "spec_id": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "in_progress",
+            "blocked",
+            "deferred",
+            "closed",
+            "pinned",
+            "hooked"
+          ]
+        },
+        "priority": {
+          "type": "integer"
+        },
+        "issue_type": {
+          "type": "string",
+          "enum": [
+            "bug",
+            "feature",
+            "task",
+            "epic",
+            "chore",
+            "decision",
+            "message",
+            "molecule",
+            "gate",
+            "spike",
+            "story",
+            "milestone"
+          ]
+        },
+        "is_blocked": {
+          "type": "boolean"
+        },
+        "assignee": {
+          "type": "string"
+        },
+        "owner": {
+          "type": "string"
+        },
+        "estimated_minutes": {
+          "type": "integer"
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "created_by": {
+          "type": "string"
+        },
+        "updated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "started_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "closed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "close_reason": {
+          "type": "string"
+        },
+        "closed_by_session": {
+          "type": "string"
+        },
+        "lease_expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "heartbeat_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "lease_granted_node": {
+          "type": "string"
+        },
+        "due_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "defer_until": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "external_ref": {
+          "type": "string"
+        },
+        "source_system": {
+          "type": "string"
+        },
+        "metadata": true,
+        "compaction_level": {
+          "type": "integer"
+        },
+        "compacted_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "compacted_at_commit": {
+          "type": "string"
+        },
+        "original_size": {
+          "type": "integer"
+        },
+        "labels": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "dependencies": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "issue_id": {
+                "type": "string"
+              },
+              "depends_on_id": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "blocks",
+                  "parent-child",
+                  "conditional-blocks",
+                  "waits-for",
+                  "related",
+                  "discovered-from",
+                  "replies-to",
+                  "relates-to",
+                  "duplicates",
+                  "supersedes",
+                  "authored-by",
+                  "assigned-to",
+                  "approved-by",
+                  "attests",
+                  "tracks",
+                  "until",
+                  "caused-by",
+                  "validates",
+                  "delegated-from"
+                ]
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              },
+              "created_by": {
+                "type": "string"
+              },
+              "metadata": {
+                "type": "string"
+              },
+              "thread_id": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "issue_id",
+              "depends_on_id",
+              "type",
+              "created_at"
+            ]
+          },
+          "type": "array"
+        },
+        "comments": {
+          "items": {
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "issue_id": {
+                "type": "string"
+              },
+              "author": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              },
+              "created_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "id",
+              "issue_id",
+              "author",
+              "text",
+              "created_at"
+            ]
+          },
+          "type": "array"
+        },
+        "sender": {
+          "type": "string"
+        },
+        "ephemeral": {
+          "type": "boolean"
+        },
+        "no_history": {
+          "type": "boolean"
+        },
+        "wisp_type": {
+          "type": "string"
+        },
+        "storage_class": {
+          "type": "string"
+        },
+        "pinned": {
+          "type": "boolean"
+        },
+        "is_template": {
+          "type": "boolean"
+        },
+        "bonded_from": {
+          "items": {
+            "properties": {
+              "source_id": {
+                "type": "string"
+              },
+              "bond_type": {
+                "type": "string"
+              },
+              "bond_point": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false,
+            "type": "object",
+            "required": [
+              "source_id",
+              "bond_type"
+            ]
+          },
+          "type": "array"
+        },
+        "await_type": {
+          "type": "string"
+        },
+        "await_id": {
+          "type": "string"
+        },
+        "timeout": {
+          "type": "integer"
+        },
+        "waiters": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "source_formula": {
+          "type": "string"
+        },
+        "source_location": {
+          "type": "string"
+        },
+        "mol_type": {
+          "type": "string"
+        },
+        "work_type": {
+          "type": "string"
+        },
+        "event_kind": {
+          "type": "string"
+        },
+        "actor": {
+          "type": "string"
+        },
+        "target": {
+          "type": "string"
+        },
+        "payload": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "priority",
+        "created_at",
+        "updated_at"
+      ]
+    }
+  }
+}

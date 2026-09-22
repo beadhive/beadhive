@@ -71,7 +71,7 @@ TRANSPORT_MECHANICS: tuple[CliTransportMechanic, ...] = (
     ),
 )
 
-# All 213 public leaves are eligible today.  The explicit empty set is still policy: adding an
+# All 214 public leaves are eligible today.  The explicit empty set is still policy: adding an
 # exclusion requires a named path and rationale in the same review as its catalog change.
 PROJECTION_EXCLUSIONS: Mapping[str, str] = MappingProxyType({})
 

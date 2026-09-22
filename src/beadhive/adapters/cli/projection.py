@@ -32,6 +32,7 @@ MIGRATED_CLI_GROUPS: tuple[str, ...] = (
     "<root>",
     "alerts",
     "backup",
+    "beads",
     "checkpoint",
     "config",
     "contrib",
@@ -60,7 +61,7 @@ HAND_AUTHORED_CLI_GROUPS: tuple[str, ...] = ()
 # without retroactively imposing work's opaque-list convention on unrelated application groups.
 _SCOPED_LIST_MODE_GROUPS = frozenset({"plan", "work"})
 
-_SINGULAR_EXCEPTIONS = frozenset({"alerts", "harness"})
+_SINGULAR_EXCEPTIONS = frozenset({"alerts", "beads", "harness"})
 _MCP_TOOL_EXCEPTIONS = frozenset({"bd_create"})
 _RESOURCE_GROUP_EXCEPTIONS = frozenset({"alerts"})
 _RETIRED_SURFACE_TOKEN = re.compile(r"(?<![a-z0-9])(?:ws|rig)(?![a-z0-9])", re.I)

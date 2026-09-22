@@ -1,0 +1,13 @@
+{
+  "id": "bh-rfp5z.1",
+  "title": "perf(release): selectively attest constrained version-only bump commits",
+  "status": "closed",
+  "priority": 0,
+  "issue_type": "bug",
+  "created_at": "2026-09-21T18:12:05Z",
+  "updated_at": "2026-09-21T19:07:22Z",
+  "dependency_count": 2,
+  "dependent_count": 0,
+  "comment_count": 0,
+  "parent": "bh-rfp5z"
+}
