@@ -1,0 +1,17 @@
+{
+  "issue": {
+    "id": "bh-xkg4u.2",
+    "title": "generate strict canonical record models",
+    "status": "in_progress",
+    "priority": 1,
+    "issue_type": "feature",
+    "created_at": "2026-09-21T06:43:38Z",
+    "updated_at": "2026-09-22T05:33:20Z"
+  },
+  "dependency": {
+    "issue_id": "bh-xkg4u.2",
+    "depends_on_id": "bh-xkg4u.1",
+    "type": "blocks",
+    "created_at": "2026-09-21T06:43:38Z"
+  }
+}

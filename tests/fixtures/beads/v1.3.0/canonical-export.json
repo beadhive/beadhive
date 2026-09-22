@@ -1,0 +1,42 @@
+{
+  "issue": {
+    "id": "bh-rfp5z.1",
+    "title": "perf(release): selectively attest constrained version-only bump commits",
+    "description": "Preserve fail-closed release behavior while carrying qualifying evidence.",
+    "status": "closed",
+    "priority": 0,
+    "issue_type": "bug",
+    "assignee": "dev/codex",
+    "owner": "brian@xenophon.dev",
+    "created_at": "2026-09-21T18:12:05Z",
+    "created_by": "Brian Cripe",
+    "updated_at": "2026-09-21T19:07:22Z",
+    "closed_at": "2026-09-21T19:07:22Z",
+    "close_reason": "merged",
+    "metadata": {
+      "git.commits": "[\"1e1682e92ffaa004debf958f7926385dbae670d9\"]"
+    },
+    "labels": [
+      "component:release",
+      "repo:beadhive"
+    ],
+    "dependencies": [
+      {
+        "issue_id": "bh-rfp5z.1",
+        "depends_on_id": "bh-rfp5z",
+        "type": "parent-child",
+        "created_at": "2026-09-21T18:12:05Z",
+        "created_by": "Brian Cripe",
+        "metadata": "{}"
+      }
+    ]
+  },
+  "dependency": {
+    "issue_id": "bh-rfp5z.1",
+    "depends_on_id": "bh-rfp5z",
+    "type": "parent-child",
+    "created_at": "2026-09-21T18:12:05Z",
+    "created_by": "Brian Cripe",
+    "metadata": "{}"
+  }
+}
