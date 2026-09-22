@@ -593,6 +593,45 @@ class AttestImpactConfig(_Section):
         return v
 
 
+class AttestTrivialConfig(_Section):
+    """A POLICY short-circuit: changes whose every path is trivially non-behavioral run a
+    reduced key set instead of the full one.
+
+    This is deliberately NOT an impact-resolver concern. A receipt answers "what did this
+    change touch", proved from ownership and selectors; this answers "what do we choose to
+    test", which carries no proof at all. Keeping them apart is what stops a policy skip from
+    being recorded as carried evidence: the keys this drops are treated exactly like a
+    disabled key -- they neither run, block, satisfy the aggregate, nor produce carryable
+    proof, so `all_keys_green` still refuses to call the revision fully attested."""
+
+    enabled: bool = Field(
+        False,
+        description=(
+            "Whether the trivial-change short-circuit applies. Off by default: a hive must "
+            "choose to trade coverage for latency."
+        ),
+    )
+    paths: list[str] = Field(
+        default_factory=list,
+        description=(
+            "fnmatch glob patterns, matched against every changed path. The short-circuit "
+            "applies ONLY when EVERY changed path matches one of them, so a single unmatched "
+            "path restores the normal route. NOTE: these are fnmatch patterns, not pathlib "
+            "globs -- '*' CROSSES directory separators and '**' has no special meaning, so "
+            "'docs/*.md' matches any depth and 'docs/*' also matches 'docs/schemas/x.json'. "
+            "Prefer the narrowest extension-anchored pattern you can write; the semantic "
+            "triage exists to veto a pattern that turns out broader than intended."
+        ),
+    )
+    keys: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Key names that still run for a trivial change. Every other key is skipped by "
+            "policy. An empty list disables the short-circuit rather than skipping everything."
+        ),
+    )
+
+
 class AttestConfig(_Section):
     """The attest key catalog and impact resolver (Attested Green ADR, Amendment 1). Absent (the
     default) is today's behavior: no keys, native-full."""
@@ -604,6 +643,10 @@ class AttestConfig(_Section):
     impact: AttestImpactConfig = Field(
         default_factory=AttestImpactConfig,
         description="Impact resolver backend selection.",
+    )
+    trivial: AttestTrivialConfig = Field(
+        default_factory=AttestTrivialConfig,
+        description="Policy short-circuit for trivially non-behavioral changes.",
     )
 
     @field_validator("keys")
@@ -1750,6 +1793,7 @@ __all__ = (
     "ArchiveConfig",
     "AttestConfig",
     "AttestImpactConfig",
+    "AttestTrivialConfig",
     "AttestKeyConfig",
     "BackupConfig",
     "BeadhiveConfig",
