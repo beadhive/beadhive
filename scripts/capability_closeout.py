@@ -5,8 +5,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
+import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 import tomllib
 from collections.abc import Iterable
@@ -14,18 +17,10 @@ from functools import cache
 from pathlib import Path
 from typing import Any
 
-# Bare sibling import for `python scripts/capability_closeout.py` (scripts/ on sys.path, not
-# repo root); Pants can't infer it since the module lives under the `scripts.` namespace.
-# The real edge is declared explicitly in scripts/BUILD.
-from check_import_boundaries import (
-    _cycle_digest,  # pants: no-infer-dep
-    _cyclic_edges,  # pants: no-infer-dep
-    check,  # pants: no-infer-dep
-    collect_imports,  # pants: no-infer-dep
-)
-
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_REVISION = "ad4077d7ee5ae40c966f089920ca794006538090"
+HISTORICAL_CHECKER_PATH = "scripts/check_import_boundaries.py"
+HISTORICAL_CHECKER_SHA256 = "09e6dfde247ab68692119417bf64390544cce8173a2197cab2b191f3f7614837"
 FOUNDATION_REVISION = "adf182bc4fc9c628a23b9b76c55f5291ec337b7a"
 PRE_MIGRATION_REVISION = "287061f089764dac29b5f584ebcdbb5f25f86c26"
 PRE_CUT_REVISION = "9dc7c10549712c42b5a38b020dcb75c26e7652c1"
@@ -151,6 +146,34 @@ def _source(revision: str, path: str) -> str:
     return _git("show", f"{revision}:{path}")
 
 
+@cache
+def _historical_checker() -> Any:
+    """Load the checker that belongs to the immutable closeout source revision."""
+    source = _source(SOURCE_REVISION, HISTORICAL_CHECKER_PATH)
+    digest = hashlib.sha256(source.encode()).hexdigest()
+    if digest != HISTORICAL_CHECKER_SHA256:
+        raise RuntimeError(
+            f"historical import checker digest changed: expected {HISTORICAL_CHECKER_SHA256}, "
+            f"got {digest}"
+        )
+
+    module_name = f"_capability_closeout_import_checker_{SOURCE_REVISION}"
+    with tempfile.TemporaryDirectory(prefix="bh-bptze-checker-") as tmp:
+        checker_path = Path(tmp) / "check_import_boundaries.py"
+        checker_path.write_text(source, encoding="utf-8")
+        spec = importlib.util.spec_from_file_location(module_name, checker_path)
+        if spec is None or spec.loader is None:
+            raise RuntimeError("cannot load historical import checker")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(module_name, None)
+            raise
+    return module
+
+
 def _module(path: str) -> str:
     parts = list(Path(path).with_suffix("").parts)
     if parts and parts[0] == "src":
@@ -184,7 +207,7 @@ def _graph(revision: str) -> tuple[dict[str, Path], tuple[Any, ...], tuple[Any, 
             target = root / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(_source(revision, path), encoding="utf-8")
-        modules, edges, dynamic = collect_imports(root / "src")
+        modules, edges, dynamic = _historical_checker().collect_imports(root / "src")
     return modules, edges, dynamic
 
 
@@ -251,7 +274,8 @@ def _slice_metrics(revision: str, paths: tuple[str, ...]) -> dict[str, Any]:
 
 def _current_graph(ledger: dict[str, Any]) -> dict[str, Any]:
     modules, edges, dynamic = _graph(SOURCE_REVISION)
-    components, cyclic = _cyclic_edges(modules, edges)
+    checker = _historical_checker()
+    components, cyclic = checker._cyclic_edges(modules, edges)
     active = [row for row in ledger["cycle_exception"] if row["status"] == "active"]
     cycles = []
     for component in sorted(components, key=lambda item: (-len(item), sorted(item))):
@@ -289,7 +313,7 @@ def _current_graph(ledger: dict[str, Any]) -> dict[str, Any]:
         else [row["size"] for row in cycles],
         "cyclic_edges": len(cyclic),
         "cyclic_symbols": sum(len(edge.symbols) for edge in cyclic),
-        "cycle_digest": _cycle_digest(cyclic),
+        "cycle_digest": checker._cycle_digest(cyclic),
         "cycles": cycles,
     }
 
@@ -433,7 +457,7 @@ def build_proof() -> dict[str, Any]:
         ledger_path = root / LEDGER_PATH
         ledger_path.parent.mkdir(parents=True, exist_ok=True)
         ledger_path.write_text(ledger_source, encoding="utf-8")
-        checked = check(root / "src", ledger_path)
+        checked = _historical_checker().check(root / "src", ledger_path)
     if checked.errors:
         raise RuntimeError("; ".join(checked.errors))
     closures = _closure_rows()
