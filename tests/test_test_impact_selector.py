@@ -631,14 +631,20 @@ def test_current_root_descendant_consumes_snapshot_and_reports_other_closure_dri
         "current-input-digest-mismatch",
         "input-digest-mismatch",
     } <= set(plan["fallback_reasons"])
-    # module.work is intentionally changed by bh-z57s1, so use another unrelated closure whose
-    # current inputs still match the historical snapshot. The assertion remains the same proof:
-    # one drifting closure must not make every unaffected exclusion look inapplicable.
-    state_exclusion = next(item for item in plan["exclusions"] if item["closure"] == "module.state")
-    assert state_exclusion["status"] == "unaffected"
-    assert state_exclusion["reason"] == "unaffected-current-digests-stable"
-    assert state_exclusion["current_applicability"]["applicable"] is True
-    assert "applicability_fallback_reasons" not in state_exclusion
+    # The repository keeps evolving, so do not freeze this proof to a particular unrelated
+    # closure.  A drifting closure must not make every unaffected, currently applicable
+    # exclusion look inapplicable.
+    stable_exclusions = [
+        item
+        for item in plan["exclusions"]
+        if item["status"] == "unaffected"
+        and item["current_applicability"]["applicable"] is True
+    ]
+    assert stable_exclusions
+    assert all(
+        item["reason"] == "unaffected-current-digests-stable" for item in stable_exclusions
+    )
+    assert all("applicability_fallback_reasons" not in item for item in stable_exclusions)
 
 
 def test_real_git_snapshot_keeps_unrelated_closure_current_and_invalidates_impacted_one(

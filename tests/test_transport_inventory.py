@@ -62,7 +62,7 @@ def test_generated_cli_and_mcp_inventory_exactly_covers_the_catalog() -> None:
     for row in projections():
         counts[row.surface] = counts.get(row.surface, 0) + 1
     assert counts == {
-        "cli": 213,
+        "cli": 215,
         "gateway": 28,
         "mcp-resource": 21,
         "mcp-tool": 10,

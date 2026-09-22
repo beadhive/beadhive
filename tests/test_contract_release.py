@@ -717,8 +717,13 @@ def test_candidate_catalog_preserves_published_prefix_and_appends_new_members(
     )
     published = load_published_baseline()
     previous = next(row for row in published["artifacts"] if row["id"] == artifact_id)["document"]
-    assert normalized[collection][:-1] == previous[collection]
-    assert normalized[collection][-1] == new_member
+    published_members = previous[collection]
+    published_identities = {row[identity] for row in published_members}
+    candidate_additions = [
+        row for row in document[collection] if row[identity] not in published_identities
+    ]
+    assert normalized[collection][: len(published_members)] == published_members
+    assert normalized[collection][len(published_members) :] == candidate_additions
 
 
 def test_candidate_catalog_normalization_keeps_existing_member_drift_visible() -> None:
