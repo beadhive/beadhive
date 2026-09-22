@@ -42,7 +42,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "cli",
       "path": "artifacts/cli-projections-v1.json",
-      "sha256": "sha256:8e474a22dea164c633d601295061ffe8dabbe8e54b75e4220b49c5bfd1e65737",
+      "sha256": "sha256:91d81360f06df778e687cbe6eb9e270feadc708dde55b304cd27a082cbfe9eb7",
       "source_owner": "beadhive.transport_inventory.document"
     },
     {
@@ -105,7 +105,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "operation-catalog",
       "path": "artifacts/operation-catalog-v1.json",
-      "sha256": "sha256:3f7b1ec94dc95228e34bc0be5f15b503bded48bc424921b7c9647ec4c682162d",
+      "sha256": "sha256:f693de3925b5661a7d133fe499bc63af71bf8be1b42574d4fb36b33e4dce1302",
       "source_owner": "beadhive.kernel.operations.document"
     },
     {
@@ -549,7 +549,7 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-catalog:operations:1",
-      "candidate_sha256": "sha256:3f7b1ec94dc95228e34bc0be5f15b503bded48bc424921b7c9647ec4c682162d",
+      "candidate_sha256": "sha256:f693de3925b5661a7d133fe499bc63af71bf8be1b42574d4fb36b33e4dce1302",
       "classification": "compatible-additive",
       "differences": [
         {
@@ -562,7 +562,7 @@
         },
         {
           "after_items": 202,
-          "after_sha256": "sha256:642319fad3241524a1f4df0661b458bc25af465e8283b4cccabb6bccfa5dabd5",
+          "after_sha256": "sha256:de1896a680c6c9011d769a8f82f03290c86b1597b68d4d39f5a6ecdbee71a2ae",
           "before_items": 200,
           "before_sha256": "sha256:63079f0c815fe84b966d71aae7539fbaa37a679a767c9e39f8b7376a20d53fb7",
           "kind": "sequence-changed",
@@ -737,7 +737,7 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-catalog:operations:1",
-      "candidate_sha256": "sha256:3f7b1ec94dc95228e34bc0be5f15b503bded48bc424921b7c9647ec4c682162d",
+      "candidate_sha256": "sha256:f693de3925b5661a7d133fe499bc63af71bf8be1b42574d4fb36b33e4dce1302",
       "classification": "policy-divergence-retained",
       "differences": [
         {
@@ -750,7 +750,7 @@
         },
         {
           "after_items": 202,
-          "after_sha256": "sha256:642319fad3241524a1f4df0661b458bc25af465e8283b4cccabb6bccfa5dabd5",
+          "after_sha256": "sha256:de1896a680c6c9011d769a8f82f03290c86b1597b68d4d39f5a6ecdbee71a2ae",
           "before_items": 195,
           "before_sha256": "sha256:9cf602bd7bf146103d3e2a3b327376648bfb1f127bc4b944eb174833decac9f1",
           "kind": "sequence-changed",
@@ -2319,7 +2319,7 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-catalog:operations:1",
-      "candidate_sha256": "sha256:3f7b1ec94dc95228e34bc0be5f15b503bded48bc424921b7c9647ec4c682162d",
+      "candidate_sha256": "sha256:f693de3925b5661a7d133fe499bc63af71bf8be1b42574d4fb36b33e4dce1302",
       "classification": "policy-divergence-retained",
       "differences": [
         {
@@ -2332,7 +2332,7 @@
         },
         {
           "after_items": 202,
-          "after_sha256": "sha256:642319fad3241524a1f4df0661b458bc25af465e8283b4cccabb6bccfa5dabd5",
+          "after_sha256": "sha256:de1896a680c6c9011d769a8f82f03290c86b1597b68d4d39f5a6ecdbee71a2ae",
           "before_items": 195,
           "before_sha256": "sha256:9cf602bd7bf146103d3e2a3b327376648bfb1f127bc4b944eb174833decac9f1",
           "kind": "sequence-changed",
@@ -3901,7 +3901,7 @@
     },
     {
       "artifact_id": "urn:beadhive:wire-catalog:operations:1",
-      "candidate_sha256": "sha256:3f7b1ec94dc95228e34bc0be5f15b503bded48bc424921b7c9647ec4c682162d",
+      "candidate_sha256": "sha256:f693de3925b5661a7d133fe499bc63af71bf8be1b42574d4fb36b33e4dce1302",
       "classification": "policy-divergence-retained",
       "differences": [
         {
@@ -3914,9 +3914,9 @@
         },
         {
           "after_items": 202,
-          "after_sha256": "sha256:642319fad3241524a1f4df0661b458bc25af465e8283b4cccabb6bccfa5dabd5",
+          "after_sha256": "sha256:de1896a680c6c9011d769a8f82f03290c86b1597b68d4d39f5a6ecdbee71a2ae",
           "before_items": 202,
-          "before_sha256": "sha256:fd5ffbb02e3bd32d6573c66ca02203d1916161bbeee0128268ecec2877838a5a",
+          "before_sha256": "sha256:829a3487f61151e11a274dd07e79e6e21cb813435cfe883c5059ce91cd181638",
           "kind": "sequence-changed",
           "path": "/operations"
         }
@@ -3924,7 +3924,7 @@
       "historical_manifest": "docs/schemas/wire/v1.5.0/release.json",
       "historical_path": "docs/schemas/wire/v1.5.0/operation-catalog-v1.json",
       "historical_release": "1.5.0",
-      "historical_sha256": "sha256:1745d4d3daad5d1b839a4512dde949db64c702a598082ef966e9074cc2efb2c5",
+      "historical_sha256": "sha256:6fa7aabdd840fca4c6fc4fd95343de976c242ddbef7c84540f54f78f94f555fd",
       "policy_errors": [
         "urn:beadhive:wire-catalog:operations:1.cli_parents[2].effective_panel: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.cli_parents[2].panel: append-only catalog value changed or members were reordered",
@@ -4041,17 +4041,13 @@
         "urn:beadhive:wire-catalog:operations:1.operations[8].surfaces.cli.parameters[0]: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[8].surfaces.cli.parameters[1]: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[8].surfaces.cli.path: append-only catalog value changed or members were reordered",
-        "urn:beadhive:wire-catalog:operations:1.operations[9].kind: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[9].name: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[9].parameters[0].name: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[9].parameters[0].required: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[9].parameters[1].name: append-only catalog value changed or members were reordered",
-        "urn:beadhive:wire-catalog:operations:1.operations[9].privilege: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[9].surfaces.cli.parameters[0]: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[9].surfaces.cli.parameters[1]: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[9].surfaces.cli.path: append-only catalog value changed or members were reordered",
-        "urn:beadhive:wire-catalog:operations:1.operations[9].surfaces.cli.progress.mode: append-only catalog value changed or members were reordered",
-        "urn:beadhive:wire-catalog:operations:1.operations[9].surfaces.cli.progress.reason: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[10].name: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[10].parameters: append-only catalog members were removed (5 -> 1)",
         "urn:beadhive:wire-catalog:operations:1.operations[10].parameters[0].name: append-only catalog value changed or members were reordered",
@@ -5929,12 +5925,10 @@
         "urn:beadhive:wire-catalog:operations:1.operations[200].surfaces.cli.path: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[200].surfaces.cli.progress.mode: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[200].surfaces.cli.progress.reason: append-only catalog value changed or members were reordered",
-        "urn:beadhive:wire-catalog:operations:1.operations[201].kind: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[201].name: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[201].parameters[0].name: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[201].parameters[1].name: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[201].parameters[1].schema.type: append-only catalog value changed or members were reordered",
-        "urn:beadhive:wire-catalog:operations:1.operations[201].privilege: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[201].surfaces.cli.aliases: append-only catalog members were removed (1 -> 0)",
         "urn:beadhive:wire-catalog:operations:1.operations[201].surfaces.cli.parameters[0]: append-only catalog value changed or members were reordered",
         "urn:beadhive:wire-catalog:operations:1.operations[201].surfaces.cli.parameters[1]: append-only catalog value changed or members were reordered",

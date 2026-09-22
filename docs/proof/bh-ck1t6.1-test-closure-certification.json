@@ -11,8 +11,8 @@
       "docs/proof/bh-j5uyb.1-modularization-closeout.json"
     ],
     "file_count": 1378,
-    "revision": "sha256:6624c6c1a9b7a839cbab0ce93df345d74caa86f82489f945e87da18bef58177f",
-    "tree": "sha256:28917189127acc3650aec4bdc582d4b342211df359ffb8865a276b24ef585086"
+    "revision": "sha256:2aa765a849360d525b3ac679f8c9d52383cd1d12bfada255e3f82caa952faa72",
+    "tree": "sha256:112a1f3cc233ff433496112a43ba6ed215fb4151c0d788ade4e08d6fd2c477be"
   },
   "closures": [
     {
@@ -3250,8 +3250,8 @@
         "docs/proof/bh-j5uyb.1-modularization-closeout.json"
       ],
       "file_count": 1378,
-      "revision": "sha256:6624c6c1a9b7a839cbab0ce93df345d74caa86f82489f945e87da18bef58177f",
-      "tree": "sha256:28917189127acc3650aec4bdc582d4b342211df359ffb8865a276b24ef585086"
+      "revision": "sha256:2aa765a849360d525b3ac679f8c9d52383cd1d12bfada255e3f82caa952faa72",
+      "tree": "sha256:112a1f3cc233ff433496112a43ba6ed215fb4151c0d788ade4e08d6fd2c477be"
     },
     "note": "The checked JSON declares the receipt lookup identity, not a self-asserted run. --check resolves the candidate's Git tree against the authoritative git-private ledger; the matching in-flight work-check is accepted only to bootstrap that same gate, and later checks require its completed green receipt.",
     "receipt_provenance": {
@@ -3267,6 +3267,6 @@
   },
   "schema_version": 2,
   "scope": "bh-ck1t6.1 digest-bound test-closure prerequisite certification",
-  "source_revision": "sha256:6624c6c1a9b7a839cbab0ce93df345d74caa86f82489f945e87da18bef58177f",
-  "source_tree": "sha256:28917189127acc3650aec4bdc582d4b342211df359ffb8865a276b24ef585086"
+  "source_revision": "sha256:2aa765a849360d525b3ac679f8c9d52383cd1d12bfada255e3f82caa952faa72",
+  "source_tree": "sha256:112a1f3cc233ff433496112a43ba6ed215fb4151c0d788ade4e08d6fd2c477be"
 }

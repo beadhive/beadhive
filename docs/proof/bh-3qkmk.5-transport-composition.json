@@ -4,8 +4,8 @@
   "current_graph": {
     "cyclic_components": 8,
     "cyclic_edges": 155,
-    "import_edges": 3019,
-    "python_files": 337
+    "import_edges": 3046,
+    "python_files": 339
   },
   "format_version": 1,
   "full_gate": "bh work check bh-3qkmk.5",
@@ -126,7 +126,7 @@
           "excluded_declarations": [],
           "exclusion_reason": null,
           "observed_source": "live Typer command tree",
-          "projection_declaration_count": 213
+          "projection_declaration_count": 215
         },
         "declared": [
           "alerts show",
@@ -136,6 +136,8 @@
           "backup reclaim",
           "backup usage",
           "bd",
+          "beads schema capture",
+          "beads schema check",
           "checkpoint run",
           "config get",
           "config init",
@@ -343,7 +345,7 @@
           "wt rm",
           "wt status"
         ],
-        "declared_count": 213,
+        "declared_count": 215,
         "delta": 0,
         "matches": true,
         "observed": [
@@ -354,6 +356,8 @@
           "backup reclaim",
           "backup usage",
           "bd",
+          "beads schema capture",
+          "beads schema check",
           "checkpoint run",
           "config get",
           "config init",
@@ -561,7 +565,7 @@
           "wt rm",
           "wt status"
         ],
-        "observed_count": 213,
+        "observed_count": 215,
         "removals": [],
         "runtime_proof": "tests/test_cli_projection.py::test_complete_cli_tree_is_catalog_derived",
         "surface": "cli"

@@ -20,14 +20,14 @@
     "safety_gate": "just check-all",
     "uncertainty_gate": "just check"
   },
-  "input_digest": "sha256:fab653301bac76f771432030fd4875cb35cfb9ca852ae140356b16ae61e0cff2",
+  "input_digest": "sha256:8f0d6f2e598aff284cfdb75f03837451ad75ba934621ce5094dd926ff91ff9e2",
   "inputs": {
-    "certification": "sha256:c891b9d65d9ba006fe190e619944b6bffe00adc2bf8ecc258948815e721f2e8c",
+    "certification": "sha256:6691d9332e512e3feca70c6e71408a803aa38c4c8c018687c7ddf12a4a0be0ab",
     "config": "sha256:1e46e37d04f906fa55de0152b7e65edc47f88fd2b3e1dc5431cac2e6245a7515",
     "policy": "sha256:1c4d7c42f62a05e1b400497339e5d750acaeada5f0195126463bbd96e0d8538e",
     "registry": "sha256:e1e73848a03e794bb4c2c594455a9983aab71d582df060a3e9ef01cccf1ba093",
     "selector": "sha256:618338874babab90298ba8797f6920b9746f58e2482caea404fdad3cdb8f44c3",
-    "shadow": "sha256:df545b805ad0594119105bccf78f9efce1cd95f75dd1df12b6ce1e16a448b8ce",
+    "shadow": "sha256:dd98b4cc52ac63551d86a0e5103063cf4417214ef5e0c5e68181f651a1951935",
     "verifier": "sha256:be30e5c5725a02edd14aa2b8bf75bb787c0536fc1a64a53af00eaf688e19db53"
   },
   "note": "The promotion boundary is provisioned but no repository closure currently satisfies the certification and shadow-evidence bar, so every production route remains full.",
@@ -56,6 +56,6 @@
     "landed_commit": "071521b05ee16f3069980e6c9dc508e5f9b71974",
     "molecule": "bh-id9pp",
     "official_release": "docs/proof/official-v1-contract-compatibility.json",
-    "official_release_digest": "sha256:1808bfe2e20ffa7bcb3c36b8bdc6747e0c8c3860ffeee527bb8421576b8fa55a"
+    "official_release_digest": "sha256:123a98f6a12bab87ce22f1952dc2cff59c78fe170ed84a966122fc0bc6bbfd95"
   }
 }

@@ -15185,7 +15185,7 @@
         "override_parameters": [],
         "secret_material": false
       },
-      "kind": "action",
+      "kind": "read-resource",
       "name": "beads.schema.check",
       "parameters": [
         {
@@ -15205,7 +15205,7 @@
           }
         }
       ],
-      "privilege": "ordinary-mutation",
+      "privilege": "unprivileged-read",
       "result_schema": "urn:beadhive:wire-schema:json-value:1",
       "surfaces": {
         "cli": {
@@ -15230,9 +15230,9 @@
           ],
           "path": "beads schema check",
           "progress": {
-            "mode": "stdout",
+            "mode": "none",
             "notification_uris": [],
-            "reason": "CLI reports human-oriented progress on stdout/stderr"
+            "reason": "read result is emitted directly; there is no distinct progress stream"
           }
         }
       }

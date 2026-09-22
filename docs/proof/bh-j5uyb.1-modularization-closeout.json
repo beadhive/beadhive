@@ -309,11 +309,11 @@
         "check": "just transport-artifact-check",
         "artifacts": [
           {"path": "docs/schemas/wire/v1.2.0/operation-catalog-v1.json", "sha256": "8c849120cb43cf19d2d6bec9ab2cbdb28eac0246441a173c2c1f98d1c87073a8"},
-          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "3d51caf4f4b9803db900471f82ef197c1889a7db620c141e7a40f4369415d031"},
+          {"path": "docs/design/transport-projection-inventory-v1.json", "sha256": "d19d797bd9f402f42a80deea8318c402f19003cb1c5ffc6018d7a6022996da2f"},
           {"path": "src/beadhive/schemas/beadhive-host-openapi-v1.json", "sha256": "29046c0b29b1a6aa9dfd8ad1ca1f0f3f3356d0ef35da01dfa319d4885d1c293d"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.json", "sha256": "dc211495dbf26074479680664e7fe73031fc551b10ebda3fedd59fce2a87d0b0"},
           {"path": "src/beadhive/schemas/beadhive-gateway-projection-v1.schema.json", "sha256": "6ee17992bc8e752fdb38142965e68bb1119242911eca872a844356a62bc33d78"},
-          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "2e9aa04a50a911de0fb78e0544e5fac0f86cc52f421be8052b41b818b987eabf"}
+          {"path": "docs/proof/bh-3qkmk.5-transport-composition.json", "sha256": "d823e4189feaba27b2ba66056ec4740dd0ac357ff5f8b04765a17aad5d81cca1"}
         ]
       },
       "import_boundary": {
@@ -326,17 +326,17 @@
         "artifacts": [
           {"path": "docs/schemas/telemetry-event-envelope-v1.schema.json", "sha256": "1bf34e38b60d8e9cdf7b5c60477cb93f9dd24dac970e5c89a8d3b2695cd2d3c6"},
           {"path": "docs/schemas/wire/v1.0.0/release.json", "sha256": "c69fb7f1567f16e6f76549ef1c9c53b1f32f7cfde79fc8b0d2cc652a01b727e1"},
-          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "1808bfe2e20ffa7bcb3c36b8bdc6747e0c8c3860ffeee527bb8421576b8fa55a"}
+          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "123a98f6a12bab87ce22f1952dc2cff59c78fe170ed84a966122fc0bc6bbfd95"}
         ]
       },
       "selective_ci": {
         "check": "just architecture-check",
         "classification": "Canonical historical certification plus current applicability checks; all closures remain uncertified and every production route fails closed to the full lane.",
         "artifacts": [
-          {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "c891b9d65d9ba006fe190e619944b6bffe00adc2bf8ecc258948815e721f2e8c"},
-          {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "df545b805ad0594119105bccf78f9efce1cd95f75dd1df12b6ce1e16a448b8ce"},
-          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "e860f9b8ed8d75f8799f6e807c1ac5fd6d7ff5d8a826047ce424674755979e8a"},
-          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "47b5d2669617c86c312ee8d98c398865273c3415e95a7b58cea61322222796b5"}
+          {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "6691d9332e512e3feca70c6e71408a803aa38c4c8c018687c7ddf12a4a0be0ab"},
+          {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "dd98b4cc52ac63551d86a0e5103063cf4417214ef5e0c5e68181f651a1951935"},
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "13f7f97717f47cb4615973723047930406ae18383fd9d8899c542218cd27c40f"},
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "3365dce12580613006f449a2695795ee60421fc872eef78bbac0fffe28e061d3"}
         ]
       },
       "package_and_entry_point": {
