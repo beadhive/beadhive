@@ -94,14 +94,37 @@ single-hive use works without it; only fleet routing and provider auto-load requ
 
 | Concern | Doc | Modules |
 |---|---|---|
-| config & paths | [CONFIGURATION](CONFIGURATION.md) | `config.py` |
-| command surface | [CLI](CLI.md) | `cli.py` |
-| onboarding & identity | [HIVES](HIVES.md) | `hive.py`, `identity.py` |
+| config & paths | [CONFIGURATION](CONFIGURATION.md) | `modules/config/`; `config*.py` compatibility facades |
+| command surface | [CLI](CLI.md) | `kernel/operations/`, `adapters/cli/`, `bootstrap/cli.py`; root compatibility surfaces |
+| onboarding & identity | [HIVES](HIVES.md) | `modules/hives/`; `hive*.py`, `identity.py` compatibility surfaces |
+| work lifecycle | [MODULES](MODULES.md) | `modules/work/`; `work.py` compatibility facade |
+| managed worktrees | [WORKTREES](WORKTREES.md) | `modules/worktrees/`; `worktree.py` compatibility facade |
+| planning | [MODULES](MODULES.md) | `modules/planning/`; root planning compatibility surfaces |
+| state/read projections | [MODULES](MODULES.md) | `modules/state/`; root state compatibility surfaces |
+| agent launch | [MODULES](MODULES.md) | `modules/agents/`; `integrations/herdr/` adapter |
 | registry, labels, validation | [LABELS](LABELS.md) | `registry.py`, `validate.py` |
 | passthrough & routing | [PASSTHROUGH](PASSTHROUGH.md) | `bd.py`, `git.py`, `route.py` |
 | cross-hive hub | [HUB](HUB.md) | `hub.py` |
-| managed worktrees | [WORKTREES](WORKTREES.md) | `worktree.py` |
 | git-workspace integration | [INTEGRATIONS](INTEGRATIONS.md) | `gitworkspace.py` |
 | diagnostics | [DIAGNOSTICS](DIAGNOSTICS.md) | `doctor.py` |
 | optional Dolt server | [DOLT](DOLT.md) | `dolt.py` |
 | subprocess helper | — | `run.py` |
+
+## Physical ownership and cleanup policy
+
+The capability-oriented dependency rules are implemented and remain authoritative in
+[MODULES](MODULES.md) and the
+[modular dependency ADR](design/modular-dependency-and-test-closure-adr.md). The later
+[repository physical-organization ADR](design/repository-physical-organization-adr.md) decides
+where new implementation belongs, how compatibility facades retire, and why package-root modules
+are closed by default.
+
+The exact starting tree is preserved in the
+[physical-layout baseline](design/repository-physical-layout-baseline.md) at
+`a8399581980d1287e05f33931525c25a5bb10bbc`. Current enforcement uses the
+[root ownership manifest](design/root-module-ownership.toml) plus the
+[architecture-debt ledger](design/import-boundary-exceptions.toml): every current root path is
+classified exactly, new unowned root implementation fails structural and full validation, and an
+active facade must retain a live successor and executable compatibility evidence. Historical
+baselines and proofs remain immutable evidence for their named commits; they are not rewritten to
+look current.

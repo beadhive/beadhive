@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import json
 import subprocess
 import sys
 from pathlib import Path
+
+from scripts import check_import_boundaries as live_boundaries
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/capability_closeout.py"
@@ -32,6 +35,25 @@ def test_capability_closeout_is_reproducible() -> None:
         text=True,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+def test_capability_closeout_uses_only_its_pinned_historical_checker() -> None:
+    module = _module()
+    historical = module._historical_checker()
+
+    assert module.HISTORICAL_CHECKER_PATH == "scripts/check_import_boundaries.py"
+    assert module.HISTORICAL_CHECKER_SHA256 == (
+        "09e6dfde247ab68692119417bf64390544cce8173a2197cab2b191f3f7614837"
+    )
+    assert tuple(inspect.signature(historical.check).parameters) == (
+        "source_root",
+        "ledger_path",
+    )
+    assert tuple(inspect.signature(live_boundaries.check).parameters) == (
+        "source_root",
+        "ledger_path",
+        "root_ownership_path",
+    )
 
 
 def test_capability_closeout_proves_every_acceptance_boundary() -> None:

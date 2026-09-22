@@ -1,20 +1,23 @@
 # Beadhive modular architecture
 
-Status: proposed architecture and workstream plan
+Status: implemented modular architecture with active physical-cleanup work
 
-Evidence date: 2026-08-30 UTC
+Current-state review: 2026-09-22 UTC
 
-Repository baseline: `fbc45370292175507d90952952d4458d2fa5a82e`
-(`chore(merge): molecule bh-4bhs7`)
+Physical-layout baseline: [`repository-physical-layout-baseline.md`](design/repository-physical-layout-baseline.md)
+at `a8399581980d1287e05f33931525c25a5bb10bbc` (`v0.17.1`).
+
+Physical-organization decision:
+[`repository-physical-organization-adr.md`](design/repository-physical-organization-adr.md).
 
 ## Purpose
 
-Beadhive is preparing its first stable configuration, CLI, MCP, API, plugin, lifecycle, and
-telemetry contracts while its implementation is still predominantly a flat Python package. This
-document defines the target internal module architecture and the migration sequence for reaching
-it without changing product behavior in one large rewrite.
+Beadhive has landed capability packages, kernels, adapters, integrations, bootstrap roots, and
+module-local tests while retaining a substantial exact inventory of package-root compatibility
+and implementation debt. This document describes the architecture that exists now, the
+compatibility rules that remain binding, and the remaining behavior-preserving physical cleanup.
 
-The intended result is a modular monolith with explicit internal boundaries:
+The implemented direction is a modular monolith with explicit internal boundaries:
 
 - one canonical catalog for operations exposed through supported transports;
 - application use cases and domain rules that do not depend on Typer, FastMCP, HTTP, Herdr,
@@ -48,18 +51,21 @@ through `beadhive.bootstrap.{cli,mcp,host,frame_bridge}:main`. The historical mo
 compatibility/runtime adapters behind exact exception-ledger edges until their patch inventories
 permit physical relocation; reusable production code has no dependency back into bootstrap.
 
-At that historical baseline, the production package contains approximately 177 flat top-level
-Python modules and 95,000 lines of code. The test tree contains approximately 343 Python files and
-123,000 lines. Its principal composition roots are `cli.py`, `mcp.py`, `host_daemon.py`, and
-`remote_gateway_runtime.py`.
+The checked physical-layout baseline contains 337 production Python files. Of those, 213 are at
+the package root: `__init__.py` plus 212 exact implementation or compatibility paths. The landed
+owners include 71 files under `modules/`, 24 under `kernel/`, 13 under `integrations/`, 8 under
+`adapters/`, 6 under `bootstrap/`, and 2 under `testing/`. The same baseline records 8 owned
+legacy SCCs spanning 59 modules and 155 exact cyclic edges. These are current cleanup inputs, not
+evidence that the module packages are still proposals.
 
-The exact-tip RepoWise index records 771 files. Static dependency evidence shows six cyclic
-strongly connected components spanning 85 production files; the largest contains 65 files,
-including config, registry, plugins, runtime, engine, telemetry, work, and worktree concerns.
-Moving files before introducing ports would therefore preserve the coupling under new paths.
+[`root-module-ownership.toml`](design/root-module-ownership.toml) classifies every one of the 213
+root paths as package metadata, an active public facade, an existing composition boundary, or
+frozen legacy implementation debt. The AST checker rejects an unclassified new root module and
+cross-checks public facades against the active exception ledger without importing production
+code.
 
-High fan-in and static test-import blast radius are concentrated in shared registration and
-configuration modules:
+The following 2026-08-30 fan-in table is retained as historical prioritization evidence; it is
+not a current exact-tip measurement:
 
 | File | Production import fan-in | Importing test files |
 |---|---:|---:|
@@ -179,7 +185,7 @@ bootstrap -> transports/integrations -> kernel/application -> domain
 packages declare the outbound protocols they need; adapters implement those protocols. Only
 bootstrap code selects concrete implementations and assembles registries.
 
-## Proposed project structure
+## Current package structure and remaining placements
 
 ```text
 src/beadhive/
@@ -231,8 +237,10 @@ tests/
   system/
 ```
 
-The names describe the target ownership model, not a requirement to move every existing file.
-Small, stable modules may remain at compatibility paths while delegating to these packages.
+The capability, kernel, Herdr integration, CLI adapter, bootstrap, and testing roots shown above
+have landed where present in the source tree. Other entries remain approved destinations for the
+physical-cleanup workstream, not claims that every illustrated directory already exists. Root
+compatibility paths remain only under the checked facade/ownership ledgers.
 
 ## Structure details
 
@@ -567,11 +575,12 @@ The supported commands and checked impact registry are documented in
 reverse-dependent selections are advisory while the full submit and land gates remain
 authoritative.
 
-The current root `tests/conftest.py` contains many autouse fixtures that initialize config,
-identity, storage, validation, telemetry, and runtime concerns. That prevents a plugin test from
-proving independence from core infrastructure.
+The current root `tests/conftest.py` only registers pytest plugins. Stateful compatibility setup
+lives in `tests/stateful_fixtures.py` behind named concern scopes, while `tests/unit/**` receives
+no implicit stateful setup. The exact current consumer and fixture mapping is maintained in
+[`test-fixture-scope-inventory.md`](design/test-fixture-scope-inventory.md).
 
-The target test topology is:
+The current test topology and remaining placement convention is:
 
 ```text
 tests/
@@ -684,10 +693,15 @@ dependency, editable-install, and contributor overhead before the internal contr
 stable. Internal packages can become distributions later with much lower risk once the boundaries
 have measurable independence.
 
-## Revised workstream sequencing
+## Historical sequencing and current continuation
 
-The work should be delivered as multiple dependent epics, not one repository-wide rewrite. Each
-epic must leave `main` compatible and independently reviewable.
+The sequence below records the migration plan that produced the landed module boundaries. It is
+retained as planning history, not as a claim that those packages are still proposed. Remaining
+physical consolidation follows the repository-organization ADR, the exact root manifest, and the
+live successors in the architecture-debt ledger.
+
+The original plan called for multiple dependent epics rather than one repository-wide rewrite.
+Each slice was required to leave `main` compatible and independently reviewable.
 
 ### Epic 0 — completed provenance: exact-seat launch contracts
 

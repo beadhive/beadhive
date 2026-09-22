@@ -1,6 +1,12 @@
 # Test fixture scope inventory
 
-Status: implemented compatibility inventory for `bh-inqwc.3`.
+Status: implemented current-state compatibility inventory (reviewed 2026-09-22).
+
+This inventory is the fixture/test-isolation companion to the
+[`repository-physical-organization` ADR](repository-physical-organization-adr.md), the exact-tip
+[`repository physical-layout baseline`](repository-physical-layout-baseline.md), and the checked
+[`root-module-ownership.toml`](root-module-ownership.toml). Historical introduction under
+`bh-inqwc.3` remains part of Git history; this file describes the current fixture boundary.
 
 The root `tests/conftest.py` only registers pytest plugins. It imports no Beadhive runtime module,
 reads no environment or file, and defines no autouse fixture or session hook. Stateful setup is
@@ -25,6 +31,13 @@ an outer-layer import, operator-home lookup, plugin discovery, Dolt/network acce
 startup, process spawn, or runtime-thread start instead of falling through to operator state.
 This makes migration incremental: move one test, run it, and add or remove the smallest named
 dependency exposed by its failure.
+
+Physical cleanup must move a module's internal tests and fixtures with its owner. A module-local
+test may depend on module-owned fakes and explicitly requested concern scopes, but it may not
+recover a legacy root implementation through `legacy_stateful_test_scope`. Higher-layer tests
+substitute the module's public port; real adapters retain focused contract/integration coverage.
+The corresponding direct, shared-contract, fixture/resource, and reverse-dependent selectors
+remain explicit in `tests/closures.toml` and are documented in [`TEST-CLOSURES`](../TEST-CLOSURES.md).
 
 ## Removed root initialization
 
