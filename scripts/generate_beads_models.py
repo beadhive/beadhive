@@ -30,12 +30,20 @@ def _annotation(schema: Any, *, property_name: str) -> str:
     if enum := schema.get("enum"):
         return _literal(enum)
     type_ = schema.get("type")
+    if isinstance(type_, list):
+        concrete = [candidate for candidate in type_ if candidate != "null"]
+        if not concrete:
+            return "None"
+        return " | ".join(
+            _annotation({**schema, "type": candidate}, property_name=property_name)
+            for candidate in concrete
+        )
     if type_ == "string":
-        return "datetime" if schema.get("format") == "date-time" else "str"
+        return "_JsonDateTime" if schema.get("format") == "date-time" else "StrictStr"
     if type_ == "integer":
-        return "int"
+        return "StrictInt"
     if type_ == "boolean":
-        return "bool"
+        return "StrictBool"
     if type_ == "array":
         if property_name == "dependencies":
             return "list[BdDependencyRecord]"
@@ -47,31 +55,46 @@ def _annotation(schema: Any, *, property_name: str) -> str:
     raise ValueError(f"unsupported schema for property {property_name!r}: {schema!r}")
 
 
+def _allows_null(schema: Any) -> bool:
+    if schema is True:
+        return True
+    if not isinstance(schema, dict):
+        return False
+    if None in schema.get("enum", ()):
+        return True
+    type_ = schema.get("type")
+    return type_ == "null" or isinstance(type_, list) and "null" in type_
+
+
 def _literal_lines(annotation: str, *, indent: str) -> list[str]:
     values = annotation.removeprefix("Literal[").removesuffix("]").split(", ")
     return [f"{indent}Literal[", *(f"{indent}    {value}," for value in values), f"{indent}]"]
 
 
-def _field_lines(property_name: str, annotation: str, *, required: bool) -> list[str]:
-    suffix = "" if required else " | None = None"
-    direct = f"    {property_name}: {annotation}{suffix}"
+def _field_lines(
+    property_name: str, annotation: str, *, required: bool, nullable: bool
+) -> list[str]:
+    union_members = [annotation]
+    if nullable and annotation != "Any":
+        union_members.append("None")
+    if not required:
+        union_members.append("MISSING")
+    field_annotation = " | ".join(union_members)
+    default = "" if required else " = MISSING"
+    direct = f"    {property_name}: {field_annotation}{default}"
     if len(direct) <= 100:
         return [direct]
     if not annotation.startswith("Literal["):
-        raise ValueError(f"cannot format long annotation for {property_name!r}: {annotation}")
-    if required:
+        raise ValueError(f"cannot format long annotation for {property_name!r}: {field_annotation}")
+    if len(union_members) == 1:
         literal = _literal_lines(annotation, indent="    ")
         literal[0] = f"    {property_name}: {literal[0].lstrip()}"
         return literal
-
-    inline_union = f"        {annotation} | None"
-    if len(inline_union) <= 100:
-        return [f"    {property_name}: (", inline_union, "    ) = None"]
     return [
         f"    {property_name}: (",
         *_literal_lines(annotation, indent="        "),
-        "        | None",
-        "    ) = None",
+        *(f"        | {member}" for member in union_members[1:]),
+        f"    ){default}",
     ]
 
 
@@ -91,7 +114,12 @@ def _class_source(name: str, schema: dict[str, Any]) -> str:
     for property_name, property_schema in properties.items():
         annotation = _annotation(property_schema, property_name=property_name)
         lines.extend(
-            _field_lines(property_name, annotation, required=property_name in required_names)
+            _field_lines(
+                property_name,
+                annotation,
+                required=property_name in required_names,
+                nullable=_allows_null(property_schema),
+            )
         )
     if len(lines) == 1:
         lines.append("    pass")
@@ -142,15 +170,36 @@ a new pinned ``bd schema`` artifact.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+)
+from pydantic.experimental.missing_sentinel import MISSING
 
 '''
         + f"SOURCE_BEADS_VERSION = {json.dumps(provenance['version'])}\n"
         + f"SOURCE_BEADS_COMMIT = {json.dumps(provenance['commit'])}\n"
         + f"SOURCE_SCHEMA_SHA256 = {json.dumps(digest)}\n\n\n"
-        + 'class _StrictRecord(BaseModel):\n    model_config = ConfigDict(extra="forbid")\n\n\n'
+        + """def _require_datetime_string(value: Any) -> Any:
+    if not isinstance(value, str):
+        raise ValueError("date-time value must be a JSON string")
+    return value
+
+
+_JsonDateTime = Annotated[datetime, BeforeValidator(_require_datetime_string)]
+
+
+class _StrictRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+"""
         + "\n\n\n".join(classes)
         + "\n"
     )

@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 from pydantic import ValidationError
 
 from beadhive.beads_models import BdBriefIssue, BdDependencyRecord, BdIssueRecord
@@ -85,6 +86,55 @@ def test_out_of_set_dependency_type_fails():
     record = _fixture("canonical-import.json")["dependency"]
     record["type"] = "requires"
     with pytest.raises(ValidationError, match="type"):
+        BdDependencyRecord.model_validate(record)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("description", None),
+        ("description", 1),
+        ("priority", "1"),
+        ("priority", True),
+        ("is_blocked", 1),
+    ],
+)
+def test_issue_model_rejects_the_same_optional_nulls_and_primitive_coercions_as_schema(
+    field, value
+):
+    record = _fixture("canonical-import.json")["issue"]
+    record[field] = value
+    schema = json.loads(CONTRACT.read_text())["types"]["issue"]
+    assert list(Draft202012Validator(schema).iter_errors(record))
+    with pytest.raises(ValidationError, match=field):
+        BdIssueRecord.model_validate(record)
+
+
+def test_omitted_non_nullable_property_stays_omitted_from_model_and_generated_schema():
+    record = _fixture("canonical-import.json")["issue"]
+    issue = BdIssueRecord.model_validate(record)
+    assert "description" not in issue.model_dump()
+    description_schema = BdIssueRecord.model_json_schema()["properties"]["description"]
+    assert description_schema["type"] == "string"
+    assert "anyOf" not in description_schema
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("issue_id", None),
+        ("issue_id", 1),
+        ("created_at", True),
+        ("metadata", None),
+        ("metadata", {"source": "not-a-string"}),
+    ],
+)
+def test_dependency_model_rejects_the_same_nulls_and_primitive_coercions_as_schema(field, value):
+    record = _fixture("canonical-export.json")["dependency"]
+    record[field] = value
+    schema = json.loads(CONTRACT.read_text())["types"]["dependency"]
+    assert list(Draft202012Validator(schema).iter_errors(record))
+    with pytest.raises(ValidationError, match=field):
         BdDependencyRecord.model_validate(record)
 
 

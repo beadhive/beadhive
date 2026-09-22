@@ -35,6 +35,9 @@ dependencies = [
     #. Already resolved transitively via fastmcp/pydantic; pinned direct
     # since config.py now depends on its API, not just whatever fastmcp happens to pull in.
     "pydantic-settings>=2.11",
+    # Generated Beads record models use the v2.12 MISSING sentinel to represent a JSON Schema
+    # property that may be omitted but may not be explicit null, without widening model schemas.
+    "pydantic>=2.12",
 ]
 
 [project.urls]
