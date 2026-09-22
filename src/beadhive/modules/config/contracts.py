@@ -632,6 +632,19 @@ class AttestTrivialConfig(_Section):
     )
 
 
+class AttestSemanticConfig(_Section):
+    """Optional fail-closed policy selector for attest keys.
+
+    The command is an adviser, not an evidence backend: skipped keys produce no carryable
+    proof.  It receives ``--base`` and ``--head`` and must emit the ``jevwrap/select/1`` JSON
+    envelope.  Any absence, error, timeout, or malformed/partial answer selects every key.
+    """
+
+    enabled: bool = False
+    command: str = Field("jevwrap select", min_length=1)
+    timeout_seconds: float = Field(30.0, gt=0)
+
+
 class AttestConfig(_Section):
     """The attest key catalog and impact resolver (Attested Green ADR, Amendment 1). Absent (the
     default) is today's behavior: no keys, native-full."""
@@ -647,6 +660,10 @@ class AttestConfig(_Section):
     trivial: AttestTrivialConfig = Field(
         default_factory=AttestTrivialConfig,
         description="Policy short-circuit for trivially non-behavioral changes.",
+    )
+    semantic: AttestSemanticConfig = Field(
+        default_factory=AttestSemanticConfig,
+        description="Advisory semantic key selection; never produces carryable proof.",
     )
 
     @field_validator("keys")
@@ -1793,6 +1810,7 @@ __all__ = (
     "ArchiveConfig",
     "AttestConfig",
     "AttestImpactConfig",
+    "AttestSemanticConfig",
     "AttestTrivialConfig",
     "AttestKeyConfig",
     "BackupConfig",
