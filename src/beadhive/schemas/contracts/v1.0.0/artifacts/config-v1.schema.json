@@ -64,6 +64,14 @@
           },
           "title": "Keys",
           "type": "array"
+        },
+        "semantic": {
+          "$ref": "#/$defs/AttestSemanticConfig",
+          "description": "Advisory semantic key selection; never produces carryable proof."
+        },
+        "trivial": {
+          "$ref": "#/$defs/AttestTrivialConfig",
+          "description": "Policy short-circuit for trivially non-behavioral changes."
         }
       },
       "title": "AttestConfig",
@@ -172,6 +180,61 @@
         "cmd"
       ],
       "title": "AttestKeyConfig",
+      "type": "object"
+    },
+    "AttestSemanticConfig": {
+      "additionalProperties": false,
+      "description": "Optional fail-closed policy selector for attest keys.\n\nThe command is an adviser, not an evidence backend: skipped keys produce no carryable\nproof.  It receives ``--base`` and ``--head`` and must emit the ``jevwrap/select/1`` JSON\nenvelope.  Any absence, error, timeout, or malformed/partial answer selects every key.",
+      "properties": {
+        "command": {
+          "default": "jevwrap select",
+          "minLength": 1,
+          "title": "Command",
+          "type": "string"
+        },
+        "enabled": {
+          "default": false,
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "timeout_seconds": {
+          "default": 30.0,
+          "exclusiveMinimum": 0,
+          "title": "Timeout Seconds",
+          "type": "number"
+        }
+      },
+      "title": "AttestSemanticConfig",
+      "type": "object"
+    },
+    "AttestTrivialConfig": {
+      "additionalProperties": false,
+      "description": "A POLICY short-circuit: changes whose every path is trivially non-behavioral run a\nreduced key set instead of the full one.\n\nThis is deliberately NOT an impact-resolver concern. A receipt answers \"what did this\nchange touch\", proved from ownership and selectors; this answers \"what do we choose to\ntest\", which carries no proof at all. Keeping them apart is what stops a policy skip from\nbeing recorded as carried evidence: the keys this drops are treated exactly like a\ndisabled key -- they neither run, block, satisfy the aggregate, nor produce carryable\nproof, so `all_keys_green` still refuses to call the revision fully attested.",
+      "properties": {
+        "enabled": {
+          "default": false,
+          "description": "Whether the trivial-change short-circuit applies. Off by default: a hive must choose to trade coverage for latency.",
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "keys": {
+          "description": "Key names that still run for a trivial change. Every other key is skipped by policy. An empty list disables the short-circuit rather than skipping everything.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Keys",
+          "type": "array"
+        },
+        "paths": {
+          "description": "fnmatch glob patterns, matched against every changed path. The short-circuit applies ONLY when EVERY changed path matches one of them, so a single unmatched path restores the normal route. NOTE: these are fnmatch patterns, not pathlib globs -- '*' CROSSES directory separators and '**' has no special meaning, so 'docs/*.md' matches any depth and 'docs/*' also matches 'docs/schemas/x.json'. Prefer the narrowest extension-anchored pattern you can write; the semantic triage exists to veto a pattern that turns out broader than intended.",
+          "items": {
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        }
+      },
+      "title": "AttestTrivialConfig",
       "type": "object"
     },
     "BackupConfig": {
