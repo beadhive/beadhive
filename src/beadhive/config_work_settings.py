@@ -479,7 +479,8 @@ def claim_authority(cfg, entry) -> str:
 def attest_config(cfg, entry):
     """The typed `work.attest` section (Attested Green ADR, Amendment 1), layered per-hive over
     global field by field: `keys` (a per-hive list replaces the global one), `impact.backend`,
-    `impact.timeout_seconds`, `impact.on_unresolved`, and the `trivial` policy section.
+    `impact.timeout_seconds`, `impact.on_unresolved`, and the `trivial` and `semantic` policy
+    sections.
 
     Absent is today's behavior — no keys, `native-full`. A hand-edited invalid catalog degrades
     to NO keys and an invalid impact section to `native-full`: both only ever invalidate more,
@@ -491,6 +492,7 @@ def attest_config(cfg, entry):
         AttestConfig,
         AttestImpactConfig,
         AttestKeyConfig,
+        AttestSemanticConfig,
         AttestTrivialConfig,
     )
 
@@ -519,7 +521,16 @@ def attest_config(cfg, entry):
         # An invalid trivial section degrades to OFF, which invalidates more, never less --
         # the same direction every other degradation in this function takes.
         trivial_cfg = AttestTrivialConfig()
-    return AttestConfig(keys=keys, impact=impact_cfg, trivial=trivial_cfg)
+    semantic = {}
+    for field in ("enabled", "command", "timeout_seconds"):
+        value = layered(cfg, entry, "work.attest.semantic", field, None)
+        if value is not None:
+            semantic[field] = value
+    try:
+        semantic_cfg = AttestSemanticConfig(**semantic)
+    except ValueError:
+        semantic_cfg = AttestSemanticConfig()
+    return AttestConfig(keys=keys, impact=impact_cfg, trivial=trivial_cfg, semantic=semantic_cfg)
 
 
 # ---- release (release-order planning, bh-k2j8) -------------------------------
