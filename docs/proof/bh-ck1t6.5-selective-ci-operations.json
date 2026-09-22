@@ -451,11 +451,11 @@
   ],
   "evidence_date": "2026-09-10",
   "inputs": {
-    "certification": "sha256:db05d46ceaa2be4ce426b4905657109c081e7d37bced7fe1587a1ebfad6f37fc",
+    "certification": "sha256:c891b9d65d9ba006fe190e619944b6bffe00adc2bf8ecc258948815e721f2e8c",
     "generator": "sha256:1044e0e6f263de5211b567f011de06ecc1703ce8a102b4d4f8461435b12eab44",
-    "promotion": "sha256:c51938936cafe36e14224b18321e0d9981374065e0dbb274ea1aaa6a064a0d6f",
+    "promotion": "sha256:e860f9b8ed8d75f8799f6e807c1ac5fd6d7ff5d8a826047ce424674755979e8a",
     "registry": "sha256:e1e73848a03e794bb4c2c594455a9983aab71d582df060a3e9ef01cccf1ba093",
-    "shadow": "sha256:fa3f2de1f5990b580022114f7a4d926d11b97094802180bdadb5ac4f5f50f8c0"
+    "shadow": "sha256:df545b805ad0594119105bccf78f9efce1cd95f75dd1df12b6ce1e16a448b8ce"
   },
   "invalidation": {
     "boundary-change": {
