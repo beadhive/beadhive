@@ -256,6 +256,7 @@ worktree status|hive:string:o,as_json:boolean:o
 _READ_PATHS = {
     "alerts show",
     "backup usage",
+    "beads schema check",
     "config get",
     "config path",
     "config schema",

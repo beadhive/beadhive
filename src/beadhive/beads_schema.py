@@ -36,6 +36,10 @@ _BD_OPTION = typer.Option("bd", "--bd", help="bd executable to verify and invoke
 
 SCHEMA_VERSION = 1
 _VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+(?:[-+][0-9A-Za-z.-]+)?$")
+_VERSION_PARTS = re.compile(
+    r"^(?P<major>[0-9]+)\.(?P<minor>[0-9]+)\.(?P<patch>[0-9]+)"
+    r"(?:-(?P<prerelease>[0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$"
+)
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 
 
@@ -171,20 +175,52 @@ def _contract_paths(repo_root: Path, version: str) -> tuple[Path, Path]:
     return contract_dir / "schema.json", contract_dir / "provenance.json"
 
 
+def _version_key(version: str) -> tuple[Any, ...]:
+    """Return a deterministic SemVer ordering key for a validated Beads version."""
+
+    match = _VERSION_PARTS.fullmatch(version)
+    if match is None:
+        raise SchemaDriftError(f"captured Beads contract has invalid version {version!r}")
+    prerelease = match.group("prerelease")
+    identifiers = (
+        tuple((0, int(part)) if part.isdigit() else (1, part) for part in prerelease.split("."))
+        if prerelease
+        else ()
+    )
+    return (
+        int(match.group("major")),
+        int(match.group("minor")),
+        int(match.group("patch")),
+        prerelease is None,
+        identifiers,
+    )
+
+
+def _previous_capture(repo_root: Path, pin: BeadsPin) -> Path:
+    """Select the greatest captured version older than an uncaptured pin."""
+
+    candidates: list[tuple[tuple[Any, ...], Path]] = []
+    pin_key = _version_key(pin.version)
+    capture_root = repo_root / "src" / "beadhive" / "schemas" / "beads"
+    for provenance in capture_root.glob("v*/provenance.json"):
+        version = provenance.parent.name.removeprefix("v")
+        version_key = _version_key(version)
+        if version_key < pin_key:
+            candidates.append((version_key, provenance))
+    if not candidates:
+        raise SchemaDriftError(
+            f"cannot locate an earlier captured Beads contract for pinned version {pin.version}; "
+            "run `uv run bh beads schema capture`"
+        )
+    return max(candidates, key=lambda candidate: candidate[0])[1]
+
+
 def _read_captured_contract(repo_root: Path, pin: BeadsPin) -> CapturedContract:
     """Load the capture for *pin*, or the previous capture during an unrecaptured upgrade."""
 
     artifact, provenance = _contract_paths(repo_root, pin.version)
     if not provenance.is_file():
-        captures = sorted(
-            (repo_root / "src" / "beadhive" / "schemas" / "beads").glob("v*/provenance.json")
-        )
-        if len(captures) != 1:
-            raise SchemaDriftError(
-                f"cannot locate the captured Beads contract for pinned version {pin.version}; "
-                "run `uv run bh beads schema capture`"
-            )
-        provenance = captures[0]
+        provenance = _previous_capture(repo_root, pin)
         artifact = provenance.with_name("schema.json")
 
     try:
@@ -284,6 +320,12 @@ def schema_delta(previous: dict[str, Any], current: dict[str, Any]) -> tuple[str
         for name in sorted(old_properties.keys() & new_properties.keys()):
             if old_properties[name] != new_properties[name]:
                 lines.append(f"{prefix}: changed {name}")
+        old_required = set(old_type.get("required", ())) if isinstance(old_type, dict) else set()
+        new_required = set(new_type.get("required", ())) if isinstance(new_type, dict) else set()
+        for name in sorted(new_required - old_required):
+            lines.append(f"{prefix}: made required {name}")
+        for name in sorted(old_required - new_required):
+            lines.append(f"{prefix}: made optional {name}")
         old_enums = _enum_members(old_type, f"types.{type_name}")
         new_enums = _enum_members(new_type, f"types.{type_name}")
         for enum_path in sorted(set(old_enums) | set(new_enums)):

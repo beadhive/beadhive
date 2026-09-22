@@ -36,6 +36,13 @@ RETIRED_SURFACE_TOKEN = re.compile(r"(?<![a-z0-9])(?P<token>ws|rig)(?![a-z0-9])"
 RETIRED_SURFACE_EXCLUSIONS: dict[str, str] = {}
 
 
+def test_beads_schema_check_is_published_as_an_unprivileged_read():
+    operation = next(item for item in operations() if item.name == "beads.schema.check")
+
+    assert operation.kind == "read-resource"
+    assert operation.privilege == "unprivileged-read"
+
+
 def _cli_leaves(
     command,
     path: tuple[str, ...] = (),

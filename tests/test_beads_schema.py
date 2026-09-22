@@ -215,6 +215,40 @@ def test_drift_check_names_pin_capture_command_and_exact_contract_delta(bare_che
     assert 'removed enum members "closed"' in message
 
 
+def test_drift_check_uses_latest_prior_capture_when_history_contains_multiple_versions(
+    bare_checkout,
+):
+    _capture(bare_checkout)
+    bare_checkout.joinpath("flake.nix").write_text(_flake(version="1.3.1"))
+    beads_schema.capture_schema(
+        bare_checkout,
+        runner=FakeBd(version="1.3.1"),
+        captured_at=datetime(2026, 9, 21, 7, 0, tzinfo=UTC),
+    )
+    bare_checkout.joinpath("flake.nix").write_text(_flake(version="1.4.0"))
+
+    with pytest.raises(beads_schema.SchemaDriftError) as raised:
+        beads_schema.check_schema_drift(
+            bare_checkout,
+            runner=FakeBd(version="1.4.0"),
+            model_checker=lambda _repo, _captured: None,
+        )
+
+    assert "captured version=1.3.1" in str(raised.value)
+
+
+def test_schema_delta_reports_requiredness_changes():
+    previous = json.loads(_schema())
+    current = json.loads(_schema())
+    previous["types"]["issue"]["required"] = ["id"]
+    current["types"]["issue"]["required"] = ["title"]
+
+    assert beads_schema.schema_delta(previous, current) == (
+        "types.issue.properties: made required title",
+        "types.issue.properties: made optional id",
+    )
+
+
 def test_drift_check_rejects_hand_edited_models_without_hive_or_database(tmp_path: Path):
     root = Path(__file__).parents[1]
     schema_dir = tmp_path / "src/beadhive/schemas/beads/v1.3.0"
