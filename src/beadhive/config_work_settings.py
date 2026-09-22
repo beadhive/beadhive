@@ -479,7 +479,7 @@ def claim_authority(cfg, entry) -> str:
 def attest_config(cfg, entry):
     """The typed `work.attest` section (Attested Green ADR, Amendment 1), layered per-hive over
     global field by field: `keys` (a per-hive list replaces the global one), `impact.backend`,
-    `impact.timeout_seconds`, `impact.on_unresolved`.
+    `impact.timeout_seconds`, `impact.on_unresolved`, and the `trivial` policy section.
 
     Absent is today's behavior — no keys, `native-full`. A hand-edited invalid catalog degrades
     to NO keys and an invalid impact section to `native-full`: both only ever invalidate more,
@@ -487,7 +487,12 @@ def attest_config(cfg, entry):
     development diagnostic: it refuses to run any key when selection cannot answer. The
     normative production mode is `fallback`; an invalid impact section degrades to that mode,
     while `bh config validate` remains the loud diagnostic gate."""
-    from .modules.config.contracts import AttestConfig, AttestImpactConfig, AttestKeyConfig
+    from .modules.config.contracts import (
+        AttestConfig,
+        AttestImpactConfig,
+        AttestKeyConfig,
+        AttestTrivialConfig,
+    )
 
     raw_keys = layered(cfg, entry, "work.attest", "keys", []) or []
     try:
@@ -503,7 +508,18 @@ def attest_config(cfg, entry):
         impact_cfg = AttestImpactConfig(**impact)
     except ValueError:
         impact_cfg = AttestImpactConfig()
-    return AttestConfig(keys=keys, impact=impact_cfg)
+    trivial = {}
+    for field in ("enabled", "paths", "keys"):
+        value = layered(cfg, entry, "work.attest.trivial", field, None)
+        if value is not None:
+            trivial[field] = value
+    try:
+        trivial_cfg = AttestTrivialConfig(**trivial)
+    except ValueError:
+        # An invalid trivial section degrades to OFF, which invalidates more, never less --
+        # the same direction every other degradation in this function takes.
+        trivial_cfg = AttestTrivialConfig()
+    return AttestConfig(keys=keys, impact=impact_cfg, trivial=trivial_cfg)
 
 
 # ---- release (release-order planning, bh-k2j8) -------------------------------
