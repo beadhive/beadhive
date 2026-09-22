@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -148,3 +149,91 @@ def test_invalid_schema_aborts_without_writing(bare_checkout, mutate, reason):
         beads_schema.capture_schema(bare_checkout, runner=bd)
 
     assert not (bare_checkout / "src").exists()
+
+
+def _capture(bare_checkout: Path, schema: bytes | None = None) -> None:
+    beads_schema.capture_schema(
+        bare_checkout,
+        runner=FakeBd(schema),
+        captured_at=datetime(2026, 9, 21, 6, 0, tzinfo=UTC),
+    )
+
+
+def test_drift_check_is_a_clean_noop_for_the_current_pin_without_calling_bd(bare_checkout):
+    _capture(bare_checkout)
+    checked: list[Path] = []
+
+    def never_run(*_args):
+        raise AssertionError("unchanged pin must not invoke bd")
+
+    def models(repo: Path, _captured: beads_schema.CapturedContract) -> None:
+        checked.append(repo)
+
+    beads_schema.check_schema_drift(bare_checkout, runner=never_run, model_checker=models)
+
+    assert checked == [bare_checkout.resolve()]
+
+
+def test_drift_check_rejects_a_hand_edited_captured_artifact_without_calling_bd(bare_checkout):
+    _capture(bare_checkout)
+    artifact = bare_checkout / "src/beadhive/schemas/beads/v1.3.0/schema.json"
+    artifact.write_bytes(artifact.read_bytes() + b"\n")
+
+    with pytest.raises(beads_schema.SchemaDriftError, match="schema bytes drift from provenance"):
+        beads_schema.check_schema_drift(
+            bare_checkout,
+            runner=lambda *_args: (_ for _ in ()).throw(AssertionError("no bd expected")),
+            model_checker=lambda _repo, _captured: None,
+        )
+
+
+def test_drift_check_names_pin_capture_command_and_exact_contract_delta(bare_checkout):
+    previous = json.loads(_schema())
+    previous["types"]["issue"]["properties"]["status"] = {"enum": ["open", "closed"]}
+    _capture(bare_checkout, json.dumps(previous).encode())
+    bare_checkout.joinpath("flake.nix").write_text(_flake(version="1.3.1"))
+    current = json.loads(json.dumps(previous))
+    current["types"]["issue"]["properties"].pop("id")
+    current["types"]["issue"]["properties"]["title"] = {"type": "string"}
+    current["types"]["issue"]["properties"]["status"] = {"enum": ["open", "review"]}
+
+    with pytest.raises(beads_schema.SchemaDriftError) as raised:
+        beads_schema.check_schema_drift(
+            bare_checkout,
+            runner=FakeBd(json.dumps(current).encode(), version="1.3.1"),
+            model_checker=lambda _repo, _captured: None,
+        )
+
+    message = str(raised.value)
+    assert "pinned version=1.3.1" in message
+    assert f"captured version={PIN_VERSION}" in message
+    assert "uv run bh beads schema capture" in message
+    assert "types.issue.properties: added title" in message
+    assert "types.issue.properties: removed id" in message
+    assert "types.issue.properties: changed status" in message
+    assert 'added enum members "review"' in message
+    assert 'removed enum members "closed"' in message
+
+
+def test_drift_check_rejects_hand_edited_models_without_hive_or_database(tmp_path: Path):
+    root = Path(__file__).parents[1]
+    schema_dir = tmp_path / "src/beadhive/schemas/beads/v1.3.0"
+    schema_dir.mkdir(parents=True)
+    (tmp_path / "scripts").mkdir()
+    shutil.copy(root / "flake.nix", tmp_path / "flake.nix")
+    shutil.copy(
+        root / "scripts/generate_beads_models.py", tmp_path / "scripts/generate_beads_models.py"
+    )
+    shutil.copy(root / "src/beadhive/beads_models.py", tmp_path / "src/beadhive/beads_models.py")
+    shutil.copy(root / "src/beadhive/schemas/beads/v1.3.0/schema.json", schema_dir / "schema.json")
+    shutil.copy(
+        root / "src/beadhive/schemas/beads/v1.3.0/provenance.json", schema_dir / "provenance.json"
+    )
+    models = tmp_path / "src/beadhive/beads_models.py"
+    models.write_text(models.read_text() + "# hand edit\n")
+
+    with pytest.raises(beads_schema.SchemaDriftError, match="generated Beads models drift"):
+        beads_schema.check_schema_drift(
+            tmp_path,
+            runner=lambda *_args: (_ for _ in ()).throw(AssertionError("no bd expected")),
+        )

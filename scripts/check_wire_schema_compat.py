@@ -28,6 +28,23 @@ OPERATION_CATALOG_ARTIFACT_ID = "urn:beadhive:wire-catalog:operations:1"
 OPERATION_CATALOG_SCHEMA_ID = "urn:beadhive:wire-schema:operation-catalog:1"
 JSON_SCHEMA_ARTIFACT = "json-schema"
 CATALOG_DATA_ARTIFACT = "operation-catalog-data"
+_DOCTOR_V1_INTERACTIVITY = {
+    "guard_conditions": [],
+    "guard_parameters": [],
+    "mode": "none",
+    "prompt_seams": [],
+    "reason": None,
+}
+_DOCTOR_V1_METADATA_CORRECTION = {
+    "guard_conditions": ["stdin-not-tty", "mcp-uses-pure-doctor-payload"],
+    "guard_parameters": [],
+    "mode": "guarded-prompt",
+    "prompt_seams": ["beadhive.doctor._offer_workspace_init:typer.confirm"],
+    "reason": (
+        "an unseeded internal workspace is offered only on a TTY; JSON and headless use "
+        "never prompt"
+    ),
+}
 
 
 class Reader(Protocol):
@@ -620,26 +637,29 @@ def _compare_catalog_value(old: Any, new: Any, path: str, errors: list[str]) -> 
         errors.append(f"{path}: value changed from {old!r} to {new!r}")
 
 
-def _catalog_operations(
-    document: dict[str, Any], side: str, errors: list[str]
+def _catalog_members(
+    document: dict[str, Any], collection: str, identity: str, side: str, errors: list[str]
 ) -> dict[str, dict[str, Any]]:
-    operations = document.get("operations")
-    if not isinstance(operations, list):
-        errors.append("$.operations: must be an array")
+    members = document.get(collection)
+    if not isinstance(members, list):
+        errors.append(f"$.{collection}: must be an array")
         return {}
     indexed: dict[str, dict[str, Any]] = {}
-    for index, operation in enumerate(operations):
-        if not isinstance(operation, dict) or not isinstance(operation.get("name"), str):
-            errors.append(f"$.operations[{index}]: operation must carry a string name")
+    for index, member in enumerate(members):
+        if not isinstance(member, dict) or not isinstance(member.get(identity), str):
+            errors.append(f"$.{collection}[{index}]: member must carry a string {identity!r}")
             continue
-        name = operation["name"]
-        if name in indexed:
+        key = member[identity]
+        if key in indexed:
+            member_kind = (
+                "operation" if collection == "operations" else collection.removesuffix("s")
+            )
             errors.append(
-                f"$.operations[{index}].name: duplicate canonical operation identity "
-                f"{name!r} in {side} catalog"
+                f"$.{collection}[{index}].{identity}: duplicate canonical {member_kind} identity "
+                f"{key!r} in {side} catalog"
             )
             continue
-        indexed[name] = operation
+        indexed[key] = member
     return indexed
 
 
@@ -685,6 +705,44 @@ def _catalog_projection_uniqueness(
             )
 
 
+def _is_doctor_metadata_correction(old: dict[str, Any], new: dict[str, Any]) -> bool:
+    """Recognize the one audited v1 correction for doctor’s historic prompt metadata.
+
+    The command has always kept JSON, headless, and MCP paths non-interactive.  The v1.4
+    catalog omitted its TTY-only workspace-init offer; v1.5 corrects precisely that omission.
+    Every field and both endpoints are exact so this cannot become a general exception for
+    projection semantics.
+    """
+
+    old_cli = old.get("surfaces", {}).get("cli")
+    new_cli = new.get("surfaces", {}).get("cli")
+    return (
+        isinstance(old_cli, dict)
+        and isinstance(new_cli, dict)
+        and old_cli.get("interactivity") == _DOCTOR_V1_INTERACTIVITY
+        and new_cli.get("interactivity") == _DOCTOR_V1_METADATA_CORRECTION
+    )
+
+
+def _compare_catalog_operation(
+    old: dict[str, Any], new: dict[str, Any], name: str, errors: list[str]
+) -> None:
+    path = f"$.operations[name={name!r}]"
+    if name != "doctor" or not _is_doctor_metadata_correction(old, new):
+        _compare_catalog_value(old, new, path, errors)
+        return
+
+    # Preserve the old interactivity value only for comparison. Everything else in the
+    # operation remains subject to the ordinary exact recursive check below.
+    corrected = dict(new)
+    surfaces = dict(new["surfaces"])
+    cli = dict(surfaces["cli"])
+    cli["interactivity"] = old["surfaces"]["cli"]["interactivity"]
+    surfaces["cli"] = cli
+    corrected["surfaces"] = surfaces
+    _compare_catalog_value(old, corrected, path, errors)
+
+
 def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> list[str]:
     """Return append-only, same-major compatibility failures for catalog data.
 
@@ -692,8 +750,9 @@ def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> li
     A uniquely named, schema-valid operation may be appended because old readers ignore it.
     """
     errors: list[str] = []
-    old_keys = set(old) - {"operations", "catalog_version"}
-    new_keys = set(new) - {"operations", "catalog_version"}
+    append_only_collections = {"operations": "name", "cli_parents": "path"}
+    old_keys = set(old) - set(append_only_collections) - {"catalog_version"}
+    new_keys = set(new) - set(append_only_collections) - {"catalog_version"}
     for key in sorted(old_keys - new_keys):
         errors.append(f"$.{key}: top-level field was removed")
     for key in sorted(new_keys - old_keys):
@@ -716,16 +775,22 @@ def catalog_compatibility_errors(old: dict[str, Any], new: dict[str, Any]) -> li
             f"$.catalog_version: invalid semantic version change {old_version!r} -> {new_version!r}"
         )
 
-    old_operations = _catalog_operations(old, "baseline", errors)
-    new_operations = _catalog_operations(new, "candidate", errors)
+    old_operations = _catalog_members(old, "operations", "name", "baseline", errors)
+    new_operations = _catalog_members(new, "operations", "name", "candidate", errors)
     _catalog_projection_uniqueness(new_operations, errors)
     for name in sorted(set(old_operations) - set(new_operations)):
         errors.append(f"$.operations[name={name!r}]: canonical operation was removed")
     for name in sorted(set(old_operations) & set(new_operations)):
+        _compare_catalog_operation(old_operations[name], new_operations[name], name, errors)
+    old_parents = _catalog_members(old, "cli_parents", "path", "baseline", errors)
+    new_parents = _catalog_members(new, "cli_parents", "path", "candidate", errors)
+    for path in sorted(set(old_parents) - set(new_parents)):
+        errors.append(f"$.cli_parents[path={path!r}]: canonical CLI parent was removed")
+    for path in sorted(set(old_parents) & set(new_parents)):
         _compare_catalog_value(
-            old_operations[name],
-            new_operations[name],
-            f"$.operations[name={name!r}]",
+            old_parents[path],
+            new_parents[path],
+            f"$.cli_parents[path={path!r}]",
             errors,
         )
     return errors

@@ -10,6 +10,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -42,6 +43,10 @@ class CaptureError(ValueError):
     """The binary, pin, or emitted schema is not the contract we can safely vendor."""
 
 
+class SchemaDriftError(CaptureError):
+    """The checked-in Beads contract no longer represents the configured pin."""
+
+
 @dataclass(frozen=True)
 class BeadsPin:
     version: str
@@ -57,7 +62,18 @@ class CaptureResult:
     commit: str
 
 
+@dataclass(frozen=True)
+class CapturedContract:
+    """The checked-in schema/provenance pair selected for an upgrade comparison."""
+
+    artifact: Path
+    provenance: Path
+    pin: BeadsPin
+    document: dict[str, Any]
+
+
 Runner = Callable[[Sequence[str], Path], subprocess.CompletedProcess[bytes]]
+ModelChecker = Callable[[Path, CapturedContract], None]
 
 
 def _run(command: Sequence[str], cwd: Path) -> subprocess.CompletedProcess[bytes]:
@@ -150,6 +166,203 @@ def _write_atomic(path: Path, data: bytes) -> None:
     temporary.replace(path)
 
 
+def _contract_paths(repo_root: Path, version: str) -> tuple[Path, Path]:
+    contract_dir = repo_root / "src" / "beadhive" / "schemas" / "beads" / f"v{version}"
+    return contract_dir / "schema.json", contract_dir / "provenance.json"
+
+
+def _read_captured_contract(repo_root: Path, pin: BeadsPin) -> CapturedContract:
+    """Load the capture for *pin*, or the previous capture during an unrecaptured upgrade."""
+
+    artifact, provenance = _contract_paths(repo_root, pin.version)
+    if not provenance.is_file():
+        captures = sorted(
+            (repo_root / "src" / "beadhive" / "schemas" / "beads").glob("v*/provenance.json")
+        )
+        if len(captures) != 1:
+            raise SchemaDriftError(
+                f"cannot locate the captured Beads contract for pinned version {pin.version}; "
+                "run `uv run bh beads schema capture`"
+            )
+        provenance = captures[0]
+        artifact = provenance.with_name("schema.json")
+
+    try:
+        provenance_document = json.loads(provenance.read_text(encoding="utf-8"))
+        schema_bytes = artifact.read_bytes()
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SchemaDriftError(f"cannot read captured Beads contract: {exc}") from exc
+    if not isinstance(provenance_document, dict):
+        raise SchemaDriftError(f"{provenance}: expected a JSON object")
+
+    captured_pin = BeadsPin(
+        version=str(provenance_document.get("version", "<missing>")),
+        commit=str(provenance_document.get("commit", "<missing>")),
+    )
+    expected_digest = provenance_document.get("document_sha256")
+    observed_digest = hashlib.sha256(schema_bytes).hexdigest()
+    if expected_digest != observed_digest:
+        raise SchemaDriftError(
+            "captured Beads schema bytes drift from provenance: "
+            f"expected sha256={expected_digest!r}; observed sha256={observed_digest}"
+        )
+    document = _decode_json(schema_bytes, source=str(artifact))
+    validate_schema_document(document)
+    return CapturedContract(artifact, provenance, captured_pin, document)
+
+
+def _read_pinned_schema(
+    repo_root: Path, pin: BeadsPin, *, bd_binary: str, runner: Runner
+) -> dict[str, Any]:
+    """Read the schema emitted by the binary for a changed pin without writing a capture."""
+
+    version_document = _invoke_json(
+        runner, [bd_binary, "version", "--json"], repo_root, source="bd version --json"
+    )
+    observed = BeadsPin(
+        version=str(version_document.get("version", "<missing>")),
+        commit=str(version_document.get("commit", "<missing>")),
+    )
+    if observed != pin:
+        raise SchemaDriftError(
+            "Beads binary pin mismatch while checking schema drift: "
+            f"expected version={pin.version} commit={pin.commit}; "
+            f"observed version={observed.version} commit={observed.commit}"
+        )
+    try:
+        result = runner([bd_binary, "schema"], repo_root)
+    except OSError as exc:
+        raise SchemaDriftError(f"cannot invoke {bd_binary!r}: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).decode("utf-8", errors="replace").strip()
+        raise SchemaDriftError(
+            f"bd schema failed with exit {result.returncode}: {detail or 'no output'}"
+        )
+    document = _decode_json(result.stdout, source="bd schema")
+    validate_schema_document(document)
+    return document
+
+
+def _enum_members(value: Any, path: str = "") -> dict[str, frozenset[str]]:
+    """Return every enum's JSON path and members, including nested schema fragments."""
+
+    found: dict[str, frozenset[str]] = {}
+    if isinstance(value, dict):
+        enum = value.get("enum")
+        if isinstance(enum, list):
+            found[path] = frozenset(json.dumps(member, sort_keys=True) for member in enum)
+        for name, child in value.items():
+            child_path = f"{path}.{name}" if path else name
+            found.update(_enum_members(child, child_path))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            found.update(_enum_members(child, f"{path}[{index}]"))
+    return found
+
+
+def schema_delta(previous: dict[str, Any], current: dict[str, Any]) -> tuple[str, ...]:
+    """Describe property and enum changes compactly enough for an upgrade review."""
+
+    lines: list[str] = []
+    previous_types = previous.get("types", {})
+    current_types = current.get("types", {})
+    if not isinstance(previous_types, dict) or not isinstance(current_types, dict):
+        return ("schema root types changed",)
+    for type_name in sorted(set(previous_types) | set(current_types)):
+        old_type = previous_types.get(type_name, {})
+        new_type = current_types.get(type_name, {})
+        old_properties = old_type.get("properties", {}) if isinstance(old_type, dict) else {}
+        new_properties = new_type.get("properties", {}) if isinstance(new_type, dict) else {}
+        if not isinstance(old_properties, dict) or not isinstance(new_properties, dict):
+            lines.append(f"types.{type_name}.properties changed")
+            continue
+        prefix = f"types.{type_name}.properties"
+        for name in sorted(new_properties.keys() - old_properties.keys()):
+            lines.append(f"{prefix}: added {name}")
+        for name in sorted(old_properties.keys() - new_properties.keys()):
+            lines.append(f"{prefix}: removed {name}")
+        for name in sorted(old_properties.keys() & new_properties.keys()):
+            if old_properties[name] != new_properties[name]:
+                lines.append(f"{prefix}: changed {name}")
+        old_enums = _enum_members(old_type, f"types.{type_name}")
+        new_enums = _enum_members(new_type, f"types.{type_name}")
+        for enum_path in sorted(set(old_enums) | set(new_enums)):
+            old_members = old_enums.get(enum_path, frozenset())
+            new_members = new_enums.get(enum_path, frozenset())
+            added = sorted(new_members - old_members)
+            removed = sorted(old_members - new_members)
+            if added:
+                lines.append(f"{enum_path}: added enum members {', '.join(added)}")
+            if removed:
+                lines.append(f"{enum_path}: removed enum members {', '.join(removed)}")
+    return tuple(lines)
+
+
+def _check_generated_models(repo_root: Path, captured: CapturedContract) -> None:
+    """Run the generator's byte-for-byte check without loading a hive or database."""
+
+    command = [
+        sys.executable,
+        str(repo_root / "scripts" / "generate_beads_models.py"),
+        "--check",
+        "--schema",
+        str(captured.artifact),
+        "--provenance",
+        str(captured.provenance),
+        "--output",
+        str(repo_root / "src" / "beadhive" / "beads_models.py"),
+    ]
+    result = subprocess.run(command, cwd=repo_root, capture_output=True, text=True, check=False)
+    if result.returncode:
+        detail = (result.stderr or result.stdout).strip()
+        raise SchemaDriftError(
+            "generated Beads models drift from the captured schema; "
+            "run `uv run python scripts/generate_beads_models.py`"
+            + (f": {detail}" if detail else "")
+        )
+
+
+def check_schema_drift(
+    repo_root: Path,
+    *,
+    bd_binary: str = "bd",
+    runner: Runner = _run,
+    model_checker: ModelChecker = _check_generated_models,
+) -> None:
+    """Check capture/model integrity; invoke ``bd schema`` only after a pin change."""
+
+    repo_root = repo_root.resolve()
+    pin = read_beads_pin(repo_root / "flake.nix")
+    captured = _read_captured_contract(repo_root, pin)
+    failures: list[str] = []
+    try:
+        model_checker(repo_root, captured)
+    except SchemaDriftError as exc:
+        failures.append(str(exc))
+
+    if captured.pin != pin:
+        failures.append(
+            "Beads pin drift: "
+            f"pinned version={pin.version} commit={pin.commit}; "
+            f"captured version={captured.pin.version} commit={captured.pin.commit}.\n"
+            "Capture the new contract with `uv run bh beads schema capture`."
+        )
+        try:
+            current = _read_pinned_schema(repo_root, pin, bd_binary=bd_binary, runner=runner)
+        except CaptureError as exc:
+            failures.append(f"Unable to inspect the new pinned schema: {exc}")
+        else:
+            delta = schema_delta(captured.document, current)
+            if delta:
+                failures.append(
+                    "Schema contract delta:\n" + "\n".join(f"- {line}" for line in delta)
+                )
+            else:
+                failures.append("Schema contract delta: no property or enum changes")
+    if failures:
+        raise SchemaDriftError("\n\n".join(failures))
+
+
 def capture_schema(
     repo_root: Path,
     *,
@@ -197,9 +410,8 @@ def capture_schema(
     }
     provenance_bytes = (json.dumps(provenance_document, indent=2) + "\n").encode()
 
-    contract_dir = repo_root / "src" / "beadhive" / "schemas" / "beads" / f"v{pin.version}"
-    artifact = contract_dir / "schema.json"
-    provenance = contract_dir / "provenance.json"
+    artifact, provenance = _contract_paths(repo_root, pin.version)
+    contract_dir = artifact.parent
     contract_dir.mkdir(parents=True, exist_ok=True)
     _write_atomic(artifact, raw_document)
     _write_atomic(provenance, provenance_bytes)
@@ -220,3 +432,17 @@ def capture_command(
         raise typer.Exit(1) from exc
     typer.echo(f"✓ captured Beads v{captured.version} schema: {captured.artifact}")
     typer.echo(f"  sha256: {captured.sha256}")
+
+
+@schema_app.command("check")
+def check_command(
+    repo: Path | None = _REPO_OPTION,
+    bd_binary: str = _BD_OPTION,
+) -> None:
+    """Fail if the pinned schema capture or its generated models have drifted."""
+
+    try:
+        check_schema_drift(repo or Path.cwd(), bd_binary=bd_binary)
+    except CaptureError as exc:
+        typer.echo(f"✗ {exc}", err=True)
+        raise typer.Exit(1) from exc

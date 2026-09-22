@@ -40,3 +40,9 @@ models in `beadhive.modules.config.contracts`. Generate it with
 `uv run python scripts/generate_config_schema.py`; check drift with the same command plus
 `--check`. The existing `bh config schema --json` list remains the explicitly versioned legacy
 row projection rather than changing shape in place.
+
+Release 1.5.0 publishes the current operation catalog without rewriting any earlier v1 release.
+It adds the Beads schema capture/check operations and their CLI parent paths, and records the
+pre-existing guarded interactive workspace-init offer on `bh doctor`. That metadata correction
+is explicitly limited to the historic non-interactive doctor projection; operation and parent
+identities remain immutable within the major under the catalog compatibility gate.

@@ -293,12 +293,97 @@ def _projection_document(surface: str) -> dict[str, Any]:
         for row in inventory["projections"]
         if row["surface"] == surface or row["surface"].startswith(f"{surface}-")
     ]
-    return {
+    document = {
         "format_version": 1,
         "projection_version": inventory["inventory_version"],
         "policy": inventory["policy"],
         "projections": projections,
     }
+    return _append_only_catalog_document(
+        document,
+        artifact_id=f"urn:beadhive:wire-catalog:{surface}-projections:1",
+        collection="projections",
+        identity="identifier",
+    )
+
+
+def _append_only_catalog_document(
+    document: dict[str, Any],
+    *,
+    artifact_id: str,
+    collection: str,
+    identity: str,
+    nested_collections: tuple[tuple[str, str], ...] = (),
+) -> dict[str, Any]:
+    """Render a candidate catalog in the immutable published order plus new tail.
+
+    Source owners may use a useful local sort order.  Official release catalogs are
+    append-only, so their serialized representation instead retains every published
+    member's position and places genuinely new identities at the end.  Member values
+    are always taken from the candidate: removals and edits therefore remain visible to
+    ``compatibility_errors`` and cannot be masked by this ordering step.
+    """
+
+    published = load_published_baseline()
+    baseline_artifact = next(
+        (artifact for artifact in published["artifacts"] if artifact["id"] == artifact_id),
+        None,
+    )
+    if not isinstance(baseline_artifact, dict):
+        raise ValueError(f"published append-only catalog {artifact_id!r} is missing")
+    baseline_document = baseline_artifact.get("document")
+    members = document.get(collection)
+    baseline_members = (
+        baseline_document.get(collection) if isinstance(baseline_document, dict) else None
+    )
+    if not isinstance(members, list) or not isinstance(baseline_members, list):
+        raise ValueError(f"append-only catalog {artifact_id!r} has invalid {collection!r} members")
+
+    def member_map(rows: list[Any], source: str, member_identity: str) -> dict[str, Any]:
+        values: dict[str, Any] = {}
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get(member_identity), str):
+                raise ValueError(
+                    f"append-only catalog {artifact_id!r} has invalid {source} {member_identity!r}"
+                )
+            key = row[member_identity]
+            if key in values:
+                raise ValueError(
+                    f"append-only catalog {artifact_id!r} has duplicate {source} "
+                    f"{member_identity} {key!r}"
+                )
+            values[key] = row
+        return values
+
+    def ordered_members(
+        candidate_rows: list[Any], published_rows: list[Any], member_identity: str
+    ) -> list[Any]:
+        candidate_by_identity = member_map(candidate_rows, "candidate", member_identity)
+        baseline_by_identity = member_map(published_rows, "published", member_identity)
+        ordered = [
+            candidate_by_identity[key]
+            for key in baseline_by_identity
+            if key in candidate_by_identity
+        ]
+        ordered.extend(
+            row for row in candidate_rows if row[member_identity] not in baseline_by_identity
+        )
+        return ordered
+
+    ordered = ordered_members(members, baseline_members, identity)
+    rendered = deepcopy(document)
+    rendered[collection] = ordered
+    for nested_collection, nested_identity in nested_collections:
+        candidate_nested = document.get(nested_collection)
+        published_nested = baseline_document.get(nested_collection)
+        if not isinstance(candidate_nested, list) or not isinstance(published_nested, list):
+            raise ValueError(
+                f"append-only catalog {artifact_id!r} has invalid {nested_collection!r} members"
+            )
+        rendered[nested_collection] = ordered_members(
+            candidate_nested, published_nested, nested_identity
+        )
+    return rendered
 
 
 def _gateway_document() -> dict[str, Any]:
@@ -500,7 +585,13 @@ def build_release() -> dict[str, Any]:
             example={},
             assertion="valid-json-schema-instance",
         )
-    catalog = operations.document()
+    catalog = _append_only_catalog_document(
+        operations.document(),
+        artifact_id=operations.CATALOG_INSTANCE_ARTIFACT_ID,
+        collection="operations",
+        identity="name",
+        nested_collections=(("cli_parents", "path"),),
+    )
     add(
         family="operation-catalog",
         artifact_id=operations.CATALOG_INSTANCE_ARTIFACT_ID,

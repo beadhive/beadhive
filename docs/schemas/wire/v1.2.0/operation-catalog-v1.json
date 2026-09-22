@@ -26,24 +26,6 @@
       "declared_hidden": false,
       "divergence": null,
       "effective_hidden": false,
-      "effective_panel": "Admin / infra",
-      "panel": "Admin / infra",
-      "path": "beads"
-    },
-    {
-      "alias_of": null,
-      "declared_hidden": false,
-      "divergence": null,
-      "effective_hidden": false,
-      "effective_panel": "Admin / infra",
-      "panel": null,
-      "path": "beads schema"
-    },
-    {
-      "alias_of": null,
-      "declared_hidden": false,
-      "divergence": null,
-      "effective_hidden": false,
       "effective_panel": "Integration plane",
       "panel": "Integration plane",
       "path": "checkpoint"
@@ -890,66 +872,6 @@
             "issues",
             "hive"
           ]
-        }
-      }
-    },
-    {
-      "alias_of": null,
-      "constraints": {
-        "hq_write": false,
-        "interactive": false,
-        "override_parameters": [],
-        "secret_material": false
-      },
-      "kind": "action",
-      "name": "beads.schema.capture",
-      "parameters": [
-        {
-          "name": "repo",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
-        },
-        {
-          "name": "bd_binary",
-          "privilege": "inherited",
-          "required": false,
-          "schema": {
-            "type": "string"
-          }
-        }
-      ],
-      "privilege": "ordinary-mutation",
-      "result_schema": "urn:beadhive:wire-schema:json-value:1",
-      "surfaces": {
-        "cli": {
-          "aliases": [],
-          "declared_hidden": false,
-          "effective_hidden": false,
-          "granularity": {
-            "mode": "fine",
-            "reason": null
-          },
-          "interactivity": {
-            "guard_conditions": [],
-            "guard_parameters": [],
-            "mode": "none",
-            "prompt_seams": [],
-            "reason": null
-          },
-          "parameter_map": {},
-          "parameters": [
-            "repo",
-            "bd_binary"
-          ],
-          "path": "beads schema capture",
-          "progress": {
-            "mode": "stdout",
-            "notification_uris": [],
-            "reason": "CLI reports human-oriented progress on stdout/stderr"
-          }
         }
       }
     },

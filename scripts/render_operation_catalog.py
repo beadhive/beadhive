@@ -10,7 +10,7 @@ from pathlib import Path
 from beadhive.operation_catalog import document
 
 ROOT = Path(__file__).resolve().parents[1]
-TARGET = ROOT / "docs" / "schemas" / "wire" / "v1.2.0" / "operation-catalog-v1.json"
+TARGET = ROOT / "docs" / "schemas" / "wire" / "v1.5.0" / "operation-catalog-v1.json"
 
 
 def main(argv: list[str] | None = None) -> int:

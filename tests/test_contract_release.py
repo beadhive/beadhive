@@ -690,6 +690,73 @@ def test_append_only_catalog_policy_allows_tail_member_addition(
     assert compatibility_errors(old, additive) == []
 
 
+@pytest.mark.parametrize(
+    ("artifact_id", "collection", "identity"),
+    [
+        ("urn:beadhive:wire-catalog:operations:1", "operations", "name"),
+        ("urn:beadhive:wire-catalog:cli-projections:1", "projections", "identifier"),
+    ],
+)
+def test_candidate_catalog_preserves_published_prefix_and_appends_new_members(
+    artifact_id: str, collection: str, identity: str
+) -> None:
+    candidate = build_release()
+    artifact = next(row for row in candidate["artifacts"] if row["id"] == artifact_id)
+    document = deepcopy(artifact["document"])
+    new_member = deepcopy(document[collection][0])
+    new_member[identity] = f"{new_member[identity]}.new"
+    # A source owner's natural order can place a new identity first.  The release
+    # serialization must retain the published prefix and make this an addition.
+    document[collection].insert(0, new_member)
+
+    normalized = contract_release._append_only_catalog_document(
+        document,
+        artifact_id=artifact_id,
+        collection=collection,
+        identity=identity,
+    )
+    published = load_published_baseline()
+    previous = next(row for row in published["artifacts"] if row["id"] == artifact_id)["document"]
+    assert normalized[collection][:-1] == previous[collection]
+    assert normalized[collection][-1] == new_member
+
+
+def test_candidate_catalog_normalization_keeps_existing_member_drift_visible() -> None:
+    published = load_published_baseline()
+    candidate = build_release()
+    artifact = next(
+        row
+        for row in candidate["artifacts"]
+        if row["id"] == "urn:beadhive:wire-catalog:operations:1"
+    )
+
+    removed = deepcopy(artifact["document"])
+    removed["operations"].pop(0)
+    artifact["document"] = contract_release._append_only_catalog_document(
+        removed,
+        artifact_id=artifact["id"],
+        collection="operations",
+        identity="name",
+        nested_collections=(("cli_parents", "path"),),
+    )
+    assert any("append-only" in error for error in compatibility_errors(published, candidate))
+
+    changed = build_release()
+    artifact = next(
+        row for row in changed["artifacts"] if row["id"] == "urn:beadhive:wire-catalog:operations:1"
+    )
+    document = deepcopy(artifact["document"])
+    document["operations"][0]["privilege"] = "unexpected"
+    artifact["document"] = contract_release._append_only_catalog_document(
+        document,
+        artifact_id=artifact["id"],
+        collection="operations",
+        identity="name",
+        nested_collections=(("cli_parents", "path"),),
+    )
+    assert any("privilege" in error for error in compatibility_errors(published, changed))
+
+
 def test_openapi_policy_rejects_route_method_request_response_and_schema_breaks() -> None:
     old = build_release()
 

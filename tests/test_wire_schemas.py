@@ -17,7 +17,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 ROOT = Path(__file__).resolve().parents[1]
-WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.4.0"
+WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.5.0"
 _SPEC = importlib.util.spec_from_file_location(
     "check_wire_schema_compat", ROOT / "scripts" / "check_wire_schema_compat.py"
 )
@@ -41,7 +41,7 @@ def test_release_manifest_schemas_and_conformance_fixtures_are_valid() -> None:
     fixtures = json.loads((WIRE / "conformance.json").read_text())
     cases = {case["name"]: case for case in fixtures["cases"]}
 
-    assert release.version == "1.4.0"
+    assert release.version == "1.5.0"
     assert set(release.artifacts) == {
         "urn:beadhive:wire-schema:bh.hive-onboard:1",
         "urn:beadhive:wire-schema:bh.hive-ready:1",
@@ -150,6 +150,62 @@ def test_catalog_compatibility_allows_a_unique_additive_operation() -> None:
     candidate["operations"].append(added)
 
     assert catalog_compatibility_errors(old, candidate) == []
+
+
+def test_catalog_compatibility_allows_additive_cli_parent_but_rejects_drift() -> None:
+    old = _catalog()
+    additive = deepcopy(old)
+    added = deepcopy(additive["cli_parents"][0])
+    added["path"] = "future parent"
+    additive["cli_parents"].append(added)
+    assert catalog_compatibility_errors(old, additive) == []
+
+    removed = deepcopy(old)
+    removed["cli_parents"].pop(0)
+    assert any(
+        "canonical CLI parent was removed" in error
+        for error in catalog_compatibility_errors(old, removed)
+    )
+
+    changed = deepcopy(old)
+    changed["cli_parents"][0]["effective_hidden"] = True
+    assert any(
+        "effective_hidden: value changed" in error
+        for error in catalog_compatibility_errors(old, changed)
+    )
+
+
+def test_catalog_compatibility_allows_only_the_audited_doctor_metadata_correction() -> None:
+    old = json.loads((ROOT / "docs/schemas/wire/v1.4.0/operation-catalog-v1.json").read_text())
+    candidate = _catalog()
+    assert catalog_compatibility_errors(old, candidate) == []
+
+    changed_reason = deepcopy(candidate)
+    _operation(changed_reason, "doctor")["surfaces"]["cli"]["interactivity"]["reason"] = (
+        "different reason"
+    )
+    assert any(
+        "interactivity.reason" in error
+        for error in catalog_compatibility_errors(old, changed_reason)
+    )
+
+    removed_guard = deepcopy(candidate)
+    _operation(removed_guard, "doctor")["surfaces"]["cli"]["interactivity"]["guard_conditions"] = [
+        "stdin-not-tty"
+    ]
+    assert any(
+        "interactivity.guard_conditions" in error
+        for error in catalog_compatibility_errors(old, removed_guard)
+    )
+
+    unrelated = deepcopy(candidate)
+    _operation(unrelated, "config.set")["surfaces"]["cli"]["interactivity"]["mode"] = (
+        "guarded-prompt"
+    )
+    assert any(
+        "config.set" in error and "interactivity.mode: value changed" in error
+        for error in catalog_compatibility_errors(old, unrelated)
+    )
 
 
 def test_catalog_compatibility_rejects_duplicate_operation_and_projection_identities() -> None:
@@ -448,7 +504,16 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
 ) -> None:
     """Exercise main(), Git baseline loading, release validation, and the exit status together."""
     repo = tmp_path / "wire-gate-repo"
-    shutil.copytree(ROOT / "docs" / "schemas" / "wire", repo / "docs" / "schemas" / "wire")
+    wire = repo / "docs" / "schemas" / "wire"
+    shutil.copytree(ROOT / "docs" / "schemas" / "wire", wire)
+    # This fixture intentionally snapshots the historic v1.4 baseline before
+    # creating a v1.4.1 candidate; later repository releases are not published
+    # in the synthetic baseline.
+    shutil.rmtree(wire / "v1.5.0")
+    index = json.loads((wire / "index.json").read_text())
+    index["releases"] = [release for release in index["releases"] if release["version"] <= "1.4.0"]
+    index["latest"] = "1.4.0"
+    (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")
     (repo / "scripts").mkdir()
     shutil.copy2(
         ROOT / "scripts" / "check_wire_schema_compat.py",
@@ -476,7 +541,6 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
     _git(repo, "branch", "baseline")
     _git(repo, "switch", "-qc", "candidate")
 
-    wire = repo / "docs" / "schemas" / "wire"
     candidate_release = wire / "v1.4.1"
     shutil.copytree(wire / "v1.4.0", candidate_release)
     _rewrite_json(candidate_release / "release.json", release_version="1.4.1")
@@ -487,6 +551,9 @@ def test_actual_gate_cli_rejects_same_major_not_mutations(
             case["schema_valid"] = False
     (candidate_release / "conformance.json").write_text(json.dumps(fixtures, indent=2) + "\n")
     index = json.loads((wire / "index.json").read_text())
+    # This fixture deliberately exercises the historical v1.4 -> v1.4.1 path.
+    # Keep later repository releases out of its isolated index.
+    index["releases"] = [release for release in index["releases"] if release["version"] <= "1.4.0"]
     index["latest"] = "1.4.1"
     index["releases"].append({"version": "1.4.1", "major": 1, "manifest": "v1.4.1/release.json"})
     (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")
@@ -533,6 +600,14 @@ def _catalog_gate_candidate(tmp_path: Path, mutation: str) -> tuple[Path, str, s
     repo = tmp_path / f"catalog-gate-{mutation}"
     wire = repo / "docs" / "schemas" / "wire"
     shutil.copytree(ROOT / "docs" / "schemas" / "wire", wire)
+    # This fixture intentionally snapshots the historic v1.4 baseline before
+    # creating a v1.4.1 candidate; later repository releases are not published
+    # in the synthetic baseline.
+    shutil.rmtree(wire / "v1.5.0")
+    index = json.loads((wire / "index.json").read_text())
+    index["releases"] = [release for release in index["releases"] if release["version"] <= "1.4.0"]
+    index["latest"] = "1.4.0"
+    (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")
     (repo / "scripts").mkdir()
     shutil.copy2(
         ROOT / "scripts" / "check_wire_schema_compat.py",
@@ -550,6 +625,9 @@ def _catalog_gate_candidate(tmp_path: Path, mutation: str) -> tuple[Path, str, s
     _rewrite_json(candidate_release / "release.json", release_version="1.4.1")
     _rewrite_json(candidate_release / "conformance.json", release_version="1.4.1")
     index = json.loads((wire / "index.json").read_text())
+    # This fixture deliberately exercises the historical v1.4 -> v1.4.1 path.
+    # Keep later repository releases out of its isolated index.
+    index["releases"] = [release for release in index["releases"] if release["version"] <= "1.4.0"]
     index["latest"] = "1.4.1"
     index["releases"].append({"version": "1.4.1", "major": 1, "manifest": "v1.4.1/release.json"})
     (wire / "index.json").write_text(json.dumps(index, indent=2) + "\n")

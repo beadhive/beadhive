@@ -466,6 +466,7 @@ _require thing since mode consequence:
 lint:
     uv run ruff check
     uv run ruff format --check
+    uv run bh beads schema check
 
 # lint markdown docs (config: .markdownlint-cli2.jsonc)
 lint-md:

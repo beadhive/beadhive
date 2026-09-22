@@ -53,6 +53,7 @@ backup reclaim|root:string:o,hive_id:string:o,dry_run:boolean:o,confirm:boolean:
 backup usage|as_json:boolean:o
 bd|
 beads schema capture|repo:string:o,bd_binary:string:o
+beads schema check|repo:string:o,bd_binary:string:o
 checkpoint run|bead:string:r,key:string:r,value:string:r,step:string:o,hive:string:o
 config get|key:string:r,scope:string:o
 config init|force:boolean:o

@@ -75,7 +75,7 @@ def test_compatibility_report_accounts_for_every_published_and_candidate_artifac
 
     assert report["format_version"] == 1
     assert report["release_version"] == "1.0.0"
-    assert report["summary"]["historical_artifact_observations"] == len(published) == 50
+    assert report["summary"]["historical_artifact_observations"] == len(published) == 67
     assert report["summary"]["candidate_artifacts"] == len(candidate) == 23
     assert len(report["historical_comparisons"]) == len(published)
     assert len(report["candidate_artifacts"]) == len(candidate)
@@ -122,7 +122,11 @@ def test_report_classifies_each_nonidentical_comparison_with_policy_evidence() -
         if row["artifact_id"] == "urn:beadhive:wire-catalog:operations:1"
         and row["classification"] == "policy-divergence-retained"
     ]
-    assert {row["historical_release"] for row in operation_divergence} == {"1.3.0", "1.4.0"}
+    assert {row["historical_release"] for row in operation_divergence} == {
+        "1.3.0",
+        "1.4.0",
+        "1.5.0",
+    }
 
 
 def test_checked_compatibility_report_is_canonical_and_current() -> None:

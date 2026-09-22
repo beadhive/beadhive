@@ -22,7 +22,7 @@ from beadhive.modules.config.application.schema_artifacts import (
 )
 
 ROOT = Path(__file__).parents[4]
-WIRE = ROOT / "docs/schemas/wire/v1.4.0"
+WIRE = ROOT / "docs/schemas/wire/v1.5.0"
 ARTIFACT = ROOT / "src/beadhive/schemas/contracts/v1.0.0/artifacts/config-v1.schema.json"
 
 
