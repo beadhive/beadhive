@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+
 from beadhive import selective_validation
 from beadhive.modules.config.contracts import AttestConfig
 from beadhive.modules.work.domain.impact import ImpactReceipt, KeyEvidence
@@ -57,6 +60,94 @@ class _UnaffectedResolver:
 
 def _attest(*keys):
     return AttestConfig.model_validate({"keys": list(keys)})
+
+
+def _semantic_attest(*keys):
+    return AttestConfig.model_validate(
+        {"keys": list(keys), "semantic": {"enabled": True, "command": "jevwrap select"}}
+    )
+
+
+def test_semantic_selection_filters_keys_without_claiming_evidence(monkeypatch) -> None:
+    attest = _semantic_attest(
+        {"name": "unit", "cmd": "just unit"},
+        {"name": "guide", "cmd": "just guide"},
+    )
+    keys = selective_validation.attest_keys(attest)
+    payload = {
+        "schema": "jevwrap/select/1",
+        "affected": ["unit"],
+        "unaffected": ["guide"],
+    }
+    seen = {}
+
+    def run(command, **kwargs):
+        seen.update(command=command, kwargs=kwargs)
+        return SimpleNamespace(returncode=0, stdout=json.dumps(payload))
+
+    monkeypatch.setattr(selective_validation.subprocess, "run", run)
+    selected, record = selective_validation.semantic_selection(
+        attest, "/repo", "base", "head", keys
+    )
+
+    assert [key.name for key in selected] == ["unit"]
+    assert record == {"applied": True, "ran": ["unit"], "skipped": ["guide"]}
+    assert seen["command"] == ["jevwrap", "select", "--base", "base", "--head", "head"]
+    assert seen["kwargs"]["cwd"] == "/repo"
+
+
+def test_semantic_selection_error_falls_back_to_normal_route(monkeypatch) -> None:
+    attest = _semantic_attest({"name": "unit", "cmd": "just unit"})
+    keys = selective_validation.attest_keys(attest)
+    monkeypatch.setattr(
+        selective_validation.subprocess,
+        "run",
+        lambda *_a, **_k: SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "schema": "jevwrap/select/1",
+                    "error": "network unavailable",
+                    "affected": ["unit"],
+                    "unaffected": [],
+                }
+            ),
+        ),
+    )
+
+    selected, record = selective_validation.semantic_selection(
+        attest, "/repo", "base", "head", keys
+    )
+
+    assert selected is None
+    assert record["applied"] is False
+    assert "network unavailable" in record["error"]
+
+
+def test_semantic_selection_partial_or_empty_answer_falls_back(monkeypatch) -> None:
+    attest = _semantic_attest(
+        {"name": "unit", "cmd": "just unit"},
+        {"name": "guide", "cmd": "just guide"},
+    )
+    keys = selective_validation.attest_keys(attest)
+
+    for payload in (
+        {"schema": "jevwrap/select/1", "affected": ["unit"], "unaffected": []},
+        {"schema": "jevwrap/select/1", "affected": [], "unaffected": ["unit", "guide"]},
+    ):
+        monkeypatch.setattr(
+            selective_validation.subprocess,
+            "run",
+            lambda *_a, _payload=payload, **_k: SimpleNamespace(
+                returncode=0, stdout=json.dumps(_payload)
+            ),
+        )
+        selected, record = selective_validation.semantic_selection(
+            attest, "/repo", "base", "head", keys
+        )
+        assert selected is None
+        assert record["applied"] is False
+        assert record["error"]
 
 
 def _run(monkeypatch, attest, runner, *, fallback_reason=""):

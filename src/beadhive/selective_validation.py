@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import fnmatch
+import json
+import shlex
+import subprocess
 import time
 from collections.abc import Callable, Sequence
 
@@ -171,6 +174,57 @@ def _changed_paths_for_policy(repo: str, base_rev: str, head_rev: str) -> tuple[
         return None
 
 
+def semantic_selection(attest, repo: str, base_rev: str, head_rev: str, keys: Sequence):
+    """Return ``(selected | None, record)`` from a fail-closed semantic adviser.
+
+    This is policy, never impact evidence.  A valid answer must partition every active key;
+    otherwise the normal route remains intact.  Refusing an empty selection prevents an adviser
+    from becoming a test-free gate even when its probabilities are badly calibrated.
+    """
+    policy = getattr(attest, "semantic", None)
+    record = {"applied": False}
+    if policy is None or not policy.enabled:
+        return None, record
+    try:
+        command = [*shlex.split(policy.command), "--base", base_rev, "--head", head_rev]
+        result = subprocess.run(
+            command,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=policy.timeout_seconds,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"selector exited {result.returncode}")
+        payload = json.loads(result.stdout)
+        if payload.get("schema") != "jevwrap/select/1" or payload.get("error"):
+            raise RuntimeError(str(payload.get("error") or "unsupported selector schema"))
+        affected = payload.get("affected")
+        unaffected = payload.get("unaffected")
+        if not isinstance(affected, list) or not isinstance(unaffected, list):
+            raise RuntimeError("selector must return affected and unaffected lists")
+        expected = {key.name for key in keys}
+        affected_set = set(affected)
+        unaffected_set = set(unaffected)
+        if affected_set & unaffected_set or affected_set | unaffected_set != expected:
+            raise RuntimeError("selector answer does not partition the active attest keys")
+        selected = tuple(key for key in keys if key.name in affected_set)
+        if not selected:
+            raise RuntimeError("selector refused: no attest key selected")
+        record.update(applied=True, ran=sorted(affected_set), skipped=sorted(unaffected_set))
+        return selected, record
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        subprocess.TimeoutExpired,
+        json.JSONDecodeError,
+    ) as exc:
+        record["error"] = f"{type(exc).__name__}: {exc}"[:300]
+        return None, record
+
+
 def run(
     entry,
     cfg,
@@ -205,6 +259,23 @@ def run(
     except (OSError, KeyError, ValueError):
         backends = {}
     changed_for_policy = _changed_paths_for_policy(repo, base_rev, head_rev)
+    semantic_selected, semantic_record = semantic_selection(
+        attest, repo, base_rev, head_rev, active_keys
+    )
+    if semantic_record.get("error"):
+        typer.echo(
+            "  · semantic key selection unavailable: "
+            f"{semantic_record['error']} — running normal route"
+        )
+    if semantic_selected is not None:
+        chosen = {key.name for key in semantic_selected}
+        for key in active_keys:
+            if key.name not in chosen:
+                typer.echo(
+                    f"  · {key.name}: SKIPPED — semantic selection policy "
+                    f"(no proof carried; this revision is not fully attested)"
+                )
+        active_keys = semantic_selected
     selected, trivial_record = (
         trivial_selection(attest, changed_for_policy, active_keys)
         if changed_for_policy is not None
