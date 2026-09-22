@@ -589,7 +589,7 @@ def test_checked_evidence_remains_uncertified_and_disabled() -> None:
     )
 
 
-def test_current_root_descendant_consumes_snapshot_and_reports_other_closure_drift() -> None:
+def test_current_root_consumes_snapshot_and_preserves_stable_exclusions() -> None:
     checked = json.loads(
         (ROOT / "docs/proof/bh-ck1t6.1-test-closure-certification.json").read_text(encoding="utf-8")
     )
@@ -620,30 +620,28 @@ def test_current_root_descendant_consumes_snapshot_and_reports_other_closure_dri
         "closure-not-certified",
         "missing-or-stale-coverage",
     } <= set(plan["fallback_reasons"])
-    # The removed config-store drift is current again. This branch's plan-repair source change
-    # legitimately invalidates module.planning instead, and the selector still reports that
-    # real current-input mismatch fail closed.
+    # A freshly recertified tree may have no unrelated drift; a later descendant may. Both states
+    # must remain fail closed without freezing this proof to whichever closure changed most
+    # recently.
     assert applicability["config.store"]["applicable"] is True
-    assert applicability["module.planning"]["applicable"] is False
-    assert applicability["module.planning"]["fallback_reasons"] == ["input-digest-mismatch"]
-    assert {
-        "current-applicability-not-proven",
-        "current-input-digest-mismatch",
-        "input-digest-mismatch",
-    } <= set(plan["fallback_reasons"])
+    drifting = [row for row in applicability.values() if row["applicable"] is False]
+    if drifting:
+        assert all("input-digest-mismatch" in row["fallback_reasons"] for row in drifting)
+        assert {
+            "current-applicability-not-proven",
+            "current-input-digest-mismatch",
+            "input-digest-mismatch",
+        } <= set(plan["fallback_reasons"])
     # The repository keeps evolving, so do not freeze this proof to a particular unrelated
     # closure.  A drifting closure must not make every unaffected, currently applicable
     # exclusion look inapplicable.
     stable_exclusions = [
         item
         for item in plan["exclusions"]
-        if item["status"] == "unaffected"
-        and item["current_applicability"]["applicable"] is True
+        if item["status"] == "unaffected" and item["current_applicability"]["applicable"] is True
     ]
     assert stable_exclusions
-    assert all(
-        item["reason"] == "unaffected-current-digests-stable" for item in stable_exclusions
-    )
+    assert all(item["reason"] == "unaffected-current-digests-stable" for item in stable_exclusions)
     assert all("applicability_fallback_reasons" not in item for item in stable_exclusions)
 
 

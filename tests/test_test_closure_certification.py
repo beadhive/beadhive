@@ -56,11 +56,17 @@ def test_checkout_identity_excludes_only_certification_generated_outputs() -> No
     assert "scripts/test_closure_promotion_policy.py" in tracked
 
 
-def test_unrelated_descendant_does_not_invalidate_the_historical_snapshot() -> None:
+def test_historical_snapshot_is_valid_at_or_before_the_current_head() -> None:
     evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
     snapshot = certification._historical_snapshot_commit(ROOT)
 
-    assert snapshot != certification._git(ROOT, "rev-parse", "HEAD")
+    assert (
+        subprocess.run(
+            ("git", "-C", str(ROOT), "merge-base", "--is-ancestor", snapshot, "HEAD"),
+            check=False,
+        ).returncode
+        == 0
+    )
     assert certification.validate_evidence(evidence, ROOT) == ()
     applicability = certification.current_applicability(evidence, ROOT)
     assert set(applicability) == {row["id"] for row in evidence["closures"]}
