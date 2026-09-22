@@ -7,9 +7,10 @@
 The
 [`modular-dependency-and-test-closure` ADR](modular-dependency-and-test-closure-adr.md)
 already decides the capability-first architecture, package roles, complete allowed dependency
-directions, exception metadata, and closure-graduation standard. This ADR extends that decision
-with the physical rules it deliberately left open. It does not replace or relax its direction
-table.
+directions, and exception metadata. This ADR extends that decision only with physical and local
+build/test-topology rules it deliberately left open. It does not replace or relax its direction
+table. Certification timelines, CI activation or promotion, CI routing, and validation-policy
+changes are outside this decision.
 
 The exact starting state is
 [`repository-physical-layout-baseline.md`](repository-physical-layout-baseline.md): 337 production
@@ -164,7 +165,66 @@ successor is no longer live while the record remains active, ownership repair is
 further migration. A facade may be retained intentionally, but that is a fresh decided record
 with a durable owner and tests, not an indefinitely “temporary” exception.
 
-## Decision 7: cleanliness is measured by ownership and edges
+## Decision 7: build and test topology follows capability-role ownership
+
+Every migrated capability-role boundary is an independently addressable Pants build/test
+artifact. “Role boundary” means a capability's domain, contracts, application, or local adapters;
+a named kernel, shared adapter, integration, bootstrap root, or public testing kit is an equivalent
+owner at its own level.
+
+Source and test generators may still create per-file targets, but each generator or explicit
+target set must be scoped to one capability-role owner. No source or test target spans unrelated
+owners. A cross-capability integration or system scenario is itself a named test owner with
+explicit inputs; it is not an excuse to place unrelated tests in one aggregate.
+
+The checked mapping for each capability/closure names exact Pants addresses for:
+
+1. owned production source targets, separated by role;
+2. direct domain, application, adapter, and independence test targets;
+3. shared-contract, compatibility-facade, and conformance test targets;
+4. statically known reverse-dependent source and test targets;
+5. fixture, conftest, harness, schema, generated, and other resource targets actually required;
+6. boundary-crossing integration and system-scenario targets; and
+7. target dependency edges plus owner, role, and attestation-category tags.
+
+That mapping is repository-owned and drift-detectable. Its checker fails locally when a migrated
+file has no owner or multiple incompatible owners, a target address is missing, a closure path and
+target sources disagree, a required shared/facade/reverse-dependent test is absent, a fixture or
+resource dependency is undeclared, or an import edge has no corresponding target dependency. From
+one checkout, a contributor must be able to resolve a capability-role target and enumerate its
+complete mapped test subset and transitive inputs without relying on path-name inference or an
+external service. Uncertainty returns an explicit incomplete result; it is never treated as an
+empty affected set.
+
+Fixture and resource edges are narrow. A pure capability test depends only on the conftest,
+fixtures, fakes, schemas, and resources it actually uses. Stateful fixture plugins, broad harness
+targets, all-package resources, and unrelated generated artifacts cannot be inherited through a
+convenience aggregate. Shared conformance kits remain independently addressable and are depended
+on explicitly.
+
+Broad umbrella targets may remain temporarily to preserve packaging or migration workflows, but
+they are recorded as migration debt with their spanned owners and replacement targets. They do not
+satisfy completion. In particular, the current `//src/beadhive:lib` generator cannot certify a
+clean physical boundary merely because Pants generates file-level children beneath it.
+
+### Future capability definition of done
+
+A new or newly migrated capability is physically complete only when the same change provides:
+
+- role-scoped BUILD generators or equivalently fine-grained source targets;
+- direct and boundary test targets with narrow fixture/resource dependencies;
+- explicit owner, role, and attestation-category tags;
+- a closure-mapping row containing the source, direct-test, shared-contract/facade,
+  reverse-dependent, integration/system, fixture, schema, and generated-resource addresses;
+- checked dependency edges matching source imports and declared boundary relationships; and
+- a local drift check proving the mapping is complete and every address resolves.
+
+Incremental closeout records, per migrated owner, the files removed from broad aggregates, old and
+new target addresses, direct and reverse-dependent tests, fixture/resource edges, mapping-check
+result, and remaining aggregate debt. Repository closeout reaches zero cross-owner source/test
+targets and zero unclassified aggregate debt.
+
+## Decision 8: cleanliness is measured by ownership and edges
 
 Repository cleanliness is achieved when one exact tree satisfies all of these conditions:
 
@@ -176,20 +236,24 @@ Repository cleanliness is achieved when one exact tree satisfies all of these co
 | Cyclic ownership | Zero active cycle exceptions and no SCC crossing capability, kernel, adapter, integration, or bootstrap ownership. |
 | Facade debt | Every remaining active facade is forwarding-only, has a live owner and successor or retained-facade decision, exact consumers, and green executable tests. |
 | Package API | Each migrated owner has explicit public exports; production consumers use those exports or declared provider contracts rather than implementation internals. |
-| Test ownership | Every owner has a present closure row naming direct, contract/facade, shared-contract, reverse-dependent, and required integration/system tests. |
-| Fixture ownership | Module-local tests use explicit concern fixtures or injected fakes; ambiguous/dynamic consumers retain the native/full fallback. |
-| Build ownership | Every moved source, test, schema, fixture, and generated artifact has one checked Pants owner and correct dependency edges. |
-| Behavior | Characterization, contract, reverse-dependent, transport/schema compatibility, and configured full validation are green on the exact tree. |
-| Evidence | The baseline/closeout names commit, dirty state, commands, tool versions, ledger counts, SCCs, paths, and validation receipts. |
+| Build granularity | Every migrated capability-role, kernel, adapter, integration, bootstrap, and testing owner has independently addressable source and test targets; no target spans unrelated owners. |
+| Closure-to-target mapping | Every owner has a checked mapping to source, direct-test, shared-contract/facade, reverse-dependent, fixture/resource, and required integration/system addresses. |
+| Test ownership | Every owner has direct and boundary test targets whose complete mapped subset is locally computable and fails explicitly when incomplete. |
+| Fixture ownership | Tests depend only on the conftests, fixtures, fakes, schemas, harness pieces, and resources they use; dynamic consumers remain explicitly unresolved until modeled. |
+| Build dependency edges | Every moved source, test, schema, fixture, and generated artifact has one compatible Pants owner, owner/role tags, and checked dependency edges. |
+| Aggregate debt | Broad source/test aggregates are classified migration debt with named replacements; clean closeout has zero cross-owner aggregates and zero unclassified aggregate debt. |
+| Behavior | Existing characterization, contract, facade, reverse-dependent, and transport/schema compatibility proofs remain green for the moved surface. |
+| Evidence | The baseline/closeout names commit, dirty state, commands, tool versions, ledger counts, SCCs, target addresses, mapping results, paths, and remaining aggregate debt. |
 
 The number of directories, average file size, and the raw count of root files are supporting
 signals only. A repository with many neat directories but unowned behavior or hidden reverse
 dependencies is not clean. Conversely, an intentional, tested compatibility facade does not make
 the repository unclean merely because the public import remains at the package root.
 
-Selective-test certification is not required to declare physical organization complete. Closure
-registration and fail-closed ownership are required; activation still follows the independent
-30-change/60-day evidence policy in the modular-dependency ADR.
+This definition concerns repository topology and local computability. It neither adopts nor
+changes a certification timeline, CI activation or promotion rule, CI route, or validation policy.
+Those concerns cannot make an incomplete ownership graph appear physically complete, and this ADR
+does not make the completed graph authoritative for any CI decision.
 
 ## Behavior-preserving migration protocol
 
@@ -200,11 +264,11 @@ Each movement slice must:
 2. add or confirm the target contract and characterization tests before moving behavior;
 3. move one cohesive owner behind an explicit package API, leaving a ledgered facade where
    compatibility is still required;
-4. update the import ledger, closure registry, fixtures, generated evidence, and BUILD ownership
-   in the same transition;
+4. add role-scoped source/test targets, narrow fixture/resource edges, owner/role tags, and the
+   checked closure-to-target mapping in the same transition;
 5. demonstrate that old and new paths have identical observable behavior for the supported
    surface; and
-6. pass the configured developer/submit and integration boundary appropriate to the bead.
+6. record the local target-resolution, mapping-drift, dependency-edge, and owned-test results.
 
 A move may reduce debt; it may not hide it by broadening an exception, weakening a test, changing
 validation selection, or binding a patchable collaborator too early. Public removal is a separate
@@ -215,7 +279,9 @@ compatibility decision after consumer-zero evidence, not a side effect of file m
 - **Global layer dumps:** repository-wide `domain/`, `application/`, `services/`, `dto/`, or
   `contracts/` directories erase capability ownership and make unrelated changes share a closure.
 - **Directory-only reshuffles:** relocating files without moving authority, dependency direction,
-  tests, fixtures, and build ownership produces cosmetic architecture.
+  tests, fixtures, target topology, and build ownership produces cosmetic architecture.
+- **One aggregate build target per language tree:** per-file generation beneath a repository-wide
+  owner still hides capability-role addressability, tags, test closure, and fixture/resource debt.
 - **Generic shared packages:** `common`, `utils`, service locators, and mixed DTO buckets hide the
   provider and turn reuse into ambient coupling.
 - **Central adapters by default:** an adapter used by one capability remains local; centralizing it

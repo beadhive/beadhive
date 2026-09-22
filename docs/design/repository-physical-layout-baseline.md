@@ -37,6 +37,7 @@ find src/beadhive -maxdepth 1 -type f -name '*.py' ! -name '__init__.py' -printf
 git ls-files 'tests/**/*.py' 'tests/*.py' | sort -u | wc -l
 python -c 'import tomllib, pathlib; data = tomllib.loads(pathlib.Path("docs/design/import-boundary-exceptions.toml").read_text()); print({key: sum(row["status"] == "active" for row in data.get(key, [])) for key in ("boundary_exception", "cycle_exception", "facade")})'
 python -c 'import tomllib, pathlib; rows = tomllib.loads(pathlib.Path("tests/closures.toml").read_text())["closures"]; print(len(rows), {(kind, status): sum(row["kind"] == kind and row["status"] == status for row in rows) for kind, status in sorted({(row["kind"], row["status"]) for row in rows})})'
+python -c 'import json, pathlib; rows = json.loads(pathlib.Path("scripts/pants_proven_tests.json").read_text())["tests"]; print(len(rows), sum(row["status"] == "proven" for row in rows.values()), sum(row["status"] == "unproven" for row in rows.values()), sum(row.get("partition") == "pants" for row in rows.values()))'
 find . -name BUILD -o -name BUILD.root | sort
 ```
 
@@ -49,11 +50,12 @@ The generated or checked evidence paths used here are:
 - `scripts/check_import_boundaries.py` and
   `docs/design/import-boundary-exceptions.toml`: native AST import graph, SCC snapshot, exact
   exceptions, and facades;
-- `tests/closures.toml` and
-  `docs/proof/bh-ck1t6.1-test-closure-certification.json`: test ownership and certification state;
+- `tests/closures.toml`: semantic test ownership, direct tests, shared contracts, and reverse
+  dependents;
 - `docs/design/test-fixture-scope-inventory.md` and `tests/stateful_fixtures.py`: fixture ownership;
-- `pants.toml`, the twelve checked `BUILD` files, and `scripts/check_pants_ownership.py`: build
-  ownership;
+- `pants.toml`, the twelve checked `BUILD` files, `scripts/pants_proven_tests.json`,
+  `scripts/pants_routes.py`, and `scripts/check_pants_ownership.py`: current build ownership,
+  proven-test partition, and qualified source/test topology;
 - `justfile`: configured developer, submit, land, and release validation commands; and
 - this file: the checked human-readable exact-tip snapshot.
 
@@ -243,9 +245,10 @@ Fixture scope is explicit:
 - dynamic fixture lookup and unknown infrastructure fall back to native/full validation.
 
 `tests/closures.toml` has **24 present closures**: 7 module, 5 contract, 5 plugin, 4 kernel, 1
-adapter, 1 integration, and 1 system closure. It names direct tests, shared contracts, and reverse
-dependents. Every row remains uncertified for selective activation in the checked certification
-artifact, so the authoritative commands are still:
+adapter, 1 integration, and 1 system closure. It names path/glob-based direct tests, shared
+contracts, and reverse dependents. It does not map every closure to independently addressable
+Pants source, test, shared-contract/facade, fixture/resource, reverse-dependent, and
+integration/system target addresses. The configured commands are:
 
 | Boundary | Configured command |
 | --- | --- |
@@ -255,16 +258,37 @@ artifact, so the authoritative commands are still:
 | Architecture evidence | `just architecture-structural-check` inside `just check`; `just architecture-check` after a completed receipt |
 | Advisory owned closure | `just test-closure <closure-id>` |
 
-Pants ownership is repository-wide through **12 checked `BUILD` files**. Production Python is
-currently one broad `//src/beadhive:lib` target rather than one target per capability. Tests are
-split into root conftest, watchdog, stateful fixtures, harness, pure tests, legacy-stateful tests,
-resources, package markers, and test configuration. Twenty-six pure test files carry
-`pants:proven`; the rest retain their current native/stateful route. Documentation has separate
-root, assets, design, examples, proof, releases, schemas, spikes, and upstream targets.
+Pants ownership is repository-wide through **12 checked `BUILD` files**, but ownership is not yet
+capability-addressable:
 
-These facts distinguish semantic test ownership from current build granularity: a file appearing
-under a capability package does not by itself prove an independently selectable or certified
-closure.
+- `//src/beadhive:lib` is one `python_sources` generator over `**/*.py`. Pants generates per-file
+  targets, but the generator's ownership and tags span every capability and role. It is the
+  production build-graph bottleneck and an explicit migration-debt aggregate, not evidence that
+  the physical module boundaries are complete.
+- The `tests/BUILD` `python_tests` generators `tests:pure-tests` and
+  `tests:legacy-stateful-tests` separate a broad pure tree from a broad legacy-stateful tree;
+  root conftest, watchdog, stateful fixtures, harness, resources, package markers, and test config
+  have distinct aggregate targets. Those aggregates still do not provide one checked mapping per
+  capability/role and integration/system scenario.
+- `scripts/pants_proven_tests.json` inventories **86 test files**: **27 proven** and **59
+  unproven**. Exactly **26** proven pure-unit files have `partition = "pants"` and matching
+  `pants:proven` overrides in `tests/BUILD`. The twenty-seventh proven file is
+  `tests/test_docs_role_vocabulary.py`; it has declared document dependencies but is not part of
+  the Pants-selected pure cohort.
+- `scripts/pants_routes.py` defines exactly **one qualified source/test pair**:
+  `src/beadhive/modules/config/application/resolution.py` and
+  `tests/unit/modules/config/test_resolution.py` (`QUALIFIED_CLOSURE_COUNT = 1`). This is a single
+  bounded route, not a complete config-capability or repository topology.
+- The checked, superseded shadow evidence at `docs/proof/bh-70ewe.5-pants-shadow.json` records
+  **zero promoted Pants routes**. That is an exact historical observation, not a requirement or a
+  statement about present validation policy.
+- Documentation has separate root, assets, design, examples, proof, releases, schemas, spikes,
+  and upstream targets.
+
+Therefore the current tree proves file ownership, one bounded source/test relationship, and a
+partial pure-test partition. It does not yet prove that each capability/role boundary is an
+independently addressable build/test artifact or that a closure's complete owned test subset can
+be computed from checked target relationships.
 
 ## Overlap and ownership reconciliation
 
