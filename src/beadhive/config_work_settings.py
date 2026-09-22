@@ -530,9 +530,7 @@ def attest_config(cfg, entry):
         semantic_cfg = AttestSemanticConfig(**semantic)
     except ValueError:
         semantic_cfg = AttestSemanticConfig()
-    return AttestConfig(
-        keys=keys, impact=impact_cfg, trivial=trivial_cfg, semantic=semantic_cfg
-    )
+    return AttestConfig(keys=keys, impact=impact_cfg, trivial=trivial_cfg, semantic=semantic_cfg)
 
 
 # ---- release (release-order planning, bh-k2j8) -------------------------------
