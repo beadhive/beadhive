@@ -591,17 +591,16 @@ FULL := ""
 # supported environment variable when choosing its auto worker count. Override it for a
 # larger or smaller host (for example, `PYTEST_XDIST_AUTO_NUM_WORKERS=3 just test`); xdist
 # rejects non-integer values instead of falling back to unbounded CPU discovery.
-export PYTEST_XDIST_AUTO_NUM_WORKERS := shell("workers=${PYTEST_XDIST_AUTO_NUM_WORKERS:-6}; case $workers in 0|*[!0-9]*) echo 'PYTEST_XDIST_AUTO_NUM_WORKERS must be a positive integer' >&2; exit 2;; *) printf %s $workers;; esac")
+export PYTEST_XDIST_AUTO_NUM_WORKERS := shell("workers=${PYTEST_XDIST_AUTO_NUM_WORKERS:-16}; case $workers in 0|*[!0-9]*) echo 'PYTEST_XDIST_AUTO_NUM_WORKERS must be a positive integer' >&2; exit 2;; *) printf %s $workers;; esac")
 test_timeout_seconds := env_var_or_default("BH_TEST_TIMEOUT_SECONDS", "900")
 # The live partition owns shared local Dolt/runtime fixtures and therefore has a stricter,
-# host-independent ceiling than unit work.  Twelve workers produced 5 failures in 440.48s;
-# six workers is the bounded capacity verified by bh-s26g9.3.
-integration_workers := "6"
+# host-independent ceiling than unit work.  This host currently uses half of its 32 cores.
+integration_workers := "16"
 
 # run the suite for a marker selection (default: the fast unit-only set)
 #   just test               → unit only (fast)    just test integration → real-bd harness only
 #   just test ""            → the complete suite (unit + integration; integration self-skips w/o bd)
-# ALWAYS parallel (pytest-xdist `-n auto`, capped at six workers by default). This comment used to assert the
+# ALWAYS parallel (pytest-xdist `-n auto`, capped at sixteen workers by default). This comment used to assert the
 # real-bd integration harness was NOT parallel-safe because "its cases share state" — and that
 # stopped being true without anyone re-checking. Three fixes each removed a piece of that state:
 # bh-dfz2 + conftest (ephemeral ports, no literal-port collisions between workers), bh-areg.7's
@@ -642,9 +641,9 @@ test-changed:
 stateful-pants:
     uv run python scripts/pants_ci.py all
 
-# Stateful tests include short-deadline process and local-Dolt fixtures. Twelve workers
-# produced eight contention failures; six is the measured safe capacity from bh-s26g9.6.
-stateful_workers := "6"
+# Stateful tests include short-deadline process and local-Dolt fixtures. This host currently
+# uses half of its 32 cores for the fixed native fan-out.
+stateful_workers := "16"
 
 stateful-native:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \

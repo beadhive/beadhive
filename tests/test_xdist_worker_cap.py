@@ -23,7 +23,7 @@ def test_every_parallel_pytest_recipe_uses_the_shared_xdist_ceiling() -> None:
     """A new `-n auto` recipe cannot silently bypass the exported shared setting."""
     text = JUSTFILE.read_text()
     assert f"export {AUTO_WORKER_ENV} := shell(" in text
-    assert f"${{{AUTO_WORKER_ENV}:-6}}" in text
+    assert f"${{{AUTO_WORKER_ENV}:-16}}" in text
     assert len(_parallel_pytest_lines()) == 2
     assert all("-n auto" in line for line in _parallel_pytest_lines())
 
@@ -31,14 +31,14 @@ def test_every_parallel_pytest_recipe_uses_the_shared_xdist_ceiling() -> None:
 def test_live_integration_recipe_uses_its_measured_fixed_worker_bound() -> None:
     text = JUSTFILE.read_text()
 
-    assert 'integration_workers := "6"' in text
+    assert 'integration_workers := "16"' in text
     assert 'pytest -n {{integration_workers}} -m "integration"' in text
 
 
 def test_stateful_recipe_uses_its_measured_fixed_worker_bound() -> None:
     text = JUSTFILE.read_text()
 
-    assert 'stateful_workers := "6"' in text
+    assert 'stateful_workers := "16"' in text
     assert 'pants_ci.py native -- -n {{stateful_workers}} -m "{{FAST}}"' in text
 
 
@@ -59,7 +59,7 @@ def test_just_exports_default_and_override_xdist_ceiling() -> None:
         env={**os.environ, AUTO_WORKER_ENV: "3"},
     )
 
-    assert default.stdout.strip() == "6"
+    assert default.stdout.strip() == "16"
     assert override.stdout.strip() == "3"
 
 

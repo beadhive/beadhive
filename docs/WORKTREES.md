@@ -229,8 +229,8 @@ name its run ID and owner as a **coalesced** decision. A dead owner is marked `a
 locks and the validation child are released, its verify checkout is reaped, and one follower may
 become the replacement execution. Lock files are stable rendezvous points, not live-owner state.
 
-This repository also caps each `pytest -n auto` invocation at **six xdist workers** via
-`PYTEST_XDIST_AUTO_NUM_WORKERS=6` in the justfile. An operator may lower or raise that positive
+This repository also caps each `pytest -n auto` invocation at **sixteen xdist workers** via
+`PYTEST_XDIST_AUTO_NUM_WORKERS=16` in the justfile. An operator may lower or raise that positive
 integer explicitly; it controls fan-out *inside one admitted gate*, while `validation_slots`
 controls how many gates can run. The test harness's `BH_DOLT_SLOTS` semaphore is narrower still:
 it bounds real Dolt-server fixtures inside a pytest run and does not provide host-wide validation
