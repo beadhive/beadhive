@@ -399,3 +399,76 @@ AFTER bh-7oo93
 2. Does **M-JUDGE's ADR** go in as its own bead, or as an amendment inside `bh-50gsn.5`?
 3. Is the `BH_BEAD` / `BH_PHASE` / `BH_BRANCH` env change wanted on its own merits, independent
    of whether any Jev gate is ever adopted?
+
+---
+
+## 8. Implementation log (2026-09-22)
+
+Recorded here because one of the decisions below **reverses a seam this document implied**, and
+a proposal that quietly disagrees with what shipped is worse than no proposal.
+
+### 8.1 What was filed
+
+| Molecule / bead | Scope |
+|---|---|
+| `bh-o2mjz` (M-SEC) | Outbound data safety: corpus, layer-1 known-value filter, offline scanners, residue classifier, redaction-vs-judgment agreement, gateway, decision |
+| `bh-j83gm` (M-GATE) | Config-only gates at the validation boundary; `bh-j83gm.2` depends on `bh-o2mjz.2`, so the J-CHK wrapper cannot run before the sanitizer exists |
+| `bh-hlwwo` (M-CPX) | Comparison harness, J-CPX measurement, second-backend decision |
+| `bh-7tq78` | Bifrost pin-drift gate — independent of every Jev verdict |
+| `bh-9igpb` | Export `BH_BEAD` / `BH_PHASE` / `BH_BRANCH` into the validation child env |
+| `bh-068zo` | Emit JUnit XML into `BH_TEST_REPORT_DIR` |
+| `bh-xg1r9` | Trivial-change policy short-circuit (below) |
+
+M-JUDGE was folded into `bh-50gsn.5` rather than filed separately, per §7 question 2.
+
+### 8.2 The seam correction
+
+`bh-xg1r9` was filed as a composing **`ImpactBackend`** and that was wrong. `apply_fail_closed`
+is **proof-carrying**: a key reaches `unaffected_keys` only with an owner for every changed path,
+no global-input hit, units present, membership in `proven_keys`, and no affected unit. A
+documentation triage has none of that evidence, so a backend would have had to fabricate exactly
+the proof the fail-closed rules exist to demand — and `selective_validation` feeds
+`unaffected_keys` into `carry_key_verdict`, recording a green the key never earned.
+
+What shipped instead is a **policy short-circuit above the resolver**, narrowing `active_keys` the
+way `AttestKeyConfig.enabled` already behaves: *"deliberately absent: they neither run, block,
+satisfy the aggregate, nor produce carryable proof."* `all_keys_green` therefore still refuses to
+call the revision fully attested. Impact resolution, `apply_fail_closed`, Pants and the receipt
+contract are untouched.
+
+**The general rule this is an instance of:** *what did this change touch* is an impact question
+answered from evidence; *what do we choose to test* is a policy question answered from
+configuration. Expressing the second as the first is how a policy decision gets laundered into
+the audit trail as proof.
+
+### 8.3 Two judges, because misconfiguration is the live risk
+
+A skip requires the configured path globs **and** an optional semantic triage
+(`yes` / `no` / `unknown`) to agree. Neither can skip alone: globs that are too **broad** are
+vetoed by a triage answering `no`; globs that are too **narrow** never fire, and the record says
+so. `unknown` is first-class — a triage that cannot tell, raises, or returns garbage is never a
+veto and never a skip.
+
+Patterns are `fnmatch`, not pathlib globs: `*` crosses `/` and `**` means nothing, so `docs/*`
+also admits `docs/schemas/x.json`. That is pinned by a test as the likeliest misconfiguration.
+
+### 8.4 Measurements this work produced
+
+| | |
+|---|---|
+| Attest key medians (1,642 runs) | `stateful` 348s · `integration` 292s · `demos` 153s · `arch-contracts` 61s · `package` 45s · `docs` 9s · `unit` 4s = **~913s**, run sequentially |
+| Green/red split (1,592 runs) | **69.8% green**, 30.2% red |
+| Red-log corpus | 380 usable, median **836,806** est tokens, max 4.4M |
+| Live `review` call | 0.354s, 7,609 input tokens, **$0.00032** — against 8.6–12.1s and $0.017–0.052 for the seat it replaces |
+| JUnit drop zone | **0 XML files across 1,591 runs**; `BH_TEST_REPORT_DIR` referenced nowhere in the repo |
+
+### 8.5 The finding that outranks the rest
+
+A red `just check` log's **root cause did not survive to the decision**. pytest prints exception
+detail mid-run and its concise summary last, so a tail-based window carried the `FAILED`/`ERROR`
+list while `could not create numbered dir` (40 occurrences) and `bh-hermetic` (144) were both
+absent. The model correctly reported low confidence on evidence it never received.
+
+The fix is not a better window. It is `bh-068zo`: bh already exports `BH_TEST_REPORT_DIR` and
+already parses JUnit into per-case results, and this repo has simply never opted in. Roughly
+2–4k structured tokens would carry the causes that 12k tokens of log tail did not.
