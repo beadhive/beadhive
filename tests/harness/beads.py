@@ -103,6 +103,26 @@ def create(repo: Path, title: str, *, type_="task", priority=2) -> str:
     return (res.stdout or "").strip().splitlines()[-1].strip()
 
 
+def create_graph(repo: Path, nodes: list[dict], edges: list[dict]) -> dict[str, str]:
+    """Create an isolated fixture graph in one real-bd transaction.
+
+    AGF tasks carry only the fields supported by ``bd create --graph``. Keeping the plan under
+    ignored ``.beads`` state prevents it from entering the git history being asserted, and the
+    unlink in ``finally`` leaves no benchmark-only fixture state behind on failure.
+    """
+    plan = repo / ".beads" / "agf-graph-plan.json"
+    plan.write_text(json.dumps({"nodes": nodes, "edges": edges}))
+    try:
+        res = bd("create", "--graph", plan, "--json", cwd=repo, capture=True)
+        payload = json.loads(res.stdout or "{}")
+        ids = payload.get("ids")
+        if not isinstance(ids, dict):
+            raise AssertionError(f"bd create --graph returned no id map: {payload!r}")
+        return {str(key): str(value) for key, value in ids.items()}
+    finally:
+        plan.unlink(missing_ok=True)
+
+
 def dep_add(repo: Path, child: str, parent: str):
     """`child` depends on `parent` (parent blocks child)."""
     bd("dep", "add", child, parent, cwd=repo, capture=True)

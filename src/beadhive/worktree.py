@@ -380,7 +380,9 @@ def _id_prefix_base(main: Path, bead: str, integration: str) -> str:
         node = parent  # climb; a non-container (issue) ancestor is skipped
 
 
-def _parent_link_base(main: Path, bead: str, integration: str) -> str:
+def _parent_link_base(
+    main: Path, bead: str, integration: str, bead_data: dict | None = None
+) -> str:
     """Nearest started container ancestor by the bd parent-child link — the source of truth after
     a re-parent/split, where the dotted id keeps its birth prefix but the real parent has moved.
     Climbs `bd show <id>`'s `parent` field, checking for a started container at each hop. Returns
@@ -392,7 +394,7 @@ def _parent_link_base(main: Path, bead: str, integration: str) -> str:
     try:
         while node and node not in seen:
             seen.add(node)
-            data = bd.show(node, main)
+            data = bead_data if node == bead and bead_data is not None else bd.show(node, main)
             parent = str((data or {}).get("parent") or "")
             if not parent:
                 return integration
@@ -405,7 +407,7 @@ def _parent_link_base(main: Path, bead: str, integration: str) -> str:
     return integration
 
 
-def integration_base(entry, bead: str, integration: str) -> str:
+def integration_base(entry, bead: str, integration: str, bead_data: dict | None = None) -> str:
     """Resolve the integration target for a bead's merges — the branch its worktree forks from and
     its merges land on — as the NEAREST started container ancestor, falling back to `integration`
     (the hive branch, main) at the root.
@@ -420,7 +422,7 @@ def integration_base(entry, bead: str, integration: str) -> str:
     isolation: a child lands on its own epic even when a workstream exists above."""
     main = registry.hive_dir(entry)
     id_base = _id_prefix_base(main, bead, integration)
-    link_base = _parent_link_base(main, bead, integration)
+    link_base = _parent_link_base(main, bead, integration, bead_data)
     # Prefer the parent-link container whenever bd resolves one that differs from the stale prefix.
     if link_base != integration and link_base != id_base:
         return link_base

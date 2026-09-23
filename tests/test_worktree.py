@@ -427,6 +427,17 @@ def test_integration_base_zero_hop_no_container(tmp_path, monkeypatch):
     assert worktree.integration_base(entry, "ag-epic.3", "main") == "main"
 
 
+def test_integration_base_reuses_supplied_bead_row(tmp_path, monkeypatch):
+    """A caller that already read the bead does not spawn another bd show for the leaf."""
+    entry, _ = _mol_hive(tmp_path, monkeypatch)
+
+    def _unexpected_show(*_args, **_kwargs):
+        pytest.fail("integration_base repeated an already-supplied bd show")
+
+    monkeypatch.setattr(worktree.bd, "show", _unexpected_show)
+    assert worktree.integration_base(entry, "ag-epic.3", "main", {"parent": ""}) == "main"
+
+
 def test_integration_base_no_dot_is_root(tmp_path, monkeypatch):
     """A dotless (top-level) id has no parent to climb to → integration (main)."""
     entry, repo = _mol_hive(tmp_path, monkeypatch)

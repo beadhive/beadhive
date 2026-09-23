@@ -54,13 +54,22 @@ def _node(kind: str, c: dict, branch: str) -> Node:
     return Node(kind, c["subject"], c["author"], c["email"], c["sig"], c["signer"], branch)
 
 
-def _wt_branch(main, sha: str) -> str:
-    # --points-at (tip == sha), NOT --contains: in a chain a dev commit is an ancestor of the
-    # later beads' branches, so --contains would ambiguously match all of them.
+def _wt_branches(main) -> dict[str, str]:
+    """Map every worktree branch tip in one git read instead of one process per dev commit."""
     out = git(
-        "-C", str(main), "branch", "--format=%(refname:short)", "--points-at", sha, check=False
+        "-C",
+        str(main),
+        "for-each-ref",
+        "--format=%(objectname) %(refname:short)",
+        "refs/heads/wt/bead/",
+        check=False,
     ).stdout
-    return next((b for b in out.split() if b.startswith("wt/bead/")), "?")
+    branches = {}
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            branches[parts[0]] = parts[1]
+    return branches
 
 
 @dataclass
@@ -100,6 +109,7 @@ class Timeline:
         main = hive.main
         full = {c["sha"]: c for c in history.commits(main, "main")}
         fp = git("-C", str(main), "log", "--first-parent", "--format=%H", "main").stdout.split()
+        worktree_branches = _wt_branches(main)
         nodes: list[Node] = []
         for sha in fp:
             c = full[sha]
@@ -107,7 +117,7 @@ class Timeline:
                 nodes.append(_node("merge", c, "main"))
                 dev = full.get(c["parents"][1])
                 if dev:
-                    nodes.append(_node("dev", dev, _wt_branch(main, dev["sha"])))
+                    nodes.append(_node("dev", dev, worktree_branches.get(dev["sha"], "?")))
             else:
                 nodes.append(_node("base", c, "main"))
         return cls(label, nodes)
