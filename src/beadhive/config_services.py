@@ -729,8 +729,21 @@ def alerts_worktree_cap_mb(cfg=None) -> int:
 
 
 def alerts_disk_free_floor_mb(cfg=None) -> int:
-    """Host free-disk floor in MB (0 disables, default 10240)."""
+    """Host-root filesystem free-space floor in MB (0 disables, default 10240)."""
     return int(alerts_cfg(cfg).get("disk_free_floor_mb", 10240))
+
+
+def alerts_worktree_filesystem_free_floor_mb(cfg=None) -> int:
+    """Configured worktree-filesystem floor in MB (0 disables, default 10240).
+
+    The existing ``disk_free_floor_mb`` remains a host-root policy. When the new field is
+    absent, inherit that existing value so current configurations retain their previous
+    effective threshold for the configured worktree filesystem as well.
+    """
+    alerts = alerts_cfg(cfg)
+    return int(
+        alerts.get("worktree_filesystem_free_floor_mb", alerts.get("disk_free_floor_mb", 10240))
+    )
 
 
 # ---- workspace-metadata cache (ws.metadata) ---------------------------------
@@ -885,6 +898,7 @@ __all__ = [
     "alerts_cfg",
     "alerts_worktree_cap_mb",
     "alerts_disk_free_floor_mb",
+    "alerts_worktree_filesystem_free_floor_mb",
     "metadata_cfg",
     "metadata_ttl",
     "metadata_background_reload",

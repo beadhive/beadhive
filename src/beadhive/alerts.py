@@ -55,11 +55,14 @@ def doctor_warnings() -> list[Alert]:
 
 @register
 def disk_pressure() -> list[Alert]:
-    """Surface configured worktree and host-free-space pressure as actionable alerts."""
+    """Surface worktree-filesystem and host-root pressure as separate actionable alerts."""
     cfg = config.load()
     measurements = doctor._data_worktree_disk_usage(cfg)
     cap_bytes = config.alerts_worktree_cap_mb(cfg) * 1024 * 1024
-    floor_bytes = config.alerts_disk_free_floor_mb(cfg) * 1024 * 1024
+    worktree_floor_mb = config.alerts_worktree_filesystem_free_floor_mb(cfg)
+    worktree_floor_bytes = worktree_floor_mb * 1024 * 1024
+    host_root_floor_mb = config.alerts_disk_free_floor_mb(cfg)
+    host_root_floor_bytes = host_root_floor_mb * 1024 * 1024
     rows: list[Alert] = []
 
     if cap_bytes:
@@ -81,19 +84,58 @@ def disk_pressure() -> list[Alert]:
                     )
                 )
 
-    free_bytes = measurements["disk_free_bytes"]
-    if floor_bytes and free_bytes is not None and free_bytes < floor_bytes:
+    worktree_filesystem = measurements.get("worktree_filesystem", {})
+    worktree_free_bytes = worktree_filesystem.get("free_bytes")
+    if (
+        worktree_floor_bytes
+        and worktree_free_bytes is not None
+        and worktree_free_bytes < worktree_floor_bytes
+    ):
+        mount = worktree_filesystem.get("mount_point") or "unknown mount"
+        filesystem = worktree_filesystem.get("filesystem_type") or "unknown filesystem"
+        device = worktree_filesystem.get("device") or "unknown device"
+        root = worktree_filesystem.get("root") or "configured worktree root"
+        rows.append(
+            Alert(
+                severity="warning",
+                code="disk.worktree-filesystem-free-space",
+                message=(
+                    f"worktree root '{root}' on {filesystem} device '{device}' mounted at "
+                    f"'{mount}' has "
+                    f"{safety.format_bytes(worktree_free_bytes)} free, below its "
+                    f"{worktree_floor_mb} MB filesystem floor"
+                ),
+                remediation=(
+                    f"Free capacity on '{mount}': dispatch a custodian to prune safe merged or "
+                    "abandoned worktrees with `bh worktree prune`, or move `worktrees.path` / "
+                    "`BH_WORKTREES` to a filesystem with more capacity."
+                ),
+            )
+        )
+
+    host_root_filesystem = measurements.get("host_root_filesystem", {})
+    host_root_free_bytes = host_root_filesystem.get("free_bytes")
+    if (
+        host_root_floor_bytes
+        and host_root_free_bytes is not None
+        and host_root_free_bytes < host_root_floor_bytes
+    ):
+        mount = host_root_filesystem.get("mount_point") or "/"
+        filesystem = host_root_filesystem.get("filesystem_type") or "unknown filesystem"
+        device = host_root_filesystem.get("device") or "unknown device"
         rows.append(
             Alert(
                 severity="warning",
                 code="disk.free-space",
                 message=(
-                    f"host has {safety.format_bytes(free_bytes)} free disk space, below its "
-                    f"{config.alerts_disk_free_floor_mb(cfg)} MB floor"
+                    f"host root filesystem {filesystem} device '{device}' mounted at "
+                    f"'{mount}' has "
+                    f"{safety.format_bytes(host_root_free_bytes)} free, below its "
+                    f"{host_root_floor_mb} MB floor"
                 ),
                 remediation=(
-                    "Dispatch a custodian to reclaim space, starting with `bh worktree prune` "
-                    "and the largest managed worktrees."
+                    f"Reclaim space on the host root filesystem mounted at '{mount}' and "
+                    "inspect `df -h /`; prune worktrees only if they share this filesystem."
                 ),
             )
         )

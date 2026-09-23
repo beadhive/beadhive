@@ -1105,8 +1105,24 @@ def test_section_fleet_health_stale_threshold_in_output(capsys):
 # ---- worktree disk measurement ---------------------------------------------
 
 
+def test_read_mount_table_decodes_mountinfo_escapes(tmp_path):
+    mountinfo = tmp_path / "mountinfo"
+    mountinfo.write_text(
+        "36 25 0:99 / /tmp/worktree\\040cache rw,nosuid,nodev - tmpfs tmpfs rw,size=123\n"
+    )
+
+    assert doctor._read_mount_table(mountinfo) == [
+        {
+            "mount_point": "/tmp/worktree cache",
+            "device_id": "0:99",
+            "filesystem_type": "tmpfs",
+            "device": "tmpfs",
+        }
+    ]
+
+
 def test_data_worktree_disk_usage_measures_only_managed_worktrees(monkeypatch, tmp_path):
-    """Worktree bytes exclude the primary clone and aggregate each hive separately."""
+    """Worktree bytes and each filesystem's free capacity are reported separately."""
     first = tmp_path / "first"
     second = tmp_path / "second"
     monkeypatch.setattr(
@@ -1120,7 +1136,29 @@ def test_data_worktree_disk_usage_measures_only_managed_worktrees(monkeypatch, t
         lambda path: {str(first): 11, str(second): 29}[path],
     )
     monkeypatch.setattr(doctor.config, "worktrees_root", lambda _cfg: tmp_path)
-    monkeypatch.setattr(doctor.shutil, "disk_usage", lambda _path: SimpleNamespace(free=97))
+    monkeypatch.setattr(
+        doctor.shutil,
+        "disk_usage",
+        lambda path: SimpleNamespace(free=97 if Path(path) == tmp_path else 71),
+    )
+    monkeypatch.setattr(
+        doctor,
+        "_read_mount_table",
+        lambda: [
+            {
+                "mount_point": "/",
+                "device_id": "8:1",
+                "filesystem_type": "ext4",
+                "device": "/dev/vda1",
+            },
+            {
+                "mount_point": str(tmp_path),
+                "device_id": "0:41",
+                "filesystem_type": "tmpfs",
+                "device": "tmpfs",
+            },
+        ],
+    )
 
     data = doctor._data_worktree_disk_usage(
         {
@@ -1131,14 +1169,68 @@ def test_data_worktree_disk_usage_measures_only_managed_worktrees(monkeypatch, t
         }
     )
 
-    assert data == {
-        "hives": [
-            {"prefix": "one", "worktree_bytes": 40, "worktree_count": 2},
-            {"prefix": "two", "worktree_bytes": 0, "worktree_count": 0},
-        ],
-        "total_worktree_bytes": 40,
-        "disk_free_bytes": 97,
+    assert data["hives"] == [
+        {"prefix": "one", "worktree_bytes": 40, "worktree_count": 2},
+        {"prefix": "two", "worktree_bytes": 0, "worktree_count": 0},
+    ]
+    assert data["total_worktree_bytes"] == 40
+    assert data["disk_free_bytes"] == 97  # compatibility alias remains the worktree root
+    assert data["worktree_filesystem"] == {
+        "root": str(tmp_path),
+        "measured_path": str(tmp_path),
+        "mount_point": str(tmp_path),
+        "filesystem_type": "tmpfs",
+        "device": "tmpfs",
+        "device_id": "0:41",
+        "free_bytes": 97,
     }
+    assert data["host_root_filesystem"] == {
+        "root": "/",
+        "measured_path": "/",
+        "mount_point": "/",
+        "filesystem_type": "ext4",
+        "device": "/dev/vda1",
+        "device_id": "8:1",
+        "free_bytes": 71,
+    }
+
+
+def test_filesystem_capacity_uses_existing_parent_for_persistent_root(monkeypatch, tmp_path):
+    """An absent persistent root is measured on its nearest existing parent filesystem."""
+    root = tmp_path / "persistent-worktrees"
+    calls = []
+
+    def disk_usage(path):
+        path = Path(path)
+        calls.append(path)
+        if path == root:
+            raise FileNotFoundError(path)
+        return SimpleNamespace(free=123)
+
+    monkeypatch.setattr(doctor.shutil, "disk_usage", disk_usage)
+    monkeypatch.setattr(
+        doctor,
+        "_filesystem_identity",
+        lambda path: {
+            "mount_point": str(tmp_path),
+            "filesystem_type": "ext4",
+            "device": "/dev/vdb1",
+            "device_id": "8:17",
+        },
+    )
+
+    data = doctor._filesystem_capacity(root)
+
+    assert data == {
+        "root": str(root),
+        "measured_path": str(tmp_path),
+        "mount_point": str(tmp_path),
+        "filesystem_type": "ext4",
+        "device": "/dev/vdb1",
+        "device_id": "8:17",
+        "free_bytes": 123,
+    }
+    assert calls == [root, tmp_path]
 
 
 # ---- doctor_payload structured dict -----------------------------------------
@@ -1269,6 +1361,8 @@ def test_doctor_payload_sections_are_structured(hive, fakebd):  # noqa: F811
         "hives",
         "total_worktree_bytes",
         "disk_free_bytes",
+        "worktree_filesystem",
+        "host_root_filesystem",
     }
     assert set(payload["fleet_health"]) >= {
         "repos_scanned",

@@ -1609,13 +1609,113 @@ def _data_disk_usage(hives, root: Path, records) -> dict:
     return {"hives": entries, "total_bytes": total_bytes}
 
 
-def _data_worktree_disk_usage(cfg) -> dict:
-    """Managed-worktree footprint per hive plus free space on their filesystem.
+def _read_mount_table(path: Path = Path("/proc/self/mountinfo")) -> list[dict[str, str]]:
+    """Read Linux mount identities when available; other platforms use device IDs."""
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
 
-    This intentionally measures the linked worktree directories, rather than the
-    primary clone and its shared ``.git`` object store measured by
-    :func:`_data_disk_usage`. The result is data only: alert policy and rendering
-    belong to their respective consumers.
+    def unescape(value: str) -> str:
+        return re.sub(r"\\([0-7]{3})", lambda match: chr(int(match.group(1), 8)), value)
+
+    mounts = []
+    for line in lines:
+        before, separator, after = line.partition(" - ")
+        if not separator:
+            continue
+        fields = before.split()
+        filesystem = after.split()
+        if len(fields) < 5 or len(filesystem) < 2:
+            continue
+        mounts.append(
+            {
+                "mount_point": unescape(fields[4]),
+                "device_id": fields[2],
+                "filesystem_type": filesystem[0],
+                "device": unescape(filesystem[1]),
+            }
+        )
+    return mounts
+
+
+def _filesystem_identity(path: Path) -> dict[str, str | None]:
+    """Identify the mounted filesystem containing *path* without external utilities."""
+    resolved = path.resolve()
+    mounts = _read_mount_table()
+    matching = []
+    for mount in mounts:
+        mount_point = Path(mount["mount_point"])
+        try:
+            resolved.relative_to(mount_point)
+        except ValueError:
+            continue
+        matching.append(mount)
+    if matching:
+        mount = max(matching, key=lambda row: len(Path(row["mount_point"]).parts))
+        return {
+            "mount_point": mount["mount_point"],
+            "filesystem_type": mount["filesystem_type"],
+            "device": mount["device"],
+            "device_id": mount["device_id"],
+        }
+
+    try:
+        device_id = str(os.stat(resolved).st_dev)
+    except OSError:
+        device_id = None
+    mount_point = resolved
+    while mount_point != mount_point.parent:
+        parent = mount_point.parent
+        try:
+            if os.stat(parent).st_dev != os.stat(mount_point).st_dev:
+                break
+        except OSError:
+            break
+        mount_point = parent
+    return {
+        "mount_point": str(mount_point),
+        "filesystem_type": None,
+        "device": None,
+        "device_id": device_id,
+    }
+
+
+def _filesystem_capacity(root: Path) -> dict[str, int | str | None]:
+    """Return free bytes and filesystem identity for a configured path.
+
+    Persistent worktree roots may not exist until the first claim. In that case use the
+    nearest existing parent for the measurement while retaining both paths in the result.
+    """
+    root = Path(root)
+    measured_path = root
+    usage = None
+    while True:
+        try:
+            usage = shutil.disk_usage(measured_path)
+            break
+        except OSError:
+            if measured_path == measured_path.parent:
+                break
+            measured_path = measured_path.parent
+
+    identity = _filesystem_identity(measured_path)
+    return {
+        "root": str(root),
+        "measured_path": str(measured_path),
+        **identity,
+        "free_bytes": usage.free if usage is not None else None,
+    }
+
+
+def _data_worktree_disk_usage(cfg) -> dict:
+    """Managed-worktree footprint plus the capacity of its and the root filesystem.
+
+    The linked worktree directories are measured separately from the primary clone and its
+    shared ``.git`` object store counted by :func:`_data_disk_usage`. Filesystem readings carry
+    their measured path and mount identity so ephemeral roots (often tmpfs) are not described
+    as host-root disk capacity. The result is data only: alert policy and rendering belong to
+    their respective consumers.
     """
     entries = {
         str(entry["prefix"]): {
@@ -1632,26 +1732,18 @@ def _data_worktree_disk_usage(cfg) -> dict:
         entry["worktree_bytes"] += safety._measure_disk_usage(path)
         entry["worktree_count"] += 1
 
-    root = config.worktrees_root(cfg)
-    try:
-        disk_free_bytes = shutil.disk_usage(root).free
-    except OSError:
-        # A configured persistent root need not exist until the first claim. Its
-        # nearest existing parent is on the same filesystem and still provides the
-        # useful host-level free-space reading.
-        parent = root
-        while not parent.exists() and parent != parent.parent:
-            parent = parent.parent
-        try:
-            disk_free_bytes = shutil.disk_usage(parent).free
-        except OSError:
-            disk_free_bytes = None
+    worktree_filesystem = _filesystem_capacity(config.worktrees_root(cfg))
+    host_root_filesystem = _filesystem_capacity(Path("/"))
 
     hives = list(entries.values())
     return {
         "hives": hives,
         "total_worktree_bytes": sum(entry["worktree_bytes"] for entry in hives),
-        "disk_free_bytes": disk_free_bytes,
+        # Compatibility alias: historically this was the configured worktree root's free
+        # space, despite callers and alerts sometimes describing it as host disk capacity.
+        "disk_free_bytes": worktree_filesystem["free_bytes"],
+        "worktree_filesystem": worktree_filesystem,
+        "host_root_filesystem": host_root_filesystem,
     }
 
 
