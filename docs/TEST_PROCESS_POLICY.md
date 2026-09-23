@@ -23,6 +23,25 @@ exercise process-group behavior may fork inside a fresh, standalone subprocess; 
 programs do not fork the xdist worker itself. A helper-based fork test must have a separately
 documented serial gate phase; it must never be silently admitted to the parallel selection.
 
+## Hub, HQ, and onboarding test boundary
+
+Fast unit selection keeps branch-facing behavior on deterministic seams. Durable store behavior
+that needs `bd` stays in the integration selection and is bounded by the `dolt_server` marker.
+These named cases are classified as follows:
+
+| Tests | Selection | Contract retained |
+| --- | --- | --- |
+| `tests/test_hub_rebuild.py::test_rm_rf_the_hub_then_rehydrate_yields_the_identical_aggregate` | `integration`, `dolt_server` | Real-store rebuild fidelity, source prefixes, and stable aggregate identity. |
+| `tests/test_hub_rebuild.py::test_hq_publishes_no_hive_derived_beads_and_prune_makes_it_so` | `integration`, `dolt_server` | Real HQ prune scope and durable native-bead preservation. |
+| `tests/test_bd_repo_sync_additive.py::test_bd_repo_sync_is_additive` | `integration`, `dolt_server` | Real `bd repo sync` preserves native beads and imports source IDs with their prefix. |
+| `tests/test_hq.py::test_ensure_store_stands_up_git_bd_repo_prefix_hq` | `integration`, `dolt_server` | `hub.ensure_store` creates and reuses the durable Git + bd HQ store. |
+| `tests/test_hive_opencode.py::test_onboard_opencode_writes_config_agents_and_agf_hint`, `test_onboard_opencode_is_idempotent`, `test_onboard_opencode_force_refreshes` | unit | OpenCode installer routing, generated files, local-edit preservation, and explicit refresh. Their fixture stubs auto-export, host bd config, and hub synchronization, which are separate durable-store concerns. |
+
+The fast hub/HQ contracts remain covered by fake-based tests in `tests/test_hub.py`,
+`tests/test_hub_bulk.py`, and `tests/test_hq.py`, including repository routing, source-prefix
+handling, sync failure behavior, and HQ initialization ordering. The four real-store proofs above
+are selected by `just test-integration-land`; they are not skipped or hidden behind a quarantine.
+
 ## Hang watchdog
 
 The parallel `just test` and `just test-integration-land` recipes run under

@@ -11,7 +11,8 @@ EMPIRICAL RESULT: PASS
   *permanent orphan* with no source-hive home (see guard.py annotation update in this commit).
 
 Test design:
-  - NOT marked ``integration``: runs under ``just check`` (fast gate) when ``bd`` is on PATH.
+  - Marked ``integration``: runs in the real-bd integration selection, separate from fast unit
+    contracts for repo routing and source-prefix preservation.
   - Marked ``skip_if_no_bd``: self-skips on machines without the binary, so the suite stays
     green in CI environments that lack bd.
   - All I/O is in pytest's ``tmp_path`` — zero production writes.
@@ -29,9 +30,9 @@ from beadhive.run import run
 from harness.beads import skip_if_no_bd
 from harness.world import reap_dolt_server
 
-# Self-skips when bd is not installed; NOT @pytest.mark.integration so the test runs under
-# `just check` (marker "not integration") and provides an empirical result on every validate.
-pytestmark = [skip_if_no_bd, pytest.mark.dolt_server]
+# This empirical real-store behavior proof belongs to the integration selection. Fast unit
+# contracts for repository routing and prefix preservation remain in the regular unit selection.
+pytestmark = [skip_if_no_bd, pytest.mark.dolt_server, pytest.mark.integration]
 
 _BD_NI = {"BD_NON_INTERACTIVE": "1"}
 
