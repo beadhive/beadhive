@@ -9,6 +9,24 @@
     ],
     "method": "Post-run read-only audit of every retained dolt-server.pid and dolt-server.port under each measurement scratch root."
   },
+  "diagnostic_assessment": {
+    "command": "Same selectors/environment as after, with -n 1 instead of -n 2",
+    "conclusion": "Serial execution removes cross-worker gate retries and lowers aggregate hold versus the parallel shared-server run, but wall remains 62.84s versus the 30.20s baseline median. It does not preserve end-to-end performance.",
+    "pytest_wall_seconds": 62.84,
+    "result": {
+      "failed": 0,
+      "passed": 2,
+      "skipped": 0
+    },
+    "scope_assessment": "Each compatible test already amortizes one startup across its own multiple databases. Cross-test process reuse saves one 12.6s startup but forces bd init maintenance work that was parallel on isolated servers through one server workspace gate. Returning either test to a fresh server restores parallel isolation but removes the cross-test start reduction; no beneficial reuse scope was identified without replacing supported bd init behavior.",
+    "server_start_count": 1,
+    "server_start_init_seconds": 12.613212495998596,
+    "slot_hold_seconds_by_test": [
+      38.07674830000178,
+      23.433062293996045
+    ],
+    "slot_hold_seconds_total": 61.50981059399783
+  },
   "environment": {
     "BH_DOLT_SLOTS": "unset (project cap 4)",
     "UV_CACHE_DIR": "/tmp/bh-7ks1c-7-uv-cache",
@@ -61,6 +79,11 @@
         },
         "server_start_count": 1,
         "server_start_init_seconds": 12.862973315997806,
+        "slot_hold_seconds_by_test": [
+          42.58903300700331,
+          62.05107793099887
+        ],
+        "slot_hold_seconds_total": 104.64011093800218,
         "slot_queue_seconds_by_test": [
           6.960299651836976e-05,
           0.00016430300456704572
@@ -90,6 +113,11 @@
         },
         "server_start_count": 1,
         "server_start_init_seconds": 12.605496504002076,
+        "slot_hold_seconds_by_test": [
+          42.12743897300243,
+          61.046076430997346
+        ],
+        "slot_hold_seconds_total": 103.17351540399977,
         "slot_queue_seconds_by_test": [
           7.846600055927411e-05,
           0.00016321300063282251
@@ -119,6 +147,11 @@
         },
         "server_start_count": 1,
         "server_start_init_seconds": 12.61421293800231,
+        "slot_hold_seconds_by_test": [
+          42.05165237800247,
+          61.654650062002474
+        ],
+        "slot_hold_seconds_total": 103.70630244000495,
         "slot_queue_seconds_by_test": [
           0.00016120600048452616,
           0.00015875200188020244
@@ -152,6 +185,11 @@
         },
         "server_start_count": 2,
         "server_start_init_seconds": 25.303190742997685,
+        "slot_hold_seconds_by_test": [
+          21.592734489997383,
+          28.66420686100173
+        ],
+        "slot_hold_seconds_total": 50.256941350999114,
         "slot_queue_seconds_by_test": [
           8.958599937614053e-05,
           0.00012858699483331293
@@ -183,6 +221,11 @@
         },
         "server_start_count": 2,
         "server_start_init_seconds": 25.49894291000237,
+        "slot_hold_seconds_by_test": [
+          21.623537876002956,
+          28.73014652400161
+        ],
+        "slot_hold_seconds_total": 50.35368440000457,
         "slot_queue_seconds_by_test": [
           7.894099690020084e-05,
           0.00021729099535150453
@@ -214,6 +257,11 @@
         },
         "server_start_count": 2,
         "server_start_init_seconds": 25.466441103999387,
+        "slot_hold_seconds_by_test": [
+          21.537610179002513,
+          28.71612799900322
+        ],
+        "slot_hold_seconds_total": 50.25373817800573,
         "slot_queue_seconds_by_test": [
           7.857899618102238e-05,
           0.00014881399692967534
@@ -240,11 +288,18 @@
   },
   "summary": {
     "acceptance_threshold_percent": 25.0,
+    "after_median_pytest_wall_seconds": 62.88,
     "after_median_server_starts": 1,
+    "after_median_slot_hold_seconds_total": 103.70630244000495,
     "after_median_startup_plus_queue_seconds": 12.614532896004675,
+    "before_median_pytest_wall_seconds": 30.2,
     "before_median_server_starts": 2,
+    "before_median_slot_hold_seconds_total": 50.256941350999114,
     "before_median_startup_plus_queue_seconds": 25.466668496992497,
+    "overall_workload_regression_observed": true,
+    "pytest_wall_change_percent": 108.21192052980135,
     "server_start_reduction_percent": 50.0,
+    "slot_hold_change_percent": 106.35219663630258,
     "startup_plus_queue_reduction_percent": 50.4664974238998,
     "threshold_met": true
   },
