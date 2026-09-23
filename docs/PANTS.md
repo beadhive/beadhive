@@ -29,6 +29,24 @@ plugin. Direct harness imports infer per-file harness dependencies. Package data
 resources have explicit resource targets. Unowned Python imports are errors, not warnings, so an
 incomplete mapping fails closed during graph use.
 
+Governed source directories own their own targets: `modules/<capability>`, `kernel/<concern>`,
+`adapters/<boundary>`, `integrations/herdr`, `bootstrap`, and `testing` each have a BUILD file
+whose generator is tagged `owner:<path>` and `role:<kind>` (`capability`, `kernel`,
+`shared-adapter`, `integration`, `bootstrap`, `testing-kit`, or `namespace` for a bare package
+marker). `//src/beadhive:lib` owns only the root-level `*.py` modules and is tagged
+`role:migration-debt`. Pure unit tests follow the same split: `tests/BUILD` generates one
+`tests:unit-<area>` target per `tests/unit/<area>` with the owner/role tags of the source it covers,
+all from one shared field set that keeps the sandbox-proven overrides in a single list. The `bh`
+PEX and the demos depend on `//src/beadhive:sources`, which lists every source target, so the
+package closure does not depend on import inference. The split adds addressability and tags, not
+sharper impact selection; `attest:*` and `category:*` tags are unchanged.
+
+```console
+pants list src/beadhive/modules/config::
+pants test tests:unit-kernel-plugins
+pants --filter-tag-regex='^owner:modules/config$' list ::
+```
+
 ## Host-wide cache topology
 
 Run Pants through the checked cache coordinator so independent worktrees share only Pants'
