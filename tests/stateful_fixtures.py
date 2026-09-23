@@ -12,9 +12,9 @@ any stateful scope they need instead of inheriting one accidentally.
 from __future__ import annotations
 
 import getpass
-import hashlib
 import importlib.abc
 import importlib.metadata
+import json
 import os
 import shutil
 import socket
@@ -23,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -51,8 +52,8 @@ DOLT_SERVER_FRESHNESS = {
     "tests/test_hq_backup_server_mode_int.py": ("fresh", "destroy/restore two owned servers"),
     "tests/test_hub_bulk_int.py": ("mixed", "per-test contracts in HUB_BULK_FRESHNESS"),
     "tests/test_hub_rebuild.py": ("fresh", "destructive aggregate rebuild and prune"),
-    "tests/test_onboard_server_mode_int.py": ("fresh", "startup and busy-port lifecycle"),
-    "tests/test_storage_migrate_int.py": ("fresh", "embedded-to-server migration lifecycle"),
+    "tests/test_onboard_server_mode_int.py": ("mixed", "cold-start and busy-port cases stay fresh"),
+    "tests/test_storage_migrate_int.py": ("mixed", "migration cases reuse only isolated databases"),
 }
 
 HUB_BULK_FRESHNESS = {
@@ -69,6 +70,128 @@ HUB_BULK_FRESHNESS = {
         "read-only discovery over isolated namespaced databases",
     ),
 }
+
+ONBOARD_FRESHNESS = {
+    "test_furnished_path_lands_on_server_mode_with_backup_on": (
+        "fresh",
+        "owns the cold-start proof for a newly furnished hive",
+    ),
+    "test_zero_footprint_path_lands_on_server_mode_and_stays_zero_footprint": (
+        "reusable",
+        "server-mode configuration and zero-footprint assertions use an isolated hive prefix",
+    ),
+    "test_bootstrap_path_second_host_lands_on_server_mode": (
+        "reusable",
+        "bootstrap behavior uses isolated source and destination hive prefixes",
+    ),
+    "test_existing_embedded_hive_untouched_by_upgrade": (
+        "fresh",
+        "embedded-mode preservation does not share server state",
+    ),
+    "test_rerunning_onboard_on_a_server_mode_hive_is_a_no_op": (
+        "reusable",
+        "idempotent behavior is isolated by a per-test hive prefix",
+    ),
+    "test_furnished_path_busy_port_fails_legibly_and_leaves_nothing_behind": (
+        "fresh",
+        "asserts cold-start busy-port failure and retry",
+    ),
+    "test_zero_footprint_path_busy_port_fails_legibly_and_leaves_nothing_behind": (
+        "fresh",
+        "asserts cold-start busy-port failure and retry",
+    ),
+    "test_hub_ensure_store_busy_port_fails_legibly_and_leaves_nothing_behind": (
+        "fresh",
+        "asserts hub cold-start busy-port failure and retry",
+    ),
+}
+
+STORAGE_MIGRATE_FRESHNESS = {
+    "test_bd_reinit_local_shared_server_leaves_metadata_stale_by_itself": (
+        "reusable",
+        "migration metadata assertion uses a unique database prefix",
+    ),
+    "test_embedded_to_shared_server_real_round_trip": (
+        "reusable",
+        "migration round trip uses a unique database prefix",
+    ),
+    "test_dry_run_against_a_real_embedded_store_changes_nothing": (
+        "fresh",
+        "dry-run does not use a shared-server database",
+    ),
+    "test_migrated_furnished_hive_does_not_untrack_the_moved_aside_store": (
+        "reusable",
+        "migration and backup assertions use a unique database prefix",
+    ),
+    "test_dry_run_selects_bootstrap_when_origin_already_has_dolt_data": (
+        "fresh",
+        "dry-run does not use a shared-server database",
+    ),
+    "test_bootstrap_migration_survives_a_live_embedded_store_with_unpushed_changes": (
+        "reusable",
+        "bootstrap migration uses a unique database prefix",
+    ),
+    "test_bootstrap_migration_survives_a_dolt_database_collision_with_another_hive": (
+        "fresh",
+        "deliberately occupies the generic beads database to prove collision recovery",
+    ),
+}
+
+DOLT_SERVER_CASE_FRESHNESS = {
+    "tests/test_hub_bulk_int.py": HUB_BULK_FRESHNESS,
+    "tests/test_onboard_server_mode_int.py": ONBOARD_FRESHNESS,
+    "tests/test_storage_migrate_int.py": STORAGE_MIGRATE_FRESHNESS,
+}
+
+
+def dolt_server_case_freshness(node) -> tuple[str, str]:
+    """Return the reviewed lifecycle class for one marked test, defaulting to fresh."""
+    relative = Path(node.path).relative_to(node.config.rootpath).as_posix()
+    module = DOLT_SERVER_FRESHNESS.get(relative)
+    if module is None:
+        return "fresh", "unlisted module"
+    cases = DOLT_SERVER_CASE_FRESHNESS.get(relative)
+    if cases is not None:
+        case = cases.get(node.name.split("[", 1)[0])
+        if case is not None:
+            return case
+    classification, reason = module
+    return ("fresh" if classification == "mixed" else classification), reason
+
+
+def _reusable_slot_index(slot: int) -> int:
+    """Map an unbounded semaphore run to its xdist worker's private reusable server slot."""
+    if slot >= 0:
+        return slot
+    worker = os.environ.get("PYTEST_XDIST_WORKER", "gw0")
+    try:
+        return int(worker.removeprefix("gw"))
+    except ValueError:
+        return 0
+
+
+def _reusable_slot_dir(slot: int) -> Path | None:
+    root = os.environ.get("BH_REUSABLE_DOLT_DIR")
+    return Path(root) / f"slot-{_reusable_slot_index(slot)}" if root else None
+
+
+def _allocate_reusable_dolt_ports(count: int, free_port) -> list[int]:
+    """Give each exclusive reusable slot a distinct private localhost port."""
+    ports = []
+    for _ in range(count * 10):
+        port = free_port()
+        if port not in ports:
+            ports.append(port)
+        if len(ports) == count:
+            return ports
+    raise RuntimeError(f"could not allocate {count} distinct Dolt ports")
+
+
+def _reap_reusable_slot(slot: int) -> None:
+    """Release a dormant reusable server before a lifecycle-sensitive test uses this slot."""
+    server_dir = _reusable_slot_dir(slot)
+    if server_dir is not None:
+        _cleanup_reusable_dolt_server(server_dir)
 
 
 def _interleave_dolt_items(items, slots):
@@ -217,12 +340,16 @@ def pytest_configure(config):
         os.environ["BH_DOLT_SLOT_EVENTS"] = str(path)
         config._bh_dolt_slot_events_owned = path
     if not hasattr(config, "workerinput"):
-        from harness.world import free_port
+        from harness.world import MAX_CONCURRENT_DOLT_SERVER_TESTS, free_port
 
-        reusable = Path(tempfile.gettempdir()) / f"bh-reusable-dolt-{os.getpid()}"
-        os.environ["BH_REUSABLE_DOLT_DIR"] = str(reusable)
-        os.environ["BH_REUSABLE_DOLT_PORT"] = str(free_port())
-        config._bh_reusable_dolt_owned = reusable
+        reusable_root = Path(tempfile.gettempdir()) / f"bh-reusable-dolt-{os.getpid()}"
+        slots = MAX_CONCURRENT_DOLT_SERVER_TESTS
+        if slots <= 0:
+            slots = max(1, os.cpu_count() or 1)
+        ports = _allocate_reusable_dolt_ports(slots, free_port)
+        os.environ["BH_REUSABLE_DOLT_DIR"] = str(reusable_root)
+        os.environ["BH_REUSABLE_DOLT_PORTS"] = ",".join(str(port) for port in ports)
+        config._bh_reusable_dolt_owned = [reusable_root / f"slot-{slot}" for slot in range(slots)]
 
 
 def pytest_unconfigure(config):
@@ -232,11 +359,13 @@ def pytest_unconfigure(config):
     if owned is not None:
         owned.unlink(missing_ok=True)
         os.environ.pop("BH_DOLT_SLOT_EVENTS", None)
-    reusable = getattr(config, "_bh_reusable_dolt_owned", None)
-    if reusable is not None:
-        _cleanup_reusable_dolt_server(reusable)
+    reusable_slots = getattr(config, "_bh_reusable_dolt_owned", None)
+    if reusable_slots is not None:
+        for server_dir in reusable_slots:
+            _cleanup_reusable_dolt_server(server_dir)
+        shutil.rmtree(reusable_slots[0].parent, ignore_errors=True)
         os.environ.pop("BH_REUSABLE_DOLT_DIR", None)
-        os.environ.pop("BH_REUSABLE_DOLT_PORT", None)
+        os.environ.pop("BH_REUSABLE_DOLT_PORTS", None)
 
 
 @pytest.fixture
@@ -259,8 +388,11 @@ def _bound_concurrent_dolt_servers(request):
     if request.node.get_closest_marker("dolt_server") is None:
         yield
         return
-    with dolt_server_slot(MAX_CONCURRENT_DOLT_SERVER_TESTS, request.node.nodeid):
-        yield
+    with dolt_server_slot(MAX_CONCURRENT_DOLT_SERVER_TESTS, request.node.nodeid) as slot:
+        classification, _reason = dolt_server_case_freshness(request.node)
+        if classification != "reusable":
+            _reap_reusable_slot(slot)
+        yield slot
 
 
 @pytest.fixture
@@ -521,7 +653,7 @@ def _sandbox_shared_server(tmp_path_factory, monkeypatch):
 
 
 class ReusableDoltServer:
-    """One run-owned server plus collision-proof per-test database names."""
+    """One slot-owned server plus collision-proof per-test database names."""
 
     def __init__(self, port: int, suffix: str):
         self.port = port
@@ -601,18 +733,61 @@ def _ensure_reusable_dolt_server(server_dir, port, start, connect=socket.create_
                 time.sleep(0.1)
 
 
-@pytest.fixture
-def reusable_dolt_server(request, monkeypatch):
-    """Share startup across compatible tests while isolating and deleting every database."""
+def _server_database_names(port: int) -> set[str]:
+    """Read actual database names from one slot's private Dolt server."""
     from beadhive.run import run
 
-    server_dir = Path(os.environ["BH_REUSABLE_DOLT_DIR"])
-    port = int(os.environ["BH_REUSABLE_DOLT_PORT"])
-    suffix = hashlib.sha256(request.node.nodeid.encode()).hexdigest()[:4]
+    result = run(
+        [
+            "dolt",
+            "--no-tls",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "sql",
+            "-q",
+            "SHOW DATABASES",
+            "-r",
+            "json",
+        ],
+        check=False,
+        capture=True,
+        timeout=10,
+    )
+    if result.returncode != 0:
+        return set()
+    try:
+        rows = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(rows, list):
+        return set()
+    return {
+        str(row["Database"])
+        for row in rows
+        if isinstance(row, dict) and row.get("Database")
+    }
+
+
+@pytest.fixture
+def reusable_dolt_server(request, monkeypatch, _bound_concurrent_dolt_servers):
+    """Reuse a slot's server sequentially across compatible tests and drop each test's databases."""
+    from beadhive.run import run
+
+    slot = _reusable_slot_index(int(_bound_concurrent_dolt_servers))
+    server_dir = _reusable_slot_dir(slot)
+    assert server_dir is not None
+    ports = [int(value) for value in os.environ["BH_REUSABLE_DOLT_PORTS"].split(",")]
+    if slot >= len(ports):
+        raise RuntimeError(f"no reusable Dolt port assigned for slot {slot}")
+    port = ports[slot]
+    suffix = uuid.uuid4().hex[:8]
     server = ReusableDoltServer(port, suffix)
     monkeypatch.delenv("COLUMNS", raising=False)
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server_dir))
     monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(port))
+    monkeypatch.setenv("BH_REUSABLE_DOLT_SLOT", str(slot))
 
     def start():
         # A worker can die after writing a pidfile or half-initializing the bootstrap store.
@@ -620,11 +795,15 @@ def reusable_dolt_server(request, monkeypatch):
         _recover_and_start_reusable_dolt_server(server_dir)
 
     _ensure_reusable_dolt_server(server_dir, port, start)
+    databases_before = _server_database_names(port)
     yield server
-    for database in sorted(server.databases):
-        run(
+    databases_created = server.databases | (_server_database_names(port) - databases_before)
+    cleanup_errors = []
+    for database in sorted(databases_created):
+        result = run(
             [
                 "dolt",
+                "--no-tls",
                 "--host",
                 "127.0.0.1",
                 "--port",
@@ -637,6 +816,10 @@ def reusable_dolt_server(request, monkeypatch):
             capture=True,
             timeout=10,
         )
+        if result.returncode:
+            cleanup_errors.append((database, result.stderr))
+    if cleanup_errors:
+        raise AssertionError(f"failed to remove reusable Dolt test databases: {cleanup_errors}")
 
 
 @pytest.fixture

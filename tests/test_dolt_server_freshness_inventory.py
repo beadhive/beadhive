@@ -5,12 +5,15 @@ import threading
 from pathlib import Path
 
 from stateful_fixtures import (
+    DOLT_SERVER_CASE_FRESHNESS,
     DOLT_SERVER_FRESHNESS,
     HUB_BULK_FRESHNESS,
     ReusableDoltServer,
+    _allocate_reusable_dolt_ports,
     _cleanup_reusable_dolt_server,
     _ensure_reusable_dolt_server,
     _recover_and_start_reusable_dolt_server,
+    _reusable_slot_dir,
 )
 
 
@@ -61,6 +64,42 @@ def test_mixed_hub_bulk_module_classifies_each_real_server_test_and_fixture():
         )
         assert fixture in functions[name]
         assert reason
+
+
+def test_mixed_server_modules_classify_every_test_before_reuse():
+    root = Path(__file__).parents[1]
+    assert set(DOLT_SERVER_CASE_FRESHNESS) == {
+        "tests/test_hub_bulk_int.py",
+        "tests/test_onboard_server_mode_int.py",
+        "tests/test_storage_migrate_int.py",
+    }
+    for relative, contracts in DOLT_SERVER_CASE_FRESHNESS.items():
+        tree = ast.parse((root / relative).read_text(encoding="utf-8"))
+        tests = {
+            node.name
+            for node in tree.body
+            if isinstance(node, ast.FunctionDef) and node.name.startswith("test_")
+        }
+        assert set(contracts) == tests, relative
+        assert {classification for classification, _ in contracts.values()} == {
+            "fresh",
+            "reusable",
+        }
+        assert all(reason for _, reason in contracts.values())
+
+
+def test_reusable_server_dirs_are_unique_per_exclusive_slot(tmp_path, monkeypatch):
+    monkeypatch.setenv("BH_REUSABLE_DOLT_DIR", str(tmp_path / "pool"))
+    paths = [_reusable_slot_dir(slot) for slot in range(4)]
+    assert all(path is not None for path in paths)
+    assert len(set(paths)) == 4
+    assert [path.name for path in paths] == [f"slot-{slot}" for slot in range(4)]
+
+
+def test_reusable_server_ports_are_unique_per_exclusive_slot():
+    offered = iter([3307, 3307, 3308, 3309, 3310])
+    ports = _allocate_reusable_dolt_ports(4, lambda: next(offered))
+    assert ports == [3307, 3308, 3309, 3310]
 
 
 def test_reusable_server_namespaces_mutable_databases_per_test():

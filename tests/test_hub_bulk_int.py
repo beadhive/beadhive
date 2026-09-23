@@ -34,92 +34,26 @@ sql-server) + self-skips without a `bd` binary on PATH.
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
 import json
-import os
 import shutil
 import socket
-import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
 from beadhive import hub, hub_bulk, store_locator
-from beadhive.run import run as _run
-from harness.beads import bd as _bd
-from harness.beads import skip_if_no_bd
+from beadhive.run import run
+from harness.beads import bd, skip_if_no_bd
 from harness.world import free_port, reap_dolt_server
 
-# `dolt_server`: every test here stands up a REAL sql-server, so each holds one of the run-wide
-# slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
+# `dolt_server`: every test here uses a REAL sql-server, so each holds one of the bounded
+# exclusive slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch). Compatible
+# cases borrow that slot's reusable process; lifecycle-sensitive cases keep their own server.
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
 
 _TIMEOUT = 60
 _STARTUP_TIMEOUT = 30.0
-
-
-def run(args, *pargs, **kwargs):
-    """Retry ordinary bd work while another worker briefly holds bd init's exclusive gate."""
-    check = kwargs.pop("check", False)
-    deadline = time.monotonic() + _STARTUP_TIMEOUT
-    while True:
-        lock = (
-            _shared_server_command_lock()
-            if args[0] == "bd" and "init" not in args
-            else contextlib.nullcontext()
-        )
-        with lock:
-            result = _run(args, *pargs, check=False, **kwargs)
-        detail = f"{result.stdout or ''}{result.stderr or ''}"
-        if result.returncode == 0 or args[0] != "bd" or "workspace gate busy" not in detail:
-            if check and result.returncode:
-                raise subprocess.CalledProcessError(
-                    result.returncode, result.args, output=result.stdout, stderr=result.stderr
-                )
-            return result
-        if time.monotonic() >= deadline:
-            if check:
-                raise subprocess.CalledProcessError(
-                    result.returncode, result.args, output=result.stdout, stderr=result.stderr
-                )
-            return result
-        time.sleep(0.2)
-
-
-def bd(*args, **kwargs):
-    deadline = time.monotonic() + _STARTUP_TIMEOUT
-    # Capture gate diagnostics even for callers that do not otherwise consume output.
-    kwargs["capture"] = True
-    while True:
-        try:
-            with _shared_server_command_lock():
-                return _bd(*args, **kwargs)
-        except AssertionError as exc:
-            if "workspace gate busy" not in str(exc) or time.monotonic() >= deadline:
-                raise
-            time.sleep(0.2)
-
-
-@contextlib.contextmanager
-def _shared_server_init_lock():
-    """Serialize bd init's exclusive workspace gate while allowing later test work to overlap."""
-    server_dir = Path(os.environ["BEADS_SHARED_SERVER_DIR"])
-    lock_path = server_dir.with_name(f"{server_dir.name}.bd-init.lock")
-    with lock_path.open("a+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        yield
-
-
-@contextlib.contextmanager
-def _shared_server_command_lock():
-    """Keep ordinary commands active while excluding bd init's maintenance gate."""
-    server_dir = Path(os.environ["BEADS_SHARED_SERVER_DIR"])
-    lock_path = server_dir.with_name(f"{server_dir.name}.bd-init.lock")
-    with lock_path.open("a+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
-        yield
 
 
 @pytest.fixture
@@ -147,7 +81,7 @@ def fresh_shared_server(tmp_path, monkeypatch):
 
 @pytest.fixture
 def isolated_shared_server(reusable_dolt_server):
-    """Run-owned shared process with unique, per-test databases and filesystem state."""
+    """Slot-owned shared process with unique, per-test databases and filesystem state."""
     yield reusable_dolt_server
 
 
@@ -170,23 +104,22 @@ def _wait_until_accepting(host: str, port: int, *, timeout: float = _STARTUP_TIM
 def _init(path, prefix):
     """A fresh bd store, on the isolated shared server, with no interactive prompts."""
     path.mkdir(parents=True, exist_ok=True)
-    with _shared_server_init_lock():
-        initialized = run(
-            [
-                "bd",
-                "init",
-                "--prefix",
-                prefix,
-                "--shared-server",
-                "--skip-agents",
-                "--skip-hooks",
-                "--non-interactive",
-            ],
-            cwd=str(path),
-            check=False,
-            capture=True,
-            timeout=_TIMEOUT,
-        )
+    initialized = run(
+        [
+            "bd",
+            "init",
+            "--prefix",
+            prefix,
+            "--shared-server",
+            "--skip-agents",
+            "--skip-hooks",
+            "--non-interactive",
+        ],
+        cwd=str(path),
+        check=False,
+        capture=True,
+        timeout=_TIMEOUT,
+    )
     assert initialized.returncode == 0, initialized.stderr
     run(["git", "config", "beads.role", "maintainer"], cwd=str(path), check=True, capture=True)
 
@@ -228,26 +161,25 @@ def _init_from_template(path, prefix, *, template_url, control_hive):
         timeout=_TIMEOUT,
     )
     path.mkdir(parents=True, exist_ok=True)
-    with _shared_server_init_lock():
-        initialized = run(
-            [
-                "bd",
-                "init",
-                "--prefix",
-                prefix,
-                "--database",
-                database,
-                "--shared-server",
-                "--external",
-                "--skip-agents",
-                "--skip-hooks",
-                "--non-interactive",
-            ],
-            cwd=str(path),
-            check=False,
-            capture=True,
-            timeout=_TIMEOUT,
-        )
+    initialized = run(
+        [
+            "bd",
+            "init",
+            "--prefix",
+            prefix,
+            "--database",
+            database,
+            "--shared-server",
+            "--external",
+            "--skip-agents",
+            "--skip-hooks",
+            "--non-interactive",
+        ],
+        cwd=str(path),
+        check=False,
+        capture=True,
+        timeout=_TIMEOUT,
+    )
     assert initialized.returncode == 0, initialized.stderr
     if prefix != hub.HUB_PREFIX:
         run(
