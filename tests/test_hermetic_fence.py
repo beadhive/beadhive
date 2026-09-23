@@ -35,6 +35,44 @@ inside_fence = pytest.mark.skipif(
 )
 
 
+def test_selected_tmpfs_cache_is_bound_after_private_tmp_with_destination_parent():
+    wrapper = WRAPPER.read_text()
+    private_tmp = wrapper.index("--tmpfs /tmp")
+    destination = wrapper.index('args+=(--dir "${CACHE_DEST}")')
+    writable_bind = wrapper.index('--bind "${CACHE_PATH}" "${CACHE_PATH}"')
+
+    assert private_tmp < destination < writable_bind
+    assert 'CACHE_COMPONENTS <<< "${CACHE_PATH#/}"' in wrapper
+    assert 'for CACHE_COMPONENT in "${CACHE_COMPONENTS[@]}"' in wrapper
+    assert '--setenv UV_CACHE_DIR "${CACHE_PATH}"' in wrapper
+    assert '--setenv npm_config_store_dir "${CACHE_PATH}"' in wrapper
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")
+def test_selected_uv_cache_and_outer_interpreter_are_available_inside_fence():
+    expected = subprocess.run(
+        [str(REPO / ".venv/bin/python"), "-c", "import sys; print(sys.version_info[:2])"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    result = subprocess.run(
+        [
+            str(WRAPPER),
+            "sh",
+            "-c",
+            'test -d "$UV_CACHE_DIR" && test -w "$UV_CACHE_DIR" && '
+            "uv run python -c 'import sys; print(sys.version_info[:2])'",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
+
+
 # ---- the boundary itself (fenced runs only) --------------------------------------------------
 
 

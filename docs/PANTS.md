@@ -31,6 +31,9 @@ incomplete mapping fails closed during graph use.
 
 ## Host-wide cache topology
 
+Pants subprocesses also receive the framework-neutral cache selection documented in
+[Framework cache locality](CACHE-LOCALITY.md), including uv's explicit hardlink or copy mode.
+
 Run Pants through the checked cache coordinator so independent worktrees share only Pants'
 content-addressed local store:
 

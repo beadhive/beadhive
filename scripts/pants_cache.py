@@ -18,6 +18,8 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from beadhive.cache_locality import UV_ADAPTER, configured_ephemeral, resolve_cache
+
 DEFAULT_MIN_FREE_BYTES = 2 * 1024**3
 DEFAULT_MIN_FREE_INODES = 50_000
 SHARED_MODE = 0o775
@@ -289,7 +291,17 @@ def run_pants(layout: CacheLayout, command: Sequence[str]) -> int:
         min_free_inodes=minimum_inodes,
     )
     env = os.environ.copy()
+    # Pants invokes uv internally.  Give that subprocess the same device-aware cache contract as
+    # worktree provisioning; an explicit UV_CACHE_DIR still wins in resolve_cache.
+    uv_selection = resolve_cache(
+        UV_ADAPTER,
+        layout.repository,
+        layout.repository / ".venv",
+        env,
+        ephemeral=configured_ephemeral(layout.repository),
+    )
     env.update(layout.environment())
+    env.update(uv_selection.environment)
     print(
         json.dumps(
             {
@@ -298,6 +310,7 @@ def run_pants(layout: CacheLayout, command: Sequence[str]) -> int:
                 "local_store": str(layout.local_store),
                 "worktree_root": str(layout.worktree_root),
                 "sandbox_root": str(layout.sandbox_root),
+                "uv_cache_locality": uv_selection.report(),
             },
             sort_keys=True,
         ),

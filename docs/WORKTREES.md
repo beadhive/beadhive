@@ -177,6 +177,10 @@ explicitly. `worktrees.toolchains: {name: template}` overrides the registry per 
 
 ### The verify-environment contract (`verify: true`)
 
+Package-manager init rules use the device-aware shared-cache resolver described in
+[Framework cache locality](CACHE-LOCALITY.md). This applies equally to ordinary seat creation
+and the ephemeral clean checkout below.
+
 `bh work submit` / merge validate from a **throwaway clean checkout** (an ephemeral
 `verify-*` worktree), so the result never depends on dirty local state. That checkout does
 **not** get the full init pass — only rules flagged `verify: true` run there, after the

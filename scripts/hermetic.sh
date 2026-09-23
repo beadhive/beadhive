@@ -88,6 +88,56 @@ args=(
     --chdir "${REPO}"
 )
 
+# Resolve the package cache before bwrap overlays /tmp and $HOME. A selected host tmpfs cache
+# must be rebound after that overlay or the framework sees an empty private /tmp and the locality
+# guarantee disappears only inside the authoritative validation fence.
+CACHE_LINES=()
+CACHE_APPLICATION=""
+CACHE_TARGET=""
+case " $* " in
+    *" pnpm "*) CACHE_APPLICATION="pnpm"; CACHE_TARGET="${REPO}/node_modules" ;;
+    *" uv "*) CACHE_APPLICATION="uv"; CACHE_TARGET="${REPO}/.venv" ;;
+esac
+CACHE_PYTHON="${REPO}/.venv/bin/python"
+if [ ! -x "${CACHE_PYTHON}" ]; then
+    CACHE_PYTHON="$(command -v python3 || true)"
+fi
+if [ -n "${CACHE_APPLICATION}" ] && [ -n "${CACHE_PYTHON}" ]; then
+    mapfile -t CACHE_LINES < <(
+        PYTHONPATH="${REPO}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+            "${CACHE_PYTHON}" -m beadhive.cache_locality "${CACHE_APPLICATION}" "${REPO}" \
+                --target "${CACHE_TARGET}" --format lines
+    )
+fi
+if [ "${#CACHE_LINES[@]}" -ge 2 ]; then
+    CACHE_PATH="${CACHE_LINES[0]}"
+    CACHE_LINK_MODE="${CACHE_LINES[1]}"
+    if [ -d "${CACHE_PATH}" ]; then
+        # --tmpfs /tmp and --tmpfs $HOME above hide the host destination tree. --dir recreates
+        # every destination component, including the cache mountpoint itself, in order before the
+        # later writable bind. This also handles a durable path nested several levels below HOME.
+        CACHE_DEST=""
+        IFS='/' read -r -a CACHE_COMPONENTS <<< "${CACHE_PATH#/}"
+        for CACHE_COMPONENT in "${CACHE_COMPONENTS[@]}"; do
+            [ -z "${CACHE_COMPONENT}" ] && continue
+            CACHE_DEST="${CACHE_DEST}/${CACHE_COMPONENT}"
+            args+=(--dir "${CACHE_DEST}")
+        done
+        args+=(--bind "${CACHE_PATH}" "${CACHE_PATH}")
+        if [ "${CACHE_APPLICATION}" = "uv" ]; then
+            args+=(--setenv UV_CACHE_DIR "${CACHE_PATH}" --setenv UV_LINK_MODE "${CACHE_LINK_MODE}")
+        else
+            args+=(--setenv npm_config_store_dir "${CACHE_PATH}")
+            args+=(--setenv npm_config_package_import_method "${CACHE_LINK_MODE}")
+        fi
+    else
+        echo "⚠ cache locality: selected cache path does not exist: ${CACHE_PATH}" >&2
+    fi
+    if [ "${CACHE_LINK_MODE}" = "copy" ] || [[ "${CACHE_LINES[2]:-}" == *fallback* ]]; then
+        echo "⚠ cache locality: ${CACHE_LINES[2]:-copy fallback selected}" >&2
+    fi
+fi
+
 # THE CHECKOUT'S OWN GIT AND BEAD STATE ARE READ-ONLY, and this is the whole point rather than a
 # refinement. The suite must be able to write INSIDE the checkout (.venv, .pytest_cache), so
 # $REPO is bound read-write above — but bh-njdxk's actual damage was `git config core.bare true`
@@ -141,11 +191,12 @@ fi
 # with a finding that looked like a migration bug. Left unbound it lands on the tmpfs: writable,
 # empty, and gone when the run ends.
 #
-# .local/share/mise is the one ~/.local/share subpath added to that list (bh-1j3ei.2): it is
-# mise's own tool-install cache (scie-pants, uv, ...), disjoint from ~/.local/share/beadhive's
-# bh/bd state, and `scripts/pants_launcher.py`'s `mise which scie-pants` fallback needs it to
-# find Pants — otherwise `just architecture-check`'s ownership check can't run fenced at all.
-for dir in .local/bin .local/lib .local/share/mise .nix-profile; do
+# Two ~/.local/share toolchain paths are added to that list. `mise` holds scie-pants and other
+# installed tools. `uv/python` holds uv's managed interpreters: an outer `uv sync` may select one
+# for .venv, whose executable symlink must keep resolving inside the fence. Both are disjoint from
+# ~/.local/share/beadhive's bh/bd state and stay read-only; binding the selected interpreter
+# preserves the outer environment instead of silently switching Python versions inside validation.
+for dir in .local/bin .local/lib .local/share/mise .local/share/uv/python .nix-profile; do
     [ -e "${HOME}/${dir}" ] && args+=(--ro-bind "${HOME}/${dir}" "${HOME}/${dir}")
 done
 
@@ -153,7 +204,10 @@ done
 # every run and dies with "Could not acquire lock ... Read-only file system" otherwise. It is a
 # content-addressed download cache, not project or hive state, so it is outside what this fence
 # exists to protect — the git config, the bead stores and the operator's HOME still are not.
-[ -e "${HOME}/.cache/uv" ] && args+=(--bind "${HOME}/.cache/uv" "${HOME}/.cache/uv")
+if { [ "${CACHE_APPLICATION}" = "uv" ] || [ -z "${CACHE_APPLICATION}" ]; } &&
+    [ "${#CACHE_LINES[@]}" -lt 2 ] && [ -e "${HOME}/.cache/uv" ]; then
+    args+=(--bind "${HOME}/.cache/uv" "${HOME}/.cache/uv")
+fi
 
 # Same reasoning for Pants (bh-1j3ei.2): `~/.cache/nce` is scie-pants's own bootstrap cache
 # (its downloaded interpreter + the Pants engine venv). It is content-addressed, but NOT
