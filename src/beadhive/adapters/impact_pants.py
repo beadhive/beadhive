@@ -35,6 +35,10 @@ PANTS_GLOBAL_INPUTS = (
 CHANGE_CATEGORY_PREFIX = "category:"
 CHANGE_CATEGORIES = frozenset({"code", "test-only", "build-system", "docs", "config"})
 PROVEN_TESTS_MANIFEST = Path("scripts/pants_proven_tests.json")
+#: In-repo packages run their tests only in the Pants sandbox, with no stateful fixture plugin,
+#: and the native pytest partition never collects them (bh-3fcl0.1). They are sandbox-proven by
+#: construction, so adding a package needs no proven-test manifest entry.
+SANDBOX_PROVEN_TEST_PREFIX = "packages/"
 
 PantsQuery = Callable[[str, Sequence[str], float], list[dict[str, Any]]]
 PANTS_PEEK_ATTEMPTS = 2
@@ -261,7 +265,7 @@ class PantsImpactBackend:
             for key_name, units in key_units.items()
             if units
             and all(
-                source in proven_sources
+                source in proven_sources or source.startswith(SANDBOX_PROVEN_TEST_PREFIX)
                 for unit in units
                 if unit in affected_units
                 for source in unit_test_sources.get(unit, ())
@@ -285,6 +289,7 @@ __all__ = [
     "CHANGE_CATEGORIES",
     "CHANGE_CATEGORY_PREFIX",
     "PROVEN_TESTS_MANIFEST",
+    "SANDBOX_PROVEN_TEST_PREFIX",
     "PantsImpactBackend",
     "query_pants",
 ]

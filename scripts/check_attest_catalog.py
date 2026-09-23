@@ -23,6 +23,7 @@ KEY_RECIPES = {
     ),
     "package": ("attest-package", ("pants-attest",)),
     "demos": ("attest-demos", ("demo-local-loop", "demo-live-ingress")),
+    "packages": ("attest-packages", ("packages-check",)),
 }
 ROOT = Path(__file__).resolve().parents[1]
 

@@ -71,6 +71,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/beadhive"]
 
+# In-repo packages (bh-3fcl0.1): every packages/<name>/ is its own distribution and import name.
+# The glob is the whole wiring — adding a package touches no shared file but uv.lock. Plain
+# `uv sync` still installs only the root project; `uv sync --all-packages` adds every member.
+[tool.uv.workspace]
+members = ["packages/*"]
+
 [dependency-groups]
 dev = [
     "pytest>=8",
@@ -107,6 +113,9 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
 
 [tool.pytest.ini_options]
 addopts = "--durations=25 --durations-min=1.0"
+# A bare `pytest` (the native partition) collects tests/ only. packages/*/tests run under Pants
+# with their own source roots (bh-3fcl0.1); explicit paths, as Pants passes them, still work.
+testpaths = ["tests"]
 pythonpath = [".", "src"]
 markers = [
     "integration: real-bd AGF topology harness (slower; needs the bd binary)",
@@ -126,7 +135,7 @@ markers = [
 
 [tool.ruff]
 line-length = 100
-src = ["src", "tests"]
+src = ["src", "tests", "packages/*/src", "packages/*/tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]

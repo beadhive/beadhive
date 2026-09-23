@@ -42,6 +42,9 @@ GLOBAL_INPUTS = (
 )
 SAFE_NON_CODE_PREFIXES = ("docs/", ".beads/")
 SAFE_NON_CODE_FILES = ("README.md", "CHANGELOG.md", "LICENSE")
+# In-repo packages are sandbox-proven from birth (bh-3fcl0.1): their tests always run under
+# Pants and never enter the native residual, so they need no manifest entry.
+PACKAGES_PREFIX = "packages/"
 
 
 class PartitionError(RuntimeError):
@@ -218,7 +221,7 @@ def plan_changed(
         if row.get("target_type") not in {"python_test", "python_tests"}:
             continue
         for source in sources:
-            if source in selected_set:
+            if source in selected_set or source.startswith(PACKAGES_PREFIX):
                 pants_tests.add(source)
             elif source.startswith("tests/") and Path(source).name.startswith("test_"):
                 native_tests.add(source)
