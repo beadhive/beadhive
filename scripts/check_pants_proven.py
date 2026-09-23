@@ -9,6 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
 MANIFEST = ROOT / "scripts" / "pants_proven_tests.json"
+PLUGIN_MANIFEST = (
+    ROOT / "packages" / "beadhive-pants" / "src" / "beadhive_pants" / "data" / "proven_tests.json"
+)
 
 
 def doc_readers() -> set[str]:
@@ -38,6 +41,10 @@ def main() -> int:
     listed = set(entries)
     actual = doc_readers()
     errors = []
+    if MANIFEST.read_bytes() != PLUGIN_MANIFEST.read_bytes():
+        errors.append(
+            "scripts/pants_proven_tests.json compatibility mirror differs from plugin data"
+        )
     if not actual <= listed:
         errors.append(f"missing doc readers={sorted(actual - listed)!r}")
     for path, record in entries.items():

@@ -15,9 +15,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from beadhive.adapters.impact_git import GitTreeDiff
-from beadhive.adapters.impact_pants import PantsImpactBackend
 from beadhive.modules.work.application.impact import select_resolver
 from beadhive.modules.work.domain.impact import AttestKey, ImpactReceipt
+from beadhive_pants.impact import PantsImpactBackend
 
 if TYPE_CHECKING:
     from beadhive.modules.work.contracts.impact import ImpactResolver

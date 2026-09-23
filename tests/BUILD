@@ -54,7 +54,6 @@ _UNIT_TEST_FIELDS = dict(
             "unit/modules/planning/test_planning_services.py",
             "unit/modules/state/test_state_services.py",
             "unit/modules/work/test_impact_pants.py",
-            "unit/modules/work/test_impact_pants_conformance.py",
             "unit/modules/work/test_work_independence.py",
             "unit/modules/work/test_work_lifecycle_services.py",
             "unit/modules/worktrees/test_adapters.py",

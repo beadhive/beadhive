@@ -1,0 +1,16 @@
+[project]
+name = "beadhive-pants"
+version = "0.17.1"
+description = "Pants build-impact plugin for Beadhive"
+requires-python = ">=3.11"
+dependencies = ["beadhive"]
+
+[tool.uv.sources]
+beadhive = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/beadhive_pants"]

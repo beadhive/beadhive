@@ -5,6 +5,7 @@ description = "Beadhive CLI"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "beadhive-pants",
     "typer>=0.12",
     "ruamel.yaml>=0.18",
     # Logging foundation: structlog drives dual-mode output (rich/ANSI on a TTY,
@@ -77,8 +78,14 @@ packages = ["src/beadhive"]
 [tool.uv.workspace]
 members = ["packages/*"]
 
+[tool.uv.sources]
+beadhive-pants = { workspace = true }
+
 [dependency-groups]
 dev = [
+    # Installed-artifact tests build both workspace wheels offline and without an isolated
+    # environment, so the declared build backend must be present in the developer environment.
+    "hatchling",
     "pytest>=8",
     # Parallel test execution (bh-z5h3). `just test` runs `-n auto`: 268s -> 65s on 10 cores.
     # Adopted only after the 4 tests that failed under it were fixed — they asserted on

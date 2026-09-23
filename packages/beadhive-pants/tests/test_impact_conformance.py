@@ -13,9 +13,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from beadhive.adapters import impact_pants
-from beadhive.adapters.impact_pants import PantsImpactBackend
-from beadhive.testing import ConformanceFailure
 from beadhive.testing.impact import (
     FAULT_ERROR,
     FAULT_TIMEOUT,
@@ -26,6 +23,8 @@ from beadhive.testing.impact import (
     ScenarioSetup,
     run_impact_case,
 )
+from beadhive_pants import impact as impact_pants
+from beadhive_pants.impact import PantsImpactBackend
 
 PANTS_VERSION = "2.32.1"
 CATEGORIES = {"code": "code", "test": "test-only", "docs": "docs", "build": "build-system"}
@@ -51,6 +50,7 @@ def peek_rows(fixture: ImpactFixture, unit_ids) -> list[dict]:
 @pytest.fixture
 def pants_harness(tmp_path, monkeypatch) -> ImpactHarness:
     (tmp_path / "pants.toml").write_text(f'[GLOBAL]\npants_version = "{PANTS_VERSION}"\n')
+    manifest = tmp_path / "scripts" / "pants_proven_tests.json"
 
     def head_tree(command, **kwargs):
         assert command[-2:] == ["rev-parse", "HEAD^{tree}"], command
@@ -70,7 +70,6 @@ def pants_harness(tmp_path, monkeypatch) -> ImpactHarness:
                 if unit.kind == "test" and unit.proven
                 for source in unit.sources
             }
-            manifest = tmp_path / "scripts" / "pants_proven_tests.json"
             manifest.parent.mkdir(exist_ok=True)
             manifest.write_text(json.dumps({"schema_version": 1, "tests": proven}))
             manifest_written = True
@@ -88,7 +87,7 @@ def pants_harness(tmp_path, monkeypatch) -> ImpactHarness:
             ), args
             return peek_rows(fixture, fixture.affected_units(setup.scenario.changes))
 
-        return PantsImpactBackend(tmp_path, query=query, sleeper=lambda _: None)
+        return PantsImpactBackend(tmp_path, manifest=manifest, query=query, sleeper=lambda _: None)
 
     return ImpactHarness(
         backend="pants",
@@ -99,30 +98,9 @@ def pants_harness(tmp_path, monkeypatch) -> ImpactHarness:
     )
 
 
-# PantsImpactBackend checks proof only for *affected* test units, so a key whose unproven test
-# the change does not reach is reported proven and carries. Amendment 1 rule 4 says an unproven
-# key is invalidated by any change. Strict: this starts failing once the backend is fixed.
-KNOWN_GAPS = {
-    "rule4.unproven-any-change": (
-        "PantsImpactBackend proves keys over affected units only; an unaffected unproven test "
-        "unit carries its key (Amendment 1 rule 4 gap)"
-    ),
-}
-
-
 @pytest.mark.parametrize(
     "case",
-    [
-        pytest.param(
-            case,
-            marks=pytest.mark.xfail(
-                strict=True, raises=ConformanceFailure, reason=KNOWN_GAPS[case.case_id]
-            ),
-        )
-        if case.case_id in KNOWN_GAPS
-        else case
-        for case in IMPACT_CASES
-    ],
+    IMPACT_CASES,
     ids=lambda case: case.case_id,
 )
 def test_pants_backend_conforms(case, pants_harness):

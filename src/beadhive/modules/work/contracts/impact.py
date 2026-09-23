@@ -51,4 +51,13 @@ class TreeDiffPort(Protocol):
         ...
 
 
-__all__ = ["ImpactBackend", "ImpactResolver", "TreeDiffPort"]
+__all__ = [
+    "AttestKey",
+    "BackendImpact",
+    "ChangedPath",
+    "ImpactBackend",
+    "ImpactReceipt",
+    "ImpactRequest",
+    "ImpactResolver",
+    "TreeDiffPort",
+]

@@ -14,7 +14,6 @@ The Pants engine is replaced by a recorded ``peek`` answer; git, the proven-test
 
 from __future__ import annotations
 
-import functools
 import json
 import os
 import subprocess
@@ -23,10 +22,11 @@ from pathlib import Path
 import pytest
 
 from beadhive import selective_validation
-from beadhive.adapters import impact_pants
 from beadhive.modules.config.contracts import AttestConfig
+from beadhive_pants import impact as impact_pants
 
 GOLDEN = Path(__file__).parent / "fixtures" / "impact-bootstrap" / "selective-validation.json"
+PANTS_BACKEND = impact_pants.PantsImpactBackend
 
 KEYS = [
     {"name": "guide", "cmd": "just attest-guide", "selectors": {"pants": "attest:guide"}},
@@ -161,9 +161,14 @@ def _run_scenario(name: str, tmp_path: Path, monkeypatch, capsys) -> dict[str, o
 
     # Replace only the Pants engine. The pre-plugin wiring bound the class into
     # selective_validation at import time; the plugin wiring resolves it from the adapter.
-    recorded = functools.partial(
-        impact_pants.PantsImpactBackend, query=query, sleeper=lambda _seconds: None
-    )
+    def recorded(repo_path):
+        return PANTS_BACKEND(
+            repo_path,
+            manifest=Path(repo_path) / "scripts/pants_proven_tests.json",
+            query=query,
+            sleeper=lambda _seconds: None,
+        )
+
     monkeypatch.setattr(impact_pants, "PantsImpactBackend", recorded)
     if hasattr(selective_validation, "PantsImpactBackend"):
         monkeypatch.setattr(selective_validation, "PantsImpactBackend", recorded)
