@@ -307,6 +307,29 @@ Both keys are optional. When `archive.dir` is unset, clones are archived under
 to a 30-day window. See [HIVES.md — bh hive archive](HIVES.md#bh-hive-archive) for the full
 reclaim workflow.
 
+## Disk-pressure alerts
+
+`alerts.disk_free_floor_mb` is the free-space floor for the filesystem mounted at `/` (default
+10,240 MB). `alerts.worktree_filesystem_free_floor_mb` independently sets the floor for the
+filesystem containing `worktrees.path` or the ephemeral worktree root (also default 10,240 MB).
+Set either value to `0` to disable that alert. When the worktree-specific key is absent, it
+inherits `disk_free_floor_mb`, so existing configs keep their previous configured threshold
+while the alert now identifies the constrained filesystem correctly. `alerts.worktree_cap_mb`
+(default 5,120 MB) continues to limit each hive's total managed-worktree footprint.
+
+Add the worktree-specific value to a config when the two filesystems need different floors:
+
+```yaml
+alerts:
+  disk_free_floor_mb: 10240
+  worktree_filesystem_free_floor_mb: 4096
+```
+
+No rewrite is required for existing `disk_free_floor_mb` settings. The doctor payload retains
+`worktree_disk_usage.disk_free_bytes` as a compatibility alias for the worktree-root reading;
+new consumers should read `worktree_filesystem.free_bytes` and
+`host_root_filesystem.free_bytes`.
+
 ## Backup section
 
 Three independent backup roots exist — a one-way pre-push HQ snapshot, bd's own periodic

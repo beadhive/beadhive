@@ -268,6 +268,11 @@ def test_iter_schema_fields_covers_known_keys_with_descriptions():
     assert protocol.default == '"grpc"'
     assert "OTLP" in protocol.description
 
+    worktree_floor = by_path["alerts.worktree_filesystem_free_floor_mb"]
+    assert worktree_floor.default == "10240"
+    assert "worktree root" in worktree_floor.description
+    assert "disk_free_floor_mb" in worktree_floor.description
+
 
 def test_iter_schema_fields_recurses_into_nested_sub_models():
     """A doubly-nested field (otel.genai.model) is reachable — the walk isn't one level deep."""

@@ -1267,8 +1267,19 @@ class AlertsConfig(_Section):
         10240,
         ge=0,
         description=(
-            "Host free-disk floor in MB. Below this, `bh alerts show` asks an operator to "
-            "dispatch cleanup. 0 disables this alert."
+            "Host-root filesystem free-space floor in MB. Below this, `bh alerts show` asks "
+            "an operator to reclaim capacity from the filesystem mounted at `/`. 0 disables "
+            "this alert."
+        ),
+    )
+    worktree_filesystem_free_floor_mb: int = Field(
+        10240,
+        ge=0,
+        description=(
+            "Free-space floor in MB for the filesystem containing the configured worktree "
+            "root. Below this, `bh alerts show` asks an operator to prune worktrees or move "
+            "the root to a filesystem with more capacity. When omitted from an existing "
+            "config, inherits `disk_free_floor_mb`. 0 disables this alert."
         ),
     )
 

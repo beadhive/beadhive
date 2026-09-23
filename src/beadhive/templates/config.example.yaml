@@ -66,6 +66,14 @@ dimensions:
 dolt:
   backend: docker
 
+# Capacity alerts are reported separately for the configured worktree root and `/`.
+# Existing configs may omit worktree_filesystem_free_floor_mb; it then inherits
+# disk_free_floor_mb so their former worktree-root threshold remains in effect.
+alerts:
+  worktree_cap_mb: 5120
+  disk_free_floor_mb: 10240                  # host-root filesystem floor; 0 disables
+  worktree_filesystem_free_floor_mb: 10240   # worktree-root filesystem; 0 disables
+
 # Which beads-compatible backend the Engine seam (src/beadhive/engine.py) routes bead
 # operations through. `bd` (Dolt) is the only adapter implemented today.
 # beads:
