@@ -1,6 +1,8 @@
 # Proposal: in-repo packages, build-system plugins, and a structured `scripts/`
 
-> Status: **proposal** (2026-09-23). Not filed as beads; nothing here changes code or policy.
+> Status: **proposal, filed** (2026-09-23). Molecules: `bh-3fcl0` (framework and Pants plugin),
+> `bh-i6gua` (spike: unify validation selection; closure machinery frozen meanwhile),
+> `bh-pb29e` (beadhive-devtools), and `bh-mwj8n` (Turborepo impact backend). Bazel is not filed.
 > Companion to
 > [`repository-organization-second-review-2026-09-23.md`](repository-organization-second-review-2026-09-23.md).
 
