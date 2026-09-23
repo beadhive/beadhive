@@ -10,7 +10,6 @@ from pathlib import Path
 import pytest
 
 import beadhive.selective_validation as selective_validation_module
-from beadhive.adapters.impact_pants import PantsImpactBackend
 from beadhive.bootstrap import impact as bootstrap_impact
 from beadhive.bootstrap.impact import (
     BUILD_IMPACT_PORT,
@@ -41,6 +40,7 @@ from beadhive.modules.work.application.impact import (
 )
 from beadhive.modules.work.contracts.impact import ImpactBackend
 from beadhive.modules.work.domain.impact import AttestKey, BackendImpact, ChangedPath
+from beadhive_pants.impact import PantsImpactBackend
 
 KEYS = (AttestKey("unit", "just unit", selectors={"pants": "attest:unit"}),)
 
@@ -96,8 +96,8 @@ def _providers(loaded: list[str]):
         return build
 
     return (
-        ImpactBackendProvider("pants", "pants", load("pants")),
-        ImpactBackendProvider("turbo", "turbo", load("turbo")),
+        ImpactBackendProvider("pants", "pants", "", "", load("pants")),
+        ImpactBackendProvider("turbo", "turbo", "", "", load("turbo")),
     )
 
 
@@ -127,6 +127,8 @@ def test_pants_is_the_sole_builtin_build_impact_provider():
     assert result.owner_of(BUILD_IMPACT) == "pants"
     assert result.owner_of(BUILD_VERIFY) is None
     assert [provider.plugin_id for provider in BUILTIN_IMPACT_PROVIDERS] == ["pants"]
+    assert BUILTIN_IMPACT_PROVIDERS[0].module == "beadhive_pants.impact"
+    assert BUILTIN_IMPACT_PROVIDERS[0].object_name == "PantsImpactBackend"
 
 
 def test_bootstrap_collects_the_pants_backend_from_its_manifest(tmp_path):

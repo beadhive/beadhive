@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from beadhive.adapters.impact_pants import PantsImpactBackend
 from beadhive.modules.work.application.impact import FailClosedResolver
 from beadhive.modules.work.domain.impact import AttestKey, ChangedPath, ImpactReason
+from beadhive_pants.impact import PantsImpactBackend
 
 
 class Diff:
@@ -42,9 +42,9 @@ def target(address, *, sources=(), tags=(), target_type="files"):
 @pytest.fixture
 def repo(tmp_path, monkeypatch):
     (tmp_path / "pants.toml").write_text('[GLOBAL]\npants_version = "2.32.1"\n')
-    scripts = tmp_path / "scripts"
-    scripts.mkdir()
-    (scripts / "pants_proven_tests.json").write_text(
+    data = tmp_path / "packages/beadhive-pants/src/beadhive_pants/data"
+    data.mkdir(parents=True)
+    (data / "proven_tests.json").write_text(
         json.dumps(
             {
                 "schema_version": 1,
@@ -238,14 +238,15 @@ def test_unproven_selected_test_invalidates_its_key(repo):
     assert receipt.evidence["unit"].reason == ImpactReason.UNPROVEN
 
 
-def test_unaffected_unproven_test_does_not_poison_an_unrelated_change(repo):
+def test_unaffected_unproven_test_invalidates_its_key_for_any_change(repo):
     graph = complete_graph()
     graph[1]["sources"] = ["tests/test_not_proven.py"]
     receipt, _ = resolve(repo, [ChangedPath("manual/guide.md")], graph, [graph[0]])
-    assert receipt.unaffected_keys == ("demos", "stateful", "unit")
+    assert receipt.invalidated_keys == ("docs", "unit")
+    assert receipt.unaffected_keys == ("demos", "stateful")
 
 
-def test_package_change_invalidates_only_the_packages_key_without_a_manifest_entry(repo):
+def test_package_change_needs_an_explicit_proven_manifest_entry(repo):
     packages_key = AttestKey(
         "packages", "just attest-packages", selectors={"pants": "attest:packages"}
     )
@@ -267,6 +268,13 @@ def test_package_change_invalidates_only_the_packages_key_without_a_manifest_ent
     def query(path, args, timeout):
         return graph if tuple(args) == ("peek", "::") else graph[5:]
 
+    manifest = repo / "packages/beadhive-pants/src/beadhive_pants/data/proven_tests.json"
+    payload = json.loads(manifest.read_text())
+    payload["tests"]["packages/example/tests/test_example.py"] = {
+        "status": "proven",
+        "dependencies": ["packages/example/src:lib"],
+    }
+    manifest.write_text(json.dumps(payload))
     backend = PantsImpactBackend(repo, query=query)
     receipt = FailClosedResolver(
         backend, Diff((ChangedPath("packages/example/src/example/__init__.py"),))
@@ -277,6 +285,7 @@ def test_package_change_invalidates_only_the_packages_key_without_a_manifest_ent
 
 
 def test_manifest_schema_failure_falls_back(repo):
-    (repo / "scripts/pants_proven_tests.json").write_text('{"schema_version": 2}')
+    manifest = repo / "packages/beadhive-pants/src/beadhive_pants/data/proven_tests.json"
+    manifest.write_text('{"schema_version": 2}')
     receipt, _ = resolve(repo, [ChangedPath("manual/guide.md")], complete_graph(), [])
     assert receipt.is_fallback

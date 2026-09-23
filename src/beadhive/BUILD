@@ -63,6 +63,7 @@ pex_binary(
     dependencies=[
         ":sources",
         ":package-data",
+        "//packages/beadhive-pants/src:lib",
     ],
     output_path="bh.pex",
     tags=["category:code", "attest:demos", "attest:package"],

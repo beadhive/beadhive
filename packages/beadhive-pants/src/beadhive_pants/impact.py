@@ -18,7 +18,7 @@ from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
-from ..modules.work.domain.impact import BackendImpact, ImpactRequest
+from beadhive.modules.work.contracts.impact import BackendImpact, ImpactRequest
 
 PANTS_GLOBAL_INPUTS = (
     "pants.toml",
@@ -34,11 +34,7 @@ PANTS_GLOBAL_INPUTS = (
 )
 CHANGE_CATEGORY_PREFIX = "category:"
 CHANGE_CATEGORIES = frozenset({"code", "test-only", "build-system", "docs", "config"})
-PROVEN_TESTS_MANIFEST = Path("scripts/pants_proven_tests.json")
-#: In-repo packages run their tests only in the Pants sandbox, with no stateful fixture plugin,
-#: and the native pytest partition never collects them (bh-3fcl0.1). They are sandbox-proven by
-#: construction, so adding a package needs no proven-test manifest entry.
-SANDBOX_PROVEN_TEST_PREFIX = "packages/"
+PROVEN_TESTS_MANIFEST = Path(__file__).parent / "data" / "proven_tests.json"
 
 PantsQuery = Callable[[str, Sequence[str], float], list[dict[str, Any]]]
 PANTS_PEEK_ATTEMPTS = 2
@@ -152,13 +148,22 @@ class PantsImpactBackend:
         self,
         repo: str | Path,
         *,
-        manifest: str | Path = PROVEN_TESTS_MANIFEST,
+        manifest: str | Path | None = None,
         query: PantsQuery = query_pants,
         clock: Callable[[], float] = time.monotonic,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         self._repo = Path(repo).resolve()
-        self._manifest = Path(manifest)
+        source_manifest = (
+            self._repo / "packages/beadhive-pants/src/beadhive_pants/data/proven_tests.json"
+        )
+        self._manifest = (
+            Path(manifest)
+            if manifest is not None
+            else source_manifest
+            if source_manifest.is_file()
+            else PROVEN_TESTS_MANIFEST
+        )
         self._query = query
         self._clock = clock
         self._sleeper = sleeper
@@ -265,9 +270,8 @@ class PantsImpactBackend:
             for key_name, units in key_units.items()
             if units
             and all(
-                source in proven_sources or source.startswith(SANDBOX_PROVEN_TEST_PREFIX)
+                source in proven_sources
                 for unit in units
-                if unit in affected_units
                 for source in unit_test_sources.get(unit, ())
             )
         )
@@ -289,7 +293,6 @@ __all__ = [
     "CHANGE_CATEGORIES",
     "CHANGE_CATEGORY_PREFIX",
     "PROVEN_TESTS_MANIFEST",
-    "SANDBOX_PROVEN_TEST_PREFIX",
     "PantsImpactBackend",
     "query_pants",
 ]

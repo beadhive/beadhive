@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from importlib import import_module
 from types import MappingProxyType
 from typing import cast
 
@@ -57,18 +58,24 @@ class ImpactBackendProvider:
 
     plugin_id: str
     external_executable: str
-    load: Callable[[str], object]
+    module: str
+    object_name: str
+    loader: Callable[[str], object] = field(repr=False, compare=False)
+
+    def load(self, repo: str) -> object:
+        return self.loader(repo)
 
 
 def _pants_backend(repo: str) -> object:
-    from ..adapters.impact_pants import PantsImpactBackend
-
-    return PantsImpactBackend(repo)
+    backend_type = import_module("beadhive_pants.impact").PantsImpactBackend
+    return backend_type(repo)
 
 
 #: Built-in runtime bindings for manifests that provide ``build.impact``.
 BUILTIN_IMPACT_PROVIDERS: tuple[ImpactBackendProvider, ...] = (
-    ImpactBackendProvider("pants", "pants", _pants_backend),
+    ImpactBackendProvider(
+        "pants", "pants", "beadhive_pants.impact", "PantsImpactBackend", _pants_backend
+    ),
 )
 
 
