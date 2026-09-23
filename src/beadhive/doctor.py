@@ -53,7 +53,10 @@ from . import (
     validate_probe,
     worktree,
 )
+from .bootstrap.build_verify import collect_build_verify_diagnostics
+from .config_work_settings import attest_config
 from .identity import workspace_mode, workspace_root
+from .kernel.plugins import DiagnosticSeverity
 from .run import run
 
 
@@ -2772,6 +2775,7 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
         "seats": _timed(timings, "seats", _data_seats, cfg, full=full_seats),
         "install": _timed(timings, "install", _data_install, cfg),
         "observability": _timed(timings, "observability", _data_observability, cfg),
+        "build_verify": _timed(timings, "build_verify", _data_build_verify, cfg),
         "warnings": _timed(
             timings,
             "warnings",
@@ -2788,6 +2792,35 @@ def _collect(cfg, *, full_seats: bool = False) -> dict:
     timings["total"] = round((time.monotonic() - t_start) * 1000, 3)
     data["timings"] = timings
     return data
+
+
+def _data_build_verify(cfg) -> list[dict]:
+    root = Path.cwd()
+    if not (root / "pants.toml").is_file():
+        return []
+    entry = registry.current_hive(cfg)
+    return [
+        {
+            "code": diagnostic.code.value,
+            "severity": diagnostic.severity.value,
+            "plugin_id": diagnostic.plugin_id,
+            "detail": diagnostic.detail,
+        }
+        for diagnostic in collect_build_verify_diagnostics(
+            str(root), attest_config(cfg, entry), plugin_kernel=cfg.get("plugin_kernel")
+        )
+    ]
+
+
+def _render_build_verify(diagnostics: list[dict]) -> None:
+    if not diagnostics:
+        return
+    typer.echo("\n# Build Verification")
+    for diagnostic in diagnostics:
+        glyph = "✗" if diagnostic["severity"] == DiagnosticSeverity.ERROR.value else "✓"
+        typer.echo(
+            f"  {glyph} {diagnostic['plugin_id']} {diagnostic['code']}: {diagnostic['detail']}"
+        )
 
 
 def doctor_payload(*, full_seats: bool = False) -> dict:
@@ -2903,6 +2936,7 @@ def doctor(as_json: bool = False, verbose: bool = False, seats: bool = False):
     _render_seats(data["seats"])
     _render_install(data["install"])
     _render_observability(data["observability"])
+    _render_build_verify(data["build_verify"])
     _render_warnings(data["warnings"])
     _offer_workspace_init(data["config"])
     if verbose:

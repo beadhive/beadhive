@@ -1,5 +1,5 @@
 {
-  "capabilities": {"provides": [{"api_version": 1, "id": "build.impact"}]},
+  "capabilities": {"provides": [{"api_version": 1, "id": "build.impact"}, {"api_version": 1, "id": "build.verify"}]},
   "compatibility": {
     "beadhive": {"maximum_exclusive": "1.0.0", "minimum_inclusive": "0.15.0"},
     "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}

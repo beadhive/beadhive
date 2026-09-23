@@ -1263,6 +1263,7 @@ _DOCTOR_SECTIONS = {
     "seats",
     "install",
     "observability",
+    "build_verify",
     "warnings",
     "timings",
 }

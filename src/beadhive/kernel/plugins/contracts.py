@@ -39,6 +39,9 @@ class DiagnosticCode(StrEnum):
     OPTIONAL_EXECUTABLE_MISSING = "optional-executable-missing"
     EXTERNAL_LOADING_DISABLED = "external-loading-disabled"
     SOURCE_FAILURE = "manifest-source-failure"
+    BUILD_OWNERSHIP = "build-ownership"
+    BUILD_PROVEN_MANIFEST = "build-proven-manifest"
+    BUILD_ATTEST_TAGS = "build-attest-tags"
 
 
 @dataclass(frozen=True, order=True)
