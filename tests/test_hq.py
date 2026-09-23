@@ -236,6 +236,8 @@ def test_hive_ls_shows_hq(world, monkeypatch, capsys):
 
 
 @skip_if_no_bd
+@pytest.mark.dolt_server
+@pytest.mark.integration
 def test_ensure_store_stands_up_git_bd_repo_prefix_hq(world):
     """hub.ensure_store (the seam hq.init reuses) bd-inits a real git+bd store at hq_dir()."""
     hqdir = config.hq_dir()

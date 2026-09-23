@@ -5,9 +5,9 @@ property of the contract (no remote, never pushed, issues no ids) is a rule some
 this one is a measurement. If a bead can survive `rm -rf ~/.beadhive/hub` only because it was
 stored there, the aggregate was never derived and the whole split is a lie.
 
-Real bd, embedded, entirely inside `tmp_path` — zero production writes, and NOT marked
-`integration` so it runs on the fast gate (same posture as `test_bd_repo_sync_additive.py`,
-which self-skips when bd is absent).
+Real bd, embedded, entirely inside `tmp_path` — zero production writes. These authoritative
+store/rebuild proofs run in the integration selection; the fast gate covers the corresponding
+branch-facing routing and prefix contracts with deterministic fakes.
 
 It also pins the two halves of the prefix contract that only a real bd can answer:
   * `bd init --prefix _HUB_ISSUES_NO_IDS` is ACCEPTED (a punctuation sentinel like `!hub` is
@@ -32,7 +32,7 @@ from beadhive.run import run
 from harness.beads import skip_if_no_bd
 from harness.world import reap_dolt_server
 
-pytestmark = [skip_if_no_bd, pytest.mark.dolt_server]
+pytestmark = [skip_if_no_bd, pytest.mark.dolt_server, pytest.mark.integration]
 
 
 def _bd_env() -> dict:

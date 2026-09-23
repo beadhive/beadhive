@@ -311,6 +311,23 @@ def synced(monkeypatch):
     return calls
 
 
+@pytest.fixture
+def opencode_onboard_unit_seams(monkeypatch, synced):
+    """Keep the OpenCode contract in the fast unit selection, without real bd calls.
+
+    Onboarding's host node/role settings and auto-export setup are covered by their own bd
+    contracts. The hub side effect is a separate real-store concern; these tests focus on
+    installer routing, file contents, idempotence, and force refresh.
+    """
+    from beadhive import onboard
+
+    monkeypatch.setattr(onboard, "_configure_auto_export", lambda _ctx: None)
+    monkeypatch.setattr(onboard, "_act_node_id", lambda _ctx: None)
+    monkeypatch.setattr(onboard, "_act_beads_role", lambda _ctx: None)
+    monkeypatch.setattr(hub, "sync_one", lambda _prefix, _src: True)
+    monkeypatch.setattr(hub, "sync_background", lambda _cfg=None: hub.sync())
+
+
 def _make_local_repo(world, *, org="acme", repo="widget"):
     target = world.ws_root / "github" / org / repo
     target.mkdir(parents=True)
@@ -333,7 +350,7 @@ def opencode_fake_plugin(tmp_path, monkeypatch):
 
 
 def test_onboard_opencode_writes_config_agents_and_agf_hint(
-    world, synced, monkeypatch, tmp_path, opencode_fake_plugin
+    world, synced, opencode_onboard_unit_seams, monkeypatch, tmp_path, opencode_fake_plugin
 ):
     target = _make_local_repo(world)
     world.chdir(world.ws_root)
@@ -355,7 +372,9 @@ def test_onboard_opencode_writes_config_agents_and_agf_hint(
     assert synced == [True]
 
 
-def test_onboard_opencode_is_idempotent(world, synced, monkeypatch, tmp_path, opencode_fake_plugin):
+def test_onboard_opencode_is_idempotent(
+    world, synced, opencode_onboard_unit_seams, monkeypatch, tmp_path, opencode_fake_plugin
+):
     target = _make_local_repo(world)
     world.chdir(world.ws_root)
     skills_home = tmp_path / "opencode-skills-home"
@@ -380,7 +399,7 @@ def test_onboard_opencode_is_idempotent(world, synced, monkeypatch, tmp_path, op
 
 
 def test_onboard_opencode_force_refreshes(
-    world, synced, monkeypatch, tmp_path, opencode_fake_plugin
+    world, synced, opencode_onboard_unit_seams, monkeypatch, tmp_path, opencode_fake_plugin
 ):
     target = _make_local_repo(world)
     world.chdir(world.ws_root)
