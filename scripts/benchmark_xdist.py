@@ -108,11 +108,14 @@ def aggregate_runs(runs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
                 if len(samples) > 1
                 else 0.0,
             },
-            "median_dolt_slot_queue_seconds": statistics.median(
-                sample.get("dolt_slots", {}).get("total_queue_seconds", 0.0) for sample in samples
+            "median_dolt_slot_queue_seconds": _median_observed_slot_metric(
+                samples, "total_queue_seconds"
             ),
-            "median_dolt_slot_hold_seconds": statistics.median(
-                sample.get("dolt_slots", {}).get("total_hold_seconds", 0.0) for sample in samples
+            "median_dolt_slot_hold_seconds": _median_observed_slot_metric(
+                samples, "total_hold_seconds"
+            ),
+            "dolt_slot_telemetry_repetitions": sum(
+                sample.get("dolt_slots", {}).get("available", False) for sample in samples
             ),
             "median_server_processes_started": statistics.median(
                 sample.get("processes", {}).get("server_processes_started", 0) for sample in samples
@@ -129,17 +132,30 @@ def aggregate_runs(runs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _median_observed_slot_metric(samples: Sequence[dict[str, Any]], key: str) -> float | None:
+    values = [
+        sample["dolt_slots"][key]
+        for sample in samples
+        if sample.get("dolt_slots", {}).get("available", False)
+    ]
+    return statistics.median(values) if values else None
+
+
 def parse_dolt_slot_events(path: Path) -> dict[str, Any]:
     tests: dict[str, dict[str, float]] = {}
+    event_count = 0
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines()[:10000]:
             event = json.loads(line)
+            event_count += 1
             row = tests.setdefault(event["test"], {"queue_seconds": 0.0, "hold_seconds": 0.0})
             if event["event"] == "acquired":
                 row["queue_seconds"] = event["queue_seconds"]
             elif event["event"] == "released":
                 row["hold_seconds"] = event["hold_seconds"]
     return {
+        "available": event_count > 0,
+        "event_count": event_count,
         "tests": tests,
         "total_queue_seconds": sum(row["queue_seconds"] for row in tests.values()),
         "total_hold_seconds": sum(row["hold_seconds"] for row in tests.values()),
@@ -399,12 +415,15 @@ def render_table(aggregates: Sequence[dict[str, Any]], run_provenance: dict[str,
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in aggregates:
+        queue = row.get("median_dolt_slot_queue_seconds")
+        hold = row.get("median_dolt_slot_hold_seconds")
+        queue_text = f"{queue:.3f}" if queue is not None else "n/a"
+        hold_text = f"{hold:.3f}" if hold is not None else "n/a"
         lines.append(
             f"| {row['selection']} | {row['workers']} | {row['successful_repetitions']}/"
             f"{row['repetitions']} | {row['median_pytest_elapsed_seconds']:.3f} | "
             f"{row['median_external_wall_seconds']:.3f} | "
-            f"{row.get('median_dolt_slot_queue_seconds', 0.0):.3f} | "
-            f"{row.get('median_dolt_slot_hold_seconds', 0.0):.3f} | "
+            f"{queue_text} | {hold_text} | "
             f"{row.get('median_max_active_servers', 0.0):.1f} | "
             f"{row.get('median_max_process_tree_count', 0.0):.1f} |"
         )
