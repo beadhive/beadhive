@@ -604,25 +604,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                             f"{stdout_path}, {stderr_path}"
                         ) from exc
                     elapsed = round(time.monotonic() - started, 3)
-                    payload["runs"].append(
-                        {
-                            "selection": selection,
-                            "marker": marker,
-                            "workers": worker,
-                            "repetition": repetition,
-                            "command": command,
-                            "exit_code": completed.returncode,
-                            "external_wall_seconds": elapsed,
-                            "dolt_slots": parse_dolt_slot_events(slot_events),
-                            "processes": {
-                                "server_pids_seen": sorted(server_pids),
-                                "server_processes_started": len(server_pids),
-                                "max_active_server_processes": max_servers,
-                                "max_pytest_process_tree": max_processes,
-                            },
-                            **parsed,
-                        }
-                    )
+                    run_result = {
+                        "selection": selection,
+                        "marker": marker,
+                        "workers": worker,
+                        "repetition": repetition,
+                        "command": command,
+                        "exit_code": completed.returncode,
+                        "external_wall_seconds": elapsed,
+                        "dolt_slots": parse_dolt_slot_events(slot_events),
+                        "processes": {
+                            "server_pids_seen": sorted(server_pids),
+                            "server_processes_started": len(server_pids),
+                            "max_active_server_processes": max_servers,
+                            "max_pytest_process_tree": max_processes,
+                        },
+                        **parsed,
+                    }
+                    if completed.returncode != 0:
+                        run_result.update(
+                            {
+                                "stdout_log": str(stdout_path),
+                                "stderr_log": str(stderr_path),
+                                "terminal_output_tail": output[-12000:],
+                            }
+                        )
+                    payload["runs"].append(run_result)
                     any_failed |= completed.returncode != 0
                     payload["aggregates"] = aggregate_runs(payload["runs"])
                     write_payload(output_path, payload)
@@ -633,7 +640,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                         f"wall={elapsed:.3f}s servers={len(server_pids)} max={max_servers}",
                         flush=True,
                     )
-                    shutil.rmtree(run_scratch, ignore_errors=True)
+                    if completed.returncode == 0:
+                        shutil.rmtree(run_scratch, ignore_errors=True)
         payload["aggregates"] = aggregate_runs(payload["runs"])
         payload["complete"] = True
         write_payload(output_path, payload)
