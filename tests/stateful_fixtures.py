@@ -763,11 +763,7 @@ def _server_database_names(port: int) -> set[str]:
         return set()
     if not isinstance(rows, list):
         return set()
-    return {
-        str(row["Database"])
-        for row in rows
-        if isinstance(row, dict) and row.get("Database")
-    }
+    return {str(row["Database"]) for row in rows if isinstance(row, dict) and row.get("Database")}
 
 
 @pytest.fixture
