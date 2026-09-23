@@ -49,10 +49,25 @@ DOLT_SERVER_FRESHNESS = {
     "tests/test_host_fence_int.py": ("fresh", "embedded/shared transport boundary"),
     "tests/test_hq.py": ("fresh", "single real-store case; no startup to amortize"),
     "tests/test_hq_backup_server_mode_int.py": ("fresh", "destroy/restore two owned servers"),
-    "tests/test_hub_bulk_int.py": ("reusable", "isolated database content/copy"),
+    "tests/test_hub_bulk_int.py": ("mixed", "per-test contracts in HUB_BULK_FRESHNESS"),
     "tests/test_hub_rebuild.py": ("fresh", "destructive aggregate rebuild and prune"),
     "tests/test_onboard_server_mode_int.py": ("fresh", "startup and busy-port lifecycle"),
     "tests/test_storage_migrate_int.py": ("fresh", "embedded-to-server migration lifecycle"),
+}
+
+HUB_BULK_FRESHNESS = {
+    "test_bulk_copy_matches_a_real_bd_produced_aggregate": (
+        "reusable",
+        "isolated namespaced source and aggregate databases",
+    ),
+    "test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync": (
+        "fresh",
+        "mutates the reserved hub database through destructive sync/rebuild behavior",
+    ),
+    "test_co_located_database_and_server_databases_against_the_real_server": (
+        "reusable",
+        "read-only discovery over isolated namespaced databases",
+    ),
 }
 
 
@@ -219,10 +234,7 @@ def pytest_unconfigure(config):
         os.environ.pop("BH_DOLT_SLOT_EVENTS", None)
     reusable = getattr(config, "_bh_reusable_dolt_owned", None)
     if reusable is not None:
-        from harness.world import reap_dolt_server
-
-        reap_dolt_server(reusable)
-        shutil.rmtree(reusable.with_name(f"{reusable.name}-bootstrap"), ignore_errors=True)
+        _cleanup_reusable_dolt_server(reusable)
         os.environ.pop("BH_REUSABLE_DOLT_DIR", None)
         os.environ.pop("BH_REUSABLE_DOLT_PORT", None)
 
@@ -522,6 +534,49 @@ class ReusableDoltServer:
         return name
 
 
+def _cleanup_reusable_dolt_server(server_dir, reap=None):
+    """Reap the run-owned process and discard all controller-owned startup state."""
+    if reap is None:
+        from harness.world import reap_dolt_server
+
+        reap = reap_dolt_server
+    reap(server_dir)
+    shutil.rmtree(server_dir.with_name(f"{server_dir.name}-bootstrap"), ignore_errors=True)
+    server_dir.with_name(f"{server_dir.name}.startup.lock").unlink(missing_ok=True)
+
+
+def _recover_and_start_reusable_dolt_server(server_dir, run_cmd=None, reap=None):
+    """Recover a killed worker's partial state before starting its replacement server."""
+    if run_cmd is None:
+        from beadhive.run import run
+
+        run_cmd = run
+    if reap is None:
+        from harness.world import reap_dolt_server
+
+        reap = reap_dolt_server
+    bootstrap = server_dir.with_name(f"{server_dir.name}-bootstrap")
+    reap(server_dir)
+    shutil.rmtree(bootstrap, ignore_errors=True)
+    bootstrap.mkdir(parents=True, exist_ok=True)
+    run_cmd(
+        [
+            "bd",
+            "init",
+            "--prefix",
+            "bhboot",
+            "--shared-server",
+            "--skip-agents",
+            "--skip-hooks",
+            "--non-interactive",
+        ],
+        cwd=str(bootstrap),
+        check=True,
+        capture=True,
+        timeout=60,
+    )
+
+
 def _ensure_reusable_dolt_server(server_dir, port, start, connect=socket.create_connection):
     """Serialize the first start across xdist workers and wait until it accepts connections."""
     lock_path = server_dir.with_name(f"{server_dir.name}.startup.lock")
@@ -550,7 +605,6 @@ def _ensure_reusable_dolt_server(server_dir, port, start, connect=socket.create_
 def reusable_dolt_server(request, monkeypatch):
     """Share startup across compatible tests while isolating and deleting every database."""
     from beadhive.run import run
-    from harness.world import reap_dolt_server
 
     server_dir = Path(os.environ["BH_REUSABLE_DOLT_DIR"])
     port = int(os.environ["BH_REUSABLE_DOLT_PORT"])
@@ -561,28 +615,9 @@ def reusable_dolt_server(request, monkeypatch):
     monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(port))
 
     def start():
-        bootstrap = server_dir.with_name(f"{server_dir.name}-bootstrap")
         # A worker can die after writing a pidfile or half-initializing the bootstrap store.
         # The next lock holder owns recovery before attempting the sole replacement start.
-        reap_dolt_server(server_dir)
-        shutil.rmtree(bootstrap, ignore_errors=True)
-        bootstrap.mkdir(parents=True, exist_ok=True)
-        run(
-            [
-                "bd",
-                "init",
-                "--prefix",
-                "bhboot",
-                "--shared-server",
-                "--skip-agents",
-                "--skip-hooks",
-                "--non-interactive",
-            ],
-            cwd=str(bootstrap),
-            check=True,
-            capture=True,
-            timeout=60,
-        )
+        _recover_and_start_reusable_dolt_server(server_dir)
 
     _ensure_reusable_dolt_server(server_dir, port, start)
     yield server
