@@ -326,7 +326,7 @@
         "artifacts": [
           {"path": "docs/schemas/telemetry-event-envelope-v1.schema.json", "sha256": "1bf34e38b60d8e9cdf7b5c60477cb93f9dd24dac970e5c89a8d3b2695cd2d3c6"},
           {"path": "docs/schemas/wire/v1.0.0/release.json", "sha256": "c69fb7f1567f16e6f76549ef1c9c53b1f32f7cfde79fc8b0d2cc652a01b727e1"},
-          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "59939de5843b16e627738ea6c8e2cf57f3992245e1062120b0dd6ec762cad198"}
+          {"path": "docs/proof/official-v1-contract-compatibility.json", "sha256": "850f17c2f52fefa7e8c7af6a686f19ff6c671b64fd74b215f7a3ad47c1159014"}
         ]
       },
       "selective_ci": {
@@ -335,8 +335,8 @@
         "artifacts": [
           {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "4be8cb0128b7efa300611768fa7063a05499423ed154719ae3c1b1405a26ea99"},
           {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "23fbd47b3fb8126c733e56ee9b765928ad1d9a4d41b5aee40b49f3544be4111a"},
-          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "6492efdb2bb0ccb22de7d938ee5e1fba2c1968d081868c74756708c40b063199"},
-          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "d3bc7544255bb018e928cd52d5309fe62b98e5ab087e1016f7f4f709a97b185c"}
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "0206f10b8f85cba7886d32117f04d865a8d65f57098aaf76d82c00bbbe1547e2"},
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "8b67aef81a02c42e67338d48efc684abc7d6600b49c543a0aaf4277f43ff8a39"}
         ]
       },
       "package_and_entry_point": {
