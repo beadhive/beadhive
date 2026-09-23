@@ -192,6 +192,7 @@ check-attest-catalog:
 # it only reads BUILD files) to keep every tracked file owned (bh-1j3ei.2).
 architecture-check:
     uv run python scripts/check_import_boundaries.py
+    uv run python scripts/check_package_imports.py
     uv run python scripts/test_closure_certification.py --check
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
@@ -207,6 +208,7 @@ architecture-check:
 # check, check-all, and selective CI. architecture-check remains the explicit post-receipt audit.
 architecture-structural-check:
     uv run python scripts/check_import_boundaries.py
+    uv run python scripts/check_package_imports.py
     uv run python scripts/test_closure_certification.py --check-structural
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
