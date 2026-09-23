@@ -1,54 +1,133 @@
 {
   "bead": "bh-7ks1c.7",
-  "cleanup_evidence": {
-    "all_recorded_ports_closed": true,
-    "all_recorded_processes_exited": true,
-    "focused_contracts": [
-      "test_killed_worker_partial_start_is_reaped_before_replacement",
-      "test_controller_cleanup_reaps_process_and_removes_all_startup_state"
-    ],
-    "method": "Post-run read-only audit of every retained dolt-server.pid and dolt-server.port under each measurement scratch root."
-  },
-  "diagnostic_assessment": {
-    "command": "Same selectors/environment as after, with -n 1 instead of -n 2",
-    "conclusion": "Serial execution removes cross-worker gate retries and lowers aggregate hold versus the parallel shared-server run, but wall remains 62.84s versus the 30.20s baseline median. It does not preserve end-to-end performance.",
-    "pytest_wall_seconds": 62.84,
-    "result": {
-      "failed": 0,
-      "passed": 2,
-      "skipped": 0
-    },
-    "scope_assessment": "Each compatible test already amortizes one startup across its own multiple databases. Cross-test process reuse saves one 12.6s startup but forces bd init maintenance work that was parallel on isolated servers through one server workspace gate. Returning either test to a fresh server restores parallel isolation but removes the cross-test start reduction; no beneficial reuse scope was identified without replacing supported bd init behavior.",
-    "server_start_count": 1,
-    "server_start_init_seconds": 12.613212495998596,
-    "slot_hold_seconds_by_test": [
-      38.07674830000178,
-      23.433062293996045
-    ],
-    "slot_hold_seconds_total": 61.50981059399783
-  },
+  "design": "Each existing exclusive Dolt slot owns one reusable server and private port. Compatible tests borrow only the server while holding that slot; lifecycle-sensitive tests reap that slot server and retain a fresh private server.",
   "environment": {
-    "BH_DOLT_SLOTS": "unset (project cap 4)",
-    "UV_CACHE_DIR": "/tmp/bh-7ks1c-7-uv-cache",
-    "UV_LINK_MODE": "unset/default",
-    "XDG_CACHE_HOME": "/tmp/bh-7ks1c-7-xdg-cache",
-    "dolt_server_slot_cap": 4,
+    "BH_DOLT_SLOTS": "unset (project default 4)",
+    "TMPDIR": "unique temporary directory per repetition",
+    "UV_CACHE_DIR": "/tmp/bh-7ks1c-7-uv-cache (same for both trees)",
+    "UV_LINK_MODE": "unset/default (same for both trees)",
+    "XDG_CACHE_HOME": "unique temporary directory per repetition",
+    "host_logical_cpus": 32,
+    "load_average_before_run": [
+      0.33,
+      0.48,
+      0.65
+    ],
+    "memory_gib": 47,
+    "process_cpu_affinity": "0-31",
     "pytest": "9.1.1",
-    "pytest_xdist_workers": 2,
+    "pytest_xdist_workers": 4,
     "python": "CPython 3.11.15",
-    "scratch_root": "/tmp/bh-7ks1c-7-measure/<run>/tmp",
     "uv": "0.12.1"
   },
-  "measurement_date_utc": "2026-09-23",
-  "provenance": {
-    "after_measured": {
-      "commit": "48d9eb90052fedb9155e227f26363d3a8194c0ea",
-      "tree": "b2c36d47dcdb4dd38464c7bd0c8be3c73928d064"
+  "failure_cleanup_result": {
+    "evidence": "The failing test and SIGKILLed worker each started one private Dolt server; the pytest exit was expected to be nonzero, and each recorded PID was gone and loopback port closed after controller teardown.",
+    "intentional_assertion_failure_cleans_process_and_port": true,
+    "killed_xdist_worker_cleans_process_and_port": true
+  },
+  "failure_cleanup_runs": [
+    {
+      "accepting_ports_after_run": [],
+      "command": [
+        "uv",
+        "run",
+        "--offline",
+        "pytest",
+        "-q",
+        "-n",
+        "1",
+        "tests/test__bh_7ks1c7_cleanup_contract_tmp.py::test_intentional_fixture_failure"
+      ],
+      "elapsed_seconds": 15.901,
+      "exit_code": 1,
+      "label": "failing",
+      "live_pids_after_run": [],
+      "pids": [
+        4114342
+      ],
+      "ports": [
+        42947
+      ],
+      "raw_log_directory": "/tmp/bh-7ks1c-7-measure/cleanup-contract/failing",
+      "server_start_count": 1
     },
-    "after_submitted": {
-      "commit": "1bcbcac8d3bfe13d67f85b1cab745c75cd5308e1",
-      "note": "autosquash changed commit identity only; measured and submitted trees are identical",
-      "tree": "b2c36d47dcdb4dd38464c7bd0c8be3c73928d064"
+    {
+      "accepting_ports_after_run": [],
+      "command": [
+        "uv",
+        "run",
+        "--offline",
+        "pytest",
+        "-q",
+        "-n",
+        "1",
+        "--max-worker-restart=1",
+        "tests/test__bh_7ks1c7_cleanup_contract_tmp.py::test_intentional_worker_kill"
+      ],
+      "elapsed_seconds": 16.071,
+      "exit_code": 1,
+      "label": "worker-killed",
+      "live_pids_after_run": [],
+      "pids": [
+        4114718
+      ],
+      "ports": [
+        47729
+      ],
+      "raw_log_directory": "/tmp/bh-7ks1c-7-measure/cleanup-contract/worker-killed",
+      "server_start_count": 1
+    }
+  ],
+  "focused_fixture_contract_tests": {
+    "command": "uv run --offline pytest -q tests/test_dolt_server_freshness_inventory.py",
+    "coverage": [
+      "all marked integration files have reviewed freshness classification",
+      "mixed modules classify each case",
+      "unique server directories and ports per exclusive slot",
+      "unique mutable database names",
+      "concurrent first use starts only once",
+      "partial startup left by killed worker is reaped before replacement",
+      "controller cleanup reaps process and removes startup state"
+    ],
+    "result": "9 passed in 3.60s"
+  },
+  "limitations": [
+    "This focused benchmark covers nine compatible real-Dolt selectors at four xdist workers; bead .8 owns the full current-host worker matrix and combined unit/integration tuning.",
+    "Process-count sampling is discrete at 0.2-second intervals.",
+    "Median total wall time is effectively flat within host variation; no end-to-end speedup is claimed."
+  ],
+  "measurement_date_utc": "2026-09-23",
+  "method": {
+    "cleanup_measurement": "After each pytest process exited, check every recorded PID and attempt a loopback connection to each recorded server port.",
+    "command": "uv run --offline pytest -q -n 4 --durations=0 <the same nine selectors below>",
+    "concurrency": "Repetitions ran sequentially on an otherwise quiet host; no benchmark runs overlapped.",
+    "order": [
+      "before-1",
+      "after-1",
+      "before-2",
+      "after-2",
+      "before-3",
+      "after-3"
+    ],
+    "selectors": [
+      "tests/test_hub_bulk_int.py::test_bulk_copy_matches_a_real_bd_produced_aggregate",
+      "tests/test_hub_bulk_int.py::test_co_located_database_and_server_databases_against_the_real_server",
+      "tests/test_onboard_server_mode_int.py::test_zero_footprint_path_lands_on_server_mode_and_stays_zero_footprint",
+      "tests/test_onboard_server_mode_int.py::test_bootstrap_path_second_host_lands_on_server_mode",
+      "tests/test_onboard_server_mode_int.py::test_rerunning_onboard_on_a_server_mode_hive_is_a_no_op",
+      "tests/test_storage_migrate_int.py::test_bd_reinit_local_shared_server_leaves_metadata_stale_by_itself",
+      "tests/test_storage_migrate_int.py::test_embedded_to_shared_server_real_round_trip",
+      "tests/test_storage_migrate_int.py::test_migrated_furnished_hive_does_not_untrack_the_moved_aside_store",
+      "tests/test_storage_migrate_int.py::test_bootstrap_migration_survives_a_live_embedded_store_with_unpushed_changes"
+    ],
+    "server_count_measurement": "Maximum simultaneously live recorded server PIDs sampled every 0.2 seconds during each run.",
+    "server_start_measurement": "A wrapper around bd records each successful bd init --shared-server command, whether its server pidfile was absent before the command, the elapsed command time, pid, and configured port. Startup time sums only commands that created a server."
+  },
+  "provenance": {
+    "after": {
+      "commit": "9c9fb67ebac279148860703b98c9d3c187e17aad",
+      "description": "slot-scoped reusable servers with unique per-test database cleanup",
+      "tree": "c7c99d45b329d18680201f41035d8d0dbea71543"
     },
     "before": {
       "commit": "3f1d8d4a098456882594303ae2879191cf53a9bd",
@@ -56,252 +135,289 @@
       "tree": "8cb0cea7d42648fb4e9bb2aa700501eb6091fa8f"
     }
   },
-  "repetitions": {
-    "after": [
-      {
-        "cleanup_observation": {
-          "accepting_recorded_ports_after_run": 0,
-          "live_recorded_pids_after_run": 0,
-          "recorded_pids": [
-            3848709
-          ],
-          "recorded_ports": [
-            46543
-          ]
-        },
-        "pytest_wall_seconds": 63.45,
-        "raw_log_directory": "/tmp/bh-7ks1c-7-measure/final-after-1",
-        "repetition": 1,
-        "result": {
-          "failed": 0,
-          "passed": 2,
-          "skipped": 0
-        },
-        "server_start_count": 1,
-        "server_start_init_seconds": 12.862973315997806,
-        "slot_hold_seconds_by_test": [
-          42.58903300700331,
-          62.05107793099887
-        ],
-        "slot_hold_seconds_total": 104.64011093800218,
-        "slot_queue_seconds_by_test": [
-          6.960299651836976e-05,
-          0.00016430300456704572
-        ],
-        "slot_queue_seconds_total": 0.00023390600108541548,
-        "startup_plus_queue_seconds": 12.863207221998891,
-        "successful_shared_server_init_count": 5
+  "raw_repetitions": [
+    {
+      "active_process_samples": 912,
+      "checkout": "/tmp/bh-7ks1c-7-baseline",
+      "cleanup": {
+        "accepting_recorded_ports_after_run": [],
+        "live_recorded_pids_after_run": []
       },
-      {
-        "cleanup_observation": {
-          "accepting_recorded_ports_after_run": 0,
-          "live_recorded_pids_after_run": 0,
-          "recorded_pids": [
-            3850635
-          ],
-          "recorded_ports": [
-            33853
-          ]
-        },
-        "pytest_wall_seconds": 62.63,
-        "raw_log_directory": "/tmp/bh-7ks1c-7-measure/final-after-2",
-        "repetition": 2,
-        "result": {
-          "failed": 0,
-          "passed": 2,
-          "skipped": 0
-        },
-        "server_start_count": 1,
-        "server_start_init_seconds": 12.605496504002076,
-        "slot_hold_seconds_by_test": [
-          42.12743897300243,
-          61.046076430997346
-        ],
-        "slot_hold_seconds_total": 103.17351540399977,
-        "slot_queue_seconds_by_test": [
-          7.846600055927411e-05,
-          0.00016321300063282251
-        ],
-        "slot_queue_seconds_total": 0.00024167900119209662,
-        "startup_plus_queue_seconds": 12.605738183003268,
-        "successful_shared_server_init_count": 5
-      },
-      {
-        "cleanup_observation": {
-          "accepting_recorded_ports_after_run": 0,
-          "live_recorded_pids_after_run": 0,
-          "recorded_pids": [
-            3852438
-          ],
-          "recorded_ports": [
-            48119
-          ]
-        },
-        "pytest_wall_seconds": 62.88,
-        "raw_log_directory": "/tmp/bh-7ks1c-7-measure/final-after-3",
-        "repetition": 3,
-        "result": {
-          "failed": 0,
-          "passed": 2,
-          "skipped": 0
-        },
-        "server_start_count": 1,
-        "server_start_init_seconds": 12.61421293800231,
-        "slot_hold_seconds_by_test": [
-          42.05165237800247,
-          61.654650062002474
-        ],
-        "slot_hold_seconds_total": 103.70630244000495,
-        "slot_queue_seconds_by_test": [
-          0.00016120600048452616,
-          0.00015875200188020244
-        ],
-        "slot_queue_seconds_total": 0.0003199580023647286,
-        "startup_plus_queue_seconds": 12.614532896004675,
-        "successful_shared_server_init_count": 5
-      }
-    ],
-    "before": [
-      {
-        "cleanup_observation": {
-          "accepting_recorded_ports_after_run": 0,
-          "live_recorded_pids_after_run": 0,
-          "recorded_pids": [
-            3830281,
-            3830303
-          ],
-          "recorded_ports": [
-            37409,
-            39611
-          ]
-        },
-        "pytest_wall_seconds": 29.76,
-        "raw_log_directory": "/tmp/bh-7ks1c-7-measure/baseline-1",
-        "repetition": 1,
-        "result": {
-          "failed": 0,
-          "passed": 2,
-          "skipped": 0
-        },
-        "server_start_count": 2,
-        "server_start_init_seconds": 25.303190742997685,
-        "slot_hold_seconds_by_test": [
-          21.592734489997383,
-          28.66420686100173
-        ],
-        "slot_hold_seconds_total": 50.256941350999114,
-        "slot_queue_seconds_by_test": [
-          8.958599937614053e-05,
-          0.00012858699483331293
-        ],
-        "slot_queue_seconds_total": 0.00021817299420945346,
-        "startup_plus_queue_seconds": 25.303408915991895,
-        "successful_shared_server_init_count": 4
-      },
-      {
-        "cleanup_observation": {
-          "accepting_recorded_ports_after_run": 0,
-          "live_recorded_pids_after_run": 0,
-          "recorded_pids": [
-            3833819,
-            3833825
-          ],
-          "recorded_ports": [
-            46177,
-            51403
-          ]
-        },
-        "pytest_wall_seconds": 30.2,
-        "raw_log_directory": "/tmp/bh-7ks1c-7-measure/baseline-2",
-        "repetition": 2,
-        "result": {
-          "failed": 0,
-          "passed": 2,
-          "skipped": 0
-        },
-        "server_start_count": 2,
-        "server_start_init_seconds": 25.49894291000237,
-        "slot_hold_seconds_by_test": [
-          21.623537876002956,
-          28.73014652400161
-        ],
-        "slot_hold_seconds_total": 50.35368440000457,
-        "slot_queue_seconds_by_test": [
-          7.894099690020084e-05,
-          0.00021729099535150453
-        ],
-        "slot_queue_seconds_total": 0.0002962319922517054,
-        "startup_plus_queue_seconds": 25.49923914199462,
-        "successful_shared_server_init_count": 4
-      },
-      {
-        "cleanup_observation": {
-          "accepting_recorded_ports_after_run": 0,
-          "live_recorded_pids_after_run": 0,
-          "recorded_pids": [
-            3835486,
-            3835487
-          ],
-          "recorded_ports": [
-            34745,
-            50293
-          ]
-        },
-        "pytest_wall_seconds": 30.29,
-        "raw_log_directory": "/tmp/bh-7ks1c-7-measure/baseline-3",
-        "repetition": 3,
-        "result": {
-          "failed": 0,
-          "passed": 2,
-          "skipped": 0
-        },
-        "server_start_count": 2,
-        "server_start_init_seconds": 25.466441103999387,
-        "slot_hold_seconds_by_test": [
-          21.537610179002513,
-          28.71612799900322
-        ],
-        "slot_hold_seconds_total": 50.25373817800573,
-        "slot_queue_seconds_by_test": [
-          7.857899618102238e-05,
-          0.00014881399692967534
-        ],
-        "slot_queue_seconds_total": 0.00022739299311069772,
-        "startup_plus_queue_seconds": 25.466668496992497,
-        "successful_shared_server_init_count": 4
-      }
-    ]
-  },
-  "schema_version": 1,
-  "selection": {
-    "commands": {
-      "after": "cd /tmp/bh-worktrees/github/beadhive/beadhive/bh-7ks1c-7 && PATH=/tmp/bh-7ks1c-7-bin:$PATH BH_REAL_BD=/home/bees/.local/bin/bd BH_BD_TIMING_LOG=<run>/bd.jsonl BH_DOLT_SLOT_EVENTS=<run>/slots.jsonl TMPDIR=<run>/tmp UV_CACHE_DIR=/tmp/bh-7ks1c-7-uv-cache XDG_CACHE_HOME=/tmp/bh-7ks1c-7-xdg-cache uv run pytest -q -n 2 --durations=0 <selectors>",
-      "before": "cd /tmp/bh-7ks1c-7-baseline && PATH=/tmp/bh-7ks1c-7-bin:$PATH BH_REAL_BD=/home/bees/.local/bin/bd BH_BD_TIMING_LOG=<run>/bd.jsonl BH_DOLT_SLOT_EVENTS=<run>/slots.jsonl TMPDIR=<run>/tmp UV_CACHE_DIR=/tmp/bh-7ks1c-7-uv-cache XDG_CACHE_HOME=/tmp/bh-7ks1c-7-xdg-cache uv run pytest -q -n 2 --durations=0 <selectors>"
+      "command": "uv run --offline pytest -q -n 4 --durations=0 <9 dolt_server selectors>",
+      "commit": "3f1d8d4a098456882594303ae2879191cf53a9bd",
+      "elapsed_seconds": 200.322,
+      "exit_code": 0,
+      "label": "before",
+      "max_active_recorded_servers_sampled": 4,
+      "pytest_summary": "9 passed in 199.14s",
+      "raw_log_directory": "/tmp/bh-7ks1c-7-measure/slotpool-paired/before-1",
+      "repetition": 1,
+      "server_start_count": 8,
+      "server_start_pids": [
+        4069620,
+        4069621,
+        4069633,
+        4070256,
+        4071284,
+        4071825,
+        4072972,
+        4073950
+      ],
+      "server_start_ports": [
+        38303,
+        41095,
+        45447,
+        47649,
+        49985,
+        52419,
+        55177,
+        57651
+      ],
+      "server_start_seconds": 105.124,
+      "slot_hold_seconds": 336.301,
+      "slot_queue_seconds": 0.001,
+      "successful_shared_server_init_count": 10,
+      "tree": "8cb0cea7d42648fb4e9bb2aa700501eb6091fa8f"
     },
-    "comparability": "Same selectors, xdist workers, slot cap, cache, scratch filesystem, Python, pytest, and command on both trees; repetitions ran serially.",
-    "instrumentation": "PATH-prepended transparent bd wrapper timed successful bd init --shared-server calls and classified a server start only when the resolved BEADS_SHARED_SERVER_DIR had no pidfile before invocation; BH_DOLT_SLOT_EVENTS recorded per-test admission queue.",
-    "pytest_command": "uv run pytest -q -n 2 --durations=0 <the two selectors above>",
-    "selectors": [
-      "tests/test_hub_bulk_int.py::test_bulk_copy_matches_a_real_bd_produced_aggregate",
-      "tests/test_hub_bulk_int.py::test_co_located_database_and_server_databases_against_the_real_server"
-    ]
-  },
+    {
+      "active_process_samples": 938,
+      "checkout": "/tmp/bh-worktrees/github/beadhive/beadhive/bh-7ks1c-7",
+      "cleanup": {
+        "accepting_recorded_ports_after_run": [],
+        "live_recorded_pids_after_run": []
+      },
+      "command": "uv run --offline pytest -q -n 4 --durations=0 <9 dolt_server selectors>",
+      "commit": "9c9fb67ebac279148860703b98c9d3c187e17aad",
+      "elapsed_seconds": 205.773,
+      "exit_code": 0,
+      "label": "after",
+      "max_active_recorded_servers_sampled": 4,
+      "pytest_summary": "9 passed in 204.25s",
+      "raw_log_directory": "/tmp/bh-7ks1c-7-measure/slotpool-paired/after-1",
+      "repetition": 1,
+      "server_start_count": 4,
+      "server_start_pids": [
+        4076994,
+        4076995,
+        4076996,
+        4077064
+      ],
+      "server_start_ports": [
+        38925,
+        43987,
+        53141,
+        59489
+      ],
+      "server_start_seconds": 52.179,
+      "slot_hold_seconds": 358.64,
+      "slot_queue_seconds": 0.001,
+      "successful_shared_server_init_count": 14,
+      "tree": "c7c99d45b329d18680201f41035d8d0dbea71543"
+    },
+    {
+      "active_process_samples": 582,
+      "checkout": "/tmp/bh-7ks1c-7-baseline",
+      "cleanup": {
+        "accepting_recorded_ports_after_run": [],
+        "live_recorded_pids_after_run": []
+      },
+      "command": "uv run --offline pytest -q -n 4 --durations=0 <9 dolt_server selectors>",
+      "commit": "3f1d8d4a098456882594303ae2879191cf53a9bd",
+      "elapsed_seconds": 127.76,
+      "exit_code": 0,
+      "label": "before",
+      "max_active_recorded_servers_sampled": 4,
+      "pytest_summary": "9 passed in 126.27s",
+      "raw_log_directory": "/tmp/bh-7ks1c-7-measure/slotpool-paired/before-2",
+      "repetition": 2,
+      "server_start_count": 8,
+      "server_start_pids": [
+        4084661,
+        4084662,
+        4084692,
+        4085437,
+        4086472,
+        4087013,
+        4088184,
+        4089178
+      ],
+      "server_start_ports": [
+        33709,
+        34213,
+        39523,
+        47531,
+        49189,
+        55401,
+        58961,
+        60607
+      ],
+      "server_start_seconds": 105.515,
+      "slot_hold_seconds": 337.227,
+      "slot_queue_seconds": 0.002,
+      "successful_shared_server_init_count": 10,
+      "tree": "8cb0cea7d42648fb4e9bb2aa700501eb6091fa8f"
+    },
+    {
+      "active_process_samples": 940,
+      "checkout": "/tmp/bh-worktrees/github/beadhive/beadhive/bh-7ks1c-7",
+      "cleanup": {
+        "accepting_recorded_ports_after_run": [],
+        "live_recorded_pids_after_run": []
+      },
+      "command": "uv run --offline pytest -q -n 4 --durations=0 <9 dolt_server selectors>",
+      "commit": "9c9fb67ebac279148860703b98c9d3c187e17aad",
+      "elapsed_seconds": 206.4,
+      "exit_code": 0,
+      "label": "after",
+      "max_active_recorded_servers_sampled": 4,
+      "pytest_summary": "9 passed in 204.64s",
+      "raw_log_directory": "/tmp/bh-7ks1c-7-measure/slotpool-paired/after-2",
+      "repetition": 2,
+      "server_start_count": 4,
+      "server_start_pids": [
+        4091969,
+        4091972,
+        4091979,
+        4092030
+      ],
+      "server_start_ports": [
+        33025,
+        33243,
+        42895,
+        56743
+      ],
+      "server_start_seconds": 52.142,
+      "slot_hold_seconds": 359.26,
+      "slot_queue_seconds": 0.001,
+      "successful_shared_server_init_count": 14,
+      "tree": "c7c99d45b329d18680201f41035d8d0dbea71543"
+    },
+    {
+      "active_process_samples": 913,
+      "checkout": "/tmp/bh-7ks1c-7-baseline",
+      "cleanup": {
+        "accepting_recorded_ports_after_run": [],
+        "live_recorded_pids_after_run": []
+      },
+      "command": "uv run --offline pytest -q -n 4 --durations=0 <9 dolt_server selectors>",
+      "commit": "3f1d8d4a098456882594303ae2879191cf53a9bd",
+      "elapsed_seconds": 200.394,
+      "exit_code": 0,
+      "label": "before",
+      "max_active_recorded_servers_sampled": 4,
+      "pytest_summary": "9 passed in 199.06s",
+      "raw_log_directory": "/tmp/bh-7ks1c-7-measure/slotpool-paired/before-3",
+      "repetition": 3,
+      "server_start_count": 8,
+      "server_start_pids": [
+        4099628,
+        4099629,
+        4099630,
+        4100275,
+        4101315,
+        4101874,
+        4102969,
+        4103948
+      ],
+      "server_start_ports": [
+        33339,
+        35413,
+        36829,
+        43501,
+        44377,
+        44745,
+        46889,
+        51551
+      ],
+      "server_start_seconds": 104.987,
+      "slot_hold_seconds": 336.42,
+      "slot_queue_seconds": 0.001,
+      "successful_shared_server_init_count": 10,
+      "tree": "8cb0cea7d42648fb4e9bb2aa700501eb6091fa8f"
+    },
+    {
+      "active_process_samples": 608,
+      "checkout": "/tmp/bh-worktrees/github/beadhive/beadhive/bh-7ks1c-7",
+      "cleanup": {
+        "accepting_recorded_ports_after_run": [],
+        "live_recorded_pids_after_run": []
+      },
+      "command": "uv run --offline pytest -q -n 4 --durations=0 <9 dolt_server selectors>",
+      "commit": "9c9fb67ebac279148860703b98c9d3c187e17aad",
+      "elapsed_seconds": 133.252,
+      "exit_code": 0,
+      "label": "after",
+      "max_active_recorded_servers_sampled": 4,
+      "pytest_summary": "9 passed in 131.41s",
+      "raw_log_directory": "/tmp/bh-7ks1c-7-measure/slotpool-paired/after-3",
+      "repetition": 3,
+      "server_start_count": 4,
+      "server_start_pids": [
+        4106954,
+        4106955,
+        4106956,
+        4106983
+      ],
+      "server_start_ports": [
+        37581,
+        49939,
+        52451,
+        54377
+      ],
+      "server_start_seconds": 52.236,
+      "slot_hold_seconds": 359.561,
+      "slot_queue_seconds": 0.002,
+      "successful_shared_server_init_count": 14,
+      "tree": "c7c99d45b329d18680201f41035d8d0dbea71543"
+    }
+  ],
   "summary": {
-    "acceptance_threshold_percent": 25.0,
-    "after_median_pytest_wall_seconds": 62.88,
-    "after_median_server_starts": 1,
-    "after_median_slot_hold_seconds_total": 103.70630244000495,
-    "after_median_startup_plus_queue_seconds": 12.614532896004675,
-    "before_median_pytest_wall_seconds": 30.2,
-    "before_median_server_starts": 2,
-    "before_median_slot_hold_seconds_total": 50.256941350999114,
-    "before_median_startup_plus_queue_seconds": 25.466668496992497,
-    "overall_workload_regression_observed": true,
-    "pytest_wall_change_percent": 108.21192052980135,
-    "server_start_reduction_percent": 50.0,
-    "slot_hold_change_percent": 106.35219663630258,
-    "startup_plus_queue_reduction_percent": 50.4664974238998,
-    "threshold_met": true
+    "acceptance": {
+      "all_normal_run_recorded_servers_and_ports_cleaned": true,
+      "all_selected_cases_green": true,
+      "at_least_25_percent_fewer_server_starts": true,
+      "at_least_25_percent_lower_cumulative_startup_plus_queue": true,
+      "did_not_raise_BH_DOLT_SLOTS": true
+    },
+    "all_six_measurement_runs_green": true,
+    "interpretation": "The slot-scoped design halves server starts and measured startup command time without increasing the four-process concurrency cap. It does not show an end-to-end test wall-time speedup: the median is 2.72% slower in this focused slice, with substantial repetition spread; slot hold time rose 6.79%.",
+    "max_active_servers_after": 4,
+    "max_active_servers_before": 4,
+    "median_server_start_command_seconds": {
+      "after": 52.179,
+      "before": 105.124,
+      "reduction_percent": 50.36
+    },
+    "median_server_starts": {
+      "after": 4,
+      "before": 8,
+      "reduction_percent": 50.0
+    },
+    "median_slot_hold_seconds": {
+      "after": 359.26,
+      "before": 336.42,
+      "change_percent": 6.79
+    },
+    "median_slot_queue_seconds": {
+      "after": 0.001,
+      "before": 0.001,
+      "change_percent": 0.0,
+      "interpretation": "Queue time was near measurement resolution in both variants; the combined startup-plus-queue improvement comes from lower startup time."
+    },
+    "median_startup_plus_queue_seconds": {
+      "after": 52.18,
+      "before": 105.125,
+      "reduction_percent": 50.36
+    },
+    "median_successful_shared_server_init_calls": {
+      "after": 14,
+      "before": 10
+    },
+    "median_total_test_wall_seconds": {
+      "after": 205.773,
+      "before": 200.322,
+      "change_percent": 2.72
+    }
   },
   "title": "Amortize real-Dolt server startup for integration tests that do not assert lifecycle"
 }
