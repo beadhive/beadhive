@@ -7,13 +7,12 @@ import json
 import shlex
 import subprocess
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import typer
 
 from . import config_work_settings as config
 from . import validation_ledger
-from .adapters.impact_pants import PantsImpactBackend
 from .bootstrap.impact import attest_keys, impact_resolver
 
 Runner = Callable[[str], int]
@@ -253,11 +252,6 @@ def run(
     from . import registry
 
     repo = repo_path or str(registry.hive_dir(entry))
-    try:
-        pants = PantsImpactBackend(repo)
-        backends = {"pants": pants}
-    except (OSError, KeyError, ValueError):
-        backends = {}
     changed_for_policy = _changed_paths_for_policy(repo, base_rev, head_rev)
     semantic_selected, semantic_record = semantic_selection(
         attest, repo, base_rev, head_rev, active_keys
@@ -295,7 +289,9 @@ def run(
                 )
         active_keys = selected
 
-    resolver = impact_resolver(attest, backends=backends)
+    # Bootstrap collects the configured backend from enabled `build.impact` plugins.
+    plugin_kernel = cfg.get("plugin_kernel") if isinstance(cfg, Mapping) else None
+    resolver = impact_resolver(attest, repo=repo, plugin_kernel=plugin_kernel)
     if full:
         from .adapters.impact_git import GitTreeDiff
         from .modules.work.application.impact import NativeFullResolver
