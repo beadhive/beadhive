@@ -12,14 +12,17 @@ any stateful scope they need instead of inheriting one accidentally.
 from __future__ import annotations
 
 import getpass
+import hashlib
 import importlib.abc
 import importlib.metadata
 import os
+import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -198,6 +201,13 @@ def pytest_configure(config):
         path = Path(tempfile.gettempdir()) / f"bh-dolt-slot-events-{os.getpid()}.jsonl"
         os.environ["BH_DOLT_SLOT_EVENTS"] = str(path)
         config._bh_dolt_slot_events_owned = path
+    if not hasattr(config, "workerinput"):
+        from harness.world import free_port
+
+        reusable = Path(tempfile.gettempdir()) / f"bh-reusable-dolt-{os.getpid()}"
+        os.environ["BH_REUSABLE_DOLT_DIR"] = str(reusable)
+        os.environ["BH_REUSABLE_DOLT_PORT"] = str(free_port())
+        config._bh_reusable_dolt_owned = reusable
 
 
 def pytest_unconfigure(config):
@@ -207,6 +217,14 @@ def pytest_unconfigure(config):
     if owned is not None:
         owned.unlink(missing_ok=True)
         os.environ.pop("BH_DOLT_SLOT_EVENTS", None)
+    reusable = getattr(config, "_bh_reusable_dolt_owned", None)
+    if reusable is not None:
+        from harness.world import reap_dolt_server
+
+        reap_dolt_server(reusable)
+        shutil.rmtree(reusable.with_name(f"{reusable.name}-bootstrap"), ignore_errors=True)
+        os.environ.pop("BH_REUSABLE_DOLT_DIR", None)
+        os.environ.pop("BH_REUSABLE_DOLT_PORT", None)
 
 
 @pytest.fixture
@@ -488,6 +506,102 @@ def _sandbox_shared_server(tmp_path_factory, monkeypatch):
     # statfile check. A finalizer, not a happy-path call, so a failing or interrupted test
     # cleans up too.
     reap_dolt_server(shared)
+
+
+class ReusableDoltServer:
+    """One run-owned server plus collision-proof per-test database names."""
+
+    def __init__(self, port: int, suffix: str):
+        self.port = port
+        self.suffix = suffix
+        self.databases: set[str] = set()
+
+    def database(self, prefix: str) -> str:
+        name = f"{prefix}{self.suffix}"
+        self.databases.add(name)
+        return name
+
+
+def _ensure_reusable_dolt_server(server_dir, port, start, connect=socket.create_connection):
+    """Serialize the first start across xdist workers and wait until it accepts connections."""
+    lock_path = server_dir.with_name(f"{server_dir.name}.startup.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+") as startup_lock:
+        import fcntl
+
+        fcntl.flock(startup_lock.fileno(), fcntl.LOCK_EX)
+        try:
+            with connect(("127.0.0.1", port), timeout=0.1):
+                return
+        except OSError:
+            start()
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                with connect(("127.0.0.1", port), timeout=0.2):
+                    return
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(f"reusable Dolt server did not accept port {port}") from None
+                time.sleep(0.1)
+
+
+@pytest.fixture
+def reusable_dolt_server(request, monkeypatch):
+    """Share startup across compatible tests while isolating and deleting every database."""
+    from beadhive.run import run
+    from harness.world import reap_dolt_server
+
+    server_dir = Path(os.environ["BH_REUSABLE_DOLT_DIR"])
+    port = int(os.environ["BH_REUSABLE_DOLT_PORT"])
+    suffix = hashlib.sha256(request.node.nodeid.encode()).hexdigest()[:4]
+    server = ReusableDoltServer(port, suffix)
+    monkeypatch.delenv("COLUMNS", raising=False)
+    monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server_dir))
+    monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(port))
+
+    def start():
+        bootstrap = server_dir.with_name(f"{server_dir.name}-bootstrap")
+        # A worker can die after writing a pidfile or half-initializing the bootstrap store.
+        # The next lock holder owns recovery before attempting the sole replacement start.
+        reap_dolt_server(server_dir)
+        shutil.rmtree(bootstrap, ignore_errors=True)
+        bootstrap.mkdir(parents=True, exist_ok=True)
+        run(
+            [
+                "bd",
+                "init",
+                "--prefix",
+                "bhboot",
+                "--shared-server",
+                "--skip-agents",
+                "--skip-hooks",
+                "--non-interactive",
+            ],
+            cwd=str(bootstrap),
+            check=True,
+            capture=True,
+            timeout=60,
+        )
+
+    _ensure_reusable_dolt_server(server_dir, port, start)
+    yield server
+    for database in sorted(server.databases):
+        run(
+            [
+                "dolt",
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
+                "sql",
+                "-q",
+                f"DROP DATABASE IF EXISTS `{database}`",
+            ],
+            check=False,
+            capture=True,
+            timeout=10,
+        )
 
 
 @pytest.fixture
