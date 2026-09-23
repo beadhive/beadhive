@@ -84,6 +84,8 @@ def run(args, *pargs, **kwargs):
 
 def bd(*args, **kwargs):
     deadline = time.monotonic() + _STARTUP_TIMEOUT
+    # Capture gate diagnostics even for callers that do not otherwise consume output.
+    kwargs["capture"] = True
     while True:
         try:
             return _bd(*args, **kwargs)
