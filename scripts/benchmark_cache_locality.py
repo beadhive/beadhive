@@ -29,6 +29,27 @@ def _capacity(path: Path) -> dict[str, int]:
     }
 
 
+def _hardlink_observation(target: Path) -> dict[str, int | bool]:
+    """Inspect installed-target metadata only; never walk opaque cache contents."""
+    if not target.exists():
+        return {"available": False, "files": 0, "files_with_multiple_links": 0}
+    files = 0
+    multiply_linked = 0
+    for path in target.rglob("*"):
+        try:
+            if path.is_symlink() or not path.is_file():
+                continue
+            files += 1
+            multiply_linked += int(path.stat().st_nlink > 1)
+        except OSError:
+            continue
+    return {
+        "available": True,
+        "files": files,
+        "files_with_multiple_links": multiply_linked,
+    }
+
+
 def _observation(command: Sequence[str], checkout: Path, env: dict[str, str], selection) -> dict:
     cache_before = _capacity(selection.path)
     shared_device = selection.cache_device == selection.target_device
@@ -46,9 +67,26 @@ def _observation(command: Sequence[str], checkout: Path, env: dict[str, str], se
     cache_after = _capacity(selection.path)
     target_after = None if shared_device else _capacity(selection.target)
     output = f"{result.stdout}\n{result.stderr}"
+    link_metadata = _hardlink_observation(selection.target)
     return {
         "seconds": elapsed,
         "returncode": result.returncode,
+        "materialization": {
+            "configured_method": selection.link_method,
+            "same_device": shared_device,
+            "hardlink_use_observed": (
+                link_metadata["files_with_multiple_links"] > 0
+                if link_metadata["available"] and selection.link_method == "hardlink"
+                else False
+                if link_metadata["available"] and selection.link_method == "copy"
+                else None
+            ),
+            "hardlinked_target_files": link_metadata["files_with_multiple_links"],
+            "target_files_inspected": link_metadata["files"],
+            "cross_device_copy_fallback_observed": (
+                result.returncode == 0 and not shared_device and selection.link_method == "copy"
+            ),
+        },
         "capacity": {
             "cache": {
                 "root": str(selection.path),
