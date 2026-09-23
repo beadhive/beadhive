@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import platform
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -505,33 +507,54 @@ def main(argv: Sequence[str] | None = None) -> int:
                     slot_events = run_scratch / "dolt-slot-events.jsonl"
                     env["BH_DOLT_SLOT_EVENTS"] = str(slot_events)
                     started = time.monotonic()
-                    completed = subprocess.Popen(
-                        command,
-                        cwd=root,
-                        env=env,
-                        text=True,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                    )
+                    stdout_path = run_scratch / "pytest.stdout.log"
+                    stderr_path = run_scratch / "pytest.stderr.log"
                     max_servers = 0
                     max_processes = 1
                     server_pids: set[int] = set()
-                    while completed.poll() is None:
-                        metrics = run_process_metrics(run_scratch, completed.pid)
-                        server_pids.update(metrics["server_pids_seen"])
-                        max_servers = max(max_servers, metrics["active_server_count"])
-                        max_processes = max(max_processes, metrics["process_tree_count"])
-                        time.sleep(0.2)
-                    stdout, stderr = completed.communicate()
+                    with (
+                        stdout_path.open("w", encoding="utf-8") as stdout_file,
+                        stderr_path.open("w", encoding="utf-8") as stderr_file,
+                    ):
+                        completed = subprocess.Popen(
+                            command,
+                            cwd=root,
+                            env=env,
+                            text=True,
+                            stdout=stdout_file,
+                            stderr=stderr_file,
+                            start_new_session=True,
+                        )
+                        try:
+                            while completed.poll() is None:
+                                metrics = run_process_metrics(run_scratch, completed.pid)
+                                server_pids.update(metrics["server_pids_seen"])
+                                max_servers = max(max_servers, metrics["active_server_count"])
+                                max_processes = max(max_processes, metrics["process_tree_count"])
+                                time.sleep(0.2)
+                        except KeyboardInterrupt:
+                            with contextlib.suppress(ProcessLookupError):
+                                os.killpg(completed.pid, signal.SIGTERM)
+                            try:
+                                completed.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                with contextlib.suppress(ProcessLookupError):
+                                    os.killpg(completed.pid, signal.SIGKILL)
+                                completed.wait()
+                            final_servers = run_process_metrics(run_scratch, completed.pid)[
+                                "server_pids_seen"
+                            ]
+                            for pid in server_pids | set(final_servers):
+                                with contextlib.suppress(ProcessLookupError):
+                                    os.kill(pid, signal.SIGTERM)
+                            raise
+                    stdout = stdout_path.read_text(encoding="utf-8")
+                    stderr = stderr_path.read_text(encoding="utf-8")
                     final_metrics = run_process_metrics(run_scratch, completed.pid)
                     server_pids.update(final_metrics["server_pids_seen"])
                     max_servers = max(max_servers, final_metrics["active_server_count"])
                     max_processes = max(max_processes, final_metrics["process_tree_count"])
                     output = stdout + "\n" + stderr
-                    stdout_path = run_scratch / "pytest.stdout.log"
-                    stderr_path = run_scratch / "pytest.stderr.log"
-                    stdout_path.write_text(stdout, encoding="utf-8")
-                    stderr_path.write_text(stderr, encoding="utf-8")
                     try:
                         parsed = parse_pytest_output(output, completed.returncode)
                     except BenchmarkError as exc:
@@ -586,8 +609,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 "max_active_server_processes": max_servers,
                                 "max_pytest_process_tree": max_processes,
                             },
-                            "stdout_log": str(stdout_path),
-                            "stderr_log": str(stderr_path),
                             **parsed,
                         }
                     )
