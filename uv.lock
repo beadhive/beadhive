@@ -10,6 +10,12 @@ resolution-markers = [
     "python_full_version < '3.13' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "beadhive",
+    "beadhive-package-template",
+]
+
 [[package]]
 name = "aiofile"
 version = "3.11.1"
@@ -152,6 +158,17 @@ dev = [
     { name = "pytest-xdist", specifier = ">=3" },
     { name = "ruff", specifier = ">=0.6" },
 ]
+
+[[package]]
+name = "beadhive-package-template"
+version = "0.0.0"
+source = { editable = "packages/_template" }
+dependencies = [
+    { name = "beadhive" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "beadhive", editable = "." }]
 
 [[package]]
 name = "beartype"

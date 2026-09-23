@@ -101,6 +101,25 @@ def test_proven_only_impact_selects_pants_without_native() -> None:
     assert route.reason == "affected-proven-tests"
 
 
+def test_package_test_impact_runs_under_pants_without_a_manifest_entry() -> None:
+    route = pants_ci.plan_changed(
+        "base",
+        ("tests/unit/test_proven.py",),
+        changes=("packages/example/src/example/__init__.py",),
+        rows=(
+            {
+                "target_type": "python_source",
+                "sources": ["packages/example/src/example/__init__.py"],
+            },
+            {"target_type": "python_test", "sources": ["packages/example/tests/test_example.py"]},
+        ),
+    )
+    assert route.pants_tests == ("packages/example/tests/test_example.py",)
+    assert route.run_native is False
+    assert route.run_all_pants is False
+    assert route.reason == "affected-proven-tests"
+
+
 def test_unproven_test_impact_routes_to_native_closure() -> None:
     route = pants_ci.plan_changed(
         "base",

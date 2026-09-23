@@ -245,6 +245,37 @@ def test_unaffected_unproven_test_does_not_poison_an_unrelated_change(repo):
     assert receipt.unaffected_keys == ("demos", "stateful", "unit")
 
 
+def test_package_change_invalidates_only_the_packages_key_without_a_manifest_entry(repo):
+    packages_key = AttestKey(
+        "packages", "just attest-packages", selectors={"pants": "attest:packages"}
+    )
+    graph = complete_graph() + [
+        target(
+            "packages/example/src:lib",
+            sources=("packages/example/src/example/__init__.py",),
+            tags=("category:code", "attest:packages"),
+            target_type="python_source",
+        ),
+        target(
+            "packages/example/tests:tests",
+            sources=("packages/example/tests/test_example.py",),
+            tags=("category:test-only", "attest:packages"),
+            target_type="python_test",
+        ),
+    ]
+
+    def query(path, args, timeout):
+        return graph if tuple(args) == ("peek", "::") else graph[5:]
+
+    backend = PantsImpactBackend(repo, query=query)
+    receipt = FailClosedResolver(
+        backend, Diff((ChangedPath("packages/example/src/example/__init__.py"),))
+    ).resolve(str(repo), "base", "head", (*KEYS, packages_key))
+    assert receipt.invalidated_keys == ("packages",)
+    assert receipt.unaffected_keys == ("demos", "docs", "stateful", "unit")
+    assert receipt.evidence["packages"].reason == ImpactReason.AFFECTED
+
+
 def test_manifest_schema_failure_falls_back(repo):
     (repo / "scripts/pants_proven_tests.json").write_text('{"schema_version": 2}')
     receipt, _ = resolve(repo, [ChangedPath("manual/guide.md")], complete_graph(), [])
