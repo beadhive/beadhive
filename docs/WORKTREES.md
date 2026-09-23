@@ -259,9 +259,13 @@ materialize it into an isolated target below the external scratch root; the JSON
 summary record that probe target's device/capacity and uv's observed hardlink/copy fallback
 outcome (or `unknown` with a diagnostic if the offline probe cannot run). Cache-source evidence
 is matched against uv's resolved cache directory, including `UV_CACHE_DIR` overrides. Its scratch
-root must be outside every Git
-checkout; the command
-refuses a root for which Git can discover a containing repository before it starts pytest.
+root must be outside every Git checkout; the command refuses a root for which Git can discover a
+containing repository before it starts pytest.
+
+Real-Dolt fixture telemetry is also run-local: each marked test reports slot queue and hold
+seconds separately in JSON, and the Markdown table shows their aggregate medians. Collection
+interleaves ready non-Dolt work after each `BH_DOLT_SLOTS` sized Dolt wave so xdist can keep useful
+workers moving while the filesystem locks remain the authoritative four-slot default bound.
 
 Use `bh work check`, not raw `just check`, when the result should seed submission. A clean
 `bh work check` writes the run and exact-tree verdict records, so the following `bh work submit`

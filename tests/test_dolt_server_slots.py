@@ -9,6 +9,7 @@ path including an exception, and that the documented `BH_DOLT_SLOTS=0` arm reall
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -76,3 +77,28 @@ def test_the_default_bound_is_a_named_constant():
     """Acceptance: 'the bound is a named constant … discoverable by grep', not a literal buried in
     a fixture."""
     assert MAX_CONCURRENT_DOLT_SERVER_TESTS >= 1
+
+
+def test_slot_events_separate_queue_from_hold(monkeypatch, tmp_path):
+    events = tmp_path / "slots.jsonl"
+    monkeypatch.setenv("BH_DOLT_SLOT_EVENTS", str(events))
+    assert _hold(slots=2, holders=4, hold_for=0.05) == 2
+
+    rows = [json.loads(line) for line in events.read_text().splitlines()]
+    acquired = [row for row in rows if row["event"] == "acquired"]
+    released = [row for row in rows if row["event"] == "released"]
+    assert len(acquired) == len(released) == 4
+    assert max(row["queue_seconds"] for row in acquired) >= 0.03
+    assert min(row["hold_seconds"] for row in released) >= 0.04
+
+
+def test_unbounded_slot_still_records_release_on_failure(monkeypatch, tmp_path):
+    events = tmp_path / "slots.jsonl"
+    monkeypatch.setenv("BH_DOLT_SLOT_EVENTS", str(events))
+    with pytest.raises(RuntimeError):
+        with dolt_server_slot(0, "failure-case"):
+            raise RuntimeError
+    assert [json.loads(line)["event"] for line in events.read_text().splitlines()] == [
+        "acquired",
+        "released",
+    ]

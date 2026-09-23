@@ -88,9 +88,32 @@ def aggregate_runs(runs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
             "median_external_wall_seconds": statistics.median(
                 sample["external_wall_seconds"] for sample in samples
             ),
+            "median_dolt_slot_queue_seconds": statistics.median(
+                sample.get("dolt_slots", {}).get("total_queue_seconds", 0.0) for sample in samples
+            ),
+            "median_dolt_slot_hold_seconds": statistics.median(
+                sample.get("dolt_slots", {}).get("total_hold_seconds", 0.0) for sample in samples
+            ),
         }
         for (selection, workers), samples in sorted(grouped.items())
     ]
+
+
+def parse_dolt_slot_events(path: Path) -> dict[str, Any]:
+    tests: dict[str, dict[str, float]] = {}
+    if path.exists():
+        for line in path.read_text(encoding="utf-8").splitlines()[:10000]:
+            event = json.loads(line)
+            row = tests.setdefault(event["test"], {"queue_seconds": 0.0, "hold_seconds": 0.0})
+            if event["event"] == "acquired":
+                row["queue_seconds"] = event["queue_seconds"]
+            elif event["event"] == "released":
+                row["hold_seconds"] = event["hold_seconds"]
+    return {
+        "tests": tests,
+        "total_queue_seconds": sum(row["queue_seconds"] for row in tests.values()),
+        "total_hold_seconds": sum(row["hold_seconds"] for row in tests.values()),
+    }
 
 
 def ensure_external_scratch(path: Path) -> Path:
@@ -282,14 +305,17 @@ def provenance(scratch: Path) -> dict[str, Any]:
 
 def render_table(aggregates: Sequence[dict[str, Any]], run_provenance: dict[str, Any]) -> str:
     lines = [
-        "| selection | workers | ok/runs | median pytest (s) | median wall (s) |",
-        "|---|---:|---:|---:|---:|",
+        "| selection | workers | ok/runs | median pytest (s) | median wall (s) "
+        "| Dolt queue (s) | Dolt hold (s) |",
+        "|---|---:|---:|---:|---:|---:|---:|",
     ]
     for row in aggregates:
         lines.append(
             f"| {row['selection']} | {row['workers']} | {row['successful_repetitions']}/"
             f"{row['repetitions']} | {row['median_pytest_elapsed_seconds']:.3f} | "
-            f"{row['median_external_wall_seconds']:.3f} |"
+            f"{row['median_external_wall_seconds']:.3f} | "
+            f"{row.get('median_dolt_slot_queue_seconds', 0.0):.3f} | "
+            f"{row.get('median_dolt_slot_hold_seconds', 0.0):.3f} |"
         )
     locality = run_provenance["cache_locality"]
     cache = locality["cache"]
@@ -362,6 +388,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     command = [sys.executable, "-m", "pytest", "-n", str(worker), "-m", marker]
                     env = os.environ.copy()
                     env["TMPDIR"] = str(run_scratch)
+                    slot_events = run_scratch / "dolt-slot-events.jsonl"
+                    env["BH_DOLT_SLOT_EVENTS"] = str(slot_events)
                     started = time.monotonic()
                     completed = subprocess.run(
                         command, cwd=ROOT, env=env, text=True, capture_output=True, check=False
@@ -377,6 +405,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "command": command,
                             "exit_code": completed.returncode,
                             "external_wall_seconds": round(time.monotonic() - started, 3),
+                            "dolt_slots": parse_dolt_slot_events(slot_events),
                             **parsed,
                         }
                     )
