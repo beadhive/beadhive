@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import tomllib
 from pathlib import Path
 
@@ -54,12 +55,14 @@ def test_unowned_imports_fail_closed_and_pure_tests_exclude_stateful_fixtures() 
     build = (ROOT / "tests" / "BUILD").read_text(encoding="utf-8")
 
     assert config["python-infer"]["unowned_dependency_behavior"] == "error"
-    pure = build.split('name="pure-tests"', maxsplit=1)[1].split(")\n\n", maxsplit=1)[0]
+    # Every pure unit-test target is generated from this one shared field set.
+    pure = build.split("_UNIT_TEST_FIELDS = dict(", maxsplit=1)[1].split(")\n\n", maxsplit=1)[0]
     stateful = build.split('name="legacy-stateful-tests"', maxsplit=1)[1]
     assert '":root-conftest"' in pure
     assert "stateful-fixtures" not in pure
     assert '":stateful-fixtures"' in stateful
     assert '"pants:proven"' in pure
+    assert 'dependencies=_UNIT_TEST_FIELDS["dependencies"]' in build
 
 
 def test_package_target_owns_runtime_resources() -> None:
@@ -68,6 +71,27 @@ def test_package_target_owns_runtime_resources() -> None:
     assert 'name="package-data"' in build
     assert '":package-data"' in build
     assert 'entry_point="beadhive.bootstrap.cli:main"' in build
+
+
+def test_package_aggregate_lists_every_governed_source_target() -> None:
+    """The pex closure comes from `:sources`, so a governed target missing from it is dropped."""
+    package = ROOT / "src" / "beadhive"
+    aggregate = (package / "BUILD").read_text(encoding="utf-8").split('name="sources"')[1]
+    aggregate = aggregate.split("\n)\n", maxsplit=1)[0]
+    expected = []
+    for build in sorted(package.rglob("BUILD")):
+        if build.parent == package:
+            continue
+        directory = build.parent.relative_to(package).as_posix()
+        for block in build.read_text(encoding="utf-8").split("python_sources(")[1:]:
+            name = re.search(r'^\s*name="([^"]+)"', block, re.MULTILINE)
+            target = name.group(1) if name else build.parent.name
+            suffix = "" if target == build.parent.name else f":{target}"
+            expected.append(f'"./{directory}{suffix}"')
+
+    assert expected, "no governed source targets found"
+    assert [address for address in expected if address not in aggregate] == []
+    assert '":lib"' in aggregate
 
 
 def test_local_pants_runtime_state_is_ignored() -> None:

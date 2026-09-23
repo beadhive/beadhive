@@ -35,7 +35,7 @@ python_sources(
 python_sources(
     name="demos",
     sources=["demo_*.py"],
-    dependencies=["//src/beadhive:lib", "//tests:test-resources"],
+    dependencies=["//src/beadhive:sources", "//tests:test-resources"],
     tags=["category:code", "attest:demos"],
 )
 
