@@ -65,7 +65,13 @@ def run(args, *pargs, **kwargs):
     check = kwargs.pop("check", False)
     deadline = time.monotonic() + _STARTUP_TIMEOUT
     while True:
-        result = _run(args, *pargs, check=False, **kwargs)
+        lock = (
+            _shared_server_command_lock()
+            if args[0] == "bd" and "init" not in args
+            else contextlib.nullcontext()
+        )
+        with lock:
+            result = _run(args, *pargs, check=False, **kwargs)
         detail = f"{result.stdout or ''}{result.stderr or ''}"
         if result.returncode == 0 or args[0] != "bd" or "workspace gate busy" not in detail:
             if check and result.returncode:
@@ -88,7 +94,8 @@ def bd(*args, **kwargs):
     kwargs["capture"] = True
     while True:
         try:
-            return _bd(*args, **kwargs)
+            with _shared_server_command_lock():
+                return _bd(*args, **kwargs)
         except AssertionError as exc:
             if "workspace gate busy" not in str(exc) or time.monotonic() >= deadline:
                 raise
@@ -102,6 +109,16 @@ def _shared_server_init_lock():
     lock_path = server_dir.with_name(f"{server_dir.name}.bd-init.lock")
     with lock_path.open("a+") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
+@contextlib.contextmanager
+def _shared_server_command_lock():
+    """Keep ordinary commands active while excluding bd init's maintenance gate."""
+    server_dir = Path(os.environ["BEADS_SHARED_SERVER_DIR"])
+    lock_path = server_dir.with_name(f"{server_dir.name}.bd-init.lock")
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
         yield
 
 
