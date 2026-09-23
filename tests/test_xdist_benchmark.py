@@ -62,8 +62,33 @@ def test_aggregate_runs_uses_true_median_and_counts_successes():
             "successful_repetitions": 3,
             "median_pytest_elapsed_seconds": 4.0,
             "median_external_wall_seconds": 5.0,
+            "median_dolt_slot_queue_seconds": 0.0,
+            "median_dolt_slot_hold_seconds": 0.0,
         }
     ]
+
+
+def test_parse_dolt_slot_events_reports_each_test_and_totals(tmp_path):
+    events = tmp_path / "slots.jsonl"
+    events.write_text(
+        "\n".join(
+            [
+                '{"event":"queued","test":"one"}',
+                '{"event":"acquired","test":"one","queue_seconds":1.25}',
+                '{"event":"released","test":"one","hold_seconds":2.5}',
+                '{"event":"acquired","test":"two","queue_seconds":0.25}',
+                '{"event":"released","test":"two","hold_seconds":1.5}',
+            ]
+        )
+    )
+    assert benchmark.parse_dolt_slot_events(events) == {
+        "tests": {
+            "one": {"queue_seconds": 1.25, "hold_seconds": 2.5},
+            "two": {"queue_seconds": 0.25, "hold_seconds": 1.5},
+        },
+        "total_queue_seconds": 1.5,
+        "total_hold_seconds": 4.0,
+    }
 
 
 def test_cache_locality_separates_capability_from_unobserved_use(monkeypatch, tmp_path):
@@ -166,6 +191,8 @@ def test_human_table_includes_locality_capacity_and_observed_mode():
             "repetitions": 1,
             "median_pytest_elapsed_seconds": 2.0,
             "median_external_wall_seconds": 3.0,
+            "median_dolt_slot_queue_seconds": 1.25,
+            "median_dolt_slot_hold_seconds": 4.5,
         }
     ]
     provenance = {
@@ -187,6 +214,7 @@ def test_human_table_includes_locality_capacity_and_observed_mode():
     assert "| interpreter target | 2 | 200 | 20 |" in rendered
     assert "| uv probe target | 3 | 300 | 30 |" in rendered
     assert "observed `copy-fallback`" in rendered
+    assert "| 1.250 | 4.500 |" in rendered
 
 
 def test_validation_slots_reports_environment_override(monkeypatch):

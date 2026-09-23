@@ -37,6 +37,23 @@ STATEFUL_CONSUMER_ROOTS = ("tests/",)
 PURE_CONSUMER_ROOTS = ("tests/unit/",)
 
 
+def _interleave_dolt_items(items, slots):
+    """Keep ready work behind every bounded wave of real-server tests."""
+    if slots <= 0:
+        return list(items)
+    marked = [item for item in items if item.get_closest_marker("dolt_server") is not None]
+    ordinary = [item for item in items if item.get_closest_marker("dolt_server") is None]
+    if not marked or not ordinary:
+        return list(items)
+    scheduled = []
+    while marked or ordinary:
+        scheduled.extend(marked[:slots])
+        del marked[:slots]
+        scheduled.extend(ordinary[:slots])
+        del ordinary[:slots]
+    return scheduled
+
+
 def pytest_collection_modifyitems(config, items):
     """Attach the inventoried compatibility scope, leaving pure-unit collection untouched."""
     for item in items:
@@ -48,6 +65,8 @@ def pytest_collection_modifyitems(config, items):
             # Compatibility defaults must establish their empty baseline before an explicit
             # ``world`` or per-test fixture overrides it, matching pytest's former autouse order.
             item.fixturenames.insert(0, "legacy_stateful_test_scope")
+    slots = int(os.environ.get("BH_DOLT_SLOTS", "4"))
+    items[:] = _interleave_dolt_items(items, slots)
 
 
 @pytest.fixture
@@ -159,11 +178,19 @@ def _sweep(config, when: str) -> None:
 def pytest_configure(config):
     """Run the prior-session Dolt backstop once on the xdist controller before workers start."""
     _sweep(config, "session start")
+    if not hasattr(config, "workerinput") and "BH_DOLT_SLOT_EVENTS" not in os.environ:
+        path = Path(tempfile.gettempdir()) / f"bh-dolt-slot-events-{os.getpid()}.jsonl"
+        os.environ["BH_DOLT_SLOT_EVENTS"] = str(path)
+        config._bh_dolt_slot_events_owned = path
 
 
 def pytest_unconfigure(config):
     """Run the final Dolt backstop once on the xdist controller after workers finish."""
     _sweep(config, "session end")
+    owned = getattr(config, "_bh_dolt_slot_events_owned", None)
+    if owned is not None:
+        owned.unlink(missing_ok=True)
+        os.environ.pop("BH_DOLT_SLOT_EVENTS", None)
 
 
 @pytest.fixture
@@ -186,7 +213,7 @@ def _bound_concurrent_dolt_servers(request):
     if request.node.get_closest_marker("dolt_server") is None:
         yield
         return
-    with dolt_server_slot(MAX_CONCURRENT_DOLT_SERVER_TESTS):
+    with dolt_server_slot(MAX_CONCURRENT_DOLT_SERVER_TESTS, request.node.nodeid):
         yield
 
 
