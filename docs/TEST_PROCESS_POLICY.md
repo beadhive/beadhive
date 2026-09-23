@@ -36,11 +36,25 @@ These named cases are classified as follows:
 | `tests/test_bd_repo_sync_additive.py::test_bd_repo_sync_is_additive` | `integration`, `dolt_server` | Real `bd repo sync` preserves native beads and imports source IDs with their prefix. |
 | `tests/test_hq.py::test_ensure_store_stands_up_git_bd_repo_prefix_hq` | `integration`, `dolt_server` | `hub.ensure_store` creates and reuses the durable Git + bd HQ store. |
 | `tests/test_hive_opencode.py::test_onboard_opencode_writes_config_agents_and_agf_hint`, `test_onboard_opencode_is_idempotent`, `test_onboard_opencode_force_refreshes` | unit | OpenCode installer routing, generated files, local-edit preservation, and explicit refresh. Their fixture stubs auto-export, host bd config, and hub synchronization, which are separate durable-store concerns. |
+| `tests/test_hub_bulk_int.py::test_bulk_copy_matches_a_real_bd_produced_aggregate` | `integration`, `dolt_server` | Real `bd` aggregate parity, event/wisp fidelity, copy exclusions, target identity, and ancestor validation. One multi-database query snapshots the same explicit content surfaces. |
+| `tests/test_hub_bulk_int.py::test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync` | `integration`, `dolt_server` | Real `hub.sync()` with per-prefix non-decreasing counts across steady and growth passes. Fixture writes are batched; the bulk path reads co-located source databases directly, so source `bd export` setup is unnecessary. |
+| `tests/test_localloop_int.py::test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spending` | `integration` | Real `bd` claims, orphan process-group reap, cancellation label, and completed molecule after restart. The test waits for actual replacement-seat exits instead of running fixed-delay polling passes. |
+| `tests/test_plan_repair.py::test_repair_and_approve_converge_hand_assembled_epic_real_bd` | `integration` | Real hand-assembled `bd` graph, repair/approval refusal routing, generated swarm and root gates, origin/dependent exclusions, real-storage repair replay, real gate approval, verify, and dispatcher start. Dependency setup is one transaction; the fast `test_repair_then_approve_twice_each_converges` retains direct command idempotence coverage for both commands. |
 
 The fast hub/HQ contracts remain covered by fake-based tests in `tests/test_hub.py`,
 `tests/test_hub_bulk.py`, and `tests/test_hq.py`, including repository routing, source-prefix
-handling, sync failure behavior, and HQ initialization ordering. The four real-store proofs above
-are selected by `just test-integration-land`; they are not skipped or hidden behind a quarantine.
+handling, sync failure behavior, and HQ initialization ordering. The named integration proofs are
+selected by `just test-integration-land`; they are not skipped or hidden behind a quarantine.
+The branch-facing fast counterparts for the four `.6` scenarios are:
+
+| Integration proof | Fast contract |
+| --- | --- |
+| Hub bulk aggregate parity | `tests/test_hub_bulk.py::test_copy_hive_success_touches_every_content_table_and_nothing_else` and `test_run_bulk_pass_never_queries_a_denied_or_undecided_table` |
+| Hub sync per-prefix preservation | `tests/test_hub.py::test_sync_bulk_enabled_calls_run_bulk_pass_with_resolved_entries` and `test_sync_bulk_pass_receives_changed_flag_from_the_existing_watermark` |
+| Local-loop restart | `tests/test_localloop.py::test_the_loop_never_spawns_two_processes_for_one_bead`, `test_a_finished_run_is_harvested_and_its_group_reaped`, and `test_shutdown_terminates_children_through_the_group_and_unclaims` |
+| Plan repair convergence | `tests/test_plan_repair.py::test_repair_backfills_swarm_gates_state_and_labels`, `test_repair_excludes_origin_report_children_from_roots`, and `test_repair_then_approve_twice_each_converges` |
+
+Scenario setup is consolidated without replacing the real-store or real-process assertions.
 
 ## Hang watchdog
 

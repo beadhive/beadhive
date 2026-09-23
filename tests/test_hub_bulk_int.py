@@ -6,7 +6,8 @@ behavior:
 
 * row-count AND content parity for ``issues``/``dependencies``/``labels``/``comments`` against
   a REAL `bd repo sync`-produced aggregate (not just issues — labels explicitly, the table an
-  earlier prototype silently dropped);
+  earlier prototype silently dropped). The aggregate snapshot is captured, then every curated
+  content table is proven empty before the same database becomes the copy target;
 * NO identity/bookkeeping table (:data:`beadhive.hub_bulk.DENY_TABLES`) is written into the
   target — proven by showing the target's OWN prefix identity survives the copy, not merely
   asserting it in a docstring;
@@ -34,13 +35,14 @@ sql-server) + self-skips without a `bd` binary on PATH.
 from __future__ import annotations
 
 import json
+import shutil
 import socket
 import time
 from pathlib import Path
 
 import pytest
 
-from beadhive import hub_bulk
+from beadhive import hub, hub_bulk, store_locator
 from beadhive.run import run
 from harness.beads import bd, skip_if_no_bd
 from harness.world import free_port, reap_dolt_server
@@ -114,6 +116,79 @@ def _init(path, prefix):
     run(["git", "config", "beads.role", "maintainer"], cwd=str(path), check=True, capture=True)
 
 
+def _snapshot_empty_server_database(hive, snapshot_dir):
+    """Copy an empty, initialized Beads database into a clean local DOLT_CLONE source.
+
+    The source store is initialized by real ``bd init`` on this test's isolated server. Copying
+    it before any issues are created keeps the schema template empty; ``dolt gc`` on the private
+    copy removes the live server's chunk journal without stopping or mutating that server.
+    """
+    database = store_locator.server_database(hive)
+    counts = _content_row_counts(hive, database)
+    assert set(counts) == set(hub_bulk.CONTENT_TABLES), counts
+    assert not any(counts.values()), counts
+    snapshot_dir = Path(snapshot_dir)
+    shutil.copytree(store_locator.database_dir(hive), snapshot_dir)
+    run(["dolt", "gc"], cwd=str(snapshot_dir), check=True, capture=True, timeout=_TIMEOUT)
+    return (snapshot_dir / ".dolt" / "noms").as_uri()
+
+
+def _init_from_template(path, prefix, *, template_url, control_hive):
+    """Clone the clean template into the already-running isolated server, then attach real bd.
+
+    ``control_hive`` supplies bd's configured server endpoint and credentials for DOLT_CLONE.
+    ``bd init --database`` writes this project's own server metadata; ordinary hive prefixes are
+    then set through bd's supported rename-prefix command. The reserved hub prefix is already the
+    template prefix and is left intact.
+    """
+    database = prefix
+    source = template_url.replace("'", "''")
+    target = database.replace("'", "''")
+    bd(
+        "sql",
+        "-q",
+        f"CALL DOLT_CLONE('{source}', '{target}')",
+        cwd=control_hive,
+        capture=True,
+        timeout=_TIMEOUT,
+    )
+    path.mkdir(parents=True, exist_ok=True)
+    run(
+        [
+            "bd",
+            "init",
+            "--prefix",
+            prefix,
+            "--database",
+            database,
+            "--shared-server",
+            "--external",
+            "--skip-agents",
+            "--skip-hooks",
+            "--non-interactive",
+        ],
+        cwd=str(path),
+        check=True,
+        capture=True,
+        timeout=_TIMEOUT,
+    )
+    if prefix != hub.HUB_PREFIX:
+        run(
+            ["bd", "-C", str(path), "rename-prefix", f"{prefix}-"],
+            check=True,
+            capture=True,
+            timeout=_TIMEOUT,
+        )
+    run(["git", "config", "beads.role", "maintainer"], cwd=str(path), check=True, capture=True)
+
+
+def _batch_create(path, titles):
+    """Seed this row-count-only fixture in one real bd transaction."""
+    batch = path.parent / f"{path.name}-seed.batch"
+    batch.write_text("".join(f'create task 2 "{title}"\n' for title in titles))
+    bd("batch", "-f", str(batch), cwd=path, capture=True)
+
+
 def _sql(path, query):
     return run(
         ["bd", "-C", str(path), "sql", "-q", query, "--json"],
@@ -128,22 +203,79 @@ def _rows(path, table, cols):
     return json.loads(res.stdout or "[]")
 
 
-def _list_ids(path):
-    res = bd("list", "--json", cwd=path, capture=True)
-    return json.loads(res.stdout or "[]")
+def _bulk_snapshot(hub_dir, *, target_prefix):
+    """Read the real-server parity surfaces in one SQL round trip.
+
+    These databases all live on the same isolated Dolt server, so the proof can query their
+    fully-qualified tables together. Keeping the table/column inventory here explicit makes the
+    parity contract reviewable while avoiding a separate bd startup for every asserted table.
+    """
+    columns = {
+        "issues": ("id", "title", "status", "priority", "created_at", "updated_at"),
+        "dependencies": ("id", "issue_id", "type", "depends_on_issue_id"),
+        "labels": ("issue_id", "label"),
+        "comments": ("id", "issue_id", "author", "text"),
+        "events": ("id", "issue_id", "event_type"),
+        "wisps": ("id", "title"),
+        "custom_statuses": ("name",),
+    }
+    databases = {
+        "hva": set(columns),
+        target_prefix: set(columns),
+    }
+    selects = []
+    for database, tables in databases.items():
+        for table in sorted(tables):
+            fields = ", ".join(f"'{column}', `{column}`" for column in columns[table])
+            selects.append(
+                f"SELECT '{database}' AS database_name, '{table}' AS table_name, "
+                f"JSON_OBJECT({fields}) AS row_json FROM `{database}`.`{table}`"
+            )
+    query = "\nUNION ALL\n".join(selects)
+    result = run(
+        ["bd", "-C", str(hub_dir), "sql", "-q", query, "--json"],
+        check=True,
+        capture=True,
+        timeout=_TIMEOUT,
+    )
+    snapshot = {(database, table): [] for database, tables in databases.items() for table in tables}
+    for row in json.loads(result.stdout or "[]"):
+        value = row["row_json"]
+        if isinstance(value, str):
+            value = json.loads(value)
+        snapshot[(row["database_name"], row["table_name"])].append(value)
+    for rows in snapshot.values():
+        rows.sort(key=lambda value: json.dumps(value, sort_keys=True))
+    return snapshot
+
+
+def _content_row_counts(hub_dir, database):
+    """Count every curated copy table after removing the imported baseline repo."""
+    selects = [
+        f"SELECT '{table}' AS table_name, COUNT(*) AS row_count FROM `{database}`.`{table}`"
+        for table in hub_bulk.CONTENT_TABLES
+    ]
+    result = run(
+        ["bd", "-C", str(hub_dir), "sql", "-q", "\nUNION ALL\n".join(selects), "--json"],
+        check=True,
+        capture=True,
+        timeout=_TIMEOUT,
+    )
+    return {row["table_name"]: int(row["row_count"]) for row in json.loads(result.stdout or "[]")}
 
 
 def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_shared_server):
     hive_a = tmp_path / "hive_a"
     _init(hive_a, "hva")
     _wait_until_accepting("127.0.0.1", isolated_shared_server)
+    template_url = _snapshot_empty_server_database(hive_a, tmp_path / "schema-template")
 
-    bd("create", "issue one", "--label", "alpha", cwd=hive_a)
-    id1 = _list_ids(hive_a)[0]["id"]
+    id1 = bd(
+        "create", "issue one", "--label", "alpha", "--silent", cwd=hive_a, capture=True
+    ).stdout.strip()
     bd("comment", id1, "a comment", cwd=hive_a)
     bd("update", id1, "--status", "in_progress", cwd=hive_a)
-    bd("create", "issue two", cwd=hive_a)
-    id2 = next(x["id"] for x in _list_ids(hive_a) if x["id"] != id1)
+    id2 = bd("create", "issue two", "--silent", cwd=hive_a, capture=True).stdout.strip()
     bd("dep", "add", id2, id1, cwd=hive_a)  # id2 depends on id1
 
     # A wisp (bd has no direct CLI to mint one outside agent-orchestration flows — inserted
@@ -158,7 +290,7 @@ def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_share
 
     # THE BASELINE: a real `bd repo sync`-produced aggregate.
     hub_a = tmp_path / "hub_a"
-    _init(hub_a, "hba")
+    _init_from_template(hub_a, "hba", template_url=template_url, control_hive=hive_a)
     run(
         ["bd", "-C", str(hive_a), "export", "-o", str(hive_a / ".beads" / "issues.jsonl")],
         check=True,
@@ -173,30 +305,38 @@ def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_share
     )
     run(["bd", "-C", str(hub_a), "repo", "sync"], check=True, capture=True, timeout=_TIMEOUT)
 
-    # THE FAST PATH: `hub_bulk`'s cross-database copy, into a SEPARATE fresh target — never
-    # sharing an aggregate with the baseline, so a false-positive "match" from shared state is
-    # structurally impossible.
-    hub_b = tmp_path / "hub_b"
-    _init(hub_b, "hbb")
-    ok, detail = hub_bulk.copy_hive(hub_b, "hva", {})
+    # Save the real aggregate before resetting the database that will become the copy target.
+    baseline = _bulk_snapshot(hub_a, target_prefix="hba")
+
+    # The baseline is now held in memory. Remove its imported repo rows and verify every curated
+    # table is empty, then use this isolated empty state as the copy target. This preserves the
+    # independent-baseline comparison while avoiding a third slow shared-server bd init.
+    run(
+        ["bd", "-C", str(hub_a), "repo", "remove", str(hive_a)],
+        check=True,
+        capture=True,
+        timeout=_TIMEOUT,
+    )
+    empty_counts = _content_row_counts(hub_a, "hba")
+    assert set(empty_counts) == set(hub_bulk.CONTENT_TABLES), empty_counts
+    assert not any(empty_counts.values()), empty_counts
+
+    # --- the empty hba target now receives the real cross-database copy ---
+    ok, detail = hub_bulk.copy_hive(hub_a, "hva", {})
     assert ok, detail
+    snapshot = _bulk_snapshot(hub_a, target_prefix="hba")
 
     # --- row-count AND content parity against the REAL bd-produced aggregate ---
-    for table, cols in (
-        ("issues", "id,title,status,priority,created_at,updated_at"),
-        ("dependencies", "id,issue_id,type,depends_on_issue_id"),
-        ("labels", "issue_id,label"),  # the table an earlier prototype silently dropped
-        ("comments", "id,issue_id,author,text"),
-    ):
-        expected = _rows(hub_a, table, cols)
-        actual = _rows(hub_b, table, cols)
+    for table in ("issues", "dependencies", "labels", "comments"):
+        expected = baseline[("hba", table)]
+        actual = snapshot[("hba", table)]
         assert actual == expected, f"{table}: bulk copy diverged from the bd-produced aggregate"
         assert actual, f"{table}: fixture produced no rows — the comparison above is vacuous"
 
     # --- events: bd's own path does NOT replay real history (measured, not assumed) ---
-    source_events = _rows(hive_a, "events", "id,issue_id,event_type")
-    bulk_events = _rows(hub_b, "events", "id,issue_id,event_type")
-    baseline_events = _rows(hub_a, "events", "id,issue_id,event_type")
+    source_events = snapshot[("hva", "events")]
+    bulk_events = snapshot[("hba", "events")]
+    baseline_events = baseline[("hba", "events")]
     assert bulk_events == source_events, "hub_bulk must copy the REAL event log verbatim"
     assert bulk_events != baseline_events, (
         "if this ever matches, bd repo sync started replaying real event history — the "
@@ -206,23 +346,23 @@ def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_share
     )
 
     # --- wisps: bd repo sync never touches this family; hub_bulk's copy is a widening ---
-    assert _rows(hub_a, "wisps", "id,title") == []
-    bulk_wisps = _rows(hub_b, "wisps", "id,title")
-    assert bulk_wisps == _rows(hive_a, "wisps", "id,title")
+    assert baseline[("hba", "wisps")] == []
+    bulk_wisps = snapshot[("hba", "wisps")]
+    assert bulk_wisps == snapshot[("hva", "wisps")]
     assert len(bulk_wisps) == 1
 
     # --- decided-not-to-copy vocabulary tables: zero rows in the target, despite the source ---
-    assert _rows(hive_a, "custom_statuses", "name") != []  # fixture sanity: source really has one
-    assert _rows(hub_b, "custom_statuses", "name") == []
+    assert snapshot[("hva", "custom_statuses")] != []  # source really has one
+    assert snapshot[("hba", "custom_statuses")] == []
 
-    # --- identity/bookkeeping untouched: hub_b can still mint ITS OWN prefix afterward ---
-    bd("create", "sanity check", cwd=hub_b)
-    hub_b_ids = [x["id"] for x in _list_ids(hub_b)]
-    assert any(i.startswith("hbb-") for i in hub_b_ids), hub_b_ids
-    assert not any(i.startswith("hva-") for i in hub_b_ids if i not in (id1, id2)), hub_b_ids
+    # --- identity/bookkeeping untouched: hba can still mint ITS OWN prefix afterward ---
+    source_ids = {row["id"] for row in snapshot[("hba", "issues")]}
+    assert source_ids == {id1, id2}, source_ids
+    sanity_id = bd("create", "sanity check", "--silent", cwd=hub_a, capture=True).stdout.strip()
+    assert sanity_id.startswith("hba-"), sanity_id
 
     # --- set-based ancestor validation runs clean over a real, well-formed graph ---
-    assert hub_bulk.validate_ancestors(hub_b) == 0
+    assert hub_bulk.validate_ancestors(hub_a) == 0
 
 
 def _prefix_counts(hub_dir) -> dict[str, int]:
@@ -258,23 +398,7 @@ def test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync(
     hypothesis) and it makes no assumption about *how* a future `hub.sync()` regression might
     shrink a prefix. Verified this test's own assertions have teeth by manually deleting a row
     between two sync() calls in this test and confirming it fails (reverted before commit)."""
-    from beadhive import hub
-
-    hives: dict[str, Path] = {}
-    for i, (prefix, titles) in enumerate((("hva", ["one", "two"]), ("hvb", ["three"]))):
-        path = tmp_path / "hives" / prefix
-        _init(path, prefix)
-        if i == 0:
-            _wait_until_accepting("127.0.0.1", isolated_shared_server)
-        for title in titles:
-            bd("create", title, cwd=path)
-        run(
-            ["bd", "-C", str(path), "export", "-o", str(path / ".beads" / "issues.jsonl")],
-            check=True,
-            capture=True,
-            timeout=_TIMEOUT,
-        )
-        hives[prefix] = path
+    hives: dict[str, Path] = {prefix: tmp_path / "hives" / prefix for prefix in ("hva", "hvb")}
 
     managed_repos = [
         {"provider": "gh", "org": "x", "repo": prefix, "prefix": prefix} for prefix in hives
@@ -283,6 +407,13 @@ def test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync(
     monkeypatch.setattr(hub.registry, "hive_dir", lambda e: hives[e["prefix"]])
 
     hub_dir, _ = hub.hub_target()
+    _init(hub_dir, hub.HUB_PREFIX)
+    _wait_until_accepting("127.0.0.1", isolated_shared_server)
+    template_url = _snapshot_empty_server_database(hub_dir, tmp_path / "schema-template")
+    for prefix, titles in (("hva", ["one", "two"]), ("hvb", ["three"])):
+        path = hives[prefix]
+        _init_from_template(path, prefix, template_url=template_url, control_hive=hub_dir)
+        _batch_create(path, titles)
 
     failed = hub.sync()
     assert not failed, failed
@@ -304,19 +435,6 @@ def test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync(
     # the "total holds steady while one prefix is wiped and another grows" shape the per-prefix
     # assertion (not just a total) exists to catch.
     bd("create", "a new one", cwd=hives["hva"])
-    run(
-        [
-            "bd",
-            "-C",
-            str(hives["hva"]),
-            "export",
-            "-o",
-            str(hives["hva"] / ".beads" / "issues.jsonl"),
-        ],
-        check=True,
-        capture=True,
-        timeout=_TIMEOUT,
-    )
     failed = hub.sync()
     assert not failed, failed
     grown = _prefix_counts(hub_dir)
