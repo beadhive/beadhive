@@ -41,11 +41,9 @@ import typer
 from beadhive import hub, onboard, store_locator
 from harness.beads import bd_json, create, skip_if_no_bd
 from harness.world import free_port, git, reap_dolt_server
-from stateful_fixtures import dolt_server_case_freshness
 
 # `dolt_server`: these onboard a hive against a REAL shared server, so each holds one of the
-# bounded exclusive slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
-# Only explicitly classified compatible cases borrow a slot's reusable process.
+# run-wide slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
 
 _TIMEOUT = 60
@@ -62,7 +60,7 @@ def _stop_shared_server_best_effort(_hive_path=None) -> None:
     hive's `metadata.json` — which is what made the previous `bd dolt stop` implementation of
     this helper silently do nothing at all (bh-cbou)."""
     server_dir = os.environ.get("BEADS_SHARED_SERVER_DIR", "")
-    if server_dir and "BH_REUSABLE_DOLT_SLOT" not in os.environ:
+    if server_dir:
         reap_dolt_server(server_dir)
 
 
@@ -91,17 +89,13 @@ def _occupy_port(port: int):
 
 
 @pytest.fixture
-def isolated_shared_server(request, tmp_path, monkeypatch):
+def isolated_shared_server(tmp_path, monkeypatch):
     """This test's OWN shared-server instance, at its own data dir and a free port — never the
     operator's real `~/.beads/shared-server/` — reaped when the test ends however it ends.
 
     The `bd dolt stop` helper this replaces could not stop a shared server at all: bd reads
     `.beads/metadata.json`'s `dolt_mode` to find one, and refuses when that says "embedded".
     See `reap_dolt_server` for the measurement (bh-cbou)."""
-    classification, _reason = dolt_server_case_freshness(request.node)
-    if classification == "reusable":
-        yield request.getfixturevalue("reusable_dolt_server")
-        return
     server_dir = tmp_path / "shared-server"
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server_dir))
     monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
@@ -124,7 +118,7 @@ def _repo(path, *, remote=None):
     return path
 
 
-def _ctx(target, *, furnish: bool, prefix: str = "widget") -> onboard.Ctx:
+def _ctx(target, *, furnish: bool) -> onboard.Ctx:
     ctx = onboard.Ctx(
         hive="github/acme/widget",
         target=str(target),
@@ -132,7 +126,7 @@ def _ctx(target, *, furnish: bool, prefix: str = "widget") -> onboard.Ctx:
         org="acme",
         repo="widget",
         cwd=str(target),
-        prefix=prefix,
+        prefix="widget",
         furnish=furnish,
     )
     ctx._derived = True  # skip real registry/classify lookups — irrelevant to this bead
@@ -174,9 +168,8 @@ def test_zero_footprint_path_lands_on_server_mode_and_stays_zero_footprint(
     tmp_path, isolated_shared_server
 ):
     target = _repo(tmp_path / "hive2")  # no git remote — no backup.enabled expectation
-    prefix = isolated_shared_server.database("widget")
     try:
-        onboard._act_bd_init(_ctx(target, furnish=False, prefix=prefix))
+        onboard._act_bd_init(_ctx(target, furnish=False))
 
         assert store_locator.dolt_mode(target) == "server"
         # Zero commits, zero tracked changes — the discipline this path exists to protect.
@@ -202,11 +195,8 @@ def test_bootstrap_path_second_host_lands_on_server_mode(tmp_path, isolated_shar
     remote.mkdir()
     git("init", "-q", "--bare", "-b", "main", cwd=remote)
     host1 = _repo(tmp_path / "host1", remote=remote)
-    prefix = isolated_shared_server.database("widget")
     try:
-        onboard._act_bd_init(
-            _ctx(host1, furnish=False, prefix=prefix)
-        )  # mints zero-footprint, server mode
+        onboard._act_bd_init(_ctx(host1, furnish=False))  # mints zero-footprint, server mode
         assert store_locator.dolt_mode(host1) == "server"
         from harness.beads import bd
 
@@ -217,7 +207,7 @@ def test_bootstrap_path_second_host_lands_on_server_mode(tmp_path, isolated_shar
         git("clone", "-q", str(remote), str(host2))
         assert not (host2 / ".beads").exists()  # zero-footprint: nothing was ever committed
 
-        onboard._act_bd_init(_ctx(host2, furnish=False, prefix=prefix))
+        onboard._act_bd_init(_ctx(host2, furnish=False))
 
         assert store_locator.dolt_mode(host2) == "server"
         # dolt_status must be clean — the GH#2455 bug never applies to a clone-based path
@@ -256,7 +246,7 @@ def test_existing_embedded_hive_untouched_by_upgrade(tmp_path, isolated_shared_s
     # "Upgrading" changes nothing about this call — it is the SAME idempotent onboard re-run
     # a bh upgrade puts an operator through; this bead's own point is that the new
     # server-mode-by-default wiring must never fire for it.
-    onboard._act_bd_init(_ctx(target, furnish=False, prefix="widgetembedded"))
+    onboard._act_bd_init(_ctx(target, furnish=False))
 
     assert store_locator.dolt_mode(target) == "embedded"  # unchanged, byte for byte
     titles = {row["title"] for row in bd_json("list", cwd=target) or []}
@@ -269,9 +259,8 @@ def test_rerunning_onboard_on_a_server_mode_hive_is_a_no_op(tmp_path, isolated_s
     misreports the mode — pinned down for a hive that is ALREADY server mode (not just the
     embedded case above)."""
     target = _repo(tmp_path / "hive3")
-    prefix = isolated_shared_server.database("widget")
     try:
-        onboard._act_bd_init(_ctx(target, furnish=False, prefix=prefix))
+        onboard._act_bd_init(_ctx(target, furnish=False))
         assert store_locator.dolt_mode(target) == "server"
         metadata_before = (target / ".beads" / "metadata.json").read_text()
 
