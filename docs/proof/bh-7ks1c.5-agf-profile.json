@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "bead": "bh-7ks1c.5",
+  "captured_at": "2026-09-23",
+  "matrix": {
+    "modalities": ["supervised", "agent-local"],
+    "graph_shapes": ["independent", "chain", "diamond"],
+    "case_count": 6,
+    "execution": "pytest-xdist with one independently collected case per worker",
+    "correctness": "Every repetition asserts all bead ids landed without deadlock and compares the complete signed, authored, no-ff integration timeline. Each case deep-copies an immutable session template; the fixture verifies the template digest after the session."
+  },
+  "environment": {
+    "command": "AGF_PROFILE=/tmp/bh-7ks1c-5-{phase}-{repetition}.ndjson UV_PYTHON=3.11.15 UV_CACHE_DIR=/tmp/bh-cache/uv UV_LINK_MODE=hardlink uv run pytest -q -n 6 tests/test_agf_modalities.py",
+    "selected_python": "3.11.15",
+    "venv_python": "3.11.15",
+    "mise_toml_python": "3.12",
+    "mise_current_python": "3.12.13",
+    "mise_python_path": "/home/bees/.local/share/mise/installs/python/3.12/bin/python",
+    "note": "The provisioned .venv differed from the repository mise pin. Before and after measurements explicitly used the same 3.11.15 interpreter; the Python pin was not changed."
+  },
+  "metric": {
+    "name": "cumulative profiled stage time",
+    "unit": "seconds",
+    "definition": "Sum of the independently recorded hive creation, graph construction, workflow, timeline rendering, and shared template setup stage samples for all six workers. Command count is the sum of direct subprocess.Popen calls in those stages.",
+    "minimum_reduction_percent": 20.0
+  },
+  "before": {
+    "repetitions": [
+      {
+        "seconds": 339.475777,
+        "commands": 2614,
+        "stages": {
+          "hive_creation": {"seconds": 38.737788, "commands": 60},
+          "graph_construction": {"seconds": 16.448273, "commands": 32},
+          "workflow": {"seconds": 283.035402, "commands": 2490},
+          "timeline_rendering": {"seconds": 1.254314, "commands": 32}
+        }
+      },
+      {
+        "seconds": 328.988158,
+        "commands": 2614,
+        "stages": {
+          "hive_creation": {"seconds": 36.454579, "commands": 60},
+          "graph_construction": {"seconds": 15.153371, "commands": 32},
+          "workflow": {"seconds": 276.040335, "commands": 2490},
+          "timeline_rendering": {"seconds": 1.339873, "commands": 32}
+        }
+      },
+      {
+        "seconds": 316.504191,
+        "commands": 2614,
+        "stages": {
+          "hive_creation": {"seconds": 39.488924, "commands": 60},
+          "graph_construction": {"seconds": 14.419781, "commands": 32},
+          "workflow": {"seconds": 261.299614, "commands": 2490},
+          "timeline_rendering": {"seconds": 1.295872, "commands": 32}
+        }
+      }
+    ],
+    "median_seconds": 328.988158,
+    "median_commands": 2614
+  },
+  "after": {
+    "repetitions": [
+      {
+        "seconds": 236.36482,
+        "commands": 2474,
+        "stages": {
+          "hive_template_setup": {"seconds": 29.293714, "commands": 2},
+          "hive_creation": {"seconds": 0.410044, "commands": 18},
+          "graph_construction": {"seconds": 3.643389, "commands": 6},
+          "workflow": {"seconds": 201.950179, "commands": 2430},
+          "timeline_rendering": {"seconds": 1.067494, "commands": 18}
+        }
+      },
+      {
+        "seconds": 237.791083,
+        "commands": 2474,
+        "stages": {
+          "hive_template_setup": {"seconds": 30.777104, "commands": 2},
+          "hive_creation": {"seconds": 0.382939, "commands": 18},
+          "graph_construction": {"seconds": 3.813899, "commands": 6},
+          "workflow": {"seconds": 201.737806, "commands": 2430},
+          "timeline_rendering": {"seconds": 1.079335, "commands": 18}
+        }
+      },
+      {
+        "seconds": 237.079309,
+        "commands": 2474,
+        "stages": {
+          "hive_template_setup": {"seconds": 31.027881, "commands": 2},
+          "hive_creation": {"seconds": 0.419054, "commands": 18},
+          "graph_construction": {"seconds": 3.615572, "commands": 6},
+          "workflow": {"seconds": 200.891425, "commands": 2430},
+          "timeline_rendering": {"seconds": 1.125377, "commands": 18}
+        }
+      }
+    ],
+    "median_seconds": 237.079309,
+    "median_commands": 2474
+  },
+  "comparison": {
+    "median_seconds_saved": 91.908849,
+    "median_reduction_percent": 27.94,
+    "median_commands_saved": 140,
+    "acceptance_met": true
+  },
+  "render_checks": [
+    {
+      "mode": "all",
+      "command": "AGF_RENDER=all UV_PYTHON=3.11.15 uv run pytest -q -n 6 -s tests/test_agf_modalities.py",
+      "result": "6 passed in 49.17s; all six modality/shape labels and workflows were attributable"
+    },
+    {
+      "mode": "diff",
+      "command": "AGF_RENDER=diff UV_PYTHON=3.11.15 uv run pytest -q -n 6 -s tests/test_agf_modalities.py",
+      "result": "6 passed in 48.89s; no divergent timeline was rendered"
+    },
+    {
+      "mode": "all-visible",
+      "command": "AGF_RENDER=all UV_PYTHON=3.11.15 uv run pytest -q -s tests/test_agf_modalities.py::test_modality_shape[supervised-diamond]",
+      "result": "1 passed in 45.35s; visible PASS block showed matching expected and actual four-bead signed branch timeline"
+    }
+  ]
+}

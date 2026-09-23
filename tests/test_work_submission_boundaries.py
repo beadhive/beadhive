@@ -79,6 +79,17 @@ def test_existing_policy_and_ledger_boundaries_remain_executable_owners():
     assert "api.work_logic.review_gates" in inspect.getsource(work_submission.impl_bounce)
 
 
+def test_submit_shares_one_authoritative_pre_mutation_bead_read_across_policy_checks():
+    implementation = inspect.getsource(work_submission.impl_submit)
+
+    assert implementation.count("api.bd.show(") == 1
+    assert "api._resolve_submit_actor(cfg, entry, target, bead, main, as_, data)" in implementation
+    assert "api._guard_submit_ready(entry, target, branch, bead, cfg, data)" in implementation
+    assert "api._warn_submit_release_hint(bead, main, entry, branch, base, data)" in implementation
+    guard = inspect.getsource(work_submission.impl__guard_submit_ready)
+    assert "integration_branch(cfg, entry), data" in guard
+
+
 def test_read_only_review_presentation_remains_outside_submission_boundary():
     assert work.review.__module__ == "beadhive.work_show"
     assert not hasattr(work_submission, "impl_review")

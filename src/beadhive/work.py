@@ -1038,14 +1038,14 @@ def _guard_submit_worktree(bead, main, target) -> None:
     return work_submission.impl__guard_submit_worktree(sys.modules[__name__], bead, main, target)
 
 
-def _resolve_submit_actor(cfg, entry, target, bead, main, as_) -> str:
+def _resolve_submit_actor(cfg, entry, target, bead, main, as_, data=None) -> str:
     """Resolve the submitting actor and guard the claim: no explicit `--as` defaults to the seat
     `claim`/`resume` actually recorded (bh-ejlq) — NOT a fresh env/git re-derivation, which is
     exactly what used to diverge from the held claim across separate shells/tool-calls. An
     explicit `--as` still wins outright; `_guard_holds_claim` refuses a mismatch or an unclaimed
     bead either way. Also warns (non-fatal) when cwd isn't the bead worktree."""
     return work_submission.impl__resolve_submit_actor(
-        sys.modules[__name__], cfg, entry, target, bead, main, as_
+        sys.modules[__name__], cfg, entry, target, bead, main, as_, data
     )
 
 
@@ -1061,21 +1061,21 @@ def _guard_claim_fence(cfg, entry, target, hive) -> None:
     return work_submission.impl__guard_claim_fence(sys.modules[__name__], cfg, entry, target, hive)
 
 
-def _guard_submit_ready(entry, target, branch, bead, cfg) -> str:
+def _guard_submit_ready(entry, target, branch, bead, cfg, data=None) -> str:
     """Guard the worktree is clean, on the expected branch, and a small clean conventional
     history — returns the resolved integration base."""
     return work_submission.impl__guard_submit_ready(
-        sys.modules[__name__], entry, target, branch, bead, cfg
+        sys.modules[__name__], entry, target, branch, bead, cfg, data
     )
 
 
-def _warn_submit_release_hint(bead, main, entry, branch, base) -> None:
+def _warn_submit_release_hint(bead, main, entry, branch, base, data=None) -> None:
     """Release-hint reconcile (bh-k2j8.5): a NON-BLOCKING cross-check of the planner's `release:`
     hint against what the branch actually landed — a `release:feature`/`fix` bead that ships a
     breaking commit gets a warning so the label (or the commit) is fixed before release-order
     scoring reads a stale hint. Advisory only; never aborts the submit."""
     return work_submission.impl__warn_submit_release_hint(
-        sys.modules[__name__], bead, main, entry, branch, base
+        sys.modules[__name__], bead, main, entry, branch, base, data
     )
 
 
