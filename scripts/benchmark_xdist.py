@@ -23,7 +23,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SELECTIONS = {"unit": "not integration", "integration-land": "integration"}
-SUMMARY_RE = re.compile(r"=+\s*(?P<body>.+?)\s+in\s+(?P<seconds>\d+(?:\.\d+)?)s\s*=+", re.MULTILINE)
+SUMMARY_RE = re.compile(
+    r"=+\s*(?P<body>.+?)\s+in\s+(?P<seconds>\d+(?:\.\d+)?)s"
+    r"(?:\s+\([^)]*\))?\s*=+",
+    re.MULTILINE,
+)
 COUNT_RE = re.compile(
     r"(?P<count>\d+)\s+(?P<kind>passed|failed|skipped|error(?:s)?|xfailed|xpassed)"
 )
@@ -440,6 +444,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--repetitions", type=int, default=3)
     result.add_argument("--selection", choices=(*SELECTIONS, "all"), default="all")
     result.add_argument(
+        "--deselect",
+        action="append",
+        default=[],
+        help="pytest node ID to exclude (may be repeated; retained in the JSON configuration)",
+    )
+    result.add_argument(
         "--checkout",
         type=Path,
         default=ROOT,
@@ -476,6 +486,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "selections": selections,
                 "scratch_root": str(scratch),
                 "checkout": str(root),
+                "deselected_tests": options.deselect,
             },
             "runs": [],
             "complete": False,
@@ -491,13 +502,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         sys.executable,
                         "-m",
                         "pytest",
-                        "--basetemp",
-                        str(run_scratch / "pytest-tmp"),
                         "-n",
                         str(worker),
                         "-m",
                         marker,
                     ]
+                    for nodeid in options.deselect:
+                        command.extend(("--deselect", nodeid))
                     env = os.environ.copy()
                     env["TMPDIR"] = str(run_scratch)
                     existing_pythonpath = env.get("PYTHONPATH")
