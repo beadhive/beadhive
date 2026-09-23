@@ -1,0 +1,1193 @@
+{
+  "after": {
+    "improvement_percent": 20.686041128429537,
+    "median_cluster_total_phase_seconds": 153.2670872630115,
+    "repetitions": [
+      {
+        "cluster_total_phase_seconds": 154.46500993199152,
+        "pytest_wall_seconds": 56.04,
+        "rep": 1,
+        "result": "4 passed",
+        "scenarios": [
+          {
+            "call_seconds": 32.657298013997206,
+            "in_process_assertion_and_orchestration_seconds": 0.03775552998558851,
+            "nodeid": "tests/test_hub_bulk_int.py::test_bulk_copy_matches_a_real_bd_produced_aggregate",
+            "polling_seconds": {
+              "asyncio_sleep": 0.0,
+              "time_sleep": 0.0,
+              "total": 0.0
+            },
+            "scenario": "hub_bulk_copy",
+            "setup_seconds": 0.006297523999819532,
+            "subprocess_counts": {
+              "bd": 41,
+              "dolt": 1,
+              "git": 2
+            },
+            "subprocess_seconds": 32.61954248401162,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 2.517926920001628,
+              "dolt_clone_sql": 0.2521254180028336,
+              "fresh_server_init": 18.101952229000744,
+              "prefix_rename": 0.2845957730023656,
+              "snapshot_copy": 0.009363281984406058,
+              "snapshot_gc": 0.12345240400463808
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd init",
+                "count": 2,
+                "seconds": 20.619879149002372
+              },
+              {
+                "command": "bd sql",
+                "count": 28,
+                "seconds": 7.782763167000667
+              },
+              {
+                "command": "bd create",
+                "count": 3,
+                "seconds": 1.3349184730031993
+              },
+              {
+                "command": "bd repo sync",
+                "count": 1,
+                "seconds": 0.6242925659971661
+              },
+              {
+                "command": "bd dep add",
+                "count": 1,
+                "seconds": 0.3519766410026932
+              },
+              {
+                "command": "bd repo remove",
+                "count": 1,
+                "seconds": 0.33306126599927666
+              },
+              {
+                "command": "bd update",
+                "count": 1,
+                "seconds": 0.33021328799804905
+              },
+              {
+                "command": "bd comment",
+                "count": 1,
+                "seconds": 0.3054751279996708
+              }
+            ],
+            "total_phase_seconds": 32.663595537997026
+          },
+          {
+            "call_seconds": 51.57310732699989,
+            "in_process_assertion_and_orchestration_seconds": 0.16839214893843746,
+            "nodeid": "tests/test_hub_bulk_int.py::test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync",
+            "polling_seconds": {
+              "asyncio_sleep": 0.0,
+              "time_sleep": 0.0,
+              "total": 0.0
+            },
+            "scenario": "hub_sync",
+            "setup_seconds": 0.005650888997479342,
+            "subprocess_counts": {
+              "bd": 91,
+              "dolt": 1,
+              "git": 3
+            },
+            "subprocess_seconds": 51.40471517806145,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 5.563125728003797,
+              "dolt_clone_sql": 0.5740198750063428,
+              "fresh_server_init": 19.235003644003882,
+              "prefix_rename": 0.6110334660043009,
+              "snapshot_copy": 0.009887267005979083,
+              "snapshot_gc": 0.1372141149986419
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd init",
+                "count": 3,
+                "seconds": 24.79812937200768
+              },
+              {
+                "command": "bd sql",
+                "count": 65,
+                "seconds": 19.714107085041178
+              },
+              {
+                "command": "bd vc status",
+                "count": 6,
+                "seconds": 1.8160890500003006
+              },
+              {
+                "command": "bd repo add",
+                "count": 6,
+                "seconds": 1.7814705969940405
+              },
+              {
+                "command": "bd repo sync",
+                "count": 3,
+                "seconds": 0.8737336420090287
+              },
+              {
+                "command": "bd batch",
+                "count": 2,
+                "seconds": 0.7368083990077139
+              },
+              {
+                "command": "bd rename-prefix",
+                "count": 2,
+                "seconds": 0.6110334660043009
+              },
+              {
+                "command": "bd repo list",
+                "count": 3,
+                "seconds": 0.4648885170026915
+              }
+            ],
+            "total_phase_seconds": 51.57875821599737
+          },
+          {
+            "call_seconds": 34.52767728899926,
+            "in_process_assertion_and_orchestration_seconds": 0.534936312949867,
+            "nodeid": "tests/test_localloop_int.py::test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spending",
+            "polling_seconds": {
+              "asyncio_sleep": 0.1948846460072673,
+              "time_sleep": 0.0,
+              "total": 0.1948846460072673
+            },
+            "scenario": "localloop_restart",
+            "setup_seconds": 0.005668888996297028,
+            "subprocess_counts": {
+              "bd": 73,
+              "git": 8,
+              "ps": 2
+            },
+            "subprocess_seconds": 33.79785633004212,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 0.0,
+              "dolt_clone_sql": 0.0,
+              "fresh_server_init": 5.070758485999249,
+              "prefix_rename": 0.0,
+              "snapshot_copy": 0.0,
+              "snapshot_gc": 0.0
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd list",
+                "count": 25,
+                "seconds": 9.68796697002108
+              },
+              {
+                "command": "bd dev/int",
+                "count": 23,
+                "seconds": 8.661433367997233
+              },
+              {
+                "command": "bd show",
+                "count": 17,
+                "seconds": 6.663957131015195
+              },
+              {
+                "command": "bd init",
+                "count": 1,
+                "seconds": 5.070758485999249
+              },
+              {
+                "command": "bd create",
+                "count": 3,
+                "seconds": 2.0231433990047663
+              },
+              {
+                "command": "bd ready",
+                "count": 3,
+                "seconds": 0.9493032670070534
+              },
+              {
+                "command": "bd update",
+                "count": 1,
+                "seconds": 0.38886767299845815
+              }
+            ],
+            "total_phase_seconds": 34.533346177995554
+          },
+          {
+            "call_seconds": 35.64480648600147,
+            "in_process_assertion_and_orchestration_seconds": 1.4636752619844628,
+            "nodeid": "tests/test_plan_repair.py::test_repair_and_approve_converge_hand_assembled_epic_real_bd",
+            "polling_seconds": {
+              "asyncio_sleep": 0.0,
+              "time_sleep": 0.0,
+              "total": 0.0
+            },
+            "scenario": "plan_repair",
+            "setup_seconds": 0.04450351400009822,
+            "subprocess_counts": {
+              "bd": 73,
+              "git": 19,
+              "herdr": 1,
+              "ssh-keygen": 2
+            },
+            "subprocess_seconds": 34.18113122401701,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 0.0,
+              "dolt_clone_sql": 0.0,
+              "fresh_server_init": 5.204284257997642,
+              "prefix_rename": 0.0,
+              "snapshot_copy": 0.0,
+              "snapshot_gc": 0.0
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd Human Dev",
+                "count": 16,
+                "seconds": 7.821120192995295
+              },
+              {
+                "command": "bd list",
+                "count": 16,
+                "seconds": 6.336791959009133
+              },
+              {
+                "command": "bd init",
+                "count": 1,
+                "seconds": 5.204284257997642
+              },
+              {
+                "command": "bd show",
+                "count": 11,
+                "seconds": 4.277621641012956
+              },
+              {
+                "command": "bd create",
+                "count": 5,
+                "seconds": 2.8037167040019995
+              },
+              {
+                "command": "bd gate list",
+                "count": 10,
+                "seconds": 2.407076908995805
+              },
+              {
+                "command": "bd dep list",
+                "count": 8,
+                "seconds": 2.3030489810043946
+              },
+              {
+                "command": "bd state",
+                "count": 4,
+                "seconds": 1.4837063100058003
+              }
+            ],
+            "total_phase_seconds": 35.68931000000157
+          }
+        ]
+      },
+      {
+        "cluster_total_phase_seconds": 152.71780409800704,
+        "pytest_wall_seconds": 55.75,
+        "rep": 2,
+        "result": "4 passed",
+        "scenarios": [
+          {
+            "call_seconds": 32.29262867799844,
+            "in_process_assertion_and_orchestration_seconds": 0.036066012013179716,
+            "nodeid": "tests/test_hub_bulk_int.py::test_bulk_copy_matches_a_real_bd_produced_aggregate",
+            "polling_seconds": {
+              "asyncio_sleep": 0.0,
+              "time_sleep": 0.0,
+              "total": 0.0
+            },
+            "scenario": "hub_bulk_copy",
+            "setup_seconds": 0.006497604998003226,
+            "subprocess_counts": {
+              "bd": 41,
+              "dolt": 1,
+              "git": 2
+            },
+            "subprocess_seconds": 32.25656266598526,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 2.4561328240015428,
+              "dolt_clone_sql": 0.24736485200264724,
+              "fresh_server_init": 18.197567294999317,
+              "prefix_rename": 0.27280881500337273,
+              "snapshot_copy": 0.010804254001413938,
+              "snapshot_gc": 0.12700579800002743
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd init",
+                "count": 2,
+                "seconds": 20.65370011900086
+              },
+              {
+                "command": "bd sql",
+                "count": 28,
+                "seconds": 7.556986610979948
+              },
+              {
+                "command": "bd create",
+                "count": 3,
+                "seconds": 1.2769335729972227
+              },
+              {
+                "command": "bd repo sync",
+                "count": 1,
+                "seconds": 0.5689378550014226
+              },
+              {
+                "command": "bd dep add",
+                "count": 1,
+                "seconds": 0.36491043700516457
+              },
+              {
+                "command": "bd update",
+                "count": 1,
+                "seconds": 0.33454661100404337
+              },
+              {
+                "command": "bd repo remove",
+                "count": 1,
+                "seconds": 0.32145561299694236
+              },
+              {
+                "command": "bd rename-prefix",
+                "count": 1,
+                "seconds": 0.27280881500337273
+              }
+            ],
+            "total_phase_seconds": 32.29912628299644
+          },
+          {
+            "call_seconds": 51.07080043300084,
+            "in_process_assertion_and_orchestration_seconds": 0.16511957001057453,
+            "nodeid": "tests/test_hub_bulk_int.py::test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync",
+            "polling_seconds": {
+              "asyncio_sleep": 0.0,
+              "time_sleep": 0.0,
+              "total": 0.0
+            },
+            "scenario": "hub_sync",
+            "setup_seconds": 0.0066117190071963705,
+            "subprocess_counts": {
+              "bd": 91,
+              "dolt": 1,
+              "git": 3
+            },
+            "subprocess_seconds": 50.905680862990266,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 5.48739567699522,
+              "dolt_clone_sql": 0.5374359219931648,
+              "fresh_server_init": 18.95085962399753,
+              "prefix_rename": 0.6372825220023515,
+              "snapshot_copy": 0.009707244011224248,
+              "snapshot_gc": 0.11528530199575471
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd init",
+                "count": 3,
+                "seconds": 24.43825530099275
+              },
+              {
+                "command": "bd sql",
+                "count": 65,
+                "seconds": 19.482237222975527
+              },
+              {
+                "command": "bd repo add",
+                "count": 6,
+                "seconds": 1.8626391729994793
+              },
+              {
+                "command": "bd vc status",
+                "count": 6,
+                "seconds": 1.7919694550073473
+              },
+              {
+                "command": "bd repo sync",
+                "count": 3,
+                "seconds": 0.8752670590110938
+              },
+              {
+                "command": "bd batch",
+                "count": 2,
+                "seconds": 0.7621129979961552
+              },
+              {
+                "command": "bd rename-prefix",
+                "count": 2,
+                "seconds": 0.6372825220023515
+              },
+              {
+                "command": "bd repo list",
+                "count": 3,
+                "seconds": 0.46975687699887203
+              }
+            ],
+            "total_phase_seconds": 51.07741215200804
+          },
+          {
+            "call_seconds": 34.188879289002216,
+            "in_process_assertion_and_orchestration_seconds": 0.5383072469558101,
+            "nodeid": "tests/test_localloop_int.py::test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spending",
+            "polling_seconds": {
+              "asyncio_sleep": 0.21666456399543677,
+              "time_sleep": 0.0,
+              "total": 0.21666456399543677
+            },
+            "scenario": "localloop_restart",
+            "setup_seconds": 0.005856167997990269,
+            "subprocess_counts": {
+              "bd": 73,
+              "git": 8,
+              "ps": 2
+            },
+            "subprocess_seconds": 33.43390747805097,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 0.0,
+              "dolt_clone_sql": 0.0,
+              "fresh_server_init": 4.884048605999851,
+              "prefix_rename": 0.0,
+              "snapshot_copy": 0.0,
+              "snapshot_gc": 0.0
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd list",
+                "count": 25,
+                "seconds": 9.781223961028445
+              },
+              {
+                "command": "bd dev/int",
+                "count": 23,
+                "seconds": 8.433192391021294
+              },
+              {
+                "command": "bd show",
+                "count": 17,
+                "seconds": 6.631606943003135
+              },
+              {
+                "command": "bd init",
+                "count": 1,
+                "seconds": 4.884048605999851
+              },
+              {
+                "command": "bd create",
+                "count": 3,
+                "seconds": 2.016060126996308
+              },
+              {
+                "command": "bd ready",
+                "count": 3,
+                "seconds": 0.9246605229927809
+              },
+              {
+                "command": "bd update",
+                "count": 1,
+                "seconds": 0.4173363970039645
+              }
+            ],
+            "total_phase_seconds": 34.194735457000206
+          },
+          {
+            "call_seconds": 35.1086396239989,
+            "in_process_assertion_and_orchestration_seconds": 1.5235499970149249,
+            "nodeid": "tests/test_plan_repair.py::test_repair_and_approve_converge_hand_assembled_epic_real_bd",
+            "polling_seconds": {
+              "asyncio_sleep": 0.0,
+              "time_sleep": 0.0,
+              "total": 0.0
+            },
+            "scenario": "plan_repair",
+            "setup_seconds": 0.037890582003456075,
+            "subprocess_counts": {
+              "bd": 73,
+              "git": 19,
+              "herdr": 1,
+              "ssh-keygen": 2
+            },
+            "subprocess_seconds": 33.58508962698397,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 0.0,
+              "dolt_clone_sql": 0.0,
+              "fresh_server_init": 4.823496840006555,
+              "prefix_rename": 0.0,
+              "snapshot_copy": 0.0,
+              "snapshot_gc": 0.0
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd Human Dev",
+                "count": 16,
+                "seconds": 7.8215971250028815
+              },
+              {
+                "command": "bd list",
+                "count": 16,
+                "seconds": 6.32791994701256
+              },
+              {
+                "command": "bd init",
+                "count": 1,
+                "seconds": 4.823496840006555
+              },
+              {
+                "command": "bd show",
+                "count": 11,
+                "seconds": 4.131920329986315
+              },
+              {
+                "command": "bd create",
+                "count": 5,
+                "seconds": 2.7757063249955536
+              },
+              {
+                "command": "bd gate list",
+                "count": 10,
+                "seconds": 2.3737470709893387
+              },
+              {
+                "command": "bd dep list",
+                "count": 8,
+                "seconds": 2.3063688909896882
+              },
+              {
+                "command": "bd state",
+                "count": 4,
+                "seconds": 1.4842814069925225
+              }
+            ],
+            "total_phase_seconds": 35.14653020600235
+          }
+        ]
+      },
+      {
+        "cluster_total_phase_seconds": 153.2670872630115,
+        "pytest_wall_seconds": 55.66,
+        "rep": 3,
+        "result": "4 passed",
+        "scenarios": [
+          {
+            "call_seconds": 32.22861068000202,
+            "in_process_assertion_and_orchestration_seconds": 0.03755286600062391,
+            "nodeid": "tests/test_hub_bulk_int.py::test_bulk_copy_matches_a_real_bd_produced_aggregate",
+            "polling_seconds": {
+              "asyncio_sleep": 0.0,
+              "time_sleep": 0.0,
+              "total": 0.0
+            },
+            "scenario": "hub_bulk_copy",
+            "setup_seconds": 0.006962790001125541,
+            "subprocess_counts": {
+              "bd": 41,
+              "dolt": 1,
+              "git": 2
+            },
+            "subprocess_seconds": 32.1910578140014,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 2.305824778995884,
+              "dolt_clone_sql": 0.24796495999908075,
+              "fresh_server_init": 18.1819449350005,
+              "prefix_rename": 0.27154239900119137,
+              "snapshot_copy": 0.010584222996840253,
+              "snapshot_gc": 0.11661809900397202
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd init",
+                "count": 2,
+                "seconds": 20.487769713996386
+              },
+              {
+                "command": "bd sql",
+                "count": 28,
+                "seconds": 7.701762117998442
+              },
+              {
+                "command": "bd create",
+                "count": 3,
+                "seconds": 1.3187120069997036
+              },
+              {
+                "command": "bd repo sync",
+                "count": 1,
+                "seconds": 0.560005170002114
+              },
+              {
+                "command": "bd dep add",
+                "count": 1,
+                "seconds": 0.354686415004835
+              },
+              {
+                "command": "bd update",
+                "count": 1,
+                "seconds": 0.3238249289934174
+              },
+              {
+                "command": "bd repo remove",
+                "count": 1,
+                "seconds": 0.2988849290049984
+              },
+              {
+                "command": "bd comment",
+                "count": 1,
+                "seconds": 0.29135366700211307
+              }
+            ],
+            "total_phase_seconds": 32.235573470003146
+          },
+          {
+            "call_seconds": 51.20028449900565,
+            "in_process_assertion_and_orchestration_seconds": 0.16379821205191547,
+            "nodeid": "tests/test_hub_bulk_int.py::test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync",
+            "polling_seconds": {
+              "asyncio_sleep": 0.0,
+              "time_sleep": 0.0,
+              "total": 0.0
+            },
+            "scenario": "hub_sync",
+            "setup_seconds": 0.009059452000656165,
+            "subprocess_counts": {
+              "bd": 91,
+              "dolt": 1,
+              "git": 3
+            },
+            "subprocess_seconds": 51.03648628695373,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 5.276011283996922,
+              "dolt_clone_sql": 0.5461633710074238,
+              "fresh_server_init": 19.225308314002177,
+              "prefix_rename": 0.5839432239954476,
+              "snapshot_copy": 0.009759831002156716,
+              "snapshot_gc": 0.1279160209960537
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd init",
+                "count": 3,
+                "seconds": 24.5013195979991
+              },
+              {
+                "command": "bd sql",
+                "count": 65,
+                "seconds": 19.520223669962434
+              },
+              {
+                "command": "bd vc status",
+                "count": 6,
+                "seconds": 1.877790257007291
+              },
+              {
+                "command": "bd repo add",
+                "count": 6,
+                "seconds": 1.8447624699983862
+              },
+              {
+                "command": "bd repo sync",
+                "count": 3,
+                "seconds": 0.894457644004433
+              },
+              {
+                "command": "bd batch",
+                "count": 2,
+                "seconds": 0.7290712129979511
+              },
+              {
+                "command": "bd rename-prefix",
+                "count": 2,
+                "seconds": 0.5839432239954476
+              },
+              {
+                "command": "bd repo list",
+                "count": 3,
+                "seconds": 0.47352218299784
+              }
+            ],
+            "total_phase_seconds": 51.2093439510063
+          },
+          {
+            "call_seconds": 34.36108514100488,
+            "in_process_assertion_and_orchestration_seconds": 0.5522801340193837,
+            "nodeid": "tests/test_localloop_int.py::test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spending",
+            "polling_seconds": {
+              "asyncio_sleep": 0.19624741599545814,
+              "time_sleep": 0.0,
+              "total": 0.19624741599545814
+            },
+            "scenario": "localloop_restart",
+            "setup_seconds": 0.006682086001092102,
+            "subprocess_counts": {
+              "bd": 73,
+              "git": 8,
+              "ps": 2
+            },
+            "subprocess_seconds": 33.612557590990036,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 0.0,
+              "dolt_clone_sql": 0.0,
+              "fresh_server_init": 5.09070029999566,
+              "prefix_rename": 0.0,
+              "snapshot_copy": 0.0,
+              "snapshot_gc": 0.0
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd list",
+                "count": 25,
+                "seconds": 9.712257174986007
+              },
+              {
+                "command": "bd dev/int",
+                "count": 23,
+                "seconds": 8.471679788999609
+              },
+              {
+                "command": "bd show",
+                "count": 17,
+                "seconds": 6.627661514008651
+              },
+              {
+                "command": "bd init",
+                "count": 1,
+                "seconds": 5.09070029999566
+              },
+              {
+                "command": "bd create",
+                "count": 3,
+                "seconds": 2.009333574998891
+              },
+              {
+                "command": "bd ready",
+                "count": 3,
+                "seconds": 0.9373605610016966
+              },
+              {
+                "command": "bd update",
+                "count": 1,
+                "seconds": 0.41623518399865134
+              }
+            ],
+            "total_phase_seconds": 34.36776722700597
+          },
+          {
+            "call_seconds": 35.41061678799451,
+            "in_process_assertion_and_orchestration_seconds": 1.4534465669858037,
+            "nodeid": "tests/test_plan_repair.py::test_repair_and_approve_converge_hand_assembled_epic_real_bd",
+            "polling_seconds": {
+              "asyncio_sleep": 0.0,
+              "time_sleep": 0.0,
+              "total": 0.0
+            },
+            "scenario": "plan_repair",
+            "setup_seconds": 0.043785827001556754,
+            "subprocess_counts": {
+              "bd": 73,
+              "git": 19,
+              "herdr": 1,
+              "ssh-keygen": 2
+            },
+            "subprocess_seconds": 33.95717022100871,
+            "teardown_seconds": 0.0,
+            "template_clone_components_seconds": {
+              "clone_attach_bd_init": 0.0,
+              "dolt_clone_sql": 0.0,
+              "fresh_server_init": 5.222530061000725,
+              "prefix_rename": 0.0,
+              "snapshot_copy": 0.0,
+              "snapshot_gc": 0.0
+            },
+            "top_bd_commands": [
+              {
+                "command": "bd Human Dev",
+                "count": 16,
+                "seconds": 7.870532215005369
+              },
+              {
+                "command": "bd list",
+                "count": 16,
+                "seconds": 6.166387643999769
+              },
+              {
+                "command": "bd init",
+                "count": 1,
+                "seconds": 5.222530061000725
+              },
+              {
+                "command": "bd show",
+                "count": 11,
+                "seconds": 4.135277330999088
+              },
+              {
+                "command": "bd create",
+                "count": 5,
+                "seconds": 2.912022563999926
+              },
+              {
+                "command": "bd gate list",
+                "count": 10,
+                "seconds": 2.39655434400629
+              },
+              {
+                "command": "bd dep list",
+                "count": 8,
+                "seconds": 2.255049594998127
+              },
+              {
+                "command": "bd state",
+                "count": 4,
+                "seconds": 1.5136075539921876
+              }
+            ],
+            "total_phase_seconds": 35.45440261499607
+          }
+        ]
+      }
+    ],
+    "result": "Each of three repetitions passed all four selected tests.",
+    "scenario_medians": {
+      "hub_bulk_copy": {
+        "after_median_seconds": 32.29912628299644,
+        "baseline_median_seconds": 52.335,
+        "reduction_percent": 38.28388978122396
+      },
+      "hub_sync": {
+        "after_median_seconds": 51.2093439510063,
+        "baseline_median_seconds": 64.275,
+        "reduction_percent": 20.327741810958695
+      },
+      "localloop_restart": {
+        "after_median_seconds": 34.36776722700597,
+        "baseline_median_seconds": 38.447,
+        "reduction_percent": 10.61001579575528
+      },
+      "plan_repair": {
+        "after_median_seconds": 35.45440261499607,
+        "baseline_median_seconds": 38.27,
+        "reduction_percent": 7.357192017256161
+      }
+    },
+    "seconds_saved_at_median": 39.973912736988524,
+    "target_met": true
+  },
+  "baseline": {
+    "detailed_representative_profile": {
+      "cluster_total_phase_seconds": 191.60118132799835,
+      "result": "4 passed",
+      "scenarios": [
+        {
+          "call_seconds": 51.74374743399676,
+          "in_process_assertion_and_orchestration_seconds": 0.03977880097954767,
+          "nodeid": "hub_bulk_copy",
+          "polling_seconds": {
+            "asyncio_sleep": 0.0,
+            "time_sleep": 0.0,
+            "total": 0.0
+          },
+          "setup_seconds": 0.007463298003131058,
+          "subprocess_counts": {
+            "bd": 54,
+            "git": 3
+          },
+          "subprocess_seconds": 51.70396863301721,
+          "teardown_seconds": 0.0,
+          "template_clone_components_seconds": {
+            "clone_attach_bd_init": 0.0,
+            "dolt_clone_sql": 0.0,
+            "fresh_server_init": 36.549369030006346,
+            "prefix_rename": 0.0,
+            "snapshot_copy": 0.0,
+            "snapshot_gc": 0.0
+          },
+          "top_bd_commands": [
+            {
+              "command": "bd init",
+              "count": 3,
+              "seconds": 36.549369030006346
+            },
+            {
+              "command": "bd sql",
+              "count": 39,
+              "seconds": 11.249252547015203
+            },
+            {
+              "command": "bd create",
+              "count": 3,
+              "seconds": 1.3070945029976428
+            },
+            {
+              "command": "bd list",
+              "count": 3,
+              "seconds": 0.5712264309986494
+            },
+            {
+              "command": "bd repo sync",
+              "count": 1,
+              "seconds": 0.5572505469972384
+            }
+          ],
+          "total_phase_seconds": 51.75121073199989
+        },
+        {
+          "call_seconds": 63.389194477000274,
+          "in_process_assertion_and_orchestration_seconds": 0.15984755699901143,
+          "nodeid": "hub_sync",
+          "polling_seconds": {
+            "asyncio_sleep": 0.0,
+            "time_sleep": 0.0,
+            "total": 0.0
+          },
+          "setup_seconds": 0.007040876997052692,
+          "subprocess_counts": {
+            "bd": 91,
+            "git": 2
+          },
+          "subprocess_seconds": 63.22934692000126,
+          "teardown_seconds": 0.0,
+          "template_clone_components_seconds": {
+            "clone_attach_bd_init": 0.0,
+            "dolt_clone_sql": 0.0,
+            "fresh_server_init": 37.164942575996974,
+            "prefix_rename": 0.0,
+            "snapshot_copy": 0.0,
+            "snapshot_gc": 0.0
+          },
+          "top_bd_commands": [
+            {
+              "command": "bd init",
+              "count": 3,
+              "seconds": 37.164942575996974
+            },
+            {
+              "command": "bd sql",
+              "count": 62,
+              "seconds": 18.280073772002652
+            },
+            {
+              "command": "bd repo add",
+              "count": 6,
+              "seconds": 1.7483833290098119
+            },
+            {
+              "command": "bd vc status",
+              "count": 6,
+              "seconds": 1.7447964829989364
+            },
+            {
+              "command": "bd create",
+              "count": 4,
+              "seconds": 1.6579355329959071
+            }
+          ],
+          "total_phase_seconds": 63.39623535399733
+        },
+        {
+          "call_seconds": 38.075209094000456,
+          "in_process_assertion_and_orchestration_seconds": 0.5986282479570946,
+          "nodeid": "localloop_restart",
+          "polling_seconds": {
+            "asyncio_sleep": 0.5144276930077467,
+            "time_sleep": 0.0,
+            "total": 0.5144276930077467
+          },
+          "setup_seconds": 0.006205931000295095,
+          "subprocess_counts": {
+            "bd": 82,
+            "git": 8,
+            "ps": 2
+          },
+          "subprocess_seconds": 36.962153153035615,
+          "teardown_seconds": 0.0,
+          "template_clone_components_seconds": {
+            "clone_attach_bd_init": 0.0,
+            "dolt_clone_sql": 0.0,
+            "fresh_server_init": 5.161151168998913,
+            "prefix_rename": 0.0,
+            "snapshot_copy": 0.0,
+            "snapshot_gc": 0.0
+          },
+          "top_bd_commands": [
+            {
+              "command": "bd list",
+              "count": 27,
+              "seconds": 10.38915890300268
+            },
+            {
+              "command": "bd dev/int",
+              "count": 26,
+              "seconds": 9.518895845023508
+            },
+            {
+              "command": "bd show",
+              "count": 21,
+              "seconds": 8.108172769017983
+            },
+            {
+              "command": "bd init",
+              "count": 1,
+              "seconds": 5.161151168998913
+            },
+            {
+              "command": "bd create",
+              "count": 3,
+              "seconds": 2.081047857005615
+            }
+          ],
+          "total_phase_seconds": 38.08141502500075
+        },
+        {
+          "call_seconds": 38.331975401997624,
+          "in_process_assertion_and_orchestration_seconds": 1.45494353997492,
+          "nodeid": "plan_repair",
+          "polling_seconds": {
+            "asyncio_sleep": 0.0,
+            "time_sleep": 0.0,
+            "total": 0.0
+          },
+          "setup_seconds": 0.04034481500275433,
+          "subprocess_counts": {
+            "bd": 79,
+            "git": 20,
+            "herdr": 1,
+            "ssh-keygen": 2
+          },
+          "subprocess_seconds": 36.877031862022704,
+          "teardown_seconds": 0.0,
+          "template_clone_components_seconds": {
+            "clone_attach_bd_init": 0.0,
+            "dolt_clone_sql": 0.0,
+            "fresh_server_init": 5.201449599000625,
+            "prefix_rename": 0.0,
+            "snapshot_copy": 0.0,
+            "snapshot_gc": 0.0
+          },
+          "top_bd_commands": [
+            {
+              "command": "bd Human Dev",
+              "count": 16,
+              "seconds": 7.618188469030429
+            },
+            {
+              "command": "bd list",
+              "count": 16,
+              "seconds": 6.2605600579991005
+            },
+            {
+              "command": "bd init",
+              "count": 1,
+              "seconds": 5.201449599000625
+            },
+            {
+              "command": "bd show",
+              "count": 11,
+              "seconds": 4.229860182997072
+            },
+            {
+              "command": "bd dep add",
+              "count": 5,
+              "seconds": 2.9213223659971845
+            },
+            {
+              "command": "bd create",
+              "count": 5,
+              "seconds": 2.8321765799919376
+            }
+          ],
+          "total_phase_seconds": 38.37232021700038
+        }
+      ]
+    },
+    "median_cluster_total_phase_seconds": 193.241,
+    "repetitions": [
+      {
+        "cluster_total_phase_seconds": 192.54,
+        "rep": 1,
+        "result": "4 passed",
+        "scenario_total_phase_seconds": {
+          "hub_bulk_copy": 52.005,
+          "hub_sync": 63.93,
+          "localloop_restart": 38.447,
+          "plan_repair": 38.158
+        }
+      },
+      {
+        "cluster_total_phase_seconds": 193.241,
+        "rep": 2,
+        "result": "4 passed",
+        "scenario_total_phase_seconds": {
+          "hub_bulk_copy": 52.335,
+          "hub_sync": 64.275,
+          "localloop_restart": 38.361,
+          "plan_repair": 38.27
+        }
+      },
+      {
+        "cluster_total_phase_seconds": 194.256,
+        "rep": 3,
+        "result": "4 passed",
+        "scenario_total_phase_seconds": {
+          "hub_bulk_copy": 52.442,
+          "hub_sync": 64.465,
+          "localloop_restart": 38.59,
+          "plan_repair": 38.759
+        }
+      }
+    ],
+    "source": "Three earlier same-environment focused repetitions; detailed representative profile captured on unchanged HEAD and reconstructed from the complete terminal profile output."
+  },
+  "bead": "bh-7ks1c.6",
+  "coverage": {
+    "flake_count": 0,
+    "idempotence": "The real plan-repair case retains the second real repair replay. Direct repeated repair/approve no-op coverage remains in test_repair_then_approve_twice_each_converges.",
+    "integration_proofs_kept_real": [
+      "bd repo sync aggregate/content parity, excluded tables, identity, and ancestry checks",
+      "shared-server hub synchronization with per-prefix non-decreasing counts across steady and growth passes",
+      "real process-group restart/reap, no duplicate claims, cancellation label, completed molecule and closed issue statuses",
+      "real hand-assembled bd graph repair/approval, refusal routing, verify and dispatcher start"
+    ],
+    "timed_after_tests_passed": 12
+  },
+  "date": "2026-09-23",
+  "measurement": {
+    "instrumentation": {
+      "assertion_and_orchestration": "call phase minus measured subprocess and polling time; includes assertions, local Python fixture/control logic, and JSON parsing rather than claiming line-level assertion timings",
+      "polling": "wrapped time.sleep and asyncio.sleep outside child-process execution",
+      "setup_call_teardown": "pytest phase hooks",
+      "subprocess": "elapsed subprocess.run time, grouped by bd command/tool",
+      "template_clone": "separate elapsed times for snapshot copy, snapshot dolt gc, credentialed DOLT_CLONE command, bd attach init, and supported prefix rename"
+    },
+    "metric": "sum of setup + call + teardown phase seconds across the four named tests",
+    "runner": {
+      "cache_locality": "copy fallback selected because cache and dependency target are on different devices",
+      "command": "./scripts/hermetic.sh uv run --offline pytest -n4 --dist=load -m integration --durations=0 -q -p _bh_scenario_profile <four selectors>",
+      "distribution": "load",
+      "host_contention": "No other pytest, bh work check, or just check run overlapped the timed repetitions.",
+      "python": "/home/bees/.local/share/mise/installs/python/3.12/bin/python (3.12.13)",
+      "timing_runs_serialized": true,
+      "uv_cache_dir": "/home/bees/.cache/uv",
+      "uv_link_mode": "copy",
+      "workers": 4,
+      "xdg_runtime_dir": "/tmp/bh-worktrees/github/beadhive/beadhive/bh-7ks1c-6/.runtime-yx279"
+    },
+    "selector": [
+      "tests/test_hub_bulk_int.py::test_bulk_copy_matches_a_real_bd_produced_aggregate",
+      "tests/test_hub_bulk_int.py::test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync",
+      "tests/test_localloop_int.py::test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spending",
+      "tests/test_plan_repair.py::test_repair_and_approve_converge_hand_assembled_epic_real_bd"
+    ],
+    "target_reduction_percent": 20
+  },
+  "title": "Remove redundant setup from hub-bulk, local-loop restart, and plan-repair scenarios"
+}
