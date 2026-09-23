@@ -36,6 +36,22 @@ if TYPE_CHECKING:
 STATEFUL_CONSUMER_ROOTS = ("tests/",)
 PURE_CONSUMER_ROOTS = ("tests/unit/",)
 
+# Reviewed bh-7ks1c.7 inventory.  Keeping the classification next to collection makes adding a
+# new real-server module without deciding its freshness contract a testable error.
+DOLT_SERVER_FRESHNESS = {
+    "tests/test_bd_repo_sync_additive.py": ("fresh", "single case; no startup to amortize"),
+    "tests/test_coordination_int.py": ("fresh", "owned-mode lifecycle and reclaim"),
+    "tests/test_dolt_health_real_server_int.py": ("fresh", "endpoint lifecycle probe"),
+    "tests/test_frame_bridge_live.py": ("fresh", "whole real-process composition"),
+    "tests/test_host_fence_int.py": ("fresh", "embedded/shared transport boundary"),
+    "tests/test_hq.py": ("fresh", "single real-store case; no startup to amortize"),
+    "tests/test_hq_backup_server_mode_int.py": ("fresh", "destroy/restore two owned servers"),
+    "tests/test_hub_bulk_int.py": ("reusable", "isolated database content/copy"),
+    "tests/test_hub_rebuild.py": ("fresh", "destructive aggregate rebuild and prune"),
+    "tests/test_onboard_server_mode_int.py": ("fresh", "startup and busy-port lifecycle"),
+    "tests/test_storage_migrate_int.py": ("fresh", "embedded-to-server migration lifecycle"),
+}
+
 
 def _interleave_dolt_items(items, slots):
     """Keep ready work behind every bounded wave of real-server tests."""
