@@ -47,8 +47,9 @@ from beadhive.run import run
 from harness.beads import bd, skip_if_no_bd
 from harness.world import free_port, reap_dolt_server
 
-# `dolt_server`: every test here stands up a REAL sql-server, so each holds one of the run-wide
-# slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
+# `dolt_server`: every test here uses a REAL sql-server, so each holds one of the bounded
+# exclusive slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch). Compatible
+# cases borrow that slot's reusable process; lifecycle-sensitive cases keep their own server.
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
 
 _TIMEOUT = 60
@@ -56,7 +57,7 @@ _STARTUP_TIMEOUT = 30.0
 
 
 @pytest.fixture
-def isolated_shared_server(tmp_path, monkeypatch):
+def fresh_shared_server(tmp_path, monkeypatch):
     """This test's OWN shared-server instance, at its own data dir and a free port — never the
     operator's real fleet server. Mirrors `test_storage_migrate_int.py`'s fixture of the same
     name (same reasoning: `bd dolt stop` cannot reliably tear this down, see
@@ -78,6 +79,12 @@ def isolated_shared_server(tmp_path, monkeypatch):
     reap_dolt_server(server_dir)
 
 
+@pytest.fixture
+def isolated_shared_server(reusable_dolt_server):
+    """Slot-owned shared process with unique, per-test databases and filesystem state."""
+    yield reusable_dolt_server
+
+
 def _wait_until_accepting(host: str, port: int, *, timeout: float = _STARTUP_TIMEOUT) -> None:
     """Poll with a raw TCP connect until *host*:*port* accepts one, or raise — never
     `dolt_health.probe_endpoint` (that is the module under test elsewhere), just startup-
@@ -97,7 +104,7 @@ def _wait_until_accepting(host: str, port: int, *, timeout: float = _STARTUP_TIM
 def _init(path, prefix):
     """A fresh bd store, on the isolated shared server, with no interactive prompts."""
     path.mkdir(parents=True, exist_ok=True)
-    run(
+    initialized = run(
         [
             "bd",
             "init",
@@ -109,10 +116,11 @@ def _init(path, prefix):
             "--non-interactive",
         ],
         cwd=str(path),
-        check=True,
+        check=False,
         capture=True,
         timeout=_TIMEOUT,
     )
+    assert initialized.returncode == 0, initialized.stderr
     run(["git", "config", "beads.role", "maintainer"], cwd=str(path), check=True, capture=True)
 
 
@@ -153,7 +161,7 @@ def _init_from_template(path, prefix, *, template_url, control_hive):
         timeout=_TIMEOUT,
     )
     path.mkdir(parents=True, exist_ok=True)
-    run(
+    initialized = run(
         [
             "bd",
             "init",
@@ -168,10 +176,11 @@ def _init_from_template(path, prefix, *, template_url, control_hive):
             "--non-interactive",
         ],
         cwd=str(path),
-        check=True,
+        check=False,
         capture=True,
         timeout=_TIMEOUT,
     )
+    assert initialized.returncode == 0, initialized.stderr
     if prefix != hub.HUB_PREFIX:
         run(
             ["bd", "-C", str(path), "rename-prefix", f"{prefix}-"],
@@ -203,7 +212,7 @@ def _rows(path, table, cols):
     return json.loads(res.stdout or "[]")
 
 
-def _bulk_snapshot(hub_dir, *, target_prefix):
+def _bulk_snapshot(hub_dir, *, source_prefix, target_prefix):
     """Read the real-server parity surfaces in one SQL round trip.
 
     These databases all live on the same isolated Dolt server, so the proof can query their
@@ -220,7 +229,7 @@ def _bulk_snapshot(hub_dir, *, target_prefix):
         "custom_statuses": ("name",),
     }
     databases = {
-        "hva": set(columns),
+        source_prefix: set(columns),
         target_prefix: set(columns),
     }
     selects = []
@@ -265,9 +274,11 @@ def _content_row_counts(hub_dir, database):
 
 
 def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_shared_server):
+    hva = isolated_shared_server.database("hva")
+    hba = isolated_shared_server.database("hba")
     hive_a = tmp_path / "hive_a"
-    _init(hive_a, "hva")
-    _wait_until_accepting("127.0.0.1", isolated_shared_server)
+    _init(hive_a, hva)
+    _wait_until_accepting("127.0.0.1", isolated_shared_server.port)
     template_url = _snapshot_empty_server_database(hive_a, tmp_path / "schema-template")
 
     id1 = bd(
@@ -283,14 +294,14 @@ def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_share
     _sql(
         hive_a,
         "INSERT INTO wisps (id, title, description, design, acceptance_criteria, notes, "
-        "ephemeral) VALUES ('hva-wisp1', 'a wisp', '', '', '', '', 1)",
+        f"ephemeral) VALUES ('{hva}-wisp1', 'a wisp', '', '', '', '', 1)",
     )
     # Per-database vocabulary — the collision risk `hub_bulk`'s own docstring names.
     _sql(hive_a, "INSERT INTO custom_statuses (name, category) VALUES ('triage', 'open')")
 
     # THE BASELINE: a real `bd repo sync`-produced aggregate.
     hub_a = tmp_path / "hub_a"
-    _init_from_template(hub_a, "hba", template_url=template_url, control_hive=hive_a)
+    _init_from_template(hub_a, hba, template_url=template_url, control_hive=hive_a)
     run(
         ["bd", "-C", str(hive_a), "export", "-o", str(hive_a / ".beads" / "issues.jsonl")],
         check=True,
@@ -306,7 +317,7 @@ def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_share
     run(["bd", "-C", str(hub_a), "repo", "sync"], check=True, capture=True, timeout=_TIMEOUT)
 
     # Save the real aggregate before resetting the database that will become the copy target.
-    baseline = _bulk_snapshot(hub_a, target_prefix="hba")
+    baseline = _bulk_snapshot(hub_a, source_prefix=hva, target_prefix=hba)
 
     # The baseline is now held in memory. Remove its imported repo rows and verify every curated
     # table is empty, then use this isolated empty state as the copy target. This preserves the
@@ -317,26 +328,26 @@ def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_share
         capture=True,
         timeout=_TIMEOUT,
     )
-    empty_counts = _content_row_counts(hub_a, "hba")
+    empty_counts = _content_row_counts(hub_a, hba)
     assert set(empty_counts) == set(hub_bulk.CONTENT_TABLES), empty_counts
     assert not any(empty_counts.values()), empty_counts
 
     # --- the empty hba target now receives the real cross-database copy ---
-    ok, detail = hub_bulk.copy_hive(hub_a, "hva", {})
+    ok, detail = hub_bulk.copy_hive(hub_a, hva, {})
     assert ok, detail
-    snapshot = _bulk_snapshot(hub_a, target_prefix="hba")
+    snapshot = _bulk_snapshot(hub_a, source_prefix=hva, target_prefix=hba)
 
     # --- row-count AND content parity against the REAL bd-produced aggregate ---
     for table in ("issues", "dependencies", "labels", "comments"):
-        expected = baseline[("hba", table)]
-        actual = snapshot[("hba", table)]
+        expected = baseline[(hba, table)]
+        actual = snapshot[(hba, table)]
         assert actual == expected, f"{table}: bulk copy diverged from the bd-produced aggregate"
         assert actual, f"{table}: fixture produced no rows — the comparison above is vacuous"
 
     # --- events: bd's own path does NOT replay real history (measured, not assumed) ---
-    source_events = snapshot[("hva", "events")]
-    bulk_events = snapshot[("hba", "events")]
-    baseline_events = baseline[("hba", "events")]
+    source_events = snapshot[(hva, "events")]
+    bulk_events = snapshot[(hba, "events")]
+    baseline_events = baseline[(hba, "events")]
     assert bulk_events == source_events, "hub_bulk must copy the REAL event log verbatim"
     assert bulk_events != baseline_events, (
         "if this ever matches, bd repo sync started replaying real event history — the "
@@ -346,20 +357,20 @@ def test_bulk_copy_matches_a_real_bd_produced_aggregate(tmp_path, isolated_share
     )
 
     # --- wisps: bd repo sync never touches this family; hub_bulk's copy is a widening ---
-    assert baseline[("hba", "wisps")] == []
-    bulk_wisps = snapshot[("hba", "wisps")]
-    assert bulk_wisps == snapshot[("hva", "wisps")]
+    assert baseline[(hba, "wisps")] == []
+    bulk_wisps = snapshot[(hba, "wisps")]
+    assert bulk_wisps == snapshot[(hva, "wisps")]
     assert len(bulk_wisps) == 1
 
     # --- decided-not-to-copy vocabulary tables: zero rows in the target, despite the source ---
-    assert snapshot[("hva", "custom_statuses")] != []  # source really has one
-    assert snapshot[("hba", "custom_statuses")] == []
+    assert snapshot[(hva, "custom_statuses")] != []  # source really has one
+    assert snapshot[(hba, "custom_statuses")] == []
 
     # --- identity/bookkeeping untouched: hba can still mint ITS OWN prefix afterward ---
-    source_ids = {row["id"] for row in snapshot[("hba", "issues")]}
+    source_ids = {row["id"] for row in snapshot[(hba, "issues")]}
     assert source_ids == {id1, id2}, source_ids
     sanity_id = bd("create", "sanity check", "--silent", cwd=hub_a, capture=True).stdout.strip()
-    assert sanity_id.startswith("hba-"), sanity_id
+    assert sanity_id.startswith(f"{hba}-"), sanity_id
 
     # --- set-based ancestor validation runs clean over a real, well-formed graph ---
     assert hub_bulk.validate_ancestors(hub_a) == 0
@@ -379,7 +390,7 @@ def _prefix_counts(hub_dir) -> dict[str, int]:
 
 
 def test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync(
-    tmp_path, monkeypatch, isolated_shared_server
+    tmp_path, monkeypatch, fresh_shared_server
 ):
     """bh-eu2pp / bh-4o07n regression guard: drives the REAL `hub.sync()` (real bd, real
     shared Dolt server, real bulk pass — not a mock of any of it) over a multi-hive fixture,
@@ -408,7 +419,7 @@ def test_hub_sync_row_counts_are_non_decreasing_per_prefix_across_a_sync(
 
     hub_dir, _ = hub.hub_target()
     _init(hub_dir, hub.HUB_PREFIX)
-    _wait_until_accepting("127.0.0.1", isolated_shared_server)
+    _wait_until_accepting("127.0.0.1", fresh_shared_server)
     template_url = _snapshot_empty_server_database(hub_dir, tmp_path / "schema-template")
     for prefix, titles in (("hva", ["one", "two"]), ("hvb", ["three"])):
         path = hives[prefix]
@@ -451,18 +462,20 @@ def test_co_located_database_and_server_databases_against_the_real_server(
     """`server_databases`/`co_located_database` against a REAL `SHOW DATABASES` — proves the
     co-location check (bh-l7sm8 item 3's fallback trigger) sees a genuinely-present database
     and correctly refuses one that was never initialized."""
+    hva = isolated_shared_server.database("hva")
+    hba = isolated_shared_server.database("hba")
     hive_a = tmp_path / "hive_a"
-    _init(hive_a, "hva")
-    _wait_until_accepting("127.0.0.1", isolated_shared_server)
+    _init(hive_a, hva)
+    _wait_until_accepting("127.0.0.1", isolated_shared_server.port)
     hub_a = tmp_path / "hub_a"
-    _init(hub_a, "hba")
+    _init(hub_a, hba)
 
     databases = hub_bulk.server_databases(hub_a)
-    assert "hva" in databases
-    assert "hba" in databases
+    assert hva in databases
+    assert hba in databases
 
-    database = hub_bulk.co_located_database(databases, hive_a, "hva")
-    assert database == "hva"
+    database = hub_bulk.co_located_database(databases, hive_a, hva)
+    assert database == hva
 
     never_initialized = tmp_path / "not-a-real-hive"
     never_initialized.mkdir()

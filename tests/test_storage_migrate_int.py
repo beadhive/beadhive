@@ -41,9 +41,11 @@ from harness.world import (
     git,  # noqa: F401 - re-exported for parity with sibling int tests
     reap_dolt_server,
 )
+from stateful_fixtures import dolt_server_case_freshness
 
-# `dolt_server`: migrating a store stands up a REAL shared server, so each test here holds one of
-# the run-wide slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch).
+# `dolt_server`: migration tests use a REAL shared server, so each holds one of the bounded
+# exclusive slots `conftest._bound_concurrent_dolt_servers` hands out (bh-wa3ch). Compatible
+# cases borrow that slot's reusable process; dry-runs and deliberate collision tests stay fresh.
 pytestmark = [pytest.mark.integration, pytest.mark.dolt_server, skip_if_no_bd]
 
 _TIMEOUT = 60
@@ -115,7 +117,7 @@ def _config_get(path, key):
 
 
 @pytest.fixture
-def isolated_shared_server(tmp_path, monkeypatch):
+def isolated_shared_server(request, tmp_path, monkeypatch):
     """This test's OWN shared-server instance, at its own data dir and a free port — never the
     operator's real `~/.beads/shared-server/` — reaped when the test ends however it ends.
 
@@ -126,6 +128,10 @@ def isolated_shared_server(tmp_path, monkeypatch):
     exited 1 while the server ran on. The call was `check=False`, so the refusal was silent and
     a server accumulated on every suite run — 16 of them by the time it was measured. Reaping by
     the pidfile in THIS fixture's own dir does not consult bd's view of the world at all."""
+    classification, _reason = dolt_server_case_freshness(request.node)
+    if classification == "reusable":
+        yield request.getfixturevalue("reusable_dolt_server")
+        return
     server_dir = tmp_path / "shared-server"
     monkeypatch.setenv("BEADS_SHARED_SERVER_DIR", str(server_dir))
     monkeypatch.setenv("BEADS_DOLT_SERVER_PORT", str(free_port()))
@@ -141,9 +147,10 @@ def test_bd_reinit_local_shared_server_leaves_metadata_stale_by_itself(
     updating `dolt_mode` in metadata.json — bd's own `warnSharedServerEmbeddedMismatch` warns
     about exactly this and recommends persisting it by hand, but does not do so itself."""
     hive_dir = world.ws_root / "github" / "acme" / "drift"
-    _init_embedded(hive_dir, "drft")
+    prefix = isolated_shared_server.database("drft")
+    _init_embedded(hive_dir, prefix)
     _create(hive_dir, "an issue")
-    res = storage_migrate._reinit_shared_server(hive_dir, "drft", "drft", "test")
+    res = storage_migrate._reinit_shared_server(hive_dir, prefix, prefix, "test")
     assert res.returncode == 0, res.stderr
 
     metadata = json.loads((hive_dir / ".beads" / "metadata.json").read_text())
@@ -152,7 +159,8 @@ def test_bd_reinit_local_shared_server_leaves_metadata_stale_by_itself(
 
 def test_embedded_to_shared_server_real_round_trip(world, isolated_shared_server):
     hive_dir = world.ws_root / "github" / "acme" / "widget"
-    _init_embedded(hive_dir, "wgt")
+    prefix = isolated_shared_server.database("wgt")
+    _init_embedded(hive_dir, prefix)
     _create(hive_dir, "real issue one")
     _create(hive_dir, "real issue two")
     live_titles = _titles(hive_dir)
@@ -165,7 +173,7 @@ def test_embedded_to_shared_server_real_round_trip(world, isolated_shared_server
         "provider": "github",
         "org": "acme",
         "repo": "widget",
-        "prefix": "wgt",
+        "prefix": prefix,
         "kind": "personal",
     }
     cfg = {"managed_repos": [entry]}
@@ -267,14 +275,15 @@ def test_migrated_furnished_hive_does_not_untrack_the_moved_aside_store(
     line, not a chosen one. AND bh-ypfnu's: bd's live backup destination ends up at root #2
     (`.beads/backup`), not the migrate snapshot it gets pointed at mid-migration."""
     hive_dir = world.ws_root / "github" / "acme" / "furnished"
-    _init_embedded_furnished(world, hive_dir, "frn")
+    prefix = isolated_shared_server.database("frn")
+    _init_embedded_furnished(world, hive_dir, prefix)
     _create(hive_dir, "an issue")
 
     entry = {
         "provider": "github",
         "org": "acme",
         "repo": "furnished",
-        "prefix": "frn",
+        "prefix": prefix,
         "kind": "personal",
     }
     cfg = {"managed_repos": [entry]}
@@ -356,7 +365,8 @@ def test_bootstrap_migration_survives_a_live_embedded_store_with_unpushed_change
     this bead — survives the migration because the pre-migration native backup is restored on
     top of the freshly-bootstrapped store."""
     hive_dir = world.ws_root / "github" / "acme" / "pushed-live"
-    _init_embedded_with_pushed_remote(world, hive_dir, "plv")
+    prefix = isolated_shared_server.database("plv")
+    _init_embedded_with_pushed_remote(world, hive_dir, prefix)
     _create(hive_dir, "pushed issue one")
     _create(hive_dir, "pushed issue two")
     from beadhive.run import run
@@ -379,7 +389,7 @@ def test_bootstrap_migration_survives_a_live_embedded_store_with_unpushed_change
         "provider": "github",
         "org": "acme",
         "repo": "pushed-live",
-        "prefix": "plv",
+        "prefix": prefix,
         "kind": "personal",
     }
     cfg = {"managed_repos": [entry]}
