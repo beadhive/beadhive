@@ -14,6 +14,7 @@ and application code never query a registry for one.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from importlib import import_module
 from typing import Protocol, runtime_checkable
 
 from ..domain.impact import AttestKey, BackendImpact, ChangedPath, ImpactReceipt, ImpactRequest
@@ -51,6 +52,30 @@ class TreeDiffPort(Protocol):
         ...
 
 
+def resolve_impact(
+    repo: str,
+    base_rev: str,
+    head_rev: str,
+    keys: Sequence[AttestKey],
+    backend: ImpactBackend,
+) -> ImpactReceipt:
+    """Resolve one plugin backend through core's fail-closed policy and Git adapter.
+
+    Build-system packages need this narrow public composition point without importing core
+    application or adapter internals. Imports stay lazy so the contracts module remains the
+    dependency root for those implementations.
+    """
+
+    tree_diff_type = import_module("beadhive.adapters.impact_git").GitTreeDiff
+    resolver_factory = import_module("beadhive.modules.work.application.impact").select_resolver
+    resolver = resolver_factory(
+        backend.name,
+        tree_diff=tree_diff_type(),
+        backends={backend.name: backend},
+    )
+    return resolver.resolve(repo, base_rev, head_rev, keys)
+
+
 __all__ = [
     "AttestKey",
     "BackendImpact",
@@ -60,4 +85,5 @@ __all__ = [
     "ImpactRequest",
     "ImpactResolver",
     "TreeDiffPort",
+    "resolve_impact",
 ]

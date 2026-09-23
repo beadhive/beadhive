@@ -43,6 +43,7 @@ from . import (
     work,
 )
 from . import bd as bd_mod
+from .adapters.cli.declarations import parent_declarations as _parent_declarations
 from .adapters.cli.tree import project_cli_tree as _project_cli_tree
 from .modules.config import contracts as config_schema
 from .plugin_runtime_catalog import PLUGIN_RUNTIME_CATALOG
@@ -147,6 +148,18 @@ _PLUGIN_CONFIG = _plugin_config_snapshot()
 _PLUGIN_MOUNTS = plugins.cli_mounts(_PLUGIN_CONFIG, None)
 for _mount in _PLUGIN_MOUNTS:
     plugin_app.add_typer(_mount.app, name=_mount.plugin_id)
+for _mount in plugins.projected_cli_mounts(_PLUGIN_CONFIG, None):
+    plugin_app.add_typer(_mount.app, name=_mount.plugin_id)
+_MANIFEST_COMMANDS = plugins.projected_cli_commands(_PLUGIN_CONFIG, None)
+_CATALOG_PARENTS = {row.path for row in _parent_declarations()}
+app._bh_manifest_commands = frozenset(_MANIFEST_COMMANDS)
+app._bh_manifest_parents = frozenset(
+    " ".join(parts[:index])
+    for command in _MANIFEST_COMMANDS
+    for parts in (command.split(),)
+    for index in range(1, len(parts))
+    if " ".join(parts[:index]) not in _CATALOG_PARENTS
+)
 
 
 def _canonically_disabled_optional_plugins(cfg: dict) -> frozenset[str]:
