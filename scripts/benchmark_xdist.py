@@ -528,7 +528,47 @@ def main(argv: Sequence[str] | None = None) -> int:
                     max_servers = max(max_servers, final_metrics["active_server_count"])
                     max_processes = max(max_processes, final_metrics["process_tree_count"])
                     output = stdout + "\n" + stderr
-                    parsed = parse_pytest_output(output, completed.returncode)
+                    stdout_path = run_scratch / "pytest.stdout.log"
+                    stderr_path = run_scratch / "pytest.stderr.log"
+                    stdout_path.write_text(stdout, encoding="utf-8")
+                    stderr_path.write_text(stderr, encoding="utf-8")
+                    try:
+                        parsed = parse_pytest_output(output, completed.returncode)
+                    except BenchmarkError as exc:
+                        failed_run = {
+                            "selection": selection,
+                            "marker": marker,
+                            "workers": worker,
+                            "repetition": repetition,
+                            "command": command,
+                            "exit_code": completed.returncode,
+                            "external_wall_seconds": round(time.monotonic() - started, 3),
+                            "summary_missing": True,
+                            "summary_error": str(exc),
+                            "stdout_log": str(stdout_path),
+                            "stderr_log": str(stderr_path),
+                            "terminal_output_tail": output[-12000:],
+                            "dolt_slots": parse_dolt_slot_events(slot_events),
+                            "processes": {
+                                "server_pids_seen": sorted(server_pids),
+                                "server_processes_started": len(server_pids),
+                                "max_active_server_processes": max_servers,
+                                "max_pytest_process_tree": max_processes,
+                            },
+                            "passed": 0,
+                            "skipped": 0,
+                            "failed": 0,
+                            "errors": 1,
+                            "pytest_elapsed_seconds": 0.0,
+                            "slow_phases": [],
+                        }
+                        payload["runs"].append(failed_run)
+                        payload["aggregates"] = aggregate_runs(payload["runs"])
+                        write_payload(output_path, payload)
+                        raise BenchmarkError(
+                            f"{exc}; child exit={completed.returncode}; logs: "
+                            f"{stdout_path}, {stderr_path}"
+                        ) from exc
                     elapsed = round(time.monotonic() - started, 3)
                     payload["runs"].append(
                         {
@@ -546,6 +586,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                                 "max_active_server_processes": max_servers,
                                 "max_pytest_process_tree": max_processes,
                             },
+                            "stdout_log": str(stdout_path),
+                            "stderr_log": str(stderr_path),
                             **parsed,
                         }
                     )
