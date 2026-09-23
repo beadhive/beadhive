@@ -3,6 +3,9 @@
 The package intentionally depends only on the Python standard library.  A plugin, adapter, or
 capability module can therefore import it without constructing Beadhive's runtime or inheriting
 repository-root pytest fixtures.
+
+The :mod:`beadhive.testing.impact` subpackage (the ``ImpactBackend`` conformance kit) is imported
+explicitly, never from here: it depends on the work module's impact contract.
 """
 
 from .conformance import (
