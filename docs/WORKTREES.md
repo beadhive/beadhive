@@ -236,6 +236,29 @@ controls how many gates can run. The test harness's `BH_DOLT_SLOTS` semaphore is
 it bounds real Dolt-server fixtures inside a pytest run and does not provide host-wide validation
 admission.
 
+The xdist comparison is a periodic, opt-in measurement:
+
+```console
+just benchmark-xdist workers="6,12,18,24" repetitions=3 output=/tmp/xdist-benchmark.json
+```
+
+That historical matrix can be replaced with a current-host matrix such as `8,16,24,32`; every
+pytest launch still receives an explicit `-n` value, so the repository's sixteen-worker default
+and its contract test stay unchanged. The command benchmarks both land partitions (`not
+integration` and `integration`), prints a Markdown table, and writes detailed JSON with Git,
+interpreter, pytest/xdist, CPU/memory, validation-slot, timing, result-count, slow-phase, and uv
+cache-locality provenance. Validation slots include both the effective value and whether it came
+from `BH_VALIDATION_SLOTS`, host config, or the default. Cache and interpreter-target filesystem
+records include available bytes and inodes. Device equality reports hardlink capability and the
+expected uv auto mode. A bounded preflight builds the local project wheel offline and asks uv to
+materialize it into an isolated target below the external scratch root; the JSON and Markdown
+summary record that probe target's device/capacity and uv's observed hardlink/copy fallback
+outcome (or `unknown` with a diagnostic if the offline probe cannot run). Cache-source evidence
+is matched against uv's resolved cache directory, including `UV_CACHE_DIR` overrides. Its scratch
+root must be outside every Git
+checkout; the command
+refuses a root for which Git can discover a containing repository before it starts pytest.
+
 Use `bh work check`, not raw `just check`, when the result should seed submission. A clean
 `bh work check` writes the run and exact-tree verdict records, so the following `bh work submit`
 can reuse them. `just check` launches the same project command outside the Beadhive lifecycle; it
