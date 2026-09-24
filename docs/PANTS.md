@@ -1,8 +1,33 @@
 # Pants developer foundation
 
 Pants is an additive developer build graph. The canonical `uv.lock`, native `uv run pytest`,
-`just check`, and `just check-all` commands remain authoritative. No selective validation route is
-enabled by this foundation.
+`just check`, and `just check-all` commands remain authoritative. Qualified selective routes
+are described below; uncertain changes fall back to the full gate.
+
+## Plugin commands and compatibility shims
+
+The `beadhive-pants` distribution under `packages/` owns the Pants runner, cache coordinator,
+attestation, and impact backend. Core discovers its `build.impact` and `build.verify`
+capabilities from a checked manifest, then imports the selected implementation lazily at
+bootstrap. The user-facing commands are:
+
+```sh
+uv run bh plugin pants test affected <git-base>
+uv run bh plugin pants test all
+uv run bh plugin pants native -m 'not integration'
+uv run bh plugin pants cache status
+uv run bh plugin pants cache check
+uv run bh plugin pants attest-check
+```
+
+`test affected` runs affected proven Pants tests and the required native residual;
+`test all` runs the complete proven Pants partition. `native` forwards pytest arguments.
+`cache` forwards coordinator arguments, and `attest-check` runs the exact-tree Pants
+prerequisite. Run these from the repository root after `uv sync`; use `--help` on a command
+for its accepted arguments. The existing `scripts/pants_ci.py`, `pants_cache.py`,
+`pants_attest.py`, and related script paths remain compatibility shims to the package-owned
+modules, so existing Just recipes and automation keep working. New callers should use
+`bh plugin pants` or the root Just recipes.
 
 Install the official Pants launcher using the upstream installation instructions, then run it
 from the repository root. `pants.toml` pins the engine to Pants 2.32.1, the first patch release
