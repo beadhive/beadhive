@@ -15,6 +15,8 @@ from typing import Any, Literal
 from . import daemon_contract
 from .gateway_wire_contracts import WireFamily, schema_ref
 from .kernel.operations import OperationSpec, operations
+from .kernel.plugins import builtin_manifest_source, discover_plugins
+from .plugin_runtime_catalog import PLUGIN_CLI_RUNTIME_CATALOG
 
 Classification = Literal["catalog-entry", "composite", "transport-mechanic", "explicit-exclusion"]
 ProjectionShape = Literal["exact", "richer", "coarser", "transport-only", "excluded"]
@@ -300,6 +302,49 @@ def _catalog_projections() -> list[ProjectionSpec]:
                 )
             )
     return result
+
+
+def _manifest_cli_projections() -> tuple[ProjectionSpec, ...]:
+    """Declare package-owned CLI leaves that intentionally lack core operation identities."""
+
+    runtime_ids = {entry.plugin_id for entry in PLUGIN_CLI_RUNTIME_CATALOG}
+    discovery = discover_plugins(
+        [builtin_manifest_source()],
+        config=None,
+        beadhive_version="0.15.1",
+        kernel_version="1.0.0",
+    )
+    manifests = {
+        plugin.manifest.plugin_id: plugin.manifest
+        for plugin in discovery.plugins
+        if plugin.manifest.plugin_id in runtime_ids
+    }
+    if set(manifests) != runtime_ids:
+        missing = sorted(runtime_ids - set(manifests))
+        raise ValueError(f"runtime CLI plugins lack valid built-in manifests: {missing}")
+    return tuple(
+        ProjectionSpec(
+            surface="cli",
+            identifier=projection.command,
+            classification="explicit-exclusion",
+            operation=None,
+            composes=(),
+            request_schema=f"manifest:{plugin_id}#presentation.cli/{index}",
+            result_schema="urn:beadhive:wire-schema:json-value:1",
+            privilege="ordinary-mutation",
+            side_effects="plugin-owned-process-execution",
+            prompts=False,
+            streaming=False,
+            availability="installed plugin package selected by the built-in manifest",
+            compatibility="validated manifest command and package-owned Typer leaf",
+            reason="package-owned plugin command has no core operation identity",
+            canonical_contracts=(),
+            transport_owner=f"plugin:{plugin_id}",
+            shape="excluded",
+        )
+        for plugin_id, manifest in sorted(manifests.items())
+        for index, projection in enumerate(manifest.cli_projections)
+    )
 
 
 def _http(
@@ -778,6 +823,7 @@ def projections() -> tuple[ProjectionSpec, ...]:
     """Return the complete inventory in stable surface/identifier order."""
     rows = [
         *_catalog_projections(),
+        *_manifest_cli_projections(),
         *_operator_projections(),
         *_gateway_projections(),
     ]

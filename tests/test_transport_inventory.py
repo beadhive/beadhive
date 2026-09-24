@@ -57,12 +57,31 @@ def test_checked_inventory_is_current_deterministic_and_schema_valid() -> None:
     assert len(keys) == len(set(keys))
 
 
+def test_manifest_owned_plugin_cli_leaves_are_explicitly_inventoried() -> None:
+    pants = {
+        row.identifier: row
+        for row in projections()
+        if row.surface == "cli" and row.identifier.startswith("plugin pants ")
+    }
+
+    assert set(pants) == {
+        "plugin pants attest-check",
+        "plugin pants cache",
+        "plugin pants native",
+        "plugin pants test affected",
+        "plugin pants test all",
+    }
+    assert all(row.classification == "explicit-exclusion" for row in pants.values())
+    assert all(row.transport_owner == "plugin:pants" for row in pants.values())
+    assert all(row.operation is None for row in pants.values())
+
+
 def test_generated_cli_and_mcp_inventory_exactly_covers_the_catalog() -> None:
     counts: dict[str, int] = {}
     for row in projections():
         counts[row.surface] = counts.get(row.surface, 0) + 1
     assert counts == {
-        "cli": 213,
+        "cli": 218,
         "gateway": 28,
         "mcp-resource": 21,
         "mcp-tool": 10,
@@ -275,7 +294,7 @@ def test_http_projection_shapes_and_non_catalog_ownership_are_explicit() -> None
     exclusions = {
         (row.surface, row.identifier)
         for row in projections()
-        if row.classification == "explicit-exclusion"
+        if row.surface in {"gateway", "operator-api"} and row.classification == "explicit-exclusion"
     }
     assert exclusions == {
         ("operator-api", "GET /api/v1/runs/{run_id}/activity"),
