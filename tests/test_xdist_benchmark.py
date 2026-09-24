@@ -54,18 +54,17 @@ def test_aggregate_runs_uses_true_median_and_counts_successes():
             (0, 3.0, 4.0),
         ]
     ]
-    assert benchmark.aggregate_runs(runs) == [
-        {
-            "selection": "unit",
-            "workers": 16,
-            "repetitions": 4,
-            "successful_repetitions": 3,
-            "median_pytest_elapsed_seconds": 4.0,
-            "median_external_wall_seconds": 5.0,
-            "median_dolt_slot_queue_seconds": 0.0,
-            "median_dolt_slot_hold_seconds": 0.0,
-        }
-    ]
+    aggregate = benchmark.aggregate_runs(runs)[0]
+    assert aggregate["selection"] == "unit"
+    assert aggregate["workers"] == 16
+    assert aggregate["repetitions"] == 4
+    assert aggregate["successful_repetitions"] == 3
+    assert aggregate["median_pytest_elapsed_seconds"] == 4.0
+    assert aggregate["median_external_wall_seconds"] == 5.0
+    assert aggregate["median_dolt_slot_queue_seconds"] is None
+    assert aggregate["median_dolt_slot_hold_seconds"] is None
+    assert aggregate["dolt_slot_telemetry_repetitions"] == 0
+    assert aggregate["median_server_processes_started"] == 0
 
 
 def test_parse_dolt_slot_events_reports_each_test_and_totals(tmp_path):
@@ -82,6 +81,8 @@ def test_parse_dolt_slot_events_reports_each_test_and_totals(tmp_path):
         )
     )
     assert benchmark.parse_dolt_slot_events(events) == {
+        "available": True,
+        "event_count": 5,
         "tests": {
             "one": {"queue_seconds": 1.25, "hold_seconds": 2.5},
             "two": {"queue_seconds": 0.25, "hold_seconds": 1.5},
@@ -96,7 +97,7 @@ def test_cache_locality_separates_capability_from_unobserved_use(monkeypatch, tm
     target = tmp_path / "environment"
     cache.mkdir()
     target.mkdir()
-    monkeypatch.setattr(benchmark, "command_output", lambda command: str(cache))
+    monkeypatch.setattr(benchmark, "command_output", lambda *args, **kwargs: str(cache))
     monkeypatch.setattr(benchmark.sys, "prefix", str(target))
     real_stat = benchmark.Path.stat
 
@@ -109,7 +110,7 @@ def test_cache_locality_separates_capability_from_unobserved_use(monkeypatch, tm
     monkeypatch.setattr(
         benchmark,
         "observe_uv_materialization",
-        lambda scratch, cache: {
+        lambda scratch, cache, root: {
             "observed": False,
             "link_mode": "unknown",
             "hardlinks_used": "unknown",
@@ -121,7 +122,7 @@ def test_cache_locality_separates_capability_from_unobserved_use(monkeypatch, tm
         "statvfs",
         lambda path: type("Capacity", (), {"f_bavail": 10, "f_frsize": 4096, "f_favail": 20})(),
     )
-    locality = benchmark.cache_locality(tmp_path)
+    locality = benchmark.cache_locality(tmp_path, tmp_path)
     assert locality["expected_auto_mode"] == "copy-fallback"
     assert locality["hardlinks_supported_by_device_layout"] is False
     assert locality["materialization_observation"] == {
@@ -219,21 +220,24 @@ def test_human_table_includes_locality_capacity_and_observed_mode():
 
 def test_validation_slots_reports_environment_override(monkeypatch):
     monkeypatch.setenv("BH_VALIDATION_SLOTS", "3")
-    assert benchmark.validation_slots() == {"effective": 3, "source": "BH_VALIDATION_SLOTS"}
+    assert benchmark.validation_slots(Path("/tmp")) == {
+        "effective": 3,
+        "source": "BH_VALIDATION_SLOTS",
+    }
 
 
 def test_validation_slots_reports_host_config_source(monkeypatch):
     monkeypatch.delenv("BH_VALIDATION_SLOTS", raising=False)
     completed = subprocess.CompletedProcess([], 0, stdout="2\n", stderr="")
     monkeypatch.setattr(benchmark.subprocess, "run", lambda *args, **kwargs: completed)
-    assert benchmark.validation_slots() == {"effective": 2, "source": "host-config"}
+    assert benchmark.validation_slots(Path("/tmp")) == {"effective": 2, "source": "host-config"}
 
 
 def test_validation_slots_reports_default_when_host_key_is_absent(monkeypatch):
     monkeypatch.delenv("BH_VALIDATION_SLOTS", raising=False)
     completed = subprocess.CompletedProcess([], 1, stdout="", stderr="missing")
     monkeypatch.setattr(benchmark.subprocess, "run", lambda *args, **kwargs: completed)
-    assert benchmark.validation_slots() == {"effective": 1, "source": "default"}
+    assert benchmark.validation_slots(Path("/tmp")) == {"effective": 1, "source": "default"}
 
 
 def test_repo_nested_scratch_is_refused_before_pytest(monkeypatch, tmp_path):
@@ -247,3 +251,72 @@ def test_repo_nested_scratch_is_refused_before_pytest(monkeypatch, tmp_path):
     with pytest.raises(benchmark.BenchmarkError, match="unsafe scratch root"):
         benchmark.ensure_external_scratch(tmp_path)
     assert calls == [["git", "-C", str(tmp_path.resolve()), "rev-parse", "--show-toplevel"]]
+
+
+def test_stage_uv_cache_copies_host_contents_to_writable_scratch(monkeypatch, tmp_path):
+    source = tmp_path / "host-uv-cache"
+    source.mkdir()
+    package = source / "wheels-v6" / "pypi" / "hatchling"
+    package.mkdir(parents=True)
+    (package / "cached-wheel.msgpack").write_text("present")
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(benchmark, "command_output", lambda *args, **kwargs: str(source))
+
+    staged = benchmark.stage_uv_cache(scratch)
+
+    effective = Path(staged["effective"]["path"])
+    assert staged["strategy"] == "copied-to-writable-scratch"
+    assert staged["source"]["path"] == str(source)
+    assert (effective / "wheels-v6/pypi/hatchling/cached-wheel.msgpack").read_text() == "present"
+
+
+def test_stage_uv_cache_rejects_recursive_source_destination(monkeypatch, tmp_path):
+    scratch = tmp_path / "scratch"
+    source = scratch / "uv-cache" / "nested-source"
+    source.mkdir(parents=True)
+    monkeypatch.setattr(benchmark, "command_output", lambda *args, **kwargs: str(source))
+
+    with pytest.raises(benchmark.BenchmarkError, match="source must not be inside"):
+        benchmark.stage_uv_cache(scratch)
+
+
+def test_stage_uv_cache_rejects_symlink_destination(monkeypatch, tmp_path):
+    source = tmp_path / "host-cache"
+    source.mkdir()
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    (scratch / "uv-cache").symlink_to(source)
+    monkeypatch.setattr(benchmark, "command_output", lambda *args, **kwargs: str(source))
+
+    with pytest.raises(benchmark.BenchmarkError, match="destination is unsafe"):
+        benchmark.stage_uv_cache(scratch)
+
+
+def test_human_table_records_staged_uv_cache_provenance():
+    locality = {
+        "cache": {"device_id": 1, "available_bytes": 100, "available_inodes": 10},
+        "target": {"device_id": 2, "available_bytes": 200, "available_inodes": 20},
+        "requested_link_mode": "auto",
+        "expected_auto_mode": "copy-fallback",
+        "materialization_observation": {
+            "link_mode": "copy-fallback",
+            "hardlinks_used": False,
+            "fallback_copies_used": True,
+            "target": {"device_id": 3, "available_bytes": 300, "available_inodes": 30},
+        },
+    }
+    rendered = benchmark.render_table(
+        [],
+        {
+            "cache_locality": locality,
+            "uv_cache_seed": {
+                "source": {"path": "/host/cache", "device_id": 4},
+                "effective": {"path": "/tmp/scratch/uv-cache", "device_id": 3},
+                "strategy": "copied-to-writable-scratch",
+            },
+        },
+    )
+    assert "copied-to-writable-scratch" in rendered
+    assert "/host/cache" in rendered
+    assert "/tmp/scratch/uv-cache" in rendered

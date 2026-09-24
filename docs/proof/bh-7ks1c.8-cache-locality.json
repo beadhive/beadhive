@@ -1,0 +1,3235 @@
+{
+  "schema_version": 1,
+  "bead": "bh-7ks1c.8",
+  "captured_at": "2026-09-24T00:32:58Z",
+  "evidence": "cache-locality-fixture",
+  "fixture": {
+    "checkout": "/tmp/bh-7ks1c-cache-fixture",
+    "cross_device_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-fixture",
+    "dependencies": "local wheel and local tarball; package-manager commands ran offline",
+    "meaning": "controlled materialization correctness evidence; timings are descriptive and non-normative"
+  },
+  "repetitions_per_case": 3,
+  "resolver_source": {
+    "branch": "wt/bead/issue/bh-7ks1c.8",
+    "head": "915701ce",
+    "note": "915701ce is the final cache-locality correctness implementation tree; later commits add proof artifacts and validator compatibility coverage only. Cache resolver and benchmark sources are unchanged. Timings are descriptive metadata only.",
+    "working_tree_changes_used": []
+  },
+  "cases": [
+    {
+      "application": "uv",
+      "checkout_class": "ephemeral",
+      "cache_device": 42,
+      "target_device": 42,
+      "command": [
+        "uv",
+        "sync",
+        "--offline",
+        "--no-install-project"
+      ],
+      "repetitions": 3,
+      "configured_methods": [
+        "hardlink"
+      ],
+      "hardlinks_observed": 18,
+      "hardlink_identities": [
+        {
+          "device": 42,
+          "inode": 32576205,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 42,
+          "inode": 32576207,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 42,
+          "inode": 32576208,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 42,
+          "inode": 32577370,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 42,
+          "inode": 32577372,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 42,
+          "inode": 32577374,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 42,
+          "inode": 32578571,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 42,
+          "inode": 32578574,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 42,
+          "inode": 32578576,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 42,
+          "inode": 32576205,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 42,
+          "inode": 32576207,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 42,
+          "inode": 32576208,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 42,
+          "inode": 32577370,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 42,
+          "inode": 32577372,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 42,
+          "inode": 32577374,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 42,
+          "inode": 32578571,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 42,
+          "inode": 32578574,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 42,
+          "inode": 32578576,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        }
+      ],
+      "target_files_inspected": 144,
+      "copy_fallback_observations": 0,
+      "warnings": [],
+      "median_seconds": {
+        "cold": 0.22068848898925353,
+        "warm": 0.15948520599340554
+      },
+      "source_artifact": {
+        "schema_version": 1,
+        "application": "uv",
+        "checkout": "/tmp/bh-7ks1c-cache-fixture",
+        "checkout_class": "ephemeral",
+        "command": [
+          "uv",
+          "sync",
+          "--offline",
+          "--no-install-project"
+        ],
+        "repetitions": 3,
+        "median_seconds": {
+          "cold": 0.22068848898925353,
+          "warm": 0.15948520599340554
+        },
+        "runs": [
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18027749376,
+                    "available_inodes": 4833075
+                  },
+                  "before": {
+                    "available_bytes": 18028580864,
+                    "available_inodes": 4833382
+                  },
+                  "bytes_consumed": 831488,
+                  "device": 42,
+                  "inodes_consumed": 307,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-1/uv",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-1/uv",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-1/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521376-1/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32576205,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32576207,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32576208,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.20444490500085521,
+              "warnings": []
+            },
+            "fresh_checkout": "/tmp/.bh-cache-benchmark-2521376-1",
+            "materialization_evidence": {
+              "basis": "cache device 42 equals target device 42; framework control was {'UV_CACHE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-1/uv', 'UV_LINK_MODE': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 1,
+            "selection": {
+              "admitted": true,
+              "application": "uv",
+              "cache_device": 42,
+              "diagnostic": "ephemeral cache admitted on dependency target device",
+              "environment": {
+                "UV_CACHE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-1/uv",
+                "UV_LINK_MODE": "hardlink"
+              },
+              "free_bytes": 18028580864,
+              "free_inodes": 4833382,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-1/uv",
+              "target": "/tmp/.bh-cache-benchmark-2521376-1/.venv",
+              "target_device": 42,
+              "tier": "ephemeral"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18026754048,
+                    "available_inodes": 4832699
+                  },
+                  "before": {
+                    "available_bytes": 18027745280,
+                    "available_inodes": 4833065
+                  },
+                  "bytes_consumed": 991232,
+                  "device": 42,
+                  "inodes_consumed": 366,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-1/uv",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-1/uv",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-1/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521376-1/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32576205,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32576207,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32576208,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.17800836799142417,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18026090496,
+                    "available_inodes": 4832365
+                  },
+                  "before": {
+                    "available_bytes": 18026831872,
+                    "available_inodes": 4832715
+                  },
+                  "bytes_consumed": 741376,
+                  "device": 42,
+                  "inodes_consumed": 350,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-2/uv",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-2/uv",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-2/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521376-2/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32577370,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32577372,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32577374,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.22068848898925353,
+              "warnings": []
+            },
+            "fresh_checkout": "/tmp/.bh-cache-benchmark-2521376-2",
+            "materialization_evidence": {
+              "basis": "cache device 42 equals target device 42; framework control was {'UV_CACHE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-2/uv', 'UV_LINK_MODE': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 2,
+            "selection": {
+              "admitted": true,
+              "application": "uv",
+              "cache_device": 42,
+              "diagnostic": "ephemeral cache admitted on dependency target device",
+              "environment": {
+                "UV_CACHE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-2/uv",
+                "UV_LINK_MODE": "hardlink"
+              },
+              "free_bytes": 18026831872,
+              "free_inodes": 4832715,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-2/uv",
+              "target": "/tmp/.bh-cache-benchmark-2521376-2/.venv",
+              "target_device": 42,
+              "tier": "ephemeral"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18025553920,
+                    "available_inodes": 4832153
+                  },
+                  "before": {
+                    "available_bytes": 18026090496,
+                    "available_inodes": 4832364
+                  },
+                  "bytes_consumed": 536576,
+                  "device": 42,
+                  "inodes_consumed": 211,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-2/uv",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-2/uv",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-2/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521376-2/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32577370,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32577372,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32577374,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.15948520599340554,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18024411136,
+                    "available_inodes": 4831662
+                  },
+                  "before": {
+                    "available_bytes": 18025549824,
+                    "available_inodes": 4832123
+                  },
+                  "bytes_consumed": 1138688,
+                  "device": 42,
+                  "inodes_consumed": 461,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-3/uv",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-3/uv",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-3/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521376-3/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32578571,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32578574,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32578576,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.2233272949961247,
+              "warnings": []
+            },
+            "fresh_checkout": "/tmp/.bh-cache-benchmark-2521376-3",
+            "materialization_evidence": {
+              "basis": "cache device 42 equals target device 42; framework control was {'UV_CACHE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-3/uv', 'UV_LINK_MODE': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 3,
+            "selection": {
+              "admitted": true,
+              "application": "uv",
+              "cache_device": 42,
+              "diagnostic": "ephemeral cache admitted on dependency target device",
+              "environment": {
+                "UV_CACHE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-3/uv",
+                "UV_LINK_MODE": "hardlink"
+              },
+              "free_bytes": 18025549824,
+              "free_inodes": 4832123,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-3/uv",
+              "target": "/tmp/.bh-cache-benchmark-2521376-3/.venv",
+              "target_device": 42,
+              "tier": "ephemeral"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18023575552,
+                    "available_inodes": 4831422
+                  },
+                  "before": {
+                    "available_bytes": 18024411136,
+                    "available_inodes": 4831662
+                  },
+                  "bytes_consumed": 835584,
+                  "device": 42,
+                  "inodes_consumed": 240,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-3/uv",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-3/uv",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/uv-ephemeral/run-3/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521376-3/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32578571,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32578574,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32578576,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.15242152400605846,
+              "warnings": []
+            }
+          }
+        ],
+        "cleanup": "benchmark roots are retained; remove them only while idle using the package manager's supported cache command or discard the containing tmpfs"
+      }
+    },
+    {
+      "application": "pnpm",
+      "checkout_class": "ephemeral",
+      "cache_device": 42,
+      "target_device": 42,
+      "command": [
+        "pnpm",
+        "install",
+        "--frozen-lockfile",
+        "--offline"
+      ],
+      "repetitions": 3,
+      "configured_methods": [
+        "hardlink"
+      ],
+      "hardlinks_observed": 12,
+      "hardlink_identities": [
+        {
+          "device": 42,
+          "inode": 32580779,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 42,
+          "inode": 32580778,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 42,
+          "inode": 32586700,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 42,
+          "inode": 32586699,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 42,
+          "inode": 32592128,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 42,
+          "inode": 32592127,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 42,
+          "inode": 32580779,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 42,
+          "inode": 32580778,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 42,
+          "inode": 32586700,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 42,
+          "inode": 32586699,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 42,
+          "inode": 32592128,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 42,
+          "inode": 32592127,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        }
+      ],
+      "target_files_inspected": 36,
+      "copy_fallback_observations": 0,
+      "warnings": [],
+      "median_seconds": {
+        "cold": 1.5469334999943385,
+        "warm": 1.3517322300031083
+      },
+      "source_artifact": {
+        "schema_version": 1,
+        "application": "pnpm",
+        "checkout": "/tmp/bh-7ks1c-cache-fixture",
+        "checkout_class": "ephemeral",
+        "command": [
+          "pnpm",
+          "install",
+          "--frozen-lockfile",
+          "--offline"
+        ],
+        "repetitions": 3,
+        "median_seconds": {
+          "cold": 1.5469334999943385,
+          "warm": 1.3517322300031083
+        },
+        "runs": [
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18020110336,
+                    "available_inodes": 4830064
+                  },
+                  "before": {
+                    "available_bytes": 18025746432,
+                    "available_inodes": 4832229
+                  },
+                  "bytes_consumed": 5636096,
+                  "device": 42,
+                  "inodes_consumed": 2165,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521927-1/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32580779,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32580778,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.5469334999943385,
+              "warnings": []
+            },
+            "fresh_checkout": "/tmp/.bh-cache-benchmark-2521927-1",
+            "materialization_evidence": {
+              "basis": "cache device 42 equals target device 42; framework control was {'PNPM_CONFIG_STORE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm', 'npm_config_store_dir': '/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm', 'PNPM_CONFIG_PACKAGE_IMPORT_METHOD': 'hardlink', 'npm_config_package_import_method': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 1,
+            "selection": {
+              "admitted": true,
+              "application": "pnpm",
+              "cache_device": 42,
+              "diagnostic": "ephemeral cache admitted on dependency target device",
+              "environment": {
+                "PNPM_CONFIG_PACKAGE_IMPORT_METHOD": "hardlink",
+                "PNPM_CONFIG_STORE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm",
+                "npm_config_package_import_method": "hardlink",
+                "npm_config_store_dir": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm"
+              },
+              "free_bytes": 18025746432,
+              "free_inodes": 4832229,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm",
+              "target": "/tmp/.bh-cache-benchmark-2521927-1/node_modules",
+              "target_device": 42,
+              "tier": "ephemeral"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18013302784,
+                    "available_inodes": 4828098
+                  },
+                  "before": {
+                    "available_bytes": 18020106240,
+                    "available_inodes": 4830063
+                  },
+                  "bytes_consumed": 6803456,
+                  "device": 42,
+                  "inodes_consumed": 1965,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-1/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521927-1/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32580779,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32580778,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.4922344630031148,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18007289856,
+                    "available_inodes": 4825819
+                  },
+                  "before": {
+                    "available_bytes": 18013241344,
+                    "available_inodes": 4828089
+                  },
+                  "bytes_consumed": 5951488,
+                  "device": 42,
+                  "inodes_consumed": 2270,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521927-2/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32586700,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32586699,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.4858986229955917,
+              "warnings": []
+            },
+            "fresh_checkout": "/tmp/.bh-cache-benchmark-2521927-2",
+            "materialization_evidence": {
+              "basis": "cache device 42 equals target device 42; framework control was {'PNPM_CONFIG_STORE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm', 'npm_config_store_dir': '/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm', 'PNPM_CONFIG_PACKAGE_IMPORT_METHOD': 'hardlink', 'npm_config_package_import_method': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 2,
+            "selection": {
+              "admitted": true,
+              "application": "pnpm",
+              "cache_device": 42,
+              "diagnostic": "ephemeral cache admitted on dependency target device",
+              "environment": {
+                "PNPM_CONFIG_PACKAGE_IMPORT_METHOD": "hardlink",
+                "PNPM_CONFIG_STORE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm",
+                "npm_config_package_import_method": "hardlink",
+                "npm_config_store_dir": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm"
+              },
+              "free_bytes": 18013241344,
+              "free_inodes": 4828089,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm",
+              "target": "/tmp/.bh-cache-benchmark-2521927-2/node_modules",
+              "target_device": 42,
+              "tier": "ephemeral"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18003161088,
+                    "available_inodes": 4824244
+                  },
+                  "before": {
+                    "available_bytes": 18007261184,
+                    "available_inodes": 4825812
+                  },
+                  "bytes_consumed": 4100096,
+                  "device": 42,
+                  "inodes_consumed": 1568,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-2/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521927-2/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32586700,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32586699,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.2858601519983495,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18000031744,
+                    "available_inodes": 4822205
+                  },
+                  "before": {
+                    "available_bytes": 18003128320,
+                    "available_inodes": 4824241
+                  },
+                  "bytes_consumed": 3096576,
+                  "device": 42,
+                  "inodes_consumed": 2036,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521927-3/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32592128,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32592127,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.5706027729902416,
+              "warnings": []
+            },
+            "fresh_checkout": "/tmp/.bh-cache-benchmark-2521927-3",
+            "materialization_evidence": {
+              "basis": "cache device 42 equals target device 42; framework control was {'PNPM_CONFIG_STORE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm', 'npm_config_store_dir': '/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm', 'PNPM_CONFIG_PACKAGE_IMPORT_METHOD': 'hardlink', 'npm_config_package_import_method': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 3,
+            "selection": {
+              "admitted": true,
+              "application": "pnpm",
+              "cache_device": 42,
+              "diagnostic": "ephemeral cache admitted on dependency target device",
+              "environment": {
+                "PNPM_CONFIG_PACKAGE_IMPORT_METHOD": "hardlink",
+                "PNPM_CONFIG_STORE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm",
+                "npm_config_package_import_method": "hardlink",
+                "npm_config_store_dir": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm"
+              },
+              "free_bytes": 18003128320,
+              "free_inodes": 4824241,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm",
+              "target": "/tmp/.bh-cache-benchmark-2521927-3/node_modules",
+              "target_device": 42,
+              "tier": "ephemeral"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 17994317824,
+                    "available_inodes": 4820146
+                  },
+                  "before": {
+                    "available_bytes": 18000031744,
+                    "available_inodes": 4822204
+                  },
+                  "bytes_consumed": 5713920,
+                  "device": 42,
+                  "inodes_consumed": 2058,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/pnpm-ephemeral/run-3/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 42,
+                  "inodes_consumed": null,
+                  "root": "/tmp/.bh-cache-benchmark-2521927-3/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 42,
+                    "inode": 32592128,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 42,
+                    "inode": 32592127,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.3517322300031083,
+              "warnings": []
+            }
+          }
+        ],
+        "cleanup": "benchmark roots are retained; remove them only while idle using the package manager's supported cache command or discard the containing tmpfs"
+      }
+    },
+    {
+      "application": "uv",
+      "checkout_class": "persistent",
+      "cache_device": 65024,
+      "target_device": 65024,
+      "command": [
+        "uv",
+        "sync",
+        "--offline",
+        "--no-install-project"
+      ],
+      "repetitions": 3,
+      "configured_methods": [
+        "hardlink"
+      ],
+      "hardlinks_observed": 18,
+      "hardlink_identities": [
+        {
+          "device": 65024,
+          "inode": 1967501,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 65024,
+          "inode": 1967504,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 65024,
+          "inode": 1967503,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 65024,
+          "inode": 1967550,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 65024,
+          "inode": 1967553,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 65024,
+          "inode": 1967552,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 65024,
+          "inode": 1967574,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 65024,
+          "inode": 1967577,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 65024,
+          "inode": 1967576,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 65024,
+          "inode": 1967501,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 65024,
+          "inode": 1967504,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 65024,
+          "inode": 1967503,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 65024,
+          "inode": 1967550,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 65024,
+          "inode": 1967553,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 65024,
+          "inode": 1967552,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        },
+        {
+          "device": 65024,
+          "inode": 1967574,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+        },
+        {
+          "device": 65024,
+          "inode": 1967577,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+        },
+        {
+          "device": 65024,
+          "inode": 1967576,
+          "link_count": 2,
+          "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+        }
+      ],
+      "target_files_inspected": 144,
+      "copy_fallback_observations": 0,
+      "warnings": [],
+      "median_seconds": {
+        "cold": 0.21707304200390354,
+        "warm": 0.1756614660116611
+      },
+      "source_artifact": {
+        "schema_version": 1,
+        "application": "uv",
+        "checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-fixture",
+        "checkout_class": "persistent",
+        "command": [
+          "uv",
+          "sync",
+          "--offline",
+          "--no-install-project"
+        ],
+        "repetitions": 3,
+        "median_seconds": {
+          "cold": 0.21707304200390354,
+          "warm": 0.1756614660116611
+        },
+        "runs": [
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170335727616,
+                    "available_inodes": 12838833
+                  },
+                  "before": {
+                    "available_bytes": 170335789056,
+                    "available_inodes": 12838852
+                  },
+                  "bytes_consumed": 61440,
+                  "device": 65024,
+                  "inodes_consumed": 19,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-1/uv",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-1/uv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-1/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-1/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1967501,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967504,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967503,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.2029024160001427,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-1",
+            "materialization_evidence": {
+              "basis": "cache device 65024 equals target device 65024; framework control was {'UV_CACHE_DIR': '/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-1/uv', 'UV_LINK_MODE': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 1,
+            "selection": {
+              "admitted": true,
+              "application": "uv",
+              "cache_device": 65024,
+              "diagnostic": "durable cache admitted on dependency target device",
+              "environment": {
+                "UV_CACHE_DIR": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-1/uv",
+                "UV_LINK_MODE": "hardlink"
+              },
+              "free_bytes": 170335789056,
+              "free_inodes": 12838852,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-1/uv",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-1/.venv",
+              "target_device": 65024,
+              "tier": "durable"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170335588352,
+                    "available_inodes": 12838797
+                  },
+                  "before": {
+                    "available_bytes": 170335727616,
+                    "available_inodes": 12838833
+                  },
+                  "bytes_consumed": 139264,
+                  "device": 65024,
+                  "inodes_consumed": 36,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-1/uv",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-1/uv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-1/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-1/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1967501,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967504,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967503,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.17722671299998183,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170335641600,
+                    "available_inodes": 12838807
+                  },
+                  "before": {
+                    "available_bytes": 170335703040,
+                    "available_inodes": 12838826
+                  },
+                  "bytes_consumed": 61440,
+                  "device": 65024,
+                  "inodes_consumed": 19,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-2/uv",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-2/uv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-2/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-2/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1967550,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967553,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967552,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.21707304200390354,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-2",
+            "materialization_evidence": {
+              "basis": "cache device 65024 equals target device 65024; framework control was {'UV_CACHE_DIR': '/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-2/uv', 'UV_LINK_MODE': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 2,
+            "selection": {
+              "admitted": true,
+              "application": "uv",
+              "cache_device": 65024,
+              "diagnostic": "durable cache admitted on dependency target device",
+              "environment": {
+                "UV_CACHE_DIR": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-2/uv",
+                "UV_LINK_MODE": "hardlink"
+              },
+              "free_bytes": 170335703040,
+              "free_inodes": 12838826,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-2/uv",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-2/.venv",
+              "target_device": 65024,
+              "tier": "durable"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170335502336,
+                    "available_inodes": 12838771
+                  },
+                  "before": {
+                    "available_bytes": 170335641600,
+                    "available_inodes": 12838807
+                  },
+                  "bytes_consumed": 139264,
+                  "device": 65024,
+                  "inodes_consumed": 36,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-2/uv",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-2/uv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-2/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-2/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1967550,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967553,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967552,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.1756614660116611,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170335535104,
+                    "available_inodes": 12838784
+                  },
+                  "before": {
+                    "available_bytes": 170335617024,
+                    "available_inodes": 12838800
+                  },
+                  "bytes_consumed": 81920,
+                  "device": 65024,
+                  "inodes_consumed": 16,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-3/uv",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-3/uv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-3/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-3/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1967574,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967577,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967576,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.2292274959909264,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-3",
+            "materialization_evidence": {
+              "basis": "cache device 65024 equals target device 65024; framework control was {'UV_CACHE_DIR': '/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-3/uv', 'UV_LINK_MODE': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 3,
+            "selection": {
+              "admitted": true,
+              "application": "uv",
+              "cache_device": 65024,
+              "diagnostic": "durable cache admitted on dependency target device",
+              "environment": {
+                "UV_CACHE_DIR": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-3/uv",
+                "UV_LINK_MODE": "hardlink"
+              },
+              "free_bytes": 170335617024,
+              "free_inodes": 12838800,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-3/uv",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-3/.venv",
+              "target_device": 65024,
+              "tier": "durable"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170334371840,
+                    "available_inodes": 12838503
+                  },
+                  "before": {
+                    "available_bytes": 170335535104,
+                    "available_inodes": 12838784
+                  },
+                  "bytes_consumed": 1163264,
+                  "device": 65024,
+                  "inodes_consumed": 281,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-3/uv",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-3/uv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/uv/run-3/uv"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522254-3/.venv",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1967574,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep/__init__.py"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967577,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/WHEEL"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967576,
+                    "link_count": 2,
+                    "path": "lib/python3.11/site-packages/cache_probe_dep-0.1.0.dist-info/METADATA"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 3,
+                "same_device": true,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.1677199599944288,
+              "warnings": []
+            }
+          }
+        ],
+        "cleanup": "benchmark roots are retained; remove them only while idle using the package manager's supported cache command or discard the containing tmpfs"
+      }
+    },
+    {
+      "application": "pnpm",
+      "checkout_class": "persistent",
+      "cache_device": 65024,
+      "target_device": 65024,
+      "command": [
+        "pnpm",
+        "install",
+        "--frozen-lockfile",
+        "--offline"
+      ],
+      "repetitions": 3,
+      "configured_methods": [
+        "hardlink"
+      ],
+      "hardlinks_observed": 12,
+      "hardlink_identities": [
+        {
+          "device": 65024,
+          "inode": 1967861,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 65024,
+          "inode": 1967860,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 65024,
+          "inode": 1968101,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 65024,
+          "inode": 1967481,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 65024,
+          "inode": 1968369,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 65024,
+          "inode": 1968109,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 65024,
+          "inode": 1967861,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 65024,
+          "inode": 1967860,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 65024,
+          "inode": 1968101,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 65024,
+          "inode": 1967481,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        },
+        {
+          "device": 65024,
+          "inode": 1968369,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+        },
+        {
+          "device": 65024,
+          "inode": 1968109,
+          "link_count": 2,
+          "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+        }
+      ],
+      "target_files_inspected": 36,
+      "copy_fallback_observations": 0,
+      "warnings": [],
+      "median_seconds": {
+        "cold": 1.5617268450005213,
+        "warm": 1.5186607340001501
+      },
+      "source_artifact": {
+        "schema_version": 1,
+        "application": "pnpm",
+        "checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-fixture",
+        "checkout_class": "persistent",
+        "command": [
+          "pnpm",
+          "install",
+          "--frozen-lockfile",
+          "--offline"
+        ],
+        "repetitions": 3,
+        "median_seconds": {
+          "cold": 1.5617268450005213,
+          "warm": 1.5186607340001501
+        },
+        "runs": [
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170334597120,
+                    "available_inodes": 12838550
+                  },
+                  "before": {
+                    "available_bytes": 170336043008,
+                    "available_inodes": 12838917
+                  },
+                  "bytes_consumed": 1445888,
+                  "device": 65024,
+                  "inodes_consumed": 367,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-1/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1967861,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967860,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.614022900001146,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-1",
+            "materialization_evidence": {
+              "basis": "cache device 65024 equals target device 65024; framework control was {'PNPM_CONFIG_STORE_DIR': '/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm', 'npm_config_store_dir': '/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm', 'PNPM_CONFIG_PACKAGE_IMPORT_METHOD': 'hardlink', 'npm_config_package_import_method': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 1,
+            "selection": {
+              "admitted": true,
+              "application": "pnpm",
+              "cache_device": 65024,
+              "diagnostic": "durable cache admitted on dependency target device",
+              "environment": {
+                "PNPM_CONFIG_PACKAGE_IMPORT_METHOD": "hardlink",
+                "PNPM_CONFIG_STORE_DIR": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm",
+                "npm_config_package_import_method": "hardlink",
+                "npm_config_store_dir": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm"
+              },
+              "free_bytes": 170336043008,
+              "free_inodes": 12838917,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-1/node_modules",
+              "target_device": 65024,
+              "tier": "durable"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170334552064,
+                    "available_inodes": 12838542
+                  },
+                  "before": {
+                    "available_bytes": 170334597120,
+                    "available_inodes": 12838550
+                  },
+                  "bytes_consumed": 45056,
+                  "device": 65024,
+                  "inodes_consumed": 8,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-1/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-1/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1967861,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967860,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.5186607340001501,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170333523968,
+                    "available_inodes": 12838291
+                  },
+                  "before": {
+                    "available_bytes": 170334584832,
+                    "available_inodes": 12838549
+                  },
+                  "bytes_consumed": 1060864,
+                  "device": 65024,
+                  "inodes_consumed": 258,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-2/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1968101,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967481,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.5617268450005213,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-2",
+            "materialization_evidence": {
+              "basis": "cache device 65024 equals target device 65024; framework control was {'PNPM_CONFIG_STORE_DIR': '/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm', 'npm_config_store_dir': '/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm', 'PNPM_CONFIG_PACKAGE_IMPORT_METHOD': 'hardlink', 'npm_config_package_import_method': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 2,
+            "selection": {
+              "admitted": true,
+              "application": "pnpm",
+              "cache_device": 65024,
+              "diagnostic": "durable cache admitted on dependency target device",
+              "environment": {
+                "PNPM_CONFIG_PACKAGE_IMPORT_METHOD": "hardlink",
+                "PNPM_CONFIG_STORE_DIR": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm",
+                "npm_config_package_import_method": "hardlink",
+                "npm_config_store_dir": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm"
+              },
+              "free_bytes": 170334584832,
+              "free_inodes": 12838549,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-2/node_modules",
+              "target_device": 65024,
+              "tier": "durable"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170333487104,
+                    "available_inodes": 12838283
+                  },
+                  "before": {
+                    "available_bytes": 170333523968,
+                    "available_inodes": 12838291
+                  },
+                  "bytes_consumed": 36864,
+                  "device": 65024,
+                  "inodes_consumed": 8,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-2/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-2/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1968101,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1967481,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.4285456219949992,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170332446720,
+                    "available_inodes": 12838031
+                  },
+                  "before": {
+                    "available_bytes": 170333519872,
+                    "available_inodes": 12838290
+                  },
+                  "bytes_consumed": 1073152,
+                  "device": 65024,
+                  "inodes_consumed": 259,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-3/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1968369,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1968109,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.5589991419983562,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-3",
+            "materialization_evidence": {
+              "basis": "cache device 65024 equals target device 65024; framework control was {'PNPM_CONFIG_STORE_DIR': '/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm', 'npm_config_store_dir': '/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm', 'PNPM_CONFIG_PACKAGE_IMPORT_METHOD': 'hardlink', 'npm_config_package_import_method': 'hardlink'}",
+              "device_compatible": true,
+              "hardlink_fallback_warning": false,
+              "requested_method": "hardlink"
+            },
+            "repetition": 3,
+            "selection": {
+              "admitted": true,
+              "application": "pnpm",
+              "cache_device": 65024,
+              "diagnostic": "durable cache admitted on dependency target device",
+              "environment": {
+                "PNPM_CONFIG_PACKAGE_IMPORT_METHOD": "hardlink",
+                "PNPM_CONFIG_STORE_DIR": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm",
+                "npm_config_package_import_method": "hardlink",
+                "npm_config_store_dir": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm"
+              },
+              "free_bytes": 170333519872,
+              "free_inodes": 12838290,
+              "link_method": "hardlink",
+              "managed": true,
+              "path": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-3/node_modules",
+              "target_device": 65024,
+              "tier": "durable"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 170332409856,
+                    "available_inodes": 12838023
+                  },
+                  "before": {
+                    "available_bytes": 170332446720,
+                    "available_inodes": 12838031
+                  },
+                  "bytes_consumed": 36864,
+                  "device": 65024,
+                  "inodes_consumed": 8,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm",
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-final-v2/pnpm/run-3/pnpm"
+                },
+                "target": {
+                  "after": null,
+                  "before": null,
+                  "bytes_consumed": null,
+                  "device": 65024,
+                  "inodes_consumed": null,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2521952-3/node_modules",
+                  "same_device_as": "cache",
+                  "sampled_from_after": null,
+                  "sampled_from_before": null
+                }
+              },
+              "materialization": {
+                "configured_method": "hardlink",
+                "cross_device_copy_fallback_observed": false,
+                "hardlink_identities": [
+                  {
+                    "device": 65024,
+                    "inode": 1968369,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/package.json"
+                  },
+                  {
+                    "device": 65024,
+                    "inode": 1968109,
+                    "link_count": 2,
+                    "path": ".pnpm/cache-probe-dep@file+vendor+cache-probe-dep-0.1.0.tgz/node_modules/cache-probe-dep/index.js"
+                  }
+                ],
+                "hardlink_use_observed": true,
+                "hardlinked_target_files": 2,
+                "same_device": true,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.5967757330072345,
+              "warnings": []
+            }
+          }
+        ],
+        "cleanup": "benchmark roots are retained; remove them only while idle using the package manager's supported cache command or discard the containing tmpfs"
+      }
+    },
+    {
+      "application": "uv",
+      "checkout_class": "persistent",
+      "cache_device": 42,
+      "target_device": 65024,
+      "command": [
+        "uv",
+        "sync",
+        "--offline",
+        "--no-install-project"
+      ],
+      "repetitions": 3,
+      "configured_methods": [
+        "copy"
+      ],
+      "hardlinks_observed": 0,
+      "hardlink_identities": [],
+      "target_files_inspected": 144,
+      "copy_fallback_observations": 6,
+      "warnings": [],
+      "median_seconds": {
+        "cold": 0.22032038599718362,
+        "warm": 0.1582931919983821
+      },
+      "source_artifact": {
+        "schema_version": 1,
+        "application": "uv",
+        "checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-fixture",
+        "checkout_class": "persistent",
+        "command": [
+          "uv",
+          "sync",
+          "--offline",
+          "--no-install-project"
+        ],
+        "repetitions": 3,
+        "median_seconds": {
+          "cold": 0.22032038599718362,
+          "warm": 0.1582931919983821
+        },
+        "runs": [
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18024570880,
+                    "available_inodes": 4831723
+                  },
+                  "before": {
+                    "available_bytes": 18025517056,
+                    "available_inodes": 4832164
+                  },
+                  "bytes_consumed": 946176,
+                  "device": 42,
+                  "inodes_consumed": 441,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-1",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-1",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-1"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170335854592,
+                    "available_inodes": 12838869
+                  },
+                  "before": {
+                    "available_bytes": 170335989760,
+                    "available_inodes": 12838904
+                  },
+                  "bytes_consumed": 135168,
+                  "device": 65024,
+                  "inodes_consumed": 35,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-1/.venv",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-1/.venv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-1"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.22032038599718362,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-1",
+            "materialization_evidence": {
+              "basis": "cache device 42 differs from target device 65024; framework control was {'UV_CACHE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-1', 'UV_LINK_MODE': 'copy'}",
+              "device_compatible": false,
+              "hardlink_fallback_warning": false,
+              "requested_method": "copy"
+            },
+            "repetition": 1,
+            "selection": {
+              "admitted": false,
+              "application": "uv",
+              "cache_device": 42,
+              "diagnostic": "explicit native cache override; cache and dependency target are on different devices, using copy mode",
+              "environment": {
+                "UV_CACHE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-1",
+                "UV_LINK_MODE": "copy"
+              },
+              "free_bytes": 18025517056,
+              "free_inodes": 4832164,
+              "link_method": "copy",
+              "managed": false,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-1",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-1/.venv",
+              "target_device": 65024,
+              "tier": "native-explicit"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18023788544,
+                    "available_inodes": 4831490
+                  },
+                  "before": {
+                    "available_bytes": 18024562688,
+                    "available_inodes": 4831716
+                  },
+                  "bytes_consumed": 774144,
+                  "device": 42,
+                  "inodes_consumed": 226,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-1",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-1",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-1"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170335715328,
+                    "available_inodes": 12838838
+                  },
+                  "before": {
+                    "available_bytes": 170335854592,
+                    "available_inodes": 12838869
+                  },
+                  "bytes_consumed": 139264,
+                  "device": 65024,
+                  "inodes_consumed": 31,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-1/.venv",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-1/.venv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-1/.venv"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.15399501800129656,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18023006208,
+                    "available_inodes": 4831256
+                  },
+                  "before": {
+                    "available_bytes": 18023559168,
+                    "available_inodes": 4831415
+                  },
+                  "bytes_consumed": 552960,
+                  "device": 42,
+                  "inodes_consumed": 159,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-2",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-2",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-2"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170335526912,
+                    "available_inodes": 12838789
+                  },
+                  "before": {
+                    "available_bytes": 170335850496,
+                    "available_inodes": 12838873
+                  },
+                  "bytes_consumed": 323584,
+                  "device": 65024,
+                  "inodes_consumed": 84,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-2/.venv",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-2/.venv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-2"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.2139915819861926,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-2",
+            "materialization_evidence": {
+              "basis": "cache device 42 differs from target device 65024; framework control was {'UV_CACHE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-2', 'UV_LINK_MODE': 'copy'}",
+              "device_compatible": false,
+              "hardlink_fallback_warning": false,
+              "requested_method": "copy"
+            },
+            "repetition": 2,
+            "selection": {
+              "admitted": false,
+              "application": "uv",
+              "cache_device": 42,
+              "diagnostic": "explicit native cache override; cache and dependency target are on different devices, using copy mode",
+              "environment": {
+                "UV_CACHE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-2",
+                "UV_LINK_MODE": "copy"
+              },
+              "free_bytes": 18023559168,
+              "free_inodes": 4831415,
+              "link_method": "copy",
+              "managed": false,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-2",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-2/.venv",
+              "target_device": 65024,
+              "tier": "native-explicit"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18022481920,
+                    "available_inodes": 4831087
+                  },
+                  "before": {
+                    "available_bytes": 18023006208,
+                    "available_inodes": 4831256
+                  },
+                  "bytes_consumed": 524288,
+                  "device": 42,
+                  "inodes_consumed": 169,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-2",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-2",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-2"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170335694848,
+                    "available_inodes": 12838821
+                  },
+                  "before": {
+                    "available_bytes": 170335526912,
+                    "available_inodes": 12838789
+                  },
+                  "bytes_consumed": -167936,
+                  "device": 65024,
+                  "inodes_consumed": -32,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-2/.venv",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-2/.venv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-2/.venv"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.1582931919983821,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18021556224,
+                    "available_inodes": 4830840
+                  },
+                  "before": {
+                    "available_bytes": 18022313984,
+                    "available_inodes": 4831072
+                  },
+                  "bytes_consumed": 757760,
+                  "device": 42,
+                  "inodes_consumed": 232,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-3",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-3",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-3"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170335440896,
+                    "available_inodes": 12838763
+                  },
+                  "before": {
+                    "available_bytes": 170335764480,
+                    "available_inodes": 12838847
+                  },
+                  "bytes_consumed": 323584,
+                  "device": 65024,
+                  "inodes_consumed": 84,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-3/.venv",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-3/.venv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-3"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.24068567900394555,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-3",
+            "materialization_evidence": {
+              "basis": "cache device 42 differs from target device 65024; framework control was {'UV_CACHE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-3', 'UV_LINK_MODE': 'copy'}",
+              "device_compatible": false,
+              "hardlink_fallback_warning": false,
+              "requested_method": "copy"
+            },
+            "repetition": 3,
+            "selection": {
+              "admitted": false,
+              "application": "uv",
+              "cache_device": 42,
+              "diagnostic": "explicit native cache override; cache and dependency target are on different devices, using copy mode",
+              "environment": {
+                "UV_CACHE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-3",
+                "UV_LINK_MODE": "copy"
+              },
+              "free_bytes": 18022313984,
+              "free_inodes": 4831072,
+              "link_method": "copy",
+              "managed": false,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-3",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-3/.venv",
+              "target_device": 65024,
+              "tier": "native-explicit"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18020876288,
+                    "available_inodes": 4830635
+                  },
+                  "before": {
+                    "available_bytes": 18021552128,
+                    "available_inodes": 4830840
+                  },
+                  "bytes_consumed": 675840,
+                  "device": 42,
+                  "inodes_consumed": 205,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-3",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-3",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/uv/run-3"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170335481856,
+                    "available_inodes": 12838779
+                  },
+                  "before": {
+                    "available_bytes": 170335440896,
+                    "available_inodes": 12838763
+                  },
+                  "bytes_consumed": -40960,
+                  "device": 65024,
+                  "inodes_consumed": -16,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-3/.venv",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-3/.venv",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2522002-3/.venv"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 24
+              },
+              "returncode": 0,
+              "seconds": 0.17607079399749637,
+              "warnings": []
+            }
+          }
+        ],
+        "cleanup": "benchmark roots are retained; remove them only while idle using the package manager's supported cache command or discard the containing tmpfs"
+      }
+    },
+    {
+      "application": "pnpm",
+      "checkout_class": "persistent",
+      "cache_device": 42,
+      "target_device": 65024,
+      "command": [
+        "pnpm",
+        "install",
+        "--frozen-lockfile",
+        "--offline"
+      ],
+      "repetitions": 3,
+      "configured_methods": [
+        "copy"
+      ],
+      "hardlinks_observed": 0,
+      "hardlink_identities": [],
+      "target_files_inspected": 36,
+      "copy_fallback_observations": 6,
+      "warnings": [],
+      "median_seconds": {
+        "cold": 1.4522384449956007,
+        "warm": 1.534365505009191
+      },
+      "source_artifact": {
+        "schema_version": 1,
+        "application": "pnpm",
+        "checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.cache-proof-fixture",
+        "checkout_class": "persistent",
+        "command": [
+          "pnpm",
+          "install",
+          "--frozen-lockfile",
+          "--offline"
+        ],
+        "repetitions": 3,
+        "median_seconds": {
+          "cold": 1.4522384449956007,
+          "warm": 1.534365505009191
+        },
+        "runs": [
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18013159424,
+                    "available_inodes": 4828081
+                  },
+                  "before": {
+                    "available_bytes": 18020020224,
+                    "available_inodes": 4830022
+                  },
+                  "bytes_consumed": 6860800,
+                  "device": 42,
+                  "inodes_consumed": 1941,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170334519296,
+                    "available_inodes": 12838540
+                  },
+                  "before": {
+                    "available_bytes": 170334334976,
+                    "available_inodes": 12838499
+                  },
+                  "bytes_consumed": -184320,
+                  "device": 65024,
+                  "inodes_consumed": -41,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-1/node_modules",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-1/node_modules",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-1"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.540833698993083,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-1",
+            "materialization_evidence": {
+              "basis": "cache device 42 differs from target device 65024; framework control was {'PNPM_CONFIG_STORE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1', 'npm_config_store_dir': '/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1', 'PNPM_CONFIG_PACKAGE_IMPORT_METHOD': 'copy', 'npm_config_package_import_method': 'copy'}",
+              "device_compatible": false,
+              "hardlink_fallback_warning": false,
+              "requested_method": "copy"
+            },
+            "repetition": 1,
+            "selection": {
+              "admitted": false,
+              "application": "pnpm",
+              "cache_device": 42,
+              "diagnostic": "explicit native cache override; cache and dependency target are on different devices, using copy mode",
+              "environment": {
+                "PNPM_CONFIG_PACKAGE_IMPORT_METHOD": "copy",
+                "PNPM_CONFIG_STORE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1",
+                "npm_config_package_import_method": "copy",
+                "npm_config_store_dir": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1"
+              },
+              "free_bytes": 18020020224,
+              "free_inodes": 4830022,
+              "link_method": "copy",
+              "managed": false,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-1/node_modules",
+              "target_device": 65024,
+              "tier": "native-explicit"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18007089152,
+                    "available_inodes": 4825691
+                  },
+                  "before": {
+                    "available_bytes": 18013159424,
+                    "available_inodes": 4828081
+                  },
+                  "bytes_consumed": 6070272,
+                  "device": 42,
+                  "inodes_consumed": 2390,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-1"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170333466624,
+                    "available_inodes": 12838285
+                  },
+                  "before": {
+                    "available_bytes": 170334519296,
+                    "available_inodes": 12838540
+                  },
+                  "bytes_consumed": 1052672,
+                  "device": 65024,
+                  "inodes_consumed": 255,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-1/node_modules",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-1/node_modules",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-1/node_modules"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.5421083480032394,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 18001526784,
+                    "available_inodes": 4823739
+                  },
+                  "before": {
+                    "available_bytes": 18006913024,
+                    "available_inodes": 4825613
+                  },
+                  "bytes_consumed": 5386240,
+                  "device": 42,
+                  "inodes_consumed": 1874,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170333454336,
+                    "available_inodes": 12838281
+                  },
+                  "before": {
+                    "available_bytes": 170333495296,
+                    "available_inodes": 12838292
+                  },
+                  "bytes_consumed": 40960,
+                  "device": 65024,
+                  "inodes_consumed": 11,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-2/node_modules",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-2/node_modules",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-2"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.4522384449956007,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-2",
+            "materialization_evidence": {
+              "basis": "cache device 42 differs from target device 65024; framework control was {'PNPM_CONFIG_STORE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2', 'npm_config_store_dir': '/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2', 'PNPM_CONFIG_PACKAGE_IMPORT_METHOD': 'copy', 'npm_config_package_import_method': 'copy'}",
+              "device_compatible": false,
+              "hardlink_fallback_warning": false,
+              "requested_method": "copy"
+            },
+            "repetition": 2,
+            "selection": {
+              "admitted": false,
+              "application": "pnpm",
+              "cache_device": 42,
+              "diagnostic": "explicit native cache override; cache and dependency target are on different devices, using copy mode",
+              "environment": {
+                "PNPM_CONFIG_PACKAGE_IMPORT_METHOD": "copy",
+                "PNPM_CONFIG_STORE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2",
+                "npm_config_package_import_method": "copy",
+                "npm_config_store_dir": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2"
+              },
+              "free_bytes": 18006913024,
+              "free_inodes": 4825613,
+              "link_method": "copy",
+              "managed": false,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-2/node_modules",
+              "target_device": 65024,
+              "tier": "native-explicit"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 17999306752,
+                    "available_inodes": 4821872
+                  },
+                  "before": {
+                    "available_bytes": 18001518592,
+                    "available_inodes": 4823739
+                  },
+                  "bytes_consumed": 2211840,
+                  "device": 42,
+                  "inodes_consumed": 1867,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-2"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170332401664,
+                    "available_inodes": 12838027
+                  },
+                  "before": {
+                    "available_bytes": 170333454336,
+                    "available_inodes": 12838281
+                  },
+                  "bytes_consumed": 1052672,
+                  "device": 65024,
+                  "inodes_consumed": 254,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-2/node_modules",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-2/node_modules",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-2/node_modules"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.524008843000047,
+              "warnings": []
+            }
+          },
+          {
+            "cold": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 17993039872,
+                    "available_inodes": 4819517
+                  },
+                  "before": {
+                    "available_bytes": 17999187968,
+                    "available_inodes": 4821825
+                  },
+                  "bytes_consumed": 6148096,
+                  "device": 42,
+                  "inodes_consumed": 2308,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170332405760,
+                    "available_inodes": 12838022
+                  },
+                  "before": {
+                    "available_bytes": 170332426240,
+                    "available_inodes": 12838034
+                  },
+                  "bytes_consumed": 20480,
+                  "device": 65024,
+                  "inodes_consumed": 12,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-3/node_modules",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-3/node_modules",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-3"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.317863951990148,
+              "warnings": []
+            },
+            "fresh_checkout": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-3",
+            "materialization_evidence": {
+              "basis": "cache device 42 differs from target device 65024; framework control was {'PNPM_CONFIG_STORE_DIR': '/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3', 'npm_config_store_dir': '/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3', 'PNPM_CONFIG_PACKAGE_IMPORT_METHOD': 'copy', 'npm_config_package_import_method': 'copy'}",
+              "device_compatible": false,
+              "hardlink_fallback_warning": false,
+              "requested_method": "copy"
+            },
+            "repetition": 3,
+            "selection": {
+              "admitted": false,
+              "application": "pnpm",
+              "cache_device": 42,
+              "diagnostic": "explicit native cache override; cache and dependency target are on different devices, using copy mode",
+              "environment": {
+                "PNPM_CONFIG_PACKAGE_IMPORT_METHOD": "copy",
+                "PNPM_CONFIG_STORE_DIR": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3",
+                "npm_config_package_import_method": "copy",
+                "npm_config_store_dir": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3"
+              },
+              "free_bytes": 17999187968,
+              "free_inodes": 4821825,
+              "link_method": "copy",
+              "managed": false,
+              "path": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3",
+              "target": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-3/node_modules",
+              "target_device": 65024,
+              "tier": "native-explicit"
+            },
+            "source_revision": "HEAD",
+            "warm": {
+              "cache_hit_reported": false,
+              "capacity": {
+                "cache": {
+                  "after": {
+                    "available_bytes": 17985466368,
+                    "available_inodes": 4817380
+                  },
+                  "before": {
+                    "available_bytes": 17993039872,
+                    "available_inodes": 4819515
+                  },
+                  "bytes_consumed": 7573504,
+                  "device": 42,
+                  "inodes_consumed": 2135,
+                  "root": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3",
+                  "sampled_from_after": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3",
+                  "sampled_from_before": "/tmp/bh-7ks1c.8-proof-final-v2/native/pnpm/run-3"
+                },
+                "target": {
+                  "after": {
+                    "available_bytes": 170332520448,
+                    "available_inodes": 12838050
+                  },
+                  "before": {
+                    "available_bytes": 170332405760,
+                    "available_inodes": 12838022
+                  },
+                  "bytes_consumed": -114688,
+                  "device": 65024,
+                  "inodes_consumed": -28,
+                  "root": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-3/node_modules",
+                  "same_device_as": null,
+                  "sampled_from_after": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-3/node_modules",
+                  "sampled_from_before": "/data/bees/beadhive/repos/github/beadhive/beadhive/.bh-cache-benchmark-2523097-3/node_modules"
+                }
+              },
+              "materialization": {
+                "configured_method": "copy",
+                "cross_device_copy_fallback_observed": true,
+                "hardlink_identities": [],
+                "hardlink_use_observed": false,
+                "hardlinked_target_files": 0,
+                "same_device": false,
+                "target_files_inspected": 6
+              },
+              "returncode": 0,
+              "seconds": 1.534365505009191,
+              "warnings": []
+            }
+          }
+        ],
+        "cleanup": "benchmark roots are retained; remove them only while idle using the package manager's supported cache command or discard the containing tmpfs"
+      }
+    }
+  ]
+}

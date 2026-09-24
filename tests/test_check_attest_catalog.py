@@ -15,6 +15,15 @@ def test_catalog_partitions_check_all() -> None:
     assert MODULE.main() == 0
 
 
+def test_plural_package_attestation_alias_preserves_canonical_selection() -> None:
+    justfile = (ROOT / "justfile").read_text()
+
+    assert MODULE._recipe_body(justfile, "attest-packages") == ["    just attest-package"]
+    assert MODULE.KEY_RECIPES["package"] == ("attest-package", ("pants-attest",))
+    assert "attest-packages" not in MODULE._check_all_dependencies(justfile)
+    assert MODULE.main() == 0
+
+
 def test_architecture_key_owns_the_bootstrap_safe_gate_recipe() -> None:
     assert "architecture-structural-check" in MODULE.KEY_RECIPES["architecture-contracts"][1]
     assert "architecture-check" not in MODULE.KEY_RECIPES["architecture-contracts"][1]

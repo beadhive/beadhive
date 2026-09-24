@@ -189,6 +189,8 @@ if [ "${#CACHE_LINES[@]}" -ge 2 ]; then
         if [ "${CACHE_APPLICATION}" = "uv" ]; then
             args+=(--setenv UV_CACHE_DIR "${CACHE_PATH}" --setenv UV_LINK_MODE "${CACHE_LINK_MODE}")
         else
+            args+=(--setenv PNPM_CONFIG_STORE_DIR "${CACHE_PATH}")
+            args+=(--setenv PNPM_CONFIG_PACKAGE_IMPORT_METHOD "${CACHE_LINK_MODE}")
             args+=(--setenv npm_config_store_dir "${CACHE_PATH}")
             args+=(--setenv npm_config_package_import_method "${CACHE_LINK_MODE}")
         fi

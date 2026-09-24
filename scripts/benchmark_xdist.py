@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import platform
 import re
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -21,7 +23,11 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SELECTIONS = {"unit": "not integration", "integration-land": "integration"}
-SUMMARY_RE = re.compile(r"=+\s*(?P<body>.+?)\s+in\s+(?P<seconds>\d+(?:\.\d+)?)s\s*=+", re.MULTILINE)
+SUMMARY_RE = re.compile(
+    r"=+\s*(?P<body>.+?)\s+in\s+(?P<seconds>\d+(?:\.\d+)?)s"
+    r"(?:\s+\([^)]*\))?\s*=+",
+    re.MULTILINE,
+)
 COUNT_RE = re.compile(
     r"(?P<count>\d+)\s+(?P<kind>passed|failed|skipped|error(?:s)?|xfailed|xpassed)"
 )
@@ -88,28 +94,68 @@ def aggregate_runs(runs: Sequence[dict[str, Any]]) -> list[dict[str, Any]]:
             "median_external_wall_seconds": statistics.median(
                 sample["external_wall_seconds"] for sample in samples
             ),
-            "median_dolt_slot_queue_seconds": statistics.median(
-                sample.get("dolt_slots", {}).get("total_queue_seconds", 0.0) for sample in samples
+            "external_wall_spread_seconds": {
+                "min": min(sample["external_wall_seconds"] for sample in samples),
+                "max": max(sample["external_wall_seconds"] for sample in samples),
+                "stdev": statistics.stdev(sample["external_wall_seconds"] for sample in samples)
+                if len(samples) > 1
+                else 0.0,
+            },
+            "pytest_elapsed_spread_seconds": {
+                "min": min(sample["pytest_elapsed_seconds"] for sample in samples),
+                "max": max(sample["pytest_elapsed_seconds"] for sample in samples),
+                "stdev": statistics.stdev(sample["pytest_elapsed_seconds"] for sample in samples)
+                if len(samples) > 1
+                else 0.0,
+            },
+            "median_dolt_slot_queue_seconds": _median_observed_slot_metric(
+                samples, "total_queue_seconds"
             ),
-            "median_dolt_slot_hold_seconds": statistics.median(
-                sample.get("dolt_slots", {}).get("total_hold_seconds", 0.0) for sample in samples
+            "median_dolt_slot_hold_seconds": _median_observed_slot_metric(
+                samples, "total_hold_seconds"
+            ),
+            "dolt_slot_telemetry_repetitions": sum(
+                sample.get("dolt_slots", {}).get("available", False) for sample in samples
+            ),
+            "median_server_processes_started": statistics.median(
+                sample.get("processes", {}).get("server_processes_started", 0) for sample in samples
+            ),
+            "median_max_active_servers": statistics.median(
+                sample.get("processes", {}).get("max_active_server_processes", 0)
+                for sample in samples
+            ),
+            "median_max_process_tree_count": statistics.median(
+                sample.get("processes", {}).get("max_pytest_process_tree", 0) for sample in samples
             ),
         }
         for (selection, workers), samples in sorted(grouped.items())
     ]
 
 
+def _median_observed_slot_metric(samples: Sequence[dict[str, Any]], key: str) -> float | None:
+    values = [
+        sample["dolt_slots"][key]
+        for sample in samples
+        if sample.get("dolt_slots", {}).get("available", False)
+    ]
+    return statistics.median(values) if values else None
+
+
 def parse_dolt_slot_events(path: Path) -> dict[str, Any]:
     tests: dict[str, dict[str, float]] = {}
+    event_count = 0
     if path.exists():
         for line in path.read_text(encoding="utf-8").splitlines()[:10000]:
             event = json.loads(line)
+            event_count += 1
             row = tests.setdefault(event["test"], {"queue_seconds": 0.0, "hold_seconds": 0.0})
             if event["event"] == "acquired":
                 row["queue_seconds"] = event["queue_seconds"]
             elif event["event"] == "released":
                 row["hold_seconds"] = event["hold_seconds"]
     return {
+        "available": event_count > 0,
+        "event_count": event_count,
         "tests": tests,
         "total_queue_seconds": sum(row["queue_seconds"] for row in tests.values()),
         "total_hold_seconds": sum(row["hold_seconds"] for row in tests.values()),
@@ -133,6 +179,52 @@ def ensure_external_scratch(path: Path) -> Path:
     return path
 
 
+def stage_uv_cache(scratch: Path) -> dict[str, Any]:
+    """Copy the host UV cache into writable benchmark scratch and return its provenance.
+
+    The benchmark runs offline wheel-build tests. A host cache can be readable but mounted
+    read-only (as in the factory sandbox), while uv still needs to create its cache lock. A
+    private scratch copy keeps those tests hermetic and gives every compared run the same cache
+    contents and device placement.
+    """
+    source = Path(command_output(["uv", "cache", "dir"])).expanduser().resolve()
+    destination = (scratch / "uv-cache").absolute()
+    if source == destination:
+        if not source.is_dir():
+            raise BenchmarkError(f"UV cache does not exist: {source}")
+        return {
+            "source": device(source),
+            "effective": device(destination),
+            "strategy": "already-in-scratch",
+        }
+    try:
+        destination.relative_to(source)
+    except ValueError:
+        pass
+    else:
+        raise BenchmarkError(
+            f"benchmark UV cache destination must not be inside its source: {source}"
+        )
+    try:
+        source.relative_to(destination)
+    except ValueError:
+        pass
+    else:
+        raise BenchmarkError(
+            f"benchmark UV cache source must not be inside its destination: {source}"
+        )
+    if not source.is_dir():
+        raise BenchmarkError(f"UV cache does not exist: {source}")
+    if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+        raise BenchmarkError(f"benchmark UV cache destination is unsafe: {destination}")
+    shutil.copytree(source, destination, dirs_exist_ok=True, symlinks=True)
+    return {
+        "source": device(source),
+        "effective": device(destination),
+        "strategy": "copied-to-writable-scratch",
+    }
+
+
 def package_version(name: str) -> str:
     try:
         return version(name)
@@ -140,8 +232,8 @@ def package_version(name: str) -> str:
         return "not-installed"
 
 
-def command_output(command: Sequence[str]) -> str:
-    result = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=True)
+def command_output(command: Sequence[str], cwd: Path = ROOT) -> str:
+    result = subprocess.run(command, cwd=cwd, text=True, capture_output=True, check=True)
     return result.stdout.strip()
 
 
@@ -201,7 +293,7 @@ def parse_materialization_observation(output: str, returncode: int, cache: Path)
     }
 
 
-def observe_uv_materialization(scratch: Path, cache: Path) -> dict[str, Any]:
+def observe_uv_materialization(scratch: Path, cache: Path, root: Path) -> dict[str, Any]:
     probe = Path(tempfile.mkdtemp(prefix="bh-xdist-uv-probe-", dir=scratch))
     try:
         wheels = probe / "wheels"
@@ -209,7 +301,7 @@ def observe_uv_materialization(scratch: Path, cache: Path) -> dict[str, Any]:
         target.mkdir()
         build = subprocess.run(
             ["uv", "build", "--wheel", "--offline", "--out-dir", str(wheels)],
-            cwd=ROOT,
+            cwd=root,
             text=True,
             capture_output=True,
             check=False,
@@ -233,7 +325,7 @@ def observe_uv_materialization(scratch: Path, cache: Path) -> dict[str, Any]:
                 "--verbose",
                 str(wheel),
             ],
-            cwd=ROOT,
+            cwd=root,
             text=True,
             capture_output=True,
             check=False,
@@ -246,9 +338,10 @@ def observe_uv_materialization(scratch: Path, cache: Path) -> dict[str, Any]:
         shutil.rmtree(probe, ignore_errors=True)
 
 
-def cache_locality(scratch: Path) -> dict[str, Any]:
-    cache = Path(command_output(["uv", "cache", "dir"])).resolve()
-    target = Path(sys.prefix).resolve()
+def cache_locality(scratch: Path, root: Path) -> dict[str, Any]:
+    cache = Path(command_output(["uv", "cache", "dir"], cwd=root)).resolve()
+    environment = root / ".venv"
+    target = (environment if environment.exists() else Path(sys.prefix)).resolve()
     same_device = cache.stat().st_dev == target.stat().st_dev
     requested = os.environ.get("UV_LINK_MODE", "auto")
     return {
@@ -258,7 +351,7 @@ def cache_locality(scratch: Path) -> dict[str, Any]:
         "requested_link_mode": requested,
         "hardlinks_supported_by_device_layout": same_device,
         "expected_auto_mode": "hardlink" if same_device else "copy-fallback",
-        "materialization_observation": observe_uv_materialization(scratch, cache),
+        "materialization_observation": observe_uv_materialization(scratch, cache, root),
     }
 
 
@@ -269,13 +362,13 @@ def effective_cpu_count() -> int:
         return os.cpu_count() or 1
 
 
-def validation_slots() -> dict[str, Any]:
+def validation_slots(root: Path) -> dict[str, Any]:
     override = os.environ.get("BH_VALIDATION_SLOTS")
     if override is not None:
         return {"effective": int(override), "source": "BH_VALIDATION_SLOTS"}
     result = subprocess.run(
         ["bh", "config", "get", "work.validation_slots", "--scope", "host"],
-        cwd=ROOT,
+        cwd=root,
         text=True,
         capture_output=True,
         check=False,
@@ -285,11 +378,14 @@ def validation_slots() -> dict[str, Any]:
     return {"effective": 1, "source": "default"}
 
 
-def provenance(scratch: Path) -> dict[str, Any]:
+def provenance(scratch: Path, root: Path, cache_seed: dict[str, Any]) -> dict[str, Any]:
     return {
-        "commit": command_output(["git", "rev-parse", "HEAD"]),
-        "tree": command_output(["git", "write-tree"]),
-        "dirty": bool(command_output(["git", "status", "--porcelain", "--untracked-files=normal"])),
+        "checkout": str(root),
+        "commit": command_output(["git", "rev-parse", "HEAD"], cwd=root),
+        "tree": command_output(["git", "rev-parse", "HEAD^{tree}"], cwd=root),
+        "dirty": bool(
+            command_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=root)
+        ),
         "platform": platform.platform(),
         "python_executable": sys.executable,
         "python_version": platform.python_version(),
@@ -297,25 +393,86 @@ def provenance(scratch: Path) -> dict[str, Any]:
         "xdist_version": package_version("pytest-xdist"),
         "effective_cpu_count": effective_cpu_count(),
         "effective_memory_bytes": memory_limit_bytes(),
-        "validation_slots": validation_slots(),
+        "validation_slots": validation_slots(root),
         "xdist_auto_worker_cap": os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS", "unset"),
-        "cache_locality": cache_locality(scratch),
+        "uv_cache_seed": cache_seed,
+        "cache_locality": cache_locality(scratch, root),
     }
+
+
+def run_process_metrics(scratch: Path, root_pid: int) -> dict[str, Any]:
+    """Sample pytest descendants and Dolt servers configured below this run's scratch root."""
+    proc_root = Path("/proc")
+    if not proc_root.is_dir():
+        return {
+            "server_pids_seen": [],
+            "active_server_count": 0,
+            "process_tree_count": 0,
+        }
+    children: dict[int, list[int]] = {}
+    process_rows: dict[int, tuple[int, list[str]]] = {}
+    for entry in proc_root.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            fields = (entry / "stat").read_text(encoding="utf-8").rsplit(")", 1)[1].split()
+            if fields[0] != "Z":
+                pid = int(entry.name)
+                parent_pid = int(fields[1])
+                cmdline = (entry / "cmdline").read_bytes().split(b"\0")
+                args = [arg.decode(errors="replace") for arg in cmdline if arg]
+                process_rows[pid] = (parent_pid, args)
+                children.setdefault(parent_pid, []).append(pid)
+        except (OSError, ValueError, IndexError):
+            continue
+    pending = [root_pid]
+    seen: set[int] = set()
+    while pending:
+        pid = pending.pop()
+        if pid in seen:
+            continue
+        seen.add(pid)
+        pending.extend(children.get(pid, ()))
+    root_text = str(scratch.resolve())
+    server_pids = {
+        pid
+        for pid, (_parent_pid, args) in process_rows.items()
+        if root_text in " ".join(args)
+        and any("dolt" in Path(arg).name.lower() for arg in args[:2])
+        and "sql-server" in args
+    }
+    return {
+        "server_pids_seen": sorted(server_pids),
+        "active_server_count": len(server_pids),
+        "process_tree_count": len(seen),
+    }
+
+
+def write_payload(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def render_table(aggregates: Sequence[dict[str, Any]], run_provenance: dict[str, Any]) -> str:
     lines = [
         "| selection | workers | ok/runs | median pytest (s) | median wall (s) "
-        "| Dolt queue (s) | Dolt hold (s) |",
-        "|---|---:|---:|---:|---:|---:|---:|",
+        "| Dolt queue (s) | Dolt hold (s) | servers (max) | processes (max) |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in aggregates:
+        queue = row.get("median_dolt_slot_queue_seconds")
+        hold = row.get("median_dolt_slot_hold_seconds")
+        queue_text = f"{queue:.3f}" if queue is not None else "n/a"
+        hold_text = f"{hold:.3f}" if hold is not None else "n/a"
         lines.append(
             f"| {row['selection']} | {row['workers']} | {row['successful_repetitions']}/"
             f"{row['repetitions']} | {row['median_pytest_elapsed_seconds']:.3f} | "
             f"{row['median_external_wall_seconds']:.3f} | "
-            f"{row.get('median_dolt_slot_queue_seconds', 0.0):.3f} | "
-            f"{row.get('median_dolt_slot_hold_seconds', 0.0):.3f} |"
+            f"{queue_text} | {hold_text} | "
+            f"{row.get('median_max_active_servers', 0.0):.1f} | "
+            f"{row.get('median_max_process_tree_count', 0.0):.1f} |"
         )
     locality = run_provenance["cache_locality"]
     cache = locality["cache"]
@@ -344,6 +501,19 @@ def render_table(aggregates: Sequence[dict[str, Any]], run_provenance: dict[str,
             f"| uv probe target | {probe_target['device_id']} | "
             f"{probe_target['available_bytes']} | {probe_target['available_inodes']} |",
         )
+    seed = run_provenance.get("uv_cache_seed")
+    if seed:
+        source = seed["source"]
+        effective = seed["effective"]
+        lines.extend(
+            [
+                "",
+                f"UV benchmark cache: `{seed['strategy']}` from `{source['path']}` "
+                f"(device {source['device_id']}) to `{effective['path']}` "
+                f"(device {effective['device_id']}); this writable staged copy is shared by all "
+                "repetitions.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -352,6 +522,18 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--workers", default="6,12,18,24", help="explicit worker matrix")
     result.add_argument("--repetitions", type=int, default=3)
     result.add_argument("--selection", choices=(*SELECTIONS, "all"), default="all")
+    result.add_argument(
+        "--deselect",
+        action="append",
+        default=[],
+        help="pytest node ID to exclude (may be repeated; retained in the JSON configuration)",
+    )
+    result.add_argument(
+        "--checkout",
+        type=Path,
+        default=ROOT,
+        help="source checkout to benchmark (defaults to the checkout containing this script)",
+    )
     result.add_argument("--scratch-root", type=Path, default=Path(tempfile.gettempdir()))
     result.add_argument("--output", type=Path, default=ROOT / "xdist-benchmark.json")
     return result
@@ -364,6 +546,13 @@ def main(argv: Sequence[str] | None = None) -> int:
         if options.repetitions <= 0:
             raise BenchmarkError("repetitions must be a positive integer")
         scratch = ensure_external_scratch(options.scratch_root)
+        cache_seed = stage_uv_cache(scratch)
+        os.environ["UV_CACHE_DIR"] = cache_seed["effective"]["path"]
+        root = options.checkout.expanduser().resolve()
+        if not (root / "pyproject.toml").is_file():
+            raise BenchmarkError(f"checkout does not contain pyproject.toml: {root}")
+        if command_output(["git", "status", "--porcelain", "--untracked-files=normal"], cwd=root):
+            raise BenchmarkError(f"checkout must be clean for benchmark comparison: {root}")
         selections = (
             SELECTIONS
             if options.selection == "all"
@@ -371,33 +560,97 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         payload: dict[str, Any] = {
             "schema_version": 1,
-            "provenance": provenance(scratch),
+            "provenance": provenance(scratch, root, cache_seed),
             "configuration": {
                 "worker_matrix": workers,
                 "repetitions": options.repetitions,
                 "selections": selections,
                 "scratch_root": str(scratch),
+                "checkout": str(root),
+                "deselected_tests": options.deselect,
             },
             "runs": [],
+            "complete": False,
         }
+        output_path = options.output.resolve()
+        write_payload(output_path, payload)
         any_failed = False
         for selection, marker in selections.items():
             for worker in workers:
                 for repetition in range(1, options.repetitions + 1):
                     run_scratch = Path(tempfile.mkdtemp(prefix="bh-xdist-", dir=scratch))
-                    command = [sys.executable, "-m", "pytest", "-n", str(worker), "-m", marker]
+                    command = [
+                        sys.executable,
+                        "-m",
+                        "pytest",
+                        "-n",
+                        str(worker),
+                        "-m",
+                        marker,
+                    ]
+                    for nodeid in options.deselect:
+                        command.extend(("--deselect", nodeid))
                     env = os.environ.copy()
                     env["TMPDIR"] = str(run_scratch)
+                    existing_pythonpath = env.get("PYTHONPATH")
+                    env["PYTHONPATH"] = str(root / "src") + (
+                        os.pathsep + existing_pythonpath if existing_pythonpath else ""
+                    )
                     slot_events = run_scratch / "dolt-slot-events.jsonl"
                     env["BH_DOLT_SLOT_EVENTS"] = str(slot_events)
                     started = time.monotonic()
-                    completed = subprocess.run(
-                        command, cwd=ROOT, env=env, text=True, capture_output=True, check=False
-                    )
-                    output = completed.stdout + "\n" + completed.stderr
-                    parsed = parse_pytest_output(output, completed.returncode)
-                    payload["runs"].append(
-                        {
+                    stdout_path = run_scratch / "pytest.stdout.log"
+                    stderr_path = run_scratch / "pytest.stderr.log"
+                    max_servers = 0
+                    max_processes = 1
+                    server_pids: set[int] = set()
+                    with (
+                        stdout_path.open("w", encoding="utf-8") as stdout_file,
+                        stderr_path.open("w", encoding="utf-8") as stderr_file,
+                    ):
+                        completed = subprocess.Popen(
+                            command,
+                            cwd=root,
+                            env=env,
+                            text=True,
+                            stdout=stdout_file,
+                            stderr=stderr_file,
+                            start_new_session=True,
+                        )
+                        try:
+                            while completed.poll() is None:
+                                metrics = run_process_metrics(run_scratch, completed.pid)
+                                server_pids.update(metrics["server_pids_seen"])
+                                max_servers = max(max_servers, metrics["active_server_count"])
+                                max_processes = max(max_processes, metrics["process_tree_count"])
+                                time.sleep(0.2)
+                        except KeyboardInterrupt:
+                            with contextlib.suppress(ProcessLookupError):
+                                os.killpg(completed.pid, signal.SIGTERM)
+                            try:
+                                completed.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                with contextlib.suppress(ProcessLookupError):
+                                    os.killpg(completed.pid, signal.SIGKILL)
+                                completed.wait()
+                            final_servers = run_process_metrics(run_scratch, completed.pid)[
+                                "server_pids_seen"
+                            ]
+                            for pid in server_pids | set(final_servers):
+                                with contextlib.suppress(ProcessLookupError):
+                                    os.kill(pid, signal.SIGTERM)
+                            raise
+                    stdout = stdout_path.read_text(encoding="utf-8")
+                    stderr = stderr_path.read_text(encoding="utf-8")
+                    final_metrics = run_process_metrics(run_scratch, completed.pid)
+                    server_pids.update(final_metrics["server_pids_seen"])
+                    max_servers = max(max_servers, final_metrics["active_server_count"])
+                    max_processes = max(max_processes, final_metrics["process_tree_count"])
+                    output = stdout + "\n" + stderr
+                    try:
+                        parsed = parse_pytest_output(output, completed.returncode)
+                    except BenchmarkError as exc:
+                        failed_run = {
                             "selection": selection,
                             "marker": marker,
                             "workers": worker,
@@ -405,18 +658,74 @@ def main(argv: Sequence[str] | None = None) -> int:
                             "command": command,
                             "exit_code": completed.returncode,
                             "external_wall_seconds": round(time.monotonic() - started, 3),
+                            "summary_missing": True,
+                            "summary_error": str(exc),
+                            "stdout_log": str(stdout_path),
+                            "stderr_log": str(stderr_path),
+                            "terminal_output_tail": output[-12000:],
                             "dolt_slots": parse_dolt_slot_events(slot_events),
-                            **parsed,
+                            "processes": {
+                                "server_pids_seen": sorted(server_pids),
+                                "server_processes_started": len(server_pids),
+                                "max_active_server_processes": max_servers,
+                                "max_pytest_process_tree": max_processes,
+                            },
+                            "passed": 0,
+                            "skipped": 0,
+                            "failed": 0,
+                            "errors": 1,
+                            "pytest_elapsed_seconds": 0.0,
+                            "slow_phases": [],
                         }
-                    )
+                        payload["runs"].append(failed_run)
+                        payload["aggregates"] = aggregate_runs(payload["runs"])
+                        write_payload(output_path, payload)
+                        raise BenchmarkError(
+                            f"{exc}; child exit={completed.returncode}; logs: "
+                            f"{stdout_path}, {stderr_path}"
+                        ) from exc
+                    elapsed = round(time.monotonic() - started, 3)
+                    run_result = {
+                        "selection": selection,
+                        "marker": marker,
+                        "workers": worker,
+                        "repetition": repetition,
+                        "command": command,
+                        "exit_code": completed.returncode,
+                        "external_wall_seconds": elapsed,
+                        "dolt_slots": parse_dolt_slot_events(slot_events),
+                        "processes": {
+                            "server_pids_seen": sorted(server_pids),
+                            "server_processes_started": len(server_pids),
+                            "max_active_server_processes": max_servers,
+                            "max_pytest_process_tree": max_processes,
+                        },
+                        **parsed,
+                    }
+                    if completed.returncode != 0:
+                        run_result.update(
+                            {
+                                "stdout_log": str(stdout_path),
+                                "stderr_log": str(stderr_path),
+                                "terminal_output_tail": output[-12000:],
+                            }
+                        )
+                    payload["runs"].append(run_result)
                     any_failed |= completed.returncode != 0
-                    shutil.rmtree(run_scratch, ignore_errors=True)
+                    payload["aggregates"] = aggregate_runs(payload["runs"])
+                    write_payload(output_path, payload)
+                    print(
+                        f"{selection} n={worker} rep={repetition}: "
+                        f"exit={completed.returncode} "
+                        f"pytest={parsed['pytest_elapsed_seconds']:.3f}s "
+                        f"wall={elapsed:.3f}s servers={len(server_pids)} max={max_servers}",
+                        flush=True,
+                    )
+                    if completed.returncode == 0:
+                        shutil.rmtree(run_scratch, ignore_errors=True)
         payload["aggregates"] = aggregate_runs(payload["runs"])
-        output_path = options.output.resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        payload["complete"] = True
+        write_payload(output_path, payload)
         print(render_table(payload["aggregates"], payload["provenance"]))
         print(f"\nJSON: {output_path}")
         return 1 if any_failed else 0
