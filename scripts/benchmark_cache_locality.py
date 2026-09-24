@@ -191,6 +191,9 @@ def benchmark(options) -> dict[str, object]:
     for repetition in range(options.repetitions):
         with _fresh_checkout(checkout, repetition) as target_checkout:
             env = os.environ.copy()
+            # The benchmark intentionally installs into a fresh detached checkout, not the
+            # caller's active environment. Avoid uv's misleading VIRTUAL_ENV mismatch warning.
+            env.pop("VIRTUAL_ENV", None)
             for key in (
                 adapter.cache_environment,
                 *adapter.cache_environment_aliases,
