@@ -27,13 +27,20 @@ environment variable cannot make an old verdict count for a different gate.
 The Pants selective catalog is `work.attest.keys` in the fleet's beadhive entry. Native
 single-command validation sets `keys: []`, so ordinary validation executes `work.validate_cmd`
 directly. The remaining `attest.impact`, `semantic`, and `trivial` settings are inert without
-keys. Preserve the prior keys as the Pants profile when making the switch. The active strings
-are `just check-native` for ordinary phases and `just check-all-native` for main-boundary phases.
+keys. Preserve the prior keys as the Pants profile when making the switch. The intended live
+strings are `just check-native` for ordinary phases and `just check-all-native` for
+main-boundary phases; activation status is recorded separately in
+`docs/proof/bh-2ygs4-native-activation.md`.
 
-To recover, restore the saved Pants keys and set the ordinary commands to `just check-pants`
-and the main-boundary commands to `just check-all-pants`. Switch the two aliases and the push
-hook's `gate_cmd` to the same Pants profile in a reviewed tree. Run `just check-attest-catalog`
-and `just check-all-pants` before relying on new verdicts. Distinct command hashes ensure a
-native verdict is not reused as a Pants verdict. The switch does not delete Pants package code,
+The exact fleet transition is recorded in
+`docs/proof/bh-2ygs4-native-fleet.patch`. The reverse profile patch,
+`docs/proof/bh-2ygs4-pants-profile.patch`, restores the saved Pants keys and explicitly sets
+ordinary commands to `just check-pants` and main-boundary commands to `just check-all-pants`.
+Apply it only against the matching active native fleet file, then switch the two aliases and
+the push hook's `gate_cmd` to the same Pants profile in a reviewed tree. Run
+`just check-attest-catalog` and `just check-all-pants` before relying on new Pants verdicts.
+The full Pants comparison was deferred to `bh-ahm6x`; no Pants execution is required to
+activate this native profile. Distinct command hashes ensure a native verdict is not reused as
+a Pants verdict. The switch does not delete Pants package code,
 `pants.toml`, BUILD files, locks, proof manifests, or any Pants cache bytes. Cache size may stay
 large until an operator deliberately reclaims it.

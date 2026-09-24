@@ -1,0 +1,68 @@
+--- fleet.yaml
++++ fleet.yaml
+@@ -124,39 +124,9 @@
+         # unchanged, so this cannot break another host if it ever is pushed. `exec`
+         # avoids an extra shell frame so the wrapped rc is the gate's rc exactly.
+         # Revert = delete the `sh -c '... || exec ` prefix and the trailing `'`.
+-        keys:
+-          - name: docs
+-            cmd: sh -c 'command -v jevwrap >/dev/null 2>&1 && exec jevwrap decide -- just attest-docs || exec just attest-docs'
+-            selectors: {pants: "attest:docs"}
+-            policy: required
+-          - name: unit
+-            cmd: sh -c 'command -v jevwrap >/dev/null 2>&1 && exec jevwrap decide -- just attest-unit || exec just attest-unit'
+-            policy: required
+-            selectors: {pants: "attest:unit"}
+-          - name: stateful
+-            cmd: sh -c 'command -v jevwrap >/dev/null 2>&1 && exec jevwrap decide -- just attest-stateful || exec just attest-stateful'
+-            selectors: {pants: "attest:stateful"}
+-            policy: required
+-          - name: integration
+-            cmd: sh -c 'command -v jevwrap >/dev/null 2>&1 && exec jevwrap decide -- just attest-integration || exec just attest-integration'
+-            policy: required
+-            selectors: {pants: "attest:integration"}
+-          - name: architecture-contracts
+-            cmd: sh -c 'command -v jevwrap >/dev/null 2>&1 && exec jevwrap decide -- just attest-architecture-contracts || exec just attest-architecture-contracts'
+-            policy: required
+-            selectors: {pants: "attest:architecture-contracts"}
+-          - name: package
+-            cmd: sh -c 'command -v jevwrap >/dev/null 2>&1 && exec jevwrap decide -- just attest-package || exec just attest-package'
+-            policy: required
+-            selectors: {pants: "attest:package"}
+-          - name: packages
+-            cmd: sh -c 'command -v jevwrap >/dev/null 2>&1 && exec jevwrap decide -- just attest-packages || exec just attest-packages'
+-            selectors: {pants: "attest:packages"}
+-            policy: required
+-          - name: demos
+-            cmd: sh -c 'command -v jevwrap >/dev/null 2>&1 && exec jevwrap decide -- just attest-demos || exec just attest-demos'
+-            selectors: {pants: "attest:demos"}
+-            policy: required
++        # Native single-command mode. The exact Pants catalog is retained in
++        # docs/proof/bh-2ygs4-native-fleet.patch for a reversible profile switch.
++        keys: []
+       # THE FULL GATE AT THE LAND BOUNDARY (bh-4kq1b). Everything else — `bh work check`,
+       # `submit`'s clean-checkout validation, every subagent self-check — runs `just check`,
+       # which EXCLUDES the integration suite and the demo. So a change that breaks only the
+@@ -183,14 +153,14 @@
+       # unmoved main produces a byte-identical tree, the push that follows has nothing left to
+       # prove. Remove this key and pushes simply run the full gate again — never a free pass.
+       validate:
+-        molecule: just check-all
+-        merge-main: just check-all
+-        push-main: just check-all
+-        submit: just lint
+-        merge: just lint
+-        union: just lint
+-        postland: just check-all
+-      validate_cmd: just lint
++        molecule: just check-all-native
++        merge-main: just check-all-native
++        push-main: just check-all-native
++        submit: just check-native
++        merge: just check-native
++        union: just check-native
++        postland: just check-all-native
++      validate_cmd: just check-native
+   - provider: github
+     org: beadhive
+     repo: beadhive-app
