@@ -51,7 +51,8 @@ def test_default_and_override_ephemeral_roots_are_app_scoped(tmp_path, monkeypat
     assert default.path == Path("/tmp/bh-cache/uv")
     assert override.path == tmp_path / "fast" / "pnpm"
     assert default.environment == {"UV_CACHE_DIR": str(default.path), "UV_LINK_MODE": "hardlink"}
-    assert override.environment["npm_config_package_import_method"] == "hardlink"
+    assert override.environment["PNPM_CONFIG_STORE_DIR"] == str(override.path)
+    assert override.environment["PNPM_CONFIG_PACKAGE_IMPORT_METHOD"] == "hardlink"
 
 
 def test_custom_managed_root_uses_actual_filesystem_classification(tmp_path, monkeypatch) -> None:
@@ -155,6 +156,34 @@ def test_explicit_cross_device_uv_override_is_preserved_with_visible_copy_mode(
     assert "different devices" in selected.diagnostic
 
 
+def test_explicit_legacy_pnpm_override_uses_current_controls_and_copy_mode(
+    tmp_path, monkeypatch
+) -> None:
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    explicit = tmp_path / "other-device" / "pnpm"
+
+    def devices(path: Path) -> int:
+        return 8 if str(path).startswith(str(explicit)) else 7
+
+    monkeypatch.setattr(cache_locality, "_device", devices)
+    monkeypatch.setattr(cache_locality, "_capacity", lambda _path: (123, 456))
+    selected = cache_locality.resolve_cache(
+        cache_locality.PNPM_ADAPTER,
+        checkout,
+        environ=_env(tmp_path, npm_config_store_dir=str(explicit)),
+        ephemeral=False,
+    )
+
+    assert selected.path == explicit
+    assert selected.tier == "native-explicit"
+    assert selected.environment["PNPM_CONFIG_STORE_DIR"] == str(explicit)
+    assert selected.environment["npm_config_store_dir"] == str(explicit)
+    assert selected.environment["PNPM_CONFIG_PACKAGE_IMPORT_METHOD"] == "copy"
+    assert selected.environment["npm_config_package_import_method"] == "copy"
+    assert "different devices" in selected.diagnostic
+
+
 def test_unsafe_explicit_override_falls_back_to_safe_durable_cache(tmp_path) -> None:
     checkout = tmp_path / "checkout"
     checkout.mkdir()
@@ -223,7 +252,10 @@ def test_command_adapter_exports_uv_and_pnpm_controls(tmp_path) -> None:
     unrelated = cache_locality.command_environment(["git", "status"], checkout, env)
 
     assert uv is not None and uv[0]["UV_LINK_MODE"] == "hardlink"
-    assert pnpm is not None and pnpm[0]["npm_config_package_import_method"] == "hardlink"
+    assert pnpm is not None
+    assert pnpm[0]["PNPM_CONFIG_STORE_DIR"] == str(pnpm[1].path)
+    assert pnpm[0]["PNPM_CONFIG_PACKAGE_IMPORT_METHOD"] == "hardlink"
+    assert pnpm[0]["npm_config_store_dir"] == str(pnpm[1].path)
     assert unrelated is None
 
 

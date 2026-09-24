@@ -21,39 +21,64 @@ from pathlib import Path
 from beadhive.cache_locality import adapter_for_application, resolve_cache
 
 
+def _existing_path(path: Path) -> Path:
+    """Return the nearest existing ancestor when a dependency target is not created yet."""
+    probe = path
+    while not probe.exists():
+        probe = probe.parent
+    return probe
+
+
 def _capacity(path: Path) -> dict[str, int]:
-    info = os.statvfs(path)
+    info = os.statvfs(_existing_path(path))
     return {
         "available_bytes": info.f_bavail * info.f_frsize,
         "available_inodes": info.f_favail,
     }
 
 
-def _hardlink_observation(target: Path) -> dict[str, int | bool]:
+def _hardlink_observation(target: Path, cache_device: int) -> dict[str, object]:
     """Inspect installed-target metadata only; never walk opaque cache contents."""
     if not target.exists():
-        return {"available": False, "files": 0, "files_with_multiple_links": 0}
+        return {
+            "available": False,
+            "files": 0,
+            "files_with_multiple_links": 0,
+            "hardlink_identities": [],
+        }
     files = 0
-    multiply_linked = 0
+    hardlink_identities: list[dict[str, int | str]] = []
     for path in target.rglob("*"):
         try:
             if path.is_symlink() or not path.is_file():
                 continue
             files += 1
-            multiply_linked += int(path.stat().st_nlink > 1)
+            info = path.stat()
+            if info.st_nlink > 1 and info.st_dev == cache_device:
+                hardlink_identities.append(
+                    {
+                        "path": str(path.relative_to(target)),
+                        "device": info.st_dev,
+                        "inode": info.st_ino,
+                        "link_count": info.st_nlink,
+                    }
+                )
         except OSError:
             continue
     return {
         "available": True,
         "files": files,
-        "files_with_multiple_links": multiply_linked,
+        "files_with_multiple_links": len(hardlink_identities),
+        "hardlink_identities": hardlink_identities,
     }
 
 
 def _observation(command: Sequence[str], checkout: Path, env: dict[str, str], selection) -> dict:
-    cache_before = _capacity(selection.path)
+    cache_before_path = _existing_path(selection.path)
+    cache_before = _capacity(cache_before_path)
     shared_device = selection.cache_device == selection.target_device
-    target_before = None if shared_device else _capacity(selection.target)
+    target_before_path = None if shared_device else _existing_path(selection.target)
+    target_before = None if shared_device else _capacity(target_before_path)
     started = time.perf_counter()
     result = subprocess.run(
         command,
@@ -64,10 +89,12 @@ def _observation(command: Sequence[str], checkout: Path, env: dict[str, str], se
         check=False,
     )
     elapsed = time.perf_counter() - started
-    cache_after = _capacity(selection.path)
-    target_after = None if shared_device else _capacity(selection.target)
+    cache_after_path = _existing_path(selection.path)
+    cache_after = _capacity(cache_after_path)
+    target_after_path = None if shared_device else _existing_path(selection.target)
+    target_after = None if shared_device else _capacity(target_after_path)
     output = f"{result.stdout}\n{result.stderr}"
-    link_metadata = _hardlink_observation(selection.target)
+    link_metadata = _hardlink_observation(selection.target, selection.cache_device)
     return {
         "seconds": elapsed,
         "returncode": result.returncode,
@@ -82,6 +109,7 @@ def _observation(command: Sequence[str], checkout: Path, env: dict[str, str], se
                 else None
             ),
             "hardlinked_target_files": link_metadata["files_with_multiple_links"],
+            "hardlink_identities": link_metadata["hardlink_identities"],
             "target_files_inspected": link_metadata["files"],
             "cross_device_copy_fallback_observed": (
                 result.returncode == 0 and not shared_device and selection.link_method == "copy"
@@ -90,6 +118,8 @@ def _observation(command: Sequence[str], checkout: Path, env: dict[str, str], se
         "capacity": {
             "cache": {
                 "root": str(selection.path),
+                "sampled_from_before": str(cache_before_path),
+                "sampled_from_after": str(cache_after_path),
                 "device": selection.cache_device,
                 "before": cache_before,
                 "after": cache_after,
@@ -102,6 +132,8 @@ def _observation(command: Sequence[str], checkout: Path, env: dict[str, str], se
             },
             "target": {
                 "root": str(selection.target),
+                "sampled_from_before": None if shared_device else str(target_before_path),
+                "sampled_from_after": None if shared_device else str(target_after_path),
                 "device": selection.target_device,
                 "same_device_as": "cache" if shared_device else None,
                 "before": target_before,
@@ -159,7 +191,11 @@ def benchmark(options) -> dict[str, object]:
     for repetition in range(options.repetitions):
         with _fresh_checkout(checkout, repetition) as target_checkout:
             env = os.environ.copy()
-            for key in (adapter.cache_environment, *adapter.native_aliases):
+            for key in (
+                adapter.cache_environment,
+                *adapter.cache_environment_aliases,
+                *adapter.native_aliases,
+            ):
                 env.pop(key, None)
             run_root = options.cache_root.resolve() / f"run-{repetition + 1}"
             if run_root.exists():
@@ -170,6 +206,22 @@ def benchmark(options) -> dict[str, object]:
                 env["BH_TMPFS_CACHE_DIR"] = str(run_root)
             else:
                 env["BH_DURABLE_CACHE_DIR"] = str(run_root)
+            if options.native_cache_root:
+                if not adapter.cache_environment:
+                    raise RuntimeError(
+                        f"{adapter.application} does not expose an explicit cache override"
+                    )
+                native_root = (
+                    options.native_cache_root.resolve()
+                    / adapter.application
+                    / f"run-{repetition + 1}"
+                )
+                if native_root.exists():
+                    raise RuntimeError(
+                        f"explicit benchmark cache already exists: {native_root}; "
+                        "choose a fresh --native-cache-root"
+                    )
+                env[adapter.cache_environment] = str(native_root)
             env["BH_CACHE_MIN_FREE_BYTES"] = str(options.min_free_bytes)
             env["BH_CACHE_MIN_FREE_INODES"] = str(options.min_free_inodes)
             selection = resolve_cache(
@@ -235,6 +287,14 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--checkout", required=True, type=Path)
     parser.add_argument("--checkout-class", required=True, choices=("ephemeral", "persistent"))
     parser.add_argument("--cache-root", required=True, type=Path)
+    parser.add_argument(
+        "--native-cache-root",
+        type=Path,
+        help=(
+            "optional base for an explicit framework cache override; useful to measure "
+            "cross-device copy fallback against the checkout filesystem"
+        ),
+    )
     parser.add_argument("--repetitions", type=int, default=3)
     parser.add_argument("--min-free-bytes", type=int, default=0)
     parser.add_argument("--min-free-inodes", type=int, default=0)

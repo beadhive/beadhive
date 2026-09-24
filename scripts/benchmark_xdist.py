@@ -179,6 +179,52 @@ def ensure_external_scratch(path: Path) -> Path:
     return path
 
 
+def stage_uv_cache(scratch: Path) -> dict[str, Any]:
+    """Copy the host UV cache into writable benchmark scratch and return its provenance.
+
+    The benchmark runs offline wheel-build tests. A host cache can be readable but mounted
+    read-only (as in the factory sandbox), while uv still needs to create its cache lock. A
+    private scratch copy keeps those tests hermetic and gives every compared run the same cache
+    contents and device placement.
+    """
+    source = Path(command_output(["uv", "cache", "dir"])).expanduser().resolve()
+    destination = (scratch / "uv-cache").absolute()
+    if source == destination:
+        if not source.is_dir():
+            raise BenchmarkError(f"UV cache does not exist: {source}")
+        return {
+            "source": device(source),
+            "effective": device(destination),
+            "strategy": "already-in-scratch",
+        }
+    try:
+        destination.relative_to(source)
+    except ValueError:
+        pass
+    else:
+        raise BenchmarkError(
+            f"benchmark UV cache destination must not be inside its source: {source}"
+        )
+    try:
+        source.relative_to(destination)
+    except ValueError:
+        pass
+    else:
+        raise BenchmarkError(
+            f"benchmark UV cache source must not be inside its destination: {source}"
+        )
+    if not source.is_dir():
+        raise BenchmarkError(f"UV cache does not exist: {source}")
+    if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+        raise BenchmarkError(f"benchmark UV cache destination is unsafe: {destination}")
+    shutil.copytree(source, destination, dirs_exist_ok=True, symlinks=True)
+    return {
+        "source": device(source),
+        "effective": device(destination),
+        "strategy": "copied-to-writable-scratch",
+    }
+
+
 def package_version(name: str) -> str:
     try:
         return version(name)
@@ -332,7 +378,7 @@ def validation_slots(root: Path) -> dict[str, Any]:
     return {"effective": 1, "source": "default"}
 
 
-def provenance(scratch: Path, root: Path) -> dict[str, Any]:
+def provenance(scratch: Path, root: Path, cache_seed: dict[str, Any]) -> dict[str, Any]:
     return {
         "checkout": str(root),
         "commit": command_output(["git", "rev-parse", "HEAD"], cwd=root),
@@ -349,6 +395,7 @@ def provenance(scratch: Path, root: Path) -> dict[str, Any]:
         "effective_memory_bytes": memory_limit_bytes(),
         "validation_slots": validation_slots(root),
         "xdist_auto_worker_cap": os.environ.get("PYTEST_XDIST_AUTO_NUM_WORKERS", "unset"),
+        "uv_cache_seed": cache_seed,
         "cache_locality": cache_locality(scratch, root),
     }
 
@@ -454,6 +501,19 @@ def render_table(aggregates: Sequence[dict[str, Any]], run_provenance: dict[str,
             f"| uv probe target | {probe_target['device_id']} | "
             f"{probe_target['available_bytes']} | {probe_target['available_inodes']} |",
         )
+    seed = run_provenance.get("uv_cache_seed")
+    if seed:
+        source = seed["source"]
+        effective = seed["effective"]
+        lines.extend(
+            [
+                "",
+                f"UV benchmark cache: `{seed['strategy']}` from `{source['path']}` "
+                f"(device {source['device_id']}) to `{effective['path']}` "
+                f"(device {effective['device_id']}); this writable staged copy is shared by all "
+                "repetitions.",
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -486,6 +546,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if options.repetitions <= 0:
             raise BenchmarkError("repetitions must be a positive integer")
         scratch = ensure_external_scratch(options.scratch_root)
+        cache_seed = stage_uv_cache(scratch)
+        os.environ["UV_CACHE_DIR"] = cache_seed["effective"]["path"]
         root = options.checkout.expanduser().resolve()
         if not (root / "pyproject.toml").is_file():
             raise BenchmarkError(f"checkout does not contain pyproject.toml: {root}")
@@ -498,7 +560,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         payload: dict[str, Any] = {
             "schema_version": 1,
-            "provenance": provenance(scratch, root),
+            "provenance": provenance(scratch, root, cache_seed),
             "configuration": {
                 "worker_matrix": workers,
                 "repetitions": options.repetitions,

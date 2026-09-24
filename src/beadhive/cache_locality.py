@@ -40,6 +40,7 @@ class CacheAdapter:
 
     application: str
     cache_environment: str
+    cache_environment_aliases: tuple[str, ...] = ()
     hardlink_environment: tuple[tuple[str, str], ...] = ()
     copy_environment: tuple[tuple[str, str], ...] = ()
     native_aliases: tuple[str, ...] = ()
@@ -57,10 +58,17 @@ UV_ADAPTER = CacheAdapter(
 )
 PNPM_ADAPTER = CacheAdapter(
     application="pnpm",
-    cache_environment="npm_config_store_dir",
+    cache_environment="PNPM_CONFIG_STORE_DIR",
+    cache_environment_aliases=("npm_config_store_dir",),
     native_aliases=("PNPM_STORE_DIR",),
-    hardlink_environment=(("npm_config_package_import_method", "hardlink"),),
-    copy_environment=(("npm_config_package_import_method", "copy"),),
+    hardlink_environment=(
+        ("PNPM_CONFIG_PACKAGE_IMPORT_METHOD", "hardlink"),
+        ("npm_config_package_import_method", "hardlink"),
+    ),
+    copy_environment=(
+        ("PNPM_CONFIG_PACKAGE_IMPORT_METHOD", "copy"),
+        ("npm_config_package_import_method", "copy"),
+    ),
     dependency_directory="node_modules",
     native_subdirectory="pnpm/store",
 )
@@ -246,7 +254,11 @@ def _is_ephemeral(
 
 
 def _native_override(adapter: CacheAdapter, env: Mapping[str, str]) -> str:
-    for key in (adapter.cache_environment, *adapter.native_aliases):
+    for key in (
+        adapter.cache_environment,
+        *adapter.cache_environment_aliases,
+        *adapter.native_aliases,
+    ):
         if value := env.get(key, "").strip():
             return value
     return ""
@@ -254,6 +266,7 @@ def _native_override(adapter: CacheAdapter, env: Mapping[str, str]) -> str:
 
 def _environment(adapter: CacheAdapter, path: Path, same_device: bool) -> dict[str, str]:
     values = {adapter.cache_environment: str(path)} if adapter.cache_environment else {}
+    values.update({key: str(path) for key in adapter.cache_environment_aliases})
     values.update(adapter.hardlink_environment if same_device else adapter.copy_environment)
     return values
 

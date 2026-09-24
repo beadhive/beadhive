@@ -45,6 +45,8 @@ def test_selected_tmpfs_cache_is_bound_after_private_tmp_with_destination_parent
     assert 'CACHE_COMPONENTS <<< "${CACHE_PATH#/}"' in wrapper
     assert 'for CACHE_COMPONENT in "${CACHE_COMPONENTS[@]}"' in wrapper
     assert '--setenv UV_CACHE_DIR "${CACHE_PATH}"' in wrapper
+    assert '--setenv PNPM_CONFIG_STORE_DIR "${CACHE_PATH}"' in wrapper
+    assert '--setenv PNPM_CONFIG_PACKAGE_IMPORT_METHOD "${CACHE_LINK_MODE}"' in wrapper
     assert '--setenv npm_config_store_dir "${CACHE_PATH}"' in wrapper
 
 

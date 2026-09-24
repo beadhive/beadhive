@@ -11,7 +11,7 @@ Each application gets a normalized child directory. The shipped adapters are:
 | Application | Cache control | Same-device import | Copy fallback |
 |---|---|---|---|
 | uv | `UV_CACHE_DIR` | `UV_LINK_MODE=hardlink` | `UV_LINK_MODE=copy` |
-| pnpm | `npm_config_store_dir` | `npm_config_package_import_method=hardlink` | `npm_config_package_import_method=copy` |
+| pnpm | `PNPM_CONFIG_STORE_DIR` | `PNPM_CONFIG_PACKAGE_IMPORT_METHOD=hardlink` | `PNPM_CONFIG_PACKAGE_IMPORT_METHOD=copy` |
 
 The adapter contract is open: another application supplies its name, dependency directory,
 cache variable, and supported hardlink/copy controls without a Beadhive config schema change.
@@ -72,7 +72,9 @@ never deletes opaque cache internals.
 Capacity is sampled before and after each phase for both cache and dependency target filesystems.
 When they share a device the report labels the target `same_device_as: cache` and records the one
 filesystem observation only under `cache` (the target deltas are null); cross-device runs retain
-two distinct pressure measurements.
+two distinct pressure measurements. Before installation creates the dependency directory, its
+filesystem capacity is sampled from the nearest existing parent on the same device; the JSON
+records the path used for each sample.
 
 ```console
 uv run python scripts/benchmark_cache_locality.py \
@@ -89,6 +91,20 @@ uv run python scripts/benchmark_cache_locality.py \
 Repeat with the main checkout, `--checkout-class persistent`, and a same-device durable
 `--cache-root`. Compare median cold and warm times; keep an optimization disabled where the
 repeated median improvement is noise.
+
+To measure an explicit cross-device override, keep the checkout on its actual filesystem and
+pass `--native-cache-root` on another device. The benchmark gives every repetition a fresh
+application child under that root, then records the preserved cache path and explicit copy
+mode. This exercises the same safe fallback used when a user-owned native cache is on another
+mount; it does not inspect or clean the cache contents.
+
+The xdist worker-matrix harness also records cache devices, but its direct pytest runs include
+offline wheel-build tests. Before timing, it copies the configured uv cache into a writable
+directory under the external benchmark scratch root and points the child test process at that
+copy. This allows offline builds to use the existing backend cache when the host cache is
+read-only. The report records both source and staged paths and devices; this staging is a
+benchmark control, not a change to the host's configured cache. The cache-locality harness above
+separately measures the resolver's same-device hardlink and cross-device copy behavior.
 
 The current host tuning remains two globally admitted validations and sixteen xdist workers
 inside each gate. Cache locality changes storage placement only; it does not increase either
