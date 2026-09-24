@@ -64,6 +64,18 @@ def doc_readers(root: Path) -> set[str]:
     return readers
 
 
+def package_tests(root: Path) -> set[str]:
+    """Return every test source selected by the workspace-wide ``packages::`` target."""
+    packages = root / "packages"
+    if not packages.is_dir():
+        return set()
+    return {
+        path.relative_to(root).as_posix()
+        for path in packages.glob("*/tests/**/test_*.py")
+        if path.is_file()
+    }
+
+
 def _diagnostic(
     code: DiagnosticCode, severity: DiagnosticSeverity, detail: str
 ) -> PluginDiagnostic:
@@ -110,6 +122,9 @@ def verify_proven_manifest(root: Path) -> PluginDiagnostic:
         actual = doc_readers(root)
         if not actual <= set(entries):
             errors.append(f"missing doc readers={sorted(actual - set(entries))!r}")
+        missing_package_tests = package_tests(root) - set(entries)
+        if missing_package_tests:
+            errors.append(f"missing package tests={sorted(missing_package_tests)!r}")
         for path, record in entries.items():
             status = record.get("status")
             if status not in {"proven", "unproven"}:
