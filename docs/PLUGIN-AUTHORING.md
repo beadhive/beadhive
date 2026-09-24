@@ -63,7 +63,8 @@ cp -R packages/_template packages/beadhive-example-build
 mv packages/beadhive-example-build/src/beadhive_package_template \
   packages/beadhive-example-build/src/beadhive_example_build
 # Edit the copied pyproject.toml: set name, description, and wheel packages to the new names.
-# Edit the copied src/BUILD resource glob and the copied Python/test imports and distribution name.
+# Replace the template import and distribution names in the copied Python files and tests.
+# Add "**/plugin.json" to src/BUILD's resources sources when adding the manifest below.
 uv lock
 just pkg beadhive-example-build check
 just packages-check
@@ -86,6 +87,22 @@ the root workspace installs the package editably.
 For a `build.verify` provider, implement the runtime-checkable `BuildVerifier` port from
 `beadhive.kernel.plugins.contracts`. `verify(repo: str)` returns a tuple of
 `PluginDiagnostic` findings; an empty tuple means healthy. Findings are data, not exceptions.
+A minimal adapter starts as:
+
+```python
+from beadhive.kernel.plugins.contracts import PluginDiagnostic
+
+
+class ExampleBuildVerifier:
+    def verify(self, repo: str) -> tuple[PluginDiagnostic, ...]:
+        del repo
+        return ()
+```
+
+Put it in `src/beadhive_example_build/verify.py` and assert
+`isinstance(ExampleBuildVerifier(), BuildVerifier)` in a package test. This smoke adapter
+only proves wiring; replace the empty answer with real read-only diagnostics before
+selecting it for production.
 For a `build.impact` provider, implement `ImpactBackend` from
 `beadhive.modules.work.contracts.impact`: expose `name`, `version`, and
 `analyze(ImpactRequest) -> BackendImpact`. The backend answers ownership, transitive
@@ -99,9 +116,18 @@ Runtime discovery and packaging are separate steps. Add a checked manifest resou
 `packages/<distribution>/src/<import_name>/plugin.json`, then copy the same JSON into
 `src/beadhive/kernel/plugins/manifests/<plugin_id>.json`. Declare `build.impact` and/or
 `build.verify` in `capabilities.provides` with API version 1, plus the manifest's compatibility,
-configuration, lifecycle, presentation, and security fields. Use
+configuration, lifecycle, presentation, and security fields. Set
+`configuration.namespace` to `plugins.<plugin_id>`; copied names such as `plugins.pants`
+are rejected by discovery. Use
 [`beadhive-pants/plugin.json`](../packages/beadhive-pants/src/beadhive_pants/plugin.json)
-as a complete example. Add the ID to `BUILTIN_PLUGIN_IDS` in `kernel/plugins/builtins.py`;
+as a complete example. First exercise the manifest in a root-level contract test using
+`BuiltInManifestSource((ManifestDocument(ManifestProvenance("built-in",
+"example-build.json"), manifest_bytes),))` and `discover_plugins`; assert that
+`owner_of(BUILD_VERIFY)` is your plugin ID and that discovery has no errors. Keep this
+test outside `packages/*`, because package imports may use only public contracts and
+`beadhive.testing`.
+
+For first-party activation, add the ID to `BUILTIN_PLUGIN_IDS` in `kernel/plugins/builtins.py`;
 this list and the JSON resources are the first-party discovery data. If the provider is
 active, add its lazy import loader to `BUILTIN_IMPACT_PROVIDERS` in `bootstrap/impact.py`
 or `BUILTIN_BUILD_VERIFIER_PROVIDERS` in `bootstrap/build_verify.py`. The loader must import
@@ -121,7 +147,9 @@ just check
 
 The package's checked manifest and runtime binding must agree: discovery selects at most one
 enabled owner per capability. A second enabled provider requires explicit
-`plugin_kernel.capability_owners` policy. A missing binding or failed provider load is a
+`plugin_kernel.capability_owners` policy; Pants already provides both build capabilities,
+so adding another enabled provider without owner selection intentionally fails closed.
+A missing binding or failed provider load is a
 diagnostic or conservative fallback, never a silent registry lookup.
 
 ## Lifecycle policy and failure isolation
