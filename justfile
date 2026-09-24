@@ -50,8 +50,8 @@ bootstrap:
 # The enforcing seam is now the LAND itself — `work.validate.molecule` / `.merge-main` for this
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
-# The aliases select the current Pants primary until native parity is measured.
-check: check-pants
+# Native is the selected primary; explicit Pants commands remain stable.
+check: check-native
 
 # Stable fast entry points. Native collects the complete non-integration core suite directly;
 # Pants retains its impact-selected developer route.
@@ -145,7 +145,7 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: check-all-pants
+check-all: check-all-native
 
 check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
 

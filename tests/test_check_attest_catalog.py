@@ -31,8 +31,19 @@ def test_both_explicit_profiles_fail_closed_on_missing_steps() -> None:
 
 def test_aliases_select_one_explicit_profile() -> None:
     source = (ROOT / "justfile").read_text()
-    changed = source.replace("check: check-pants", "check: check-pants check-native", 1)
+    changed = source.replace("check: check-native", "check: check-pants check-native", 1)
     assert any("check must alias" in error for error in MODULE.check(changed))
+
+
+def test_alias_and_push_hook_profiles_cannot_drift() -> None:
+    source = (ROOT / "justfile").read_text()
+    changed = source.replace("check-all: check-all-native", "check-all: check-all-pants", 1)
+    assert any("same profile" in error for error in MODULE.check(changed))
+    hook = (ROOT / "scripts" / "main-push-gate.sh").read_text()
+    changed_hook = hook.replace(
+        'gate_cmd="just check-all-native"', 'gate_cmd="just check-all-pants"'
+    )
+    assert any("push hook" in error for error in MODULE.check(source, changed_hook))
 
 
 def test_architecture_key_owns_the_bootstrap_safe_gate_recipe() -> None:

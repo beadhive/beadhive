@@ -57,7 +57,7 @@ def _recipe_body(justfile: str, recipe: str) -> list[str]:
     return match.group(1).splitlines() if match else []
 
 
-def check(justfile: str) -> list[str]:
+def check(justfile: str, push_hook: str | None = None) -> list[str]:
     expected = [leaf for _, leaves in KEY_RECIPES.values() for leaf in leaves]
     errors: list[str] = []
     for recipe, required in (
@@ -70,11 +70,22 @@ def check(justfile: str) -> list[str]:
         if sorted(declared) != sorted(required) or len(declared) != len(set(declared)):
             errors.append(f"{recipe} steps differ: expected {required!r}, got {declared!r}")
 
+    selected_profiles: dict[str, str] = {}
     for alias in ("check", "check-all"):
         selected = _dependencies(justfile, alias)
         allowed = (f"{alias}-native", f"{alias}-pants")
         if len(selected) != 1 or selected[0] not in allowed:
             errors.append(f"{alias} must alias exactly one of {allowed!r}, got {selected!r}")
+        else:
+            selected_profiles[alias] = selected[0]
+    if len(selected_profiles) == 2 and (
+        selected_profiles["check"].split("-")[-1] != selected_profiles["check-all"].split("-")[-1]
+    ):
+        errors.append("check and check-all must select the same profile")
+    if push_hook is not None and "check-all" in selected_profiles:
+        expected_gate = f'gate_cmd="just {selected_profiles["check-all"]}"'
+        if expected_gate not in push_hook:
+            errors.append(f"push hook must name {expected_gate}")
 
     owners: dict[str, str] = {}
     for key, (recipe_name, leaves) in KEY_RECIPES.items():
@@ -92,7 +103,8 @@ def check(justfile: str) -> list[str]:
 
 def main() -> int:
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
-    errors = check(justfile)
+    push_hook = (ROOT / "scripts" / "main-push-gate.sh").read_text(encoding="utf-8")
+    errors = check(justfile, push_hook)
     if errors:
         print("attest-catalog: invalid", file=sys.stderr)
         for error in errors:
