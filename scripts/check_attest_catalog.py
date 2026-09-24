@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify that named attest recipes are an exact partition of ``just check-all``."""
+"""Verify both explicit gate graphs and the Pants attest-key partition."""
 
 from __future__ import annotations
 
@@ -21,14 +21,34 @@ KEY_RECIPES = {
     "packages": ("attest-packages", ("packages-check",)),
 }
 ROOT = Path(__file__).resolve().parents[1]
+NATIVE_FAST = (
+    "lint",
+    "lint-md",
+    "license-check",
+    "architecture-structural-check",
+    "stateful-native",
+)
+PANTS_FAST = ("lint", "lint-md", "license-check", "architecture-structural-check", "test-changed")
+NATIVE_FULL = (
+    "require-bd",
+    "lint",
+    "lint-md",
+    "license-check",
+    "architecture-structural-check",
+    "stateful-native",
+    "test-integration-land",
+    "demo-local-loop",
+    "demo-live-ingress",
+    "packages-check",
+)
 
 
-def _check_all_dependencies(justfile: str) -> list[str]:
-    declaration = next(line for line in justfile.splitlines() if line.startswith("check-all:"))
+def _dependencies(justfile: str, recipe: str) -> list[str]:
+    declaration = next(line for line in justfile.splitlines() if line.startswith(f"{recipe}:"))
     return [
         parenthesized or plain
         for parenthesized, plain in re.findall(r"\(([-\w]+)[^)]*\)|([-\w]+)", declaration)
-        if (parenthesized or plain) != "check-all"
+        if (parenthesized or plain) != recipe
     ]
 
 
@@ -37,13 +57,24 @@ def _recipe_body(justfile: str, recipe: str) -> list[str]:
     return match.group(1).splitlines() if match else []
 
 
-def main() -> int:
-    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
-    declared = _check_all_dependencies(justfile)
+def check(justfile: str) -> list[str]:
     expected = [leaf for _, leaves in KEY_RECIPES.values() for leaf in leaves]
     errors: list[str] = []
-    if sorted(declared) != sorted(expected) or len(declared) != len(set(declared)):
-        errors.append(f"check-all keys differ: expected {expected!r}, got {declared!r}")
+    for recipe, required in (
+        ("check-native", NATIVE_FAST),
+        ("check-pants", PANTS_FAST),
+        ("check-all-native", NATIVE_FULL),
+        ("check-all-pants", expected),
+    ):
+        declared = _dependencies(justfile, recipe)
+        if sorted(declared) != sorted(required) or len(declared) != len(set(declared)):
+            errors.append(f"{recipe} steps differ: expected {required!r}, got {declared!r}")
+
+    for alias in ("check", "check-all"):
+        selected = _dependencies(justfile, alias)
+        allowed = (f"{alias}-native", f"{alias}-pants")
+        if len(selected) != 1 or selected[0] not in allowed:
+            errors.append(f"{alias} must alias exactly one of {allowed!r}, got {selected!r}")
 
     owners: dict[str, str] = {}
     for key, (recipe_name, leaves) in KEY_RECIPES.items():
@@ -56,12 +87,18 @@ def main() -> int:
             if previous != key:
                 errors.append(f"{leaf}: owned by both {previous} and {key}")
 
+    return errors
+
+
+def main() -> int:
+    justfile = (ROOT / "justfile").read_text(encoding="utf-8")
+    errors = check(justfile)
     if errors:
         print("attest-catalog: invalid", file=sys.stderr)
         for error in errors:
             print(f"  - {error}", file=sys.stderr)
         return 1
-    print(f"attest-catalog: OK ({len(KEY_RECIPES)} keys, {len(owners)} gate steps)")
+    print(f"attest-catalog: OK ({len(KEY_RECIPES)} Pants keys, 4 explicit gates)")
     return 0
 
 

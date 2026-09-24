@@ -10,8 +10,10 @@ an opt-in optimization, and uncertainty always costs more validation rather than
 
 ## This repository's key catalog
 
-The live catalog is configured under `work.attest` in the fleet configuration. Keep it aligned
-with the recipes in `justfile`; `just check-attest-catalog` enforces that partition.
+The Pants catalog is configured under `work.attest` in the fleet configuration. Keep it aligned
+with `just check-all-pants` in `justfile`; `just check-attest-catalog` checks that partition and
+both explicit native and Pants recipe graphs. The native hive profile removes the catalog and
+uses its single explicit `work.validate_cmd` path; the catalog remains available for rollback.
 
 | Key | Opaque command | Pants selector | Covers |
 |---|---|---|---|

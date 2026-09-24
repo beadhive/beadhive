@@ -15,6 +15,26 @@ def test_catalog_partitions_check_all() -> None:
     assert MODULE.main() == 0
 
 
+def test_both_explicit_profiles_fail_closed_on_missing_steps() -> None:
+    source = (ROOT / "justfile").read_text()
+    assert MODULE.check(source) == []
+    for recipe, step in (
+        ("check-native", "stateful-native"),
+        ("check-pants", "test-changed"),
+        ("check-all-native", "packages-check"),
+        ("check-all-pants", "pants-attest"),
+    ):
+        declaration = next(line for line in source.splitlines() if line.startswith(f"{recipe}:"))
+        changed = source.replace(declaration, declaration.replace(f" {step}", ""), 1)
+        assert any(recipe in error for error in MODULE.check(changed))
+
+
+def test_aliases_select_one_explicit_profile() -> None:
+    source = (ROOT / "justfile").read_text()
+    changed = source.replace("check: check-pants", "check: check-pants check-native", 1)
+    assert any("check must alias" in error for error in MODULE.check(changed))
+
+
 def test_architecture_key_owns_the_bootstrap_safe_gate_recipe() -> None:
     assert "architecture-structural-check" in MODULE.KEY_RECIPES["architecture-contracts"][1]
     assert "architecture-check" not in MODULE.KEY_RECIPES["architecture-contracts"][1]

@@ -50,8 +50,14 @@ bootstrap:
 # The enforcing seam is now the LAND itself — `work.validate.molecule` / `.merge-main` for this
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
-# FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check architecture-structural-check test-changed
+# The aliases select the current Pants primary until native parity is measured.
+check: check-pants
+
+# Stable fast entry points. Native collects the complete non-integration core suite directly;
+# Pants retains its impact-selected developer route.
+check-native: lint lint-md license-check architecture-structural-check stateful-native
+
+check-pants: lint lint-md license-check architecture-structural-check test-changed
 
 # Current-candidate proof rows are generated evidence and must match the exact release tree.
 proof-digest-check:
@@ -139,10 +145,12 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
+check-all: check-all-pants
+
+check-all-pants: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
 
 # Full native validation runs every core and workspace test directly with pytest. Pants remains
-# available through check-all; this mode deliberately has no Pants engine prerequisite.
+# available through check-all-pants; this mode deliberately has no Pants engine prerequisite.
 check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
 
 # Attest-key commands deliberately partition check-all. Keep this list and the fleet's
