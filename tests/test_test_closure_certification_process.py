@@ -240,14 +240,18 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     assert isinstance(recipes, dict)
     architecture = recipes["architecture-check"]
     selective_architecture = recipes["architecture-structural-check"]
+    pants_architecture = recipes["architecture-pants-check"]
     attest_architecture = recipes["attest-architecture-contracts"]
     check = recipes["check"]
     check_all = recipes["check-all"]
+    check_all_native = recipes["check-all-native"]
     assert isinstance(architecture, dict)
     assert isinstance(selective_architecture, dict)
+    assert isinstance(pants_architecture, dict)
     assert isinstance(attest_architecture, dict)
     assert isinstance(check, dict)
     assert isinstance(check_all, dict)
+    assert isinstance(check_all_native, dict)
     architecture_body = [row[0] for row in architecture["body"]]
     assert architecture_body == [
         "uv run python scripts/check_import_boundaries.py",
@@ -264,11 +268,18 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     ]
     selective_body = [row[0] for row in selective_architecture["body"]]
     assert selective_body == [
-        line.replace("--check", "--check-structural")
-        if "test_closure_certification.py" in line
-        else line
-        for line in architecture_body
+        "uv run python scripts/check_import_boundaries.py",
+        "uv run python scripts/check_package_imports.py",
+        "uv run python scripts/test_closure_certification.py --check-structural",
+        "uv run python scripts/test_closure_shadow_policy.py --check",
+        "uv run python scripts/test_closure_promotion_policy.py --check",
+        "uv run python scripts/test_closure_operational_report.py --check",
+        "just transport-artifact-check",
+        "just wire-schema-compat",
+        "just proof-digest-check",
     ]
+    pants_body = [row[0] for row in pants_architecture["body"]]
+    assert pants_body == architecture_body[6:]
     attest_body = [row[0] for row in attest_architecture["body"]]
     assert "just architecture-structural-check" in attest_body
     assert "just architecture-check" not in attest_body
@@ -289,7 +300,28 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     check_test = next(item for item in check["dependencies"] if item["recipe"] == "test-changed")
     assert check_test["arguments"] == []
     assert {"stateful-pants", "stateful-native"} <= check_all_dependencies
+    assert "architecture-pants-check" in check_all_dependencies
     assert "test" not in check_all_dependencies
+    native_dependencies = {item["recipe"] for item in check_all_native["dependencies"]}
+    assert "architecture-structural-check" in native_dependencies
+    assert "architecture-pants-check" not in native_dependencies
+    assert "stateful-pants" not in native_dependencies
+    assert "pants-attest" not in native_dependencies
+
+    def recipe_closure(name: str, seen: set[str] | None = None) -> set[str]:
+        visited = set() if seen is None else seen
+        if name in visited:
+            return visited
+        visited.add(name)
+        for dependency in recipes[name]["dependencies"]:
+            recipe_closure(dependency["recipe"], visited)
+        return visited
+
+    native_graph = recipe_closure("check-all-native")
+    assert not {"architecture-pants-check", "stateful-pants", "pants-attest"} & native_graph
+    for name in native_graph:
+        for row in recipes[name]["body"]:
+            assert "pants" not in row[0].lower(), f"native gate launches Pants via {name}: {row[0]}"
 
 
 def _manifests(repo: Path) -> list[dict[str, object]]:

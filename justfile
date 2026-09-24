@@ -51,7 +51,7 @@ bootstrap:
 # hive point at `check-all`, so `bh work finish` / `merge` runs it from a clean checkout before
 # anything reaches main. The pre-push job stays as the belt to that braces.
 # FAST GATE (the default validate_cmd): ruff + markdown + licences + the UNIT suite
-check: lint lint-md license-check architecture-structural-check transport-artifact-check wire-schema-compat proof-digest-check test-changed
+check: lint lint-md license-check architecture-structural-check test-changed
 
 # Current-candidate proof rows are generated evidence and must match the exact release tree.
 proof-digest-check:
@@ -139,7 +139,11 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check architecture-structural-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
+check-all: require-bd lint lint-md license-check architecture-structural-check architecture-pants-check pants-attest stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
+
+# Full native validation runs every core and workspace test directly with pytest. Pants remains
+# available through check-all; this mode deliberately has no Pants engine prerequisite.
+check-all-native: require-bd lint lint-md license-check architecture-structural-check stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
 
 # Attest-key commands deliberately partition check-all. Keep this list and the fleet's
 # work.attest.keys catalog aligned; check-attest-catalog verifies the recipe graph so adding a
@@ -163,12 +167,10 @@ attest-integration:
 
 attest-architecture-contracts:
     just architecture-structural-check
-    just transport-artifact-check
-    just wire-schema-compat
-    just proof-digest-check
 
 attest-package:
     just pants-attest
+    just architecture-pants-check
 
 # ONE key for every packages/* distribution (bh-3fcl0.1); Pants' CAS serves unchanged ones.
 attest-packages:
@@ -213,6 +215,11 @@ architecture-structural-check:
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
     uv run python scripts/test_closure_operational_report.py --check
+    just transport-artifact-check
+    just wire-schema-compat
+    just proof-digest-check
+
+architecture-pants-check:
     uv run python scripts/pants_shadow_evidence.py
     uv run python scripts/check_pants_ownership.py
     uv run python scripts/check_pants_proven.py

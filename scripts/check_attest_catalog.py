@@ -14,14 +14,9 @@ KEY_RECIPES = {
     "integration": ("attest-integration", ("require-bd", "test-integration-land")),
     "architecture-contracts": (
         "attest-architecture-contracts",
-        (
-            "architecture-structural-check",
-            "transport-artifact-check",
-            "wire-schema-compat",
-            "proof-digest-check",
-        ),
+        ("architecture-structural-check",),
     ),
-    "package": ("attest-package", ("pants-attest",)),
+    "package": ("attest-package", ("pants-attest", "architecture-pants-check")),
     "demos": ("attest-demos", ("demo-local-loop", "demo-live-ingress")),
     "packages": ("attest-packages", ("packages-check",)),
 }
