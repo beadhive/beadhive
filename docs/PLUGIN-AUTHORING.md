@@ -50,6 +50,80 @@ Define a narrow, runtime-checkable `Protocol` for each capability. Bootstrap sup
 application code do not query a plugin registry. Missing, duplicate, or structurally wrong
 bindings block only the composition that requires that capability.
 
+## Build plugins in `packages/*`
+
+An in-repo build plugin is its own distribution under `packages/<distribution>/`; its Python
+package lives in `src/<import_name>/`, with tests in `tests/`. Start from
+[`packages/_template`](../packages/_template). The root uv workspace includes `packages/*`,
+Pants discovers the package source and test roots, and the root Just recipes address all
+packages without adding a per-package recipe. For a package named `beadhive-example-build`:
+
+```sh
+cp -R packages/_template packages/beadhive-example-build
+mv packages/beadhive-example-build/src/beadhive_package_template \
+  packages/beadhive-example-build/src/beadhive_example_build
+# Edit the copied pyproject.toml: set name, description, and wheel packages to the new names.
+# Edit the copied src/BUILD resource glob and the copied Python/test imports and distribution name.
+uv lock
+just pkg beadhive-example-build check
+just packages-check
+```
+
+Keep the three copied BUILD files at the package root, `src/`, and `tests/`. Their recursive
+globs cover new Python modules, tests, and declared package data without a BUILD edit. Add any
+new resource suffix to `src/BUILD`'s `resources` glob, since `python_sources` depends on that
+target for `importlib.resources` reads. The package-local `justfile` delegates to the root:
+`just pkg <name> lint`, `test`, or `check` runs one package; `just packages-check` runs all of
+them. Package tests run in Pants sandboxes without the root stateful fixture plugin.
+
+The static import rule is enforced by `scripts/check_package_imports.py` and `just
+architecture-structural-check`. Package code may import `beadhive.testing` and public
+`beadhive.kernel.*.contracts` or `beadhive.modules.*.contracts` modules. It may not import
+core implementation, bootstrap, or transport modules. Conversely, `src/beadhive` must not
+statically import a package's Python module. This keeps the distribution boundary real while
+the root workspace installs the package editably.
+
+For a `build.verify` provider, implement the runtime-checkable `BuildVerifier` port from
+`beadhive.kernel.plugins.contracts`. `verify(repo: str)` returns a tuple of
+`PluginDiagnostic` findings; an empty tuple means healthy. Findings are data, not exceptions.
+For a `build.impact` provider, implement `ImpactBackend` from
+`beadhive.modules.work.contracts.impact`: expose `name`, `version`, and
+`analyze(ImpactRequest) -> BackendImpact`. The backend answers ownership, transitive
+dependents, and key selection; core's `FailClosedResolver` creates the receipt and enforces
+fallback. Run every `IMPACT_CASES` case from `beadhive.testing.impact` with a fresh
+`ImpactHarness` backend per scenario. See
+[`test_impact_conformance.py`](../packages/beadhive-pants/tests/test_impact_conformance.py)
+for the Pants query adapter and injected fault examples.
+
+Runtime discovery and packaging are separate steps. Add a checked manifest resource at
+`packages/<distribution>/src/<import_name>/plugin.json`, then copy the same JSON into
+`src/beadhive/kernel/plugins/manifests/<plugin_id>.json`. Declare `build.impact` and/or
+`build.verify` in `capabilities.provides` with API version 1, plus the manifest's compatibility,
+configuration, lifecycle, presentation, and security fields. Use
+[`beadhive-pants/plugin.json`](../packages/beadhive-pants/src/beadhive_pants/plugin.json)
+as a complete example. Add the ID to `BUILTIN_PLUGIN_IDS` in `kernel/plugins/builtins.py`;
+this list and the JSON resources are the first-party discovery data. If the provider is
+active, add its lazy import loader to `BUILTIN_IMPACT_PROVIDERS` in `bootstrap/impact.py`
+or `BUILTIN_BUILD_VERIFIER_PROVIDERS` in `bootstrap/build_verify.py`. The loader must import
+the package only after manifest discovery selects it. A CLI surface is optional; if added,
+declare each command in `presentation.cli` and mount the package's Typer app at the transport
+boundary, as `beadhive_pants.cli` does. Never introduce a static core-to-package import.
+
+Finish with the parser, boundary, and package gates:
+
+```sh
+uv run python scripts/check_package_imports.py
+just check-attest-catalog
+just pkg beadhive-example-build check
+just packages-check
+just check
+```
+
+The package's checked manifest and runtime binding must agree: discovery selects at most one
+enabled owner per capability. A second enabled provider requires explicit
+`plugin_kernel.capability_owners` policy. A missing binding or failed provider load is a
+diagnostic or conservative fallback, never a silent registry lookup.
+
 ## Lifecycle policy and failure isolation
 
 Use only IDs in `EVENTS_BY_ID` and the matching immutable context type. Same-phase order is
