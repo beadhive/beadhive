@@ -631,9 +631,8 @@ integration_workers := "16"
 # The suspect ran in the unfenced half for the fence's entire existence.
 # run the suite for a marker selection — fenced and parallel (default: the fast unit-only set)
 test set=FAST:
-    {{ if set == "FAST" { "just stateful-pants" } else if set == "" { "just stateful-pants" } else { "true" } }}
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pants_ci.py native -- -n auto {{ if set == "" { "" } else { "-m " + quote(set) } }}
+        ./scripts/hermetic.sh uv run pytest -n auto tests {{ if set == "" { "" } else { "-m " + quote(set) } }}
 
 # Developer feedback: query from the integration merge-base and execute only affected proven
 # Pants targets. Affected unproven tests route to the native residual; global, unowned, or failed
@@ -641,9 +640,8 @@ test set=FAST:
 test-changed:
     uv run python scripts/pants_ci.py affected "$(git merge-base "${BH_INTEGRATION_BASE:-main}" HEAD)"
 
-# Submission/merge closure: every graduated target (including reverse dependents through its
-# declared graph) plus every explicitly unproven native test. Pants serves unchanged processes
-# from CAS; native never recollects a graduated file.
+# Pants-backed closure: every graduated target, including reverse dependents from its declared
+# graph. `stateful-native` independently collects all core tests for the Pants-free full mode.
 stateful-pants:
     uv run python scripts/pants_ci.py all
 
@@ -653,7 +651,7 @@ stateful_workers := "16"
 
 stateful-native:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run python scripts/pants_ci.py native -- -n {{stateful_workers}} -m "{{FAST}}"
+        ./scripts/hermetic.sh uv run pytest -n {{stateful_workers}} tests -m "{{FAST}}"
 
 # Advisory module/plugin closures. These commands never replace `just check` or `just check-all`;
 # the checked impact map adds shared-contract and reverse-dependent selectors to each direct set.
@@ -715,7 +713,10 @@ pkg name *args:
 packages-check:
     uv run ruff check packages
     uv run ruff format --check packages
-    just _pants lint test packages::
+    uv sync --locked --all-packages
+    uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
+        ./scripts/hermetic.sh uv run --locked --all-packages pytest -n auto packages/*/tests
+    uv build --all-packages --no-build-isolation
 
 test-kernel:
     just test-closure kernel
@@ -745,7 +746,7 @@ test-system-smoke:
 # the LAND gate's complete integration pass — fenced and parallel
 test-integration-land:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
-        ./scripts/hermetic.sh uv run pytest -n {{integration_workers}} -m "integration"
+        ./scripts/hermetic.sh uv run pytest -n {{integration_workers}} tests -m "integration"
 
 # ^ the FENCE's own quarantine (test_storage_migrate_int's furnished-hive test) is GONE, not
 # forgotten (bh-gsg8x). It was never a fence incompatibility: in a linked worktree the tmpfs HOME

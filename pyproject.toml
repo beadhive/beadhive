@@ -120,8 +120,8 @@ pre_bump_hooks = ["scripts/prepare-release-version.sh $CZ_PRE_NEW_VERSION"]
 
 [tool.pytest.ini_options]
 addopts = "--durations=25 --durations-min=1.0"
-# A bare `pytest` (the native partition) collects tests/ only. packages/*/tests run under Pants
-# with their own source roots (bh-3fcl0.1); explicit paths, as Pants passes them, still work.
+# Core pytest collection is rooted at tests/. Workspace distributions under packages/* use
+# their own source roots and are run by the packages-check native/Pants build validation path.
 testpaths = ["tests"]
 pythonpath = [".", "src"]
 markers = [
