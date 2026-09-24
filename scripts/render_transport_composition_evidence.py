@@ -21,6 +21,7 @@ from check_import_boundaries import (
     collect_imports,  # pants: no-infer-dep
 )
 
+from beadhive.plugins import projected_cli_commands
 from beadhive.transport_inventory import (
     composition_roots,
     projections,
@@ -125,7 +126,12 @@ def _route_inventory(routes: Any) -> set[str]:
 def _declared_registration_sets() -> dict[str, frozenset[str]]:
     rows = projections()
     return {
-        "cli": frozenset(row.identifier for row in rows if row.surface == "cli"),
+        "cli": frozenset(
+            (
+                *(row.identifier for row in rows if row.surface == "cli"),
+                *projected_cli_commands(),
+            )
+        ),
         "mcp": frozenset(
             f"tool {row.identifier}" if row.surface == "mcp-tool" else f"resource {row.identifier}"
             for row in rows
@@ -149,7 +155,11 @@ def _registration_comparison(surface: str, declared_count: int) -> dict[str, Any
         else None
     )
     return {
-        "declared_source": "checked transport projection inventory",
+        "declared_source": (
+            "checked transport projection inventory plus selected plugin manifests"
+            if surface == "cli"
+            else "checked transport projection inventory"
+        ),
         "observed_source": REGISTRATION_OBSERVATION[surface],
         "projection_declaration_count": declared_count + len(excluded),
         "excluded_declarations": excluded,

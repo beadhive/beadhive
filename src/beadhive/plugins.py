@@ -42,7 +42,7 @@ from .kernel.plugins import (
     parse_kernel_config,
 )
 from .kernel.telemetry import SemanticTelemetryPort
-from .plugin_runtime_catalog import PLUGIN_RUNTIME_MODULES
+from .plugin_runtime_catalog import PLUGIN_CLI_RUNTIME_CATALOG, PLUGIN_RUNTIME_MODULES
 
 _semantic_telemetry: SemanticTelemetryPort | None = None
 
@@ -220,6 +220,48 @@ def cli_mounts(cfg: Any = None, entry: Any = None) -> tuple[CliMount, ...]:
         CliMount(plugin.name, plugin.cli)
         for plugin in composition.declarations
         if plugin.name in composition.selected_plugin_ids
+    )
+
+
+def projected_cli_mounts(cfg: Any = None, entry: Any = None) -> tuple[CliMount, ...]:
+    """Resolve package-owned CLI apps named by selected manifest projections."""
+
+    composition = _compose(cfg, entry, honor_legacy_enablement=False)
+    projected = {
+        plugin.manifest.plugin_id
+        for plugin in composition.result.plugins
+        if plugin.manifest.cli_projections
+    }
+    mounts: list[CliMount] = []
+    for runtime in PLUGIN_CLI_RUNTIME_CATALOG:
+        if (
+            runtime.plugin_id not in composition.selected_plugin_ids
+            or runtime.plugin_id not in projected
+        ):
+            continue
+        try:
+            module = import_module(runtime.module)
+        except ModuleNotFoundError as exc:
+            if exc.name == runtime.module.partition(".")[0]:
+                continue
+            raise
+        mounts.append(
+            CliMount(runtime.plugin_id, cast(typer.Typer, getattr(module, runtime.object_name)))
+        )
+    return tuple(mounts)
+
+
+def projected_cli_commands(cfg: Any = None, entry: Any = None) -> tuple[str, ...]:
+    """Return selected package CLI leaf paths declared by manifests."""
+
+    composition = _compose(cfg, entry, honor_legacy_enablement=False)
+    runtime_ids = {mount.plugin_id for mount in projected_cli_mounts(cfg, entry)}
+    return tuple(
+        projection.command
+        for plugin in composition.result.plugins
+        if plugin.manifest.plugin_id in composition.selected_plugin_ids
+        and plugin.manifest.plugin_id in runtime_ids
+        for projection in plugin.manifest.cli_projections
     )
 
 

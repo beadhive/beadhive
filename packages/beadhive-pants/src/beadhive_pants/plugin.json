@@ -9,7 +9,15 @@
   "manifest_version": 1,
   "plugin_id": "pants",
   "plugin_version": "1.0.0",
-  "presentation": {"cli": []},
+  "presentation": {
+    "cli": [
+      {"capability_id": "build.impact", "command": "plugin pants attest-check"},
+      {"capability_id": "build.impact", "command": "plugin pants cache"},
+      {"capability_id": "build.impact", "command": "plugin pants native"},
+      {"capability_id": "build.impact", "command": "plugin pants test affected"},
+      {"capability_id": "build.impact", "command": "plugin pants test all"}
+    ]
+  },
   "security": {
     "credentials": [],
     "executables": [{"name": "pants", "required": false, "version": {"maximum_exclusive": "999.0.0", "minimum_inclusive": "0.0.0"}}],

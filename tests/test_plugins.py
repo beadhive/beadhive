@@ -167,6 +167,22 @@ def test_compatibility_facade_projects_cli_and_typed_lifecycle(monkeypatch):
     assert report.deliveries[0].status is DeliveryStatus.SUCCEEDED
 
 
+def test_package_cli_projection_is_absent_when_optional_package_is_not_installed(
+    monkeypatch,
+) -> None:
+    original_import = plugins.import_module
+
+    def without_pants(name: str):
+        if name == "beadhive_pants.cli":
+            raise ModuleNotFoundError("No module named 'beadhive_pants'", name="beadhive_pants")
+        return original_import(name)
+
+    monkeypatch.setattr(plugins, "import_module", without_pants)
+
+    assert plugins.projected_cli_mounts() == ()
+    assert plugins.projected_cli_commands() == ()
+
+
 def test_plugin_lifecycle_delivery_uses_semantic_port_with_bounded_attribution(
     monkeypatch,
 ) -> None:

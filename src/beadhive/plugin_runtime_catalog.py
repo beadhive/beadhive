@@ -19,6 +19,15 @@ class RuntimePluginEntry:
     delivery: str = "runtime-core"
 
 
+@dataclass(frozen=True, order=True)
+class RuntimeCliEntry:
+    """A lazily imported CLI app advertised by a built-in manifest projection."""
+
+    plugin_id: str
+    module: str
+    object_name: str = "app"
+
+
 PLUGIN_RUNTIME_CATALOG = (
     RuntimePluginEntry("orca", "beadhive.orca", "orca"),
     RuntimePluginEntry("observaloop", "beadhive.observaloop", "observaloop"),
@@ -28,3 +37,5 @@ PLUGIN_RUNTIME_CATALOG = (
 )
 
 PLUGIN_RUNTIME_MODULES = tuple(entry.module for entry in PLUGIN_RUNTIME_CATALOG)
+
+PLUGIN_CLI_RUNTIME_CATALOG = (RuntimeCliEntry("pants", "beadhive_pants.cli"),)
