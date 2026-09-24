@@ -139,7 +139,7 @@ gateway-contract-check:
 # on a gate measured in minutes. Measured rather than extrapolated — the fenced unit phase came in
 # FASTER than the unfenced one (80.07s vs 123.29s, bh-nvv66), so this buys isolation for nothing.
 # FULL GATE: ruff + markdown + licences + the COMPLETE suite + the local-loop demo — what the LAND runs
-check-all: require-bd lint lint-md license-check architecture-structural-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress
+check-all: require-bd lint lint-md license-check architecture-structural-check transport-artifact-check wire-schema-compat proof-digest-check pants-attest stateful-pants stateful-native test-integration-land demo-local-loop demo-live-ingress packages-check
 
 # Attest-key commands deliberately partition check-all. Keep this list and the fleet's
 # work.attest.keys catalog aligned; check-attest-catalog verifies the recipe graph so adding a
@@ -170,6 +170,10 @@ attest-architecture-contracts:
 attest-package:
     just pants-attest
 
+# ONE key for every packages/* distribution (bh-3fcl0.1); Pants' CAS serves unchanged ones.
+attest-packages:
+    just packages-check
+
 # The demos execute declared application and fixture inputs, and config owners carry the same
 # selector. They therefore run for graph-implicated code/config changes without taxing docs-only
 # or test-only changes.
@@ -188,6 +192,7 @@ check-attest-catalog:
 # it only reads BUILD files) to keep every tracked file owned (bh-1j3ei.2).
 architecture-check:
     uv run python scripts/check_import_boundaries.py
+    uv run python scripts/check_package_imports.py
     uv run python scripts/test_closure_certification.py --check
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
@@ -203,6 +208,7 @@ architecture-check:
 # check, check-all, and selective CI. architecture-check remains the explicit post-receipt audit.
 architecture-structural-check:
     uv run python scripts/check_import_boundaries.py
+    uv run python scripts/check_package_imports.py
     uv run python scripts/test_closure_certification.py --check-structural
     uv run python scripts/test_closure_shadow_policy.py --check
     uv run python scripts/test_closure_promotion_policy.py --check
@@ -689,6 +695,27 @@ pants-shadow-check:
 # Required Pants build/test evidence; `check-all` still runs every native phase afterward.
 pants-attest:
     uv run python scripts/pants_attest.py
+
+# --- in-repo packages (packages/*, bh-3fcl0.1) ------------------------------------------------
+# Glob-shaped once so adding a package edits no recipe here: `pkg` delegates by directory name
+# and `packages-check` addresses the whole tree.
+
+# the pinned Pants launcher behind the shared cache coordinator (any goal and specs)
+_pants *args:
+    uv run python scripts/pants_cache.py run -- \
+        "$(uv run python -c 'from scripts.pants_launcher import launcher; print(launcher())')" \
+        --no-pantsd {{args}}
+
+# run a package-local recipe: `just pkg <name> <recipe> [args]` (packages/<name>/justfile)
+pkg name *args:
+    just --justfile {{quote("packages/" + name + "/justfile")}} {{args}}
+
+# lint + sandboxed tests for every packages/* distribution (the `packages` attest key). ruff
+# runs here too: a change confined to packages/ selects only this key, never `unit`'s `lint`.
+packages-check:
+    uv run ruff check packages
+    uv run ruff format --check packages
+    just _pants lint test packages::
 
 test-kernel:
     just test-closure kernel

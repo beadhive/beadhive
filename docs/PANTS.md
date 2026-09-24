@@ -1,8 +1,33 @@
 # Pants developer foundation
 
 Pants is an additive developer build graph. The canonical `uv.lock`, native `uv run pytest`,
-`just check`, and `just check-all` commands remain authoritative. No selective validation route is
-enabled by this foundation.
+`just check`, and `just check-all` commands remain authoritative. Qualified selective routes
+are described below; uncertain changes fall back to the full gate.
+
+## Plugin commands and compatibility shims
+
+The `beadhive-pants` distribution under `packages/` owns the Pants runner, cache coordinator,
+attestation, and impact backend. Core discovers its `build.impact` and `build.verify`
+capabilities from a checked manifest, then imports the selected implementation lazily at
+bootstrap. The user-facing commands are:
+
+```sh
+uv run bh plugin pants test affected <git-base>
+uv run bh plugin pants test all
+uv run bh plugin pants native -m 'not integration'
+uv run bh plugin pants cache status
+uv run bh plugin pants cache check
+uv run bh plugin pants attest-check
+```
+
+`test affected` runs affected proven Pants tests and the required native residual;
+`test all` runs the complete proven Pants partition. `native` forwards pytest arguments.
+`cache` forwards coordinator arguments, and `attest-check` runs the exact-tree Pants
+prerequisite. Run these from the repository root after `uv sync`; use `--help` on a command
+for its accepted arguments. The existing `scripts/pants_ci.py`, `pants_cache.py`,
+`pants_attest.py`, and related script paths remain compatibility shims to the package-owned
+modules, so existing Just recipes and automation keep working. New callers should use
+`bh plugin pants` or the root Just recipes.
 
 Install the official Pants launcher using the upstream installation instructions, then run it
 from the repository root. `pants.toml` pins the engine to Pants 2.32.1, the first patch release
@@ -28,6 +53,24 @@ watchdog diagnostics but omit `stateful_fixtures.py`; legacy tests own the state
 plugin. Direct harness imports infer per-file harness dependencies. Package data and test fixture
 resources have explicit resource targets. Unowned Python imports are errors, not warnings, so an
 incomplete mapping fails closed during graph use.
+
+Governed source directories own their own targets: `modules/<capability>`, `kernel/<concern>`,
+`adapters/<boundary>`, `integrations/herdr`, `bootstrap`, and `testing` each have a BUILD file
+whose generator is tagged `owner:<path>` and `role:<kind>` (`capability`, `kernel`,
+`shared-adapter`, `integration`, `bootstrap`, `testing-kit`, or `namespace` for a bare package
+marker). `//src/beadhive:lib` owns only the root-level `*.py` modules and is tagged
+`role:migration-debt`. Pure unit tests follow the same split: `tests/BUILD` generates one
+`tests:unit-<area>` target per `tests/unit/<area>` with the owner/role tags of the source it covers,
+all from one shared field set that keeps the sandbox-proven overrides in a single list. The `bh`
+PEX and the demos depend on `//src/beadhive:sources`, which lists every source target, so the
+package closure does not depend on import inference. The split adds addressability and tags, not
+sharper impact selection; `attest:*` and `category:*` tags are unchanged.
+
+```console
+pants list src/beadhive/modules/config::
+pants test tests:unit-kernel-plugins
+pants --filter-tag-regex='^owner:modules/config$' list ::
+```
 
 ## Host-wide cache topology
 

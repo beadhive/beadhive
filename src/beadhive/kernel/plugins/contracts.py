@@ -11,7 +11,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from types import MappingProxyType
-from typing import Generic, Protocol, TypeVar
+from typing import Generic, Protocol, TypeVar, runtime_checkable
 
 from ..lifecycle.contracts import DeliveryPolicy
 
@@ -39,6 +39,9 @@ class DiagnosticCode(StrEnum):
     OPTIONAL_EXECUTABLE_MISSING = "optional-executable-missing"
     EXTERNAL_LOADING_DISABLED = "external-loading-disabled"
     SOURCE_FAILURE = "manifest-source-failure"
+    BUILD_OWNERSHIP = "build-ownership"
+    BUILD_PROVEN_MANIFEST = "build-proven-manifest"
+    BUILD_ATTEST_TAGS = "build-attest-tags"
 
 
 @dataclass(frozen=True, order=True)
@@ -301,6 +304,28 @@ class ProviderBinding(Generic[PortT]):
 
 class CapabilityBindingError(LookupError):
     """Composition could not bind a selected provider to the requested typed port."""
+
+
+#: Build-graph impact analysis (Attested Green ADR, Amendment 1). Its typed port is
+#: ``beadhive.modules.work.contracts.impact.ImpactBackend``, unchanged: the port belongs to the
+#: work module, so this stdlib-only kernel contract names the capability and bootstrap pairs it
+#: with the port in a :class:`CapabilityKey`. Every selected provider's answer still runs inside
+#: the core's fail-closed resolver; a provider only answers questions.
+BUILD_IMPACT = CapabilityRef("build.impact", 1)
+
+#: Build-system health checks (ownership completeness, proven-test drift, key-tag coverage)
+#: reported through :class:`BuildVerifier`.
+BUILD_VERIFY = CapabilityRef("build.verify", 1)
+
+
+@runtime_checkable
+class BuildVerifier(Protocol):
+    """Typed port for :data:`BUILD_VERIFY`: inspect one repository and report findings.
+
+    Verification is read-only and never raises for a finding; an empty tuple means healthy.
+    """
+
+    def verify(self, repo: str) -> tuple[PluginDiagnostic, ...]: ...
 
 
 ManifestLoader = Callable[[ExternalEntryPoint], bytes]

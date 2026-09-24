@@ -3,6 +3,9 @@
 from .binding import bind_application_port
 from .builtins import BUILTIN_PLUGIN_IDS, builtin_manifest_documents, builtin_manifest_source
 from .contracts import (
+    BUILD_IMPACT,
+    BUILD_VERIFY,
+    BuildVerifier,
     CapabilityBindingError,
     CapabilityKey,
     CapabilityRef,
@@ -38,6 +41,9 @@ from .discovery import (
 )
 
 __all__ = [
+    "BUILD_IMPACT",
+    "BUILD_VERIFY",
+    "BuildVerifier",
     "BuiltInManifestSource",
     "BUILTIN_PLUGIN_IDS",
     "CapabilityBindingError",

@@ -251,6 +251,7 @@ def _assert_production_full_gate_wiring(repo: Path) -> None:
     architecture_body = [row[0] for row in architecture["body"]]
     assert architecture_body == [
         "uv run python scripts/check_import_boundaries.py",
+        "uv run python scripts/check_package_imports.py",
         "uv run python scripts/test_closure_certification.py --check",
         "uv run python scripts/test_closure_shadow_policy.py --check",
         "uv run python scripts/test_closure_promotion_policy.py --check",

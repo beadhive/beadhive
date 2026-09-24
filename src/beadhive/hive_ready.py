@@ -28,8 +28,11 @@ from . import (
     store_locator,
     validate_probe,
 )
+from .bootstrap.build_verify import collect_build_verify_diagnostics
+from .config_work_settings import attest_config
 from .hive import _is_plugin_installed  # shared with the installer (defined in hive.py)
 from .identity import workspace_identity
+from .kernel.plugins import DiagnosticSeverity
 from .modules.hives import HiveDiagnostic, ReadinessCheck, ReadinessResult
 from .run import run
 
@@ -155,6 +158,24 @@ def _plugin_checks(cfg, entry) -> list[Check]:
         state, detail = port.probe(cfg, entry) or ("off", "unknown")
         checks.append(Check(port.plugin_id, False, state, detail))
     return checks
+
+
+def _build_verify_checks(cfg, entry, root: Path) -> list[Check]:
+    """Project plugin diagnostics; errors fail readiness because impact would be unsound."""
+    if not (root / "pants.toml").is_file():
+        return []
+    diagnostics = collect_build_verify_diagnostics(
+        str(root), attest_config(cfg, entry), plugin_kernel=cfg.get("plugin_kernel")
+    )
+    return [
+        Check(
+            f"{diagnostic.plugin_id} {diagnostic.code.value}",
+            True,
+            "missing" if diagnostic.severity is DiagnosticSeverity.ERROR else "ok",
+            diagnostic.detail,
+        )
+        for diagnostic in diagnostics
+    ]
 
 
 def _git_workspace_check(cfg, entry) -> Check:
@@ -537,6 +558,7 @@ def scan(cfg, ident, entry, root: Path) -> list[Check]:
     checks.extend(_observaloop_checks(cfg, entry))
     checks.append(_git_workspace_check(cfg, entry))
     checks.extend(_plugin_checks(cfg, entry))
+    checks.extend(_build_verify_checks(cfg, entry, root))
     checks.append(_grant_check(cfg, root, provider, org, repo))
     checks.append(_codex_sandbox_check(cfg, root, provider, org, repo))
     checks.append(_hint_check("AGENTS.md hint", root / "AGENTS.md"))

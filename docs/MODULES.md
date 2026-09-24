@@ -115,6 +115,29 @@ betweenness, and repeated recent fixes. The agent-launch domain should therefore
 reference capability module while Herdr transport, topology, CLI, and lifecycle details move
 outward into an integration adapter.
 
+### Landed `packages/*` boundary
+
+The historical recommendation below to defer distribution splits has one deliberate landed
+extension: in-repo build plugins can live as separate distributions in `packages/*`.
+`src/beadhive` still contains core contracts, policy, and composition roots; it does not
+statically import package implementations. The uv workspace installs package distributions
+editably, while each package has its own `pyproject.toml`, `src/`, `tests/`, `justfile`, and
+three recursive BUILD files. Start with [`packages/_template`](../packages/_template) and
+follow [PLUGIN-AUTHORING.md](PLUGIN-AUTHORING.md) for the full authoring procedure.
+
+The enforced direction is `packages/*` to public `beadhive.kernel.*.contracts`,
+`beadhive.modules.*.contracts`, or `beadhive.testing`; `src/beadhive` to package code is a
+lazy bootstrap import after plugin manifest selection. `scripts/check_package_imports.py`
+checks both sides. First-party manifest JSON in `src/beadhive/kernel/plugins/manifests/`
+names the plugin and capabilities; `bootstrap/impact.py` and `bootstrap/build_verify.py`
+provide selected runtime bindings. Package tests run in Pants sandboxes under the shared
+`packages` attest key, separate from the root native pytest partition.
+
+`beadhive-pants` is the first example. It implements `build.impact` and `build.verify`, owns
+the `bh plugin pants` command tree, and keeps legacy `scripts/pants_*.py` paths as shims.
+This extraction is limited to build plugins; the capability modules under
+`src/beadhive/modules/` remain inside the core distribution.
+
 ## Architectural principles
 
 1. **Capability cohesion over layer-only grouping.** Top-level modules represent reasons to

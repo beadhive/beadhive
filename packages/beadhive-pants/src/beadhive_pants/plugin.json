@@ -1,0 +1,29 @@
+{
+  "capabilities": {"provides": [{"api_version": 1, "id": "build.impact"}, {"api_version": 1, "id": "build.verify"}]},
+  "compatibility": {
+    "beadhive": {"maximum_exclusive": "1.0.0", "minimum_inclusive": "0.15.0"},
+    "plugin_kernel": {"maximum_exclusive": "2.0.0", "minimum_inclusive": "1.0.0"}
+  },
+  "configuration": {"legacy_namespaces": [], "namespace": "plugins.pants", "schema_artifact": null},
+  "lifecycle": {"subscriptions": []},
+  "manifest_version": 1,
+  "plugin_id": "pants",
+  "plugin_version": "1.0.0",
+  "presentation": {
+    "cli": [
+      {"capability_id": "build.impact", "command": "plugin pants attest-check"},
+      {"capability_id": "build.impact", "command": "plugin pants cache"},
+      {"capability_id": "build.impact", "command": "plugin pants native"},
+      {"capability_id": "build.impact", "command": "plugin pants test affected"},
+      {"capability_id": "build.impact", "command": "plugin pants test all"}
+    ]
+  },
+  "security": {
+    "credentials": [],
+    "executables": [{"name": "pants", "required": false, "version": {"maximum_exclusive": "999.0.0", "minimum_inclusive": "0.0.0"}}],
+    "permissions": [
+      {"id": "filesystem.workspace.read", "purpose": "read the build graph and the proven-test manifest", "required": true},
+      {"id": "process.build.query", "purpose": "run read-only Pants graph queries", "required": true}
+    ]
+  }
+}

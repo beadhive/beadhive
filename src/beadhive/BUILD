@@ -1,7 +1,11 @@
+# Root-level modules only. This is migration debt (physical-organization ADR, Decision 7): the
+# governed directories (modules/<capability>, kernel/<concern>, adapters/<boundary>,
+# integrations/herdr, bootstrap, testing) own their sources through their own BUILD files,
+# tagged `owner:<path>` and `role:<kind>`.
 python_sources(
     name="lib",
-    sources=["**/*.py"],
-    tags=["category:code", "attest:package"],
+    sources=["*.py"],
+    tags=["category:code", "attest:package", "owner:root", "role:migration-debt"],
 )
 
 resources(
@@ -19,12 +23,47 @@ resources(
     tags=["category:code", "attest:package"],
 )
 
+# Every first-party Python source target under src/beadhive. The pex and the demos depend on this
+# set rather than on import inference from the entry point, so narrowing :lib cannot drop a
+# dynamically loaded module from their closure. A new source target under src/beadhive must be
+# listed here; tests/test_pants_foundation.py enforces it.
+target(
+    name="sources",
+    dependencies=[
+        ":lib",
+        "./adapters:impact",
+        "./adapters:package",
+        "./adapters:telemetry",
+        "./adapters/cli",
+        "./bootstrap",
+        "./integrations",
+        "./integrations/herdr",
+        "./kernel",
+        "./kernel/daemon",
+        "./kernel/lifecycle",
+        "./kernel/operations",
+        "./kernel/plugins",
+        "./kernel/telemetry",
+        "./modules",
+        "./modules/agents",
+        "./modules/config",
+        "./modules/hives",
+        "./modules/planning",
+        "./modules/state",
+        "./modules/work",
+        "./modules/worktrees",
+        "./testing",
+    ],
+    tags=["category:code", "attest:package"],
+)
+
 pex_binary(
     name="bh",
     entry_point="beadhive.bootstrap.cli:main",
     dependencies=[
-        ":lib",
+        ":sources",
         ":package-data",
+        "//packages/beadhive-pants/src:lib",
     ],
     output_path="bh.pex",
     tags=["category:code", "attest:demos", "attest:package"],

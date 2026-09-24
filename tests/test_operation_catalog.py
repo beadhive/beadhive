@@ -29,6 +29,8 @@ from beadhive.operation_catalog import document, operations
 ROOT = Path(__file__).resolve().parents[1]
 WIRE = ROOT / "docs" / "schemas" / "wire" / "v1.2.0"
 RETIRED_SURFACE_TOKEN = re.compile(r"(?<![a-z0-9])(?P<token>ws|rig)(?![a-z0-9])", re.I)
+MANIFEST_CLI_COMMANDS = frozenset(app._bh_manifest_commands)
+MANIFEST_CLI_PARENTS = frozenset(app._bh_manifest_parents)
 
 # There are deliberately no exceptions today.  Any future compatibility seam must name the exact
 # scanned descriptor and explain why it cannot be removed; an unscoped regex suppression is never
@@ -244,9 +246,11 @@ def test_every_cli_leaf_and_signature_is_declared_exactly_once() -> None:
     projected = _projected_cli()
     by_name = {operation.name: operation for operation in operations()}
 
-    assert set(projected) == set(actual)
-    assert len(projected) == len(actual)
+    assert set(projected) == set(actual) - MANIFEST_CLI_COMMANDS
+    assert MANIFEST_CLI_COMMANDS == set(actual) - set(projected)
     for path, metadata in actual.items():
+        if path in MANIFEST_CLI_COMMANDS:
+            continue
         operation_name, projection = projected[path]
         operation = by_name[operation_name]
         declared = {parameter.name: parameter for parameter in operation.parameters}
@@ -346,8 +350,11 @@ def test_cli_parent_alias_and_passthrough_metadata_is_complete() -> None:
     root = get_command(app)
     actual_parents = _cli_parents(root)
     declared_parents = {row["path"]: row for row in document()["cli_parents"]}
-    assert set(declared_parents) == set(actual_parents)
+    assert set(declared_parents) == set(actual_parents) - MANIFEST_CLI_PARENTS
+    assert MANIFEST_CLI_PARENTS == set(actual_parents) - set(declared_parents)
     for path, actual in actual_parents.items():
+        if path in MANIFEST_CLI_PARENTS:
+            continue
         declared = declared_parents[path]
         for key in ("declared_hidden", "effective_hidden", "panel", "effective_panel"):
             assert declared[key] == actual[key], (path, key)
@@ -367,6 +374,7 @@ def test_cli_parent_alias_and_passthrough_metadata_is_complete() -> None:
     expected_passthrough = {
         path
         for path, metadata in actual_leaves.items()
+        if path not in MANIFEST_CLI_COMMANDS
         if (metadata["command"].context_settings or {}).get("allow_extra_args")
         or (metadata["command"].context_settings or {}).get("ignore_unknown_options")
     }
@@ -586,7 +594,8 @@ def test_convention_8_scans_every_live_description_probe_and_test_filename() -> 
     filename_texts = {f"test-filename:{path}": Path(path).name for path in test_files}
     scanned = {**cli_texts, **mcp_texts, **filename_texts}
 
-    assert len(cli_texts) == 213 * 2  # rendered help + callback docstring for every leaf
+    # Core catalog and package manifests are the two explicit CLI authorities.
+    assert len(cli_texts) == (213 + len(MANIFEST_CLI_COMMANDS)) * 2
     assert mcp_counts == {"tools": 10, "resources": 21, "probes": 1}
     assert len(filename_texts) == len(test_files) > 0
     assert set(RETIRED_SURFACE_EXCLUSIONS) <= set(scanned)

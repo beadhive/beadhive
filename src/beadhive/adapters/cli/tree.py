@@ -187,6 +187,8 @@ def _validate_live_parameters(
                 walk(child, child_path)
                 continue
             rendered = " ".join(child_path)
+            if rendered not in declarations:
+                continue
             declaration = declarations[rendered]
             actual = tuple(parameter.name for parameter in child.params)
             if actual != declaration.parameters:
@@ -220,12 +222,14 @@ def project_cli_tree(
     parents: dict[str, tuple[typer.Typer, TyperInfo]] = {}
     callbacks: set[str] = set()
     _collect(app, commands, parents, callbacks)
+    external_commands = frozenset(getattr(app, "_bh_manifest_commands", ()))
+    external_parents = frozenset(getattr(app, "_bh_manifest_parents", ()))
 
     def is_unavailable(path: str) -> bool:
         parts = path.split()
         return len(parts) >= 2 and parts[0] == "plugin" and parts[1] in unavailable_optional_plugins
 
-    expected_commands = {
+    expected_commands = external_commands | {
         path
         for path in set(declared_commands) - set(PROJECTION_EXCLUSIONS)
         if not is_unavailable(path)
@@ -236,7 +240,9 @@ def project_cli_tree(
             f"(missing={sorted(expected_commands - set(commands))!r}, "
             f"extra={sorted(set(commands) - expected_commands)!r})"
         )
-    expected_parents = {path for path in declared_parents if not is_unavailable(path)}
+    expected_parents = external_parents | {
+        path for path in declared_parents if not is_unavailable(path)
+    }
     if set(parents) != expected_parents:
         raise CatalogProjectionError(
             "CLI parent inventory drift "
@@ -251,13 +257,21 @@ def project_cli_tree(
         )
 
     command_bindings = tuple(
-        _CommandBinding(*commands[path], declared_commands[path]) for path in commands
+        _CommandBinding(*commands[path], declared_commands[path])
+        for path in commands
+        if path in declared_commands
     )
     parent_bindings = tuple(
-        _ParentBinding(*parents[path], declared_parents[path]) for path in parents
+        _ParentBinding(*parents[path], declared_parents[path])
+        for path in parents
+        if path in declared_parents
     )
+    preserved_parents = tuple(parents[path] for path in external_parents)
     _rebind_commands(command_bindings)
     _rebind_parents(parent_bindings)
+    for parent_app, info in preserved_parents:
+        if info not in parent_app.registered_groups:
+            parent_app.registered_groups.append(info)
     _validate_live_parameters(app, declared_commands)
 
     projected_commands = tuple(row for row in command_rows if row.path in expected_commands)

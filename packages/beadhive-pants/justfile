@@ -1,0 +1,14 @@
+root := justfile_directory() / ".." / ".."
+name := file_name(justfile_directory())
+
+default:
+    @just --justfile {{ quote(justfile()) }} --list
+
+test:
+    just --justfile {{ quote(root / "justfile") }} _pants test {{ quote("packages/" + name + "::") }}
+
+lint:
+    cd {{ quote(root) }} && uv run ruff check {{ quote("packages/" + name) }}
+    cd {{ quote(root) }} && uv run ruff format --check {{ quote("packages/" + name) }}
+
+check: lint test

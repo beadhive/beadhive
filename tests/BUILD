@@ -23,9 +23,9 @@ python_sources(
     tags=["category:test-only", "attest:stateful"],
 )
 
-python_tests(
-    name="pure-tests",
-    sources=["unit/**/test_*.py"],
+# Fields shared by every pure unit-test target below. `_unit_tests` hands each target only the
+# overrides for files under its own directory and adds that target's owner/role tags.
+_UNIT_TEST_FIELDS = dict(
     dependencies=[":root-conftest"],
     tags=["category:test-only", "attest:unit"],
     overrides={
@@ -60,6 +60,7 @@ python_tests(
             "unit/modules/worktrees/test_policy.py",
             "unit/modules/worktrees/test_services.py",
             "unit/testing/test_conformance_testkit.py",
+            "unit/testing/test_impact_conformance_kit.py",
         ): {
             "tags": [
                 "category:test-only",
@@ -70,6 +71,48 @@ python_tests(
         },
     },
 )
+
+
+def _unit_tests(area, owner, role):
+    """One pure unit-test target per `unit/<area>`, tagged with the source owner it covers.
+
+    An empty area is the root of `unit/` (non-recursive). A test file under a directory with no
+    target here is unowned, and `check_pants_ownership.py` fails closed on it.
+    """
+    prefix = f"unit/{area}/" if area else "unit/"
+    ownership = [f"owner:{owner}", f"role:{role}"]
+    overrides = {}
+    for paths, fields in _UNIT_TEST_FIELDS["overrides"].items():
+        owned = tuple(
+            path
+            for path in paths
+            if path.startswith(prefix) and (area or "/" not in path[len(prefix) :])
+        )
+        if owned:
+            overrides[owned] = dict(fields, tags=[*fields["tags"], *ownership])
+    python_tests(
+        name="unit-" + (area.replace("/", "-") if area else "root"),
+        sources=[f"{prefix}**/test_*.py" if area else f"{prefix}test_*.py"],
+        dependencies=_UNIT_TEST_FIELDS["dependencies"],
+        tags=[*_UNIT_TEST_FIELDS["tags"], *ownership],
+        overrides=overrides,
+    )
+
+
+_unit_tests("", "root", "migration-debt")
+_unit_tests("integrations", "integrations/herdr", "integration")
+_unit_tests("kernel/lifecycle", "kernel/lifecycle", "kernel")
+_unit_tests("kernel/operations", "kernel/operations", "kernel")
+_unit_tests("kernel/plugins", "kernel/plugins", "kernel")
+_unit_tests("kernel/telemetry", "kernel/telemetry", "kernel")
+_unit_tests("modules/agents", "modules/agents", "capability")
+_unit_tests("modules/config", "modules/config", "capability")
+_unit_tests("modules/hives", "modules/hives", "capability")
+_unit_tests("modules/planning", "modules/planning", "capability")
+_unit_tests("modules/state", "modules/state", "capability")
+_unit_tests("modules/work", "modules/work", "capability")
+_unit_tests("modules/worktrees", "modules/worktrees", "capability")
+_unit_tests("testing", "testing", "testing-kit")
 
 python_tests(
     name="legacy-stateful-tests",
@@ -102,7 +145,7 @@ resources(
 )
 
 # Package marker for tests/unit/integrations so imports resolve; the test_*.py siblings there
-# are already covered by :pure-tests.
+# are already covered by the :unit-<area> targets.
 python_sources(
     name="package-markers",
     sources=["unit/**/__init__.py"],

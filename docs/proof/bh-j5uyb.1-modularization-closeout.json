@@ -334,13 +334,13 @@
         "classification": "Canonical historical certification plus current applicability checks; all closures remain uncertified and every production route fails closed to the full lane.",
         "artifacts": [
           {"path": "docs/proof/bh-ck1t6.1-test-closure-certification.json", "sha256": "4be8cb0128b7efa300611768fa7063a05499423ed154719ae3c1b1405a26ea99"},
-          {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "23fbd47b3fb8126c733e56ee9b765928ad1d9a4d41b5aee40b49f3544be4111a"},
-          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "0206f10b8f85cba7886d32117f04d865a8d65f57098aaf76d82c00bbbe1547e2"},
-          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "8b67aef81a02c42e67338d48efc684abc7d6600b49c543a0aaf4277f43ff8a39"}
+          {"path": "docs/proof/bh-ck1t6.3-shadow-activation.json", "sha256": "50ecf5242bb344276503b0f6ceeb51e000a0a862eee39788d1c65dd812b4a596"},
+          {"path": "docs/proof/bh-ck1t6.4-promotion-policy.json", "sha256": "d938fa21241b7df3cadc7198146e1d9c1f2732788bfd01b7ffa3beb2e4b8bb30"},
+          {"path": "docs/proof/bh-ck1t6.5-selective-ci-operations.json", "sha256": "08acfbc3eb901d8646821db8d80d5e7b3631ed996e9c9ed23e9ecf24a90717be"}
         ]
       },
       "package_and_entry_point": {
-        "manifest": {"path": "pyproject.toml", "sha256": "2adc20a20b4eac00480955a63b7c0f6f020dfdab701097c65dfed6da0545a72e"},
+        "manifest": {"path": "pyproject.toml", "sha256": "988d988795e3188ef7dc5485c43fdb378da89c8a8e4ce748911b62f567fca2ff"},
         "wheel_test": "tests/test_frame_bridge_handoff.py::test_wheel_contains_only_the_frame_bridge_core_entry_point",
         "console_script": "beadhive-frame-bridge = beadhive.bootstrap.frame_bridge:main",
         "packaged_modules": ["beadhive/bootstrap/frame_bridge.py", "beadhive/frame_bridge.py", "beadhive/frame_bridge_runtime.py"],
