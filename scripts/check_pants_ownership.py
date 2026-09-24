@@ -14,6 +14,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from beadhive_pants.verify import pants_owned_files as _pants_owned_files
+from beadhive_pants.verify import tracked_files as _tracked_files
+
 try:
     from scripts import check_attest_catalog
     from scripts.pants_launcher import launcher
@@ -31,42 +34,37 @@ class OwnershipCheckError(RuntimeError):
 
 
 def tracked_files(root: Path = ROOT) -> set[str]:
-    result = subprocess.run(
-        ["git", "ls-files"],
-        cwd=root,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    if result.returncode:
-        raise OwnershipCheckError(f"git ls-files failed: {result.stderr or result.returncode}")
-    return {line for line in result.stdout.splitlines() if line}
+    try:
+        return _tracked_files(root)
+    except RuntimeError as exc:
+        raise OwnershipCheckError(str(exc)) from exc
 
 
 def pants_owned_files(root: Path = ROOT, *, pants: str | None = None) -> set[str]:
     pants_bin = pants or launcher()
-    command = [
-        sys.executable,
-        "scripts/pants_cache.py",
-        "run",
-        "--",
-        pants_bin,
-        "--no-pantsd",
-        "filedeps",
-        "::",
-    ]
-    result = subprocess.run(
-        command,
-        cwd=root,
-        check=False,
-        text=True,
-        capture_output=True,
-    )
-    if result.returncode:
-        raise OwnershipCheckError(
-            f"pants filedeps :: failed with exit {result.returncode}:\n{result.stderr}"
+
+    def query(path: Path, args):
+        result = subprocess.run(
+            [
+                sys.executable,
+                "scripts/pants_cache.py",
+                "run",
+                "--",
+                pants_bin,
+                "--no-pantsd",
+                *args,
+            ],
+            cwd=path,
+            check=False,
+            text=True,
+            capture_output=True,
         )
-    return {line for line in result.stdout.splitlines() if line}
+        return result.returncode, result.stdout, result.stderr
+
+    try:
+        return _pants_owned_files(root, query=query)
+    except RuntimeError as exc:
+        raise OwnershipCheckError(str(exc)) from exc
 
 
 def unowned(tracked: set[str], owned: set[str]) -> set[str]:

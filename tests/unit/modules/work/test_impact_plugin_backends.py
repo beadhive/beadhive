@@ -76,6 +76,7 @@ def _second_impact_manifest(plugin_id: str = "turbo") -> ManifestDocument:
     )
     raw = json.loads(pants.payload)
     raw["plugin_id"] = plugin_id
+    raw["capabilities"]["provides"] = [{"api_version": 1, "id": "build.impact"}]
     raw["configuration"]["namespace"] = f"plugins.{plugin_id}"
     raw["security"]["executables"] = []
     return ManifestDocument(
@@ -125,7 +126,7 @@ def test_pants_is_the_sole_builtin_build_impact_provider():
 
     assert result.errors == ()
     assert result.owner_of(BUILD_IMPACT) == "pants"
-    assert result.owner_of(BUILD_VERIFY) is None
+    assert result.owner_of(BUILD_VERIFY) == "pants"
     assert [provider.plugin_id for provider in BUILTIN_IMPACT_PROVIDERS] == ["pants"]
     assert BUILTIN_IMPACT_PROVIDERS[0].module == "beadhive_pants.impact"
     assert BUILTIN_IMPACT_PROVIDERS[0].object_name == "PantsImpactBackend"
