@@ -170,6 +170,10 @@ attest-architecture-contracts:
 attest-package:
     just pants-attest
 
+# External validation selectors still request the plural spelling; keep it as a narrow delegate.
+attest-packages:
+    just attest-package
+
 # The demos execute declared application and fixture inputs, and config owners carry the same
 # selector. They therefore run for graph-implicated code/config changes without taxing docs-only
 # or test-only changes.

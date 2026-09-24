@@ -35,26 +35,19 @@ Continue the independent cache-locality work. Same-filesystem UV cache placement
 materialization, and safe copy fallback address dependency materialization and remain worth
 measuring independently of Dolt fixture reuse.
 
-## Replan of `.8`
+## Current scope for `.8`
 
-Keep `bh-7ks1c.8` because it still needs to select current-host worker caps and report the
-cache-locality results. Remove the requirement that the molecule improve combined test wall
-time by 15%: that target was tied to the rejected server-reuse experiment and is not a useful
-success criterion for a cache-placement change. The final report must instead:
+The operator approved a correctness-only cache-locality closeout. The `.7` NO-GO evidence above
+remains historical provenance for the rejected Dolt server-reuse proposal; it does not set a
+performance target for `.8`. The rejected reuse implementation stays out of the final candidate,
+and this decision record remains intact.
 
-- retain the no-go result and keep `.7` out of the final implementation;
-- provide at least three green repetitions for the historical worker comparison and a
-  current-host comparison that includes the repository's 16-worker default;
-- compare unit, integration, and combined wall times, variance, slow phases, process/server
-  counts, and available Dolt queue/hold telemetry, clearly labeling unavailable telemetry;
-- record same-device hardlink behavior, cross-device copy fallback, cache bytes/inodes,
-  capacity, and warnings;
-- recommend phase-specific and uniform worker caps from current-host measurements, preserve
-  the 16-worker default unless evidence supports a change, and keep global validation
-  admission at two; and
-- document any test-wall regression over 5% that is not explained by host variance or the
-  measured optimization, without requiring a fixed whole-suite speedup from cache locality.
+The `.8` handoff proves same-device UV and pnpm hardlink behavior through target-file filesystem
+identity, and explicit cross-device copy fallback with capacity and warning evidence. Focused
+tests cover resolver safety and worker/environment propagation. The benchmark tools remain
+opt-in, and any timings they record are descriptive and non-normative.
 
-The matrix remains an operator-run benchmark; it does not enter the per-commit validation
-gate. Future CPU grants through `bh-nzck2` remain separate from the global validation-admission
-limit.
+Preserve the repository's 16 xdist workers and two globally admitted heavyweight validations.
+No worker matrix, tuning recommendation, regression budget, or performance claim is required to
+gate `.8` landing. The ordinary correctness validation remains required; benchmarks and
+repeated timing matrices stay outside that gate.
