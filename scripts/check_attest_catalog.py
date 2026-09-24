@@ -16,7 +16,10 @@ KEY_RECIPES = {
         "attest-architecture-contracts",
         ("architecture-structural-check",),
     ),
-    "package": ("attest-package", ("pants-attest", "architecture-pants-check")),
+    "package": (
+        "attest-package",
+        ("pants-attest", "architecture-pants-check", "pants-artifact-check"),
+    ),
     "demos": ("attest-demos", ("demo-local-loop", "demo-live-ingress")),
     "packages": ("attest-packages", ("packages-check",)),
 }
@@ -97,6 +100,16 @@ def check(justfile: str, push_hook: str | None = None) -> list[str]:
             previous = owners.setdefault(leaf, key)
             if previous != key:
                 errors.append(f"{leaf}: owned by both {previous} and {key}")
+
+    artifact = "\n".join(_recipe_body(justfile, "pants-artifact-check"))
+    if "./scripts/hermetic.sh uv run pytest" not in artifact or (
+        "tests/test_beadhive_pants_artifacts.py::test_bh_pex_contains_and_resolves_the_backend"
+        not in artifact
+    ):
+        errors.append("pants-artifact-check must run the recursive PEX proof inside the fence")
+    native = "\n".join(_recipe_body(justfile, "stateful-native"))
+    if "not integration and not pants_profile" not in native:
+        errors.append("stateful-native must exclude the Pants-only artifact proof")
 
     return errors
 

@@ -84,6 +84,9 @@ args=(
     --die-with-parent
     --setenv HOME "${HOME}"
     --setenv TMPDIR "${SCRATCH}"
+    # `just` chooses XDG_RUNTIME_DIR ahead of TMPDIR for shebang recipe scripts. The host's
+    # /run/user directory is read-only here, so point it at the writable private scratch.
+    --setenv XDG_RUNTIME_DIR "${SCRATCH}"
     --setenv BH_HERMETIC_FENCE "1"
     --chdir "${REPO}"
 )

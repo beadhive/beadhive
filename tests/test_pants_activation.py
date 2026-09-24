@@ -113,8 +113,9 @@ def test_disable_switch_invokes_native_and_preserves_failure(monkeypatch) -> Non
 
 def test_check_all_requires_pants_attest_and_native_phases() -> None:
     just = (ROOT / "justfile").read_text(encoding="utf-8")
-    declaration = next(line for line in just.splitlines() if line.startswith("check-all:"))
+    declaration = next(line for line in just.splitlines() if line.startswith("check-all-pants:"))
     assert "pants-attest" in declaration
+    assert "pants-artifact-check" in declaration
     assert "test-integration-land" in declaration
     assert "demo-local-loop" in declaration
     assert os.environ.get("BH_PANTS_ROUTING", "1") == "1"

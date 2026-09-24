@@ -22,7 +22,7 @@ uses its single explicit `work.validate_cmd` path; the catalog remains available
 | `stateful` | `just attest-stateful` | `attest:stateful` | Proven Pants tests plus the residual native fast suite |
 | `integration` | `just attest-integration` | `attest:integration` | Landing integration tests |
 | `architecture-contracts` | `just attest-architecture-contracts` | `attest:architecture-contracts` | Architecture, transport, wire, and proof contracts |
-| `package` | `just attest-package` | `attest:package` | Pants package attestation |
+| `package` | `just attest-package` | `attest:package` | Pants package attestation and recursive PEX proof |
 | `packages` | `just attest-packages` | `attest:packages` | Ruff and sandboxed tests for every `packages/*` distribution |
 | `demos` | `just attest-demos` | `attest:demos` | Local-loop and live-ingress operator demos |
 

@@ -8,11 +8,13 @@ stable when the primary changes:
 | Native | `just check-native` | `just check-all-native` |
 | Pants | `just check-pants` | `just check-all-pants` |
 
-Native uses raw pytest for every core test and every `packages/*/tests` directory, then builds
+Native uses raw pytest for every core product test and every `packages/*/tests` directory, then builds
 all uv workspace distributions with Hatchling. The full command also runs lint, docs, licences,
-architecture and wire contracts, real-`bd` integration, and both operator demos. Pants keeps
-the proven test partition, graph and proof checks, package sandbox evidence, integration, and
-demos. `just check-attest-catalog` rejects missing or partially wired steps in either graph.
+architecture and wire contracts, real-`bd` integration, and both operator demos. The one
+`pants_profile` test recursively builds a Pants PEX, so it runs through `pants-artifact-check`
+only in the Pants full profile. Pants also keeps the proven test partition, graph and proof
+checks, package sandbox evidence, integration, and demos. `just check-attest-catalog` rejects
+missing or partially wired steps in either graph.
 
 Native is the selected primary: `just check` aliases `check-native`, and `just check-all`
 aliases `check-all-native`. The beadhive hive configuration must name the corresponding
