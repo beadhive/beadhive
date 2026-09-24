@@ -13,7 +13,8 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING
 
-from beadhive.modules.work.contracts.impact import AttestKey, ImpactReceipt, resolve_impact
+from beadhive.modules.work.contracts.impact import AttestKey, ChangedPath, ImpactReceipt
+from beadhive.modules.work.contracts.impact_resolution import select_resolver
 from beadhive_pants.impact import PantsImpactBackend
 
 from .launcher import launcher
@@ -32,6 +33,47 @@ UNIT_KEY = AttestKey(
     cmd="just test",
     selectors={"pants": "attest:unit"},
 )
+
+
+class GitTreeDiff:
+    """Resolve Git trees and changed paths without importing a core adapter."""
+
+    def _run(self, repo: str, *args: str) -> str:
+        result = subprocess.run(
+            ["git", "-C", repo, *args],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode:
+            raise RuntimeError(
+                f"git {' '.join(args)} failed ({result.returncode}): {result.stderr.strip()}"
+            )
+        return result.stdout
+
+    def tree_of(self, repo: str, rev: str) -> str:
+        return self._run(repo, "rev-parse", "--verify", "--quiet", f"{rev}^{{tree}}").strip()
+
+    def changed_paths(self, repo: str, base_tree: str, head_tree: str) -> tuple[ChangedPath, ...]:
+        if base_tree == head_tree:
+            return ()
+        fields = self._run(
+            repo,
+            "diff-tree",
+            "-r",
+            "-z",
+            "--no-renames",
+            "--name-status",
+            base_tree,
+            head_tree,
+        ).split("\0")
+        return tuple(
+            sorted(
+                ChangedPath(path=path, status=status[0])
+                for status, path in zip(fields[0::2], fields[1::2], strict=False)
+                if status and path
+            )
+        )
 
 
 @dataclass
@@ -127,13 +169,12 @@ def route(
     decision, fallback = "pants", None
     if action == "changed":
         try:
-            receipt = (
-                resolver.resolve(str(ROOT), selector, "HEAD", (UNIT_KEY,))
-                if resolver is not None
-                else resolve_impact(
-                    str(ROOT), selector, "HEAD", (UNIT_KEY,), PantsImpactBackend(ROOT)
-                )
+            selected = resolver or select_resolver(
+                "pants",
+                tree_diff=GitTreeDiff(),
+                backends={"pants": PantsImpactBackend(ROOT)},
             )
+            receipt = selected.resolve(str(ROOT), selector, "HEAD", (UNIT_KEY,))
             paths = list(receipt.changed_paths)
             decision, fallback = classify(receipt)
         except Exception as exc:
