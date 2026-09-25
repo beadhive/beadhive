@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -290,6 +292,55 @@ def test_picker_is_attention_ordered_bounded_and_cursor_scoped() -> None:
             cursor=first["next_cursor"],
         )
     assert exc.value.code == "view_cursor_revision_mismatch"
+
+
+def test_picker_never_waits_on_slow_hive_sources(monkeypatch) -> None:
+    """`ViewBackend.picker` must serve cached summaries, never a live per-hive refresh."""
+
+    monkeypatch.setattr(herdr_plugin, "_has_cli", lambda: False)
+
+    class SlowProvider:
+        def __init__(self) -> None:
+            self.release = threading.Event()
+
+        def refresh(self, request):
+            self.release.wait(5.0)
+            return state_stream.ProviderSnapshot(
+                scope="hive",
+                revision=f"{request.hive}-1",
+                as_of="2026-08-27T12:00:00Z",
+                issues=(),
+            )
+
+    provider = SlowProvider()
+    cfg = {
+        "managed_repos": [
+            {
+                "provider": "github",
+                "org": "acme",
+                "repo": f"hive-{index:02d}",
+                "prefix": f"h{index:02d}",
+                "kind": "org-native",
+            }
+            for index in range(operator_sources.HIVE_REFRESH_CONCURRENCY + 4)
+        ]
+    }
+    sources = operator_sources.OperatorSources(cfg=cfg, host_id="host-1", provider=provider)
+    backend = herdr_views.ViewBackend(cfg=cfg, sources=sources, _roster=_roster())
+    try:
+        started = time.monotonic()
+        payload = backend.picker(limit=200, cursor=None)
+        elapsed = time.monotonic() - started
+    finally:
+        provider.release.set()
+
+    assert elapsed < 2.0
+    assert payload["returned"] == len(cfg["managed_repos"])
+    for row in payload["rows"]:
+        assert row["style"] == "available"
+        assert row["badges"][0] == {"text": "AVAILABLE", "style": "available"}
+    assert sources.hive_summaries.wait_idle(10)
+    sources.close()
 
 
 def test_real_roster_revision_invalidates_deck_cursor_on_agent_change(

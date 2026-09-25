@@ -9,7 +9,6 @@ roster contracts.  Lifecycle commands remain the mutation authority.
 from __future__ import annotations
 
 import base64
-import concurrent.futures
 import hashlib
 import json
 import time
@@ -27,7 +26,6 @@ from . import (
     host,
     jsonout,
     operator_actions,
-    operator_contract,
     operator_work_items,
     registry,
     worktree,
@@ -1966,19 +1964,7 @@ class ViewBackend:
         }
 
     def picker(self, *, limit: int, cursor: str | None) -> dict:
-        hives = self.sources.registered_hives()
-
-        def summary(hive):
-            try:
-                state = self.sources.refresh_hive_state(hive)
-            except OperatorSourceError as exc:
-                return operator_contract.factory_hive_summary(
-                    hive.entry, None, unavailable_reason=exc.code
-                )
-            return operator_contract.factory_hive_summary(hive.entry, state)
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, max(1, len(hives)))) as pool:
-            summaries = list(pool.map(summary, hives))
+        summaries = self.sources.factory_hive_directory()
         return picker_payload(summaries, self.roster(), limit=limit, cursor=cursor)
 
     def hive_facts(
