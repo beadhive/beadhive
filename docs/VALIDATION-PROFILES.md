@@ -27,9 +27,8 @@ environment variable cannot make an old verdict count for a different gate.
 The Pants selective catalog is `work.attest.keys` in the fleet's beadhive entry. Native
 single-command validation sets `keys: []`, so ordinary validation executes `work.validate_cmd`
 directly. The remaining `attest.impact`, `semantic`, and `trivial` settings are inert without
-keys. Preserve the prior keys as the Pants profile when making the switch. The intended live
-strings are `just check-native` for ordinary phases and `just check-all-native` for
-main-boundary phases; activation status is recorded separately in
+keys. The active live strings are `just check-native` for ordinary phases and
+`just check-all-native` for main-boundary phases; activation evidence is recorded in
 `docs/proof/bh-2ygs4-native-activation.md`.
 
 The exact fleet transition is recorded in

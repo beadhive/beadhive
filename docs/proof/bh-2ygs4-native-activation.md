@@ -1,7 +1,16 @@
 # Native validation switch: exact-tree evidence
 
-Activation status: prepared, not applied. A scoped live-fleet write was rejected pending
-explicit operator approval; the current hive validation settings remain unchanged.
+Activation status: applied with explicit operator approval at 2026-09-25 00:23 UTC.
+The live `/home/bees/.beadhive/hq/fleet.yaml` matched the reviewed preimage byte-for-byte
+before application and the expected postimage byte-for-byte afterward. Its SHA-256 changed
+from `d569d1b1af87732f784b5552a5b20d9e5c592575b72bfb66d367d34741868ec7` to
+`18220ea7eae713ea37ca6d206e7a5cdd88002ae2c51550a7f8f911746ff1017e`.
+Parsed postimage fields are `work.attest.keys: []`, `work.validate_cmd: just check-native`,
+`submit`/`merge`/`union: just check-native`, and
+`molecule`/`merge-main`/`push-main`/`postland: just check-all-native`.
+`bh config validate` still reports a separate host setting error:
+`host.daemon: enabled daemon requires auth.credential_file`; this patch did not touch host
+configuration.
 
 The native full profile passed on clean commit
 `6fe0a96189e3148cbc023818277765162314accd`, tree
@@ -34,10 +43,9 @@ No Pants full comparison was run; that work is deferred to `bh-ahm6x`.
 The fleet profile transition is the exact patch in `bh-2ygs4-native-fleet.patch`.
 The inverse switch from native to explicit Pants commands is
 `bh-2ygs4-pants-profile.patch`. The latter was dry-run and applied in an isolated temporary
-copy, then byte-compared to the expected Pants profile. It did not execute Pants. Applying
-the native patch to the live fleet requires approval because it replaces the eight required
-Pants attest keys with the native single-command path; the prepared patch does not alter
-other hive entries or fleet settings.
+copy, then byte-compared to the expected Pants profile. It did not execute Pants. The approved
+native patch replaced the eight required Pants attest keys with the native single-command
+path. It did not alter other hive entries or fleet settings.
 
 The ledger hashes the literal command string with SHA-256, truncated to 16 hex characters.
 The two profiles therefore have distinct fast and full keys:
