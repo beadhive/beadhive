@@ -1,5 +1,10 @@
 # Bead backend abstraction — pluggable engines over the JSONL interchange (design)
 
+> **Superseded 2026-09-25.** The supported work-state platform is the official Beads v1.3 API;
+> embedded Dolt, external Dolt, and a team service are endpoint topologies rather than Beadhive
+> storage providers. See [the API-first parallel-replacement ADR](beads-api-first-parallel-replacement-adr.md).
+> This document remains historical context only.
+>
 > Status: **design / intent.** Nothing here is built. It turns the roadmap line in the
 > beadhive-concepts storage model — *"a rig selects its engine with `beads switch <bd|br|nodb>`
 > while every other verb stays identical"* — into a phased plan, and defines the

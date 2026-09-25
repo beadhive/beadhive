@@ -735,7 +735,9 @@ pkg name *args:
 packages-check:
     uv run ruff check packages
     uv run ruff format --check packages
-    ./scripts/hermetic.sh uv sync --locked --all-packages
+    # The two locked `uv run` steps above provision build requirements in the selected cache.
+    # Keep workspace builds deterministic when the package index is temporarily unavailable.
+    ./scripts/hermetic.sh uv sync --locked --offline --all-packages
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run --locked --all-packages pytest -n auto packages/*/tests
     ./scripts/hermetic.sh uv build --all-packages --no-build-isolation

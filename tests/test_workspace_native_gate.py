@@ -64,7 +64,7 @@ def test_workspace_packages_are_all_tested_and_built_by_the_gate() -> None:
 
     justfile = (ROOT / "justfile").read_text(encoding="utf-8")
     package_gate = "\n".join(_recipe_body(justfile, "packages-check"))
-    assert "./scripts/hermetic.sh uv sync --locked --all-packages" in package_gate
+    assert "./scripts/hermetic.sh uv sync --locked --offline --all-packages" in package_gate
     assert "--all-packages pytest -n auto packages/*/tests" in package_gate
     assert "./scripts/hermetic.sh uv build --all-packages --no-build-isolation" in package_gate
 

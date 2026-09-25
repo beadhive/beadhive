@@ -1,0 +1,81 @@
+epic:
+  title: 'Adopt native spike and decision bead types throughout bh planning'
+  priority: 1
+  component: planner
+  complexity: COMPLEX
+  description: |
+    Beads now has native `spike` and `decision` issue types, but Beadhive still encodes those
+    semantics primarily as `type: task` plus `tag:spike` or `tag:decision`. The mismatch is
+    already observable: `bh plan check` and `bh plan file` accept native children, while
+    `bh plan show` and `bh plan verify` ignore them and can report a filed molecule as empty.
+
+    Make native types the single write convention, retain read compatibility for historical
+    tagged records, and safely migrate the current hive without rewriting unrelated labels.
+  design: |
+    Native child types become authoritative: spike work is `type: spike` and decision work is
+    `type: decision`. A containing molecule remains `type: epic`; its spike shape is derived from
+    native children rather than requiring `tag:spike` on the epic. The general open `tag:` label
+    dimension remains available for unrelated classification, but `spike` and `decision` stop
+    being type aliases expressed through that label.
+
+    Roll out in two stages. First make every planning read, write, render, validation, repair,
+    and scheduling surface understand native types while continuing to read the legacy tagged
+    form. Then run a guarded, idempotent migration over the measured corpus and switch docs and
+    templates to native emission. Never mutate a conflicting type/tag record automatically.
+issues:
+- handle: support
+  title: 'Support native spike and decision types end to end in bh plan'
+  type: feature
+  priority: 1
+  component: planner
+  complexity: MEDIUM
+  description: |
+    Make the molecule schema, compiler, filed-molecule loader, renderer, verifier, repair path,
+    status views, and scheduling or triage consumers round-trip native spike and decision child
+    types. Continue to recognize task-plus-tag records as a legacy read form during migration.
+  design: |
+    Define one shared semantic classifier which prefers the native issue type and recognizes the
+    legacy matching tag only when the type is an allowed legacy carrier. Remove ad hoc child-type
+    allowlists from render and verify paths. A native type with a contradictory semantic tag is a
+    validation error, not an arbitrary precedence choice.
+  acceptance: |
+    - A spec containing native spike and decision children passes plan check, dry-run, file, show, verify, repair, and filed-spec reconstruction without losing either child.
+    - New filings persist issue_type spike or decision and do not add tag:spike or tag:decision to those children.
+    - Spike-molecule epics remain type epic and are recognized from their native child shape without requiring tag:spike.
+    - Existing task-plus-tag children still render, verify, schedule, and round-trip during the compatibility window.
+    - Matching native-type plus legacy-tag records are tolerated for reads; contradictory native-type and semantic-tag records fail with the exact bead ID and remedy.
+    - Shared tests cover compiler, renderer, verifier, repair, status, dependency roots, kickoff gates, and mixed legacy/native molecules.
+    - Planning documentation and molecule examples describe native types as the only write convention.
+- handle: migrate
+  title: 'Migrate legacy spike and decision tags and retire tag-based type emission'
+  type: task
+  priority: 1
+  component: planner
+  complexity: COMPLEX
+  deps: [support]
+  description: |
+    Provide a guarded migration and use it to convert the current hive from task-plus-tag type
+    emulation to native spike and decision records. Remove obsolete semantic tags only where the
+    mapping is unambiguous, including safe treatment of epic containers.
+
+    Baseline measured 2026-09-25: 179 tag:spike records (136 task, 42 epic, 1 decision) and 49
+    tag:decision records (47 task, 1 epic, 1 decision), while only 5 native spike and 9 native
+    decision records exist. Refresh these counts immediately before execution.
+  design: |
+    The migration is dry-run first, deterministic, resumable, and idempotent. Convert legacy task
+    children with exactly one matching semantic tag to the corresponding native type, then remove
+    that tag. Remove a redundant matching tag from an already-native record. Keep an epic as an
+    epic; remove its semantic tag only when native child structure proves the same molecule shape.
+    Report conflicting, orphaned, custom-type, active-assignee, and ambiguous epic cases for
+    explicit review. Preserve every ID, parent, dependency, gate, state, status, assignee, event,
+    and timestamp field not owned by the type migration.
+  acceptance: |
+    - The command emits a bounded machine-readable dry-run with before and after type and labels, totals by status, and a separate refusal list.
+    - Re-running either dry-run or apply is idempotent; interruption can resume without double mutation or skipped records.
+    - Unambiguous task-plus-tag records become native spike or decision records and lose only the matching semantic tag.
+    - Epic containers remain epics and lose a semantic tag only when their native child structure proves the classification; ambiguous epics are reported unchanged.
+    - Native records with redundant matching tags are normalized; contradictory type/tag records are refused and named.
+    - IDs, parents, blockers, dependents, gates, kickoff state, status, assignee, history, and non-semantic labels are unchanged, verified from before and after snapshots.
+    - Active or in-progress records require an explicit reviewed allowlist or are deferred and reported; no live claim is silently rewritten.
+    - The repository corpus, examples, templates, and new worktree-provider molecule use native child types, and no bh write path emits tag:spike or tag:decision as a type substitute.
+    - Legacy tagged records from another hive remain readable after the local migration; removal of that compatibility is not part of this molecule.

@@ -1,0 +1,68 @@
+epic:
+  title: 'spike(worktrees): select a provider contract for native Git, Herdr, and Worktrunk'
+  tag: spike
+  description: |
+    Beadhive already owns durable bead identity, branch and path conventions, and worktree safety,
+    but native Git, Herdr, and Worktrunk can each execute some or all worktree mechanics. Determine
+    the smallest honest provider contract before the larger refactor moves more implementation
+    behind the current plugin-first fallback seam.
+
+    This is independent of the Beads API client work. It produces evidence and a decision only;
+    it does not implement speculative adapters.
+  design: |
+    Inventory the existing WorktreeProvisioner, WorktreeInventory, native Git adapter, plugin
+    adapter, and their call sites first. Probe each candidate in disposable repositories against
+    the exact Beadhive lifecycle. Separate one exclusive mechanics provider from lifecycle
+    observers. Preserve Beadhive ownership of identity, naming intent, and safety constraints.
+
+    The decision must account for Worktrunk template paths rather than assuming it can accept an
+    arbitrary target path. A no-go result keeps native Git as the sole provider and does not block
+    the API-first work and planning replacement.
+issues:
+- handle: evidence
+  title: 'Prove one worktree-manager contract against native Git, Herdr, and Worktrunk'
+  type: task
+  tag: spike
+  complexity: MEDIUM
+  priority: 1
+  component: worktree
+  description: |
+    Run a bounded, disposable-repository probe of the existing Beadhive lifecycle against all
+    three candidates. Determine which inputs, results, capabilities, and failure modes are real,
+    and whether the current five-phase provisioner plus plugin fallback should be narrowed or
+    replaced.
+  design: |
+    Test exact Beadhive branch identity; preferred versus exact path support; create-new;
+    open or reattach-existing; inspect and inventory; dirty and unpushed refusal; remove while
+    preserving the branch; prune and reconcile after a crash; machine-readable identity; and
+    unavailable or disabled provider behavior. Record command and version evidence. Do not add
+    product code.
+  acceptance: |
+    - One committed spike artifact records the installed versions, commands, fixtures, and results.
+    - Native Git, Herdr, and Worktrunk are each tested in disposable repositories against the same lifecycle table.
+    - The table distinguishes exact path, preferred path, branch naming, inventory, open, remove, prune, recovery, and machine-output capabilities.
+    - Current WorktreeProvisioner, WorktreeInventory, native, and plugin seams are mapped to keep, narrow, replace, or delete outcomes.
+    - Worktrunk template-path behavior is tested explicitly rather than inferred.
+    - No production adapter or framework code is delivered.
+- handle: decision
+  title: 'DECISION: select the worktree provider contract and ownership boundary'
+  type: task
+  tag: decision
+  complexity: MEDIUM
+  priority: 1
+  component: worktree
+  deps: [evidence]
+  description: |
+    Use the evidence to select the minimal contract and provider-selection behavior, or retain
+    native Git only. Replan the affected worktree and Herdr beads from the verdict.
+  design: |
+    A GO names exact methods, request and result data, capability flags, selection and fallback
+    rules, naming or path compromises, cleanup authority, observer ordering, recovery, and
+    rollback. A NO-GO records why native Git remains the only mechanics owner. Avoid a generic
+    event bus or a third provider-API package.
+  acceptance: |
+    - A committed ADR records GO or NO-GO and cites the spike evidence.
+    - GO defines the exact minimal methods and capabilities and assigns naming, safety, mechanics, cleanup, and observation ownership once each.
+    - Provider unavailable, partial failure, crash recovery, and rollback behavior are explicit.
+    - The decision names every existing worktree and Herdr bead to preserve, amend, supersede, or unblock.
+    - A follow-up replan wires implementation only after this decision; no speculative adapter beads are filed here.
