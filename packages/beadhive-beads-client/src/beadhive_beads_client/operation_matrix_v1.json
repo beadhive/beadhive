@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "beads_release": "1.3.0",
+  "api_version": "v0",
+  "scope": "transport readiness; command cutover still requires Beadhive shell policy tests",
+  "operations": [
+    {"name": "context", "classification": "api-ready", "capability": "project.enforce", "evidence": "authenticated context and project binding"},
+    {"name": "work.issue.get", "classification": "api-ready", "capability": "issues.get", "evidence": "typed detail and 404"},
+    {"name": "work.issue.list", "classification": "api-ready", "capability": "issues.list", "evidence": "two-page cursor traversal"},
+    {"name": "work.ready.list", "classification": "api-ready", "capability": "ready.list", "evidence": "database readiness and blocked issue selection"},
+    {"name": "work.dependencies.list", "classification": "api-ready", "capability": "dependencies.list", "evidence": "created edge readback"},
+    {"name": "plan.issue.create", "classification": "api-ready", "capability": "issues.create", "evidence": "explicit issue_type, actor and readback; CLI hooks omitted"},
+    {"name": "work.issue.update", "classification": "api-ready", "capability": "issues.update", "evidence": "guarded update, stale revision conflict, lost response reconciliation; CLI hooks omitted"},
+    {"name": "work.dependencies.add", "classification": "api-ready", "capability": "dependencies.add", "evidence": "atomic edge add and readback; CLI hooks omitted"},
+    {"name": "work.dependencies.remove", "classification": "api-ready", "capability": "dependencies.remove", "evidence": "wire type generated; deletion of an edge is non-destructive issue operation"},
+    {"name": "work.claim", "classification": "api-ready", "capability": "issues.claim", "evidence": "actor and assignee readback; CLI hooks omitted"},
+    {"name": "work.claim-next", "classification": "api-ready", "capability": "issues.claimNext", "evidence": "atomic ready selection excludes blocked issue; CLI hooks omitted"},
+    {"name": "work.close", "classification": "api-ready", "capability": "issues.close", "evidence": "guarded close and audit actor; CLI hooks omitted"},
+    {"name": "work.reopen", "classification": "api-ready", "capability": "issues.reopen", "evidence": "guarded reopen and audit actor; CLI hooks omitted"},
+    {"name": "work.check", "classification": "cli-compatibility", "reason": "Beadhive validation execution is a shell policy"},
+    {"name": "work.submit", "classification": "cli-compatibility", "reason": "review gates and evidence are absent from the Beads HTTP API"},
+    {"name": "work.review", "classification": "cli-compatibility", "reason": "review gates and evidence are absent from the Beads HTTP API"},
+    {"name": "work.merge", "classification": "cli-compatibility", "reason": "merge serialization and Git safety are absent from the Beads HTTP API"},
+    {"name": "work.state", "classification": "cli-compatibility", "reason": "state dimensions are absent from the Beads HTTP API"},
+    {"name": "plan.batch-apply", "classification": "cli-compatibility", "reason": "batchApply was generated but is not in the real-service mutation proof"},
+    {"name": "admin.sync", "classification": "administrative", "reason": "Dolt publication is an explicit CLI administration operation"},
+    {"name": "admin.backup", "classification": "administrative", "reason": "backup is an explicit CLI administration operation"},
+    {"name": "admin.migration", "classification": "administrative", "reason": "schema migration is an explicit CLI administration operation"},
+    {"name": "issues.delete", "classification": "denied", "reason": "destructive API operation outside the approved surface"},
+    {"name": "issues.sweep", "classification": "denied", "reason": "destructive API operation outside the approved surface"}
+  ]
+}
