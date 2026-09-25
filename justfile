@@ -55,7 +55,7 @@ check: check-native
 
 # Stable fast entry points. Native collects the complete non-integration core suite directly;
 # Pants retains its impact-selected developer route.
-check-native: lint lint-md license-check architecture-structural-check stateful-native beads-client-check
+check-native: lint lint-md license-check architecture-structural-check stateful-native
 
 # Compare the checked-in SDK and exercise the package without the root app.
 beads-client-check:
@@ -673,6 +673,7 @@ stateful_workers := "16"
 stateful-native:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run pytest -n {{stateful_workers}} tests -m "not integration and not pants_profile"
+    just beads-client-check
 
 # Recursive PEX packaging executes the Pants engine and needs its pinned artifact cache. Keep
 # this one test in the Pants full profile and outside the native collection.
