@@ -15,6 +15,7 @@ from beadhive import (
     daemon_state_broker,
     host_daemon,
     operator_api,
+    operator_contract,
     operator_sources,
     operator_sse,
     run_journal,
@@ -27,6 +28,7 @@ from beadhive.state_stream_polling import PollingStateStreamProvider
 
 HIVE = "github/beadhive/beadhive"
 OTHER_HIVE = "github/beadhive/other"
+HIVE_SUBSCRIPTION = operator_contract.hive_subscription_id(HIVE)
 NOW = datetime(2026, 9, 3, tzinfo=UTC).isoformat().replace("+00:00", "Z")
 DIGEST = "sha256:" + "a" * 64
 
@@ -182,7 +184,10 @@ def test_unknown_snapshot_and_event_reads_retain_no_hive_admissions(tmp_path: Pa
                     "method": "GET",
                     "path": f"/api/v1/hives/{identity}/events",
                     "raw_path": f"/api/v1/hives/{encoded}/events".encode(),
-                    "query_string": (f"subscription=hive%3A{encoded}&cursor=unknown%3A0").encode(),
+                    "query_string": (
+                        f"subscription={operator_contract.hive_subscription_id(identity)}"
+                        "&cursor=unknown%3A0"
+                    ).encode(),
                     "headers": [],
                     "path_params": {"hive_id": identity},
                 }
@@ -216,7 +221,7 @@ def test_broker_snapshot_delta_identity_and_transport_sequence_are_independent(
     loop = asyncio.new_event_loop()
     client = broker.relay.subscribe(
         HIVE,
-        subscription_id=f"hive:{HIVE}",
+        subscription_id=HIVE_SUBSCRIPTION,
         cursor=operator_sse.EventCursor(epoch, 0),
         loop=loop,
     )
@@ -228,7 +233,7 @@ def test_broker_snapshot_delta_identity_and_transport_sequence_are_independent(
     assert first["hive"]["prefix"] == HIVE
     assert second["workItems"][0]["ref"]["hiveId"] == HIVE
     assert second["cursor"] == {
-        "subscriptionId": f"hive:{HIVE}",
+        "subscriptionId": HIVE_SUBSCRIPTION,
         "producerEpoch": epoch,
         "sequence": 1,
         "observedAt": 1_000,
@@ -269,7 +274,7 @@ def test_hive_removal_closes_clients_drops_all_state_and_restarts_epoch(tmp_path
     async def exercise():
         client = broker.relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(old_epoch, 0),
             loop=asyncio.get_running_loop(),
         )
@@ -434,7 +439,7 @@ def test_snapshot_to_subscribe_gap_cannot_recreate_removed_hive_state(tmp_path: 
             "method": "GET",
             "path": f"/api/v1/hives/{HIVE}/events",
             "raw_path": f"/api/v1/hives/{encoded_hive}/events".encode(),
-            "query_string": (f"subscription=hive%3A{encoded_hive}&cursor={old_epoch}%3A0").encode(),
+            "query_string": (f"subscription={HIVE_SUBSCRIPTION}&cursor={old_epoch}%3A0").encode(),
             "headers": [],
             "path_params": {"hive_id": HIVE},
         }
@@ -519,7 +524,7 @@ def test_subscribe_to_pump_start_is_fenced_by_removal_generation(tmp_path: Path)
             "method": "GET",
             "path": f"/api/v1/hives/{HIVE}/events",
             "raw_path": f"/api/v1/hives/{encoded_hive}/events".encode(),
-            "query_string": (f"subscription=hive%3A{encoded_hive}&cursor={old_epoch}%3A0").encode(),
+            "query_string": (f"subscription={HIVE_SUBSCRIPTION}&cursor={old_epoch}%3A0").encode(),
             "headers": [],
             "path_params": {"hive_id": HIVE},
         }
@@ -528,7 +533,7 @@ def test_subscribe_to_pump_start_is_fenced_by_removal_generation(tmp_path: Path)
     async def exercise_removal_race():
         initial_client = broker.relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(old_epoch, 0),
             loop=asyncio.get_running_loop(),
         )
@@ -721,7 +726,7 @@ def test_active_pump_detects_registry_removal_and_cleans_only_that_hive(tmp_path
     async def exercise():
         client = broker.relay.subscribe(
             HIVE,
-            subscription_id=f"hive:{HIVE}",
+            subscription_id=HIVE_SUBSCRIPTION,
             cursor=operator_sse.EventCursor(
                 str(snapshot["cursor"]["producerEpoch"]),
                 int(snapshot["cursor"]["sequence"]),

@@ -50,6 +50,12 @@ def _revision(*parts: object) -> str:
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
+def hive_subscription_id(hive_id: str) -> str:
+    """Return the stable, path-independent stream identity for one canonical hive."""
+
+    return f"hive-sha256-{hashlib.sha256(hive_id.encode('utf-8')).hexdigest()}"
+
+
 def _ref(hive_id: str, kind: str, entity_id: str) -> dict[str, object]:
     return {"hiveId": hive_id, "kind": kind, "id": entity_id}
 
@@ -145,7 +151,7 @@ def factory_hive_summary(
     """
 
     identity = "/".join(str(entry[field]) for field in ("provider", "org", "repo"))
-    opaque_ref = f"hive-sha256-{hashlib.sha256(identity.encode('utf-8')).hexdigest()}"
+    opaque_ref = hive_subscription_id(identity)
     base: dict[str, object] = {
         "id": identity,
         "displayLabel": str(entry.get("label") or entry.get("display_name") or entry["repo"]),
@@ -484,7 +490,7 @@ def hive_operator_snapshot(
         "revision": revision,
         "generatedAt": generated_at,
         "cursor": {
-            "subscriptionId": f"hive:{hive_id}",
+            "subscriptionId": hive_subscription_id(hive_id),
             "producerEpoch": producer_epoch,
             "sequence": sequence,
             "observedAt": observed_at,

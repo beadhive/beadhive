@@ -12,9 +12,11 @@ import jsonschema
 from starlette.middleware import Middleware
 
 from beadhive import (
+    daemon_contract,
     daemon_state_broker,
     host_daemon,
     operator_api,
+    operator_contract,
     operator_feed,
     operator_sources,
     operator_sse,
@@ -147,7 +149,11 @@ def test_phase_one_gets_are_unauthenticated_direct_and_path_free(tmp_path: Path)
     assert factory.json()["hives"][0]["hiveId"] == HIVE
     assert not ({"workspaceRoot", "worktrees", "edges"} & factory.json().keys())
     assert snapshot.json()["hive"]["prefix"] == HIVE
-    assert snapshot.json()["cursor"]["subscriptionId"] == f"hive:{HIVE}"
+    snapshot_payload = snapshot.json()
+    assert snapshot_payload["cursor"]["subscriptionId"] == (
+        operator_contract.hive_subscription_id(HIVE)
+    )
+    assert daemon_contract.HiveSnapshotResponse.model_validate(snapshot_payload)
     assert health.json() == {
         "schemaVersion": 1,
         "status": "live",

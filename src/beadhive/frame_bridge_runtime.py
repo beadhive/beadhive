@@ -17,7 +17,7 @@ import httpx
 from joserfc.jwk import KeySet
 
 from . import config as bh_config
-from . import daemon_auth, gateway_read, otel
+from . import daemon_auth, gateway_read, operator_contract, otel
 from .frame_bridge import (
     CLOUD_APP_ORIGIN,
     CLOUD_GATEWAY_ORIGIN,
@@ -40,6 +40,7 @@ GATEWAY_ORIGIN = CLOUD_GATEWAY_ORIGIN
 AUDIENCE = "beadhive-gateway-dev"
 LOOPBACK_ORIGIN = "http://127.0.0.1:8420"
 HIVE_ID = "github/beadhive/beadhive"
+HIVE_SUBSCRIPTION_ID = operator_contract.hive_subscription_id(HIVE_ID)
 _HIVE_PATH = "/api/v1/hives/github%2Fbeadhive%2Fbeadhive"
 _SUBJECT = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 _HIVE_ID = re.compile(r"[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+\Z")
@@ -511,7 +512,7 @@ class LoopbackDemoRuntime:
         context = self._client.stream(
             "GET",
             f"{_HIVE_PATH}/events",
-            params={"cursor": _local_cursor(cursor), "subscription": f"hive:{HIVE_ID}"},
+            params={"cursor": _local_cursor(cursor), "subscription": HIVE_SUBSCRIPTION_ID},
             auth=self._daemon_auth,
         )
         response = await context.__aenter__()
