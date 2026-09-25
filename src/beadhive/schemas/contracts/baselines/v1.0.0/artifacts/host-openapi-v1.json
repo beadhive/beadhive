@@ -485,46 +485,6 @@
         ],
         "type": "object"
       },
-      "EntityRemovePayload": {
-        "additionalProperties": false,
-        "properties": {
-          "entity": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "kind": {
-            "const": "entity-remove",
-            "type": "string"
-          },
-          "revision": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "kind",
-          "entity",
-          "revision"
-        ],
-        "type": "object"
-      },
-      "EntityUpsertPayload": {
-        "additionalProperties": false,
-        "properties": {
-          "entity": {
-            "additionalProperties": true,
-            "type": "object"
-          },
-          "kind": {
-            "const": "entity-upsert",
-            "type": "string"
-          }
-        },
-        "required": [
-          "kind",
-          "entity"
-        ],
-        "type": "object"
-      },
       "Error": {
         "additionalProperties": false,
         "properties": {
@@ -1221,32 +1181,8 @@
       },
       "HiveOperatorSnapshot": {
         "additionalProperties": false,
-        "description": "Top-level UI snapshot envelope; entity bodies retain the shared UI contract.",
+        "description": "Compact, byte-first seed snapshot for one exact hive.",
         "properties": {
-          "advertisedActions": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "agents": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "assignments": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
           "coverage": {
             "$ref": "#/components/schemas/OperatorCoverage"
           },
@@ -1260,55 +1196,23 @@
               }
             ]
           },
-          "dependencies": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "epics": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "evidence": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
-          "gates": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
-          },
           "generatedAt": {
+            "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
           },
           "hive": {
             "$ref": "#/components/schemas/HiveInfo"
           },
-          "revision": {
+          "limits": {
+            "$ref": "#/components/schemas/SnapshotProjectionLimits"
+          },
+          "projectionPolicy": {
+            "const": "beadhive.snapshot-summary/v1",
             "type": "string"
           },
-          "schedules": {
-            "default": [],
-            "items": {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            "type": "array"
+          "revision": {
+            "type": "string"
           },
           "schemaVersion": {
             "const": 1,
@@ -1316,11 +1220,10 @@
             "type": "integer"
           },
           "workItems": {
-            "default": [],
             "items": {
-              "additionalProperties": true,
-              "type": "object"
+              "$ref": "#/components/schemas/SnapshotWorkItemSummary"
             },
+            "maxItems": 4096,
             "type": "array"
           }
         },
@@ -1330,16 +1233,10 @@
           "revision",
           "generatedAt",
           "cursor",
+          "projectionPolicy",
+          "limits",
           "coverage",
-          "workItems",
-          "dependencies",
-          "epics",
-          "gates",
-          "agents",
-          "assignments",
-          "schedules",
-          "evidence",
-          "advertisedActions"
+          "workItems"
         ],
         "type": "object"
       },
@@ -1370,9 +1267,45 @@
       "OperatorCoverage": {
         "additionalProperties": false,
         "properties": {
-          "generatedAt": {
+          "eligible": {
+            "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
+          },
+          "generatedAt": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "limits": {
+            "$ref": "#/components/schemas/SnapshotProjectionLimits"
+          },
+          "policy": {
+            "const": "beadhive.snapshot-summary/v1",
+            "type": "string"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "enum": [
+                  "byte_budget",
+                  "structural_cap"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "returned": {
+            "maximum": 4096,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "sourceRevision": {
+            "minLength": 1,
+            "type": "string"
           },
           "sources": {
             "additionalProperties": {
@@ -1383,8 +1316,7 @@
           "state": {
             "enum": [
               "complete",
-              "partial",
-              "unavailable"
+              "partial"
             ],
             "type": "string"
           }
@@ -1392,6 +1324,12 @@
         "required": [
           "state",
           "generatedAt",
+          "eligible",
+          "returned",
+          "reason",
+          "policy",
+          "sourceRevision",
+          "limits",
           "sources"
         ],
         "type": "object"
@@ -1438,8 +1376,6 @@
               "mapping": {
                 "activity": "#/components/schemas/ActivityEventPayload",
                 "activity-reset": "#/components/schemas/ActivityResetPayload",
-                "entity-remove": "#/components/schemas/EntityRemovePayload",
-                "entity-upsert": "#/components/schemas/EntityUpsertPayload",
                 "heartbeat": "#/components/schemas/HeartbeatPayload",
                 "invalidate": "#/components/schemas/InvalidatePayload",
                 "reset": "#/components/schemas/ResetPayload"
@@ -1447,12 +1383,6 @@
               "propertyName": "kind"
             },
             "oneOf": [
-              {
-                "$ref": "#/components/schemas/EntityUpsertPayload"
-              },
-              {
-                "$ref": "#/components/schemas/EntityRemovePayload"
-              },
               {
                 "$ref": "#/components/schemas/InvalidatePayload"
               },
@@ -1531,10 +1461,12 @@
           },
           "fromCache": {
             "default": 0,
+            "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
           },
           "generatedAt": {
+            "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
           },
@@ -1544,6 +1476,7 @@
           "requested": {
             "anyOf": [
               {
+                "maximum": 9007199254740991,
                 "minimum": 0,
                 "type": "integer"
               },
@@ -1556,6 +1489,7 @@
           "returned": {
             "anyOf": [
               {
+                "maximum": 9007199254740991,
                 "minimum": 0,
                 "type": "integer"
               },
@@ -1888,6 +1822,139 @@
         ],
         "type": "object"
       },
+      "SnapshotProjectionLimits": {
+        "additionalProperties": false,
+        "properties": {
+          "maxBytes": {
+            "const": 917504,
+            "type": "integer"
+          },
+          "maxWorkItems": {
+            "const": 4096,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "maxBytes",
+          "maxWorkItems"
+        ],
+        "type": "object"
+      },
+      "SnapshotWorkItemSummary": {
+        "additionalProperties": false,
+        "properties": {
+          "assignee": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "blockerCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "type": "string"
+          },
+          "issueType": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "labels": {
+            "items": {
+              "maxLength": 256,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 12,
+            "type": "array"
+          },
+          "liveAgentCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "openGateCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "owner": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "priority": {
+            "maximum": 4,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "readiness": {
+            "enum": [
+              "ready",
+              "active",
+              "blocked"
+            ],
+            "type": "string"
+          },
+          "remainingLabelCount": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "in_progress",
+              "blocked"
+            ],
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 4096,
+            "type": "string"
+          },
+          "updatedAt": {
+            "maximum": 9007199254740991,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "readiness",
+          "issueType",
+          "priority",
+          "labels",
+          "remainingLabelCount",
+          "assignee",
+          "owner",
+          "updatedAt",
+          "blockerCount",
+          "openGateCount",
+          "liveAgentCount"
+        ],
+        "type": "object"
+      },
       "SourceProvenance": {
         "additionalProperties": false,
         "properties": {
@@ -1940,6 +2007,7 @@
         "additionalProperties": false,
         "properties": {
           "observedAt": {
+            "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
           },
@@ -1947,6 +2015,7 @@
             "type": "string"
           },
           "sequence": {
+            "maximum": 9007199254740991,
             "minimum": 0,
             "type": "integer"
           },

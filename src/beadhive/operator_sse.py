@@ -58,16 +58,6 @@ _CURSOR = re.compile(
     rf"^([A-Za-z0-9._~-]{{1,{MAX_EVENT_CURSOR_EPOCH_LENGTH}}}):"
     rf"(0|[1-9][0-9]{{0,{MAX_EVENT_CURSOR_SEQUENCE_DIGITS - 1}}})$"
 )
-_ENTITY_COLLECTIONS = (
-    ("workItems", "beads"),
-    ("dependencies", "beads"),
-    ("epics", "beads"),
-    ("gates", "beads"),
-    ("agents", "runtime"),
-    ("assignments", "beads"),
-    ("schedules", "beads"),
-    ("evidence", "beads"),
-)
 
 
 class ResnapshotRequired(RuntimeError):
@@ -219,24 +209,6 @@ def _subscription_value(request: Request) -> str:
 
 def _resnapshot(code: str) -> JSONResponse:
     return JSONResponse({"error": code, "action": "resnapshot"}, status_code=409)
-
-
-def _entity_map(
-    snapshot: Mapping[str, object], collection: str
-) -> dict[tuple[str, str, str], dict]:
-    raw = snapshot.get(collection)
-    if not isinstance(raw, list):
-        raise RuntimeError(f"operator snapshot {collection} must be an array")
-    result: dict[tuple[str, str, str], dict] = {}
-    for value in raw:
-        if not isinstance(value, dict) or not isinstance(value.get("ref"), dict):
-            raise RuntimeError(f"operator snapshot {collection} has an invalid entity")
-        ref = value["ref"]
-        key = (str(ref.get("hiveId", "")), str(ref.get("kind", "")), str(ref.get("id", "")))
-        if not all(key) or key in result:
-            raise RuntimeError(f"operator snapshot {collection} has an invalid entity identity")
-        result[key] = value
-    return result
 
 
 class OperatorEventRelay:
@@ -524,84 +496,21 @@ class OperatorEventRelay:
     def _diff_events(
         self, transition: FeedTransition
     ) -> list[tuple[str, str, dict | None, dict[str, object]]]:
-        result: list[tuple[str, str, dict | None, dict[str, object]]] = []
-        for collection, default_source in _ENTITY_COLLECTIONS:
-            previous = _entity_map(transition.previous, collection)
-            current = _entity_map(transition.current, collection)
-            for key in sorted(current):
-                entity = current[key]
-                if previous.get(key) == entity:
-                    continue
-                ref = dict(entity["ref"])
-                source = (
-                    "runtime"
-                    if collection == "assignments" and str(ref["id"]).startswith("runtime:")
-                    else default_source
-                )
-                result.append(
-                    (
-                        source,
-                        str(entity.get("revision", transition.source_revision)),
-                        ref,
-                        {"kind": "entity-upsert", "entity": entity},
-                    )
-                )
-            for key in sorted(previous.keys() - current.keys()):
-                ref = dict(previous[key]["ref"])
-                source = (
-                    "runtime"
-                    if collection == "assignments" and str(ref["id"]).startswith("runtime:")
-                    else default_source
-                )
-                result.append(
-                    (
-                        source,
-                        transition.source_revision,
-                        ref,
-                        {
-                            "kind": "entity-remove",
-                            "entity": ref,
-                            "revision": transition.source_revision,
-                        },
-                    )
-                )
-
-        scopes: list[str] = []
+        scopes = ["snapshot"]
         if transition.previous.get("coverage") != transition.current.get("coverage"):
             scopes.append("coverage")
-        if transition.previous.get("advertisedActions") != transition.current.get(
-            "advertisedActions"
-        ):
-            scopes.append("capabilities")
-        if transition.previous.get("hive") != transition.current.get("hive"):
-            scopes.append("snapshot")
-        if scopes:
-            result.append(
-                (
-                    "beads",
-                    transition.source_revision,
-                    None,
-                    {
-                        "kind": "invalidate",
-                        "scopes": scopes,
-                        "reason": "authoritative snapshot metadata changed",
-                    },
-                )
+        return [
+            (
+                "beads",
+                transition.source_revision,
+                None,
+                {
+                    "kind": "invalidate",
+                    "scopes": scopes,
+                    "reason": "authoritative hive snapshot changed",
+                },
             )
-        if not result:
-            result.append(
-                (
-                    "beads",
-                    transition.source_revision,
-                    None,
-                    {
-                        "kind": "invalidate",
-                        "scopes": ["snapshot"],
-                        "reason": "authoritative source revision changed",
-                    },
-                )
-            )
-        return result
+        ]
 
     def _heartbeat(self, pulse: FeedPulse) -> int:
         with self._lock:

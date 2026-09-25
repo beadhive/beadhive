@@ -456,3 +456,70 @@ def test_checked_contract_fixture_round_trips_through_public_models() -> None:
         daemon_contract.TerminalUnavailable.model_validate(fixture["terminalUnavailable"]).to_wire()
         == fixture["terminalUnavailable"]
     )
+
+
+def _snapshot_contract_fixture() -> dict[str, object]:
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures" / "host_daemon" / "v1" / "contracts.json").read_text()
+    )["snapshot"]
+    fixture["coverage"]["eligible"] = 1
+    fixture["coverage"]["returned"] = 1
+    fixture["workItems"] = [
+        {
+            "id": "bh-1",
+            "title": "Strict summary",
+            "status": "open",
+            "readiness": "ready",
+            "issueType": "task",
+            "priority": 1,
+            "labels": ["contract"],
+            "remainingLabelCount": 0,
+            "assignee": None,
+            "owner": None,
+            "updatedAt": 0,
+            "blockerCount": 0,
+            "openGateCount": 0,
+            "liveAgentCount": 0,
+        }
+    ]
+    return fixture
+
+
+@pytest.mark.parametrize(
+    ("path", "bad_value"),
+    [(("workItems", 0, "priority"), value) for value in ("1", True, 1.0)]
+    + [(("workItems", 0, "blockerCount"), value) for value in ("0", False, 0.0)]
+    + [(("coverage", "eligible"), value) for value in ("1", True, 1.0)]
+    + [(("cursor", "sequence"), value) for value in ("0", False, 0.0)],
+)
+def test_compact_snapshot_numeric_fields_reject_coercive_inputs(
+    path: tuple[str | int, ...], bad_value: object
+) -> None:
+    snapshot = _snapshot_contract_fixture()
+    target: object = snapshot
+    for segment in path[:-1]:
+        target = target[segment]  # type: ignore[index]
+    target[path[-1]] = bad_value  # type: ignore[index]
+
+    with pytest.raises(ValidationError):
+        daemon_contract.HiveSnapshotResponse.model_validate(snapshot)
+
+
+def test_compact_snapshot_rejects_boolean_returned_count_and_empty_label() -> None:
+    empty = _snapshot_contract_fixture()
+    empty["coverage"]["eligible"] = 0
+    empty["coverage"]["returned"] = False
+    empty["workItems"] = []
+    with pytest.raises(ValidationError):
+        daemon_contract.HiveSnapshotResponse.model_validate(empty)
+
+    empty_label = _snapshot_contract_fixture()
+    empty_label["workItems"][0]["labels"] = [""]
+    with pytest.raises(ValidationError):
+        daemon_contract.HiveSnapshotResponse.model_validate(empty_label)
+
+    label_schema = daemon_contract.HiveSnapshotResponse.model_json_schema(by_alias=True)["$defs"][
+        "SnapshotWorkItemSummary"
+    ]["properties"]["labels"]["items"]
+    assert label_schema["minLength"] == 1
+    assert label_schema["maxLength"] == 256

@@ -20,7 +20,13 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
-from beadhive import daemon_auth, frame_bridge, frame_bridge_runtime, gateway_read
+from beadhive import (
+    daemon_auth,
+    frame_bridge,
+    frame_bridge_runtime,
+    gateway_read,
+    operator_contract,
+)
 
 ISSUER = "https://rapid-snail-6758.clerk.accounts.dev"
 AUDIENCE = "beadhive-gateway-dev"
@@ -619,7 +625,7 @@ def test_release_selection_is_read_from_the_digest_pinned_manifest() -> None:
         )
 
 
-def test_authenticated_bridge_lists_selected_hives_and_returns_rich_generated_snapshot() -> None:
+def test_authenticated_bridge_lists_selected_hives_and_returns_compact_generated_snapshot() -> None:
     private_key, public_key = _keys()
     source = gateway_read.load_packaged_development_source(authorized_subjects=frozenset({SUBJECT}))
     app = _application(public_key, source)
@@ -666,7 +672,9 @@ def test_authenticated_bridge_lists_selected_hives_and_returns_rich_generated_sn
     }
     assert envelope["source"]["revision"] == envelope["snapshot"]["revision"]
     assert envelope["snapshot"]["hive"]["prefix"] == envelope["hiveId"]
-    assert not envelope["snapshot"]["advertisedActions"]
+    assert set(envelope["snapshot"]) == gateway_read._COMPACT_SNAPSHOT_REQUIRED
+    assert envelope["snapshot"]["projectionPolicy"] == "beadhive.snapshot-summary/v1"
+    assert envelope["snapshot"]["coverage"]["returned"] == len(envelope["snapshot"]["workItems"])
     assert set(_hive_ids(envelope["snapshot"])) <= {envelope["hiveId"]}
 
 
@@ -718,7 +726,8 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
     epoch = "123e4567e89b42d3a456426614174000"
     revision = "sha256:" + "a" * 64
     daemon_bearer = "bh1.frame-bridge." + "d" * 43
-    subscription = f"hive:{hive_id}"
+    subscription = operator_contract.hive_subscription_id(hive_id)
+    limits = {"maxBytes": 917_504, "maxWorkItems": 4_096}
     snapshot = {
         "schemaVersion": 1,
         "hive": {
@@ -736,8 +745,20 @@ def test_canonical_factory_routes_alias_live_loopback_directory_snapshot_and_eve
             "sequence": 7,
             "observedAt": 1_787_811_221_001,
         },
-        "coverage": {"state": "complete", "generatedAt": 1_787_811_221_000},
-        **{name: [] for name in gateway_read._SNAPSHOT_COLLECTIONS},
+        "projectionPolicy": "beadhive.snapshot-summary/v1",
+        "limits": limits,
+        "coverage": {
+            "state": "complete",
+            "generatedAt": 1_787_811_221_000,
+            "eligible": 0,
+            "returned": 0,
+            "reason": None,
+            "policy": "beadhive.snapshot-summary/v1",
+            "sourceRevision": revision,
+            "limits": limits,
+            "sources": {},
+        },
+        "workItems": [],
     }
 
     async def directory(request):

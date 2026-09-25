@@ -64,40 +64,54 @@ def _token(
 
 
 def _snapshot() -> dict[str, object]:
+    limits = {"maxBytes": 917504, "maxWorkItems": 4096}
     return {
         "schemaVersion": 1,
         "revision": "sha256:" + "a" * 64,
         "generatedAt": 1724716800000,
+        "projectionPolicy": "beadhive.snapshot-summary/v1",
+        "limits": limits,
+        "coverage": {
+            "state": "complete",
+            "generatedAt": 1724716800000,
+            "eligible": 1,
+            "returned": 1,
+            "reason": None,
+            "policy": "beadhive.snapshot-summary/v1",
+            "sourceRevision": "sha256:" + "a" * 64,
+            "limits": limits,
+            "sources": {"private": "must-not-cross"},
+        },
         "workItems": [
             {
-                "ref": {"hiveId": "github/beadhive/beadhive", "kind": "work-item", "id": "bh-1"},
-                "record": {
-                    "id": "bh-1",
-                    "title": "Development demo",
-                    "status": "open",
-                    "issueType": "task",
-                    "priority": 1,
-                    "labels": ["component:gateway"],
-                    "assignee": "dev/codex",
-                    "description": "must not cross the remote boundary",
-                },
+                "id": "bh-1",
+                "title": "Development demo",
+                "status": "open",
+                "readiness": "ready",
+                "issueType": "task",
+                "priority": 1,
+                "labels": ["component:gateway"],
+                "remainingLabelCount": 0,
+                "assignee": "dev/codex",
+                "owner": None,
                 "updatedAt": 1724716800000,
-                "revision": "private-revision",
-            }
-        ],
-        "agents": [
-            {
-                "ref": {"hiveId": "github/beadhive/beadhive", "kind": "agent-run", "id": "run-1"},
-                "state": "running",
-                "ownerSeat": "dev",
-                "startedAt": 1724716700000,
-                "updatedAt": 1724716800000,
-                "endedAt": None,
-                "runtime": "private-runtime",
+                "blockerCount": 0,
+                "openGateCount": 0,
+                "liveAgentCount": 0,
+                "description": "must not cross the remote boundary",
             }
         ],
         "workspaceRoot": "/Users/private/repository",
         "secret": "must-not-leak",
+    }
+
+
+def _public_snapshot_envelope() -> dict[str, object]:
+    return {
+        "schemaVersion": 1,
+        "contractVersion": "gateway.v1",
+        "instanceId": INSTANCE_ID,
+        "snapshot": frame_bridge._public_snapshot(_snapshot(), with_events=False),
     }
 
 
@@ -425,26 +439,34 @@ def test_authorized_subject_discovers_only_dev_demo_and_reads_redacted_snapshot(
             "schemaVersion": 1,
             "revision": "sha256:" + "a" * 64,
             "generatedAt": 1724716800000,
+            "projectionPolicy": "beadhive.snapshot-summary/v1",
+            "limits": {"maxBytes": 917504, "maxWorkItems": 4096},
+            "coverage": {
+                "state": "complete",
+                "generatedAt": 1724716800000,
+                "eligible": 1,
+                "returned": 1,
+                "reason": None,
+                "policy": "beadhive.snapshot-summary/v1",
+                "sourceRevision": "sha256:" + "a" * 64,
+                "limits": {"maxBytes": 917504, "maxWorkItems": 4096},
+            },
             "workItems": [
                 {
                     "id": "bh-1",
                     "title": "Development demo",
                     "status": "open",
+                    "readiness": "ready",
                     "issueType": "task",
                     "priority": 1,
                     "labels": ["component:gateway"],
+                    "remainingLabelCount": 0,
                     "assignee": "dev/codex",
+                    "owner": None,
                     "updatedAt": 1724716800000,
-                }
-            ],
-            "agents": [
-                {
-                    "id": "run-1",
-                    "state": "running",
-                    "ownerSeat": "dev",
-                    "startedAt": 1724716700000,
-                    "updatedAt": 1724716800000,
-                    "endedAt": None,
+                    "blockerCount": 0,
+                    "openGateCount": 0,
+                    "liveAgentCount": 0,
                 }
             ],
         },
@@ -469,11 +491,35 @@ def test_public_caller_bearer_is_never_forwarded_to_the_host_daemon() -> None:
             200,
             json={
                 "schemaVersion": 1,
+                "hive": {
+                    "prefix": "github/beadhive/beadhive",
+                    "provider": "github",
+                    "org": "beadhive",
+                    "repo": "beadhive",
+                    "kind": "org-native",
+                },
                 "revision": "sha256:" + "a" * 64,
                 "generatedAt": 1724716800000,
-                "cursor": {"producerEpoch": EVENT_EPOCH.replace("-", ""), "sequence": 0},
+                "cursor": {
+                    "subscriptionId": frame_bridge_runtime.HIVE_SUBSCRIPTION_ID,
+                    "producerEpoch": EVENT_EPOCH.replace("-", ""),
+                    "sequence": 0,
+                    "observedAt": 1724716800000,
+                },
+                "projectionPolicy": "beadhive.snapshot-summary/v1",
+                "limits": {"maxBytes": 917504, "maxWorkItems": 4096},
+                "coverage": {
+                    "state": "complete",
+                    "generatedAt": 1724716800000,
+                    "eligible": 0,
+                    "returned": 0,
+                    "reason": None,
+                    "policy": "beadhive.snapshot-summary/v1",
+                    "sourceRevision": "sha256:" + "a" * 64,
+                    "limits": {"maxBytes": 917504, "maxWorkItems": 4096},
+                    "sources": {},
+                },
                 "workItems": [],
-                "agents": [],
             },
         )
 
@@ -1322,17 +1368,17 @@ def test_incompatible_runtime_snapshot_fails_without_reflecting_internal_content
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda value: value["workItems"][0]["record"].__setitem__(
+        lambda value: value["workItems"][0].__setitem__(
             "title", {"secret": "nested-must-not-leak"}
         ),
-        lambda value: value["workItems"][0]["record"].__setitem__(
+        lambda value: value["workItems"][0].__setitem__(
             "labels", [{"secret": "nested-must-not-leak"}]
         ),
-        lambda value: value["workItems"][0]["record"].__setitem__("priority", True),
-        lambda value: value["agents"][0].__setitem__(
-            "ownerSeat", {"secret": "nested-must-not-leak"}
+        lambda value: value["workItems"][0].__setitem__("priority", True),
+        lambda value: value["workItems"][0].__setitem__(
+            "owner", {"secret": "nested-must-not-leak"}
         ),
-        lambda value: value["agents"][0].__setitem__("updatedAt", -1),
+        lambda value: value["workItems"][0].__setitem__("updatedAt", -1),
     ],
     ids=["title-object", "label-object", "boolean-priority", "seat-object", "negative-time"],
 )
@@ -1415,7 +1461,7 @@ def test_snapshot_collection_bounds_fail_closed_before_serialization() -> None:
         gateway_origin=GATEWAY_ORIGIN,
     )
     oversized = _snapshot()
-    oversized["workItems"] = oversized["workItems"] * 1_001
+    oversized["workItems"] = oversized["workItems"] * 4_097
     app = frame_bridge.build_development_frame_bridge_application(
         config=config,
         verifier=frame_bridge.ClerkTokenVerifier(config=config, key=public_key),
@@ -1474,6 +1520,25 @@ def test_snapshot_timestamp_outside_json_safe_integer_range_fails_closed() -> No
     response = _exercise(app, action)
     assert response.status_code == 503
     assert response.json()["error"]["code"] == "runtime_unavailable"
+
+
+def test_snapshot_coverage_allowlist_enforces_strict_truthful_counts() -> None:
+    unsafe_eligible = _public_snapshot_envelope()
+    unsafe_eligible["snapshot"]["coverage"]["eligible"] = 2**53
+    assert not frame_bridge.frame_bridge_payload_is_allowlisted("snapshot", unsafe_eligible)
+
+    boolean_returned = _public_snapshot_envelope()
+    boolean_returned["snapshot"]["workItems"] = []
+    boolean_returned["snapshot"]["coverage"].update(
+        {"state": "complete", "eligible": 0, "returned": False, "reason": None}
+    )
+    assert not frame_bridge.frame_bridge_payload_is_allowlisted("snapshot", boolean_returned)
+
+    false_structural_cap = _public_snapshot_envelope()
+    false_structural_cap["snapshot"]["coverage"].update(
+        {"state": "partial", "eligible": 2, "returned": 1, "reason": "structural_cap"}
+    )
+    assert not frame_bridge.frame_bridge_payload_is_allowlisted("snapshot", false_structural_cap)
 
 
 @pytest.mark.parametrize("schema_version", [True, 1.0, "1", -1, 2])

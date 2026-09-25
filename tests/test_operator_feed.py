@@ -129,7 +129,7 @@ def test_snapshot_is_direct_canonical_and_same_revision_keeps_cursor(tmp_path: P
 
     assert first is second
     assert first["hive"]["prefix"] == HIVE
-    assert first["workItems"][0]["ref"]["hiveId"] == HIVE
+    assert first["workItems"][0]["id"] == "bh-1"
     assert first["cursor"] == {
         "subscriptionId": operator_contract.hive_subscription_id(HIVE),
         "producerEpoch": first["cursor"]["producerEpoch"],
@@ -167,8 +167,8 @@ def test_concurrent_change_is_old_snapshot_then_strictly_later_install(tmp_path:
     old = responses[0]
     provider.captured = provider.release = None
     new = feed.snapshot_with_cursor(HIVE)
-    assert old["workItems"][0]["record"]["status"] == "open"
-    assert new["workItems"][0]["record"]["status"] == "blocked"
+    assert old["workItems"][0]["status"] == "open"
+    assert new["workItems"][0]["status"] == "blocked"
     assert old["cursor"]["sequence"] == 0
     assert new["cursor"]["sequence"] == 1
     assert installs[-1].current["cursor"]["sequence"] > old["cursor"]["sequence"]

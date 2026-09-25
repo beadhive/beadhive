@@ -28,6 +28,7 @@ HIVE_SUBSCRIPTION = operator_contract.hive_subscription_id(HIVE)
 
 
 def _live_snapshot() -> dict[str, object]:
+    limits = {"maxBytes": 917_504, "maxWorkItems": 4_096}
     return {
         "schemaVersion": 1,
         "hive": {
@@ -45,9 +46,17 @@ def _live_snapshot() -> dict[str, object]:
             "sequence": 7,
             "observedAt": 1_787_811_221_001,
         },
+        "projectionPolicy": "beadhive.snapshot-summary/v1",
+        "limits": limits,
         "coverage": {
-            "state": "partial",
+            "state": "complete",
             "generatedAt": 1_787_811_221_000,
+            "eligible": 1,
+            "returned": 1,
+            "reason": None,
+            "policy": "beadhive.snapshot-summary/v1",
+            "sourceRevision": REVISION,
+            "limits": limits,
             "sources": {
                 "runtime": {
                     "state": "unavailable",
@@ -65,15 +74,24 @@ def _live_snapshot() -> dict[str, object]:
                 }
             },
         },
-        "workItems": [{"sentinel": "work-item"}],
-        "dependencies": [{"sentinel": "dependency"}],
-        "epics": [{"sentinel": "epic"}],
-        "gates": [{"sentinel": "gate"}],
-        "agents": [],
-        "assignments": [{"sentinel": "assignment"}],
-        "schedules": [{"sentinel": "schedule"}],
-        "evidence": [],
-        "advertisedActions": [],
+        "workItems": [
+            {
+                "id": "bh-1",
+                "title": "Compact summary",
+                "status": "open",
+                "readiness": "ready",
+                "issueType": "task",
+                "priority": 1,
+                "labels": ["component:gateway"],
+                "remainingLabelCount": 0,
+                "assignee": None,
+                "owner": None,
+                "updatedAt": 1_787_811_221_000,
+                "blockerCount": 0,
+                "openGateCount": 0,
+                "liveAgentCount": 0,
+            }
+        ],
     }
 
 
@@ -87,17 +105,21 @@ def _operator_app(seen_authorizations: list[str | None] | None = None) -> Starle
             seen_authorizations.append(authorization)
         if authorization != f"Bearer {DAEMON_BEARER}":
             return JSONResponse({"error": {"code": "auth_missing"}}, status_code=401)
-        return JSONResponse(
-            {
-                "schemaVersion": 1,
-                "revision": REVISION,
-                "generatedAt": 1_787_811_221_000,
-                "cursor": {"producerEpoch": EPOCH, "sequence": 1},
-                "workItems": [],
-                "agents": [],
-                "workspaceRoot": "/private/must-not-cross",
-            }
-        )
+        payload = _live_snapshot()
+        payload["hive"] = {
+            "prefix": "github/beadhive/beadhive",
+            "provider": "github",
+            "org": "beadhive",
+            "repo": "beadhive",
+            "kind": "org-native",
+        }
+        payload["cursor"] = {
+            "subscriptionId": frame_bridge_runtime.HIVE_SUBSCRIPTION_ID,
+            "producerEpoch": EPOCH,
+            "sequence": 1,
+            "observedAt": 1_787_811_221_001,
+        }
+        return JSONResponse(payload)
 
     async def events(request):
         authorization = request.headers.get("authorization")
@@ -450,6 +472,7 @@ def test_live_gateway_read_source_fences_a_stream_when_a_new_snapshot_is_install
         payload = _live_snapshot()
         if snapshots == 2:
             payload["revision"] = "sha256:" + "b" * 64
+            payload["coverage"]["sourceRevision"] = "sha256:" + "b" * 64
             payload["cursor"] = {
                 "subscriptionId": HIVE_SUBSCRIPTION,
                 "producerEpoch": "223e4567e89b42d3a456426614174000",
@@ -546,8 +569,10 @@ def test_real_loopback_profile_maps_snapshot_refresh_and_retained_events() -> No
         "schemaVersion": 1,
         "revision": REVISION,
         "generatedAt": 1_787_811_221_000,
-        "workItems": [],
-        "agents": [],
+        "projectionPolicy": "beadhive.snapshot-summary/v1",
+        "limits": {"maxBytes": 917_504, "maxWorkItems": 4_096},
+        "coverage": _live_snapshot()["coverage"],
+        "workItems": _live_snapshot()["workItems"],
         "eventCursor": "123e4567-e89b-42d3-a456-426614174000:1",
     }
     assert receipt == {"status": "completed", "revision": REVISION}
@@ -588,23 +613,23 @@ def test_loopback_profile_sends_only_its_private_daemon_bearer() -> None:
 
 def test_development_projection_selects_only_current_non_operational_work() -> None:
     items = [
-        {"record": {"id": "active", "status": "open", "issueType": "task"}},
-        {"record": {"id": "running", "status": "in_progress", "issueType": "feature"}},
-        {"record": {"id": "blocked", "status": "blocked", "issueType": "bug"}},
-        {"record": {"id": "closed", "status": "closed", "issueType": "task"}},
-        {"record": {"id": "deferred", "status": "deferred", "issueType": "task"}},
-        {"record": {"id": "event", "status": "open", "issueType": "event"}},
-        {"record": {"id": "gate", "status": "open", "issueType": "gate"}},
+        {"id": "active", "status": "open", "issueType": "task"},
+        {"id": "running", "status": "in_progress", "issueType": "feature"},
+        {"id": "blocked", "status": "blocked", "issueType": "bug"},
+        {"id": "closed", "status": "closed", "issueType": "task"},
+        {"id": "deferred", "status": "deferred", "issueType": "task"},
+        {"id": "event", "status": "open", "issueType": "event"},
+        {"id": "gate", "status": "open", "issueType": "gate"},
     ]
 
     selected = frame_bridge_runtime._development_work_items(items)
 
-    assert [item["record"]["id"] for item in selected] == ["active", "running", "blocked"]
+    assert [item["id"] for item in selected] == ["active", "running", "blocked"]
 
 
 def test_development_projection_rejects_malformed_work_items() -> None:
     with pytest.raises(RuntimeError, match="work item is incompatible"):
-        frame_bridge_runtime._development_work_items([{"record": {"status": "open"}}])
+        frame_bridge_runtime._development_work_items([{"status": "open"}])
 
 
 def test_loopback_profile_rejects_stale_refresh_and_event_cursor() -> None:
@@ -704,14 +729,9 @@ def test_local_desktop_live_factory_wires_the_loopback_gateway_read_source(
             return True
 
         async def snapshot(self):
-            return {
-                "schemaVersion": 1,
-                "revision": REVISION,
-                "generatedAt": 1_787_811_221_000,
-                "workItems": [],
-                "agents": [],
-                "eventCursor": "123e4567-e89b-42d3-a456-426614174000:1",
-            }
+            payload = _live_snapshot()
+            payload["eventCursor"] = "123e4567-e89b-42d3-a456-426614174000:1"
+            return payload
 
         async def refresh(self, _revision, _correlation_id):
             return {"status": "completed", "revision": REVISION}

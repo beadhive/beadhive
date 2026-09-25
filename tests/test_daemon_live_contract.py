@@ -1027,7 +1027,7 @@ async def _run_live_contract_scenario_body(
         assert overlap_snapshot.status_code == 200
         assert overlap_snapshot.json()["cursor"]["producerEpoch"] == cursor["producerEpoch"]
         assert snapshot.status_code == 200
-        assert any(item["record"]["id"] == bead_id for item in snapshot.json()["workItems"])
+        assert any(item["id"] == bead_id for item in snapshot.json()["workItems"])
         assert published.status_code == 201
         assert published.json()["status"] == "created"
         assert mutation.data["ok"] is True

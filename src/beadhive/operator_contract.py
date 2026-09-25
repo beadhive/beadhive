@@ -8,6 +8,7 @@ summaries, and run journals retain their distinct authority and revision domains
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime
@@ -29,12 +30,19 @@ from .modules.state import (
 )
 
 SCHEMA_VERSION = 1
-DEVELOPMENT_SNAPSHOT_MAX_BYTES = 1 << 20
-DEVELOPMENT_WORK_ITEM_LIMIT = 1_000
+DEVELOPMENT_SNAPSHOT_MAX_BYTES = 896 * 1024
+DEVELOPMENT_WORK_ITEM_LIMIT = 4_096
 DEVELOPMENT_MAX_JSON_SAFE_INTEGER = 2**53 - 1
 DEVELOPMENT_MAX_CURSOR_SEQUENCE = DEVELOPMENT_MAX_JSON_SAFE_INTEGER
+DEVELOPMENT_SNAPSHOT_POLICY = "beadhive.snapshot-summary/v1"
+DEVELOPMENT_MAX_LABELS = 12
+DEVELOPMENT_MAX_LABEL_LENGTH = 256
+DEVELOPMENT_MAX_ID_LENGTH = 256
+DEVELOPMENT_MAX_TITLE_LENGTH = 4_096
 _DEVELOPMENT_WORK_STATUSES = frozenset({"open", "in_progress", "blocked"})
 _INTERNAL_WORK_ITEM_TYPES = frozenset({"event", "gate"})
+_NON_BLOCKING_DEPENDENCIES = frozenset({"parent-child", "related", "discovered-from"})
+_LIVE_AGENT_STATES = frozenset({"starting", "active", "waiting"})
 _MISSING_WORK_ITEM_DETAIL = (
     "The state stream does not expose description, molecule type, or lifecycle timestamps."
 )
@@ -42,6 +50,19 @@ _MISSING_WORK_ITEM_DETAIL = (
 
 class SnapshotProjectionUnavailable(RuntimeError):
     """The Development snapshot cannot satisfy its fail-closed disclosure bounds."""
+
+
+class _WorstFirstIssue:
+    """Heap entry whose root is the worst retained deterministic summary candidate."""
+
+    __slots__ = ("issue", "key")
+
+    def __init__(self, issue: StreamIssue, key: tuple[object, ...]) -> None:
+        self.issue = issue
+        self.key = key
+
+    def __lt__(self, other: _WorstFirstIssue) -> bool:
+        return self.key > other.key
 
 
 def _millis(value: str | float | int | None, *, fallback: int = 0) -> int:
@@ -272,6 +293,152 @@ def _work_item(issue: StreamIssue, hive_id: str, revision: str, generated_at: in
     }
 
 
+def _priority(value: str) -> int:
+    try:
+        priority = int(value.removeprefix("P").removeprefix("p"))
+    except ValueError:
+        raise SnapshotProjectionUnavailable("Development work-item priority is invalid") from None
+    if priority not in range(5):
+        raise SnapshotProjectionUnavailable("Development work-item priority is invalid")
+    return priority
+
+
+def _bounded_text(value: str, maximum: int) -> str:
+    return value[:maximum]
+
+
+def _bounded_optional_text(value: str | None, maximum: int) -> str | None:
+    return None if value is None else _bounded_text(value, maximum)
+
+
+def _summary_order(issue: StreamIssue) -> tuple[object, ...]:
+    status_rank = {"in_progress": 0, "blocked": 1, "open": 2}[issue.status.lower()]
+    return (
+        status_rank,
+        _priority(issue.priority),
+        -_millis(issue.updated_at),
+        issue.id,
+    )
+
+
+def _bounded_summary_candidates(
+    issues: Sequence[StreamIssue], hive_id: str
+) -> tuple[tuple[StreamIssue, ...], int]:
+    """Return the best bounded candidates without materializing an unbounded summary list."""
+
+    retained: list[_WorstFirstIssue] = []
+    eligible = 0
+    for issue in issues:
+        if (
+            issue.hive != hive_id
+            or issue.status.lower() not in _DEVELOPMENT_WORK_STATUSES
+            or issue.issue_type.lower() in _INTERNAL_WORK_ITEM_TYPES
+        ):
+            continue
+        eligible += 1
+        ranked = _WorstFirstIssue(issue, _summary_order(issue))
+        if len(retained) < DEVELOPMENT_WORK_ITEM_LIMIT:
+            heapq.heappush(retained, ranked)
+        elif ranked.key < retained[0].key:
+            heapq.heapreplace(retained, ranked)
+    selected = tuple(item.issue for item in sorted(retained, key=lambda item: item.key))
+    if len({issue.id for issue in selected}) != len(selected):
+        raise SnapshotProjectionUnavailable("Development work-item identity is ambiguous")
+    return selected, eligible
+
+
+def _summary_counts(
+    bead_state: ProviderSnapshot,
+    runtime_state: AgentRunSnapshot,
+    hive_id: str,
+    retained_issue_ids: frozenset[str],
+) -> tuple[dict[str, int], dict[str, int], dict[str, int]]:
+    status_by_id = {
+        issue.id: issue.status.lower() for issue in bead_state.issues if issue.hive == hive_id
+    }
+    blocker_counts: dict[str, int] = {}
+    for dependency in bead_state.work_dependencies:
+        if (
+            dependency.hive != hive_id
+            or dependency.issue_id not in retained_issue_ids
+            or dependency.type in _NON_BLOCKING_DEPENDENCIES
+            or status_by_id.get(dependency.depends_on_id) == "closed"
+        ):
+            continue
+        blocker_counts[dependency.issue_id] = min(
+            DEVELOPMENT_MAX_JSON_SAFE_INTEGER,
+            blocker_counts.get(dependency.issue_id, 0) + 1,
+        )
+    gate_counts: dict[str, int] = {}
+    for gate in bead_state.gate_requests:
+        if gate.hive != hive_id or gate.status.lower() not in {"open", "pending"}:
+            continue
+        for issue_id in set(gate.blocks).intersection(retained_issue_ids):
+            gate_counts[issue_id] = min(
+                DEVELOPMENT_MAX_JSON_SAFE_INTEGER,
+                gate_counts.get(issue_id, 0) + 1,
+            )
+    live_agent_counts: dict[str, int] = {}
+    for summary in runtime_state.summaries:
+        if summary.bead not in retained_issue_ids or summary.state.value not in _LIVE_AGENT_STATES:
+            continue
+        live_agent_counts[summary.bead] = min(
+            DEVELOPMENT_MAX_JSON_SAFE_INTEGER,
+            live_agent_counts.get(summary.bead, 0) + 1,
+        )
+    return blocker_counts, gate_counts, live_agent_counts
+
+
+def _work_item_summary(
+    issue: StreamIssue,
+    *,
+    generated_at: int,
+    blocker_count: int,
+    open_gate_count: int,
+    live_agent_count: int,
+) -> dict[str, object]:
+    if not issue.id or len(issue.id) > DEVELOPMENT_MAX_ID_LENGTH:
+        raise SnapshotProjectionUnavailable("Development work-item id exceeds its bound")
+    if not issue.issue_type or len(issue.issue_type) > 128:
+        raise SnapshotProjectionUnavailable("Development work-item type exceeds its bound")
+    if any(not label for label in issue.labels):
+        raise SnapshotProjectionUnavailable("Development work-item label is invalid")
+    updated_at = _millis(issue.updated_at)
+    if not 0 <= updated_at <= DEVELOPMENT_MAX_JSON_SAFE_INTEGER:
+        raise SnapshotProjectionUnavailable("Development work-item timestamp exceeds its bound")
+    if issue.status.lower() == "in_progress":
+        readiness = "active"
+    elif issue.status.lower() == "blocked" or blocker_count or open_gate_count:
+        readiness = "blocked"
+    elif issue.status.lower() == "open":
+        readiness = "ready"
+    else:
+        readiness = "unavailable"
+    labels = [
+        _bounded_text(label, DEVELOPMENT_MAX_LABEL_LENGTH)
+        for label in issue.labels[:DEVELOPMENT_MAX_LABELS]
+    ]
+    return {
+        "id": issue.id,
+        "title": _bounded_text(issue.title, DEVELOPMENT_MAX_TITLE_LENGTH),
+        "status": _bounded_text(issue.status, 128),
+        "readiness": readiness,
+        "issueType": issue.issue_type,
+        "priority": _priority(issue.priority),
+        "labels": labels[:DEVELOPMENT_MAX_LABELS],
+        "remainingLabelCount": min(
+            DEVELOPMENT_MAX_JSON_SAFE_INTEGER,
+            max(0, len(issue.labels) - DEVELOPMENT_MAX_LABELS),
+        ),
+        "assignee": _bounded_optional_text(issue.assignee or None, DEVELOPMENT_MAX_ID_LENGTH),
+        "owner": _bounded_optional_text(issue.owner or None, DEVELOPMENT_MAX_ID_LENGTH),
+        "updatedAt": updated_at,
+        "blockerCount": blocker_count,
+        "openGateCount": open_gate_count,
+        "liveAgentCount": live_agent_count,
+    }
+
+
 def _dependency(
     item: WorkDependency, hive_id: str, revision: str, generated_at: int
 ) -> dict[str, object]:
@@ -471,7 +638,7 @@ def hive_operator_snapshot(
     sequence: int,
     observed_at: int,
 ) -> dict[str, object]:
-    """Project independently-labelled real sources into the UI's direct snapshot contract."""
+    """Project one byte-bounded, compact, deterministic Development seed snapshot."""
 
     hive_id = "/".join(str(entry[field]) for field in ("provider", "org", "repo"))
     if type(sequence) is not int or not 0 <= sequence <= DEVELOPMENT_MAX_CURSOR_SEQUENCE:
@@ -479,51 +646,23 @@ def hive_operator_snapshot(
     if type(observed_at) is not int or not 0 <= observed_at <= DEVELOPMENT_MAX_JSON_SAFE_INTEGER:
         raise SnapshotProjectionUnavailable("Development cursor timestamp limit exceeded")
     generated_at = _millis(bead_state.as_of, fallback=observed_at)
+    if not 0 <= generated_at <= DEVELOPMENT_MAX_JSON_SAFE_INTEGER:
+        raise SnapshotProjectionUnavailable("Development generated timestamp limit exceeded")
     revision = _revision(bead_state.revision, runtime_state.revision)
-    retained_issues = tuple(
-        issue
-        for issue in bead_state.issues
-        if issue.hive == hive_id
-        and issue.status.lower() in _DEVELOPMENT_WORK_STATUSES
-        and issue.issue_type.lower() not in _INTERNAL_WORK_ITEM_TYPES
-    )
-    if len(retained_issues) > DEVELOPMENT_WORK_ITEM_LIMIT:
-        raise SnapshotProjectionUnavailable("Development work-item limit exceeded")
+    retained_issues, eligible_count = _bounded_summary_candidates(bead_state.issues, hive_id)
     retained_issue_ids = frozenset(issue.id for issue in retained_issues)
-    retained_dependencies = tuple(
-        item
-        for item in bead_state.work_dependencies
-        if item.hive == hive_id
-        and item.issue_id in retained_issue_ids
-        and item.depends_on_id in retained_issue_ids
+    blocker_counts, gate_counts, live_agent_counts = _summary_counts(
+        bead_state, runtime_state, hive_id, retained_issue_ids
     )
-    retained_assignments = tuple(
-        item
-        for item in bead_state.assignments
-        if item.hive == hive_id and item.issue_id in retained_issue_ids
-    )
-    retained_gates = tuple(
-        item
-        for item in bead_state.gate_requests
-        if item.hive == hive_id and retained_issue_ids.intersection(item.blocks)
-    )
-    retained_schedules = tuple(
-        item
-        for item in bead_state.epic_schedules
-        if item.hive == hive_id and item.epic_id in retained_issue_ids
-    )
-
-    bead_detail = _MISSING_WORK_ITEM_DETAIL
-    if bead_state.partial_reason:
-        bead_detail = f"{bead_state.partial_reason}; {bead_detail}"
-    beads_coverage = _source_coverage(
-        state="partial",
-        generated_at=generated_at,
-        detail=bead_detail,
-        system="beadhive.state-stream",
-        instance=None,
-        requested=None,
-        returned=len(bead_state.issues),
+    summaries = tuple(
+        _work_item_summary(
+            issue,
+            generated_at=generated_at,
+            blocker_count=blocker_counts.get(issue.id, 0),
+            open_gate_count=gate_counts.get(issue.id, 0),
+            live_agent_count=live_agent_counts.get(issue.id, 0),
+        )
+        for issue in retained_issues
     )
     runtime_state_name = {
         Coverage.COMPLETE: "complete",
@@ -541,81 +680,82 @@ def hive_operator_snapshot(
         requested=None,
         returned=len(runtime_state.summaries),
     )
-    assignments = [
-        _state_assignment(item, hive_id, bead_state.revision, generated_at)
-        for item in retained_assignments
-    ]
-    assignments.extend(
-        _runtime_assignment(summary, hive_id, runtime_state.revision, generated_at)
-        for summary in runtime_state.summaries
-        if summary.bead in retained_issue_ids
-    )
-    snapshot = {
-        "schemaVersion": SCHEMA_VERSION,
-        "hive": hive_info(entry, canonical_prefix=True),
-        "revision": revision,
-        "generatedAt": generated_at,
-        "cursor": {
-            "subscriptionId": hive_subscription_id(hive_id),
-            "producerEpoch": producer_epoch,
-            "sequence": sequence,
-            "observedAt": observed_at,
-        },
-        "coverage": {
-            "state": "partial",
-            "generatedAt": generated_at,
-            "sources": {"beads": beads_coverage, "runtime": runtime_coverage},
-        },
-        "workItems": [
-            _work_item(item, hive_id, bead_state.revision, generated_at) for item in retained_issues
-        ],
-        "dependencies": [
-            _dependency(item, hive_id, bead_state.revision, generated_at)
-            for item in retained_dependencies
-        ],
-        "epics": _epics(retained_issues, hive_id, bead_state.revision),
-        "gates": [
-            _gate(
-                item,
-                hive_id,
-                bead_state.revision,
-                generated_at,
-                retained_issue_ids,
-            )
-            for item in retained_gates
-        ],
-        "agents": [
-            _agent(item, hive_id, runtime_state.revision, generated_at)
-            for item in runtime_state.summaries
-        ],
-        "assignments": assignments,
-        "schedules": [
-            _schedule(
-                item,
-                hive_id,
-                bead_state.revision,
-                generated_at,
-                retained_issue_ids,
-            )
-            for item in retained_schedules
-        ],
-        "evidence": [],
-        "advertisedActions": [],
+    limits = {
+        "maxBytes": DEVELOPMENT_SNAPSHOT_MAX_BYTES,
+        "maxWorkItems": DEVELOPMENT_WORK_ITEM_LIMIT,
     }
-    sizing_snapshot = dict(snapshot)
-    sizing_cursor = dict(snapshot["cursor"])
-    sizing_cursor["sequence"] = DEVELOPMENT_MAX_CURSOR_SEQUENCE
-    sizing_cursor["observedAt"] = DEVELOPMENT_MAX_JSON_SAFE_INTEGER
-    sizing_snapshot["cursor"] = sizing_cursor
-    encoded = json.dumps(
-        sizing_snapshot,
-        ensure_ascii=False,
-        allow_nan=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    if len(encoded) > DEVELOPMENT_SNAPSHOT_MAX_BYTES:
-        raise SnapshotProjectionUnavailable("Development snapshot byte limit exceeded")
-    return snapshot
+
+    def projected(returned_count: int, *, reserve_cursor_width: bool) -> dict[str, object]:
+        selection_reason: str | None
+        if returned_count < len(summaries):
+            selection_reason = "byte_budget"
+        elif eligible_count > len(summaries):
+            selection_reason = "structural_cap"
+        else:
+            selection_reason = None
+        beads_detail_parts = []
+        if bead_state.partial_reason:
+            beads_detail_parts.append(bead_state.partial_reason)
+        if selection_reason:
+            beads_detail_parts.append(selection_reason)
+        beads_coverage = _source_coverage(
+            state="partial" if bead_state.partial or selection_reason else "complete",
+            generated_at=generated_at,
+            detail="; ".join(beads_detail_parts) or None,
+            system="beadhive.state-stream",
+            instance=None,
+            requested=eligible_count,
+            returned=returned_count,
+        )
+        return {
+            "schemaVersion": SCHEMA_VERSION,
+            "hive": hive_info(entry, canonical_prefix=True),
+            "revision": revision,
+            "generatedAt": generated_at,
+            "cursor": {
+                "subscriptionId": hive_subscription_id(hive_id),
+                "producerEpoch": producer_epoch,
+                "sequence": (DEVELOPMENT_MAX_CURSOR_SEQUENCE if reserve_cursor_width else sequence),
+                "observedAt": (
+                    DEVELOPMENT_MAX_JSON_SAFE_INTEGER if reserve_cursor_width else observed_at
+                ),
+            },
+            "projectionPolicy": DEVELOPMENT_SNAPSHOT_POLICY,
+            "limits": limits,
+            "coverage": {
+                "state": "partial" if selection_reason else "complete",
+                "generatedAt": generated_at,
+                "eligible": eligible_count,
+                "returned": returned_count,
+                "reason": selection_reason,
+                "policy": DEVELOPMENT_SNAPSHOT_POLICY,
+                "sourceRevision": revision,
+                "limits": limits,
+                "sources": {"beads": beads_coverage, "runtime": runtime_coverage},
+            },
+            "workItems": list(summaries[:returned_count]),
+        }
+
+    def encoded_size(returned_count: int) -> int:
+        return len(
+            json.dumps(
+                projected(returned_count, reserve_cursor_width=True),
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        )
+
+    if encoded_size(0) > DEVELOPMENT_SNAPSHOT_MAX_BYTES:
+        raise SnapshotProjectionUnavailable("Development snapshot envelope byte limit exceeded")
+    low, high = 0, len(summaries)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if encoded_size(middle) <= DEVELOPMENT_SNAPSHOT_MAX_BYTES:
+            low = middle
+        else:
+            high = middle - 1
+    return projected(low, reserve_cursor_width=False)
 
 
 def _activity_kind(name: str) -> str:

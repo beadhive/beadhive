@@ -60,7 +60,7 @@
       "compatibility_policy": "append-only-catalog-v1",
       "family": "gateway",
       "path": "artifacts/gateway-contracts-v1.json",
-      "sha256": "sha256:f9e280614f11cb15229488e5830b6143cc06074142e2996c8dccdae07e2f7da2",
+      "sha256": "sha256:42bbff61fe6ad529c535da752430d994365020bde684f58874e0de4c7dd41046",
       "source_owner": "beadhive.gateway_wire_contracts.documents"
     },
     {
@@ -69,7 +69,7 @@
       "compatibility_policy": "openapi-additive-v1",
       "family": "openapi",
       "path": "artifacts/host-openapi-v1.json",
-      "sha256": "sha256:59c2c09a3e512e31726c88d3be7e3327a834cad99bb241eb7b9887e8d4ed74e9",
+      "sha256": "sha256:de689fe724157f3375285b11b9986cd703a09da6643e80521563f070e9aed983",
       "source_owner": "beadhive.daemon_openapi.generate_openapi_document"
     },
     {

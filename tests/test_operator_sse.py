@@ -58,7 +58,7 @@ UI_OPERATOR_EVENT_FIELDS = {
     "entity",
     "payload",
 }
-UI_CONFORMANCE_SHA256 = "b0ad6bad0af72ab1c77d928666f9e6838971763812dce8900cbb8a18e23b348e"
+UI_CONFORMANCE_SHA256 = "8c8de66bcee8c6902de1ae8a154a45b98e6e991d279f1a679c4c91b5e83d4af2"
 
 
 def _snapshot(revision: str, status: str, *, hive: str = HIVE) -> state_stream.ProviderSnapshot:
@@ -451,7 +451,7 @@ def test_exact_sse_subscription_owns_connection_and_queue_gauges_to_zero(tmp_pat
     assert ("sse-client", 0) in telemetry.depths
 
 
-def test_snapshot_boundary_replays_strictly_later_entity_event(tmp_path: Path) -> None:
+def test_snapshot_boundary_replays_strictly_later_invalidation(tmp_path: Path) -> None:
     provider, feed, _runtime, relay = _relay(tmp_path)
     first = feed.snapshot_with_cursor(HIVE)
     epoch = first["cursor"]["producerEpoch"]
@@ -474,8 +474,12 @@ def test_snapshot_boundary_replays_strictly_later_entity_event(tmp_path: Path) -
     event_id, event = _event(frame)
     assert event_id == f"{epoch}:1"
     assert (event["sequence"], event["baseSequence"]) == (1, 0)
-    assert event["payload"]["kind"] == "entity-upsert"
-    assert event["entity"] == event["payload"]["entity"]["ref"]
+    assert event["payload"] == {
+        "kind": "invalidate",
+        "scopes": ["snapshot", "coverage"],
+        "reason": "authoritative hive snapshot changed",
+    }
+    assert event["entity"] is None
     assert second["cursor"]["sequence"] == 1
 
 
@@ -490,14 +494,11 @@ def test_closing_work_removes_it_from_snapshot_and_sse_projection(tmp_path: Path
     assert second["cursor"]["sequence"] == first["cursor"]["sequence"] + 1
     assert len(relay._hives[HIVE].history) == 1
     _event_id, event = _event(relay._hives[HIVE].history[0].frame)
-    assert event["payload"] == {
-        "kind": "entity-remove",
-        "entity": {"hiveId": HIVE, "kind": "work-item", "id": "bh-1"},
-        "revision": second["revision"],
-    }
+    assert event["payload"]["kind"] == "invalidate"
+    assert event["payload"]["scopes"] == ["snapshot", "coverage"]
 
 
-def test_two_event_transition_overflow_is_atomic_repeatable_and_recoverable(
+def test_invalidation_transition_overflow_is_atomic_repeatable_and_recoverable(
     tmp_path: Path,
 ) -> None:
     def two_items(revision: str, status: str) -> state_stream.ProviderSnapshot:
@@ -524,7 +525,7 @@ def test_two_event_transition_overflow_is_atomic_repeatable_and_recoverable(
     first = feed.snapshot_with_cursor(HIVE)
     feed_state = feed._hives[HIVE]
     relay_state = relay._hives[HIVE]
-    feed_state.sequence = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE - 1
+    feed_state.sequence = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
     first["cursor"]["sequence"] = feed_state.sequence
     relay_state.sequence = feed_state.sequence
     loop = asyncio.new_event_loop()
@@ -564,14 +565,13 @@ def test_two_event_transition_overflow_is_atomic_repeatable_and_recoverable(
 
     client.close()
     loop.close()
-    feed_state.sequence = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE - 2
+    feed_state.sequence = operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE - 1
     first["cursor"]["sequence"] = feed_state.sequence
     relay_state.sequence = feed_state.sequence
     recovered = feed.snapshot_with_cursor(HIVE)
     assert recovered["cursor"]["sequence"] == operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
     assert [event.sequence for event in relay_state.history] == [
-        operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE - 1,
-        operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE,
+        operator_contract.DEVELOPMENT_MAX_CURSOR_SEQUENCE
     ]
 
 
@@ -641,8 +641,8 @@ def test_concurrent_snapshot_handoff_never_exposes_new_state_with_old_cursor(
     refresh_thread.join(1)
     read_thread.join(1)
     assert not refresh_thread.is_alive() and not read_thread.is_alive()
-    assert refreshed[0]["workItems"][0]["record"]["status"] == "blocked"
-    assert installed[0]["workItems"][0]["record"]["status"] == "blocked"
+    assert refreshed[0]["workItems"][0]["status"] == "blocked"
+    assert installed[0]["workItems"][0]["status"] == "blocked"
     assert refreshed[0]["cursor"] == installed[0]["cursor"]
     assert refreshed[0]["cursor"]["sequence"] == 1
     event = relay._hives[HIVE].history[0]
@@ -700,13 +700,14 @@ def test_production_polling_source_projects_a_real_change_into_sse(
     backend.records = [_raw_issue("blocked")]
     second = feed.snapshot_with_cursor(HIVE)
 
-    assert first["workItems"][0]["record"]["status"] == "open"
-    assert second["workItems"][0]["record"]["status"] == "blocked"
+    assert first["workItems"][0]["status"] == "open"
+    assert second["workItems"][0]["status"] == "blocked"
     retained = relay._hives[HIVE].history
     assert len(retained) == 1
     event_id, event = _event(retained[0].frame)
     assert event_id == f"{first['cursor']['producerEpoch']}:1"
-    assert event["payload"]["entity"]["record"]["status"] == "blocked"
+    assert event["payload"]["kind"] == "invalidate"
+    assert event["entity"] is None
 
 
 def test_emitted_frame_matches_checked_ui_wire_schema_exactly(tmp_path: Path) -> None:
@@ -734,7 +735,8 @@ def test_emitted_frame_matches_checked_ui_wire_schema_exactly(tmp_path: Path) ->
     ).validate(event)
     assert event["source"] in {"beads", "runtime", "git", "mcp", "supervisor", "fixture"}
     assert event["baseSequence"] == event["sequence"] - 1
-    assert event["entity"] == event["payload"]["entity"]["ref"]
+    assert event["entity"] is None
+    assert event["payload"]["kind"] == "invalidate"
 
 
 def test_pinned_ui_conformance_frame_is_reproduced_byte_for_byte(
@@ -754,7 +756,7 @@ def test_pinned_ui_conformance_frame_is_reproduced_byte_for_byte(
     event_id, event = _event(frame)
     assert event_id == f"{event['producerEpoch']}:{event['sequence']}"
     assert set(event) == UI_OPERATOR_EVENT_FIELDS
-    assert event["payload"]["kind"] == "entity-upsert"
+    assert event["payload"]["kind"] == "invalidate"
 
 
 def test_heartbeat_advances_feed_cursor_and_is_replayable(tmp_path: Path) -> None:

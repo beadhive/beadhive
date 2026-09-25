@@ -76,6 +76,19 @@ _SNAPSHOT_REQUIRED = frozenset(
         *_SNAPSHOT_COLLECTIONS,
     }
 )
+_COMPACT_SNAPSHOT_REQUIRED = frozenset(
+    {
+        "schemaVersion",
+        "hive",
+        "revision",
+        "generatedAt",
+        "cursor",
+        "projectionPolicy",
+        "limits",
+        "coverage",
+        "workItems",
+    }
+)
 _EVENT_REQUIRED = frozenset(
     {
         "schemaVersion",
@@ -94,6 +107,9 @@ _EVENT_REQUIRED = frozenset(
 )
 _MAX_DOCUMENT_BYTES = 2_000_000
 _MAX_COLLECTION_ITEMS = 10_000
+_COMPACT_SNAPSHOT_POLICY = "beadhive.snapshot-summary/v1"
+_COMPACT_SNAPSHOT_MAX_BYTES = 896 * 1024
+_COMPACT_SNAPSHOT_MAX_ITEMS = 4_096
 _PAGE_CURSOR_TTL_SECONDS = 300
 _EVENT_SUBSCRIPTION_MAX_LENGTH = 512
 _EVENT_AFTER_MAX_LENGTH = 512
@@ -236,8 +252,9 @@ def gateway_wire_schemas() -> dict[str, dict[str, object]]:
                 "source": {"type": "object"},
                 "snapshot": {
                     "type": "object",
-                    "required": sorted(_SNAPSHOT_REQUIRED),
-                    "properties": {key: {} for key in sorted(_SNAPSHOT_REQUIRED)},
+                    "additionalProperties": False,
+                    "required": sorted(_COMPACT_SNAPSHOT_REQUIRED),
+                    "properties": {key: {} for key in sorted(_COMPACT_SNAPSHOT_REQUIRED)},
                 },
             },
         },
@@ -262,8 +279,9 @@ def gateway_wire_schemas() -> dict[str, dict[str, object]]:
                 "source": {"type": "object"},
                 "snapshot": {
                     "type": "object",
-                    "required": sorted(_SNAPSHOT_REQUIRED),
-                    "properties": {key: {} for key in sorted(_SNAPSHOT_REQUIRED)},
+                    "additionalProperties": False,
+                    "required": sorted(_COMPACT_SNAPSHOT_REQUIRED),
+                    "properties": {key: {} for key in sorted(_COMPACT_SNAPSHOT_REQUIRED)},
                 },
             },
         },
@@ -539,6 +557,104 @@ def _decode_snapshot(raw: object, scenario_id: str) -> tuple[str, Mapping[str, o
     )
     projected["revision"] = revision
     return hive_id, projected
+
+
+def _compact_catalog_snapshot(snapshot: Mapping[str, object]) -> dict[str, object]:
+    """Project generated fixture state into the sole published compact seed shape."""
+
+    revision = _text(snapshot.get("revision"), "snapshot revision", maximum=256)
+    generated_at = _integer(snapshot.get("generatedAt"), "snapshot generatedAt")
+    blocker_counts: dict[str, int] = {}
+    for raw in _array(snapshot.get("dependencies"), "snapshot dependencies"):
+        dependency = _object(raw, "snapshot dependency")
+        issue_id = _object(dependency.get("dependentId"), "dependency dependent").get("id")
+        if isinstance(issue_id, str):
+            blocker_counts[issue_id] = blocker_counts.get(issue_id, 0) + 1
+    gate_counts: dict[str, int] = {}
+    for raw in _array(snapshot.get("gates"), "snapshot gates"):
+        gate = _object(raw, "snapshot gate")
+        if gate.get("status") not in {"open", "pending"}:
+            continue
+        for raw_block in _array(gate.get("blocks"), "gate blocks"):
+            issue_id = _object(raw_block, "gate block").get("id")
+            if isinstance(issue_id, str):
+                gate_counts[issue_id] = gate_counts.get(issue_id, 0) + 1
+    status_rank = {"in_progress": 0, "blocked": 1, "open": 2}
+    summaries: list[dict[str, object]] = []
+    for raw in _array(snapshot.get("workItems"), "snapshot workItems"):
+        item = _object(raw, "snapshot work item")
+        record = _object(item.get("record"), "snapshot work item record")
+        status = record.get("status")
+        issue_type = record.get("issueType")
+        if status not in status_rank or issue_type in {"event", "gate"}:
+            continue
+        issue_id = _text(record.get("id"), "work item id", maximum=256)
+        labels = [
+            _text(label, "work item label", maximum=256)
+            for label in _array(record.get("labels"), "work item labels")
+        ]
+        blocker_count = blocker_counts.get(issue_id, 0)
+        gate_count = gate_counts.get(issue_id, 0)
+        summaries.append(
+            {
+                "id": issue_id,
+                "title": _text(record.get("title"), "work item title", maximum=4_096),
+                "status": status,
+                "readiness": (
+                    "active"
+                    if status == "in_progress"
+                    else "blocked"
+                    if status == "blocked" or blocker_count or gate_count
+                    else "ready"
+                ),
+                "issueType": _text(issue_type, "work item type", maximum=128),
+                "priority": _integer(record.get("priority"), "work item priority"),
+                "labels": labels[:12],
+                "remainingLabelCount": max(0, len(labels) - 12),
+                "assignee": record.get("assignee"),
+                "owner": None,
+                "updatedAt": _integer(item.get("updatedAt"), "work item updatedAt"),
+                "blockerCount": blocker_count,
+                "openGateCount": gate_count,
+                "liveAgentCount": 0,
+            }
+        )
+    summaries.sort(
+        key=lambda item: (
+            status_rank[str(item["status"])],
+            int(item["priority"]),
+            -int(item["updatedAt"]),
+            str(item["id"]),
+        )
+    )
+    if len(summaries) > _COMPACT_SNAPSHOT_MAX_ITEMS:
+        raise CatalogValidationError("generated compact snapshot exceeds its structural limit")
+    limits = {
+        "maxBytes": _COMPACT_SNAPSHOT_MAX_BYTES,
+        "maxWorkItems": _COMPACT_SNAPSHOT_MAX_ITEMS,
+    }
+    source_coverage = _object(snapshot.get("coverage"), "snapshot coverage")
+    return {
+        "schemaVersion": SCHEMA_VERSION,
+        "hive": copy.deepcopy(_object(snapshot.get("hive"), "snapshot hive")),
+        "revision": revision,
+        "generatedAt": generated_at,
+        "cursor": copy.deepcopy(snapshot.get("cursor")),
+        "projectionPolicy": _COMPACT_SNAPSHOT_POLICY,
+        "limits": limits,
+        "coverage": {
+            "state": "complete",
+            "generatedAt": generated_at,
+            "eligible": len(summaries),
+            "returned": len(summaries),
+            "reason": None,
+            "policy": _COMPACT_SNAPSHOT_POLICY,
+            "sourceRevision": revision,
+            "limits": limits,
+            "sources": copy.deepcopy(source_coverage.get("sources", {})),
+        },
+        "workItems": summaries,
+    }
 
 
 def _decode_event(
@@ -878,7 +994,7 @@ class GeneratedCatalogReadSource:
         if detail != "live":
             raise ReadSourceInvalidRequest
         hive = self._hive(subject, factory_id, hive_id)
-        snapshot = copy.deepcopy(hive.snapshot)
+        snapshot = _compact_catalog_snapshot(hive.snapshot)
         generated_at = _integer(snapshot.get("generatedAt"), "snapshot generatedAt")
         raw_cursor = snapshot.get("cursor")
         sequence = 0

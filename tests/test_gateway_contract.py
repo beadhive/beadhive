@@ -21,6 +21,31 @@ def _canonical_digest(value: object) -> str:
     return f"sha256:{sha256(encoded).hexdigest()}"
 
 
+def _compact_frame_snapshot(*, event_cursor: str | None = None) -> dict[str, object]:
+    limits = {"maxBytes": 917_504, "maxWorkItems": 4_096}
+    value: dict[str, object] = {
+        "schemaVersion": 1,
+        "revision": "sha256:" + "a" * 64,
+        "generatedAt": 1724716800000,
+        "projectionPolicy": "beadhive.snapshot-summary/v1",
+        "limits": limits,
+        "coverage": {
+            "state": "complete",
+            "generatedAt": 1724716800000,
+            "eligible": 0,
+            "returned": 0,
+            "reason": None,
+            "policy": "beadhive.snapshot-summary/v1",
+            "sourceRevision": "sha256:" + "a" * 64,
+            "limits": limits,
+        },
+        "workItems": [],
+    }
+    if event_cursor is not None:
+        value["eventCursor"] = event_cursor
+    return value
+
+
 def _resolve_wire_schema(document: dict[str, object], reference: str) -> dict[str, object]:
     contract_id, fragment = reference.split("#", 1)
     contracts = {
@@ -54,13 +79,7 @@ def _success_gateway_app():
             return subject
 
     async def snapshot():
-        return {
-            "schemaVersion": 1,
-            "revision": "sha256:" + "a" * 64,
-            "generatedAt": 1724716800000,
-            "workItems": [],
-            "agents": [],
-        }
+        return _compact_frame_snapshot()
 
     async def online() -> bool:
         return True
@@ -107,14 +126,7 @@ def _event_gateway_app(calls: list[str], *, read_source=None):
             return subject
 
     async def snapshot():
-        return {
-            "schemaVersion": 1,
-            "revision": "sha256:" + "a" * 64,
-            "generatedAt": 1724716800000,
-            "workItems": [],
-            "agents": [],
-            "eventCursor": f"{epoch}:0",
-        }
+        return _compact_frame_snapshot(event_cursor=f"{epoch}:0")
 
     async def online() -> bool:
         return True
@@ -365,7 +377,7 @@ def test_gateway_wire_references_resolve_to_versioned_digested_owned_contracts()
         frame_bridge._SNAPSHOT_KEYS
     )
 
-    rich_snapshot = _resolve_wire_schema(
+    compact_snapshot = _resolve_wire_schema(
         document,
         next(
             operation["wireResultSchema"]
@@ -374,8 +386,8 @@ def test_gateway_wire_references_resolve_to_versioned_digested_owned_contracts()
             == "GET /v1/instances/{stage}/{slug}/hives/{hive_id:path}/snapshot"
         ),
     )
-    assert rich_snapshot["properties"]["snapshot"]["required"] == sorted(
-        gateway_read._SNAPSHOT_REQUIRED
+    assert compact_snapshot["properties"]["snapshot"]["required"] == sorted(
+        gateway_read._COMPACT_SNAPSHOT_REQUIRED
     )
 
     canonical_schemas = {
@@ -592,8 +604,8 @@ def test_gateway_owned_wire_version_and_required_shape_drift_changes_artifact(
         ),
         (
             gateway_read,
-            "_SNAPSHOT_REQUIRED",
-            gateway_read._SNAPSHOT_REQUIRED | {"reviewRequired"},
+            "_COMPACT_SNAPSHOT_REQUIRED",
+            gateway_read._COMPACT_SNAPSHOT_REQUIRED | {"reviewRequired"},
             rich_snapshot,
         ),
     )

@@ -211,7 +211,7 @@ class NearLimitSnapshotProvider:
         )
 
 
-def test_snapshot_overload_is_source_unavailable_while_health_stays_ready(tmp_path: Path) -> None:
+def test_snapshot_overload_returns_bounded_partial_while_health_stays_ready(tmp_path: Path) -> None:
     async def action(client, _app):
         snapshot = await client.get("/api/v1/hives/github%2Fbeadhive%2Fbeadhive/snapshot")
         health = await client.get("/health")
@@ -219,9 +219,14 @@ def test_snapshot_overload_is_source_unavailable_while_health_stays_ready(tmp_pa
 
     snapshot, health = _exercise(tmp_path, action, provider=OverloadedSnapshotProvider())
 
-    assert snapshot.status_code == 503
-    assert snapshot.json()["error"]["code"] == "snapshot_source_unavailable"
-    assert snapshot.json()["error"]["retryable"] is True
+    assert snapshot.status_code == 200
+    assert len(snapshot.content) <= operator_contract.DEVELOPMENT_SNAPSHOT_MAX_BYTES
+    payload = snapshot.json()
+    assert payload["coverage"]["state"] == "partial"
+    assert payload["coverage"]["eligible"] == 4_097
+    assert payload["coverage"]["reason"] in {"byte_budget", "structural_cap"}
+    assert len(payload["workItems"]) <= 4_096
+    daemon_contract.HiveSnapshotResponse.model_validate(payload)
     assert health.status_code == 200
     assert health.json()["ready"] is True
 

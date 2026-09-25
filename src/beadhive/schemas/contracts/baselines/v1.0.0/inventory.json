@@ -87,7 +87,7 @@
       "id": "urn:beadhive:wire-catalog:gateway-contracts:1",
       "kind": "catalog",
       "path": "artifacts/gateway-contracts-v1.json",
-      "sha256": "sha256:786cae1c30c8a85e3b3a97764abcfb4476d248cdde697ada4ce32c8e478b4f5a",
+      "sha256": "sha256:42bbff61fe6ad529c535da752430d994365020bde684f58874e0de4c7dd41046",
       "source_owner": "beadhive.gateway_wire_contracts.documents",
       "version": 1
     },
@@ -100,7 +100,7 @@
       "id": "urn:beadhive:wire-contract:host-openapi:1",
       "kind": "openapi",
       "path": "artifacts/host-openapi-v1.json",
-      "sha256": "sha256:59c2c09a3e512e31726c88d3be7e3327a834cad99bb241eb7b9887e8d4ed74e9",
+      "sha256": "sha256:de689fe724157f3375285b11b9986cd703a09da6643e80521563f070e9aed983",
       "source_owner": "beadhive.daemon_openapi.generate_openapi_document",
       "version": 1
     },
