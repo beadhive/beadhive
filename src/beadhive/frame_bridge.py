@@ -1602,7 +1602,12 @@ def build_development_frame_bridge_application(
                 for item in freshness
                 if isinstance(item, Mapping) and type(item.get("asOf")) is int
             ]
-            freshness_state = "fresh" if freshness and states == {"fresh"} else "unknown"
+            if freshness and states == {"fresh"}:
+                freshness_state = "fresh"
+            elif freshness and states <= {"fresh", "stale"}:
+                freshness_state = "stale"
+            else:
+                freshness_state = "unknown"
             count = len(hives)
             coverage = {"state": "complete", "requested": count, "returned": count}
             overview = {

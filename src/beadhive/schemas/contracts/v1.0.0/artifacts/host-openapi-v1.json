@@ -762,6 +762,49 @@
         ],
         "type": "object"
       },
+      "FactoryHiveFreshness": {
+        "additionalProperties": false,
+        "description": "How current a cached directory summary is (additive; absent from older producers).\n\n``fresh`` is inside its refresh interval, ``stale`` has expired, ``refreshing`` has a\nbackground refresh in flight, and ``unknown`` has never been observed.  ``asOf`` is when\nthe host observed the summary and ``expiresAt`` when it stops being fresh; both are null\nbefore the first observation.",
+        "properties": {
+          "asOf": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "expiresAt": {
+            "anyOf": [
+              {
+                "minimum": 0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "enum": [
+              "fresh",
+              "stale",
+              "refreshing",
+              "unknown"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "state",
+          "asOf",
+          "expiresAt"
+        ],
+        "type": "object"
+      },
       "FactoryHivePage": {
         "additionalProperties": false,
         "properties": {
@@ -863,6 +906,18 @@
           "displayLabel": {
             "minLength": 1,
             "type": "string"
+          },
+          "freshness": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FactoryHiveFreshness"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "x-beadhive-additive": true
           },
           "id": {
             "pattern": "^[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+/[A-Za-z0-9._~-]+$",
@@ -4237,7 +4292,7 @@
             }
           },
           {
-            "description": "Opaque snapshot-scoped cursor returned by nextCursor.",
+            "description": "Opaque cursor returned by nextCursor. It is scoped to registry membership, order, and filters; background summary refreshes do not invalidate it.",
             "in": "query",
             "name": "cursor",
             "required": false,
@@ -4247,6 +4302,7 @@
             }
           },
           {
+            "description": "Filter on cached summary availability; best effort across pages because cached state may refresh between page reads.",
             "in": "query",
             "name": "availability",
             "required": false,
