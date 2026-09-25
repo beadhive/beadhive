@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import contextlib
 import fcntl
+import json
 import os
 import signal
 import socket
@@ -71,8 +72,25 @@ MAX_CONCURRENT_DOLT_SERVER_TESTS = int(os.environ.get("BH_DOLT_SLOTS", "4"))
 _SLOT_WAIT_TIMEOUT = 600.0
 
 
+def _slot_event(kind: str, test_id: str, **fields) -> None:
+    path = os.environ.get("BH_DOLT_SLOT_EVENTS")
+    if not path:
+        return
+    payload = json.dumps(
+        {"event": kind, "test": test_id[-1000:], "monotonic": time.monotonic(), **fields}
+    )
+    handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        if os.fstat(handle).st_size < 8 * 1024 * 1024:
+            os.write(handle, (payload + "\n").encode())
+    finally:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+        os.close(handle)
+
+
 @contextlib.contextmanager
-def dolt_server_slot(slots: int = MAX_CONCURRENT_DOLT_SERVER_TESTS):
+def dolt_server_slot(slots: int = MAX_CONCURRENT_DOLT_SERVER_TESTS, test_id: str = "unknown"):
     """Hold one of *slots* run-wide permits to start a real dolt sql-server.
 
     A file lock rather than an xdist group, and the difference matters: `--dist loadgroup` +
@@ -89,11 +107,17 @@ def dolt_server_slot(slots: int = MAX_CONCURRENT_DOLT_SERVER_TESTS):
     ``slots <= 0`` is the unbounded arm of the measurement (``BH_DOLT_SLOTS=0``) — no lock at all.
     """
     if slots <= 0:
-        yield -1
+        _slot_event("acquired", test_id, slot=-1, queue_seconds=0.0)
+        started = time.monotonic()
+        try:
+            yield -1
+        finally:
+            _slot_event("released", test_id, slot=-1, hold_seconds=time.monotonic() - started)
         return
     slot_dir = Path(tempfile.gettempdir()) / "bh-dolt-server-slots"
     slot_dir.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + _SLOT_WAIT_TIMEOUT
+    queued = time.monotonic()
     while True:
         for index in range(slots):
             handle = (slot_dir / f"slot-{index}").open("a+")
@@ -103,9 +127,14 @@ def dolt_server_slot(slots: int = MAX_CONCURRENT_DOLT_SERVER_TESTS):
                 handle.close()
                 continue
             try:
+                acquired = time.monotonic()
+                _slot_event("acquired", test_id, slot=index, queue_seconds=acquired - queued)
                 yield index
                 return
             finally:
+                _slot_event(
+                    "released", test_id, slot=index, hold_seconds=time.monotonic() - acquired
+                )
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
                 handle.close()
         if time.monotonic() >= deadline:

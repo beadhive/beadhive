@@ -523,8 +523,10 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     """END-TO-END regression (real bd): hand-assemble an epic exactly like bh-er55 —
     `bd create --type=epic` + `bd dep add <child> <epic> -t parent-child` over pre-existing
     beads (no swarm, no gates, no kickoff state, no identity labels, one untriaged
-    origin-report child) — then run `plan repair` twice and `plan approve` twice, and prove
-    `bh work start` takes the dispatcher seat."""
+    origin-report child) — then replay real `plan repair` against durable storage, approve the
+    generated gates, prove the graph with `plan verify`, and prove `bh work start` takes the
+    dispatcher seat. Fast unit coverage separately proves both commands converge to a clean
+    no-op when repeated."""
     from harness.beads import bd as hbd
     from harness.hive import make_hive
 
@@ -545,9 +547,15 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     )
     origin = _create("reported thing", "-l", "origin:report,intake:untriaged")
 
-    for child in (root_a, root_b, dependent, origin):
-        hbd("dep", "add", child, epic, "-t", "parent-child", cwd=m, capture=True)
-    hbd("dep", "add", dependent, root_a, cwd=m, capture=True)  # dependent is not a root
+    dependency_batch = world.tmp / "plan-repair-dependencies.batch"
+    dependency_batch.write_text(
+        "".join(
+            f"dep add {child} {epic} parent-child\n"
+            for child in (root_a, root_b, dependent, origin)
+        )
+        + f"dep add {dependent} {root_a}\n"
+    )
+    hbd("batch", "-f", str(dependency_batch), cwd=m, capture=True)
 
     # the refusal trail on the malformed molecule: work start points at approve, and approve
     # refuses on the convention gate pointing at repair — the operator never gate-spelunks
@@ -560,7 +568,7 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     assert refused_approve.exit_code != 0
     assert "plan repair" in refused_approve.output
 
-    # repair twice: converge, then clean no-op
+    # The first real pass repairs durable convention state and creates the root gates.
     first = _runner.invoke(app, ["plan", "repair", epic, "--hive", "mr"])
     assert first.exit_code == 0, first.output
     assert f"created bd swarm for {epic}" in first.output
@@ -570,17 +578,15 @@ def test_repair_and_approve_converge_hand_assembled_epic_real_bd(world):
     assert dependent not in [
         line.split()[-1] for line in first.output.splitlines() if "kickoff gate" in line
     ]
+    # Real storage remains converged on repair replay; the fast unit test also
+    # covers approve replay.
     second = _runner.invoke(app, ["plan", "repair", epic, "--hive", "mr"])
     assert second.exit_code == 0, second.output
     assert "nothing to repair" in second.output
 
-    # approve twice: converge, then clean no-op — no raw gate ids anywhere
     approve1 = _runner.invoke(app, ["plan", "approve", epic, "--hive", "mr"])
     assert approve1.exit_code == 0, approve1.output
     assert "2 gate(s) resolved" in approve1.output
-    approve2 = _runner.invoke(app, ["plan", "approve", epic, "--hive", "mr"])
-    assert approve2.exit_code == 0, approve2.output
-    assert "already approved" in approve2.output
 
     verify = _runner.invoke(app, ["plan", "verify", epic, "--hive", "mr"])
     assert verify.exit_code == 0, verify.output

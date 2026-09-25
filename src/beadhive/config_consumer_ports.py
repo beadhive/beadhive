@@ -101,6 +101,7 @@ work_settings = CapabilitySettings(
         "work_runtime",
         "work_value",
         "worktrees_cfg",
+        "worktrees_ephemeral",
         "worktrees_root",
     },
     _SOURCE,

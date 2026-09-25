@@ -177,6 +177,10 @@ explicitly. `worktrees.toolchains: {name: template}` overrides the registry per 
 
 ### The verify-environment contract (`verify: true`)
 
+Package-manager init rules use the device-aware shared-cache resolver described in
+[Framework cache locality](CACHE-LOCALITY.md). This applies equally to ordinary seat creation
+and the ephemeral clean checkout below.
+
 `bh work submit` / merge validate from a **throwaway clean checkout** (an ephemeral
 `verify-*` worktree), so the result never depends on dirty local state. That checkout does
 **not** get the full init pass — only rules flagged `verify: true` run there, after the
@@ -235,6 +239,33 @@ integer explicitly; it controls fan-out *inside one admitted gate*, while `valid
 controls how many gates can run. The test harness's `BH_DOLT_SLOTS` semaphore is narrower still:
 it bounds real Dolt-server fixtures inside a pytest run and does not provide host-wide validation
 admission.
+
+The xdist comparison is a periodic, opt-in measurement:
+
+```console
+just benchmark-xdist workers="6,12,18,24" repetitions=3 output=/tmp/xdist-benchmark.json
+```
+
+That historical matrix can be replaced with a current-host matrix such as `8,16,24,32`; every
+pytest launch still receives an explicit `-n` value, so the repository's sixteen-worker default
+and its contract test stay unchanged. The command benchmarks both land partitions (`not
+integration` and `integration`), prints a Markdown table, and writes detailed JSON with Git,
+interpreter, pytest/xdist, CPU/memory, validation-slot, timing, result-count, slow-phase, and uv
+cache-locality provenance. Validation slots include both the effective value and whether it came
+from `BH_VALIDATION_SLOTS`, host config, or the default. Cache and interpreter-target filesystem
+records include available bytes and inodes. Device equality reports hardlink capability and the
+expected uv auto mode. A bounded preflight builds the local project wheel offline and asks uv to
+materialize it into an isolated target below the external scratch root; the JSON and Markdown
+summary record that probe target's device/capacity and uv's observed hardlink/copy fallback
+outcome (or `unknown` with a diagnostic if the offline probe cannot run). Cache-source evidence
+is matched against uv's resolved cache directory, including `UV_CACHE_DIR` overrides. Its scratch
+root must be outside every Git checkout; the command refuses a root for which Git can discover a
+containing repository before it starts pytest.
+
+Real-Dolt fixture telemetry is also run-local: each marked test reports slot queue and hold
+seconds separately in JSON, and the Markdown table shows their aggregate medians. Collection
+interleaves ready non-Dolt work after each `BH_DOLT_SLOTS` sized Dolt wave so xdist can keep useful
+workers moving while the filesystem locks remain the authoritative four-slot default bound.
 
 Use `bh work check`, not raw `just check`, when the result should seed submission. A clean
 `bh work check` writes the run and exact-tree verdict records, so the following `bh work submit`

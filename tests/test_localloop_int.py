@@ -272,20 +272,24 @@ async def test_restart_mid_molecule_neither_double_claims_nor_leaves_a_seat_spen
     # a dead worker — the orphan's claim was released first, so any re-dispatch is a FRESH turn.
     assert len(set(restart.dispatched)) == len(restart.dispatched)
     assert all(_row(b, main).get("assignee") == "dev/int" for b in restart.dispatched)
-    labels = _row(claimed, main).get("labels") or []
-    assert DISPATCH_CANCELLED_LABEL in labels, "the restart must be legible in the beads afterwards"
-
     # (3) the molecule still completes
     for _ in range(12):
+        seats = tuple(loop_b.in_flight.values())
+        if seats:
+            exited = await asyncio.gather(*(seat.wait_exit(timeout=5.0) for seat in seats))
+            assert all(exited), "the replacement seats should finish within the bounded wait"
         pass_report = await loop_b.run_pass()
         for bead, outcome in pass_report.harvested:
             if outcome == "done":
                 bd("close", bead, "--reason", "seat done", cwd=main, actor="dev/int", capture=True)
         if pass_report.decision and pass_report.decision.row in ("finish", "done"):
             break
-        await asyncio.sleep(0.1)
     await loop_b.shutdown()
-    assert {_row(b, main)["status"] for b in (first, second)} == {"closed"}
+    rows = bd_json("list", "--id", f"{first},{second},{claimed}", "--all", cwd=main) or []
+    by_id = {row["id"]: row for row in rows}
+    assert {by_id[bead]["status"] for bead in (first, second)} == {"closed"}, by_id
+    labels = by_id[claimed].get("labels") or []
+    assert DISPATCH_CANCELLED_LABEL in labels, "the restart must be legible in the beads afterwards"
 
 
 @async_test

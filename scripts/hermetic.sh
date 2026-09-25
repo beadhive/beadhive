@@ -62,15 +62,77 @@ fi
 # Writable scratch OUTSIDE the tmpfs $HOME: pytest's tmp tree (dolt stores, real servers) is far
 # too big for RAM, and TMPDIR here is often under $HOME.
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/bh-hermetic-XXXXXX")"
+BWRAP_PID=""
+CLEANED_UP=0
+
+cleanup_once() {
+    if [ "${CLEANED_UP}" -eq 0 ]; then
+        CLEANED_UP=1
+        rm -rf "${SCRATCH}"
+    fi
+}
+
+terminate_fence() {
+    local requested_signal="$1"
+    local pid="${BWRAP_PID}"
+
+    if [ -n "${pid}" ]; then
+        # Bash job control starts bwrap in its own process group below, so its pid is also the
+        # group id inherited by every fenced descendant. Signal the group, wait briefly for
+        # cooperative shutdown, then
+        # close the namespace with SIGKILL if any process ignored INT/TERM/HUP. Reap the leader so
+        # neither it nor a descendant can outlive cleanup or retain the caller's output pipes.
+        kill "-${requested_signal}" -- "-${pid}" 2>/dev/null || true
+        for _ in {1..20}; do
+            kill -0 -- "-${pid}" 2>/dev/null || break
+            sleep 0.05
+        done
+        if kill -0 -- "-${pid}" 2>/dev/null; then
+            kill -KILL -- "-${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+        BWRAP_PID=""
+    fi
+}
+
+on_signal() {
+    local requested_signal="$1"
+    local signal_number="$2"
+
+    # Ignore a second cancellation while the first handler closes the process group. Removing
+    # EXIT here makes cleanup_once the sole owner of the signal path instead of running it again
+    # when this shell terminates itself below.
+    trap '' INT TERM HUP
+    trap - EXIT
+    terminate_fence "${requested_signal}"
+    cleanup_once
+
+    # Preserve native signal termination for callers that inspect returncode, with 128+signal as
+    # a defensive fallback for shells that defer or ignore a self-signal.
+    trap - "${requested_signal}"
+    kill "-${requested_signal}" "$$"
+    exit "$((128 + signal_number))"
+}
+
+on_exit() {
+    local rc=$?
+    trap '' INT TERM HUP
+    trap - EXIT
+    # This is normally already reaped. It also closes the group if an unrelated shell error
+    # occurs after launch, without letting the error path leak a namespace or scratch tree.
+    terminate_fence TERM
+    cleanup_once
+    exit "${rc}"
+}
+
 # INT/TERM/HUP as well as EXIT. With EXIT alone, bash exiting on SIGINT took its status from the
-# trap's last command (`rm -rf`, which succeeds), so an INTERRUPTED fenced gate exited 0 — a
-# false green, the exact shape this bead exists to prevent. SIGTERM/SIGHUP were already correct
-# (143/129); only SIGINT never reached the `exit` below. SIGKILL cannot be trapped, so that one
-# path still leaks its scratch dir; nothing in userspace can fix that.
-trap 'rc=$?; rm -rf "${SCRATCH}"; trap - INT TERM HUP EXIT; exit "${rc}"' EXIT
-trap 'rm -rf "${SCRATCH}"; trap - INT TERM HUP EXIT; kill -INT $$' INT
-trap 'rm -rf "${SCRATCH}"; trap - INT TERM HUP EXIT; kill -TERM $$' TERM
-trap 'rm -rf "${SCRATCH}"; trap - INT TERM HUP EXIT; kill -HUP $$' HUP
+# trap's last command (`rm -rf`, which succeeds), so an INTERRUPTED fenced gate exited 0. Signal
+# handlers now close and reap the complete fenced group before cleaning the scratch tree exactly
+# once. SIGKILL cannot be trapped, so that one path can still leave scratch behind.
+trap on_exit EXIT
+trap 'on_signal INT 2' INT
+trap 'on_signal TERM 15' TERM
+trap 'on_signal HUP 1' HUP
 
 args=(
     --ro-bind / /
@@ -90,6 +152,58 @@ args=(
     --setenv BH_HERMETIC_FENCE "1"
     --chdir "${REPO}"
 )
+
+# Resolve the package cache before bwrap overlays /tmp and $HOME. A selected host tmpfs cache
+# must be rebound after that overlay or the framework sees an empty private /tmp and the locality
+# guarantee disappears only inside the authoritative validation fence.
+CACHE_LINES=()
+CACHE_APPLICATION=""
+CACHE_TARGET=""
+case " $* " in
+    *" pnpm "*) CACHE_APPLICATION="pnpm"; CACHE_TARGET="${REPO}/node_modules" ;;
+    *" uv "*) CACHE_APPLICATION="uv"; CACHE_TARGET="${REPO}/.venv" ;;
+esac
+CACHE_PYTHON="${REPO}/.venv/bin/python"
+if [ ! -x "${CACHE_PYTHON}" ]; then
+    CACHE_PYTHON="$(command -v python3 || true)"
+fi
+if [ -n "${CACHE_APPLICATION}" ] && [ -n "${CACHE_PYTHON}" ]; then
+    mapfile -t CACHE_LINES < <(
+        PYTHONPATH="${REPO}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+            "${CACHE_PYTHON}" -m beadhive.cache_locality "${CACHE_APPLICATION}" "${REPO}" \
+                --target "${CACHE_TARGET}" --format lines
+    )
+fi
+if [ "${#CACHE_LINES[@]}" -ge 2 ]; then
+    CACHE_PATH="${CACHE_LINES[0]}"
+    CACHE_LINK_MODE="${CACHE_LINES[1]}"
+    if [ -d "${CACHE_PATH}" ]; then
+        # --tmpfs /tmp and --tmpfs $HOME above hide the host destination tree. --dir recreates
+        # every destination component, including the cache mountpoint itself, in order before the
+        # later writable bind. This also handles a durable path nested several levels below HOME.
+        CACHE_DEST=""
+        IFS='/' read -r -a CACHE_COMPONENTS <<< "${CACHE_PATH#/}"
+        for CACHE_COMPONENT in "${CACHE_COMPONENTS[@]}"; do
+            [ -z "${CACHE_COMPONENT}" ] && continue
+            CACHE_DEST="${CACHE_DEST}/${CACHE_COMPONENT}"
+            args+=(--dir "${CACHE_DEST}")
+        done
+        args+=(--bind "${CACHE_PATH}" "${CACHE_PATH}")
+        if [ "${CACHE_APPLICATION}" = "uv" ]; then
+            args+=(--setenv UV_CACHE_DIR "${CACHE_PATH}" --setenv UV_LINK_MODE "${CACHE_LINK_MODE}")
+        else
+            args+=(--setenv PNPM_CONFIG_STORE_DIR "${CACHE_PATH}")
+            args+=(--setenv PNPM_CONFIG_PACKAGE_IMPORT_METHOD "${CACHE_LINK_MODE}")
+            args+=(--setenv npm_config_store_dir "${CACHE_PATH}")
+            args+=(--setenv npm_config_package_import_method "${CACHE_LINK_MODE}")
+        fi
+    else
+        echo "⚠ cache locality: selected cache path does not exist: ${CACHE_PATH}" >&2
+    fi
+    if [ "${CACHE_LINK_MODE}" = "copy" ] || [[ "${CACHE_LINES[2]:-}" == *fallback* ]]; then
+        echo "⚠ cache locality: ${CACHE_LINES[2]:-copy fallback selected}" >&2
+    fi
+fi
 
 # THE CHECKOUT'S OWN GIT AND BEAD STATE ARE READ-ONLY, and this is the whole point rather than a
 # refinement. The suite must be able to write INSIDE the checkout (.venv, .pytest_cache), so
@@ -144,10 +258,11 @@ fi
 # with a finding that looked like a migration bug. Left unbound it lands on the tmpfs: writable,
 # empty, and gone when the run ends.
 #
-# .local/share/mise holds scie-pants and other tool installs. uv-managed CPython lives separately
-# in .local/share/uv/python; hiding it makes a provisioned .venv interpreter symlink appear
-# broken, so uv replaces the environment inside the offline fence. Bind only the interpreter
-# installs read-only, never the adjacent .local/share/beadhive operator state.
+# Two ~/.local/share toolchain paths are added to that list. `mise` holds scie-pants and other
+# installed tools. `uv/python` holds uv's managed interpreters: an outer `uv sync` may select one
+# for .venv, whose executable symlink must keep resolving inside the fence. Both are disjoint from
+# ~/.local/share/beadhive's bh/bd state and stay read-only; binding the selected interpreter
+# preserves the outer environment instead of silently switching Python versions inside validation.
 for dir in .local/bin .local/lib .local/share/mise .local/share/uv/python .nix-profile; do
     [ -e "${HOME}/${dir}" ] && args+=(--ro-bind "${HOME}/${dir}" "${HOME}/${dir}")
 done
@@ -156,7 +271,10 @@ done
 # every run and dies with "Could not acquire lock ... Read-only file system" otherwise. It is a
 # content-addressed download cache, not project or hive state, so it is outside what this fence
 # exists to protect — the git config, the bead stores and the operator's HOME still are not.
-[ -e "${HOME}/.cache/uv" ] && args+=(--bind "${HOME}/.cache/uv" "${HOME}/.cache/uv")
+if { [ "${CACHE_APPLICATION}" = "uv" ] || [ -z "${CACHE_APPLICATION}" ]; } &&
+    [ "${#CACHE_LINES[@]}" -lt 2 ] && [ -e "${HOME}/.cache/uv" ]; then
+    args+=(--bind "${HOME}/.cache/uv" "${HOME}/.cache/uv")
+fi
 
 # Same reasoning for Pants (bh-1j3ei.2): `~/.cache/nce` is scie-pants's own bootstrap cache
 # (its downloaded interpreter + the Pants engine venv). It is content-addressed, but NOT
@@ -177,5 +295,14 @@ done
 # is bh-njdxk's factor 3 (leaked state accumulating across runs) re-created in a new place by the
 # very script claiming to have removed it. Run, keep the status, let the trap clean up, exit it.
 rc=0
-bwrap "${args[@]}" "$@" || rc=$?
+# Non-interactive Bash otherwise starts asynchronous commands with SIGINT and SIGQUIT ignored.
+# Monitor mode both preserves their normal signal dispositions and puts this job in a dedicated
+# process group, without creating a new session for everything inside the fence. Turn it off as
+# soon as the group exists so the wrapper's remaining control flow keeps normal script semantics.
+set -m
+bwrap "${args[@]}" "$@" &
+BWRAP_PID=$!
+set +m
+wait "${BWRAP_PID}" || rc=$?
+BWRAP_PID=""
 exit "${rc}"

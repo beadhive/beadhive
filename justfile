@@ -735,10 +735,12 @@ pkg name *args:
 packages-check:
     uv run ruff check packages
     uv run ruff format --check packages
-    uv sync --locked --all-packages
+    # The two locked `uv run` steps above provision build requirements in the selected cache.
+    # Keep workspace builds deterministic when the package index is temporarily unavailable.
+    ./scripts/hermetic.sh uv sync --locked --offline --all-packages
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run --locked --all-packages pytest -n auto packages/*/tests
-    uv build --all-packages --no-build-isolation
+    ./scripts/hermetic.sh uv build --all-packages --no-build-isolation
 
 test-kernel:
     just test-closure kernel
@@ -769,6 +771,14 @@ test-system-smoke:
 test-integration-land:
     uv run python scripts/test-watchdog.py --timeout {{test_timeout_seconds}} -- \
         ./scripts/hermetic.sh uv run pytest -n {{integration_workers}} tests -m "integration"
+
+# PERIODIC ONLY: compare explicit xdist worker counts for both pytest land partitions. This does
+# not feed `PYTEST_XDIST_AUTO_NUM_WORKERS` back into contract tests or any validation recipe.
+# Historical comparison: workers="6,12,18,24". Current-host example: workers="8,16,24,32".
+benchmark-xdist workers="6,12,18,24" repetitions="3" output="xdist-benchmark.json" scratch="/tmp":
+    uv run python scripts/benchmark_xdist.py --workers {{quote(workers)}} \
+        --repetitions {{quote(repetitions)}} --output {{quote(output)}} \
+        --scratch-root {{quote(scratch)}}
 
 # ^ the FENCE's own quarantine (test_storage_migrate_int's furnished-hive test) is GONE, not
 # forgotten (bh-gsg8x). It was never a fence incompatibility: in a linked worktree the tmpfs HOME

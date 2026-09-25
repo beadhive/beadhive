@@ -35,6 +35,46 @@ inside_fence = pytest.mark.skipif(
 )
 
 
+def test_selected_tmpfs_cache_is_bound_after_private_tmp_with_destination_parent():
+    wrapper = WRAPPER.read_text()
+    private_tmp = wrapper.index("--tmpfs /tmp")
+    destination = wrapper.index('args+=(--dir "${CACHE_DEST}")')
+    writable_bind = wrapper.index('--bind "${CACHE_PATH}" "${CACHE_PATH}"')
+
+    assert private_tmp < destination < writable_bind
+    assert 'CACHE_COMPONENTS <<< "${CACHE_PATH#/}"' in wrapper
+    assert 'for CACHE_COMPONENT in "${CACHE_COMPONENTS[@]}"' in wrapper
+    assert '--setenv UV_CACHE_DIR "${CACHE_PATH}"' in wrapper
+    assert '--setenv PNPM_CONFIG_STORE_DIR "${CACHE_PATH}"' in wrapper
+    assert '--setenv PNPM_CONFIG_PACKAGE_IMPORT_METHOD "${CACHE_LINK_MODE}"' in wrapper
+    assert '--setenv npm_config_store_dir "${CACHE_PATH}"' in wrapper
+
+
+@pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")
+def test_selected_uv_cache_and_outer_interpreter_are_available_inside_fence():
+    expected = subprocess.run(
+        [str(REPO / ".venv/bin/python"), "-c", "import sys; print(sys.version_info[:2])"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    result = subprocess.run(
+        [
+            str(WRAPPER),
+            "sh",
+            "-c",
+            'test -d "$UV_CACHE_DIR" && test -w "$UV_CACHE_DIR" && '
+            "uv run python -c 'import sys; print(sys.version_info[:2])'",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == expected
+
+
 # ---- the boundary itself (fenced runs only) --------------------------------------------------
 
 
@@ -324,32 +364,76 @@ def test_the_wrapper_cleans_up_its_scratch_tree(tmp_path):
     private_tmp.mkdir()
     env = {**os.environ, "TMPDIR": str(private_tmp)}
 
-    for argv in (["true"], ["false"], ["sh", "-c", "exit 42"]):
-        subprocess.run([str(WRAPPER), *argv], capture_output=True, timeout=120, env=env)
+    for argv, expected in ((["true"], 0), (["false"], 1), (["sh", "-c", "exit 42"], 42)):
+        result = subprocess.run([str(WRAPPER), *argv], capture_output=True, timeout=120, env=env)
+        assert result.returncode == expected
 
     leaked = sorted(private_tmp.glob("bh-hermetic-*"))
     assert not leaked, f"the wrapper leaked scratch directories onto the host: {leaked}"
 
 
+def _sentinel_processes(token: str) -> list[int]:
+    encoded = token.encode()
+    found = []
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            command = (process / "cmdline").read_bytes()
+        except (FileNotFoundError, PermissionError, ProcessLookupError):
+            continue
+        if encoded in command:
+            found.append(int(process.name))
+    return found
+
+
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")
-def test_an_interrupted_run_never_exits_zero(tmp_path):
+@pytest.mark.parametrize("cancel_signal", [signal.SIGINT, signal.SIGTERM, signal.SIGHUP])
+def test_an_interrupted_run_never_exits_zero(tmp_path, cancel_signal):
     """A fenced gate killed part-way must not report success. With only an EXIT trap, bash
     exiting on SIGINT took its status from the trap's last command and the wrapper exited 0 —
-    SIGTERM and SIGHUP were already correct, which is what made it easy to miss."""
+    SIGTERM and SIGHUP were already correct, which is what made it easy to miss. The sentinel
+    and its child ignore all three cooperative signals, so only complete process-group cleanup
+    plus the bounded hard fallback can make this finish promptly without a descendant leak."""
     private_tmp = tmp_path / "signal-probe"
     private_tmp.mkdir()
+    token = f"bh-hermetic-sentinel-{os.getpid()}-{time.monotonic_ns()}"
+    sentinel = (
+        "import os,signal,subprocess,sys,time\n"
+        "for value in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):\n"
+        " signal.signal(value, signal.SIG_IGN)\n"
+        "child = subprocess.Popen([\n"
+        " 'bash', '-c', 'trap \\\"\\\" INT TERM HUP; exec -a \\\"$1\\\" sleep 300',\n"
+        " 'bash', sys.argv[1] + '-descendant',\n"
+        "])\n"
+        "open(os.path.join(os.environ['TMPDIR'], 'sentinel-ready'), 'w').close()\n"
+        "while True: time.sleep(300)\n"
+    )
     proc = subprocess.Popen(
-        [str(WRAPPER), "sleep", "30"],
+        [str(WRAPPER), "python3", "-c", sentinel, token],
         env={**os.environ, "TMPDIR": str(private_tmp)},
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    time.sleep(2)
-    proc.send_signal(signal.SIGINT)
-    rc = proc.wait(timeout=60)
+    ready_deadline = time.monotonic() + 5
+    while time.monotonic() < ready_deadline:
+        if list(private_tmp.glob("bh-hermetic-*/sentinel-ready")):
+            break
+        time.sleep(0.05)
+    else:
+        proc.kill()
+        proc.wait(timeout=5)
+        pytest.fail("the long-running fenced sentinel did not become ready")
+
+    started = time.monotonic()
+    proc.send_signal(cancel_signal)
+    rc = proc.wait(timeout=10)
+    elapsed = time.monotonic() - started
 
     assert rc != 0, "an interrupted fenced run exited 0 — a gate can now go green on a SIGINT"
+    assert elapsed < 8, f"signal {cancel_signal.name} took {elapsed:.2f}s to terminate the fence"
     assert sorted(private_tmp.glob("bh-hermetic-*")) == [], "the signal path skipped cleanup"
+    assert _sentinel_processes(token) == [], "a fenced child or descendant survived cancellation"
 
 
 @pytest.mark.skipif(shutil.which("bwrap") is None, reason="bubblewrap is Linux-only")

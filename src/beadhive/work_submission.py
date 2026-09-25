@@ -280,10 +280,13 @@ def impl_submit(api, bead, as_, hive, group):
     api.otel.set_bead(bead)
     entry, main, target, branch = api.worktree.locate(cfg, hive, bead)
     api._guard_submit_worktree(bead, main, target)
-    actor = api._resolve_submit_actor(cfg, entry, target, bead, main, as_)
+    # Submit's three policy checks all inspect the same pre-mutation bead. Read it once: a real
+    # bd process is materially expensive, and no state transition occurs until the gate opens.
+    data = api.bd.show(bead, main)
+    actor = api._resolve_submit_actor(cfg, entry, target, bead, main, as_, data)
     api._guard_claim_fence(cfg, entry, target, hive)
-    base = api._guard_submit_ready(entry, target, branch, bead, cfg)
-    api._warn_submit_release_hint(bead, main, entry, branch, base)
+    base = api._guard_submit_ready(entry, target, branch, bead, cfg, data)
+    api._warn_submit_release_hint(bead, main, entry, branch, base, data)
     api._validate_submit_checkout(entry, branch, cfg, bead=bead)
     sha = api.worktree.head_sha(target)
     api._record_submit_commits(bead, main, entry, branch, base)
@@ -329,7 +332,7 @@ def impl__guard_submit_worktree(api, bead, main, target):
     raise api.typer.Exit(1)
 
 
-def impl__resolve_submit_actor(api, cfg, entry, target, bead, main, as_):
+def impl__resolve_submit_actor(api, cfg, entry, target, bead, main, as_, data=None):
     authority = api.claim_authority.get_authority(api.config.claim_authority(cfg, entry))
     record = authority.read(target)
     claim_holder = record.seat if authority.verify(record, "submit", "") else ""
@@ -337,7 +340,7 @@ def impl__resolve_submit_actor(api, cfg, entry, target, bead, main, as_):
         api.work_logic.opt_str(as_),
         claim_holder or api.config.work_identity(cfg, entry)["name"] or "",
     )
-    api._guard_holds_claim(api.bd.show(bead, main), actor, bead)
+    api._guard_holds_claim(data if data is not None else api.bd.show(bead, main), actor, bead)
     if not api.worktree.in_bead_worktree(target):
         api.typer.echo(
             "WARNING: cwd is not the bead worktree — ensure all changes are committed.\n"
@@ -352,7 +355,7 @@ def impl__guard_claim_fence(api, cfg, entry, target, hive):
     api.guard.guard_claim_epoch(authority.read(target), hive, cfg=cfg, verb="work submit")
 
 
-def impl__guard_submit_ready(api, entry, target, branch, bead, cfg):
+def impl__guard_submit_ready(api, entry, target, branch, bead, cfg, data=None):
     if not api.worktree.is_clean(target):
         api.typer.echo("✗ working tree not clean — commit or discard changes first", err=True)
         raise api.typer.Exit(1)
@@ -360,10 +363,12 @@ def impl__guard_submit_ready(api, entry, target, branch, bead, cfg):
     if cur != branch:
         api.typer.echo(f"✗ on branch {cur or '(detached)'}, expected {branch}", err=True)
         raise api.typer.Exit(1)
-    base = api.worktree.integration_base(entry, bead, api.config.integration_branch(cfg, entry))
+    base = api.worktree.integration_base(
+        entry, bead, api.config.integration_branch(cfg, entry), data
+    )
     count, subjects = api.worktree.history(entry, branch, base)
     limit = api.config.max_commits(cfg, entry)
-    data = api.bd.show(bead, api.registry.hive_dir(entry))
+    data = data if data is not None else api.bd.show(bead, api.registry.hive_dir(entry))
     if api._is_epic(data):
         policy = api.work_logic.epic_history_policy(
             entry,
@@ -393,9 +398,9 @@ def impl__guard_submit_ready(api, entry, target, branch, bead, cfg):
     return base
 
 
-def impl__warn_submit_release_hint(api, bead, main, entry, branch, base):
+def impl__warn_submit_release_hint(api, bead, main, entry, branch, base, data=None):
     warn = api.work_logic.reconcile_release_hint(
-        api.work_logic.release_hint(api.bd.show(bead, main)),
+        api.work_logic.release_hint(data if data is not None else api.bd.show(bead, main)),
         api.worktree.commit_messages(entry, branch, base),
     )
     if warn:

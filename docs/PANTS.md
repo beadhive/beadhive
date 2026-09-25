@@ -75,6 +75,10 @@ pants --filter-tag-regex='^owner:modules/config$' list ::
 
 ## Host-wide cache topology
 
+The native framework-cache resolver documented in [Framework cache locality](CACHE-LOCALITY.md)
+is not wired into this package-owned Pants path yet. Pants cache propagation and comparative
+validation are deferred; the coordinator below retains its existing behavior.
+
 Run Pants through the checked cache coordinator so independent worktrees share only Pants'
 content-addressed local store:
 

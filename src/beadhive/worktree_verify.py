@@ -22,6 +22,7 @@ from pathlib import Path
 import typer
 
 from . import (
+    cache_locality,
     converge,
     host,
     otel,
@@ -286,7 +287,26 @@ def impl_run_init(cfg, entry, path: Path, verify_only: bool = False):
         if cond and not any(path.glob(cond)):
             continue
         typer.echo(f"  → {cmd}")
-        res = run(shlex.split(cmd), cwd=str(path), check=False)
+        argv = shlex.split(cmd)
+        cache = cache_locality.command_environment(
+            argv,
+            path,
+            worktree_root=config.worktrees_root(cfg),
+            ephemeral=config.worktrees_ephemeral(cfg),
+        )
+        run_kwargs = {"cwd": str(path), "check": False}
+        if cache is not None:
+            child_env, selection = cache
+            run_kwargs["env"] = child_env
+            typer.echo(
+                f"  → cache[{selection.application}] {selection.tier} "
+                f"{selection.path} ({selection.link_method}; "
+                f"device {selection.cache_device} → {selection.target_device}; "
+                f"{selection.free_bytes} bytes/{selection.free_inodes} inodes free)"
+            )
+            if selection.link_method == "copy" or "fallback" in selection.diagnostic:
+                typer.echo(f"  ⚠ cache locality: {selection.diagnostic}", err=True)
+        res = run(argv, **run_kwargs)
         if missing_binary(res):
             typer.echo(f"  ⚠ init: command not found: {cmd}", err=True)
             failed.append(cmd)
