@@ -9,15 +9,15 @@ default command transport.
 | Item | Exact value |
 |---|---|
 | Package | `beadhive-beads-client==0.1.0` |
-| Source commit | `80a9b65f6ff615527e3a092313a7b0f9c0cdcc74` |
-| Package tree | `a2b7d70a1bbdc45ec54690f213630d31d7f81f24` |
+| Source commit | `7ae0a3bd841ebc29da417a383867dfeedb8c83fe` |
+| Package tree | `897e43c8ce22c6c6b8bfd4b27a4e80c2a35fb89d` |
 | Generated SDK tree | `929e9e4c4cc3f6f033ee58cff64a44c429aa0750` |
 | Session and matrix tree | `526ce243cda7cae3b5883a1c579dc7043714cca2` |
 | Beads release source | `f45b249ce6b40ba62aecc03949e6371e8f7c79d8` |
 | OpenAPI SHA-256 | `9a33a349e5266bdba916246594a4fc457c63e39d7affb5acec9bd5b75acde4dd` |
 | Generator | `openapi-python-client==0.29.1`, locked in `uv.lock` |
 | Wheel SHA-256 | `520e03fde792b4628ae89e58ef470cb7fdc51659c2bad7195119825cb1d296ae` |
-| Source distribution SHA-256 | `007bdee766dc9cfdba0e1f17f93ca44e4aa0ea9a8c7fe3c0ced5eb583c840e24` |
+| Source distribution SHA-256 | `7f193618c6d2aa7be29f8d7841a89086c8763c73e5ea5c2a70d555be581c6137` |
 
 The wheel and source distribution were built from the clean source tree with
 `uv build packages/beadhive-beads-client --no-build-isolation`. The wheel has
