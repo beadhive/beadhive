@@ -1,5 +1,10 @@
 # herdr integration ADR — isolated panes, native worktrees, visible bead identity
 
+> **Partially superseded 2026-09-25.** Section 2's rule that Beadhive must always execute
+> worktree mechanics is under replacement by the evidence and decision in `bh-mr9tk`. Beadhive
+> still owns durable identity, naming intent, and safety; the selected provider may execute the
+> mechanics. Exact-session, safe-adoption, and single-cleanup-authority constraints remain.
+
 **Status:** decided (GO), session selection amended by `bh-tvre4` and `bh-359ih` ·
 **Date:** 2026-08-23 · **Decision owner:** `bh-ffwnu.1` ·
 **Related:** [HERDR.md](../HERDR.md),

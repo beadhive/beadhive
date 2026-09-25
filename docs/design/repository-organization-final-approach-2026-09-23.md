@@ -1,5 +1,10 @@
 # Repository organization: final approach and plan-update instructions
 
+> **Partially superseded 2026-09-25.** The work/planning physical-migration sequence is replaced
+> by the greenfield API-first packages and top-level cutover in
+> [the API-first parallel-replacement ADR](beads-api-first-parallel-replacement-adr.md). Worktree
+> movement waits for `bh-mr9tk.2`. Config ownership and transport-shell cleanup remain valid.
+
 Date: 2026-09-23 UTC.
 
 This document reconciles the [first review](repository-organization-review-2026-09-23.md)

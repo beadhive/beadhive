@@ -1,5 +1,11 @@
 # `bh-ie41e.5`: `bd serve` adoption decision
 
+> **Partially superseded 2026-09-25.** The closed read allowlist, mandatory CLI mutation path,
+> journal-first rollout, and local-only topology are replaced by
+> [the API-first parallel-replacement ADR](../design/beads-api-first-parallel-replacement-adr.md).
+> The exact contract digest, identity/security binding, typed failures, destructive-operation
+> denial, no blind replay of ambiguous writes, and separate Factory activation gates remain valid.
+
 ## Decision
 
 **NARROW GO for product architecture; no Factory operational GO.** Beadhive should implement a
